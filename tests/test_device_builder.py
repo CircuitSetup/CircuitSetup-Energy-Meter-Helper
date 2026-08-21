@@ -228,18 +228,34 @@ def test_rollback_transport_failures_are_wrapped(stage: str) -> None:
 
     async def run() -> None:
         client, _ = await connected_client()
+        calls: list[str] = []
 
         async def fail(*args, **kwargs):
+            calls.append(stage)
             raise ConnectionError("transport failed")
+
+        async def read_ok(*args, **kwargs):
+            calls.append("read")
+            return ESPHomeConfigSnapshot("meter.yaml", "current", "hash")
+
+        async def write_ok(*args, **kwargs):
+            calls.append("write")
+            return {}
 
         if stage == "read":
             client.async_get_config = fail
         elif stage == "write":
+            client.async_get_config = read_ok
             client.async_command = fail
         else:
+            client.async_get_config = read_ok
+            client.async_command = write_ok
             client.async_validate = fail
         with pytest.raises(RollbackError) as error:
-            await client.async_restore_content("meter.yaml", "api: secret")
+            await asyncio.wait_for(
+                client.async_restore_content("meter.yaml", "api: secret"), timeout=1
+            )
+        assert calls[-1] == stage
         assert "secret" not in str(error.value)
         await client.async_disconnect()
 
