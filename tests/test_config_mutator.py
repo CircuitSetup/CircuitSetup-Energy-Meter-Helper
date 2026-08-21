@@ -27,13 +27,13 @@ def _topology() -> MeterTopology:
     )
 
 
-def _snapshot(*, missing: str | None = None) -> ESPHomeConfigSnapshot:
+def _snapshot(*, missing: str | None = None, quote: str = '"') -> ESPHomeConfigSnapshot:
     substitutions = []
     for channel in range(1, 7):
         if missing != f"ct{channel}_name":
-            substitutions.append(f'  ct{channel}_name: "CT {channel}"')
+            substitutions.append(f"  ct{channel}_name: {quote}CT {channel}{quote}")
         if missing != f"current_cal_ct{channel}":
-            substitutions.append(f'  current_cal_ct{channel}: "11143"')
+            substitutions.append(f"  current_cal_ct{channel}: {quote}11143{quote}")
     content = (
         "api:\n  encryption:\n    key: top-secret\nsubstitutions:\n"
         + "\n".join(substitutions)
@@ -83,6 +83,19 @@ def test_missing_keys_insert_only_in_writable_substitutions_or_refuse_with_snipp
     )
     assert '  current_cal_ct3: "11143"\nlogger:' in plan.proposed_content
     assert plan.changes[-1].old_value is None
+
+    missing_name = build_ct_mutation(
+        _snapshot(missing="ct3_name", quote="'"),
+        _topology(),
+        (CTChangeRequest(3, "O'Clock", "sct_006_20a_25ma"),),
+    )
+    assert "  ct3_name: 'O''Clock'\nlogger:" in missing_name.proposed_content
+    missing_gain = build_ct_mutation(
+        _snapshot(missing="current_cal_ct3", quote="'"),
+        _topology(),
+        (CTChangeRequest(3, "CT 3", "sct_006_20a_25ma"),),
+    )
+    assert "  current_cal_ct3: '11143'\nlogger:" in missing_gain.proposed_content
 
     snapshot = _snapshot()
     without_substitutions = replace(

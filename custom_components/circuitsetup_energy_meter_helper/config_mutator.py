@@ -238,21 +238,22 @@ def _render_value(key: str, value: str, content: str, current: ConfigScalar) -> 
 
 
 def _render_missing(change: SubstitutionChange, document: ESPHomeConfigDocument) -> str:
+    quote = _prevailing_quote(document, change.key)
     if change.key.startswith("current_cal_ct"):
-        quoted = any(
-            document.content[scalar.span.start : scalar.span.end].startswith(("'", '"'))
-            for key, scalar in document.substitutions.items()
-            if key.startswith("current_cal_ct")
-        )
-        return json.dumps(change.new_value) if quoted else change.new_value
-    quoted = any(
-        document.content[scalar.span.start : scalar.span.end].startswith(("'", '"'))
-        for key, scalar in document.substitutions.items()
-        if key.endswith("_name")
-    )
-    return (
-        json.dumps(change.new_value) if quoted else _render_name(change.new_value, "")
-    )
+        return _render_gain(change.new_value, quote)
+    return _render_name(change.new_value, quote)
+
+
+def _prevailing_quote(document: ESPHomeConfigDocument, key: str) -> str:
+    is_gain = key.startswith("current_cal_ct")
+    for same_family in (True, False):
+        for candidate_key, scalar in document.substitutions.items():
+            if same_family and (candidate_key.startswith("current_cal_ct") != is_gain):
+                continue
+            token = document.content[scalar.span.start : scalar.span.end]
+            if token.startswith(("'", '"')):
+                return token[0]
+    return ""
 
 
 def _render_gain(value: str, old_token: str) -> str:
