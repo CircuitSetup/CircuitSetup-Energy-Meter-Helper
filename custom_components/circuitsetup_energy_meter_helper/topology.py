@@ -100,9 +100,12 @@ def addon_count_from_packages(package_files: Iterable[str]) -> int | None:
         match = _ADDON_PACKAGE_RE.search(path)
         if match is None:
             continue
-        index = int(match.group("index"))
-        if not 1 <= index <= 6:
-            raise TopologyParseError("add-on package index must be in 1..6")
+        raw_index = match.group("index")
+        if raw_index not in {"1", "2", "3", "4", "5", "6"}:
+            raise TopologyParseError(
+                "add-on package filename must use official index 1..6"
+            )
+        index = int(raw_index)
         if index in indices:
             raise TopologyParseError(f"duplicate add-on package index {index}")
         indices.add(index)
@@ -188,6 +191,17 @@ def topology_from_config(
                 native_metadata[0],
                 native_project_name,
             )
+        )
+
+    if (
+        project_metadata is not None
+        and native_metadata is not None
+        and project_metadata[0] == native_metadata[0]
+        and project_metadata != native_metadata
+    ):
+        raise TopologyMismatchError(
+            f"config project metadata {project_metadata} disagrees with "
+            f"native project metadata {native_metadata}"
         )
 
     addon_count = counts[0][1]

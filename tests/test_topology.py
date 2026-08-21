@@ -140,8 +140,12 @@ def test_package_count_requires_contiguous_unique_indices() -> None:
         addon_count_from_packages((main, addon.format(1), addon.format(3)))
     with pytest.raises(TopologyParseError, match="duplicate"):
         addon_count_from_packages((main, addon.format(1), addon.format(1)))
-    with pytest.raises(TopologyParseError, match="1..6"):
-        addon_count_from_packages((main, addon.format(7)))
+
+
+@pytest.mark.parametrize("filename", ("6chan_addon0.yaml", "6chan_addon01.yaml", "6chan_addon7.yaml", "6chan_addon10.yaml"))
+def test_package_count_rejects_noncanonical_indices(filename: str) -> None:
+    with pytest.raises(TopologyParseError, match="official index 1..6"):
+        addon_count_from_packages((f"Software/ESPHome/meter_sensors/{filename}",))
 
 
 @pytest.mark.parametrize(
@@ -215,6 +219,46 @@ def test_native_project_is_cross_checked_against_config() -> None:
             document,
             native_project_name="circuitsetup.6c-energy-meter-2-addons",
         )
+
+
+@pytest.mark.parametrize(
+    ("config_project", "native_project"),
+    (
+        (
+            "circuitsetup.6c-energy-meter-2-addons",
+            "circuitsetup.6c-energy-meter-2-addons-ethernet-waveshare",
+        ),
+        (
+            "circuitsetup.6c-energy-meter-2-addons",
+            "circuitsetup.6c-energy-meter-2-addons-2-voltages",
+        ),
+    ),
+)
+def test_native_project_rejects_semantic_variant_conflict(
+    config_project: str, native_project: str
+) -> None:
+    document = ESPHomeConfigDocument.parse(
+        f"esphome:\n  project:\n    name: {config_project}\n"
+    )
+
+    with pytest.raises(TopologyMismatchError, match="config project.*native project"):
+        topology_from_config(document, native_project_name=native_project)
+
+
+def test_native_project_accepts_equivalent_suffix_ordering() -> None:
+    document = ESPHomeConfigDocument.parse(
+        "esphome:\n"
+        "  project:\n"
+        "    name: circuitsetup.6c-energy-meter-2-addons-ethernet\n"
+    )
+
+    topology = topology_from_config(
+        document,
+        native_project_name="circuitsetup.6c-energy-meter-ethernet-2-addons",
+    )
+
+    assert topology.connection_type == "ethernet_lilygo"
+    assert topology.evidence[-1].source is TopologyEvidenceSource.NATIVE_PROJECT
 
 
 def test_dashboard_import_alone_is_not_authoritative() -> None:
