@@ -24,6 +24,7 @@ _EVIDENCE_SOURCES = {
 ConnectionType = Literal[
     "wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"
 ]
+Phase = Literal["A", "B", "C"]
 
 
 class SetupState(StrEnum):
@@ -71,6 +72,91 @@ def _safe_line(value: str, field: str, limit: int = 256) -> None:
     """Reject multiline payloads from metadata fields."""
     if not value or len(value) > limit or "\n" in value or "\r" in value:
         raise ValueError(f"{field} must be a non-empty single-line value")
+
+
+class TopologyEvidenceSource(StrEnum):
+    """Source of one topology count."""
+
+    CONFIG_PROJECT = "config_project"
+    CONFIG_PACKAGES = "config_packages"
+    DASHBOARD_IMPORT = "dashboard_import"
+    NATIVE_PROJECT = "native_project"
+    NATIVE_ENTITY_COUNTS = "native_entity_counts"
+
+
+@dataclass(slots=True, frozen=True)
+class TopologyEvidence:
+    """One retained input to a topology decision."""
+
+    source: TopologyEvidenceSource
+    addon_count: int
+    detail: str
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.addon_count <= 6:
+            raise ValueError("addon_count must be between 0 and 6")
+        _safe_line(self.detail, "detail")
+
+
+@dataclass(slots=True, frozen=True)
+class MeterTopology:
+    """Immutable physical layout derived from an add-on count."""
+
+    addon_count: int
+    board_count: int
+    ct_count: int
+    group_count: int
+    connection_type: ConnectionType
+    voltage_layout: str
+    project_name: str
+    evidence: tuple[TopologyEvidence, ...]
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.addon_count <= 6:
+            raise ValueError("addon_count must be between 0 and 6")
+        if (self.board_count, self.ct_count, self.group_count) != (
+            self.addon_count + 1,
+            6 * (self.addon_count + 1),
+            2 * (self.addon_count + 1),
+        ):
+            raise ValueError("topology counts do not match addon_count")
+        if self.connection_type not in _CONNECTION_TYPES:
+            raise ValueError("invalid connection_type")
+        _safe_line(self.voltage_layout, "voltage_layout")
+        _safe_line(self.project_name, "project_name")
+
+    @classmethod
+    def from_addon_count(
+        cls,
+        addon_count: int,
+        *,
+        connection_type: ConnectionType,
+        voltage_layout: str,
+        project_name: str,
+        evidence: tuple[TopologyEvidence, ...],
+    ) -> MeterTopology:
+        """Derive every fixed count from the number of add-on boards."""
+        board_count = addon_count + 1
+        return cls(
+            addon_count,
+            board_count,
+            6 * board_count,
+            2 * board_count,
+            connection_type,
+            voltage_layout,
+            project_name,
+            evidence,
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class ChannelAddress:
+    """Board, local group, and phase for one global CT channel."""
+
+    channel: int
+    board_index: int
+    group_index: int
+    phase: Phase
 
 
 @dataclass(slots=True, frozen=True)
