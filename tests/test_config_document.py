@@ -90,3 +90,55 @@ def test_rejects_duplicate_mutable_substitutions() -> None:
 
     with pytest.raises(ESPHomeConfigParseError, match="line 3"):
         ESPHomeConfigDocument.parse(content)
+
+
+def test_only_direct_owned_keys_are_extracted() -> None:
+    content = """substitutions:
+  metadata:
+    ct1_name: nested
+esphome:
+  project:
+    metadata:
+      name: circuitsetup.wrong
+    name: circuitsetup.correct
+dashboard_import:
+  metadata:
+    package_import_url: github://wrong.yaml
+  package_import_url: github://correct.yaml
+"""
+
+    doc = ESPHomeConfigDocument.parse(content)
+
+    assert doc.substitutions == {}
+    assert doc.project_name == "circuitsetup.correct"
+    assert doc.dashboard_import == "github://correct.yaml"
+
+
+@pytest.mark.parametrize(
+    ("content", "line"),
+    (
+        ("esphome:\n  project:\n    name: one\n  project:\n    name: two\n", 4),
+        ("esphome:\n  project:\n    name: one\n    name: two\n", 4),
+        (
+            "dashboard_import:\n  package_import_url: one\n  package_import_url: two\n",
+            3,
+        ),
+    ),
+)
+def test_rejects_duplicate_owned_project_and_import_keys(
+    content: str, line: int
+) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match=rf"line {line}"):
+        ESPHomeConfigDocument.parse(content)
+
+
+@pytest.mark.parametrize(
+    ("content", "line"),
+    (
+        ("substitutions: !include substitutions.yaml\n", 1),
+        ("substitutions:\n  <<: *defaults\n", 2),
+    ),
+)
+def test_rejects_nonlocal_substitution_sources(content: str, line: int) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match=rf"line {line}"):
+        ESPHomeConfigDocument.parse(content)

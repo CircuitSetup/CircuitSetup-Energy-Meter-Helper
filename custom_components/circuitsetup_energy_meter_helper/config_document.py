@@ -125,14 +125,30 @@ class _DocumentParser:
         return start + 1, end, mapping.indent
 
     def _substitutions(self) -> dict[str, ConfigScalar]:
-        bounds = self._section_lines("substitutions")
-        if bounds is None:
+        section = self._section("substitutions")
+        if section is None:
             return {}
+        section_index, section_mapping = section
+        if self._has_value(section_mapping.rest):
+            raise ESPHomeConfigParseError(
+                "substitutions must be a local mapping", section_index + 1
+            )
+        bounds = self._section_lines("substitutions")
+        assert bounds is not None
         substitutions: dict[str, ConfigScalar] = {}
         start, end, section_indent = bounds
+        child_indent = self._direct_child_indent(start, end, section_indent)
         for index in range(start, end):
+            body = self._bodies[index]
+            indent = len(body) - len(body.lstrip(" "))
+            if child_indent is None or indent != child_indent:
+                continue
+            if re.match(r"<<\s*:", body.lstrip()):
+                raise ESPHomeConfigParseError(
+                    "substitution merges are not locally authoritative", index + 1
+                )
             mapping = self._mapping(index)
-            if mapping is None or mapping.indent <= section_indent:
+            if mapping is None:
                 continue
             if not (CT_NAME_RE.fullmatch(mapping.key) or CT_GAIN_RE.fullmatch(mapping.key)):
                 continue
@@ -150,45 +166,81 @@ class _DocumentParser:
         if bounds is None:
             return None
         start, end, section_indent = bounds
-        parent: tuple[int, _Mapping] | None = None
+        direct_indent = self._direct_child_indent(start, end, section_indent)
+        parents: list[tuple[int, _Mapping]] = []
         for index in range(start, end):
             mapping = self._mapping(index)
             if (
                 mapping
-                and mapping.indent > section_indent
+                and mapping.indent == direct_indent
                 and mapping.key == parent_key
             ):
-                parent = (index, mapping)
-                break
-        if parent is None:
+                parents.append((index, mapping))
+        if len(parents) > 1:
+            raise ESPHomeConfigParseError(
+                f"duplicate {parent_key} block", parents[1][0] + 1
+            )
+        if not parents:
             return None
-        parent_index, parent_mapping = parent
-        if parent_mapping.rest.strip():
+        parent_index, parent_mapping = parents[0]
+        if self._has_value(parent_mapping.rest):
             raise ESPHomeConfigParseError(
                 f"{parent_key} must be a mapping", parent_index + 1
             )
+        parent_end = end
         for index in range(parent_index + 1, end):
             body = self._bodies[index]
             if not body.strip() or body.lstrip().startswith("#"):
                 continue
-            mapping = self._mapping(index)
             indent = len(body) - len(body.lstrip(" "))
             if indent <= parent_mapping.indent:
+                parent_end = index
                 break
-            if mapping and mapping.key == child_key:
-                return self._scalar(index, mapping)
-        return None
+        child_indent = self._direct_child_indent(
+            parent_index + 1, parent_end, parent_mapping.indent
+        )
+        children: list[tuple[int, _Mapping]] = []
+        for index in range(parent_index + 1, parent_end):
+            mapping = self._mapping(index)
+            if mapping and mapping.indent == child_indent and mapping.key == child_key:
+                children.append((index, mapping))
+        if len(children) > 1:
+            raise ESPHomeConfigParseError(
+                f"duplicate {child_key}", children[1][0] + 1
+            )
+        return self._scalar(*children[0]) if children else None
 
     def _section_scalar(self, section_name: str, key: str) -> ConfigScalar | None:
         bounds = self._section_lines(section_name)
         if bounds is None:
             return None
         start, end, section_indent = bounds
+        direct_indent = self._direct_child_indent(start, end, section_indent)
+        matches: list[tuple[int, _Mapping]] = []
         for index in range(start, end):
             mapping = self._mapping(index)
-            if mapping and mapping.indent > section_indent and mapping.key == key:
-                return self._scalar(index, mapping)
-        return None
+            if mapping and mapping.indent == direct_indent and mapping.key == key:
+                matches.append((index, mapping))
+        if len(matches) > 1:
+            raise ESPHomeConfigParseError(f"duplicate {key}", matches[1][0] + 1)
+        return self._scalar(*matches[0]) if matches else None
+
+    def _direct_child_indent(
+        self, start: int, end: int, parent_indent: int
+    ) -> int | None:
+        indents = [
+            len(body) - len(body.lstrip(" "))
+            for body in self._bodies[start:end]
+            if body.strip()
+            and not body.lstrip().startswith("#")
+            and len(body) - len(body.lstrip(" ")) > parent_indent
+        ]
+        return min(indents, default=None)
+
+    @staticmethod
+    def _has_value(rest: str) -> bool:
+        value = rest.strip()
+        return bool(value and not value.startswith("#"))
 
     def _package_files(self) -> tuple[str, ...]:
         bounds = self._section_lines("packages")
