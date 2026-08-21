@@ -19,7 +19,7 @@ class FakeWebSocket:
         self.sent: list[dict] = []
         self._received: asyncio.Queue[dict | None] = asyncio.Queue()
         self._received.put_nowait(server_info)
-        if server_info["requires_auth"]:
+        if server_info.get("requires_auth"):
             self._received.put_nowait({"message_id": "0", "result": {}})
 
     async def send_json(self, message: dict) -> None:
@@ -54,6 +54,25 @@ def test_trusted_server_skips_auth() -> None:
         client, ws = await connected_client()
         assert ws.sent == []
         await client.async_disconnect()
+
+    asyncio.run(run())
+
+
+def test_missing_auth_flag_requires_opaque_token() -> None:
+    """Only an explicit false ServerInfo flag permits trusted ingress."""
+
+    async def run() -> None:
+        ws = FakeWebSocket({"server_version": "1.0"})
+        client = DeviceBuilderClient("http://builder", connect=lambda _: ws)
+        with pytest.raises(ConnectionError):
+            await client.async_connect()
+        token_client = DeviceBuilderClient(
+            "http://builder",
+            token="opaque",
+            connect=lambda _: FakeWebSocket({"server_version": "1.0", "requires_auth": True}),
+        )
+        await token_client.async_connect()
+        await token_client.async_disconnect()
 
     asyncio.run(run())
 

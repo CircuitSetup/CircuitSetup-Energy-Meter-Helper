@@ -86,7 +86,7 @@ class DeviceBuilderClient:
         if not server_info or "server_version" not in server_info:
             raise ConnectionError("Device Builder did not provide server info")
         self._listener = asyncio.create_task(self._listen())
-        if server_info.get("requires_auth"):
+        if server_info.get("requires_auth") is not False:
             if not self._token:
                 raise ConnectionError("Device Builder requires an issued bearer token")
             future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
