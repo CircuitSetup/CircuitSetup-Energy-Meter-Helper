@@ -12,6 +12,7 @@ from custom_components.circuitsetup_energy_meter_helper.models import (
     SetupState,
 )
 from custom_components.circuitsetup_energy_meter_helper.provisioning import (
+    DeviceBuilderStatus,
     ProvisioningCoordinator,
 )
 
@@ -112,6 +113,41 @@ def test_rescan_requires_circuitsetup_runtime_project_prefix() -> None:
         assert [device.entry_id for device in snapshot.devices] == ["meter"]
         assert snapshot.state == SetupState.DEVICE_DISCOVERED
         assert not snapshot.configuration_authoritative
+
+    asyncio.run(run())
+
+
+def test_rescan_reports_configured_and_importable_device_builder_state() -> None:
+    """Current backend state distinguishes configured and importable meters."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        hass.config_entries.entries.extend(
+            [
+                FakeEntry(
+                    "configured",
+                    "Configured meter",
+                    FakeRuntimeData(FakeDeviceInfo("circuitsetup.6c-energy-meter")),
+                ),
+                FakeEntry(
+                    "importable",
+                    "Importable meter",
+                    FakeRuntimeData(FakeDeviceInfo("circuitsetup.6c-energy-meter")),
+                ),
+            ]
+        )
+        states = {
+            "configured": DeviceBuilderStatus(False, "configured-meter.yaml"),
+            "importable": DeviceBuilderStatus(True, None),
+        }
+        snapshot = await ProvisioningCoordinator(
+            hass, status_resolver=lambda entry: states[entry.entry_id]
+        ).async_rescan()
+
+        assert snapshot.devices[0].configuration == "configured-meter.yaml"
+        assert not snapshot.devices[0].importable
+        assert snapshot.devices[1].configuration is None
+        assert snapshot.devices[1].importable
 
     asyncio.run(run())
 

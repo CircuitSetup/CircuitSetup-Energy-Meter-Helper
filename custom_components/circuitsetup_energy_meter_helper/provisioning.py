@@ -37,6 +37,14 @@ class DiscoveredDevice:
 
 
 @dataclass(slots=True, frozen=True)
+class DeviceBuilderStatus:
+    """Current cached Device Builder state for one ESPHome entry."""
+
+    importable: bool
+    configuration: str | None
+
+
+@dataclass(slots=True, frozen=True)
 class ProvisioningSnapshot:
     """Current discovery state sent to panel subscribers."""
 
@@ -55,8 +63,13 @@ def _project_name(entry: Any) -> str | None:
 class ProvisioningCoordinator:
     """Guide installation, then discover compatible ESPHome config entries."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        status_resolver: Callable[[Any], DeviceBuilderStatus] | None = None,
+    ) -> None:
         self._hass = hass
+        self._status_resolver = status_resolver
         self._subscribers: set[Callable[[ProvisioningSnapshot], None]] = set()
         self._refresh_task: asyncio.Task[None] | None = None
         self._unsub_config_entries: Callable[[], None] | None = None
@@ -94,7 +107,7 @@ class ProvisioningCoordinator:
     async def async_rescan(self) -> ProvisioningSnapshot:
         """Report compatible ESPHome devices; this never polls USB."""
         devices = tuple(
-            DiscoveredDevice(entry.entry_id, entry.title, project_name)
+            self._device(entry, project_name)
             for entry in self._hass.config_entries.async_entries("esphome")
             if (project_name := _project_name(entry))
             and project_name.startswith(BASE_PROJECT)
@@ -111,6 +124,21 @@ class ProvisioningCoordinator:
         self.snapshot = ProvisioningSnapshot(state, devices)
         self._publish()
         return self.snapshot
+
+    def _device(self, entry: Any, project_name: str) -> DiscoveredDevice:
+        """Combine a compatible runtime identity with cached backend state."""
+        status = (
+            self._status_resolver(entry)
+            if self._status_resolver is not None
+            else DeviceBuilderStatus(False, None)
+        )
+        return DiscoveredDevice(
+            entry.entry_id,
+            entry.title,
+            project_name,
+            status.importable,
+            status.configuration,
+        )
 
     @callback
     def _async_entry_changed(
