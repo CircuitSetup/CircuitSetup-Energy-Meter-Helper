@@ -94,7 +94,14 @@ def test_inventory_rejects_esphome_object_id_collisions_and_warns_for_unscaled_r
     """Names only normalize for collision checks and high-range presets only warn."""
     with pytest.raises(ValueError, match="object-ID collision"):
         CTInventory.from_document(
-            _document(first_name="Main-feed", second_name="Main feed"),
+            _document(first_name="Main--feed", second_name="Main feed"),
+            _topology(),
+            CTPresetCatalog.load(),
+            "a" * 64,
+        )
+    with pytest.raises(ValueError, match="object-ID collision"):
+        CTInventory.from_document(
+            _document(first_name="Mø", second_name="M"),
             _topology(),
             CTPresetCatalog.load(),
             "a" * 64,

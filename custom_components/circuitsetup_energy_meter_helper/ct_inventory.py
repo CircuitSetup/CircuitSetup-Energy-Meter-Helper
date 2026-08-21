@@ -7,8 +7,6 @@ import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from homeassistant.util import slugify
-
 from .config_document import ESPHomeConfigDocument
 from .ct_catalog import CTPresetCatalog
 from .models import ChannelAddress, MeterTopology, StoredCTSelection
@@ -150,7 +148,28 @@ def _reject_object_id_collisions(channels: Iterable[CTChannelConfig]) -> None:
     for suffix in ("Amps", "Watts", "Ref Current"):
         object_ids: set[str] = set()
         for channel in channels:
-            object_id = slugify(f"{channel.name} {suffix}")
+            object_id = _esphome_object_id(f"{channel.name} {suffix}")
             if object_id in object_ids:
                 raise ValueError(f"ESPHome object-ID collision for {suffix}")
             object_ids.add(object_id)
+
+
+def _esphome_object_id(value: str) -> str:
+    """Match ESPHome's helpers.slugify for pre-write collision detection."""
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFD", value)
+        if unicodedata.category(character) != "Mn"
+    )
+    normalized = (
+        normalized.lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+        .replace("__", "_")
+        .strip("_")
+    )
+    return "".join(
+        character
+        for character in normalized
+        if character in "abcdefghijklmnopqrstuvwxyz0123456789-_"
+    )

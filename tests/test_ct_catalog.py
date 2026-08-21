@@ -1,6 +1,10 @@
 """Tests for the bundled, versioned CT preset catalog."""
 
+import subprocess
+import tarfile
 from importlib import resources
+from io import BytesIO
+from pathlib import Path
 
 import pytest
 
@@ -38,11 +42,28 @@ def test_bundled_catalog_matches_the_official_schema_v1_rows() -> None:
         ("sct_024_200a_100ma", 27518, False),
         ("sct_024_200a_50ma", 55036, False),
     ]
-    assert (
-        resources.files("custom_components.circuitsetup_energy_meter_helper")
-        .joinpath("data", "ct_presets.json")
-        .is_file()
-    )
+    catalog_path = resources.files(
+        "custom_components.circuitsetup_energy_meter_helper"
+    ).joinpath("data", "ct_presets.json")
+    assert catalog_path.is_file()
+
+    archive = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(Path(__file__).parents[1]),
+            "archive",
+            "--format=tar",
+            "HEAD",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    with tarfile.open(fileobj=BytesIO(archive)) as release:
+        assert (
+            "custom_components/circuitsetup_energy_meter_helper/data/ct_presets.json"
+            in release.getnames()
+        )
 
 
 def test_gain_math_is_half_up_and_only_unique_physical_gains_infer() -> None:
