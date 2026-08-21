@@ -186,7 +186,7 @@ class DeviceBuilderClient:
         terminal, output = await self._async_stream_command(
             "devices/validate", {"configuration": configuration}
         )
-        return self._job_result(terminal, output=output)
+        return self._validation_result(terminal, output)
 
     async def async_compile(self, configuration: str) -> JobResult:
         result = await self.async_command("firmware/compile", {"configuration": configuration})
@@ -230,6 +230,17 @@ class DeviceBuilderClient:
             result.get("error", ""),
             tuple(str(line) for line in output[-self._output_tail_size :]),
             job_id,
+        )
+
+    def _validation_result(
+        self, result: dict[str, Any], output: tuple[str, ...]
+    ) -> JobResult:
+        """Map the generic validation stream terminal result."""
+        return JobResult(
+            bool(result.get("success")),
+            result.get("code"),
+            result.get("summary", result.get("error", "")),
+            output,
         )
 
     async def _listen(self) -> None:

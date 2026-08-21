@@ -161,6 +161,25 @@ def test_failed_job_uses_pinned_terminal_fields() -> None:
     asyncio.run(run())
 
 
+def test_validation_uses_generic_terminal_fields() -> None:
+    """Validation streams use generic success/code rather than firmware status."""
+
+    async def run() -> None:
+        client, ws = await connected_client()
+        task = asyncio.create_task(client.async_validate("meter.yaml"))
+        await asyncio.sleep(0)
+        await ws.send_event("1", "result", {"success": True, "code": 0})
+        assert (await task).success
+        failed = asyncio.create_task(client.async_validate("meter.yaml"))
+        await asyncio.sleep(0)
+        await ws.send_event("2", "result", {"success": False, "code": 1, "summary": "bad"})
+        result = await failed
+        assert not result.success and result.code == 1 and result.summary == "bad"
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
 def test_upload_uses_ota_and_never_install() -> None:
     """OTA is administrator-confirmed and never routed through install."""
 
