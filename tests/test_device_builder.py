@@ -19,6 +19,8 @@ class FakeWebSocket:
         self.sent: list[dict] = []
         self._received: asyncio.Queue[dict | None] = asyncio.Queue()
         self._received.put_nowait(server_info)
+        if server_info["requires_auth"]:
+            self._received.put_nowait({"message_id": "0", "result": {}})
 
     async def send_json(self, message: dict) -> None:
         self.sent.append(message)
@@ -130,10 +132,30 @@ def test_compile_follows_singular_job_with_bounded_tail() -> None:
         assert ws.sent[1]["command"] == "firmware/follow_job"
         await ws.send_event("2", "output", "a")
         await ws.send_event("2", "output", "b")
-        await ws.send_event("2", "result", {"success": True, "code": 0})
+        await ws.send_event("2", "result", {"status": "completed", "exit_code": 0})
         result = await compile_task
         assert result.success
         assert result.output_tail == ("a", "b")
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
+def test_failed_job_uses_pinned_terminal_fields() -> None:
+    """Pinned follow-job failures map status, exit_code, and error."""
+
+    async def run() -> None:
+        client, ws = await connected_client()
+        task = asyncio.create_task(client.async_compile("meter.yaml"))
+        await asyncio.sleep(0)
+        await ws.send_result("1", {"job_id": "job-1"})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await ws.send_event(
+            "2", "result", {"status": "failed", "exit_code": 2, "error": "bad"}
+        )
+        result = await task
+        assert not result.success and result.code == 2 and result.summary == "bad"
         await client.async_disconnect()
 
     asyncio.run(run())

@@ -72,6 +72,7 @@ class DeviceBuilderClient:
         self._listener: asyncio.Task[None] | None = None
         self._pending: dict[str, asyncio.Future[Any]] = {}
         self._stream_handlers: dict[str, Callable[[dict[str, Any]], None]] = {}
+        self._stream_futures: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._next_message_id = 0
 
     def __repr__(self) -> str:
@@ -84,13 +85,17 @@ class DeviceBuilderClient:
         server_info = await self._ws.receive_json()
         if not server_info or "server_version" not in server_info:
             raise ConnectionError("Device Builder did not provide server info")
+        self._listener = asyncio.create_task(self._listen())
         if server_info.get("requires_auth"):
             if not self._token:
                 raise ConnectionError("Device Builder requires an issued bearer token")
-            await self._ws.send_json(
-                {"command": "auth", "message_id": "0", "args": {"token": self._token}}
-            )
-        self._listener = asyncio.create_task(self._listen())
+            future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+            self._pending["0"] = future
+            await self._ws.send_json({"command": "auth", "message_id": "0", "args": {"token": self._token}})
+            try:
+                await future
+            finally:
+                self._pending.pop("0", None)
 
     async def async_disconnect(self) -> None:
         """Close the websocket and fail all outstanding callers."""
@@ -138,6 +143,7 @@ class DeviceBuilderClient:
                 future.set_result(data if isinstance(data, dict) else {})
 
         self._stream_handlers[message_id] = handle
+        self._stream_futures[message_id] = future
         await self._ws.send_json(
             {"command": command, "message_id": message_id, "args": args}
         )
@@ -145,6 +151,7 @@ class DeviceBuilderClient:
             return await future, tuple(output)
         finally:
             self._stream_handlers.pop(message_id, None)
+            self._stream_futures.pop(message_id, None)
 
     async def async_list_devices(self) -> dict[str, Any]:
         return await self.async_command("devices/list", {})
@@ -218,9 +225,9 @@ class DeviceBuilderClient:
         if isinstance(output, str):
             output = (output,)
         return JobResult(
-            bool(result.get("success")),
-            result.get("code"),
-            result.get("summary", ""),
+            result.get("status") == "completed",
+            result.get("exit_code"),
+            result.get("error", ""),
             tuple(str(line) for line in output[-self._output_tail_size :]),
             job_id,
         )
@@ -235,6 +242,10 @@ class DeviceBuilderClient:
                     continue
                 if not isinstance(message_id, str):
                     continue
+                stream_future = self._stream_futures.get(message_id)
+                if "error_code" in message and stream_future is not None and not stream_future.done():
+                    stream_future.set_exception(ConnectionError("Device Builder command failed"))
+                    continue
                 future = self._pending.get(message_id)
                 if future is None or future.done():
                     continue
@@ -248,5 +259,8 @@ class DeviceBuilderClient:
 
     def _fail_pending(self) -> None:
         for future in self._pending.values():
+            if not future.done():
+                future.set_exception(ConnectionError("Device Builder disconnected"))
+        for future in self._stream_futures.values():
             if not future.done():
                 future.set_exception(ConnectionError("Device Builder disconnected"))
