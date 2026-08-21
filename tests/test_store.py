@@ -39,6 +39,16 @@ def test_migrate_storage_rejects_unknown_newer_version() -> None:
         )
 
 
+def test_store_migration_rejects_unknown_newer_minor_version() -> None:
+    """The live Home Assistant migration hook fails closed on newer minor data."""
+    with pytest.raises(ValueError, match="newer"):
+        asyncio.run(
+            _HelperStorage._async_migrate_func(
+                None, STORAGE_VERSION, 2, {}
+            )
+        )
+
+
 def test_store_rejects_untyped_topology_payload() -> None:
     """Arbitrary credentials or complete YAML cannot enter persisted records."""
     record = StoredMeterRecord(

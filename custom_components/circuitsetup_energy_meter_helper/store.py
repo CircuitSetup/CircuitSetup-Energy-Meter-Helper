@@ -15,14 +15,20 @@ from .models import (
 )
 
 STORAGE_VERSION = 1
+STORAGE_MINOR_VERSION = 1
 STORAGE_KEY = "circuitsetup_energy_meter_helper"
 
 
-def migrate_storage(version: int, data: dict[str, Any]) -> dict[str, Any]:
+def migrate_storage(
+    version: int, minor_version: int, data: dict[str, Any]
+) -> dict[str, Any]:
     """Accept the known schema and fail closed for unknown future data."""
-    if version > STORAGE_VERSION:
-        raise ValueError(f"Storage version {version} is newer than supported")
-    if version != STORAGE_VERSION:
+    if (
+        version > STORAGE_VERSION
+        or version == STORAGE_VERSION and minor_version > STORAGE_MINOR_VERSION
+    ):
+        raise ValueError("Storage version is newer than supported")
+    if (version, minor_version) != (STORAGE_VERSION, STORAGE_MINOR_VERSION):
         raise ValueError(f"Storage version {version} cannot be migrated")
     return data
 
@@ -34,8 +40,7 @@ class _HelperStorage(Store[dict[str, Any]]):
         self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
     ) -> dict[str, Any]:
         """Reject unsupported storage versions during Home Assistant loading."""
-        del old_minor_version
-        return migrate_storage(old_major_version, old_data)
+        return migrate_storage(old_major_version, old_minor_version, old_data)
 
 
 def _serialize_topology(topology: StoredTopology) -> dict[str, Any]:
@@ -116,7 +121,10 @@ class HelperStore:
 
     def __init__(self, hass: HomeAssistant) -> None:
         self._store: _HelperStorage = _HelperStorage(
-            hass, STORAGE_VERSION, STORAGE_KEY
+            hass,
+            STORAGE_VERSION,
+            STORAGE_KEY,
+            minor_version=STORAGE_MINOR_VERSION,
         )
 
     async def async_load(self) -> dict[str, Any]:
