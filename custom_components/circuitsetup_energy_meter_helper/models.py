@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from math import isfinite
+from typing import Literal
 
 _CONNECTION_TYPES = {
     "wifi",
@@ -18,6 +20,51 @@ _EVIDENCE_SOURCES = {
     "native_project",
     "native_entity_counts",
 }
+
+ConnectionType = Literal[
+    "wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"
+]
+
+
+class SetupState(StrEnum):
+    """The user-visible state of meter setup."""
+
+    NO_DEVICE = "no_device"
+    INSTALLER_GUIDE = "installer_guide"
+    WAITING_FOR_DISCOVERY = "waiting_for_discovery"
+    DEVICE_DISCOVERED = "device_discovered"
+    WAITING_FOR_ADOPTION = "waiting_for_adoption"
+    READING_CONFIG = "reading_config"
+    TOPOLOGY_REVIEW = "topology_review"
+    CT_CONFIGURATION = "ct_configuration"
+    CONFIG_REVIEW = "config_review"
+    CONFIG_WRITING = "config_writing"
+    CONFIG_VALIDATING = "config_validating"
+    CONFIG_COMPILING = "config_compiling"
+    WAITING_FOR_INSTALL_CONFIRMATION = "waiting_for_install_confirmation"
+    CONFIG_INSTALLING = "config_installing"
+    WAITING_FOR_RECONNECT = "waiting_for_reconnect"
+    READY_FOR_CALIBRATION = "ready_for_calibration"
+    FAILED = "failed"
+
+
+@dataclass(slots=True, frozen=True)
+class InstallerIntent:
+    """The firmware variant the user plans to install."""
+
+    addon_count: int
+    connection_type: ConnectionType
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.addon_count <= 6:
+            raise ValueError("addon_count must be between 0 and 6")
+        if self.connection_type not in _CONNECTION_TYPES - {"unknown"}:
+            raise ValueError("unsupported connection_type")
+
+    @property
+    def ct_count(self) -> int:
+        """Return six CT channels for every installed board."""
+        return 6 * (self.addon_count + 1)
 
 
 def _safe_line(value: str, field: str, limit: int = 256) -> None:
