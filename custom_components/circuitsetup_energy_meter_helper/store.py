@@ -25,7 +25,8 @@ def migrate_storage(
     """Accept the known schema and fail closed for unknown future data."""
     if (
         version > STORAGE_VERSION
-        or version == STORAGE_VERSION and minor_version > STORAGE_MINOR_VERSION
+        or version == STORAGE_VERSION
+        and minor_version > STORAGE_MINOR_VERSION
     ):
         raise ValueError("Storage version is newer than supported")
     if (version, minor_version) != (STORAGE_VERSION, STORAGE_MINOR_VERSION):
@@ -103,7 +104,9 @@ def serialize_meter_record(record: StoredMeterRecord) -> dict[str, Any]:
         "setup_intent": record.setup_intent,
         "config_filename": record.config_filename,
         "topology": (
-            _serialize_topology(record.topology) if record.topology is not None else None
+            _serialize_topology(record.topology)
+            if record.topology is not None
+            else None
         ),
         "ct_selections": [
             _serialize_ct_selection(selection) for selection in record.ct_selections
@@ -136,4 +139,14 @@ class HelperStore:
         data = await self.async_load()
         meters = data.setdefault("meters", {})
         meters[record.mac] = serialize_meter_record(record)
+        await self._store.async_save(data)
+
+    async def async_save_verified_ct_selections(
+        self, mac: str, selections: tuple[StoredCTSelection, ...]
+    ) -> None:
+        """Persist only post-reconnect CT metadata, never configuration content."""
+        data = await self.async_load()
+        meters = data.setdefault("meters", {})
+        meter = meters.setdefault(mac, {})
+        meter["ct_selections"] = [_serialize_ct_selection(item) for item in selections]
         await self._store.async_save(data)
