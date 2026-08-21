@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from enum import StrEnum
 from math import isfinite
 from typing import Literal
@@ -21,9 +22,7 @@ _EVIDENCE_SOURCES = {
     "native_entity_counts",
 }
 
-ConnectionType = Literal[
-    "wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"
-]
+ConnectionType = Literal["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]
 Phase = Literal["A", "B", "C"]
 
 
@@ -157,6 +156,26 @@ class ChannelAddress:
     board_index: int
     group_index: int
     phase: Phase
+
+
+@dataclass(slots=True, frozen=True)
+class SubstitutionChange:
+    """One safe, visible CT substitution change."""
+
+    key: str
+    old_value: str | None
+    new_value: str
+
+
+@dataclass(slots=True, frozen=True)
+class ConfigMutationPlan:
+    """Backend-only proposed content plus its safe review summary."""
+
+    configuration: str
+    source_sha256: str
+    changes: tuple[SubstitutionChange, ...]
+    redacted_diff: str
+    proposed_content: str = dataclass_field(repr=False)
 
 
 @dataclass(slots=True, frozen=True)
