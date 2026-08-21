@@ -27,7 +27,10 @@ class FakeWebSocket:
         return await self._received.get()
 
     async def send_result(self, message_id: str, result: dict) -> None:
-        await self._received.put({"type": "result", "message_id": message_id, "result": result})
+        await self._received.put({"message_id": message_id, "result": result})
+
+    async def send_event(self, message_id: str, event: str, data: object) -> None:
+        await self._received.put({"message_id": message_id, "event": event, "data": data})
 
     async def close(self) -> None:
         await self._received.put(None)
@@ -36,7 +39,7 @@ class FakeWebSocket:
 async def connected_client(
     requires_auth: bool = False, token: str | None = None
 ) -> tuple[DeviceBuilderClient, FakeWebSocket]:
-    ws = FakeWebSocket({"type": "server_info", "requires_auth": requires_auth})
+    ws = FakeWebSocket({"server_version": "1.0", "requires_auth": requires_auth})
     client = DeviceBuilderClient("http://builder", token=token, connect=lambda _: ws)
     await client.async_connect()
     return client, ws
@@ -105,7 +108,7 @@ def test_config_commands_and_hash_precondition() -> None:
         snapshot = ESPHomeConfigSnapshot("meter.yaml", "api: {}", "old")
         update = asyncio.create_task(client.async_update_config(snapshot, "new: value"))
         await asyncio.sleep(0)
-        await ws.send_result("1", {"content": "changed", "configuration": "meter.yaml"})
+        await ws.send_result("1", "changed")
         with pytest.raises(ConfigChangedError):
             await update
         assert "new: value" not in repr(client)
@@ -125,10 +128,12 @@ def test_compile_follows_singular_job_with_bounded_tail() -> None:
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert ws.sent[1]["command"] == "firmware/follow_job"
-        await ws.send_result("2", {"success": True, "code": 0, "output": ["a", "b", "c"]})
+        await ws.send_event("2", "output", "a")
+        await ws.send_event("2", "output", "b")
+        await ws.send_event("2", "result", {"success": True, "code": 0})
         result = await compile_task
         assert result.success
-        assert result.output_tail == ("a", "b", "c")
+        assert result.output_tail == ("a", "b")
         await client.async_disconnect()
 
     asyncio.run(run())
@@ -149,7 +154,7 @@ def test_upload_uses_ota_and_never_install() -> None:
         await ws.send_result("1", {"job_id": "job-1"})
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        await ws.send_result("2", {"success": True, "output": []})
+        await ws.send_event("2", "result", {"success": True})
         await task
         assert all(message["command"] != "firmware/install" for message in ws.sent)
         await client.async_disconnect()
@@ -164,11 +169,11 @@ def test_rollback_failure_is_separate() -> None:
         client, ws = await connected_client()
         task = asyncio.create_task(client.async_restore_content("meter.yaml", "api: {}"))
         await asyncio.sleep(0)
-        await ws.send_result("1", {"content": "new", "configuration": "meter.yaml"})
+        await ws.send_result("1", "new")
         await asyncio.sleep(0)
         await ws.send_result("2", {})
         await asyncio.sleep(0)
-        await ws.send_result("3", {"success": False, "summary": "bad"})
+        await ws.send_event("3", "result", {"success": False, "summary": "bad"})
         with pytest.raises(RollbackError):
             await task
         await client.async_disconnect()

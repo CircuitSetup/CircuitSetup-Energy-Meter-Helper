@@ -70,7 +70,7 @@ class DeviceBuilderClient:
         self._output_tail_size = output_tail_size
         self._ws: WebSocket | None = None
         self._listener: asyncio.Task[None] | None = None
-        self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._pending: dict[str, asyncio.Future[Any]] = {}
         self._stream_handlers: dict[str, Callable[[dict[str, Any]], None]] = {}
         self._next_message_id = 0
 
@@ -82,7 +82,7 @@ class DeviceBuilderClient:
         connection = self._connect(f"{self._base_url}/ws")
         self._ws = await connection if inspect.isawaitable(connection) else connection
         server_info = await self._ws.receive_json()
-        if not server_info or server_info.get("type") != "server_info":
+        if not server_info or "server_version" not in server_info:
             raise ConnectionError("Device Builder did not provide server info")
         if server_info.get("requires_auth"):
             if not self._token:
@@ -102,13 +102,13 @@ class DeviceBuilderClient:
             self._ws = None
         self._fail_pending()
 
-    async def async_command(self, command: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def async_command(self, command: str, args: dict[str, Any]) -> Any:
         """Send one pinned protocol command and await its matching envelope."""
         if self._ws is None:
             raise ConnectionError("Device Builder is disconnected")
         self._next_message_id += 1
         message_id = str(self._next_message_id)
-        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._pending[message_id] = future
         await self._ws.send_json(
             {"command": command, "message_id": message_id, "args": args}
@@ -118,6 +118,34 @@ class DeviceBuilderClient:
         finally:
             self._pending.pop(message_id, None)
 
+    async def _async_stream_command(
+        self, command: str, args: dict[str, Any]
+    ) -> tuple[dict[str, Any], tuple[str, ...]]:
+        """Run a pinned streaming command until its `result` event."""
+        if self._ws is None:
+            raise ConnectionError("Device Builder is disconnected")
+        self._next_message_id += 1
+        message_id = str(self._next_message_id)
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        output: list[str] = []
+
+        def handle(event: dict[str, Any]) -> None:
+            if event["event"] == "output":
+                output.append(str(event.get("data", "")))
+                del output[:-self._output_tail_size]
+            elif event["event"] == "result" and not future.done():
+                data = event.get("data", {})
+                future.set_result(data if isinstance(data, dict) else {})
+
+        self._stream_handlers[message_id] = handle
+        await self._ws.send_json(
+            {"command": command, "message_id": message_id, "args": args}
+        )
+        try:
+            return await future, tuple(output)
+        finally:
+            self._stream_handlers.pop(message_id, None)
+
     async def async_list_devices(self) -> dict[str, Any]:
         return await self.async_command("devices/list", {})
 
@@ -125,9 +153,11 @@ class DeviceBuilderClient:
         result = await self.async_command(
             "devices/get_config", {"configuration": configuration}
         )
-        content = result["content"]
+        if not isinstance(result, str):
+            raise ConnectionError("Device Builder returned an invalid configuration")
+        content = result
         return ESPHomeConfigSnapshot(
-            result.get("configuration", configuration), content, sha256(content.encode()).hexdigest()
+            configuration, content, sha256(content.encode()).hexdigest()
         )
 
     async def async_update_config(
@@ -146,9 +176,10 @@ class DeviceBuilderClient:
         return result["configuration"]
 
     async def async_validate(self, configuration: str) -> JobResult:
-        return self._job_result(
-            await self.async_command("devices/validate", {"configuration": configuration})
+        terminal, output = await self._async_stream_command(
+            "devices/validate", {"configuration": configuration}
         )
+        return self._job_result(terminal, output=output)
 
     async def async_compile(self, configuration: str) -> JobResult:
         result = await self.async_command("firmware/compile", {"configuration": configuration})
@@ -172,11 +203,18 @@ class DeviceBuilderClient:
 
     async def _async_follow_job(self, result: dict[str, Any]) -> JobResult:
         job_id = result["job_id"]
-        terminal = await self.async_command("firmware/follow_job", {"job_id": job_id})
-        return self._job_result(terminal, job_id)
+        terminal, output = await self._async_stream_command(
+            "firmware/follow_job", {"job_id": job_id}
+        )
+        return self._job_result(terminal, job_id, output)
 
-    def _job_result(self, result: dict[str, Any], job_id: str | None = None) -> JobResult:
-        output = result.get("output", ())
+    def _job_result(
+        self,
+        result: dict[str, Any],
+        job_id: str | None = None,
+        output: tuple[str, ...] = (),
+    ) -> JobResult:
+        output = result.get("output", output)
         if isinstance(output, str):
             output = (output,)
         return JobResult(
@@ -192,11 +230,7 @@ class DeviceBuilderClient:
         try:
             while message := await self._ws.receive_json():
                 message_id = message.get("message_id")
-                if (
-                    message["type"] == "event"
-                    and isinstance(message_id, str)
-                    and message_id in self._stream_handlers
-                ):
+                if isinstance(message_id, str) and "event" in message and message_id in self._stream_handlers:
                     self._stream_handlers[message_id](message)
                     continue
                 if not isinstance(message_id, str):
@@ -204,10 +238,10 @@ class DeviceBuilderClient:
                 future = self._pending.get(message_id)
                 if future is None or future.done():
                     continue
-                if message["type"] == "error":
+                if "error_code" in message:
                     future.set_exception(ConnectionError("Device Builder command failed"))
-                else:
-                    future.set_result(message.get("result", {}))
+                elif "result" in message:
+                    future.set_result(message["result"])
         finally:
             self._ws = None
             self._fail_pending()
