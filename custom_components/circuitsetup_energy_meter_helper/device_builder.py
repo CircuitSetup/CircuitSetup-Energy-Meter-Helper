@@ -200,13 +200,18 @@ class DeviceBuilderClient:
 
     async def async_restore_content(self, configuration: str, content: str) -> None:
         """Restore exact content and raise a distinct error if validation fails."""
-        current = await self.async_get_config(configuration)
-        await self.async_command(
-            "devices/update_config", {"configuration": current.configuration, "content": content}
-        )
-        validation = await self.async_validate(configuration)
-        if not validation.success:
-            raise RollbackError("Device Builder rollback validation failed")
+        try:
+            current = await self.async_get_config(configuration)
+            await self.async_command(
+                "devices/update_config", {"configuration": current.configuration, "content": content}
+            )
+            validation = await self.async_validate(configuration)
+            if not validation.success:
+                raise RollbackError("Device Builder rollback validation failed")
+        except RollbackError:
+            raise
+        except Exception as err:
+            raise RollbackError("Device Builder rollback failed") from err
 
     async def _async_follow_job(self, result: dict[str, Any]) -> JobResult:
         job_id = result["job_id"]

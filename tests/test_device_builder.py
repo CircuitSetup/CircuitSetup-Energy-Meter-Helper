@@ -220,3 +220,27 @@ def test_rollback_failure_is_separate() -> None:
         await client.async_disconnect()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("stage", ("read", "write", "validate"))
+def test_rollback_transport_failures_are_wrapped(stage: str) -> None:
+    """Every rollback stage is separately identifiable without content leakage."""
+
+    async def run() -> None:
+        client, _ = await connected_client()
+
+        async def fail(*args, **kwargs):
+            raise ConnectionError("transport failed")
+
+        if stage == "read":
+            client.async_get_config = fail
+        elif stage == "write":
+            client.async_command = fail
+        else:
+            client.async_validate = fail
+        with pytest.raises(RollbackError) as error:
+            await client.async_restore_content("meter.yaml", "api: secret")
+        assert "secret" not in str(error.value)
+        await client.async_disconnect()
+
+    asyncio.run(run())
