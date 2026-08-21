@@ -7,6 +7,7 @@ import pytest
 from homeassistant.config_entries import SIGNAL_CONFIG_ENTRY_CHANGED, ConfigEntryChange
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
+from custom_components.circuitsetup_energy_meter_helper import async_setup_entry
 from custom_components.circuitsetup_energy_meter_helper.models import (
     InstallerIntent,
     SetupState,
@@ -39,6 +40,13 @@ class FakeEntry:
     title: str
     runtime_data: FakeRuntimeData
     domain: str = "esphome"
+
+
+@dataclass
+class FakeHelperEntry:
+    """Minimal helper entry used through the production setup function."""
+
+    entry_id: str = "helper"
 
 
 class FakeConfigEntries:
@@ -113,6 +121,32 @@ def test_rescan_requires_circuitsetup_runtime_project_prefix() -> None:
         assert [device.entry_id for device in snapshot.devices] == ["meter"]
         assert snapshot.state == SetupState.DEVICE_DISCOVERED
         assert not snapshot.configuration_authoritative
+        assert snapshot.devices[0].importable is None
+
+    asyncio.run(run())
+
+
+def test_production_setup_reports_unavailable_device_builder_state_as_unknown() -> None:
+    """The real integration setup never claims unavailability as a false value."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        hass.config_entries.entries.append(
+            FakeEntry(
+                "meter",
+                "CircuitSetup meter",
+                FakeRuntimeData(FakeDeviceInfo("circuitsetup.6c-energy-meter")),
+            )
+        )
+
+        assert await async_setup_entry(hass, FakeHelperEntry())
+        coordinator = hass.data["circuitsetup_energy_meter_helper"]["helper"][
+            "provisioning"
+        ]
+
+        assert coordinator.snapshot.devices[0].importable is None
+        assert coordinator.snapshot.devices[0].configuration is None
+        await coordinator.async_stop()
 
     asyncio.run(run())
 

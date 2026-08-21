@@ -32,7 +32,7 @@ class DiscoveredDevice:
     entry_id: str
     title: str
     project_name: str
-    importable: bool = False
+    importable: bool | None = None
     configuration: str | None = None
 
 
@@ -40,7 +40,7 @@ class DiscoveredDevice:
 class DeviceBuilderStatus:
     """Current cached Device Builder state for one ESPHome entry."""
 
-    importable: bool
+    importable: bool | None
     configuration: str | None
 
 
@@ -130,7 +130,7 @@ class ProvisioningCoordinator:
         status = (
             self._status_resolver(entry)
             if self._status_resolver is not None
-            else DeviceBuilderStatus(False, None)
+            else DeviceBuilderStatus(None, None)
         )
         return DiscoveredDevice(
             entry.entry_id,
