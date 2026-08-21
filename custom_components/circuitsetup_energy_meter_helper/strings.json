@@ -1,0 +1,14 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "esphome_entry_id": "ESPHome device"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only one CircuitSetup Energy Meter Helper entry is allowed."
+    }
+  }
+}
