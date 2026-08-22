@@ -32,6 +32,7 @@ from custom_components.circuitsetup_energy_meter_helper.log_parser import (
     RestoreEvidence,
 )
 from custom_components.circuitsetup_energy_meter_helper.session_manager import (
+    CalibrationBusyError,
     SessionManager,
 )
 from custom_components.circuitsetup_energy_meter_helper.store import (
@@ -150,6 +151,22 @@ class LogFallbackRestartSession:
         self.log_lines = self.restore_lines
 
 
+class DelayedFragmentRestartSession(LogFallbackRestartSession):
+    def __init__(self, restore_lines: tuple[str, ...], fragment: str) -> None:
+        super().__init__(restore_lines)
+        self.fragment = fragment
+        self.emitter: asyncio.Task[None] | None = None
+
+    async def async_reconnect(self, *, dump_config: bool = False) -> None:
+        await super().async_reconnect(dump_config=dump_config)
+
+        async def emit() -> None:
+            await asyncio.sleep(0.005)
+            self.log_lines = (*self.log_lines, self.fragment)
+
+        self.emitter = asyncio.create_task(emit())
+
+
 def _restore_log(instance_id: str, gains: GainTable) -> tuple[str, ...]:
     lines = [
         f"[I] [CALIBRATION][{instance_id}] ============ Restoring saved gain calibrations to registers ============",
@@ -169,21 +186,30 @@ async def _ignore_marker(mac: str, marker: object) -> None:
     del mac, marker
 
 
-def _prime_origin(
+async def _prime_origin(
     sessions: SessionManager,
+    session: object,
+    binding: object,
     expected: dict[str, GainTable],
     *,
-    addons: int,
     snapshot: ESPHomeConfigSnapshot | None = None,
 ) -> ESPHomeConfigSnapshot:
     snapshot = snapshot or _snapshot()
-    sessions.start_calibration_origin(
-        "aabbccddeeff", topology(addons), snapshot.configuration, snapshot.sha256
-    )
-    for instance_id, gains in expected.items():
-        sessions.record_calibration_group(
-            "aabbccddeeff", topology(addons), instance_id, gains
-        )
+    lease = await sessions.async_acquire_calibration("aabbccddeeff")
+    try:
+        pending = sessions._begin_calibration_origin(lease, session, binding, snapshot)
+        for instance_id, gains in expected.items():
+            pending = sessions.record_calibration_group(
+                lease,
+                pending.operation_id,
+                pending.revision,
+                session,
+                binding,
+                instance_id,
+                gains,
+            )
+    finally:
+        lease.release()
     return snapshot
 
 
@@ -208,8 +234,12 @@ def test_restart_arms_disconnect_rebinds_and_persists_exact_changed_set() -> Non
             saved.append(record)
 
         sessions = SessionManager()
-        snapshot = _prime_origin(sessions, expected, addons=1)
-        engine = CalibrationEngine(sessions, _ignore_marker, persist_verified=persist)
+        snapshot = await _prime_origin(sessions, session, original, expected)
+        engine = CalibrationEngine(
+            sessions,
+            _ignore_marker,
+            persist_verified=persist,
+        )
         result = await engine.async_verify_after_restart(
             "aabbccddeeff",
             session,
@@ -247,6 +277,47 @@ def test_restart_arms_disconnect_rebinds_and_persists_exact_changed_set() -> Non
                 substitutions=substitutions(1),
             )
         assert len(session.events) == event_count
+
+    asyncio.run(run())
+
+
+def test_restart_claim_blocks_group_revision_during_persistence() -> None:
+    async def run() -> None:
+        expected = {"meter_main1": ((7301, 1), (7301, 2), (7301, 3))}
+        session = RestartSession(
+            {"meter_main1": _restore("meter_main1", expected["meter_main1"])},
+            addons=0,
+        )
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(0), substitutions(0)
+        )
+        sessions = SessionManager()
+        await _prime_origin(sessions, session, binding, expected)
+        saved: list[VerifiedCalibrationRecord] = []
+
+        async def persist(record: VerifiedCalibrationRecord) -> None:
+            pending = sessions.pending_calibration("aabbccddeeff")
+            assert pending is not None
+            lease = sessions._calibration_leases["aabbccddeeff"]
+            with pytest.raises(CalibrationBusyError, match="claimed"):
+                sessions.record_calibration_group(
+                    lease,
+                    pending.operation_id,
+                    pending.revision,
+                    session,
+                    binding,
+                    "meter_main2",
+                    ((7999, 7), (7999, 8), (7999, 9)),
+                )
+            saved.append(record)
+
+        engine = CalibrationEngine(sessions, _ignore_marker, persist_verified=persist)
+        result = await engine.async_verify_after_restart(
+            "aabbccddeeff", session, binding, substitutions=substitutions(0)
+        )
+        assert [group.instance_id for group in result.record.groups] == ["meter_main1"]
+        assert saved == [result.record]
+        assert sessions.pending_calibration("aabbccddeeff") is None
 
     asyncio.run(run())
 
@@ -310,7 +381,7 @@ def test_restart_refuses_incomplete_fallback_spi_or_unexpected_evidence(
             saved.append(record)
 
         sessions = SessionManager()
-        _prime_origin(sessions, expected, addons=0)
+        await _prime_origin(sessions, session, binding, expected)
         engine = CalibrationEngine(sessions, _ignore_marker, persist_verified=persist)
         with pytest.raises(RestartVerificationError, match=match):
             await engine.async_verify_after_restart(
@@ -337,7 +408,7 @@ def test_restart_disconnect_timeout_is_typed_and_never_reconnects_or_persists() 
             saved.append(record)
 
         sessions = SessionManager()
-        _prime_origin(sessions, expected, addons=0)
+        await _prime_origin(sessions, session, binding, expected)
         engine = CalibrationEngine(
             sessions,
             _ignore_marker,
@@ -369,7 +440,7 @@ def test_restart_retries_transient_boot_failure_within_one_restore_deadline() ->
             EntityCatalog(session.entities, 1), topology(0), substitutions(0)
         )
         sessions = SessionManager()
-        _prime_origin(sessions, expected, addons=0)
+        await _prime_origin(sessions, session, binding, expected)
         saved: list[VerifiedCalibrationRecord] = []
 
         async def persist(record: VerifiedCalibrationRecord) -> None:
@@ -401,7 +472,7 @@ def test_restart_reconnect_exhaustion_is_typed_and_preserves_no_record() -> None
             EntityCatalog(session.entities, 1), topology(0), substitutions(0)
         )
         sessions = SessionManager()
-        _prime_origin(sessions, expected, addons=0)
+        await _prime_origin(sessions, session, binding, expected)
         saved: list[VerifiedCalibrationRecord] = []
 
         async def persist(record: VerifiedCalibrationRecord) -> None:
@@ -432,7 +503,7 @@ def test_restart_reconnect_cancellation_propagates_and_preserves_origin() -> Non
             EntityCatalog(session.entities, 1), topology(0), substitutions(0)
         )
         sessions = SessionManager()
-        _prime_origin(sessions, expected, addons=0)
+        await _prime_origin(sessions, session, binding, expected)
         saved: list[VerifiedCalibrationRecord] = []
 
         async def persist(record: VerifiedCalibrationRecord) -> None:
@@ -484,12 +555,14 @@ def test_restart_requires_and_consumes_server_owned_complete_origin() -> None:
             )
         assert session.events == []
 
-        _prime_origin(sessions, all_expected, addons=0)
+        await _prime_origin(sessions, session, binding, all_expected)
         with pytest.raises(RestartVerificationError, match="missing"):
             await engine.async_verify_after_restart(
                 "aabbccddeeff", session, binding, substitutions=substitutions(0)
             )
-        assert sessions.pending_calibration("aabbccddeeff") is not None
+        pending = sessions.pending_calibration("aabbccddeeff")
+        assert pending is not None
+        assert pending.claimed_revision is None
 
     asyncio.run(run())
 
@@ -506,18 +579,85 @@ def test_real_log_fallback_rejects_complete_unexpected_restore_block() -> None:
             EntityCatalog(session.entities, 1), topology(0), substitutions(0)
         )
         sessions = SessionManager()
-        _prime_origin(sessions, expected, addons=0)
+        await _prime_origin(sessions, session, binding, expected)
         saved: list[VerifiedCalibrationRecord] = []
 
         async def persist(record: VerifiedCalibrationRecord) -> None:
             saved.append(record)
 
-        engine = CalibrationEngine(sessions, _ignore_marker, persist_verified=persist)
+        engine = CalibrationEngine(
+            sessions,
+            _ignore_marker,
+            persist_verified=persist,
+            restart_restore_timeout=0.02,
+        )
         with pytest.raises(RestartVerificationError, match="unexpected"):
             await engine.async_verify_after_restart(
                 "aabbccddeeff", session, binding, substitutions=substitutions(0)
             )
         assert saved == []
+
+    asyncio.run(run())
+
+
+def test_real_log_fallback_rejects_unexpected_phase_row_fragment() -> None:
+    async def run() -> None:
+        expected = {"meter_main1": ((7305, 1), (7305, 2), (7305, 3))}
+        session = LogFallbackRestartSession(
+            _restore_log("meter_main1", expected["meter_main1"])
+            + ("[I] [CALIBRATION][meter_main2] | A | 9999 | 9999 |",)
+        )
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(0), substitutions(0)
+        )
+        sessions = SessionManager()
+        await _prime_origin(sessions, session, binding, expected)
+        saved: list[VerifiedCalibrationRecord] = []
+
+        async def persist(record: VerifiedCalibrationRecord) -> None:
+            saved.append(record)
+
+        engine = CalibrationEngine(
+            sessions,
+            _ignore_marker,
+            persist_verified=persist,
+            restart_restore_timeout=0.02,
+        )
+        with pytest.raises(RestartVerificationError, match="unexpected"):
+            await engine.async_verify_after_restart(
+                "aabbccddeeff", session, binding, substitutions=substitutions(0)
+            )
+        assert saved == []
+
+    asyncio.run(run())
+
+
+def test_real_log_fallback_retains_late_fragment_through_bounded_window() -> None:
+    async def run() -> None:
+        expected = {"meter_main1": ((7305, 1), (7305, 2), (7305, 3))}
+        session = DelayedFragmentRestartSession(
+            _restore_log("meter_main1", expected["meter_main1"]),
+            "[I] [CALIBRATION][meter_main2] | A | 9999 | 9999 |",
+        )
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(0), substitutions(0)
+        )
+        sessions = SessionManager()
+        await _prime_origin(sessions, session, binding, expected)
+        engine = CalibrationEngine(
+            sessions,
+            _ignore_marker,
+            persist_verified=_ignore_verified,
+            restart_restore_timeout=0.02,
+        )
+        try:
+            with pytest.raises(RestartVerificationError, match="unexpected"):
+                await engine.async_verify_after_restart(
+                    "aabbccddeeff", session, binding, substitutions=substitutions(0)
+                )
+        finally:
+            if session.emitter is not None:
+                await session.emitter
 
     asyncio.run(run())
 
@@ -530,18 +670,21 @@ def test_successful_task17_gain_updates_server_owned_pending_table() -> None:
     async def run() -> None:
         sessions = SessionManager()
         snapshot = _snapshot()
-        sessions.start_calibration_origin(
-            "aabbccddeeff",
-            topology(0),
-            snapshot.configuration,
-            snapshot.sha256,
-        )
+
+        async def authoritative_snapshot(mac: str) -> ESPHomeConfigSnapshot:
+            assert mac == "aabbccddeeff"
+            return snapshot
+
         evidence = gain_evidence(
             "meter_main1",
             reference_currents=(10.0, 0.0, 0.0),
             current_changes=(True, False, False),
         )
-        engine = CalibrationEngine(sessions, _ignore_marker)
+        engine = CalibrationEngine(
+            sessions,
+            _ignore_marker,
+            calibration_snapshot_reader=authoritative_snapshot,
+        )
         await engine.async_calibrate_current(
             "aabbccddeeff",
             FakeCalibrationSession(evidence),
@@ -563,8 +706,55 @@ def test_successful_task17_gain_updates_server_owned_pending_table() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("configuration", "invalid_hash", "match"),
+    (
+        ("forged.yaml", True, "hash"),
+        ("forged\n.yaml", False, "filename"),
+    ),
+)
+def test_task17_rejects_forged_origin_before_any_calibration_mutation(
+    configuration: str, invalid_hash: bool, match: str
+) -> None:
+    async def run() -> None:
+        sessions = SessionManager()
+        source = _snapshot()
+        forged = ESPHomeConfigSnapshot(
+            configuration,
+            source.content,
+            "a" * 64 if invalid_hash else source.sha256,
+        )
+
+        async def authoritative_snapshot(mac: str) -> ESPHomeConfigSnapshot:
+            del mac
+            return forged
+
+        evidence = gain_evidence(
+            "meter_main1",
+            reference_currents=(10.0, 0.0, 0.0),
+            current_changes=(True, False, False),
+        )
+        session = FakeCalibrationSession(evidence)
+        engine = CalibrationEngine(
+            sessions,
+            _ignore_marker,
+            calibration_snapshot_reader=authoritative_snapshot,
+        )
+        with pytest.raises(ValueError, match=f"authoritative.*{match}"):
+            await engine.async_calibrate_current(
+                "aabbccddeeff", session, native_meter(), 1, 10.0, 1.0, 1.0
+            )
+        assert session.events == []
+        assert sessions.pending_calibration("aabbccddeeff") is None
+
+    asyncio.run(run())
+
+
 def _snapshot(content: str | None = None) -> ESPHomeConfigSnapshot:
     content = content or (
+        "esphome:\n"
+        "  project:\n"
+        "    name: circuitsetup.6c-energy-meter\n"
         "substitutions:\n"
         "  voltage_cal1: '7305'\n"
         "  voltage_cal2: '7305'\n"
@@ -719,7 +909,7 @@ class CalibrationPersistence(Persistence):
     def __init__(self, records: tuple[VerifiedCalibrationRecord, ...]) -> None:
         super().__init__()
         self.records = {record.mac: record for record in records}
-        self.claimed: set[str] = set()
+        self.claimed: dict[str, str] = {}
 
     async def async_get_verified_calibration(
         self, mac: str
@@ -727,7 +917,7 @@ class CalibrationPersistence(Persistence):
         return self.records.get(mac)
 
     async def async_claim_verified_calibration(
-        self, mac: str, verification_id: str
+        self, mac: str, verification_id: str, transaction_id: str
     ) -> bool:
         record = self.records.get(mac)
         if (
@@ -736,8 +926,18 @@ class CalibrationPersistence(Persistence):
             or verification_id in self.claimed
         ):
             return False
-        self.claimed.add(verification_id)
+        self.claimed[verification_id] = transaction_id
         return True
+
+    async def async_revalidate_verified_calibration(
+        self, mac: str, verification_id: str, transaction_id: str
+    ) -> bool:
+        record = self.records.get(mac)
+        return (
+            record is not None
+            and record.verification_id == verification_id
+            and self.claimed.get(verification_id) == transaction_id
+        )
 
 
 def test_transaction_rereads_and_refuses_cross_device_stale_or_changed_origin() -> None:
@@ -757,7 +957,7 @@ def test_transaction_rereads_and_refuses_cross_device_stale_or_changed_origin() 
                 "aabbccddeeff", topology(0), record.verification_id
             )
         assert manager.sessions._config_transactions == {}
-        assert persistence.claimed == set()
+        assert persistence.claimed == {}
 
         cross_builder = Builder(remote_content=origin.content)
         cross_manager = ConfigTransactionManager(
@@ -808,6 +1008,78 @@ def test_transaction_rereads_and_refuses_cross_device_stale_or_changed_origin() 
     asyncio.run(run())
 
 
+def test_confirm_refuses_preview_superseded_by_new_verified_record() -> None:
+    async def run() -> None:
+        source = _snapshot()
+        old = _record(source, ((7301, 1),) * 3, verification_id="1" * 32)
+        persistence = CalibrationPersistence((old,))
+        builder = Builder(remote_content=source.content)
+        sessions = SessionManager()
+        manager = ConfigTransactionManager(
+            builder,
+            Verifier(RuntimeError()),
+            persistence,
+            sessions,
+        )
+        preview = await manager.async_preview_calibrated_gains(
+            old.mac, topology(0), old.verification_id
+        )
+        assert preview.state is ConfigTransactionState.PREVIEWED
+
+        newer = _record(source, ((7999, 9),) * 3, verification_id="2" * 32)
+        persistence.records[old.mac] = newer
+        with pytest.raises(ConfigMutationError, match="superseded"):
+            await manager.async_confirm_write(preview.transaction_id, "admin-user")
+
+        assert "write" not in builder.calls
+        assert "7301" not in builder.remote_content
+        assert not sessions.is_config_locked(old.mac)
+        assert not sessions.is_calibration_locked(old.mac)
+
+    asyncio.run(run())
+
+
+def test_cancelled_source_revalidation_releases_config_ownership() -> None:
+    async def run() -> None:
+        source = _snapshot()
+        record = _record(source, ((7301, 1),) * 3)
+
+        class BlockingPersistence(CalibrationPersistence):
+            def __init__(self) -> None:
+                super().__init__((record,))
+                self.started = asyncio.Event()
+
+            async def async_revalidate_verified_calibration(
+                self, mac: str, verification_id: str, transaction_id: str
+            ) -> bool:
+                del mac, verification_id, transaction_id
+                self.started.set()
+                await asyncio.Event().wait()
+                return False
+
+        persistence = BlockingPersistence()
+        builder = Builder(remote_content=source.content)
+        sessions = SessionManager()
+        manager = ConfigTransactionManager(
+            builder, Verifier(RuntimeError()), persistence, sessions
+        )
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+        confirmation = asyncio.create_task(
+            manager.async_confirm_write(preview.transaction_id, "admin-user")
+        )
+        await persistence.started.wait()
+        confirmation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await confirmation
+        assert "write" not in builder.calls
+        assert not sessions.is_config_locked(record.mac)
+        assert not sessions.is_calibration_locked(record.mac)
+
+    asyncio.run(run())
+
+
 def test_store_writes_only_compact_verified_calibration_schema() -> None:
     async def run() -> None:
         snapshot = _snapshot()
@@ -837,14 +1109,18 @@ def test_store_writes_only_compact_verified_calibration_schema() -> None:
             ],
             "source_authority": "saved_flash",
             "source_handoff_available": True,
+            "source_handoff_transaction_id": None,
         }
         assert "content" not in repr(saved)
         assert await store.async_get_verified_calibration(record.mac) == record
         assert await store.async_claim_verified_calibration(
-            record.mac, record.verification_id
+            record.mac, record.verification_id, "3" * 32
+        )
+        assert await store.async_revalidate_verified_calibration(
+            record.mac, record.verification_id, "3" * 32
         )
         assert not await store.async_claim_verified_calibration(
-            record.mac, record.verification_id
+            record.mac, record.verification_id, "4" * 32
         )
 
     asyncio.run(run())

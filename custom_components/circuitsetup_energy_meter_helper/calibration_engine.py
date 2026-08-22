@@ -9,11 +9,14 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
 from statistics import fmean
 from time import monotonic
 from typing import Any, cast
 from uuid import uuid4
 
+from .config_document import ESPHomeConfigDocument
+from .device_builder import ESPHomeConfigSnapshot
 from .entity_binding import BoundEntity, EntityBindingError, GroupBinding, MeterBinding
 from .entity_catalog import EntityCatalog, EntityCatalogError
 from .esphome_api import ESPHomeSessionDisconnectedError
@@ -25,14 +28,16 @@ from .log_parser import (
     parse_gain_run,
     parse_restore,
 )
-from .models import StoredInterruptedSession
+from .models import MeterTopology, StoredInterruptedSession
 from .preflight import ReferenceZeroError, zero_reference_guard
-from .session_manager import SessionManager
+from .session_manager import CalibrationLease, PendingCalibrationOrigin, SessionManager
 from .state_tracker import SensorSampleWindow
 from .store import PhaseGainTable, VerifiedCalibrationRecord, VerifiedGainGroup
+from .topology import topology_from_config
 
 type MarkerWriter = Callable[[str, StoredInterruptedSession | None], Awaitable[None]]
 type VerifiedWriter = Callable[[VerifiedCalibrationRecord], Awaitable[None]]
+type CalibrationSnapshotReader = Callable[[str], Awaitable[ESPHomeConfigSnapshot]]
 
 
 class CalibrationState(StrEnum):
@@ -126,6 +131,7 @@ class CalibrationEngine:
         restart_disconnect_timeout: float = 20.0,
         restart_restore_timeout: float = 120.0,
         restart_backoff_initial: float = 0.25,
+        calibration_snapshot_reader: CalibrationSnapshotReader | None = None,
     ) -> None:
         if sample_count < 1 or zero_concurrency < 1:
             raise ValueError("sample count and zero concurrency must be positive")
@@ -147,6 +153,7 @@ class CalibrationEngine:
         self._restart_disconnect_timeout = restart_disconnect_timeout
         self._restart_restore_timeout = restart_restore_timeout
         self._restart_backoff_initial = restart_backoff_initial
+        self._calibration_snapshot_reader = calibration_snapshot_reader
         self._operation_sequences: dict[str, int] = {}
 
     async def async_verify_after_restart(
@@ -161,16 +168,18 @@ class CalibrationEngine:
         if self._persist_verified is None:
             raise RestartVerificationError("verified calibration persistence is absent")
         lease = await self.sessions.async_acquire_calibration(mac)
+        claimed = None
+        consumed = False
         try:
-            pending = self.sessions.pending_calibration(mac)
-            if pending is None or not pending.expected_phase_gains:
+            try:
+                pending = self.sessions.claim_calibration_origin(
+                    lease, session, binding
+                )
+                claimed = pending
+            except RuntimeError as error:
                 raise RestartVerificationError(
                     "server-owned calibration origin is missing"
-                )
-            if pending.topology != binding.topology or pending.mac != mac.casefold():
-                raise RestartVerificationError(
-                    "server-owned calibration origin is inconsistent"
-                )
+                ) from error
             expected = pending.expected_phase_gains
             try:
                 groups = tuple(
@@ -226,19 +235,20 @@ class CalibrationEngine:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     raise TimeoutError
-                async with asyncio.timeout(remaining):
-                    evidence = await self._wait_restore(
-                        session,
-                        generation=int(session.connection_generation),
-                        expected_instance_ids=set(expected),
-                        started_after=restore_started,
-                        baseline=baseline,
-                        timeout=remaining,
-                    )
+                evidence = await self._wait_restore(
+                    session,
+                    generation=int(session.connection_generation),
+                    expected_instance_ids=set(expected),
+                    started_after=restore_started,
+                    baseline=baseline,
+                    timeout=remaining,
+                )
             except TimeoutError as error:
                 raise RestartVerificationError(
                     "reconnect and restore evidence timed out"
                 ) from error
+            except LogEvidenceError as error:
+                raise RestartVerificationError(str(error)) from error
             _validate_restart_evidence(
                 evidence,
                 expected,
@@ -257,9 +267,16 @@ class CalibrationEngine:
                 verification_id=uuid4().hex,
             )
             await self._persist_verified(record)
-            self.sessions.consume_calibration_origin(mac, pending.operation_id)
+            self.sessions.consume_calibration_origin(
+                lease, pending.operation_id, pending.revision
+            )
+            consumed = True
             return RestartVerificationResult(record, rebound)
         finally:
+            if claimed is not None and not consumed:
+                self.sessions.release_calibration_origin_claim(
+                    lease, claimed.operation_id, claimed.revision
+                )
             lease.release()
 
     async def _reconnect_after_restart(self, session: Any, deadline: float) -> None:
@@ -286,6 +303,45 @@ class CalibrationEngine:
         raise RestartVerificationError(
             "ESPHome reconnect attempts exhausted before the restore deadline"
         ) from last_error
+
+    async def _calibration_origin(
+        self,
+        lease: CalibrationLease,
+        session: Any,
+        binding: MeterBinding,
+    ) -> PendingCalibrationOrigin | None:
+        """Load an authoritative source once, before any calibration mutation."""
+        pending = self.sessions.calibration_origin_for_update(lease, session, binding)
+        if pending is not None or self._calibration_snapshot_reader is None:
+            return pending
+        snapshot = await self._calibration_snapshot_reader(lease.mac)
+        if (
+            not isinstance(snapshot, ESPHomeConfigSnapshot)
+            or sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256
+        ):
+            raise ValueError("authoritative configuration hash is invalid")
+        if (
+            not snapshot.configuration
+            or "\n" in snapshot.configuration
+            or "\r" in snapshot.configuration
+        ):
+            raise ValueError("authoritative configuration filename is invalid")
+        try:
+            source_topology = topology_from_config(
+                ESPHomeConfigDocument.parse(snapshot.content),
+                native_project_name=binding.topology.project_name,
+            )
+        except ValueError as error:
+            raise ValueError(
+                "authoritative configuration topology is invalid"
+            ) from error
+        if not _same_topology_identity(source_topology, binding.topology):
+            raise ValueError(
+                "authoritative configuration topology does not match the session"
+            )
+        return self.sessions._begin_calibration_origin(
+            lease, session, binding, snapshot
+        )
 
     async def async_zero_all_references(
         self, session: Any, binding: MeterBinding
@@ -333,6 +389,7 @@ class CalibrationEngine:
         channels = tuple(_channel_number(entity) for entity in group.current_references)
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
+            origin = await self._calibration_origin(lease, session, binding)
             before = await self._windows(session, group.voltage_sensors)
             marker = self._marker(channels)
             await self._persist_interrupted(mac, marker)
@@ -352,12 +409,16 @@ class CalibrationEngine:
                         group, channels, attempt, before, restore
                     )
                 self._validate_voltage_evidence(evidence, trusted_voltage)
-                self.sessions.record_calibration_group(
-                    mac,
-                    binding.topology,
-                    evidence.instance_id,
-                    _phase_gain_table(evidence),
-                )
+                if origin is not None:
+                    origin = self.sessions.record_calibration_group(
+                        lease,
+                        origin.operation_id,
+                        origin.revision,
+                        session,
+                        binding,
+                        evidence.instance_id,
+                        _phase_gain_table(evidence),
+                    )
                 after = await self._windows(session, group.voltage_sensors)
                 errors = tuple(
                     _error_percent(window.mean, trusted_voltage) for window in after
@@ -408,6 +469,7 @@ class CalibrationEngine:
         reference = group.current_references[phase_index]
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
+            origin = await self._calibration_origin(lease, session, binding)
             before = (await self._window(session, sensor),)
             marker = self._marker((channel,))
             await self._persist_interrupted(mac, marker)
@@ -430,12 +492,16 @@ class CalibrationEngine:
                     phase_index,
                     trusted_current / reporting_multiplier,
                 )
-                self.sessions.record_calibration_group(
-                    mac,
-                    binding.topology,
-                    evidence.instance_id,
-                    _phase_gain_table(evidence),
-                )
+                if origin is not None:
+                    origin = self.sessions.record_calibration_group(
+                        lease,
+                        origin.operation_id,
+                        origin.revision,
+                        session,
+                        binding,
+                        evidence.instance_id,
+                        _phase_gain_table(evidence),
+                    )
                 after = (await self._window(session, sensor),)
                 errors = (_error_percent(after[0].mean, trusted_current),)
                 return CalibrationResult(
@@ -641,38 +707,30 @@ class CalibrationEngine:
         evidence_timeout = self._evidence_timeout if timeout is None else timeout
         wait = getattr(session, "async_wait_for_restore", None)
         if wait is not None:
-            return cast(
-                dict[str, object],
-                await wait(
-                    connection_generation=generation,
-                    expected_instance_ids=expected_instance_ids,
-                    started_after=started_after,
-                    timeout=evidence_timeout,
-                ),
-            )
+            async with asyncio.timeout(evidence_timeout):
+                return cast(
+                    dict[str, object],
+                    await wait(
+                        connection_generation=generation,
+                        expected_instance_ids=expected_instance_ids,
+                        started_after=started_after,
+                        timeout=evidence_timeout,
+                    ),
+                )
         deadline = monotonic() + evidence_timeout
-        last_error: LogEvidenceError | None = None
         while monotonic() < deadline:
-            new_lines = _new_log_lines(baseline, tuple(session.log_lines))
-            correlated = tuple(
-                CalibrationLogLine(
-                    generation, 0, started_after + (index + 1) * 1e-6, line
-                )
-                for index, line in enumerate(new_lines)
-            )
-            try:
-                return parse_restore(
-                    correlated,
-                    connection_generation=generation,
-                    expected_instance_ids=expected_instance_ids,
-                    started_after=started_after,
-                )
-            except LogEvidenceError as error:
-                last_error = error
-            await asyncio.sleep(0.05)
-        if last_error is not None:
-            raise last_error
-        raise LogEvidenceError("restore evidence timed out")
+            await asyncio.sleep(min(0.05, max(0.0, deadline - monotonic())))
+        new_lines = _new_log_lines(baseline, tuple(session.log_lines))
+        correlated = tuple(
+            CalibrationLogLine(generation, 0, started_after + (index + 1) * 1e-6, line)
+            for index, line in enumerate(new_lines)
+        )
+        return parse_restore(
+            correlated,
+            connection_generation=generation,
+            expected_instance_ids=expected_instance_ids,
+            started_after=started_after,
+        )
 
     async def _windows(
         self, session: Any, entities: Sequence[BoundEntity]
@@ -964,6 +1022,19 @@ def _phase_gain_table(evidence: GainRunEvidence) -> PhaseGainTable:
         (evidence.phases[0].new_voltage_gain, evidence.phases[0].new_current_gain),
         (evidence.phases[1].new_voltage_gain, evidence.phases[1].new_current_gain),
         (evidence.phases[2].new_voltage_gain, evidence.phases[2].new_current_gain),
+    )
+
+
+def _same_topology_identity(left: MeterTopology, right: MeterTopology) -> bool:
+    voltage_layouts = {left.voltage_layout, right.voltage_layout}
+    return (
+        left.addon_count == right.addon_count
+        and left.project_name == right.project_name
+        and left.connection_type == right.connection_type
+        and (
+            left.voltage_layout == right.voltage_layout
+            or voltage_layouts == {"single", "standard"}
+        )
     )
 
 

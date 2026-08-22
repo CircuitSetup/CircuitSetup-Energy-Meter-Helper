@@ -83,6 +83,7 @@ class VerifiedCalibrationRecord:
         CalibrationSourceAuthority.SAVED_FLASH
     )
     source_handoff_available: bool = True
+    source_handoff_transaction_id: str | None = None
 
     def __post_init__(self) -> None:
         if re.fullmatch(r"[0-9a-f]{12}", self.mac) is None:
@@ -111,6 +112,12 @@ class VerifiedCalibrationRecord:
             raise ValueError("verification ID must be a server-generated identifier")
         if type(self.source_handoff_available) is not bool:
             raise ValueError("source handoff state must be boolean")
+        if (
+            self.source_handoff_transaction_id is not None
+            and re.fullmatch(r"[0-9a-f]{32}", self.source_handoff_transaction_id)
+            is None
+        ):
+            raise ValueError("source handoff transaction ID is invalid")
         instance_ids = tuple(group.instance_id for group in self.groups)
         if len(instance_ids) != len(set(instance_ids)):
             raise ValueError("verified calibration groups must be unique")
@@ -224,6 +231,7 @@ def _serialize_verified_calibration(
         ],
         "source_authority": record.source_authority.value,
         "source_handoff_available": record.source_handoff_available,
+        "source_handoff_transaction_id": record.source_handoff_transaction_id,
     }
 
 
@@ -276,6 +284,7 @@ def _deserialize_verified_calibration(
             verification_id=raw["verification_id"],
             source_authority=authority,
             source_handoff_available=raw["source_handoff_available"],
+            source_handoff_transaction_id=raw.get("source_handoff_transaction_id"),
         )
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError("stored verified calibration is invalid") from error
@@ -362,9 +371,11 @@ class HelperStore:
         return None if raw is None else _deserialize_verified_calibration(mac, raw)
 
     async def async_claim_verified_calibration(
-        self, mac: str, verification_id: str
+        self, mac: str, verification_id: str, transaction_id: str
     ) -> bool:
         """Atomically consume one record's reviewed source-handoff preview."""
+        if re.fullmatch(r"[0-9a-f]{32}", transaction_id) is None:
+            return False
         async with self._update_lock:
             data = await self.async_load()
             raw = data.get("meters", {}).get(mac, {}).get("verified_calibration")
@@ -377,5 +388,22 @@ class HelperStore:
             ):
                 return False
             raw["source_handoff_available"] = False
+            raw["source_handoff_transaction_id"] = transaction_id
             await self._store.async_save(data)
             return True
+
+    async def async_revalidate_verified_calibration(
+        self, mac: str, verification_id: str, transaction_id: str
+    ) -> bool:
+        """Atomically require the same latest record and preview reservation."""
+        async with self._update_lock:
+            data = await self.async_load()
+            raw = data.get("meters", {}).get(mac, {}).get("verified_calibration")
+            if raw is None:
+                return False
+            record = _deserialize_verified_calibration(mac, raw)
+            return (
+                record.verification_id == verification_id
+                and not record.source_handoff_available
+                and record.source_handoff_transaction_id == transaction_id
+            )

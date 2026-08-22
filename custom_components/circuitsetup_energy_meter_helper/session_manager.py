@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 from uuid import uuid4
 
+from .device_builder import ESPHomeConfigSnapshot
+from .entity_binding import MeterBinding
 from .models import MeterTopology
 
 type PhaseGainTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
@@ -59,16 +60,24 @@ class CalibrationLease:
         self.on_release(self.mac)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class PendingCalibrationOrigin:
     """Server-owned source identity and final tables awaiting one restart."""
 
     operation_id: str
+    revision: int
     mac: str
+    session_identity: int
     topology: MeterTopology
     config_filename: str
     config_sha256: str
-    expected_phase_gains: dict[str, PhaseGainTable]
+    gain_groups: tuple[tuple[str, PhaseGainTable], ...]
+    claimed_revision: int | None = None
+
+    @property
+    def expected_phase_gains(self) -> dict[str, PhaseGainTable]:
+        """Return a detached table for exact evidence comparison."""
+        return dict(self.gain_groups)
 
 
 class SessionManager:
@@ -154,75 +163,147 @@ class SessionManager:
             if key[0] != mac
         }
 
-    def start_calibration_origin(
+    def _begin_calibration_origin(
         self,
-        mac: str,
-        topology: MeterTopology,
-        config_filename: str,
-        config_sha256: str,
-    ) -> str:
-        """Retain the authoritative YAML origin before any calibration mutation."""
-        mac = canonical_mac(mac)
-        if self.is_config_locked(mac) or self.is_calibration_locked(mac):
-            raise CalibrationBusyError(f"{mac} is busy")
-        if re.fullmatch(r"[0-9a-f]{12}", mac) is None:
-            raise ValueError("MAC must be canonical")
-        if not config_filename or "\n" in config_filename or "\r" in config_filename:
-            raise ValueError("configuration filename must be a non-empty single line")
-        if re.fullmatch(r"[0-9a-f]{64}", config_sha256) is None:
-            raise ValueError("configuration hash must be SHA-256")
-        operation_id = uuid4().hex
-        self._pending_calibrations[mac] = PendingCalibrationOrigin(
-            operation_id,
-            mac,
-            topology,
-            config_filename,
-            config_sha256,
-            {},
+        lease: CalibrationLease,
+        session: Any,
+        binding: MeterBinding,
+        snapshot: ESPHomeConfigSnapshot,
+    ) -> PendingCalibrationOrigin:
+        """Freeze an internally fetched configuration under its active lease."""
+        self._require_active_calibration_lease(lease)
+        if canonical_mac(lease.mac) in self._pending_calibrations:
+            raise CalibrationBusyError("a calibration origin is already active")
+        pending = PendingCalibrationOrigin(
+            operation_id=uuid4().hex,
+            revision=0,
+            mac=lease.mac,
+            session_identity=id(session),
+            topology=binding.topology,
+            config_filename=snapshot.configuration,
+            config_sha256=snapshot.sha256,
+            gain_groups=(),
         )
-        return operation_id
+        self._pending_calibrations[lease.mac] = pending
+        return pending
 
     def record_calibration_group(
         self,
-        mac: str,
-        topology: MeterTopology,
+        lease: CalibrationLease,
+        operation_id: str,
+        revision: int,
+        session: Any,
+        binding: MeterBinding,
         instance_id: str,
         phase_gains: PhaseGainTable,
-    ) -> bool:
-        """Update one final table only when a server-owned origin is active."""
-        pending = self._pending_calibrations.get(canonical_mac(mac))
-        if pending is None:
-            return False
-        if pending.topology != topology:
+    ) -> PendingCalibrationOrigin:
+        """Revision one final table under the exact active operation and lease."""
+        self._require_active_calibration_lease(lease)
+        pending = self._pending_calibrations.get(lease.mac)
+        if (
+            pending is None
+            or pending.operation_id != operation_id
+            or pending.revision != revision
+        ):
+            raise RuntimeError("calibration origin revision changed")
+        if pending.claimed_revision is not None:
+            raise CalibrationBusyError("calibration origin is claimed for restart")
+        if (
+            pending.session_identity != id(session)
+            or pending.topology != binding.topology
+        ):
             raise RuntimeError("calibration topology changed after origin capture")
         expected_ids = {
             f"meter_main{group_index}"
             if board_index == 0
             else f"addon{board_index}_{group_index}"
-            for board_index in range(topology.board_count)
+            for board_index in range(pending.topology.board_count)
             for group_index in (1, 2)
         }
         if instance_id not in expected_ids:
             raise RuntimeError("calibration group is outside the retained topology")
-        pending.expected_phase_gains[instance_id] = phase_gains
-        return True
+        groups = pending.expected_phase_gains
+        groups[instance_id] = phase_gains
+        updated = replace(
+            pending,
+            revision=pending.revision + 1,
+            gain_groups=tuple(groups.items()),
+        )
+        self._pending_calibrations[lease.mac] = updated
+        return updated
+
+    def calibration_origin_for_update(
+        self, lease: CalibrationLease, session: Any, binding: MeterBinding
+    ) -> PendingCalibrationOrigin | None:
+        """Return the unclaimed aggregate bound to this active operation."""
+        self._require_active_calibration_lease(lease)
+        pending = self._pending_calibrations.get(lease.mac)
+        if pending is None:
+            return None
+        if pending.claimed_revision is not None:
+            raise CalibrationBusyError("calibration origin is claimed for restart")
+        if (
+            pending.session_identity != id(session)
+            or pending.topology != binding.topology
+        ):
+            raise RuntimeError("calibration origin belongs to another session")
+        return pending
+
+    def claim_calibration_origin(
+        self, lease: CalibrationLease, session: Any, binding: MeterBinding
+    ) -> PendingCalibrationOrigin:
+        """Atomically freeze the exact aggregate used for restart verification."""
+        pending = self.calibration_origin_for_update(lease, session, binding)
+        if pending is None or not pending.gain_groups:
+            raise RuntimeError("server-owned calibration origin is missing")
+        claimed = replace(pending, claimed_revision=pending.revision)
+        self._pending_calibrations[lease.mac] = claimed
+        return claimed
+
+    def release_calibration_origin_claim(
+        self, lease: CalibrationLease, operation_id: str, revision: int
+    ) -> None:
+        """Make an exact failed verification aggregate retryable again."""
+        self._require_active_calibration_lease(lease)
+        pending = self._pending_calibrations.get(lease.mac)
+        if (
+            pending is None
+            or pending.operation_id != operation_id
+            or pending.revision != revision
+            or pending.claimed_revision != revision
+        ):
+            raise RuntimeError("calibration origin claim changed")
+        self._pending_calibrations[lease.mac] = replace(pending, claimed_revision=None)
 
     def pending_calibration(self, mac: str) -> PendingCalibrationOrigin | None:
         """Return a detached snapshot of the current server-owned aggregate."""
-        pending = self._pending_calibrations.get(canonical_mac(mac))
-        return (
-            replace(pending, expected_phase_gains=dict(pending.expected_phase_gains))
-            if pending is not None
-            else None
-        )
+        return self._pending_calibrations.get(canonical_mac(mac))
 
-    def consume_calibration_origin(self, mac: str, operation_id: str) -> None:
+    def consume_calibration_origin(
+        self, lease: CalibrationLease, operation_id: str, revision: int
+    ) -> None:
         """Consume exactly the aggregate that completed restart persistence."""
-        mac = canonical_mac(mac)
-        pending = self._pending_calibrations.get(mac)
-        if pending is None or pending.operation_id != operation_id:
+        self._require_active_calibration_lease(lease)
+        pending = self._pending_calibrations.get(lease.mac)
+        if (
+            pending is None
+            or pending.operation_id != operation_id
+            or pending.revision != revision
+            or pending.claimed_revision != revision
+        ):
             raise RuntimeError("calibration origin changed before consumption")
-        self._pending_calibrations.pop(mac)
+        self._pending_calibrations.pop(lease.mac)
+
+    def _require_active_calibration_lease(self, lease: CalibrationLease) -> None:
+        active = self._calibration_leases.get(lease.mac)
+        if (
+            active is not lease
+            or lease.released
+            or lease.task is not asyncio.current_task()
+            or not lease.locks.config.locked()
+            or not lease.locks.calibration.locked()
+        ):
+            raise CalibrationBusyError("calibration operation lease is not active")
 
     async def async_unload(self) -> None:
         self._closed = True

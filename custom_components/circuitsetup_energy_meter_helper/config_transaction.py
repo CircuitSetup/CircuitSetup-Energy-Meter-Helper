@@ -125,7 +125,11 @@ class VerifiedPersistence(Protocol):
     ) -> VerifiedCalibrationRecord | None: ...
 
     async def async_claim_verified_calibration(
-        self, mac: str, verification_id: str
+        self, mac: str, verification_id: str, transaction_id: str
+    ) -> bool: ...
+
+    async def async_revalidate_verified_calibration(
+        self, mac: str, verification_id: str, transaction_id: str
     ) -> bool: ...
 
 
@@ -183,6 +187,7 @@ class _ConfigTransaction:
     plan: ConfigMutationPlan | None = field(repr=False)
     prior_content: str | None = field(repr=False)
     selections: tuple[StoredCTSelection, ...] = field(default=(), repr=False)
+    verification_id: str | None = field(default=None, repr=False)
     state: ConfigTransactionState = ConfigTransactionState.PREVIEWED
     rollback_available: bool = False
     evidence: list[TransactionEvidenceCode] = field(default_factory=list)
@@ -266,31 +271,48 @@ class ConfigTransactionManager:
     ) -> TransactionStatus:
         """Re-read YAML and open the normal reviewed transaction for final gains."""
         mac = canonical_mac(mac)
-        verified = await self._persistence.async_get_verified_calibration(mac)
-        if verified is None or verified.verification_id != verification_id:
-            raise ConfigMutationError(
-                "request does not identify the current verified calibration"
+        lease = await self.sessions.async_acquire_config(mac)
+        transaction: _ConfigTransaction | None = None
+        try:
+            verified = await self._persistence.async_get_verified_calibration(mac)
+            if verified is None or verified.verification_id != verification_id:
+                raise ConfigMutationError(
+                    "request does not identify the current verified calibration"
+                )
+            if verified.mac != mac:
+                raise ConfigMutationError(
+                    "verified calibration belongs to another device"
+                )
+            if (
+                verified.topology_addon_count != topology.addon_count
+                or verified.topology_project_name != topology.project_name
+                or verified.topology_connection_type != topology.connection_type
+                or verified.topology_voltage_layout != topology.voltage_layout
+            ):
+                raise ConfigMutationError(
+                    "verified calibration topology does not match target"
+                )
+            if not verified.source_handoff_available:
+                raise ConfigMutationError("verified calibration has already been used")
+            snapshot = await self._device_builder.async_get_config(
+                verified.config_filename
             )
-        if verified.mac != mac:
-            raise ConfigMutationError("verified calibration belongs to another device")
-        if (
-            verified.topology_addon_count != topology.addon_count
-            or verified.topology_project_name != topology.project_name
-            or verified.topology_connection_type != topology.connection_type
-            or verified.topology_voltage_layout != topology.voltage_layout
-        ):
-            raise ConfigMutationError(
-                "verified calibration topology does not match target"
-            )
-        if not verified.source_handoff_available:
-            raise ConfigMutationError("verified calibration has already been used")
-        snapshot = await self._device_builder.async_get_config(verified.config_filename)
-        plan = build_calibrated_gain_mutation(snapshot, topology, verified)
-        if not await self._persistence.async_claim_verified_calibration(
-            mac, verification_id
-        ):
-            raise ConfigMutationError("verified calibration has already been used")
-        return await self.async_preview(mac, topology, plan, snapshot)
+            plan = build_calibrated_gain_mutation(snapshot, topology, verified)
+            status = await self.async_preview(mac, topology, plan, snapshot)
+            transaction = self._transaction(status.transaction_id)
+            transaction.verification_id = verification_id
+            if not await self._persistence.async_claim_verified_calibration(
+                mac, verification_id, transaction.transaction_id
+            ):
+                self._finish(transaction, ConfigTransactionState.FAILED)
+                raise ConfigMutationError("verified calibration has already been used")
+            return status
+        except BaseException:
+            if transaction is not None and not transaction.closed:
+                self._finish(transaction, ConfigTransactionState.FAILED)
+            raise
+        finally:
+            lease.release()
 
     def status(self, transaction_id: str) -> TransactionStatus:
         """Return only the safe DTO for a live transaction."""
@@ -310,6 +332,33 @@ class ConfigTransactionManager:
             transaction.lease = await self.sessions.async_acquire_config(
                 transaction.mac
             )
+            try:
+                verification_current = (
+                    transaction.verification_id is None
+                    or await self._persistence.async_revalidate_verified_calibration(
+                        transaction.mac,
+                        transaction.verification_id,
+                        transaction.transaction_id,
+                    )
+                )
+            except BaseException as error:
+                self._finish(
+                    transaction,
+                    ConfigTransactionState.FAILED,
+                    (
+                        TransactionEvidenceCode.CANCELLED
+                        if isinstance(error, asyncio.CancelledError)
+                        else TransactionEvidenceCode.SOURCE_CHANGED
+                    ),
+                )
+                raise
+            if not verification_current:
+                self._finish(
+                    transaction,
+                    ConfigTransactionState.FAILED,
+                    TransactionEvidenceCode.SOURCE_CHANGED,
+                )
+                raise ConfigMutationError("verified calibration preview was superseded")
             transaction.state = ConfigTransactionState.WRITE_CONFIRMED
             plan, prior_content = _sensitive(transaction)
             snapshot = ESPHomeConfigSnapshot(

@@ -247,7 +247,12 @@ def parse_restore(
     observed_instance_ids = {
         instance_id
         for item in matching
-        if any(term in item.line for term in restore_terms)
+        if (
+            any(term in item.line for term in restore_terms)
+            or _RESTORE_ROW_RE.search(item.line) is not None
+            or _COMPARE_ROW_RE.search(item.line) is not None
+            or "|Phase|voltage_gain|current_gain|" in re.sub(r"\s+", "", item.line)
+        )
         if (instance_id := _instance(item.line)) is not None
     }
     for instance_id in expected_instance_ids | observed_instance_ids:
@@ -291,6 +296,10 @@ def parse_restore(
             phase_gains, differs = compared_rows
             basis = "verified_config_flash_table"
         else:
+            if instance_id not in expected_instance_ids:
+                raise LogEvidenceError(
+                    f"unexpected incomplete restore evidence for {instance_id}"
+                )
             raise LogEvidenceError(f"missing restore evidence for {instance_id}")
         evidence[instance_id] = RestoreEvidence(
             connection_generation,
