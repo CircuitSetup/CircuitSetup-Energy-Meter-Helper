@@ -70,8 +70,7 @@ _MAX_PAYLOAD_BYTES = 64 * 1024
 _MAX_PENDING_EVENTS = 32
 _FORBIDDEN_KEY = re.compile(
     r"(?:^|_)(?:api_?key|content|credential|encryption(?:_key)?|logs?|noise_?psk|"
-    r"output_tail|password|prior(?:_content)?|proposed_content|"
-    r"raw(?!_gain_ct(?:$|_))(?:_logs?)?|"
+    r"output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|"
     r"secret|ssid|summary|token|yaml)(?:$|_)",
     re.IGNORECASE,
 )
@@ -769,7 +768,7 @@ def sanitize_payload(value: Any, *, _depth: int = 0, _field: str = "") -> Any:
                 or not key
                 or len(key) > 128
                 or key.casefold() in {"entity_key", "key", "raw_key"}
-                or _FORBIDDEN_KEY.search(key)
+                or (key.casefold() != "raw_gain_ct" and _FORBIDDEN_KEY.search(key))
             ):
                 continue
             if key in result:

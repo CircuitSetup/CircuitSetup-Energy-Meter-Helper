@@ -1874,6 +1874,8 @@ def test_recursive_sanitizer_preserves_required_raw_gain_only() -> None:
     assert sanitize_payload(
         {
             "raw_gain_ct": 27518,
+            "raw_gain_ct_secret": "secret",
+            "raw_gain_ct_debug": "secret",
             "raw": "secret",
             "raw_log": "secret",
             "raw_logs": ["secret"],

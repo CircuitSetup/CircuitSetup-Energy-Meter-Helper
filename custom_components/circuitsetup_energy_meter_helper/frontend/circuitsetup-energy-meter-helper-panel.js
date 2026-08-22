@@ -499,7 +499,7 @@ k._$litElement$ = !0, k.finalized = !0, W.litElementHydrateSupport?.({ LitElemen
 const Dt = W.litElementPolyfillSupport;
 Dt?.({ LitElement: k });
 (W.litElementVersions ??= []).push("4.2.2");
-const st = "circuitsetup_energy_meter_helper/", Nt = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?!_gain_ct(?:$|_))(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
+const st = "circuitsetup_energy_meter_helper/", Nt = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
 class D {
   constructor(t, e) {
     this.hass = t, this.entryId = e, this.setupStatus = () => this.call("setup_status"), this.listMeters = () => this.call("list_meters"), this.getTopology = (i) => this.call("get_topology", { device_id: i }), this.getCtInventory = (i) => this.call("get_ct_inventory", { device_id: i }), this.getSession = (i) => this.call("get_session", { session_id: i }), this.getDiagnosticsSummary = () => this.call("get_diagnostics_summary"), this.setInstallerIntent = (i, s) => this.call("set_installer_intent", { addon_count: i, connection_type: s }), this.rescan = () => this.call("rescan"), this.adoptDevice = (i) => this.call("adopt_device", { device_id: i }), this.previewCtConfig = (i, s, r, a) => this.call("preview_ct_config", {
@@ -535,7 +535,8 @@ class D {
     }
     if (!(t === null || typeof t != "object"))
       for (const [i, s] of Object.entries(t)) {
-        if (Nt.test(i)) throw new Error(`private field ${i} refused`);
+        if (i.toLowerCase() !== "raw_gain_ct" && Nt.test(i))
+          throw new Error(`private field ${i} refused`);
         this.assertPublicPayload(s, e + 1);
       }
   }
