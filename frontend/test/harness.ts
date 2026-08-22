@@ -1,101 +1,76 @@
 import "../src/index";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
-import type { CtChannel } from "../src/types";
 
-const device = {
-  entry_id: "meter-live-1",
-  title: "CircuitSetup meter",
-  project_name: "circuitsetup.6c-energy-meter",
-  project_version: "2026.8.0",
-  importable: true,
-  configuration: null,
-};
+type Frame = Record<string, unknown> & { id?: number; type: string };
 
-const channels: CtChannel[] = Array.from({ length: 42 }, (_, index) => ({
-  channel: index + 1,
-  name: `CT${index + 1}`,
-  raw_gain_ct: index === 3 ? 27518 : 5500,
-  reporting_multiplier: 1,
-  selected_model_id: index === 3 ? null : "cs-ct-200a",
-  selection_verified_against_config: index !== 3,
-  address: {
-    channel: index + 1,
-    board_index: Math.floor(index / 6),
-    group_index: Math.floor((index % 6) / 3) + 1,
-    phase: (["A", "B", "C"] as const)[index % 3]!,
-  },
-}));
+class HomeAssistantWebSocket implements HomeAssistant {
+  private readonly socket = new WebSocket(`ws://${location.host}/api/websocket`);
+  private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private readonly subscriptions = new Map<number, (value: unknown) => void>();
+  private nextId = 0;
+  private readonly authenticated: Promise<void>;
 
-let setup = { state: "no_device", devices: [] as typeof device[] };
-const hass: HomeAssistant = {
-  async callWS<T>(message: Record<string, unknown>): Promise<T> {
-    const operation = String(message.type).split("/").at(-1);
-    if (operation === "setup_status" || operation === "set_installer_intent") return setup as T;
-    if (operation === "rescan") {
-      setup = { state: "device_discovered", devices: [device] };
-      return setup as T;
-    }
-    if (operation === "get_topology") return {
-      addon_count: 6,
-      board_count: 7,
-      ct_count: 42,
-      group_count: 14,
-      connection_type: "wifi",
-      voltage_layout: "two_groups_per_board",
-      project_name: device.project_name,
-      evidence: [
-        { source: "config_project", addon_count: 6, detail: "Project declares six add-on boards" },
-        { source: "config_packages", addon_count: 6, detail: "Seven board packages loaded" },
-        { source: "native_entity_counts", addon_count: 6, detail: "42 CT channels and 14 voltage groups" },
-      ],
-    } as T;
-    if (operation === "get_ct_inventory") return {
-      plan_id: "plan-qa",
-      source_sha256: "a".repeat(64),
-      channels,
-      catalog: {
-        presets: [{
-          model_id: "cs-ct-200a",
-          label: "CS-CT-200A-333mV",
-          rated_current_a: 200,
-          secondary: "333 mV @ 200 A",
-          default_gain_ct: 5500,
-          requires_burden_jumper_cut: false,
-          notes: "Use burden at least 1 VA for best accuracy.",
-        }, {
-          model_id: "sct-016",
-          label: "SCT-016",
-          rated_current_a: 120,
-          secondary: "50 mA @ 120 A",
-          default_gain_ct: 41787,
-          requires_burden_jumper_cut: true,
-          notes: "Review the board burden jumper before use.",
-        }],
-        source_repository: "CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter",
-        source_ref: "1e5e153",
-        schema_version: 1,
-      },
-    } as T;
-    if (operation === "preview_ct_config") return {
-      transaction_id: "transaction-qa",
-      state: "previewed",
-      source_sha256: "a".repeat(64),
-      changes: [{ key: "ct1_name", old_value: "CT1", new_value: "Grid Import" }],
-      redacted_diff: "- ct1_name: CT1\n+ ct1_name: Grid Import",
-      rollback_available: false,
-      evidence: [],
-      progress: [],
-    } as T;
-    return {} as T;
-  },
-  connection: {
-    async subscribeMessage() {
-      return () => undefined;
+  public readonly connection: HomeAssistant["connection"] = {
+    subscribeMessage: async <T>(callback: (message: T) => void, message: Record<string, unknown>) => {
+      await this.authenticated;
+      const id = ++this.nextId;
+      this.subscriptions.set(id, callback as (value: unknown) => void);
+      await this.send(id, message);
+      return () => {
+        this.subscriptions.delete(id);
+        void this.callWS({ type: "unsubscribe_events", subscription: id });
+      };
     },
-  },
-};
+  };
+
+  public constructor() {
+    this.authenticated = new Promise((resolve, reject) => {
+      this.socket.addEventListener("message", (event) => {
+        const frame = JSON.parse(String(event.data)) as Frame;
+        if (frame.type === "auth_required") {
+          this.socket.send(JSON.stringify({ type: "auth", access_token: "playwright-token" }));
+          return;
+        }
+        if (frame.type === "auth_ok") {
+          resolve();
+          return;
+        }
+        if (frame.type === "auth_invalid") {
+          reject(new Error("Home Assistant websocket authentication failed"));
+          return;
+        }
+        if (frame.type === "event" && frame.id !== undefined) {
+          this.subscriptions.get(frame.id)?.(frame.event);
+          return;
+        }
+        if (frame.type !== "result" || frame.id === undefined) return;
+        const request = this.pending.get(frame.id);
+        if (!request) return;
+        this.pending.delete(frame.id);
+        if (frame.success === true) request.resolve(frame.result);
+        else {
+          const detail = frame.error as { code?: string; message?: string } | undefined;
+          request.reject(Object.assign(new Error(detail?.message ?? "WebSocket command failed"), { code: detail?.code }));
+        }
+      });
+      this.socket.addEventListener("error", () => reject(new Error("Home Assistant websocket failed")));
+    });
+  }
+
+  public async callWS<T>(message: Record<string, unknown>): Promise<T> {
+    await this.authenticated;
+    return this.send(++this.nextId, message) as Promise<T>;
+  }
+
+  private send(id: number, message: Record<string, unknown>): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.socket.send(JSON.stringify({ id, ...message }));
+    });
+  }
+}
 
 const panel = document.querySelector("circuitsetup-energy-meter-helper-panel") as CircuitSetupPanel;
 panel.panel = { config: { entry_id: "qa-entry" } };
-panel.hass = hass;
+panel.hass = new HomeAssistantWebSocket();

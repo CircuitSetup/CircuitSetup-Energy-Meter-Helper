@@ -13,6 +13,7 @@ from time import monotonic
 from typing import Any
 from uuid import uuid4
 
+from aioesphomeapi.model import build_device_unique_id
 from aiohasupervisor import SupervisorNotFoundError, SupervisorResponseError
 from aiohasupervisor.models import AddonState as SupervisorAddonState
 from aiohttp import hdrs
@@ -410,17 +411,29 @@ class EntryWorkflow:
         if not requested.keys() <= channels.keys() or not requested.keys() <= {item.channel for item in plan.inventory.channels}:
             raise WorkflowHandleError("channel is not owned by this inventory")
         registry = er.async_get(self._hass)
-        results: list[dict[str, Any]] = []
+        targets: list[tuple[int, str, str, Any]] = []
+        if len(set(requested.values())) != len(requested):
+            raise WorkflowHandleError("label conflicts with another meter entity")
+        registry_entries = tuple(registry.entities.values())
         for channel, label in requested.items():
             descriptor = channels[channel].current_sensor.descriptor
-            entity_id = registry.async_get_entity_id("sensor", "esphome", descriptor.object_id)
+            unique_id = build_device_unique_id(plan.mac, descriptor.info)
+            entity_id = registry.async_get_entity_id("sensor", "esphome", unique_id)
             if entity_id is None:
                 raise WorkflowHandleError("bound entity is not owned by this device")
             entry = registry.async_get(entity_id)
             if entry is None or getattr(entry, "config_entry_id", None) != device_id:
                 raise WorkflowHandleError("bound entity is not owned by this device")
-            if any(item.entity_id != entity_id and getattr(item, "config_entry_id", None) == device_id and getattr(item, "name", None) == label for item in registry.entities.values()):
+            if any(
+                item.entity_id != entity_id
+                and getattr(item, "config_entry_id", None) == device_id
+                and getattr(item, "name", None) == label
+                for item in registry_entries
+            ):
                 raise WorkflowHandleError("label conflicts with another meter entity")
+            targets.append((channel, label, entity_id, entry))
+        results: list[dict[str, Any]] = []
+        for channel, label, entity_id, entry in targets:
             previous = getattr(entry, "name", None)
             if previous != label:
                 registry.async_update_entity(entity_id, name=label)

@@ -384,6 +384,44 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
   });
 
+  it("keeps label-only edits out of every firmware control and preview route", async () => {
+    const messages: Record<string, unknown>[] = [];
+    const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] },
+      set_ha_labels: { mode: "home_assistant_labels", results: [{ channel: 1, state: "updated" }] } });
+    const callWS = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      messages.push(message);
+      return callWS<T>(message);
+    };
+    const inventory: CtInventory = {
+      plan_id: "plan-1", source_sha256: "a".repeat(64),
+      channels: [{ channel: 1, name: "CT1", raw_gain_ct: 32000, reporting_multiplier: 2,
+        selected_model_id: "custom", selection_verified_against_config: true, display_label: "Existing clamp",
+        address: { channel: 1, board_index: 0, group_index: 1, phase: "A" } }],
+      catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
+    };
+    const panel = await mount(hass);
+    panel.showInventory(inventory);
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelectorAll<HTMLInputElement>('[name="name-mode"]')[1]?.click();
+    await panel.updateComplete;
+
+    for (const selector of ['[aria-label="CT1 model"]', '[aria-label="CT1 multiplier"]',
+      '[aria-label="CT1 custom gain"]', '[aria-label="CT1 custom label"]',
+      '[aria-label="CT1 burden output acknowledgement"]']) {
+      expect(panel.shadowRoot?.querySelector<HTMLInputElement>(selector)?.disabled).toBe(true);
+    }
+    const name = panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 name"]');
+    if (name) { name.value = "Kitchen mains"; name.dispatchEvent(new Event("input")); }
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.click();
+    await tick();
+
+    expect(messages.map((message) => String(message.type).split("/").at(-1))).toContain("set_ha_labels");
+    expect(messages.map((message) => String(message.type).split("/").at(-1))).not.toContain("preview_ct_config");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Configuration");
+  });
+
   it("owns late subscriptions by connection generation and resubscribes live handles", async () => {
     let resolveFirst: ((unsubscribe: () => void) => void) | undefined;
     let unsubscribed = 0;

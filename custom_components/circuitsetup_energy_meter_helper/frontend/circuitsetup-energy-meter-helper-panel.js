@@ -247,9 +247,9 @@ let M = class extends HTMLElement {
   }
 };
 M.elementStyles = [], M.shadowRootOptions = { mode: "open" }, M[H("elementProperties")] = /* @__PURE__ */ new Map(), M[H("finalized")] = /* @__PURE__ */ new Map(), Qe?.({ ReactiveElement: M }), (X.reactiveElementVersions ??= []).push("2.1.2");
-const ae = globalThis, be = (n) => n, J = ae.trustedTypes, $e = J ? J.createPolicy("lit-html", { createHTML: (n) => n }) : void 0, Ue = "$lit$", I = `lit$${Math.random().toFixed(9).slice(2)}$`, Pe = "?" + I, et = `<${Pe}>`, R = document, q = () => R.createComment(""), z = (n) => n === null || typeof n != "object" && typeof n != "function", ce = Array.isArray, tt = (n) => ce(n) || typeof n?.[Symbol.iterator] == "function", te = `[\x20\t
+const ae = globalThis, be = (n) => n, J = ae.trustedTypes, $e = J ? J.createPolicy("lit-html", { createHTML: (n) => n }) : void 0, Ue = "$lit$", I = `lit$${Math.random().toFixed(9).slice(2)}$`, Pe = "?" + I, et = `<${Pe}>`, O = document, q = () => O.createComment(""), z = (n) => n === null || typeof n != "object" && typeof n != "function", ce = Array.isArray, tt = (n) => ce(n) || typeof n?.[Symbol.iterator] == "function", te = `[\x20\t
 \f\r]`, j = /<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g, ye = /-->/g, we = />/g, T = RegExp(`>|${te}(?:([^\\s"'>=/]+)(${te}*=${te}*(?:[^\x20\t
-\f\r"'\`<>=]|("|')|))|$)`, "g"), Se = /'/g, xe = /"/g, De = /^(?:script|style|textarea|title)$/i, it = (n) => (e, ...t) => ({ _$litType$: n, strings: e, values: t }), d = it(1), U = /* @__PURE__ */ Symbol.for("lit-noChange"), y = /* @__PURE__ */ Symbol.for("lit-nothing"), Ce = /* @__PURE__ */ new WeakMap(), O = R.createTreeWalker(R, 129);
+\f\r"'\`<>=]|("|')|))|$)`, "g"), Se = /'/g, xe = /"/g, De = /^(?:script|style|textarea|title)$/i, it = (n) => (e, ...t) => ({ _$litType$: n, strings: e, values: t }), d = it(1), U = /* @__PURE__ */ Symbol.for("lit-noChange"), y = /* @__PURE__ */ Symbol.for("lit-nothing"), Ce = /* @__PURE__ */ new WeakMap(), R = O.createTreeWalker(O, 129);
 function je(n, e) {
   if (!ce(n) || !n.hasOwnProperty("raw")) throw Error("invalid template strings array");
   return $e !== void 0 ? $e.createHTML(e) : e;
@@ -272,11 +272,11 @@ class V {
     this.parts = [];
     let o = 0, r = 0;
     const a = e.length - 1, c = this.parts, [p, f] = st(e, t);
-    if (this.el = V.createElement(p, i), O.currentNode = this.el.content, t === 2 || t === 3) {
+    if (this.el = V.createElement(p, i), R.currentNode = this.el.content, t === 2 || t === 3) {
       const u = this.el.content.firstChild;
       u.replaceWith(...u.childNodes);
     }
-    for (; (s = O.nextNode()) !== null && c.length < a; ) {
+    for (; (s = R.nextNode()) !== null && c.length < a; ) {
       if (s.nodeType === 1) {
         if (s.hasAttributes()) for (const u of s.getAttributeNames()) if (u.endsWith(Ue)) {
           const l = f[r++], h = s.getAttribute(u).split(I), g = /([.?@])?(.*)/.exec(l);
@@ -286,7 +286,7 @@ class V {
           const u = s.textContent.split(I), l = u.length - 1;
           if (l > 0) {
             s.textContent = J ? J.emptyScript : "";
-            for (let h = 0; h < l; h++) s.append(u[h], q()), O.nextNode(), c.push({ type: 2, index: ++o });
+            for (let h = 0; h < l; h++) s.append(u[h], q()), R.nextNode(), c.push({ type: 2, index: ++o });
             s.append(u[l], q());
           }
         }
@@ -299,7 +299,7 @@ class V {
     }
   }
   static createElement(e, t) {
-    const i = R.createElement("template");
+    const i = O.createElement("template");
     return i.innerHTML = e, i;
   }
 }
@@ -320,17 +320,17 @@ class nt {
     return this._$AM._$AU;
   }
   u(e) {
-    const { el: { content: t }, parts: i } = this._$AD, s = (e?.creationScope ?? R).importNode(t, !0);
-    O.currentNode = s;
-    let o = O.nextNode(), r = 0, a = 0, c = i[0];
+    const { el: { content: t }, parts: i } = this._$AD, s = (e?.creationScope ?? O).importNode(t, !0);
+    R.currentNode = s;
+    let o = R.nextNode(), r = 0, a = 0, c = i[0];
     for (; c !== void 0; ) {
       if (r === c.index) {
         let p;
         c.type === 2 ? p = new L(o, o.nextSibling, this, e) : c.type === 1 ? p = new c.ctor(o, c.name, c.strings, this, e) : c.type === 6 && (p = new ct(o, this, e)), this._$AV.push(p), c = i[++a];
       }
-      r !== c?.index && (o = O.nextNode(), r++);
+      r !== c?.index && (o = R.nextNode(), r++);
     }
-    return O.currentNode = R, s;
+    return R.currentNode = O, s;
   }
   p(e) {
     let t = 0;
@@ -365,7 +365,7 @@ class L {
     this._$AH !== e && (this._$AR(), this._$AH = this.O(e));
   }
   _(e) {
-    this._$AH !== y && z(this._$AH) ? this._$AA.nextSibling.data = e : this.T(R.createTextNode(e)), this._$AH = e;
+    this._$AH !== y && z(this._$AH) ? this._$AA.nextSibling.data = e : this.T(O.createTextNode(e)), this._$AH = e;
   }
   $(e) {
     const { values: t, _$litType$: i } = e, s = typeof i == "number" ? this._$AC(e) : (i.el === void 0 && (i.el = V.createElement(je(i.h, i.h[0]), this.options)), i);
@@ -636,19 +636,19 @@ function Tt(n, e, t, i) {
   if (r !== c.every((p) => p <= 1)) throw new Error(`${e} response is invalid`);
   return n;
 }
-function Oe(n, e, t) {
+function Re(n, e, t) {
   const i = b(n, e), s = x(i.state, /* @__PURE__ */ new Set(["applied_pending_restart_verification", "result_outside_tolerance", "indeterminate"]), e);
   _(i.group_key, e), i.phase !== null && x(i.phase, Z, e);
   const o = v(i.iteration, e), r = w(i.changed_channels, e, 3).map((g) => v(g, e)), a = w(i.before_values, e, 3), c = w(i.after_values, e, 3), p = w(i.error_percent_values, e, 3);
   for (const g of [a, c, p]) g.forEach(($) => A($, e));
-  const f = t.target === "voltage" ? t.groupKey : He(t.channel), u = t.target === "voltage" ? Rt(t.groupKey) : [t.channel], l = t.target === "current" ? ["A", "B", "C"][(t.channel - 1) % 3] : null, h = k(i.retry_allowed, e);
+  const f = t.target === "voltage" ? t.groupKey : He(t.channel), u = t.target === "voltage" ? Ot(t.groupKey) : [t.channel], l = t.target === "current" ? ["A", "B", "C"][(t.channel - 1) % 3] : null, h = k(i.retry_allowed, e);
   if (!Number.isFinite(t.reference) || t.reference <= 0 || t.target === "current" && (!Number.isFinite(t.rawReference) || t.rawReference <= 0) || ![1, 3].includes(r.length) || a.length !== r.length || new Set(r).size !== r.length || r.some((g) => g < 1 || g > 42) || o < 1 || o > 3 || i.group_key !== f || i.phase !== l || r.length !== u.length || r.some((g, $) => g !== u[$]) || (s === "indeterminate" ? c.length !== 0 || p.length !== 0 : c.length !== r.length || p.length !== r.length)) throw new Error(`${e} response is invalid`);
   if (s === "indeterminate") {
     if (i.gain_evidence !== null || h) throw new Error(`${e} response is invalid`);
     i.restore_evidence != null && b(i.restore_evidence, e);
   } else {
     if (i.gain_evidence == null || i.restore_evidence !== null) throw new Error(`${e} response is invalid`);
-    Ot(i.gain_evidence, e, t);
+    Rt(i.gain_evidence, e, t);
     const g = c.map((S) => 100 * Math.abs(A(S, e) - t.reference) / t.reference);
     if (p.some((S, m) => A(S, e) < 0 || !K(A(S, e), g[m]))) throw new Error(`${e} response is invalid`);
     const $ = Math.max(...g) > 1;
@@ -660,7 +660,7 @@ function He(n) {
   const e = Math.floor((n - 1) / 6), t = Math.floor((n - 1) % 6 / 3) + 1;
   return e === 0 ? `main_${t}` : `addon${e}_${t}`;
 }
-function Ot(n, e, t) {
+function Rt(n, e, t) {
   const i = b(n, e), s = v(i.connection_generation, e), o = v(i.operation_sequence, e), r = t.target === "voltage" ? t.groupKey : He(t.channel), a = r.startsWith("main_") ? `meter_main${r.slice(-1)}` : r;
   if (s < 1 || o < 1 || _(i.instance_id, e) !== a) throw new Error(`${e} response is invalid`);
   const c = t.target === "current" ? ["A", "B", "C"][(t.channel - 1) % 3] : null, p = w(i.phases, e, 3);
@@ -680,7 +680,7 @@ function Ot(n, e, t) {
   const u = w(i.matching_lines, e, 100);
   if (u.length === 0 || u.some((l) => typeof l != "string") || k(i.flash_saved, e) !== !0 || f.length !== 0 || k(i.calibration_disabled, e) !== !1) throw new Error(`${e} response is invalid`);
 }
-function Rt(n) {
+function Ot(n) {
   const e = /^(?:main_([12])|addon([1-6])_([12]))$/.exec(n);
   if (!e) return [];
   const t = e[2] === void 0 ? 0 : Number(e[2]), i = Number(e[1] ?? e[3]), s = t * 6 + (i - 1) * 3 + 1;
@@ -730,12 +730,12 @@ class Y {
       device_id: s,
       transaction_id: o,
       source_sha256: r
-    }), this.applyCtConfig = (i, s, o) => this.transaction("apply_ct_config", i, s, o), this.compileCtConfig = (i, s, o) => this.transaction("compile_ct_config", i, s, o), this.installCtConfig = (i, s, o) => this.transaction("install_ct_config", i, s, o), this.rollbackCtConfig = (i, s, o) => this.transaction("rollback_ct_config", i, s, o), this.startSession = (i) => this.call("start_session", (s) => B(s, "start_session"), { device_id: i }), this.acknowledgeSafety = (i) => this.call("acknowledge_safety", (s) => B(s, "acknowledge_safety"), { session_id: i, acknowledged: !0 }), this.checkStability = (i, s, o) => this.call("check_stability", (r) => Tt(r, "check_stability", s, o), { session_id: i, target: s, target_id: o }), this.calibrateVoltage = (i, s, o, r) => this.call("calibrate_voltage", (a) => Oe(a, "calibrate_voltage", { target: "voltage", groupKey: s, reference: o }), {
+    }), this.applyCtConfig = (i, s, o) => this.transaction("apply_ct_config", i, s, o), this.compileCtConfig = (i, s, o) => this.transaction("compile_ct_config", i, s, o), this.installCtConfig = (i, s, o) => this.transaction("install_ct_config", i, s, o), this.rollbackCtConfig = (i, s, o) => this.transaction("rollback_ct_config", i, s, o), this.startSession = (i) => this.call("start_session", (s) => B(s, "start_session"), { device_id: i }), this.acknowledgeSafety = (i) => this.call("acknowledge_safety", (s) => B(s, "acknowledge_safety"), { session_id: i, acknowledged: !0 }), this.checkStability = (i, s, o) => this.call("check_stability", (r) => Tt(r, "check_stability", s, o), { session_id: i, target: s, target_id: o }), this.calibrateVoltage = (i, s, o, r) => this.call("calibrate_voltage", (a) => Re(a, "calibrate_voltage", { target: "voltage", groupKey: s, reference: o }), {
       session_id: i,
       group_key: s,
       reference: o,
       confirm_iteration: r
-    }), this.calibrateCurrent = (i, s, o, r, a = 1) => this.call("calibrate_current", (c) => Oe(c, "calibrate_current", { target: "current", channel: s, reference: o, rawReference: o / a }), {
+    }), this.calibrateCurrent = (i, s, o, r, a = 1) => this.call("calibrate_current", (c) => Re(c, "calibrate_current", { target: "current", channel: s, reference: o, rawReference: o / a }), {
       session_id: i,
       channel: s,
       reference: o,
@@ -922,13 +922,15 @@ function Bt(n, e, t, i, s, o, r, a, c, p = !1) {
               </div>
               ${h.modelId === "custom" ? d`<div class="ct-detail custom-fields">
                 <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${l.channel} custom gain`}
+                  ?disabled=${p}
                   .value=${h.customGainCt === void 0 ? "" : String(h.customGainCt)}
                   @input=${(m) => r(l.channel, { customGainCt: Number(m.target.value) })} /></label>
-                <label>Custom label <input maxlength="64" aria-label=${`CT${l.channel} custom label`} .value=${h.customLabel ?? ""}
+                <label>Custom label <input maxlength="64" aria-label=${`CT${l.channel} custom label`} ?disabled=${p} .value=${h.customLabel ?? ""}
                   @input=${(m) => r(l.channel, { customLabel: m.target.value })} /></label>
               </div>` : y}
               ${h.modelId === "custom" || g?.requires_burden_jumper_cut ? d`<div class="warning-band">
                 <label class="check-row"><input type="checkbox" aria-label=${`CT${l.channel} burden output acknowledgement`}
+                  ?disabled=${p}
                   .checked=${h.burdenAcknowledged}
                   @change=${(m) => r(l.channel, { burdenAcknowledged: m.target.checked })} />
                   I checked the burden-output requirement for CT${l.channel}</label>
@@ -1072,7 +1074,7 @@ function Ft(n, e, t, i, s, o) {
     </section>
   `;
 }
-const Re = [
+const Oe = [
   ["wifi", "Wi-Fi"],
   ["ethernet_lilygo", "LilyGO Ethernet"],
   ["ethernet_waveshare", "Waveshare Ethernet"]
@@ -1097,7 +1099,7 @@ function Kt(n, e, t, i, s, o) {
         <legend>Connection</legend>
         <p>Choose how your device will connect to your network.</p>
         <div class="connection-options">
-          ${Re.map(([r, a]) => d`
+          ${Oe.map(([r, a]) => d`
             <label class=${r === t ? "selected" : ""}>
               <input name="connection-type" type="radio" .value=${r}
                 .checked=${r === t} @change=${() => s(r)} />
@@ -1111,7 +1113,7 @@ function Kt(n, e, t, i, s, o) {
         <dl class="summary-band">
           <div><dt>IO0</dt><dd><strong>OPEN</strong> (not connected)</dd></div>
           <div><dt>Add-on boards</dt><dd>${e}</dd></div>
-          <div><dt>Connection</dt><dd>${Re.find(([r]) => r === t)?.[1]}</dd></div>
+          <div><dt>Connection</dt><dd>${Oe.find(([r]) => r === t)?.[1]}</dd></div>
           ${Wt.slice(0, e).map((r, a) => d`<div><dt>Add-on ${a + 1}</dt><dd>${r}</dd></div>`)}
         </dl>
       </section>

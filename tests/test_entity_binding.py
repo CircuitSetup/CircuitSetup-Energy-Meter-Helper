@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 import re
+from asyncio import run
 from dataclasses import dataclass, replace
+from hashlib import sha256
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from aioesphomeapi import ButtonInfo as ApiButtonInfo
+from aioesphomeapi import NumberInfo as ApiNumberInfo
+from aioesphomeapi import SensorInfo as ApiSensorInfo
+from aioesphomeapi.model import build_device_unique_id
 
+from custom_components.circuitsetup_energy_meter_helper.device_builder import (
+    ESPHomeConfigSnapshot,
+)
 from custom_components.circuitsetup_energy_meter_helper.entity_binding import (
     EntityBindingAmbiguity,
     EntityBindingMissing,
@@ -18,6 +29,17 @@ from custom_components.circuitsetup_energy_meter_helper.entity_catalog import (
     EntityCatalog,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
+from custom_components.circuitsetup_energy_meter_helper.provisioning import (
+    DiscoveredDevice,
+)
+from custom_components.circuitsetup_energy_meter_helper.session_manager import (
+    SessionManager,
+)
+from custom_components.circuitsetup_energy_meter_helper.store import HelperStore
+from custom_components.circuitsetup_energy_meter_helper.workflow import (
+    EntryWorkflow,
+    WorkflowHandleError,
+)
 
 
 @dataclass(slots=True)
@@ -418,3 +440,150 @@ def test_duplicate_object_ids_are_explicitly_unrepairable() -> None:
         bind_meter(EntityCatalog(entities, 1), topology(0), substitutions(0))
 
     assert error.value.manual_options == ()
+
+
+class _LabelRegistry:
+    def __init__(self, entities: dict[str, SimpleNamespace]) -> None:
+        self.entities = entities
+
+    def async_get_entity_id(self, domain: str, platform: str, unique_id: str) -> str | None:
+        return next((entry.entity_id for entry in self.entities.values()
+            if entry.domain == domain and entry.platform == platform and entry.unique_id == unique_id), None)
+
+    def async_get(self, entity_id: str) -> SimpleNamespace | None:
+        return self.entities.get(entity_id)
+
+    def async_update_entity(self, entity_id: str, *, name: str) -> None:
+        self.entities[entity_id].name = name
+
+
+def _label_workflow(monkeypatch: pytest.MonkeyPatch) -> tuple[EntryWorkflow, _LabelRegistry, dict[str, int]]:
+    values = substitutions(0)
+    content = "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\nsubstitutions:\n" + "".join(
+        f"  {key}: '{value}'\n" for key, value in values.items()
+    ) + "".join(f"  current_cal_ct{channel}: '5500'\n" for channel in range(1, 7))
+    digest = sha256(content.encode()).hexdigest()
+    calls = {name: 0 for name in ("list", "get", "update", "validate", "compile", "upload", "restart")}
+
+    class Builder:
+        async def async_list_devices(self) -> dict[str, Any]:
+            calls["list"] += 1
+            return {"configured": [{"name": "meter", "configuration": "meter.yaml"}]}
+
+        async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
+            calls["get"] += 1
+            return ESPHomeConfigSnapshot(configuration, content, digest)
+
+        def __getattr__(self, name: str) -> Any:
+            if name.startswith("async_"):
+                async def unexpected(*_args: Any, **_kwargs: Any) -> None:
+                    calls[next(key for key in calls if key in name)] += 1
+                return unexpected
+            raise AttributeError(name)
+
+    api_entities: list[Any] = []
+    for item in synthetic_entities(0):
+        common = {
+            "object_id": item.object_id,
+            "key": item.key,
+            "name": item.name,
+            "device_id": item.device_id,
+            "disabled_by_default": item.disabled_by_default,
+        }
+        if isinstance(item, SensorInfo):
+            api_entities.append(ApiSensorInfo(**common, unit_of_measurement=item.unit_of_measurement))
+        elif isinstance(item, NumberInfo):
+            api_entities.append(ApiNumberInfo(**common, unit_of_measurement=item.unit_of_measurement))
+        else:
+            api_entities.append(ApiButtonInfo(**common))
+
+    class Api:
+        entities = tuple(api_entities)
+        connection_generation = 1
+
+        async def async_connect(self) -> None:
+            return None
+
+        async def async_restart(self) -> None:
+            calls["restart"] += 1
+
+    entry = SimpleNamespace(entry_id="meter", unique_id="aa:bb:cc:dd:ee:ff")
+    registry_entries: dict[str, SimpleNamespace] = {}
+    for item in api_entities:
+        if isinstance(item, ApiSensorInfo) and item.unit_of_measurement == "A":
+            entity_id = f"sensor.meter_{item.object_id}"
+            registry_entries[entity_id] = SimpleNamespace(entity_id=entity_id, domain="sensor",
+                platform="esphome", unique_id=build_device_unique_id("aabbccddeeff", item),
+                config_entry_id="meter", name=None)
+    registry = _LabelRegistry(registry_entries)
+    hass = SimpleNamespace(
+        data={},
+        config=SimpleNamespace(config_dir="."),
+        config_entries=SimpleNamespace(async_get_entry=lambda entry_id: entry if entry_id == "meter" else None),
+    )
+    monkeypatch.setattr("custom_components.circuitsetup_energy_meter_helper.workflow.er.async_get", lambda _hass: registry)
+    provisioning = SimpleNamespace(snapshot=SimpleNamespace(devices=(
+        DiscoveredDevice("meter", "Meter", "circuitsetup.6c-energy-meter", "2026.8.0", False, "meter.yaml"),
+    )))
+    workflow = EntryWorkflow(hass, provisioning, SessionManager(), HelperStore(hass), "meter",
+        Api(), Builder())  # type: ignore[arg-type]
+    run(workflow.async_get_ct_inventory("meter"))
+    return workflow, registry, calls
+
+
+def test_ha_labels_use_task15_current_sensor_binding_and_persist_without_builder_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow, registry, calls = _label_workflow(monkeypatch)
+    plan = next(iter(workflow._plans.values()))
+    baseline = calls.copy()
+
+    result = run(workflow.async_set_ha_labels("meter", plan.plan_id, plan.snapshot.sha256,
+        ({"channel": 1, "name": "Kitchen mains"},)))
+    unchanged = run(workflow.async_set_ha_labels("meter", plan.plan_id, plan.snapshot.sha256,
+        ({"channel": 1, "name": "Kitchen mains"},)))
+
+    target = next(entry for entry in registry.entities.values() if entry.unique_id.endswith("/sensor/CT1 Amps"))
+    assert target.name == "Kitchen mains"
+    assert result == {"mode": "home_assistant_labels", "results": [{"channel": 1, "state": "updated"}]}
+    assert unchanged == {"mode": "home_assistant_labels", "results": [{"channel": 1, "state": "unchanged"}]}
+    assert calls == baseline
+    assert "entity_id" not in repr(result)
+
+
+@pytest.mark.parametrize("changes", [
+    ({"channel": 0, "name": "Unknown"},),
+    ({"channel": 1, "name": "bad\nlabel"},),
+    ({"channel": 1, "name": "Duplicate"}, {"channel": 1, "name": "Again"}),
+])
+def test_ha_labels_refuse_unknown_or_malformed_changes_without_partial_updates(
+    monkeypatch: pytest.MonkeyPatch, changes: tuple[dict[str, Any], ...],
+) -> None:
+    workflow, registry, _calls = _label_workflow(monkeypatch)
+    plan = next(iter(workflow._plans.values()))
+
+    with pytest.raises(WorkflowHandleError):
+        run(workflow.async_set_ha_labels("meter", plan.plan_id, plan.snapshot.sha256, changes))
+
+    assert all(entry.name is None for entry in registry.entities.values())
+
+
+def test_ha_labels_refuse_foreign_ownership_and_collisions_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow, registry, _calls = _label_workflow(monkeypatch)
+    plan = next(iter(workflow._plans.values()))
+    ct2 = next(entry for entry in registry.entities.values() if entry.unique_id.endswith("/sensor/CT2 Amps"))
+    ct2.config_entry_id = "foreign-meter"
+
+    with pytest.raises(WorkflowHandleError, match="owned"):
+        run(workflow.async_set_ha_labels("meter", plan.plan_id, plan.snapshot.sha256,
+            ({"channel": 1, "name": "First"}, {"channel": 2, "name": "Second"})))
+    assert all(entry.name is None for entry in registry.entities.values())
+
+    ct2.config_entry_id = "meter"
+    ct2.name = "Already used"
+    with pytest.raises(WorkflowHandleError, match="conflicts"):
+        run(workflow.async_set_ha_labels("meter", plan.plan_id, plan.snapshot.sha256,
+            ({"channel": 1, "name": "Already used"},)))
+    assert next(entry for entry in registry.entities.values() if entry.unique_id.endswith("/sensor/CT1 Amps")).name is None

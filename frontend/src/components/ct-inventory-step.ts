@@ -104,13 +104,15 @@ export function ctInventoryStep(
               </div>
               ${draft.modelId === "custom" ? html`<div class="ct-detail custom-fields">
                 <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
+                  ?disabled=${labelOnly}
                   .value=${draft.customGainCt === undefined ? "" : String(draft.customGainCt)}
                   @input=${(event: Event) => update(channel.channel, { customGainCt: Number((event.target as HTMLInputElement).value) })} /></label>
-                <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} .value=${draft.customLabel ?? ""}
+                <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} ?disabled=${labelOnly} .value=${draft.customLabel ?? ""}
                   @input=${(event: Event) => update(channel.channel, { customLabel: (event.target as HTMLInputElement).value })} /></label>
               </div>` : nothing}
               ${draft.modelId === "custom" || preset?.requires_burden_jumper_cut ? html`<div class="warning-band">
                 <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
+                  ?disabled=${labelOnly}
                   .checked=${draft.burdenAcknowledged}
                   @change=${(event: Event) => update(channel.channel, { burdenAcknowledged: (event.target as HTMLInputElement).checked })} />
                   I checked the burden-output requirement for CT${channel.channel}</label>
