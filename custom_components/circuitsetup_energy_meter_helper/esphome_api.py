@@ -381,10 +381,7 @@ class ESPHomeApiSession:
             self._clear_connection_state()
             return
         self.connected = False
-        if self._unsubscribe_logs is not None:
-            with suppress(Exception):
-                self._unsubscribe_logs()
-            self._unsubscribe_logs = None
+        self._clear_log_subscription()
         with suppress(Exception):
             client.subscribe_logs(lambda _: None, self._log_level("LOG_LEVEL_NONE"))
         if shutdown:
@@ -409,6 +406,8 @@ class ESPHomeApiSession:
             raise asyncio.CancelledError
 
     async def _disconnect_failed_client(self, client: Any) -> None:
+        self._clear_log_subscription()
+
         async def disconnect() -> None:
             with suppress(Exception):
                 await client.disconnect(force=True)
@@ -423,6 +422,12 @@ class ESPHomeApiSession:
             self.connected = False
         if caller_cancelled:
             raise asyncio.CancelledError
+
+    def _clear_log_subscription(self) -> None:
+        unsubscribe, self._unsubscribe_logs = self._unsubscribe_logs, None
+        if unsubscribe is not None:
+            with suppress(Exception):
+                unsubscribe()
 
     @staticmethod
     async def _wait_for_owned_cleanup(task: asyncio.Task[None]) -> bool:

@@ -209,8 +209,10 @@ class GatedClient(FakeClient):
 
 
 class StopDuringReadyClient(FakeClient):
-    def __init__(self, stop_during: str) -> None:
-        super().__init__()
+    def __init__(
+        self, stop_during: str, *, unsubscribe_error: Exception | None = None
+    ) -> None:
+        super().__init__(unsubscribe_error=unsubscribe_error)
         self.stop_during = stop_during
 
     async def device_info_and_list_entities(
@@ -762,5 +764,31 @@ def test_repeated_cancellation_of_reconnect_finishes_old_client_cleanup() -> Non
         assert session.connected
         assert session.connection_generation == 2
         await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("callback_raises", (False, True))
+def test_failed_log_subscription_cleanup_is_idempotent_and_suppresses_callback_error(
+    callback_raises: bool,
+) -> None:
+    async def run() -> None:
+        client = StopDuringReadyClient(
+            "logs",
+            unsubscribe_error=(
+                RuntimeError("unsubscribe failed") if callback_raises else None
+            ),
+        )
+        session = make_session([client])
+
+        with pytest.raises(ESPHomeSessionDisconnectedError):
+            await session.async_connect()
+
+        assert client.log_unsubscribed == 1
+        assert session._unsubscribe_logs is None
+        assert client.disconnects == 1
+        await session.async_shutdown()
+        assert client.log_unsubscribed == 1
+        assert session._unsubscribe_logs is None
 
     asyncio.run(run())
