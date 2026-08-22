@@ -136,7 +136,7 @@ describe("HelperApi", () => {
     hass.responses.check_stability = { ...stability, target_id: "42" };
     await api.checkStability("session-1", "current", "42");
     await api.calibrateVoltage("session-1", "addon6_2", 120, true);
-    await api.calibrateCurrent("session-1", 42, 25, true);
+    await api.calibrateCurrent("session-1", 42, 25, true, 1);
     await api.restartAndVerify("session-1", topology);
     await api.cancelSession("session-1");
     await api.getDiagnosticsSummary();
@@ -187,6 +187,9 @@ describe("HelperApi", () => {
           burden_output_acknowledged: true,
         },
       ],
+    });
+    expect(hass.messages.find((message) => String(message.type).endsWith("/calibrate_current"))).toMatchObject({
+      reporting_multiplier: 1,
     });
   });
 
@@ -252,7 +255,7 @@ describe("HelperApi", () => {
       { ...calibration, iteration: 4 },
     ]) {
       hass.responses.calibrate_current = invalid;
-      await expect(api.calibrateCurrent("session-1", 1, 5, true)).rejects.toThrow("calibrate_current");
+      await expect(api.calibrateCurrent("session-1", 1, 5, true, 1)).rejects.toThrow("calibrate_current");
     }
     hass.responses.restart_and_verify = {
       ...restart,
@@ -264,6 +267,40 @@ describe("HelperApi", () => {
     };
     await expect(api.restartAndVerify("session-1", { ...topology, addon_count: 6, board_count: 7,
       ct_count: 42, group_count: 14 })).rejects.toThrow("restart_and_verify");
+  });
+
+  it("accepts only coherent restart source handoff identity pairs", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    hass.responses.restart_and_verify = {
+      ...restart,
+      config_filename: null,
+      config_sha256: null,
+      source_handoff_available: false,
+    };
+    await expect(api.restartAndVerify("session-1", topology)).resolves.toMatchObject({
+      config_filename: null,
+      config_sha256: null,
+      source_handoff_available: false,
+    });
+    for (const invalid of [
+      { config_filename: "meter.yaml", config_sha256: null, source_handoff_available: false },
+      { config_filename: null, config_sha256: "a".repeat(64), source_handoff_available: false },
+      { config_filename: "meter.yaml", config_sha256: "a".repeat(64), source_handoff_available: false },
+      { config_filename: null, config_sha256: null, source_handoff_available: true },
+    ]) {
+      hass.responses.restart_and_verify = { ...restart, ...invalid };
+      await expect(api.restartAndVerify("session-1", topology)).rejects.toThrow("restart_and_verify");
+    }
+  });
+
+  it("rejects unknown or out-of-range current reporting multipliers", async () => {
+    const api = new HelperApi(new FakeHass(), "entry-1");
+    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, 0, 0.0009, 1000.001]) {
+      await expect(api.calibrateCurrent("session-1", 1, 5, true, invalid)).rejects.toThrow(
+        "reporting multiplier",
+      );
+    }
   });
 
   it("accepts the exact sanitized substitution change DTO without allowing generic keys", async () => {
@@ -301,6 +338,7 @@ describe("HelperApi", () => {
     }
     const calibrateCurrent = api.calibrateCurrent as unknown as (
       sessionId: string, channel: number, reference: number, confirm: boolean,
+      reportingMultiplier: number,
     ) => Promise<unknown>;
     for (const invalid of [
       { ...calibration, group_key: "main_2" },
@@ -324,11 +362,11 @@ describe("HelperApi", () => {
       { ...calibration, state: "indeterminate", after_values: [], error_percent_values: [], gain_evidence: calibration.gain_evidence },
     ]) {
       hass.responses.calibrate_current = invalid;
-      await expect(calibrateCurrent("session-1", 1, 5, true)).rejects.toThrow();
+      await expect(calibrateCurrent("session-1", 1, 5, true, 1)).rejects.toThrow();
     }
     hass.responses.calibrate_current = { ...calibration, state: "result_outside_tolerance",
       after_values: [5.1], error_percent_values: [2], retry_allowed: true };
-    await expect(calibrateCurrent("session-1", 1, 5, true)).resolves.toMatchObject({ retry_allowed: true });
+    await expect(calibrateCurrent("session-1", 1, 5, true, 1)).resolves.toMatchObject({ retry_allowed: true });
     hass.responses.calibrate_current = { ...calibration, gain_evidence: gainEvidence("meter_main1", "current", 2.5) };
     await expect(api.calibrateCurrent("session-1", 1, 5, true, 2)).resolves.toMatchObject({ state: "applied_pending_restart_verification" });
   });

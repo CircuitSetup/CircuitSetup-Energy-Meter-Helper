@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
+from math import isfinite
 from statistics import pstdev
 from threading import RLock
 from time import monotonic
@@ -37,7 +38,7 @@ from .device_builder import (
     ESPHomeConfigSnapshot,
     _wait_for_owned_cleanup,
 )
-from .entity_binding import MeterBinding, bind_meter
+from .entity_binding import MeterBinding, bind_meter, bind_native_meter
 from .entity_catalog import EntityCatalog
 from .esphome_api import ESPHomeApiSession
 from .models import MeterTopology, StoredCTSelection, canonical_mac
@@ -458,6 +459,9 @@ class EntryWorkflow:
         substitutions: dict[str, str] = {}
         if self._builder is None:
             topology = topology_from_native(device.project_name)
+            binding = bind_native_meter(
+                EntityCatalog(api.entities, api.connection_generation), topology
+            )
         else:
             snapshot = await self._async_snapshot(device)
             document = ESPHomeConfigDocument.parse(snapshot.content)
@@ -468,11 +472,11 @@ class EntryWorkflow:
             substitutions = {
                 key: scalar.value for key, scalar in document.substitutions.items()
             }
-        binding = bind_meter(
-            EntityCatalog(api.entities, api.connection_generation),
-            topology,
-            substitutions,
-        )
+            binding = bind_meter(
+                EntityCatalog(api.entities, api.connection_generation),
+                topology,
+                substitutions,
+            )
         mac = self._mac(device_id)
         lease = await self._sessions_owner.async_acquire_calibration(mac)
         try:
@@ -607,12 +611,15 @@ class EntryWorkflow:
         channel: int,
         reference: float,
         confirm_iteration: bool,
+        reporting_multiplier: float | None,
     ) -> Any:
         handle, revision = self._claim_ready_session(session_id)
         try:
             if not 1 <= channel <= handle.topology.ct_count:
                 raise WorkflowHandleError("unknown current channel")
-            multiplier = await self._reporting_multiplier(handle, channel)
+            multiplier = await self._reporting_multiplier(
+                handle, channel, reporting_multiplier
+            )
             iteration = self._sessions_owner.next_calibration_iteration(
                 handle.mac, f"current:{channel}"
             )
@@ -814,15 +821,31 @@ class EntryWorkflow:
         return await self._require_builder().async_get_config(handle.configuration)
 
     async def _reporting_multiplier(
-        self, handle: _SessionHandle, channel: int
+        self,
+        handle: _SessionHandle,
+        channel: int,
+        confirmed: float | None,
     ) -> float:
         if self._builder is not None:
-            return (await self._inventory_for_handle(handle)).channels[
+            authoritative = (await self._inventory_for_handle(handle)).channels[
                 channel - 1
             ].reporting_multiplier
-        stored = await self._store.async_get_ct_selections(handle.mac)
-        selection = next((item for item in stored if item.channel == channel), None)
-        return selection.reporting_multiplier if selection is not None else 1.0
+            if confirmed is not None and confirmed != authoritative:
+                raise WorkflowHandleError(
+                    "reporting multiplier confirmation is stale"
+                )
+            return authoritative
+        if confirmed is None:
+            raise WorkflowCapabilityUnavailable(
+                "reporting multiplier confirmation is required"
+            )
+        if (
+            isinstance(confirmed, bool)
+            or not isfinite(confirmed)
+            or not 0.001 <= confirmed <= 1000
+        ):
+            raise WorkflowHandleError("reporting multiplier is outside supported range")
+        return confirmed
 
     async def _inventory_for_handle(self, handle: _SessionHandle) -> CTInventory:
         if handle.configuration is None:

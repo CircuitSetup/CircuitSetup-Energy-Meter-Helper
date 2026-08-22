@@ -135,6 +135,53 @@ describe("CircuitSetup panel", () => {
     }
   });
 
+  it("starts runtime-only calibration directly from authoritative native topology", async () => {
+    const operations: string[] = [];
+    const setup = { state: "device_discovered", devices: [device], configuration_authoritative: false };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        operations.push(operation);
+        if (operation === "setup_status") return setup as T;
+        if (operation === "start_session") return { session_id: "native-session", device_id: "meter-1",
+          state: "safety_required", safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    panel.showTopology({ addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime project metadata" }] });
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]")?.click();
+    await tick(); await panel.updateComplete;
+    expect(operations).toContain("start_session");
+    expect(operations).not.toContain("get_ct_inventory");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
+  });
+
+  it("requires an explicit bounded multiplier for runtime-only current calibration", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
+    state.inventory = null;
+    state.stabilityByTarget = new Map([["current:1", { target: "current", target_id: "1", stable: true,
+      windows: [{ samples: [5, 5, 5], mean: 5, standard_deviation: 0, range_percent: 0 }] }]]);
+    panel.showState("current"); await panel.updateComplete;
+    const input = panel.shadowRoot?.querySelector<HTMLInputElement>("[data-role=reporting-multiplier]");
+    const calibrate = Array.from(panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("button.primary") ?? [])
+      .find((button) => button.textContent?.includes("Calibrate CT"));
+    expect(input).not.toBeNull();
+    expect(calibrate?.disabled).toBe(true);
+    input!.value = "2";
+    input!.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    await panel.updateComplete;
+    expect(calibrate?.disabled).toBe(false);
+  });
+
   it("bounds the DOM for 42 CTs while preserving board and three-channel navigation", async () => {
     const panel = await mount(
       makeHass({ setup_status: { state: "device_discovered", devices: [device] } }),
@@ -734,6 +781,24 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
     expect(text(panel)).toContain("4".repeat(32));
     expect(text(panel)).toContain("saved flash");
+  });
+
+  it("renders runtime-only restart verification without a source identity", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.restartResult = {
+      mac: "aabbccddeeff", config_filename: null, config_sha256: null,
+      topology_addon_count: 0, topology_project_name: device.project_name,
+      topology_connection_type: "wifi", topology_voltage_layout: "two_groups",
+      connection_generation: 2, groups: [], verification_id: "2".repeat(32),
+      source_authority: "saved_flash", source_handoff_available: false,
+      source_handoff_transaction_id: null,
+    };
+    state.session = { session_id: "session", device_id: "meter-1", state: "verified",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+    panel.showState("restart"); await panel.updateComplete;
+    expect(text(panel)).toContain("Source handoff");
+    expect(text(panel)).toContain("Unavailable in runtime-only mode");
   });
 
   it("reconnect assigns the returned live session instead of discarding it", async () => {

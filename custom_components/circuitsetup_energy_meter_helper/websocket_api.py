@@ -185,6 +185,7 @@ class WorkflowOwner(Protocol):
         channel: int,
         reference: float,
         confirm_iteration: bool,
+        reporting_multiplier: float,
     ) -> Any: ...
 
     async def async_restart_and_verify(self, session_id: str) -> Any: ...
@@ -330,6 +331,7 @@ class EntryWebsocketController:
                 msg["channel"],
                 msg["reference"],
                 msg["confirm_iteration"],
+                msg["reporting_multiplier"],
             )
         if operation == "restart_and_verify" and workflow is not None:
             return await workflow.async_restart_and_verify(msg["session_id"])
@@ -799,6 +801,7 @@ def _schema(command: str) -> dict[Any, Any]:
             vol.Required("session_id"): _ID,
             vol.Required("channel"): vol.All(int, vol.Range(min=1, max=42)),
             vol.Required("reference"): vol.Coerce(float),
+            vol.Required("reporting_multiplier"): _reporting_multiplier,
             vol.Optional("confirm_iteration", default=False): bool,
         }
     elif operation in {
@@ -809,6 +812,18 @@ def _schema(command: str) -> dict[Any, Any]:
     }:
         schema[vol.Required("session_id")] = _ID
     return schema
+
+
+def _reporting_multiplier(value: Any) -> float:
+    if isinstance(value, bool):
+        raise vol.Invalid("reporting_multiplier must be numeric")
+    try:
+        multiplier = float(value)
+    except (TypeError, ValueError) as error:
+        raise vol.Invalid("reporting_multiplier must be numeric") from error
+    if not math.isfinite(multiplier) or not 0.001 <= multiplier <= 1000:
+        raise vol.Invalid("reporting_multiplier must be between 0.001 and 1000")
+    return multiplier
 
 
 def sanitize_payload(

@@ -261,9 +261,13 @@ function groupChannels(groupKey: string): number[] {
   return [first, first + 1, first + 2];
 }
 function restart(value: unknown, label: string, expected: MeterTopology): RestartVerificationResult {
-  const item = record(value, label); for (const key of ["mac", "config_filename", "config_sha256", "topology_project_name", "topology_voltage_layout", "verification_id"] as const) string(item[key], label);
-  const addonCount = integer(item.topology_addon_count, label); enumeration(item.topology_connection_type, CONNECTIONS, label); const generation = integer(item.connection_generation, label); enumeration(item.source_authority, new Set(["saved_flash"]), label); boolean(item.source_handoff_available, label); optionalString(item.source_handoff_transaction_id, label);
-  if (!MAC.test(item.mac as string) || !CONFIGURATION.test(item.config_filename as string) || !SHA256.test(item.config_sha256 as string)
+  const item = record(value, label); for (const key of ["mac", "topology_project_name", "topology_voltage_layout", "verification_id"] as const) string(item[key], label);
+  const addonCount = integer(item.topology_addon_count, label); enumeration(item.topology_connection_type, CONNECTIONS, label); const generation = integer(item.connection_generation, label); enumeration(item.source_authority, new Set(["saved_flash"]), label); const sourceHandoff = boolean(item.source_handoff_available, label); optionalString(item.source_handoff_transaction_id, label);
+  if (sourceHandoff) {
+    string(item.config_filename, label); string(item.config_sha256, label);
+    if (!CONFIGURATION.test(item.config_filename as string) || !SHA256.test(item.config_sha256 as string)) throw new Error(`${label} response is invalid`);
+  } else if (item.config_filename !== null || item.config_sha256 !== null) throw new Error(`${label} response is invalid`);
+  if (!MAC.test(item.mac as string)
     || !SERVER_ID.test(item.verification_id as string) || generation < 1
     || item.source_handoff_transaction_id !== null && !SERVER_ID.test(item.source_handoff_transaction_id as string)
     || addonCount !== expected.addon_count || item.topology_project_name !== expected.project_name
@@ -397,13 +401,16 @@ export class HelperApi {
       reference,
       confirm_iteration: confirmIteration,
     });
-  public calibrateCurrent = (sessionId: string, channel: number, reference: number, confirmIteration: boolean, reportingMultiplier = 1) =>
-    this.call("calibrate_current", (value) => calibration(value, "calibrate_current", { target: "current", channel, reference, rawReference: reference / reportingMultiplier }), {
+  public calibrateCurrent = (sessionId: string, channel: number, reference: number, confirmIteration: boolean, reportingMultiplier: number) => {
+    if (!Number.isFinite(reportingMultiplier) || reportingMultiplier < 0.001 || reportingMultiplier > 1000) return Promise.reject(new Error("calibrate_current reporting multiplier is invalid"));
+    return this.call("calibrate_current", (value) => calibration(value, "calibrate_current", { target: "current", channel, reference, rawReference: reference / reportingMultiplier }), {
       session_id: sessionId,
       channel,
       reference,
+      reporting_multiplier: reportingMultiplier,
       confirm_iteration: confirmIteration,
     });
+  };
   public restartAndVerify = (sessionId: string, expectedTopology: MeterTopology) =>
     this.call("restart_and_verify", (value) => restart(value, "restart_and_verify", expectedTopology), { session_id: sessionId });
   public cancelSession = (sessionId: string) =>

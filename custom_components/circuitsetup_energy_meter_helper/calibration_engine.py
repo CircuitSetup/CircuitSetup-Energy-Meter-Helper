@@ -940,10 +940,6 @@ class CalibrationEngine:
         entities = tuple(getattr(session, "entities", ()))
         if not entities:
             raise CalibrationRebindError("reconnect returned no fresh entity metadata")
-        if not substitutions:
-            raise CalibrationRebindError(
-                "authoritative substitutions are required to rebind entities"
-            )
         try:
             catalog = EntityCatalog(entities, generation)
             rebound = binding.rebind(catalog, substitutions)

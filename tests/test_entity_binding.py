@@ -15,14 +15,22 @@ from aioesphomeapi import NumberInfo as ApiNumberInfo
 from aioesphomeapi import SensorInfo as ApiSensorInfo
 from aioesphomeapi.model import build_device_unique_id
 
+from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
+    CalibrationEngine,
+)
+from custom_components.circuitsetup_energy_meter_helper.ct_inventory import (
+    _esphome_object_id,
+)
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ESPHomeConfigSnapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.entity_binding import (
     EntityBindingAmbiguity,
+    EntityBindingError,
     EntityBindingMissing,
     ResolutionSource,
     bind_meter,
+    bind_native_meter,
     group_key,
 )
 from custom_components.circuitsetup_energy_meter_helper.entity_catalog import (
@@ -91,17 +99,28 @@ def topology(addon_count: int) -> MeterTopology:
     )
 
 
-def substitutions(addon_count: int, prefix: str = "CT") -> dict[str, str]:
+def substitutions(
+    addon_count: int, prefix: str = "CT", *, native: bool = False
+) -> dict[str, str]:
     values = {
         f"ct{channel}_name": f"{prefix}{channel}"
         for channel in range(1, 6 * (addon_count + 1) + 1)
     }
-    values.update(
-        {"main_meter_name1": "Main Meter 1", "main_meter_name2": "Main Meter 2"}
-    )
+    values.update({
+        "main_meter_name1": "Meter 1-3" if native else "Main Meter 1",
+        "main_meter_name2": "Meter 4-6" if native else "Main Meter 2",
+    })
     for board in range(1, addon_count + 1):
-        values[f"addon{board}_name1"] = f"Add-on {board} Meter 1"
-        values[f"addon{board}_name2"] = f"Add-on {board} Meter 2"
+        values[f"addon{board}_name1"] = (
+            f"Addon{board} {board * 6 + 1}-{board * 6 + 3}"
+            if native
+            else f"Add-on {board} Meter 1"
+        )
+        values[f"addon{board}_name2"] = (
+            f"Addon{board} {board * 6 + 4}-{board * 6 + 6}"
+            if native
+            else f"Add-on {board} Meter 2"
+        )
     return values
 
 
@@ -110,8 +129,10 @@ def synthetic_entities(
     *,
     prefix: str = "CT",
     key_offset: int = 0,
+    native: bool = False,
 ) -> list[object]:
-    values = substitutions(addon_count, prefix)
+    values = substitutions(addon_count, prefix, native=native)
+    object_id_for = _esphome_object_id if native else slug
     entities: list[object] = []
     key = key_offset
     phases = "abc"
@@ -133,16 +154,26 @@ def synthetic_entities(
                 entities.append(info)
 
             voltage_ref_name = f"{group_name} Ref V {group_index + 1}"
-            add(NumberInfo(slug(voltage_ref_name), 0, voltage_ref_name, "V", device_id))
+            add(
+                NumberInfo(
+                    object_id_for(voltage_ref_name),
+                    0,
+                    voltage_ref_name,
+                    "V",
+                    device_id,
+                )
+            )
             for channel in range(first_channel, first_channel + 3):
                 ct_name = values[f"ct{channel}_name"]
                 ref_name = f"{ct_name} Ref Current"
-                add(NumberInfo(slug(ref_name), 0, ref_name, "A", device_id))
+                add(NumberInfo(object_id_for(ref_name), 0, ref_name, "A", device_id))
 
             run_name = f"3. Run {group_name} Gain Cal"
             clear_name = f"z3. Clear {group_name} Gain Cal"
-            add(ButtonInfo(slug(run_name), 0, run_name, device_id=device_id))
-            add(ButtonInfo(slug(clear_name), 0, clear_name, device_id=device_id))
+            add(ButtonInfo(object_id_for(run_name), 0, run_name, device_id=device_id))
+            add(
+                ButtonInfo(object_id_for(clear_name), 0, clear_name, device_id=device_id)
+            )
 
             for phase_index, phase in enumerate(phases):
                 if board_index == 0 and group_index == 0 and phase == "a":
@@ -169,6 +200,65 @@ def synthetic_entities(
                     )
                 )
     return entities
+
+
+@pytest.mark.parametrize("addon_count", (0, 1))
+def test_native_binding_uses_exact_official_runtime_entity_contract(
+    addon_count: int,
+) -> None:
+    expected_topology = topology(addon_count)
+
+    binding = bind_native_meter(
+        EntityCatalog(synthetic_entities(addon_count, native=True), 3),
+        expected_topology,
+    )
+
+    assert binding.native
+    assert len(binding.groups) == expected_topology.group_count
+    assert binding.role(f"ct{expected_topology.ct_count}.current_sensor").descriptor.name == (
+        f"CT{expected_topology.ct_count} Amps"
+    )
+
+
+@pytest.mark.parametrize(
+    "failure", ("incomplete", "ambiguous", "misordered", "cross_device")
+)
+def test_native_binding_fails_closed_for_non_authoritative_catalogs(
+    failure: str,
+) -> None:
+    entities = synthetic_entities(1, native=True)
+    if failure == "incomplete":
+        entities.pop()
+    elif failure == "ambiguous":
+        entities.append(
+            replace(entities[0], key=99_999, object_id="duplicate_voltage_reference")
+        )
+    elif failure == "misordered":
+        first = next(item for item in entities if item.object_id == "ct1amps")
+        second = next(item for item in entities if item.object_id == "ct2amps")
+        first.name, second.name = second.name, first.name
+    else:
+        target = next(item for item in entities if item.object_id == "ct7amps")
+        target.device_id = 99
+
+    with pytest.raises(EntityBindingError):
+        bind_native_meter(EntityCatalog(entities, 2), topology(1))
+
+
+def test_native_binding_rebinds_after_restart_without_yaml_substitutions() -> None:
+    original = bind_native_meter(
+        EntityCatalog(synthetic_entities(1, native=True), 3), topology(1)
+    )
+    session = SimpleNamespace(
+        connection_generation=4,
+        entities=synthetic_entities(1, native=True, key_offset=1_000),
+    )
+
+    rebound = CalibrationEngine._rebind_after_reconnect(session, original, {})
+
+    assert rebound.native
+    assert rebound.connection_generation == 4
+    assert rebound.groups[0].run_gain.descriptor.key >= 1_000
 
 
 @pytest.mark.parametrize("addon_count", (0, 1, 6))

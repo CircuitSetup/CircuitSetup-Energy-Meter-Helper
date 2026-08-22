@@ -12,6 +12,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import voluptuous as vol
+from aioesphomeapi import ButtonInfo as ApiButtonInfo
+from aioesphomeapi import NumberInfo as ApiNumberInfo
+from aioesphomeapi import SensorInfo as ApiSensorInfo
 from aiohttp import ClientConnectionError
 from homeassistant.components.hassio import HassIO
 from homeassistant.components.hassio.const import DATA_COMPONENT
@@ -28,6 +32,9 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     ConfigTransactionState,
 )
 from custom_components.circuitsetup_energy_meter_helper.const import DOMAIN
+from custom_components.circuitsetup_energy_meter_helper.ct_inventory import (
+    _esphome_object_id,
+)
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ESPHomeConfigSnapshot,
 )
@@ -59,6 +66,7 @@ from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
 from custom_components.circuitsetup_energy_meter_helper.workflow import (
     EntryWorkflow,
     LazyDeviceBuilder,
+    WorkflowCapabilityUnavailable,
     WorkflowHandleError,
     _public_sample_window,
 )
@@ -66,16 +74,83 @@ from custom_components.circuitsetup_energy_meter_helper.workflow import (
 _MISSING = object()
 
 
+def _native_entities(addon_count: int = 0) -> tuple[Any, ...]:
+    entities: list[Any] = []
+    key = 0
+    for board in range(addon_count + 1):
+        for group in range(2):
+            start = board * 6 + group * 3 + 1
+            group_name = (
+                f"Meter {start}-{start + 2}"
+                if board == 0
+                else f"Addon{board} {start}-{start + 2}"
+            )
+            device_id = board + 1
+
+            def add(
+                info_type: type[Any],
+                object_id: str,
+                name: str,
+                unit: str = "",
+                device_id: int = device_id,
+            ) -> None:
+                nonlocal key
+                key += 1
+                common = {
+                    "object_id": object_id,
+                    "key": key,
+                    "name": name,
+                    "device_id": device_id,
+                    "disabled_by_default": True,
+                }
+                entities.append(
+                    info_type(**common, unit_of_measurement=unit)
+                    if info_type is not ApiButtonInfo
+                    else info_type(**common)
+                )
+
+            voltage_reference = f"{group_name} Ref V {group + 1}"
+            add(ApiNumberInfo, _esphome_object_id(voltage_reference), voltage_reference, "V")
+            for channel in range(start, start + 3):
+                name = f"CT{channel} Ref Current"
+                add(ApiNumberInfo, _esphome_object_id(name), name, "A")
+            for prefix, action in (("3", "Run"), ("z3", "Clear")):
+                name = f"{prefix}. {action} {group_name} Gain Cal"
+                add(ApiButtonInfo, _esphome_object_id(name), name)
+            for phase_index, phase in enumerate("ABC"):
+                if board == 0 and group == 0 and phase == "A":
+                    add(ApiSensorInfo, "ic1volts", "Voltage 1", "V")
+                else:
+                    object_id = (
+                        f"meter_main{group + 1}_voltage_{phase.lower()}_calibration"
+                        if board == 0
+                        else f"addon{board}_{group + 1}_voltage_{phase.lower()}_calibration"
+                    )
+                    add(
+                        ApiSensorInfo,
+                        object_id,
+                        f"{group_name} Voltage {phase} Calibration",
+                        "V",
+                    )
+                channel = start + phase_index
+                add(ApiSensorInfo, f"ct{channel}amps", f"CT{channel} Amps", "A")
+    return tuple(entities)
+
+
 async def _native_only_workflow(
     monkeypatch: pytest.MonkeyPatch,
     *,
     preflight: Any | None = None,
+    addon_count: int = 0,
 ) -> tuple[EntryWorkflow, Any, SessionManager]:
     from custom_components.circuitsetup_energy_meter_helper.topology import (
         topology_from_native,
     )
 
-    topology = topology_from_native("circuitsetup.6c-energy-meter")
+    project_name = "circuitsetup.6c-energy-meter" + (
+        f"-{addon_count}-addon" if addon_count else ""
+    )
+    topology = topology_from_native(project_name)
     entry = SimpleNamespace(
         domain="esphome",
         entry_id="meter",
@@ -89,17 +164,6 @@ async def _native_only_workflow(
     hass = FakeHass((entry,))
     provisioning = ProvisioningCoordinator(hass)
     await provisioning.async_rescan()
-    binding = SimpleNamespace(
-        topology=topology,
-        connection_generation=1,
-        groups=(),
-        channels=(),
-    )
-    monkeypatch.setattr(
-        "custom_components.circuitsetup_energy_meter_helper.workflow.bind_meter",
-        lambda *_args: binding,
-    )
-
     async def ready_preflight(*_args: Any) -> PreflightResult:
         return PreflightResult(())
 
@@ -109,7 +173,7 @@ async def _native_only_workflow(
     )
 
     class Api:
-        entities: tuple[Any, ...] = ()
+        entities = _native_entities(addon_count)
         connection_generation = 1
 
         async def async_connect(self) -> None:
@@ -133,7 +197,7 @@ async def _native_only_workflow(
         Api(),  # type: ignore[arg-type]
         None,
     )
-    return workflow, binding, sessions
+    return workflow, None, sessions
 
 
 def test_stability_browser_evidence_has_samples_and_standard_deviation() -> None:
@@ -463,7 +527,12 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
     elif suffix == "calibrate_voltage":
         base |= {"session_id": "session", "group_key": "main_1", "reference": 120.0}
     elif suffix == "calibrate_current":
-        base |= {"session_id": "session", "channel": 1, "reference": 5.0}
+        base |= {
+            "session_id": "session",
+            "channel": 1,
+            "reference": 5.0,
+            "reporting_multiplier": 1.0,
+        }
     elif suffix in {
         "get_session",
         "restart_and_verify",
@@ -1010,7 +1079,26 @@ def test_native_only_session_starts_without_yaml_identity(
     asyncio.run(run())
 
 
-def test_native_only_current_uses_persisted_reporting_multiplier(
+def test_native_only_addon_session_uses_complete_production_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(
+            monkeypatch, addon_count=1
+        )
+
+        status = await workflow.async_start_session("meter")
+        binding = workflow._sessions[status.session_id].binding
+
+        assert binding.native
+        assert len(binding.groups) == 4
+        assert len(binding.channels) == 12
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_native_only_current_requires_explicit_reporting_multiplier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def run() -> None:
@@ -1028,10 +1116,77 @@ def test_native_only_current_uses_persisted_reporting_multiplier(
 
         workflow._calibration = Calibration()  # type: ignore[assignment]
 
-        await workflow.async_calibrate_current(status.session_id, 1, 5.0, False)
+        with pytest.raises(
+            WorkflowCapabilityUnavailable,
+            match="reporting multiplier confirmation is required",
+        ):
+            await workflow.async_calibrate_current(
+                status.session_id, 1, 5.0, False, None
+            )
+
+        await workflow.async_calibrate_current(
+            status.session_id, 1, 5.0, False, 2.0
+        )
 
         assert calls[0][0][5] == 2.0
         assert calls[0][1]["substitutions"] == {}
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_current_calibration_schema_rejects_unknown_or_invalid_multiplier() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        command = f"{DOMAIN}/calibrate_current"
+        _handler, schema = hass.data["websocket_api"][command]
+        missing = _message(command)
+        missing.pop("reporting_multiplier")
+        with pytest.raises(vol.Invalid):
+            schema(missing)
+        for invalid in (
+            None,
+            True,
+            "invalid",
+            float("nan"),
+            float("inf"),
+            0,
+            0.0009,
+            1000.001,
+        ):
+            message = _message(command)
+            message["reporting_multiplier"] = invalid
+            with pytest.raises(vol.Invalid):
+                schema(message)
+        assert schema(_message(command))["reporting_multiplier"] == 1.0
+
+    asyncio.run(run())
+
+
+def test_configuration_inventory_remains_authoritative_for_multiplier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+
+        class Builder:
+            async def async_close(self) -> None:
+                return None
+
+        workflow._builder = Builder()  # type: ignore[assignment]
+
+        async def inventory(_handle: Any) -> Any:
+            return SimpleNamespace(
+                channels=(SimpleNamespace(reporting_multiplier=2.0),)
+            )
+
+        workflow._inventory_for_handle = inventory  # type: ignore[method-assign]
+        handle = SimpleNamespace()
+        assert await workflow._reporting_multiplier(handle, 1, None) == 2.0
+        assert await workflow._reporting_multiplier(handle, 1, 2.0) == 2.0
+        with pytest.raises(WorkflowHandleError, match="confirmation is stale"):
+            await workflow._reporting_multiplier(handle, 1, 1.0)
         await workflow.async_close()
 
     asyncio.run(run())
@@ -1071,6 +1226,7 @@ def test_native_only_restart_verification_persists_without_source_handoff(
     async def run() -> None:
         workflow, binding, _sessions = await _native_only_workflow(monkeypatch)
         status = await workflow.async_start_session("meter")
+        binding = workflow._sessions[status.session_id].binding
         await workflow.async_acknowledge_safety(status.session_id, True)
         record = SimpleNamespace(
             config_filename=None,
@@ -1236,7 +1392,9 @@ def test_cancel_revokes_session_before_waiting_calibration_can_mutate(
         workflow._inventory_for_handle = inventory  # type: ignore[method-assign]
         workflow._calibration = Calibration()  # type: ignore[assignment]
         task = asyncio.create_task(
-            workflow.async_calibrate_current(session.session_id, 1, 5.0, False)
+            workflow.async_calibrate_current(
+                session.session_id, 1, 5.0, False, 1.0
+            )
         )
         await entered.wait()
         handle = workflow._sessions[session.session_id]

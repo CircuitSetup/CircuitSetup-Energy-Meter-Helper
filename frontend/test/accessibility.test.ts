@@ -32,7 +32,7 @@ describe("calibration tab semantics", () => {
   it("supports roving keyboard focus and a linked current-board tabpanel", () => {
     const select = vi.fn();
     const root = mount(
-      currentStep(topology, null, 1, 0, null, null, select, noop, noop, noop, noop, noop),
+      currentStep(topology, null, 1, 0, null, null, null, select, noop, noop, noop, noop, noop, noop),
     );
     const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
 
