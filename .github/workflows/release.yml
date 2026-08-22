@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
-          ref: 4d1d14f732291a7e4e8aaba57a1d7815c94ec508
+          ref: 6145e2a0a0be46abb32f6808c093564594d80713
           path: firmware
       - name: Verify firmware catalog schema and supported project patterns
         run: python scripts/verify_firmware_contract.py . firmware
