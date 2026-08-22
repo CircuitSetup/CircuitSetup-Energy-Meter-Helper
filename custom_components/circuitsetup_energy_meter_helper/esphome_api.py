@@ -13,7 +13,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from .models import canonical_mac
-from .state_tracker import StateDisconnectedError, StateTracker
+from .state_tracker import SensorSampleWindow, StateDisconnectedError, StateTracker
 
 _ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _ANSI_OSC = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)", re.DOTALL)
@@ -311,7 +311,7 @@ class ESPHomeApiSession:
         sample_count: int,
         after: float | None = None,
         timeout: float = 10.0,
-    ) -> tuple[Any, ...]:
+    ) -> SensorSampleWindow:
         """Wait for fresh SensorState samples from the current connection."""
         if sample_count < 1:
             raise ValueError("sample_count must be positive")
@@ -426,8 +426,6 @@ class ESPHomeApiSession:
             client.subscribe_logs(lambda _: None, self._log_level("LOG_LEVEL_NONE"))
         if shutdown:
             self._cancel_waiters()
-        else:
-            self._state_tracker.disconnect()
         try:
             disconnect_task = asyncio.create_task(client.disconnect())
             caller_cancelled = await self._wait_for_owned_cleanup(disconnect_task)

@@ -389,7 +389,7 @@ def test_commands_register_acknowledgement_first_and_wait_for_fresh_samples() ->
         client.on_state(SensorState(5, 12.0, 2))
 
         assert acknowledged.state == 123.5
-        assert [sample.state for sample in await waiter] == [10.0, 12.0]
+        assert (await waiter).values == (10.0, 12.0)
         assert client.events[-2:] == ["number:2:4:123.5", "button:2:9"]
 
     asyncio.run(run())

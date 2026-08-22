@@ -218,35 +218,34 @@ class StateTracker:
         sample_count: int,
         device_id: int = 0,
         timeout: float = 10.0,
-    ) -> tuple[Any, ...]:
-        """Wait for a complete fresh raw sensor window on this generation."""
+    ) -> SensorSampleWindow:
+        """Wait for a complete fresh sensor window on this generation."""
         async with asyncio.timeout(timeout):
             while True:
                 if not self.connected:
                     raise StateDisconnectedError("native state connection was lost")
                 event = self._state_event
-                records = tuple(
-                    record
-                    for (
-                        state_type,
-                        record_device,
-                        record_key,
-                    ), history in self._history.items()
-                    if state_type.__name__ == "SensorState"
-                    and record_device == device_id
-                    and record_key == key
-                    for record in history
-                    if record.received_at > fresh_after
+                state_type = next(
+                    (
+                        state_type
+                        for state_type, record_device, record_key in self._history
+                        if state_type.__name__ == "SensorState"
+                        and record_device == device_id
+                        and record_key == key
+                    ),
+                    None,
                 )
-                if len(records) >= sample_count:
-                    records = records[-sample_count:]
-                    if any(
-                        record.stale
-                        or bool(getattr(record.state, "missing_state", False))
-                        for record in records
-                    ):
-                        raise FreshWindowError("sensor sample is unavailable")
-                    return tuple(record.state for record in records)
+                if state_type is not None:
+                    try:
+                        return self.sensor_window(
+                            state_type,
+                            key,
+                            fresh_after=fresh_after,
+                            sample_count=sample_count,
+                            device_id=device_id,
+                        )
+                    except FreshWindowError:
+                        pass
                 await event.wait()
 
     def expect_number_state(
