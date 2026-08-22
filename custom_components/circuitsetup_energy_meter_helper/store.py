@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -129,6 +130,7 @@ class HelperStore:
             STORAGE_KEY,
             minor_version=STORAGE_MINOR_VERSION,
         )
+        self._update_lock = asyncio.Lock()
 
     async def async_load(self) -> dict[str, Any]:
         """Load the known storage schema through the strict version guard."""
@@ -136,17 +138,21 @@ class HelperStore:
 
     async def async_save_meter(self, record: StoredMeterRecord) -> None:
         """Save one typed record keyed by MAC address."""
-        data = await self.async_load()
-        meters = data.setdefault("meters", {})
-        meters[record.mac] = serialize_meter_record(record)
-        await self._store.async_save(data)
+        async with self._update_lock:
+            data = await self.async_load()
+            meters = data.setdefault("meters", {})
+            meters[record.mac] = serialize_meter_record(record)
+            await self._store.async_save(data)
 
     async def async_save_verified_ct_selections(
         self, mac: str, selections: tuple[StoredCTSelection, ...]
     ) -> None:
         """Persist only post-reconnect CT metadata, never configuration content."""
-        data = await self.async_load()
-        meters = data.setdefault("meters", {})
-        meter = meters.setdefault(mac, {})
-        meter["ct_selections"] = [_serialize_ct_selection(item) for item in selections]
-        await self._store.async_save(data)
+        async with self._update_lock:
+            data = await self.async_load()
+            meters = data.setdefault("meters", {})
+            meter = meters.setdefault(mac, {})
+            meter["ct_selections"] = [
+                _serialize_ct_selection(item) for item in selections
+            ]
+            await self._store.async_save(data)

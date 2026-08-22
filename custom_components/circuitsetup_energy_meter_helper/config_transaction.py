@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -16,7 +17,7 @@ from .models import (
     StoredCTSelection,
     SubstitutionChange,
 )
-from .session_manager import SessionManager
+from .session_manager import ConfigLease, SessionManager, canonical_mac
 
 
 class ConfigTransactionState(StrEnum):
@@ -98,6 +99,9 @@ class ConfigTransaction:
     validation_summary: str = ""
     output_tail: tuple[str, ...] = ()
     rollback_available: bool = False
+    lease: ConfigLease | None = field(default=None, repr=False)
+    operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    active_task: asyncio.Task[object] | None = field(default=None, repr=False)
 
 
 class ConfigTransactionManager:
@@ -120,13 +124,25 @@ class ConfigTransactionManager:
         mac: str,
         topology: MeterTopology,
         plan: ConfigMutationPlan,
-        prior_content: str,
+        source_snapshot: ESPHomeConfigSnapshot,
         selections: tuple[StoredCTSelection, ...] = (),
     ) -> TransactionPreview:
         """Retain full content only in memory and return a safe review surface."""
         transaction_id = uuid4().hex
+        if (
+            source_snapshot.configuration != plan.configuration
+            or source_snapshot.sha256 != plan.source_sha256
+            or sha256(source_snapshot.content.encode()).hexdigest()
+            != source_snapshot.sha256
+        ):
+            raise ValueError("source snapshot does not match mutation plan")
         transaction = ConfigTransaction(
-            transaction_id, mac, topology, plan, prior_content, selections
+            transaction_id,
+            canonical_mac(mac),
+            topology,
+            plan,
+            source_snapshot.content,
+            selections,
         )
         self.sessions.register_transaction(transaction_id, transaction)
         return self._preview(transaction)
@@ -139,7 +155,7 @@ class ConfigTransactionManager:
         transaction = self._transaction(transaction_id)
         if transaction.state is not ConfigTransactionState.PREVIEWED:
             raise RuntimeError("write confirmation is not legal in the current state")
-        await self.sessions.async_acquire_config(transaction.mac)
+        transaction.lease = await self.sessions.async_acquire_config(transaction.mac)
         try:
             transaction.state = ConfigTransactionState.WRITE_CONFIRMED
             snapshot = ESPHomeConfigSnapshot(
@@ -164,7 +180,7 @@ class ConfigTransactionManager:
         except Exception:
             if transaction.state is not ConfigTransactionState.ROLLED_BACK:
                 transaction.state = ConfigTransactionState.FAILED
-                self.sessions.release_config(transaction.mac)
+                _release(transaction)
             raise
 
     async def async_compile(self, transaction_id: str) -> ConfigTransaction:
@@ -230,7 +246,7 @@ class ConfigTransactionManager:
                 ConfigTransactionState.VERIFIED,
                 ConfigTransactionState.FAILED,
             }:
-                self.sessions.release_config(transaction.mac)
+                _release(transaction)
 
     async def async_rollback(self, transaction_id: str) -> ConfigTransaction:
         """Restore a locally valid edited configuration before any OTA uncertainty."""
@@ -258,7 +274,7 @@ class ConfigTransactionManager:
             transaction.state = ConfigTransactionState.FAILED
             raise RollbackFailedError("configuration rollback failed") from error
         finally:
-            self.sessions.release_config(transaction.mac)
+            _release(transaction)
 
     def _transaction(self, transaction_id: str) -> ConfigTransaction:
         transaction = self.sessions.get_transaction(transaction_id)
@@ -280,6 +296,11 @@ class ConfigTransactionManager:
 def _require_confirmation(user_id: str) -> None:
     if not user_id:
         raise PermissionError("administrator confirmation is required")
+
+
+def _release(transaction: ConfigTransaction) -> None:
+    if transaction.lease is not None:
+        transaction.lease.release()
 
 
 def _tail(output: tuple[str, ...], limit: int = 100) -> tuple[str, ...]:

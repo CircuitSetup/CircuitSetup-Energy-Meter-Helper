@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
+from hashlib import sha256
 
 import pytest
 
@@ -9,6 +10,9 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     ConfigTransactionManager,
     ConfigTransactionState,
     ReconnectEvidence,
+)
+from custom_components.circuitsetup_energy_meter_helper.device_builder import (
+    ESPHomeConfigSnapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
@@ -96,10 +100,16 @@ def _topology() -> MeterTopology:
     )
 
 
-def _plan() -> ConfigMutationPlan:
+def _source(content: str = "prior") -> ESPHomeConfigSnapshot:
+    return ESPHomeConfigSnapshot(
+        "meter.yaml", content, sha256(content.encode()).hexdigest()
+    )
+
+
+def _plan(content: str = "prior") -> ConfigMutationPlan:
     return ConfigMutationPlan(
         "meter.yaml",
-        "a" * 64,
+        sha256(content.encode()).hexdigest(),
         (SubstitutionChange("ct1_name", "CT 1", "Kitchen"),),
         "+ ct1_name: Kitchen",
         "api:\n  encryption_key: top-secret\nsubstitutions:\n  ct1_name: Kitchen\n",
@@ -126,7 +136,7 @@ def test_requires_two_confirmations_and_persists_only_after_reconnect_verificati
         builder, persistence = Builder(), Persistence()
         manager = _manager(builder, persistence)
         preview = await manager.async_preview(
-            "aa", _topology(), _plan(), "prior top-secret"
+            "aa", _topology(), _plan("prior top-secret"), _source("prior top-secret")
         )
         assert "top-secret" not in repr(preview)
         with pytest.raises(PermissionError):
@@ -156,7 +166,7 @@ def test_validation_failure_restores_validates_and_releases_the_config_lock() ->
     async def run() -> None:
         builder, persistence = Builder(validation=(False, True)), Persistence()
         manager = _manager(builder, persistence)
-        preview = await manager.async_preview("aa", _topology(), _plan(), "prior")
+        preview = await manager.async_preview("aa", _topology(), _plan(), _source())
         transaction = await manager.async_confirm_write(preview.transaction_id, "admin")
         assert transaction.state is ConfigTransactionState.ROLLED_BACK
         assert builder.calls == ["write", "validate", "restore", "validate"]
@@ -172,7 +182,7 @@ def test_compile_failure_never_uploads_and_exposes_explicit_rollback() -> None:
     async def run() -> None:
         builder, persistence = Builder(compile=False), Persistence()
         manager = _manager(builder, persistence)
-        preview = await manager.async_preview("aa", _topology(), _plan(), "prior")
+        preview = await manager.async_preview("aa", _topology(), _plan(), _source())
         transaction = await manager.async_confirm_write(preview.transaction_id, "admin")
         assert transaction.state is ConfigTransactionState.FAILED
         assert transaction.rollback_available and "upload" not in builder.calls
@@ -191,7 +201,7 @@ def test_wrong_reconnect_identity_fails_without_persistence_and_unload_releases_
     async def run() -> None:
         builder, persistence = Builder(), Persistence()
         manager = _manager(builder, persistence, mac="wrong")
-        preview = await manager.async_preview("aa", _topology(), _plan(), "prior")
+        preview = await manager.async_preview("aa", _topology(), _plan(), _source())
         await manager.async_confirm_write(preview.transaction_id, "admin")
         transaction = await manager.async_confirm_install(
             preview.transaction_id, "admin"
