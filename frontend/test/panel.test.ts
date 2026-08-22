@@ -277,7 +277,7 @@ describe("CircuitSetup panel", () => {
     expect(style).toContain("@media (max-width: 720px)");
   });
 
-  it("keeps every 15px core color pairing at WCAG AA contrast", () => {
+  it("keeps every core text and focus pairing at the plan's 4.5:1 contrast", () => {
     const cssText = panelStyles.cssText;
     const token = (name: string) => new RegExp(`${name}:\\s*(#[0-9a-f]{6})`, "i").exec(cssText)?.[1] ?? "";
     expect(cssText).toContain(".primary { color: #fff; background: var(--orange)");
@@ -286,6 +286,8 @@ describe("CircuitSetup panel", () => {
     expect(cssText).toContain("li.current .number { color: #fff; background: var(--orange)");
     expect(cssText).toContain(".summary-band strong, .success-band { color: var(--teal)");
     expect(cssText).toContain(".rescan { color: #fff; background: var(--teal)");
+    expect(cssText).toContain("summary:focus-visible { outline: 3px solid var(--focus)");
+    expect(cssText).toContain(".step-button:focus-visible { outline-color: var(--focus-on-navy)");
     const pairs: Array<[string, string]> = [
       ["#ffffff", token("--orange")],
       [token("--orange"), "#ffffff"],
@@ -293,8 +295,9 @@ describe("CircuitSetup panel", () => {
       [token("--teal"), token("--band")],
       [token("--teal"), "#ffffff"],
       ["#ffffff", token("--teal")],
-      ["#1769d3", "#ffffff"],
-      ["#1769d3", token("--band")],
+      [token("--focus"), "#ffffff"],
+      [token("--focus"), token("--band")],
+      [token("--focus-on-navy"), token("--navy")],
     ];
     for (const [foreground, background] of pairs)
       expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5);

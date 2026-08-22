@@ -1215,6 +1215,8 @@ const Yt = Ve`
     --orange: #c94f00;
     --orange-on-navy: #ff8a3d;
     --teal: #077f7a;
+    --focus: #1769d3;
+    --focus-on-navy: #4893f2;
     --muted: #5c687b;
     --band: #f5f7fa;
     --border: #d7dce3;
@@ -1233,7 +1235,7 @@ const Yt = Ve`
   button, input, select, summary { min-height: 44px; }
   button { border: 1px solid #aeb7c4; background: #fff; border-radius: 5px; padding: 0.65rem 1rem; cursor: pointer; font-weight: 650; }
   button:hover:not(:disabled) { border-color: #1769d3; }
-  button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid #1769d3; outline-offset: 2px; }
+  button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
   button:disabled { opacity: .45; cursor: not-allowed; }
   .primary { color: #fff; background: var(--orange); border-color: var(--orange); }
   .secondary { color: var(--navy); background: #fff; border-color: #42658d; }
@@ -1245,6 +1247,7 @@ const Yt = Ve`
   nav li { position: relative; min-height: 60px; }
   nav li:not(:last-child)::after { content: ""; position: absolute; left: 17px; top: 38px; width: 1px; height: 28px; background: #8fa2b9; }
   .step-button { display: grid; grid-template-columns: 36px 1fr; gap: 10px; align-items: center; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; font-weight: 500; }
+  .step-button:focus-visible { outline-color: var(--focus-on-navy); }
   .step-button .number { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid #d7e1ec; border-radius: 50%; }
   li.current .step-button { color: var(--orange-on-navy); font-weight: 750; }
   li.current .number { color: #fff; background: var(--orange); border-color: var(--orange); }
@@ -1261,7 +1264,7 @@ const Yt = Ve`
   .choice-field > p { margin: 3px 0 12px; }
   .addon-options { display: grid; grid-template-columns: repeat(7, minmax(52px, 1fr)); gap: 12px; max-width: 760px; }
   .addon-options label, .connection-options label { display: flex; align-items: center; border: 1px solid #b8c1cc; border-radius: 5px; cursor: pointer; }
-  .addon-options label:focus-within, .connection-options label:focus-within, .meter-row:focus-within { outline: 3px solid #1769d3; outline-offset: 2px; }
+  .addon-options label:focus-within, .connection-options label:focus-within, .meter-row:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
   .addon-options label { justify-content: center; min-height: 56px; font-size: 18px; font-weight: 700; }
   .addon-options input, .connection-options input, .meter-row input { position: absolute; opacity: 0; pointer-events: none; }
   .addon-options .selected { color: #fff; background: var(--navy); border-color: var(--navy); }
