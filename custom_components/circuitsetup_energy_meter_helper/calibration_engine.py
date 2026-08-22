@@ -102,21 +102,17 @@ class CalibrationEngine:
         stability_limit_percent: float = 1.0,
         zero_concurrency: int = 2,
         evidence_timeout: float = 10.0,
-        evidence_quiescence: float = 0.15,
     ) -> None:
         if sample_count < 1 or zero_concurrency < 1:
             raise ValueError("sample count and zero concurrency must be positive")
         if not _positive_finite(stability_limit_percent, evidence_timeout):
             raise ValueError("calibration limits must be finite and positive")
-        if not math.isfinite(evidence_quiescence) or evidence_quiescence < 0:
-            raise ValueError("evidence quiescence must be finite and non-negative")
         self.sessions = sessions
         self._persist_interrupted = persist_interrupted
         self._sample_count = sample_count
         self._stability_limit_percent = stability_limit_percent
         self._zero_concurrency = zero_concurrency
         self._evidence_timeout = evidence_timeout
-        self._evidence_quiescence = evidence_quiescence
         self._operation_sequences: dict[str, int] = {}
 
     async def async_zero_all_references(
@@ -414,22 +410,14 @@ class CalibrationEngine:
         deadline = monotonic() + self._evidence_timeout
         last_error: LogEvidenceError | None = None
         candidate: GainRunEvidence | None = None
-        candidate_lines: tuple[str, ...] = ()
-        quiet_since: float | None = None
+        # Current firmware logs only failures after save/verify, not success.
+        # Reparse until the full bounded window ends; silence is not a terminal.
         while monotonic() < deadline:
             if getattr(session, "connected", True) is False:
                 raise ESPHomeSessionDisconnectedError(
                     "connection ended before complete gain evidence"
                 )
             new_lines = _new_log_lines(baseline, tuple(session.log_lines))
-            now = monotonic()
-            if (
-                candidate is not None
-                and new_lines == candidate_lines
-                and quiet_since is not None
-                and now - quiet_since >= self._evidence_quiescence
-            ):
-                return candidate
             correlated = tuple(
                 CalibrationLogLine(
                     generation,
@@ -451,16 +439,14 @@ class CalibrationEngine:
             except LogEvidenceError as error:
                 last_error = error
                 candidate = None
-                quiet_since = None
             else:
-                if new_lines != candidate_lines:
-                    quiet_since = now
                 candidate = parsed
-                candidate_lines = new_lines
             await asyncio.sleep(0.05)
+        if candidate is not None:
+            return candidate
         if last_error is not None:
             raise last_error
-        raise LogEvidenceError("gain evidence did not reach verified quiescence")
+        raise LogEvidenceError("gain evidence collection timed out")
 
     async def _wait_restore(
         self,

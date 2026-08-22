@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, replace
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 import pytest
@@ -354,7 +355,10 @@ def test_interrupted_recovery_refuses_to_zero_without_fresh_metadata() -> None:
     asyncio.run(run())
 
 
-def test_streaming_gain_waits_for_delayed_register_mismatch() -> None:
+@pytest.mark.parametrize("mismatch_delay", (0.25, 0.6))
+def test_streaming_gain_waits_for_delayed_register_mismatch(
+    mismatch_delay: float,
+) -> None:
     async def run() -> None:
         meter = native_meter()
         lines = (
@@ -377,7 +381,7 @@ def test_streaming_gain_waits_for_delayed_register_mismatch() -> None:
                 async def stream() -> None:
                     await asyncio.sleep(0.01)
                     self.log_lines.extend(lines)
-                    await asyncio.sleep(0.08)
+                    await asyncio.sleep(mismatch_delay)
                     self.log_lines.append(
                         "[E][atm90e32:1211] [CALIBRATION][meter_main1] "
                         "Mismatch detected for Phase A!"
@@ -390,8 +394,7 @@ def test_streaming_gain_waits_for_delayed_register_mismatch() -> None:
         engine = CalibrationEngine(
             SessionManager(),
             persist,
-            evidence_timeout=1.0,
-            evidence_quiescence=0.15,
+            evidence_timeout=0.8,
         )
 
         with pytest.raises(CalibrationInvariantError, match="verification"):
@@ -400,6 +403,56 @@ def test_streaming_gain_waits_for_delayed_register_mismatch() -> None:
             )
 
         assert [event[0] for event in session.events].count("button") == 1
+
+    asyncio.run(run())
+
+
+def test_streaming_gain_success_waits_for_complete_collection_window() -> None:
+    async def run() -> None:
+        meter = native_meter()
+        lines = (
+            (Path(__file__).parent / "fixtures" / "logs" / "gain_success.log")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+
+        class StreamingSession(FakeCalibrationSession):
+            expect_gain_run = None
+
+            def __init__(self) -> None:
+                stable = sample_window(12.42, 12.43, 12.44)
+                super().__init__(
+                    gain_evidence("meter_main1"), before=stable, after=stable
+                )
+                self.connected = True
+                self.log_lines: list[str] = []
+
+            async def async_press_button(self, key: int, *, device_id: int = 0) -> None:
+                await super().async_press_button(key, device_id=device_id)
+
+                async def stream() -> None:
+                    await asyncio.sleep(0.01)
+                    self.log_lines.extend(lines)
+
+                asyncio.create_task(stream())
+
+        session = StreamingSession()
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(
+            SessionManager(),
+            persist,
+            evidence_timeout=0.25,
+        )
+
+        started = monotonic()
+        result = await engine.async_calibrate_current(
+            "meter", session, meter, 2, 12.43, 1.0, 1.0
+        )
+
+        assert monotonic() - started >= 0.22
+        assert result.state is CalibrationState.APPLIED_PENDING_RESTART_VERIFICATION
+        assert result.gain_evidence is not None
+        assert result.gain_evidence.immediate_apply_acceptable
 
     asyncio.run(run())
 
