@@ -135,6 +135,88 @@ def test_gain_correlation_rejects_predispatch_wrong_generation_and_interleaving(
             dispatched_after=10.0,
         )
 
+    row_before_header = actual.copy()
+    row_before_header.insert(
+        1,
+        CalibrationLogLine(
+            3,
+            8,
+            11.5,
+            "[I] [CALIBRATION][addon1_1] |   A   | 120.0 | 1.0 | 0.0 | 0.0 | 7305 → 7305 | 1 → 1 |",
+        ),
+    )
+    with pytest.raises(LogEvidenceError, match="interleaved"):
+        parse_gain_run(
+            row_before_header,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="3. Run Main Meter 1 Gain Cal",
+            dispatched_after=10.0,
+        )
+
+    target_row_before_header = actual.copy()
+    target_row_before_header.insert(
+        1,
+        CalibrationLogLine(
+            3,
+            8,
+            11.5,
+            "[I] [CALIBRATION][meter_main1] |   A   | 120.0 | 1.0 | 0.0 | 0.0 | 7305 → 7305 | 1 → 1 |",
+        ),
+    )
+    with pytest.raises(LogEvidenceError, match="before.*header"):
+        parse_gain_run(
+            target_row_before_header,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="3. Run Main Meter 1 Gain Cal",
+            dispatched_after=10.0,
+        )
+
+
+def test_gain_requires_target_tag_on_rows_and_one_terminal_save_result() -> None:
+    untagged = [
+        CalibrationLogLine(
+            item.connection_generation,
+            item.operation_sequence,
+            item.arrived_at,
+            item.line.replace("[CALIBRATION][meter_main1]", "[CALIBRATION]"),
+        )
+        if "|   " in item.line or "saved to memory" in item.line
+        else item
+        for item in log_lines("gain_success.log")
+    ]
+    with pytest.raises(LogEvidenceError, match="target instance"):
+        parse_gain_run(
+            untagged,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="3. Run Main Meter 1 Gain Cal",
+            dispatched_after=10.0,
+        )
+
+    contradictory = log_lines("gain_save_failure.log")
+    contradictory.append(
+        CalibrationLogLine(
+            3,
+            8,
+            contradictory[-1].arrived_at + 1,
+            "[I] [CALIBRATION][meter_main1] Gain calibration saved to memory.",
+        )
+    )
+    with pytest.raises(LogEvidenceError, match="save result"):
+        parse_gain_run(
+            contradictory,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="3. Run Main Meter 1 Gain Cal",
+            dispatched_after=10.0,
+        )
+
 
 def test_parses_both_verified_restore_shapes() -> None:
     positive = parse_restore(

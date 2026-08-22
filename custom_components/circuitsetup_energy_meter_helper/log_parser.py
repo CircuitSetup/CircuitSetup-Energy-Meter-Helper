@@ -113,34 +113,53 @@ def parse_gain_run(
     )
     if button_index is None:
         raise LogEvidenceError("matching Run Gain button line is missing")
-    header_index = next(
-        (
-            index
-            for index in range(button_index + 1, len(matching))
-            if "Gain Calibration" in matching[index].line
-            and "disabled" not in matching[index].line.casefold()
-        ),
-        None,
-    )
-    if header_index is None:
-        raise LogEvidenceError("matching gain calibration header is missing")
-    if _instance(matching[header_index].line) != target_instance_id:
-        raise LogEvidenceError("interleaved ATM90E32 instance in operation window")
 
-    block = matching[button_index:]
-    for item in matching[header_index:]:
+    def is_header(item: CalibrationLogLine) -> bool:
+        return "Gain Calibration" in item.line and "====" in item.line
+
+    def is_evidence(item: CalibrationLogLine) -> bool:
+        return (
+            is_header(item)
+            or _GAIN_ROW_RE.search(item.line) is not None
+            or "gain calibration saved to memory" in item.line.casefold()
+            or "failed to save gain calibration to memory" in item.line.casefold()
+            or "Mismatch detected for Phase" in item.line
+        )
+
+    for item in matching[button_index + 1 :]:
         instance = _instance(item.line)
         if instance is not None and instance != target_instance_id:
             raise LogEvidenceError("interleaved ATM90E32 instance in operation window")
+        if is_evidence(item) and instance != target_instance_id:
+            raise LogEvidenceError("gain evidence is missing the target instance tag")
+    header_indices = [
+        index
+        for index in range(button_index + 1, len(matching))
+        if is_header(matching[index])
+    ]
+    if not header_indices:
+        raise LogEvidenceError("matching gain calibration header is missing")
+    if len(header_indices) != 1:
+        raise LogEvidenceError("gain operation has duplicate headers")
+    header_index = header_indices[0]
+    if _instance(matching[header_index].line) != target_instance_id:
+        raise LogEvidenceError("interleaved ATM90E32 instance in operation window")
+    if any(is_evidence(item) for item in matching[button_index + 1 : header_index]):
+        raise LogEvidenceError("gain evidence appeared before the target header")
+
+    block = matching[button_index:]
     calibration_disabled = any(
         "Gain calibration is disabled" in item.line for item in block
     )
     phase_rows: dict[Phase, PhaseGainEvidence] = {}
-    flash_saved: bool | None = None
+    save_results: list[bool] = []
     mismatches: list[Phase] = []
+    terminal_seen = False
     for item in matching[header_index:]:
         row = _GAIN_ROW_RE.search(item.line)
         if row:
+            if terminal_seen:
+                raise LogEvidenceError("gain row appeared after the save result")
             phase = cast(Phase, row.group("phase"))
             if phase in phase_rows:
                 raise LogEvidenceError(f"duplicate gain row for phase {phase}")
@@ -170,15 +189,19 @@ def parse_gain_run(
                 int(row.group("new_current_gain")),
             )
         if "Gain calibration saved to memory." in item.line:
-            flash_saved = True
+            save_results.append(True)
+            terminal_seen = True
         elif "Failed to save gain calibration to memory!" in item.line:
-            flash_saved = False
+            save_results.append(False)
+            terminal_seen = True
         if mismatch := _MISMATCH_RE.search(item.line):
             mismatches.append(cast(Phase, mismatch.group("phase")))
     if set(phase_rows) != {"A", "B", "C"}:
         raise LogEvidenceError("gain evidence must contain exactly phases A, B, and C")
-    if flash_saved is None:
+    if not save_results:
         raise LogEvidenceError("gain save result is missing")
+    if len(save_results) != 1:
+        raise LogEvidenceError("gain save result is duplicate or contradictory")
     phases = cast(
         tuple[PhaseGainEvidence, PhaseGainEvidence, PhaseGainEvidence],
         tuple(phase_rows[phase] for phase in ("A", "B", "C")),
@@ -188,7 +211,7 @@ def parse_gain_run(
         operation_sequence,
         target_instance_id,
         phases,
-        flash_saved,
+        save_results[0],
         tuple(dict.fromkeys(mismatches)),
         calibration_disabled,
         tuple(item.line for item in block),
@@ -230,8 +253,18 @@ def parse_restore(
             "Gain calibration loaded and verified successfully." in item.line
             for item in instance_lines
         )
-        restored_rows = _phase_pairs(instance_lines, _RESTORE_ROW_RE)
-        compared_rows = _comparison_rows(instance_lines)
+        restore_block = _gain_table(
+            instance_lines, "Restoring saved gain calibrations to registers"
+        )
+        compare_block = _gain_table(instance_lines, "Gain mismatch: using flash values")
+        restored_rows = (
+            _phase_pairs(restore_block, _RESTORE_ROW_RE)
+            if restore_block is not None
+            else None
+        )
+        compared_rows = (
+            _comparison_rows(compare_block) if compare_block is not None else None
+        )
         if positive and restored_rows is not None:
             phase_gains = restored_rows
             basis: Literal["positive_loaded_line", "verified_config_flash_table"] = (
@@ -261,6 +294,29 @@ def parse_restore(
 def _instance(line: str) -> str | None:
     match = _INSTANCE_RE.search(line)
     return match.group("instance") if match else None
+
+
+def _gain_table(
+    lines: list[CalibrationLogLine], header: str
+) -> list[CalibrationLogLine] | None:
+    headers = [index for index, item in enumerate(lines) if header in item.line]
+    if not headers:
+        return None
+    if len(headers) != 1:
+        raise LogEvidenceError(f"duplicate gain table header: {header}")
+    block: list[CalibrationLogLine] = []
+    for item in lines[headers[0] + 1 :]:
+        if "====" in item.line:
+            break
+        block.append(item)
+    normalized = [re.sub(r"\s+", "", item.line) for item in block]
+    if not any("|Phase|voltage_gain|current_gain|" in line for line in normalized):
+        raise LogEvidenceError(f"gain table columns are missing: {header}")
+    if "mismatch" in header.casefold() and not any(
+        "|config|flash|config|flash|" in line for line in normalized
+    ):
+        raise LogEvidenceError(f"gain comparison columns are missing: {header}")
+    return block
 
 
 def _phase_pairs(

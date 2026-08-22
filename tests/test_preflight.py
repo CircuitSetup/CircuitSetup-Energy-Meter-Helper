@@ -279,3 +279,41 @@ def test_zero_guard_preserves_original_and_accumulates_cleanup_failures() -> Non
         assert len(cleanup.value.failures) == 2
 
     asyncio.run(run())
+
+
+def test_zero_guard_drains_cleanup_but_preserves_caller_cancellation() -> None:
+    class Engine:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.cleanup_started = asyncio.Event()
+            self.release_cleanup = asyncio.Event()
+            self.cleanup_finished = False
+
+        async def async_zero_all_references(self, session: object) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                return
+            self.cleanup_started.set()
+            await self.release_cleanup.wait()
+            self.cleanup_finished = True
+            raise ReferenceZeroError((TimeoutError("ct1 cleanup"),))
+
+    async def run() -> None:
+        engine = Engine()
+
+        async def guarded() -> None:
+            async with zero_reference_guard(engine, object()):
+                pass
+
+        task = asyncio.create_task(guarded())
+        await engine.cleanup_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        engine.release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await task
+        assert engine.cleanup_finished
+        assert [str(item) for item in cancelled.value.cleanup_errors] == ["ct1 cleanup"]
+
+    asyncio.run(run())

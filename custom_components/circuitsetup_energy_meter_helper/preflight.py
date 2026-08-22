@@ -237,12 +237,12 @@ async def zero_reference_guard(engine: Any, session: Any) -> AsyncIterator[None]
     except BaseException as error:  # noqa: BLE001 - cleanup after failed entry
         original = error
     finally:
-        try:
-            await engine.async_zero_all_references(session)
-        except ReferenceZeroError as error:
-            cleanup_failures = error.failures
-        except BaseException as error:  # noqa: BLE001 - surface cleanup failures
-            cleanup_failures = (error,)
+        cleanup_failures, cleanup_cancelled = await _drain_final_zero(engine, session)
+        if cleanup_cancelled is not None:
+            if original is None:
+                original = cleanup_cancelled
+            else:
+                cleanup_failures = (*cleanup_failures, cleanup_cancelled)
     if original is not None:
         if cleanup_failures:
             cast(Any, original).cleanup_errors = cleanup_failures
@@ -252,3 +252,29 @@ async def zero_reference_guard(engine: Any, session: Any) -> AsyncIterator[None]
         raise original
     if cleanup_failures:
         raise ReferenceCleanupError(cleanup_failures)
+
+
+async def _drain_final_zero(
+    engine: Any, session: Any
+) -> tuple[tuple[BaseException, ...], asyncio.CancelledError | None]:
+    task = asyncio.create_task(engine.async_zero_all_references(session))
+    caller_cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            caller_cancelled = caller_cancelled or error
+        except BaseException:  # noqa: BLE001 - inspect the owned task below
+            break
+    try:
+        task.result()
+    except ReferenceZeroError as error:
+        failures = error.failures
+    except asyncio.CancelledError as error:
+        caller_cancelled = caller_cancelled or error
+        failures = ()
+    except BaseException as error:  # noqa: BLE001 - report cleanup, preserve caller
+        failures = (error,)
+    else:
+        failures = ()
+    return failures, caller_cancelled
