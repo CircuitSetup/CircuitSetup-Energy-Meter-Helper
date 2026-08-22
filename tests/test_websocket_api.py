@@ -1145,6 +1145,7 @@ def test_success_error_snapshot_and_event_are_recursively_redacted() -> None:
                     "token": "browser-token",
                     "items": [{"name": "meter", "api_encryption_key": "native-key"}],
                 },
+                "changes": {"key": "current_cal_ct42"},
                 "text": "password: wifi-secret",
             }
         )
@@ -1154,6 +1155,7 @@ def test_success_error_snapshot_and_event_are_recursively_redacted() -> None:
             (
                 1,
                 {
+                    "changes": {},
                     "nested": {"items": [{"name": "meter"}]},
                     "safe": "ok",
                     "text": "<redacted>",
@@ -1911,7 +1913,85 @@ def test_recursive_sanitizer_preserves_only_approved_change_keys_in_context() ->
             Path(__file__).with_name("fixtures") / "task20_sanitized_change.json"
         ).read_text(encoding="utf-8")
     )
-    assert sanitize_payload(contract["raw"]) == contract["sanitized"]
-    assert sanitize_payload({"changes": [{"key": "logger", "new_value": "x"}]}) == {
-        "changes": [{"new_value": "x"}]
-    }
+    generic = sanitize_payload(contract["raw"])
+    assert generic["changes"] == [{"old_value": "27518", "new_value": "5500"}]
+    assert (
+        sanitize_payload(contract["raw"], allow_transaction_change_keys=True)
+        == contract["sanitized"]
+    )
+    assert sanitize_payload(
+        {"changes": {"key": "current_cal_ct42"}},
+        allow_transaction_change_keys=True,
+    ) == {"changes": {}}
+    assert sanitize_payload(
+        {"changes": [[{"key": "current_cal_ct42", "new_value": "x"}]]},
+        allow_transaction_change_keys=True,
+    ) == {"changes": [[{"new_value": "x"}]]}
+    assert sanitize_payload(
+        {"changes": [{"nested": {"key": "current_cal_ct42"}}]},
+        allow_transaction_change_keys=True,
+    ) == {"changes": [{"nested": {}}]}
+    assert sanitize_payload(
+        {"changes": [{"key": "logger", "new_value": "x"}]},
+        allow_transaction_change_keys=True,
+    ) == {"changes": [{"new_value": "x"}]}
+
+
+def test_router_scopes_change_keys_to_transaction_results_and_events() -> None:
+    """Only transaction commands expose direct approved substitution keys."""
+
+    async def run() -> None:
+        contract = json.loads(
+            (
+                Path(__file__).with_name("fixtures") / "task20_sanitized_change.json"
+            ).read_text(encoding="utf-8")
+        )
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+
+        async def call(*args: Any) -> Any:
+            del args
+            return contract["raw"]
+
+        async def snapshot(*args: Any) -> Any:
+            del args
+            return contract["raw"]
+
+        def subscribe(*args: Any) -> Any:
+            args[-1](contract["raw"])
+            return lambda: None
+
+        controller.async_call = call  # type: ignore[method-assign]
+        controller.async_snapshot = snapshot  # type: ignore[method-assign]
+        controller.subscribe = subscribe  # type: ignore[method-assign]
+        connection = FakeConnection()
+
+        await _invoke(
+            hass,
+            connection,
+            _message(f"{DOMAIN}/get_diagnostics_summary", 1),
+        )
+        assert "key" not in connection.results[-1][1]["changes"][0]
+        await _invoke(hass, connection, _message(f"{DOMAIN}/preview_ct_config", 2))
+        assert connection.results[-1][1] == contract["sanitized"]
+
+        await _invoke(hass, connection, _message(f"{DOMAIN}/subscribe_setup", 3))
+        setup_events = [event for event_id, event in connection.events if event_id == 3]
+        assert len(setup_events) == 2
+        assert all("key" not in event["changes"][0] for event in setup_events)
+        await _invoke(
+            hass,
+            connection,
+            _message(f"{DOMAIN}/subscribe_config_transaction", 4),
+        )
+        transaction_events = [
+            event for event_id, event in connection.events if event_id == 4
+        ]
+        assert len(transaction_events) == 2
+        assert all(
+            event["changes"][0]["key"] == "current_cal_ct42"
+            for event in transaction_events
+        )
+
+    asyncio.run(run())

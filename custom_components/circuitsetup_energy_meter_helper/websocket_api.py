@@ -62,6 +62,17 @@ SUBSCRIPTION_COMMANDS = (
     f"{_PREFIX}subscribe_session",
 )
 ALL_COMMANDS = (*READ_COMMANDS, *MUTATION_COMMANDS, *SUBSCRIPTION_COMMANDS)
+_TRANSACTION_STATUS_COMMANDS = frozenset(
+    f"{_PREFIX}{operation}"
+    for operation in (
+        "preview_ct_config",
+        "apply_ct_config",
+        "compile_ct_config",
+        "install_ct_config",
+        "rollback_ct_config",
+        "subscribe_config_transaction",
+    )
+)
 
 _ROUTER = "_websocket_router"
 _MAX_ITEMS = 100
@@ -509,7 +520,15 @@ class _Router:
             result = await controller.async_call(
                 msg["type"], msg, getattr(connection.user, "id", None)
             )
-            connection.send_result(msg["id"], sanitize_payload(result))
+            connection.send_result(
+                msg["id"],
+                sanitize_payload(
+                    result,
+                    allow_transaction_change_keys=(
+                        msg["type"] in _TRANSACTION_STATUS_COMMANDS
+                    ),
+                ),
+            )
         except Exception as error:  # noqa: BLE001 - stable websocket error boundary
             _send_safe_error(connection, msg["id"], error)
 
@@ -521,6 +540,7 @@ class _Router:
         msg_id = msg["id"]
         try:
             pending: deque[Any] = deque()
+            allow_transaction_change_keys = msg["type"] in _TRANSACTION_STATUS_COMMANDS
             initial_sent = False
             active = True
             overflowed = False
@@ -554,7 +574,13 @@ class _Router:
                     pending.append(event)
                     return
                 try:
-                    connection.send_event(msg_id, sanitize_payload(event))
+                    connection.send_event(
+                        msg_id,
+                        sanitize_payload(
+                            event,
+                            allow_transaction_change_keys=allow_transaction_change_keys,
+                        ),
+                    )
                 except Exception:  # noqa: BLE001 - never leak provider failures
                     connection.subscriptions.pop(msg_id, None)
                     try:
@@ -578,7 +604,10 @@ class _Router:
             tracked.add(remove)
             try:
                 snapshot = await controller.async_snapshot(msg["type"], msg)
-                safe_snapshot = sanitize_payload(snapshot)
+                safe_snapshot = sanitize_payload(
+                    snapshot,
+                    allow_transaction_change_keys=allow_transaction_change_keys,
+                )
             except BaseException as error:
                 try:
                     remove()
@@ -736,7 +765,14 @@ def _schema(command: str) -> dict[Any, Any]:
     return schema
 
 
-def sanitize_payload(value: Any, *, _depth: int = 0, _field: str = "") -> Any:
+def sanitize_payload(
+    value: Any,
+    *,
+    allow_transaction_change_keys: bool = False,
+    _depth: int = 0,
+    _field: str = "",
+    _allow_change_key: bool = False,
+) -> Any:
     """Convert existing DTOs to bounded JSON while recursively removing secrets."""
     if _depth > _MAX_DEPTH:
         raise ValueError("payload nesting is too deep")
@@ -747,7 +783,12 @@ def sanitize_payload(value: Any, *, _depth: int = 0, _field: str = "") -> Any:
             raise ValueError("payload contains a non-finite number")
         return value
     if isinstance(value, Enum):
-        return sanitize_payload(value.value, _depth=_depth + 1, _field=_field)
+        return sanitize_payload(
+            value.value,
+            _depth=_depth + 1,
+            _field=_field,
+            _allow_change_key=_allow_change_key,
+        )
     if isinstance(value, str):
         had_line_break = "\n" in value or "\r" in value
         value = sanitize_control_text(value)
@@ -766,7 +807,7 @@ def sanitize_payload(value: Any, *, _depth: int = 0, _field: str = "") -> Any:
                 key = sanitize_control_text(key)
             approved_change_key = (
                 key == "key"
-                and _field == "changes"
+                and _allow_change_key
                 and isinstance(item, str)
                 and any(
                     pattern.fullmatch(item) is not None
@@ -784,7 +825,26 @@ def sanitize_payload(value: Any, *, _depth: int = 0, _field: str = "") -> Any:
                 continue
             if key in result:
                 raise ValueError("payload keys collide after sanitization")
-            result[key] = sanitize_payload(item, _depth=_depth + 1, _field=key)
+            if (
+                allow_transaction_change_keys
+                and _depth == 0
+                and key == "changes"
+                and isinstance(item, tuple | list)
+            ):
+                result[key] = [
+                    sanitize_payload(
+                        change,
+                        _depth=_depth + 2,
+                        _allow_change_key=True,
+                    )
+                    for change in list(item)[:_MAX_ITEMS]
+                ]
+            else:
+                result[key] = sanitize_payload(
+                    item,
+                    _depth=_depth + 1,
+                    _field=key,
+                )
         _check_payload_size(result)
         return result
     if isinstance(value, tuple | list | set | frozenset):

@@ -275,6 +275,8 @@ export class CircuitSetupPanel extends LitElement {
         before_values: [],
         after_values: [],
         error_percent_values: [],
+        gain_evidence: null,
+        restore_evidence: null,
         retry_allowed: false,
       });
     } else {
@@ -497,7 +499,8 @@ export class CircuitSetupPanel extends LitElement {
     await this.run(async () => {
       const result = target === "voltage"
         ? await api.calibrateVoltage(sessionId, groupKey, reference, true)
-        : await api.calibrateCurrent(sessionId, channel, reference, true);
+        : await api.calibrateCurrent(sessionId, channel, reference, true,
+          this.inventory?.channels[channel - 1]?.reporting_multiplier ?? 1);
       if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
       this.calibrationByTarget = new Map(this.calibrationByTarget).set(`${target}:${targetId}`, result);
       this.announcement = `Calibration iteration ${result.iteration} finished with state ${result.state}.`;

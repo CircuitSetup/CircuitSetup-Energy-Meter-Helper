@@ -51,9 +51,29 @@ const session = { session_id: "session-1", device_id: "meter-1", state: "ready",
   preflight: { issues: [], zeroed_roles: ["reference"] } };
 const stability = { target: "current", target_id: "1", stable: true,
   windows: [{ samples: [1, 1, 1], mean: 1, standard_deviation: 0, range_percent: 0 }] };
+const gainEvidence = (instanceId: string, target: "voltage" | "current", reference: number, phase = "A") => ({
+  connection_generation: 1,
+  operation_sequence: 1,
+  instance_id: instanceId,
+  phases: (["A", "B", "C"] as const).map((item) => ({
+    phase: item,
+    measured_voltage: 120,
+    measured_current: 10,
+    reference_voltage: target === "voltage" ? reference : 0,
+    reference_current: target === "current" && item === phase ? reference : 0,
+    old_voltage_gain: 7305,
+    new_voltage_gain: target === "voltage" ? 7310 : 7305,
+    old_current_gain: 27518,
+    new_current_gain: target === "current" && item === phase ? 28000 : 27518,
+  })),
+  flash_saved: true,
+  register_mismatch_phases: [],
+  calibration_disabled: false,
+  matching_lines: ["[CALIBRATION] verified gain evidence"],
+});
 const calibration = { state: "applied_pending_restart_verification", group_key: "main_1", phase: "A",
   changed_channels: [1], iteration: 1, before_values: [4.9], after_values: [5], error_percent_values: [0],
-  gain_evidence: { outcome: "success" }, restore_evidence: null, retry_allowed: false };
+  gain_evidence: gainEvidence("meter_main1", "current", 5), restore_evidence: null, retry_allowed: false };
 const restart = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
   topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
   topology_voltage_layout: "two_groups", connection_generation: 2,
@@ -71,9 +91,11 @@ function validResponse(operation: string): unknown {
   if (["start_session", "get_session", "acknowledge_safety", "cancel_session"].includes(operation)) return session;
   if (operation === "check_stability") return stability;
   if (operation === "calibrate_voltage") return { ...calibration, group_key: "addon6_2", phase: null,
-    changed_channels: [40, 41, 42], before_values: [119, 119, 119], after_values: [120, 120, 120], error_percent_values: [0, 0, 0] };
+    changed_channels: [40, 41, 42], before_values: [119, 119, 119], after_values: [120, 120, 120], error_percent_values: [0, 0, 0],
+    gain_evidence: gainEvidence("addon6_2", "voltage", 120) };
   if (operation === "calibrate_current") return { ...calibration, group_key: "addon6_2", phase: "C",
-    changed_channels: [42], before_values: [24.9], after_values: [25], error_percent_values: [0] };
+    changed_channels: [42], before_values: [24.9], after_values: [25], error_percent_values: [0],
+    gain_evidence: gainEvidence("addon6_2", "current", 25, "C") };
   if (operation === "restart_and_verify") return restart;
   if (operation === "adopt_device") return { device_id: "meter-1", configuration: "meter.yaml" };
   if (operation === "get_diagnostics_summary") return { setup_state: "device_discovered", meter_count: 1 };
@@ -252,7 +274,17 @@ describe("HelperApi", () => {
       changes: [{ key: "current_cal_ct42" }],
     });
     expect(() => HelperApi.assertPublicPayload({ key: "generic-provider-key" })).toThrow("private field");
-    expect(() => HelperApi.assertPublicPayload({ changes: [{ key: "logger", new_value: "x" }] })).not.toThrow();
+    expect(() => HelperApi.assertPublicPayload({ changes: [{ key: "current_cal_ct42", new_value: "x" }] })).toThrow("private field");
+    for (const invalid of [
+      { ...transaction, changes: [[{ key: "current_cal_ct42", old_value: null, new_value: "x" }]] },
+      { ...transaction, changes: [{ nested: { key: "current_cal_ct42" } }] },
+      { ...transaction, changes: { key: "current_cal_ct42" } },
+    ]) {
+      hass.responses.preview_ct_config = invalid;
+      await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow();
+    }
+    hass.responses.get_diagnostics_summary = { changes: { key: "current_cal_ct42" } };
+    await expect(api.getDiagnosticsSummary()).rejects.toThrow("private field");
     hass.responses.preview_ct_config = { ...transaction, changes: [{ key: "logger", old_value: null, new_value: "x" }] };
     await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
   });
@@ -277,14 +309,24 @@ describe("HelperApi", () => {
       { ...calibration, retry_allowed: true },
       { ...calibration, error_percent_values: [2] },
       { ...calibration, state: "result_outside_tolerance", error_percent_values: [0] },
-      { ...calibration, state: "indeterminate", after_values: [], error_percent_values: [], gain_evidence: { outcome: "success" } },
+      { ...calibration, gain_evidence: {} },
+      { ...calibration, gain_evidence: { ...calibration.gain_evidence, instance_id: "meter_main2" } },
+      { ...calibration, gain_evidence: { ...calibration.gain_evidence, phases: calibration.gain_evidence.phases.slice(0, 2) } },
+      { ...calibration, gain_evidence: { ...calibration.gain_evidence, phases: calibration.gain_evidence.phases.map((phase, index) => index === 1 ? { ...phase, new_current_gain: 28000 } : phase) } },
+      { ...calibration, gain_evidence: { ...calibration.gain_evidence, flash_saved: false } },
+      { ...calibration, gain_evidence: { ...calibration.gain_evidence, register_mismatch_phases: ["A"] } },
+      { ...calibration, gain_evidence: { ...calibration.gain_evidence, calibration_disabled: true } },
+      { ...calibration, gain_evidence: { ...calibration.gain_evidence, matching_lines: Array(101).fill("line") } },
+      { ...calibration, state: "indeterminate", after_values: [], error_percent_values: [], gain_evidence: calibration.gain_evidence },
     ]) {
       hass.responses.calibrate_current = invalid;
-      await expect(calibrateCurrent("session-1", 1, 5, true)).rejects.toThrow("calibrate_current");
+      await expect(calibrateCurrent("session-1", 1, 5, true)).rejects.toThrow();
     }
     hass.responses.calibrate_current = { ...calibration, state: "result_outside_tolerance",
       after_values: [5.1], error_percent_values: [2], retry_allowed: true };
     await expect(calibrateCurrent("session-1", 1, 5, true)).resolves.toMatchObject({ retry_allowed: true });
+    hass.responses.calibrate_current = { ...calibration, gain_evidence: gainEvidence("meter_main1", "current", 2.5) };
+    await expect(api.calibrateCurrent("session-1", 1, 5, true, 2)).resolves.toMatchObject({ state: "applied_pending_restart_verification" });
   });
 
   it("requires authoritative topology evidence and restart identity matching that topology", async () => {
@@ -361,14 +403,17 @@ describe("HelperApi", () => {
     const received: unknown[] = [];
     await api.subscribeSetup((value) => received.push(value));
     expect(() => hass.callbacks[0]?.({ state: "failed", devices: [{ ...device, title: "bad\nline" }] })).toThrow("unsafe string");
+    expect(() => hass.callbacks[0]?.({ state: "failed", devices: [], changes: [{ key: "current_cal_ct42" }] })).toThrow("private field");
     expect(received).toEqual([]);
     hass.callbacks[0]?.({ state: "device_discovered", devices: [device] });
     expect(received).toHaveLength(1);
 
     await api.subscribeConfigTransaction("meter-1", "tx-1", "a".repeat(64), (value) => received.push(value));
     expect(() => hass.callbacks[1]?.({ ...transaction, state: "invented" })).toThrow("subscribe_config_transaction");
+    expect(() => hass.callbacks[1]?.({ ...transaction, changes: [[{ key: "current_cal_ct42" }]] })).toThrow("private field");
+    hass.callbacks[1]?.(sanitizerContract.sanitized as never);
     await api.subscribeSession("session-1", (value) => received.push(value));
     expect(() => hass.callbacks[2]?.({ ...session, preflight: { issues: [{ code: "invented", role: "meter", detail: "bad" }], zeroed_roles: [] } })).toThrow("subscribe_session");
-    expect(received).toHaveLength(1);
+    expect(received).toHaveLength(2);
   });
 });

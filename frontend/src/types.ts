@@ -197,8 +197,27 @@ export interface CalibrationResult {
   after_values: number[];
   error_percent_values: number[];
   retry_allowed: boolean;
-  gain_evidence?: Record<string, unknown> | null;
-  restore_evidence?: Record<string, unknown> | null;
+  gain_evidence: {
+    connection_generation: number;
+    operation_sequence: number;
+    instance_id: string;
+    phases: Array<{
+      phase: "A" | "B" | "C";
+      measured_voltage: number;
+      measured_current: number;
+      reference_voltage: number;
+      reference_current: number;
+      old_voltage_gain: number;
+      new_voltage_gain: number;
+      old_current_gain: number;
+      new_current_gain: number;
+    }>;
+    flash_saved: boolean;
+    register_mismatch_phases: Array<"A" | "B" | "C">;
+    calibration_disabled: boolean;
+    matching_lines: string[];
+  } | null;
+  restore_evidence: Record<string, unknown> | null;
 }
 
 export interface RestartVerificationResult {

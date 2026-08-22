@@ -43,9 +43,13 @@ const MAC = /^[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
+const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
 
 type PublicRecord = Record<string, unknown>;
 type Validator<T> = (value: unknown) => T;
+type CalibrationExpectation =
+  | { target: "voltage"; groupKey: string; reference: number }
+  | { target: "current"; channel: number; reference: number; rawReference: number };
 
 function record(value: unknown, label: string): PublicRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} response is invalid`);
@@ -175,7 +179,7 @@ function stability(value: unknown, label: string, expectedTarget: "voltage" | "c
 function calibration(
   value: unknown,
   label: string,
-  expected: { target: "voltage"; groupKey: string; reference: number } | { target: "current"; channel: number; reference: number },
+  expected: CalibrationExpectation,
 ): CalibrationResult {
   const item = record(value, label); const state = enumeration(item.state, new Set(["applied_pending_restart_verification", "result_outside_tolerance", "indeterminate"]), label); string(item.group_key, label); if (item.phase !== null) enumeration(item.phase, PHASES, label); const iteration = integer(item.iteration, label);
   const changed = array(item.changed_channels, label, 3).map((entry) => integer(entry, label));
@@ -186,6 +190,7 @@ function calibration(
   const expectedPhase = expected.target === "current" ? (["A", "B", "C"] as const)[(expected.channel - 1) % 3] : null;
   const retryAllowed = boolean(item.retry_allowed, label);
   if (!Number.isFinite(expected.reference) || expected.reference <= 0
+    || expected.target === "current" && (!Number.isFinite(expected.rawReference) || expected.rawReference <= 0)
     || ![1, 3].includes(changed.length) || before.length !== changed.length || new Set(changed).size !== changed.length
     || changed.some((channel) => channel < 1 || channel > 42) || iteration < 1 || iteration > 3
     || item.group_key !== expectedGroup || item.phase !== expectedPhase
@@ -196,7 +201,7 @@ function calibration(
     if (item.restore_evidence != null) record(item.restore_evidence, label);
   } else {
     if (item.gain_evidence == null || item.restore_evidence !== null) throw new Error(`${label} response is invalid`);
-    record(item.gain_evidence, label);
+    gainEvidence(item.gain_evidence, label, expected);
     const expectedErrors = after.map((result) => 100 * Math.abs(number(result, label) - expected.reference) / expected.reference);
     if (errors.some((error, index) => number(error, label) < 0 || !close(number(error, label), expectedErrors[index]!))) throw new Error(`${label} response is invalid`);
     const outside = Math.max(...expectedErrors) > 1;
@@ -207,6 +212,45 @@ function calibration(
 function channelGroup(channel: number): string {
   const board = Math.floor((channel - 1) / 6); const group = Math.floor(((channel - 1) % 6) / 3) + 1;
   return board === 0 ? `main_${group}` : `addon${board}_${group}`;
+}
+function gainEvidence(
+  value: unknown,
+  label: string,
+  expected: CalibrationExpectation,
+): void {
+  const evidence = record(value, label);
+  const generation = integer(evidence.connection_generation, label);
+  const sequence = integer(evidence.operation_sequence, label);
+  const groupKey = expected.target === "voltage" ? expected.groupKey : channelGroup(expected.channel);
+  const instanceId = groupKey.startsWith("main_") ? `meter_main${groupKey.slice(-1)}` : groupKey;
+  if (generation < 1 || sequence < 1 || string(evidence.instance_id, label) !== instanceId) throw new Error(`${label} response is invalid`);
+  const targetPhase = expected.target === "current" ? (["A", "B", "C"] as const)[(expected.channel - 1) % 3] : null;
+  const phases = array(evidence.phases, label, 3);
+  if (phases.length !== 3) throw new Error(`${label} response is invalid`);
+  phases.forEach((entry, index) => {
+    const phase = record(entry, label);
+    const phaseName = enumeration(phase.phase, PHASES, label);
+    if (phaseName !== ["A", "B", "C"][index]) throw new Error(`${label} response is invalid`);
+    number(phase.measured_voltage, label); number(phase.measured_current, label);
+    const referenceVoltage = number(phase.reference_voltage, label);
+    const referenceCurrent = number(phase.reference_current, label);
+    const oldVoltage = integer(phase.old_voltage_gain, label); const newVoltage = integer(phase.new_voltage_gain, label);
+    const oldCurrent = integer(phase.old_current_gain, label); const newCurrent = integer(phase.new_current_gain, label);
+    if ([oldVoltage, newVoltage, oldCurrent, newCurrent].some((gain) => gain < 0)) throw new Error(`${label} response is invalid`);
+    if (expected.target === "voltage") {
+      if (Math.abs(referenceVoltage - expected.reference) > Math.max(0.01, 1e-6 * Math.max(Math.abs(referenceVoltage), expected.reference))
+        || Math.abs(referenceCurrent) > 1e-6 || oldCurrent !== newCurrent) throw new Error(`${label} response is invalid`);
+    } else if (Math.abs(referenceVoltage) > 1e-6
+      || (phaseName === targetPhase
+        ? Math.abs(referenceCurrent - expected.rawReference) > Math.max(1e-4, 1e-6 * Math.max(Math.abs(referenceCurrent), expected.rawReference))
+        : Math.abs(referenceCurrent) > 1e-6)
+      || oldVoltage !== newVoltage || (phaseName !== targetPhase && oldCurrent !== newCurrent)) throw new Error(`${label} response is invalid`);
+  });
+  const mismatches = array(evidence.register_mismatch_phases, label, 3);
+  mismatches.forEach((phase) => enumeration(phase, PHASES, label));
+  const lines = array(evidence.matching_lines, label, 100);
+  if (lines.some((line) => typeof line !== "string") || boolean(evidence.flash_saved, label) !== true
+    || mismatches.length !== 0 || boolean(evidence.calibration_disabled, label) !== false) throw new Error(`${label} response is invalid`);
 }
 function groupChannels(groupKey: string): number[] {
   const match = /^(?:main_([12])|addon([1-6])_([12]))$/.exec(groupKey);
@@ -237,11 +281,17 @@ export class HelperApi {
     private readonly entryId: string,
   ) {}
 
-  public static assertPublicPayload(value: unknown, depth = 0, field = ""): void {
+  public static assertPublicPayload(
+    value: unknown,
+    transactionStatus = false,
+    depth = 0,
+    field = "",
+    allowChangeKey = false,
+  ): void {
     if (depth > 8) throw new Error("payload nesting is too deep");
     if (Array.isArray(value)) {
       if (value.length > 100) throw new Error(`unsafe collection ${field || "value"} refused`);
-      for (const item of value) this.assertPublicPayload(item, depth + 1, field);
+      for (const item of value) this.assertPublicPayload(item, false, depth + 1, field);
       return;
     }
     if (typeof value === "string") {
@@ -255,11 +305,16 @@ export class HelperApi {
     if (value === null || typeof value !== "object") return;
     for (const [key, item] of Object.entries(value)) {
       if (key.length > 256 || PROPERTY_CONTROL.test(key)) throw new Error(`unsafe property name refused`);
-      if (key.toLowerCase() === "key" && field !== "changes") throw new Error(`private field ${key} refused`);
+      if (key.toLowerCase() === "key" && !allowChangeKey) throw new Error(`private field ${key} refused`);
       if (key.toLowerCase() !== "raw_gain_ct" && PRIVATE_FIELD.test(key)) {
         throw new Error(`private field ${key} refused`);
       }
-      this.assertPublicPayload(item, depth + 1, key.toLowerCase());
+      if (transactionStatus && depth === 0 && key === "changes" && Array.isArray(item)) {
+        if (item.length > 100) throw new Error("unsafe collection changes refused");
+        for (const change of item) this.assertPublicPayload(change, false, depth + 2, "", true);
+      } else {
+        this.assertPublicPayload(item, false, depth + 1, key.toLowerCase());
+      }
     }
   }
 
@@ -269,7 +324,7 @@ export class HelperApi {
       entry_id: this.entryId,
       ...data,
     });
-    HelperApi.assertPublicPayload(result);
+    HelperApi.assertPublicPayload(result, TRANSACTION_OPERATIONS.has(operation));
     return validator(result);
   }
 
@@ -280,7 +335,7 @@ export class HelperApi {
     callback: (message: T) => void,
   ): Promise<() => void> {
     return this.hass.connection.subscribeMessage<T>((message) => {
-      HelperApi.assertPublicPayload(message);
+      HelperApi.assertPublicPayload(message, TRANSACTION_OPERATIONS.has(operation));
       callback(validator(message));
     }, { type: `${PREFIX}${operation}`, entry_id: this.entryId, ...data });
   }
@@ -337,8 +392,8 @@ export class HelperApi {
       reference,
       confirm_iteration: confirmIteration,
     });
-  public calibrateCurrent = (sessionId: string, channel: number, reference: number, confirmIteration: boolean) =>
-    this.call("calibrate_current", (value) => calibration(value, "calibrate_current", { target: "current", channel, reference }), {
+  public calibrateCurrent = (sessionId: string, channel: number, reference: number, confirmIteration: boolean, reportingMultiplier = 1) =>
+    this.call("calibrate_current", (value) => calibration(value, "calibrate_current", { target: "current", channel, reference, rawReference: reference / reportingMultiplier }), {
       session_id: sessionId,
       channel,
       reference,
