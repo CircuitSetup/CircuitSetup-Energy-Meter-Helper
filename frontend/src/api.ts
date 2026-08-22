@@ -26,6 +26,7 @@ const PREFIX = "circuitsetup_energy_meter_helper/";
 const PRIVATE_FIELD = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
 const SECRET_VALUE = /(?:api[_ -]?key|password|secret|ssid|token)\s*[:=]/i;
 const CONTROL = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
+const PROPERTY_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const SETUP_STATES = new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]);
 const TRANSACTION_STATES = new Set(["previewed", "write_confirmed", "written", "validated", "compiled", "install_confirmation_required", "installing", "reconnecting", "verified", "rolled_back", "failed"]);
 const SESSION_STATES = new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "indeterminate", "verified", "cancelled"]);
@@ -44,8 +45,8 @@ function record(value: unknown, label: string): PublicRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} response is invalid`);
   return value as PublicRecord;
 }
-function array(value: unknown, label: string): unknown[] {
-  if (!Array.isArray(value)) throw new Error(`${label} response is invalid`);
+function array(value: unknown, label: string, limit = 100): unknown[] {
+  if (!Array.isArray(value) || value.length > limit) throw new Error(`${label} response is invalid`);
   return value;
 }
 function string(value: unknown, label: string, nullable = false): string | null {
@@ -74,6 +75,9 @@ function enumeration(value: unknown, values: Set<string>, label: string): string
 }
 function optionalString(value: unknown, label: string): void {
   if (value !== undefined) string(value, label, true);
+}
+function close(actual: number, expected: number): boolean {
+  return Math.abs(actual - expected) <= 1e-9 * Math.max(1, Math.abs(actual), Math.abs(expected));
 }
 
 function device(value: unknown, label: string): void {
@@ -142,20 +146,44 @@ function session(value: unknown, label: string): SessionStatus {
   return value as SessionStatus;
 }
 function stability(value: unknown, label: string): StabilityResult {
-  const item = record(value, label); const target = enumeration(item.target, new Set(["voltage", "current"]), label); void target; string(item.target_id, label); boolean(item.stable, label);
-  array(item.windows, label).forEach((entry) => { const window = record(entry, label); array(window.samples, label).forEach((sample) => number(sample, label)); number(window.mean, label); number(window.standard_deviation, label); number(window.range_percent, label); });
+  const item = record(value, label); const target = enumeration(item.target, new Set(["voltage", "current"]), label); string(item.target_id, label); const stable = boolean(item.stable, label);
+  const windows = array(item.windows, label, target === "voltage" ? 3 : 1);
+  if (windows.length !== (target === "voltage" ? 3 : 1)) throw new Error(`${label} response is invalid`);
+  const ranges = windows.map((entry) => {
+    const window = record(entry, label); const samples = array(window.samples, label, 3).map((sample) => number(sample, label));
+    if (samples.length !== 3) throw new Error(`${label} response is invalid`);
+    const mean = number(window.mean, label);
+    const standardDeviation = number(window.standard_deviation, label);
+    const rangePercent = number(window.range_percent, label);
+    const expectedMean = samples.reduce((sum, sample) => sum + sample, 0) / samples.length;
+    const expectedDeviation = Math.sqrt(samples.reduce((sum, sample) => sum + (sample - expectedMean) ** 2, 0) / samples.length);
+    const expectedRange = 100 * (Math.max(...samples) - Math.min(...samples)) / Math.abs(expectedMean);
+    if (!close(mean, expectedMean) || !close(standardDeviation, expectedDeviation) || !close(rangePercent, expectedRange)) throw new Error(`${label} response is invalid`);
+    return rangePercent;
+  });
+  if (stable !== ranges.every((range) => range <= 1)) throw new Error(`${label} response is invalid`);
   return value as StabilityResult;
 }
 function calibration(value: unknown, label: string): CalibrationResult {
-  const item = record(value, label); enumeration(item.state, new Set(["applied_pending_restart_verification", "result_outside_tolerance", "indeterminate"]), label); string(item.group_key, label); if (item.phase !== null) enumeration(item.phase, PHASES, label); integer(item.iteration, label); boolean(item.retry_allowed, label);
-  for (const key of ["changed_channels", "before_values", "after_values", "error_percent_values"] as const) array(item[key], label).forEach((entry) => number(entry, label));
+  const item = record(value, label); const state = enumeration(item.state, new Set(["applied_pending_restart_verification", "result_outside_tolerance", "indeterminate"]), label); string(item.group_key, label); if (item.phase !== null) enumeration(item.phase, PHASES, label); const iteration = integer(item.iteration, label); boolean(item.retry_allowed, label);
+  const changed = array(item.changed_channels, label, 3).map((entry) => integer(entry, label));
+  const before = array(item.before_values, label, 3); const after = array(item.after_values, label, 3); const errors = array(item.error_percent_values, label, 3);
+  for (const values of [before, after, errors]) values.forEach((entry) => number(entry, label));
+  if (![1, 3].includes(changed.length) || before.length !== changed.length || new Set(changed).size !== changed.length
+    || changed.some((channel) => channel < 1 || channel > 42) || iteration < 1 || iteration > 3
+    || (changed.length === 1) !== (item.phase !== null)
+    || (state === "indeterminate" ? after.length !== 0 || errors.length !== 0 : after.length !== changed.length || errors.length !== changed.length)) throw new Error(`${label} response is invalid`);
   if (item.gain_evidence != null) record(item.gain_evidence, label); if (item.restore_evidence != null) record(item.restore_evidence, label);
   return value as CalibrationResult;
 }
 function restart(value: unknown, label: string): RestartVerificationResult {
   const item = record(value, label); for (const key of ["mac", "config_filename", "config_sha256", "topology_project_name", "topology_voltage_layout", "verification_id"] as const) string(item[key], label);
-  integer(item.topology_addon_count, label); enumeration(item.topology_connection_type, CONNECTIONS, label); integer(item.connection_generation, label); enumeration(item.source_authority, new Set(["saved_flash"]), label); boolean(item.source_handoff_available, label); optionalString(item.source_handoff_transaction_id, label);
-  array(item.groups, label).forEach((entry) => { const group = record(entry, label); string(group.instance_id, label); const phases = array(group.phase_gains, label); if (phases.length !== 3) throw new Error(`${label} response is invalid`); phases.forEach((phase) => { const gains = array(phase, label); if (gains.length !== 2) throw new Error(`${label} response is invalid`); gains.forEach((gain) => { const amount = integer(gain, label); if (amount < 1 || amount > 65535) throw new Error(`${label} response is invalid`); }); }); });
+  const addonCount = integer(item.topology_addon_count, label); enumeration(item.topology_connection_type, CONNECTIONS, label); const generation = integer(item.connection_generation, label); enumeration(item.source_authority, new Set(["saved_flash"]), label); boolean(item.source_handoff_available, label); optionalString(item.source_handoff_transaction_id, label);
+  if (addonCount < 0 || addonCount > 6 || generation < 1) throw new Error(`${label} response is invalid`);
+  const groups = array(item.groups, label, 14);
+  const expectedIds = ["meter_main1", "meter_main2", ...Array.from({ length: addonCount }, (_, index) => [`addon${index + 1}_1`, `addon${index + 1}_2`]).flat()];
+  if (groups.length !== expectedIds.length) throw new Error(`${label} response is invalid`);
+  groups.forEach((entry, index) => { const group = record(entry, label); if (string(group.instance_id, label) !== expectedIds[index]) throw new Error(`${label} response is invalid`); const phases = array(group.phase_gains, label, 3); if (phases.length !== 3) throw new Error(`${label} response is invalid`); phases.forEach((phase) => { const gains = array(phase, label, 2); if (gains.length !== 2) throw new Error(`${label} response is invalid`); gains.forEach((gain) => { const amount = integer(gain, label); if (amount < 1 || amount > 65535) throw new Error(`${label} response is invalid`); }); }); });
   return value as RestartVerificationResult;
 }
 
@@ -168,6 +196,7 @@ export class HelperApi {
   public static assertPublicPayload(value: unknown, depth = 0, field = ""): void {
     if (depth > 8) throw new Error("payload nesting is too deep");
     if (Array.isArray(value)) {
+      if (value.length > 100) throw new Error(`unsafe collection ${field || "value"} refused`);
       for (const item of value) this.assertPublicPayload(item, depth + 1, field);
       return;
     }
@@ -181,6 +210,7 @@ export class HelperApi {
     }
     if (value === null || typeof value !== "object") return;
     for (const [key, item] of Object.entries(value)) {
+      if (key.length > 256 || PROPERTY_CONTROL.test(key)) throw new Error(`unsafe property name refused`);
       if (key.toLowerCase() !== "raw_gain_ct" && PRIVATE_FIELD.test(key)) {
         throw new Error(`private field ${key} refused`);
       }

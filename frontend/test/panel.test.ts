@@ -408,6 +408,98 @@ describe("CircuitSetup panel", () => {
     expect(state.restartResult).toBeNull();
   });
 
+  it("drops every pending device response when another meter is selected", async () => {
+    const pending = new Map<string, (value: unknown) => void>();
+    const subscribed: string[] = [];
+    const meter2 = { ...device, entry_id: "meter-2", title: "Garage meter" };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>) => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device, meter2] } as T;
+        return await new Promise<T>((resolve) => pending.set(operation, resolve as (value: unknown) => void));
+      },
+      connection: { subscribeMessage: async (_callback, message) => {
+        subscribed.push(String(message.type).split("/").at(-1) ?? "");
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & {
+      loadTopology(): Promise<void>;
+      loadInventory(): Promise<void>;
+      reviewChanges(): Promise<void>;
+      startSession(): Promise<void>;
+      selectDevice(deviceId: string): void;
+    };
+    const topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
+    const inventory: CtInventory = {
+      plan_id: "plan-1", source_sha256: "a".repeat(64),
+      channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`,
+        raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model", selection_verified_against_config: true,
+        address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3) + 1,
+          phase: (["A", "B", "C"] as const)[index % 3]! } })),
+      catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100, secondary: "50 mA",
+        default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }],
+        source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
+    };
+
+    const topologyCall = state.loadTopology();
+    state.selectDevice("meter-2");
+    pending.get("get_topology")?.(topology);
+    await topologyCall;
+    expect(state.topology).toBeNull();
+
+    state.selectDevice("meter-1");
+    const inventoryCall = state.loadInventory();
+    state.selectDevice("meter-2");
+    pending.get("get_ct_inventory")?.(inventory);
+    await inventoryCall;
+    expect(state.inventory).toBeNull();
+
+    state.selectDevice("meter-1");
+    state.inventory = inventory;
+    state.drafts = new Map([[1, { name: "Changed", modelId: "model", multiplier: 1,
+      burdenAcknowledged: false, expanded: false }]]);
+    const previewCall = state.reviewChanges();
+    state.selectDevice("meter-2");
+    pending.get("preview_ct_config")?.({ transaction_id: "tx-a", state: "previewed", source_sha256: "a".repeat(64),
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [] });
+    await previewCall;
+    expect(state.transaction).toBeNull();
+    expect(subscribed).not.toContain("subscribe_config_transaction");
+
+    state.selectDevice("meter-1");
+    const sessionCall = state.startSession();
+    state.selectDevice("meter-2");
+    pending.get("start_session")?.({ session_id: "session-a", device_id: "meter-1", state: "safety_required",
+      safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } });
+    await sessionCall;
+    expect(state.session).toBeNull();
+    expect(subscribed).not.toContain("subscribe_session");
+  });
+
+  it("never renders verified success for an impossible restart group collection", async () => {
+    const invalidRestart = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
+      topology_addon_count: 6, topology_project_name: device.project_name, topology_connection_type: "wifi",
+      topology_voltage_layout: "two_groups", connection_generation: 4,
+      groups: Array.from({ length: 15 }, (_, index) => ({ instance_id: `group-${index}`,
+        phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]] })), verification_id: "invalid",
+      source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null };
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] },
+      restart_and_verify: invalidRestart }));
+    const state = panel as unknown as Record<string, unknown> & { restart(): Promise<void> };
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] } };
+    panel.showState("restart");
+    await state.restart();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Restart");
+    expect(state.restartResult).toBeNull();
+    expect(text(panel)).not.toContain("invalid");
+  });
+
   it("makes Back and mobile Steps navigation functional with deterministic heading focus", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     panel.showState("safety"); await panel.updateComplete;
@@ -451,7 +543,9 @@ describe("CircuitSetup panel", () => {
   it("keeps cancellation distinct and preserves the authoritative restart result", async () => {
     const restartResult = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
       topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
-      topology_voltage_layout: "two_groups", connection_generation: 4, groups: [], verification_id: "verified-4",
+      topology_voltage_layout: "two_groups", connection_generation: 4,
+      groups: ["meter_main1", "meter_main2"].map((instance_id) => ({ instance_id,
+        phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]] })), verification_id: "verified-4",
       source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null };
     const cancelled = { session_id: "session", device_id: "meter-1", state: "cancelled", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled,

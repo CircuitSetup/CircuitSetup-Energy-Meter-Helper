@@ -80,6 +80,7 @@ export class CircuitSetupPanel extends LitElement {
   private announcement = "";
   private unsubs: Array<() => void> = [];
   private connectionGeneration = 0;
+  private operationGeneration = 0;
   private transactionSubscriptionScope = 0;
   private sessionSubscriptionScope = 0;
   private transactionUnsub: (() => void) | null = null;
@@ -95,6 +96,7 @@ export class CircuitSetupPanel extends LitElement {
 
   public override disconnectedCallback(): void {
     ++this.connectionGeneration;
+    ++this.operationGeneration;
     ++this.transactionSubscriptionScope;
     ++this.sessionSubscriptionScope;
     for (const unsub of this.unsubs.splice(0)) {
@@ -147,6 +149,10 @@ export class CircuitSetupPanel extends LitElement {
     return this.isConnected && generation === this.connectionGeneration && api === this.api;
   }
 
+  private ownsOperation(generation: number, api: HelperApi, deviceId: string | null): boolean {
+    return generation === this.operationGeneration && api === this.api && deviceId === this.selectedDeviceId;
+  }
+
   private async ownSubscription(
     pending: Promise<() => void>,
     generation: number,
@@ -187,6 +193,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private selectDevice(deviceId: string | null): void {
     if (deviceId === this.selectedDeviceId) return;
+    ++this.operationGeneration;
     this.clearSubscription("transaction");
     this.clearSubscription("session");
     this.selectedDeviceId = deviceId;
@@ -273,9 +280,13 @@ export class CircuitSetupPanel extends LitElement {
   private async rescan(): Promise<void> {
     if (!this.api) return;
     const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const generation = ++this.operationGeneration;
     await this.run(async () => {
       await api.setInstallerIntent(this.addonCount, this.connection);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
+      if (!this.ownsOperation(generation, api, deviceId)) return;
       this.setup = setup;
       if (setup.devices.length) {
         this.selectDevice(setup.devices[0]?.entry_id ?? null);
@@ -284,32 +295,37 @@ export class CircuitSetupPanel extends LitElement {
       } else {
         this.announcement = "No compatible meter found. Check the network and rescan.";
       }
-    }, "Rescan failed.");
+    }, "Rescan failed.", () => this.ownsOperation(generation, api, deviceId));
   }
 
   private async adopt(): Promise<void> {
     if (!this.api || !this.selectedDeviceId) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
     await this.run(async () => {
-      await this.api?.adoptDevice(this.selectedDeviceId!);
+      await api.adoptDevice(deviceId);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
       this.announcement = "Meter adopted in Device Builder.";
-    }, "Adoption is unavailable for this meter.");
+    }, "Adoption is unavailable for this meter.", () => this.ownsOperation(generation, api, deviceId));
   }
 
   private async loadTopology(): Promise<void> {
     if (!this.api || !this.selectedDeviceId) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
     await this.run(async () => {
-      const result = await this.api?.getTopology(this.selectedDeviceId!);
-      if (!result) return;
+      const result = await api.getTopology(deviceId);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
       this.showTopology("topology" in result ? result.topology : result);
-    }, "Topology evidence could not be loaded.");
+    }, "Topology evidence could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
   }
 
   private async loadInventory(): Promise<void> {
     if (!this.api || !this.selectedDeviceId) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
     await this.run(async () => {
-      const result = await this.api?.getCtInventory(this.selectedDeviceId!);
-      if (result) this.showInventory(result);
-    }, "CT inventory could not be loaded.");
+      const result = await api.getCtInventory(deviceId);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.showInventory(result);
+    }, "CT inventory could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
   }
 
   private updateDraft(channel: number, patch: Partial<CtDraft>): void {
@@ -333,18 +349,23 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.inventory || !this.selectedDeviceId) return;
     const changes = changesFromDrafts(this.inventory, this.drafts);
     if (!changes.length) return this.fail(new Error(), "Select at least one CT change before review.");
+    const api = this.api; const deviceId = this.selectedDeviceId; const inventory = this.inventory;
+    const generation = ++this.operationGeneration;
     this.clearSubscription("transaction");
     this.transaction = null;
     await this.run(async () => {
-      this.transaction = await this.api?.previewCtConfig(
-        this.selectedDeviceId!,
-        this.inventory!.plan_id,
-        this.inventory!.source_sha256,
+      const transaction = await api.previewCtConfig(
+        deviceId,
+        inventory.plan_id,
+        inventory.source_sha256,
         changes,
-      ) ?? null;
+      );
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.transaction = transaction;
       this.navigate("build");
       await this.subscribeTransaction(this.connectionGeneration);
-    }, "The configuration preview is stale. Reload the CT inventory and review again.");
+    }, "The configuration preview is stale. Reload the CT inventory and review again.",
+    () => this.ownsOperation(generation, api, deviceId));
   }
 
   private async subscribeTransaction(generation: number): Promise<void> {
@@ -380,26 +401,36 @@ export class CircuitSetupPanel extends LitElement {
 
   private async transactionAction(action: "apply" | "compile" | "install" | "rollback"): Promise<void> {
     if (!this.api || !this.transaction || !this.selectedDeviceId) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const current = this.transaction;
+    const generation = ++this.operationGeneration;
     await this.run(async () => {
-      const args = [this.selectedDeviceId!, this.transaction!.transaction_id, this.transaction!.source_sha256] as const;
-      this.transaction = action === "apply" ? await this.api!.applyCtConfig(...args)
-        : action === "compile" ? await this.api!.compileCtConfig(...args)
-        : action === "install" ? await this.api!.installCtConfig(...args)
-        : await this.api!.rollbackCtConfig(...args);
+      const args = [deviceId, current.transaction_id, current.source_sha256] as const;
+      const transaction = action === "apply" ? await api.applyCtConfig(...args)
+        : action === "compile" ? await api.compileCtConfig(...args)
+        : action === "install" ? await api.installCtConfig(...args)
+        : await api.rollbackCtConfig(...args);
+      if (!this.ownsOperation(generation, api, deviceId)
+        || this.transaction?.transaction_id !== current.transaction_id
+        || this.transaction.source_sha256 !== current.source_sha256) return;
+      this.transaction = transaction;
       this.announcement = `Configuration ${this.transaction.state}.`;
-    }, "This confirmation is stale. Reload the CT inventory before making another change.");
+    }, "This confirmation is stale. Reload the CT inventory before making another change.",
+    () => this.ownsOperation(generation, api, deviceId));
   }
 
   private async startSession(): Promise<void> {
     if (!this.api || !this.selectedDeviceId) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
     this.clearSubscription("session");
     this.session = null;
     this.resetCalibrationRun();
     await this.run(async () => {
-      this.session = await this.api!.startSession(this.selectedDeviceId!);
+      const session = await api.startSession(deviceId);
+      if (!this.ownsOperation(generation, api, deviceId) || session.device_id !== deviceId) return;
+      this.session = session;
       this.navigate("safety");
       await this.subscribeSession(this.connectionGeneration);
-    }, "Calibration session could not be started.");
+    }, "Calibration session could not be started.", () => this.ownsOperation(generation, api, deviceId));
   }
 
   private async subscribeSession(generation: number): Promise<void> {
@@ -427,31 +458,43 @@ export class CircuitSetupPanel extends LitElement {
 
   private async acknowledgeSafety(): Promise<void> {
     if (!this.api || !this.session) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
     await this.run(async () => {
-      this.session = await this.api!.acknowledgeSafety(this.session!.session_id);
+      const session = await api.acknowledgeSafety(sessionId);
+      if (!this.ownsOperation(generation, api, deviceId) || session.session_id !== sessionId) return;
+      this.session = session;
       this.navigate("voltage");
-    }, "Safety acknowledgement could not be accepted.");
+    }, "Safety acknowledgement could not be accepted.", () => this.ownsOperation(generation, api, deviceId));
   }
 
   private async checkStability(target: "voltage" | "current"): Promise<void> {
     if (!this.api || !this.session) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
     const targetId = target === "voltage" ? this.groupKey(this.group) : String(this.channel);
     await this.run(async () => {
-      const result = await this.api!.checkStability(this.session!.session_id, target, targetId);
+      const result = await api.checkStability(sessionId, target, targetId);
+      if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
       this.stabilityByTarget = new Map(this.stabilityByTarget).set(`${target}:${targetId}`, result);
-    }, "Stable samples could not be collected.");
+    }, "Stable samples could not be collected.", () => this.ownsOperation(generation, api, deviceId));
   }
 
   private async calibrate(target: "voltage" | "current"): Promise<void> {
     if (!this.api || !this.session) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
     const targetId = target === "voltage" ? this.groupKey(this.group) : String(this.channel);
+    const groupKey = this.groupKey(this.group); const channel = this.channel; const reference = this.reference;
     await this.run(async () => {
       const result = target === "voltage"
-        ? await this.api!.calibrateVoltage(this.session!.session_id, this.groupKey(this.group), this.reference, true)
-        : await this.api!.calibrateCurrent(this.session!.session_id, this.channel, this.reference, true);
+        ? await api.calibrateVoltage(sessionId, groupKey, reference, true)
+        : await api.calibrateCurrent(sessionId, channel, reference, true);
+      if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
       this.calibrationByTarget = new Map(this.calibrationByTarget).set(`${target}:${targetId}`, result);
       this.announcement = `Calibration iteration ${result.iteration} finished with state ${result.state}.`;
-    }, "Calibration did not complete. Reconnect and inspect before another attempt.");
+    }, "Calibration did not complete. Reconnect and inspect before another attempt.",
+    () => this.ownsOperation(generation, api, deviceId));
   }
 
   private groupKey(index: number): string {
@@ -462,31 +505,44 @@ export class CircuitSetupPanel extends LitElement {
 
   private async restart(): Promise<void> {
     if (!this.api || !this.session) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
     await this.run(async () => {
-      this.restartResult = await this.api!.restartAndVerify(this.session!.session_id);
+      const result = await api.restartAndVerify(sessionId);
+      if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+      this.restartResult = result;
       this.session = { ...this.session!, state: "verified" };
       this.navigate("summary");
-    }, "Restart verification failed; review recovery evidence before rollback.");
+    }, "Restart verification failed; review recovery evidence before rollback.",
+    () => this.ownsOperation(generation, api, deviceId));
   }
 
   private async cancelSession(): Promise<void> {
     if (!this.api || !this.session) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
     await this.run(async () => {
-      const cancelled = await this.api!.cancelSession(this.session!.session_id);
+      const cancelled = await api.cancelSession(sessionId);
+      if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
       this.clearSubscription("session");
       this.session = cancelled;
       this.restartResult = null;
       this.navigate("safety");
       this.announcement = "Calibration session cancelled; cleanup completed without restart verification.";
-    }, "The session cleanup could not be confirmed.");
+    }, "The session cleanup could not be confirmed.", () => this.ownsOperation(generation, api, deviceId));
   }
 
   private async reconnectSession(): Promise<void> {
     if (!this.api || !this.session) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
     await this.run(async () => {
-      this.session = await this.api!.getSession(this.session!.session_id);
+      const session = await api.getSession(sessionId);
+      if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+      this.session = session;
       this.announcement = `Session reconnected with state ${this.session.state}.`;
-    }, "Session reconnection failed. Retry only after checking the meter connection.");
+    }, "Session reconnection failed. Retry only after checking the meter connection.",
+    () => this.ownsOperation(generation, api, deviceId));
   }
 
   private resultFor(target: "voltage" | "current"): CalibrationResult | null {
@@ -499,15 +555,20 @@ export class CircuitSetupPanel extends LitElement {
     return this.stabilityByTarget.get(`${target}:${targetId}`) ?? null;
   }
 
-  private async run(operation: () => Promise<void>, fallback: string): Promise<void> {
+  private async run(
+    operation: () => Promise<void>,
+    fallback: string,
+    isCurrent: () => boolean = () => true,
+  ): Promise<void> {
     this.error = "";
     try {
       await operation();
     } catch (error) {
+      if (!isCurrent()) return;
       const code = (error as WsError).code;
       this.fail(error, code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : fallback);
     }
-    this.requestUpdate();
+    if (isCurrent()) this.requestUpdate();
   }
 
   private fail(_error: unknown, safeMessage: string): void {

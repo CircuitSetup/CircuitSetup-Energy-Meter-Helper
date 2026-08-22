@@ -49,12 +49,15 @@ const session = { session_id: "session-1", device_id: "meter-1", state: "ready",
   preflight: { issues: [], zeroed_roles: ["reference"] } };
 const stability = { target: "current", target_id: "1", stable: true,
   windows: [{ samples: [1, 1, 1], mean: 1, standard_deviation: 0, range_percent: 0 }] };
-const calibration = { state: "applied_pending_restart_verification", group_key: "meter_main1", phase: null,
+const calibration = { state: "applied_pending_restart_verification", group_key: "meter_main1", phase: "A",
   changed_channels: [1], iteration: 1, before_values: [5500], after_values: [5520], error_percent_values: [0.2],
   gain_evidence: { outcome: "success" }, restore_evidence: { reference: "zeroed" }, retry_allowed: false };
 const restart = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
   topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
-  topology_voltage_layout: "two_groups", connection_generation: 2, groups: [], verification_id: "verify-1",
+  topology_voltage_layout: "two_groups", connection_generation: 2,
+  groups: ["meter_main1", "meter_main2"].map((instance_id) => ({
+    instance_id, phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]],
+  })), verification_id: "verify-1",
   source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null };
 
 function validResponse(operation: string): unknown {
@@ -188,6 +191,50 @@ describe("HelperApi", () => {
     }
     expect(() => HelperApi.assertPublicPayload({ detail: "ordinary safe whitespace" })).not.toThrow();
     expect(() => HelperApi.assertPublicPayload({ redacted_diff: "- old\n+ new" })).not.toThrow();
+    for (const key of ["safe\tkey", "api\tkey", "safe\nkey", "x".repeat(257)]) {
+      expect(() => HelperApi.assertPublicPayload({ evidence: [{ [key]: "value" }] })).toThrow();
+    }
+  });
+
+  it("rejects impossible stability statistics and rendered collection sizes", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    for (const window of [
+      { samples: Array(101).fill(1), mean: 1, standard_deviation: 0, range_percent: 0 },
+      { samples: [1, 1, 1], mean: 2, standard_deviation: 0, range_percent: 0 },
+      { samples: [1, 2, 3], mean: 2, standard_deviation: 0, range_percent: 100 },
+      { samples: [1, 2, 3], mean: 2, standard_deviation: Math.sqrt(2 / 3), range_percent: 1 },
+    ]) {
+      hass.responses.check_stability = { ...stability, windows: [window] };
+      await expect(api.checkStability("session-1", "current", "1")).rejects.toThrow();
+    }
+    hass.responses.check_stability = { ...stability, target: "voltage", target_id: "meter_main1" };
+    await expect(api.checkStability("session-1", "voltage", "meter_main1")).rejects.toThrow("check_stability");
+    hass.responses.get_diagnostics_summary = { values: Array(101).fill(1) };
+    await expect(api.getDiagnosticsSummary()).rejects.toThrow("collection");
+  });
+
+  it("rejects cross-inconsistent calibration arrays and restart groups", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    for (const invalid of [
+      { ...calibration, changed_channels: [1, 2, 3, 4], before_values: [1, 2, 3, 4], after_values: [1, 2, 3, 4], error_percent_values: [0, 0, 0, 0] },
+      { ...calibration, before_values: [5500, 5501] },
+      { ...calibration, state: "indeterminate", after_values: [5520], error_percent_values: [] },
+      { ...calibration, iteration: 4 },
+    ]) {
+      hass.responses.calibrate_current = invalid;
+      await expect(api.calibrateCurrent("session-1", 1, 5, true)).rejects.toThrow("calibrate_current");
+    }
+    hass.responses.restart_and_verify = {
+      ...restart,
+      topology_addon_count: 6,
+      groups: Array.from({ length: 15 }, (_, index) => ({
+        instance_id: `group-${index}`,
+        phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]],
+      })),
+    };
+    await expect(api.restartAndVerify("session-1")).rejects.toThrow("restart_and_verify");
   });
 
   it("rejects impossible topology counts and bounded collections before rendering", async () => {
