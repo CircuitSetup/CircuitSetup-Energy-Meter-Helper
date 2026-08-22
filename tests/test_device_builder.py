@@ -8,6 +8,7 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ConfigChangedError,
     DeviceBuilderClient,
     ESPHomeConfigSnapshot,
+    JobProgressStage,
     RollbackError,
 )
 
@@ -32,7 +33,9 @@ class FakeWebSocket:
         await self._received.put({"message_id": message_id, "result": result})
 
     async def send_event(self, message_id: str, event: str, data: object) -> None:
-        await self._received.put({"message_id": message_id, "event": event, "data": data})
+        await self._received.put(
+            {"message_id": message_id, "event": event, "data": data}
+        )
 
     async def close(self) -> None:
         await self._received.put(None)
@@ -69,7 +72,9 @@ def test_missing_auth_flag_requires_opaque_token() -> None:
         token_client = DeviceBuilderClient(
             "http://builder",
             token="opaque",
-            connect=lambda _: FakeWebSocket({"server_version": "1.0", "requires_auth": True}),
+            connect=lambda _: FakeWebSocket(
+                {"server_version": "1.0", "requires_auth": True}
+            ),
         )
         await token_client.async_connect()
         await token_client.async_disconnect()
@@ -191,7 +196,9 @@ def test_validation_uses_generic_terminal_fields() -> None:
         assert (await task).success
         failed = asyncio.create_task(client.async_validate("meter.yaml"))
         await asyncio.sleep(0)
-        await ws.send_event("2", "result", {"success": False, "code": 1, "summary": "bad"})
+        await ws.send_event(
+            "2", "result", {"success": False, "code": 1, "summary": "bad"}
+        )
         result = await failed
         assert not result.success and result.code == 1 and result.summary == "bad"
         await client.async_disconnect()
@@ -222,12 +229,44 @@ def test_upload_uses_ota_and_never_install() -> None:
     asyncio.run(run())
 
 
+def test_upload_reports_only_live_structured_progress() -> None:
+    """Output text is reduced to allowlisted stage/percentage data before callbacks."""
+
+    async def run() -> None:
+        client, ws = await connected_client()
+        progress = []
+        task = asyncio.create_task(client.async_upload("meter.yaml", progress.append))
+        await asyncio.sleep(0)
+        await ws.send_result("1", {"job_id": "job-1"})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await ws.send_event(
+            "2", "output", "Uploading token=top-secret password=hunter2 42%"
+        )
+        await asyncio.sleep(0)
+
+        assert progress[0].stage is JobProgressStage.UPLOADING
+        assert progress[0].percentage == 42
+        assert "secret" not in repr(progress[0]) and "hunter2" not in repr(progress[0])
+        await ws.send_event("2", "output", "token=another-secret arbitrary text")
+        await asyncio.sleep(0)
+        assert len(progress) == 1
+
+        await ws.send_event("2", "result", {"status": "completed", "exit_code": 0})
+        await task
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
 def test_rollback_failure_is_separate() -> None:
     """A rollback validation failure is distinguishable from its initiating error."""
 
     async def run() -> None:
         client, ws = await connected_client()
-        task = asyncio.create_task(client.async_restore_content("meter.yaml", "api: {}"))
+        task = asyncio.create_task(
+            client.async_restore_content("meter.yaml", "api: {}")
+        )
         await asyncio.sleep(0)
         await ws.send_result("1", "new")
         await asyncio.sleep(0)

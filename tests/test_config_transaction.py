@@ -1,6 +1,7 @@
 """Adversarial tests for configuration/install transactions."""
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 
@@ -17,6 +18,8 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ConfigChangedError,
     ESPHomeConfigSnapshot,
+    JobProgress,
+    JobProgressStage,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
@@ -34,6 +37,7 @@ class Job:
     success: bool
     summary: str = ""
     output_tail: tuple[str, ...] = ()
+    code: int | None = None
 
 
 class Builder:
@@ -44,11 +48,13 @@ class Builder:
         compile: Job | BaseException | None = None,
         upload: Job | BaseException | None = None,
         restore_error: BaseException | None = None,
+        remote_content: str = "prior",
     ) -> None:
         self.validation = list(validation or (Job(True),))
         self.compile = compile if compile is not None else Job(True)
         self.upload = upload if upload is not None else Job(True)
         self.restore_error = restore_error
+        self.remote_content = remote_content
         self.calls: list[str] = []
         self.restored_content: str | None = None
         self.pauses: dict[str, asyncio.Event] = {}
@@ -68,8 +74,17 @@ class Builder:
     async def async_update_config(
         self, snapshot: ESPHomeConfigSnapshot, proposed: str
     ) -> None:
-        del snapshot, proposed
+        del snapshot
         await self._enter("write")
+        self.remote_content = proposed
+
+    async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
+        await self._enter("read")
+        return ESPHomeConfigSnapshot(
+            configuration,
+            self.remote_content,
+            sha256(self.remote_content.encode()).hexdigest(),
+        )
 
     async def async_validate(self, configuration: str) -> Job:
         del configuration
@@ -88,8 +103,15 @@ class Builder:
             raise self.compile
         return self.compile
 
-    async def async_upload(self, configuration: str) -> Job:
+    async def async_upload(
+        self,
+        configuration: str,
+        progress: Callable[[JobProgress], None] | None = None,
+    ) -> Job:
         del configuration
+        if progress is not None:
+            for percentage in range(101):
+                progress(JobProgress(JobProgressStage.UPLOADING, percentage))
         await self._enter("upload")
         if isinstance(self.upload, BaseException):
             raise self.upload
@@ -99,8 +121,33 @@ class Builder:
         del configuration
         await self._enter("restore")
         self.restored_content = content
+        self.remote_content = content
         if self.restore_error is not None:
             raise self.restore_error
+
+
+class UncertainUpdateBuilder(Builder):
+    """Commit a selected remote outcome, then lose or withhold the response."""
+
+    def __init__(self, outcome: str, *, block: bool = False) -> None:
+        super().__init__()
+        self.outcome = outcome
+        if block:
+            self.pause("write")
+
+    async def async_update_config(
+        self, snapshot: ESPHomeConfigSnapshot, proposed: str
+    ) -> None:
+        self.calls.append("write")
+        self.remote_content = {
+            "source": snapshot.content,
+            "proposed": proposed,
+            "foreign": "foreign concurrent content",
+        }[self.outcome]
+        if "write" in self.started:
+            self.started["write"].set()
+            await self.pauses["write"].wait()
+        raise ConnectionError("response lost after remote outcome")
 
 
 class Persistence:
@@ -223,6 +270,111 @@ def test_preview_binds_source_and_exposes_only_bounded_safe_dto() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("outcome", "state", "code", "restore_count", "retained"),
+    (
+        (
+            "source",
+            ConfigTransactionState.FAILED,
+            TransactionEvidenceCode.WRITE_NOT_APPLIED,
+            0,
+            False,
+        ),
+        (
+            "proposed",
+            ConfigTransactionState.ROLLED_BACK,
+            TransactionEvidenceCode.WRITE_FAILED,
+            1,
+            False,
+        ),
+        (
+            "foreign",
+            ConfigTransactionState.FAILED,
+            TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED,
+            0,
+            True,
+        ),
+    ),
+)
+def test_lost_update_response_reconciles_without_overwriting_foreign_content(
+    outcome: str,
+    state: ConfigTransactionState,
+    code: TransactionEvidenceCode,
+    restore_count: int,
+    retained: bool,
+) -> None:
+    async def run() -> None:
+        builder = UncertainUpdateBuilder(outcome)
+        manager = _manager(builder, Persistence())
+        preview = await _preview(manager)
+
+        status = await manager.async_confirm_write(preview.transaction_id, "admin")
+
+        assert status.state is state and code in status.evidence
+        assert builder.calls.count("restore") == restore_count
+        assert builder.remote_content == (
+            "foreign concurrent content" if outcome == "foreign" else "prior"
+        )
+        assert manager.sessions.is_config_locked("aa") is retained
+        if retained:
+            assert manager.status(preview.transaction_id) == status
+            await manager.sessions.async_unload()
+        else:
+            with pytest.raises(KeyError):
+                manager.status(preview.transaction_id)
+
+    asyncio.run(run())
+
+
+def test_cancellation_after_remote_write_commit_is_reconciled_before_cleanup() -> None:
+    async def run() -> None:
+        builder = UncertainUpdateBuilder("proposed", block=True)
+        manager = _manager(builder, Persistence())
+        preview = await _preview(manager)
+        task = asyncio.create_task(
+            manager.async_confirm_write(preview.transaction_id, "admin")
+        )
+        await asyncio.wait_for(builder.started["write"].wait(), 1)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+
+        assert builder.remote_content == "prior"
+        assert builder.calls == ["write", "read", "restore"]
+        assert not manager.sessions.is_config_locked("aa")
+        with pytest.raises(KeyError):
+            manager.status(preview.transaction_id)
+
+    asyncio.run(run())
+
+
+def test_indeterminate_update_retains_typed_recovery_state_and_owned_lease() -> None:
+    class IndeterminateBuilder(UncertainUpdateBuilder):
+        async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
+            del configuration
+            self.calls.append("read")
+            raise ConnectionError("cannot determine current content")
+
+    async def run() -> None:
+        builder = IndeterminateBuilder("proposed")
+        manager = _manager(builder, Persistence())
+        preview = await _preview(manager)
+
+        status = await manager.async_confirm_write(preview.transaction_id, "admin")
+
+        assert status.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
+        assert builder.calls == ["write", "read"]
+        assert manager.sessions.is_config_locked("aa")
+        assert manager.status(preview.transaction_id) == status
+        internal = manager.sessions._get_transaction(preview.transaction_id)
+        assert internal.plan is not None and internal.prior_content == "prior"
+        await manager.sessions.async_unload()
+        assert not manager.sessions.is_config_locked("aa")
+
+    asyncio.run(run())
+
+
 def test_confirmations_and_verified_persistence_are_separate() -> None:
     async def run() -> None:
         builder, persistence = Builder(), Persistence()
@@ -269,6 +421,24 @@ def test_validation_failure_or_disconnect_restores_exact_source_once(
         assert builder.restored_content == "exact prior bytes\n"
         assert "secret" not in repr(status)
         assert not manager.sessions.is_config_locked("aa")
+
+    asyncio.run(run())
+
+
+def test_validation_detail_is_useful_bounded_and_never_contains_raw_text() -> None:
+    async def run() -> None:
+        raw = "ERROR token=top-secret\nWARNING password=hunter2"
+        builder = Builder(validation=(Job(False, raw, (raw,), 17),))
+        manager = _manager(builder, Persistence())
+        preview = await _preview(manager)
+
+        status = await manager.async_confirm_write(preview.transaction_id, "admin")
+
+        assert status.validation_detail is not None
+        assert status.validation_detail.code == 17
+        assert status.validation_detail.error_count >= 1
+        assert status.validation_detail.warning_count >= 1
+        assert "top-secret" not in repr(status) and "hunter2" not in repr(status)
 
     asyncio.run(run())
 
@@ -388,6 +558,33 @@ def test_upload_disconnect_is_terminal_and_never_persists() -> None:
         assert status.evidence == (TransactionEvidenceCode.UPLOAD_FAILED,)
         assert "token" not in repr(status) and not persistence.saved
         assert not manager.sessions.is_config_locked("aa")
+
+    asyncio.run(run())
+
+
+def test_upload_progress_is_live_structured_and_bounded() -> None:
+    async def run() -> None:
+        builder = Builder()
+        release = builder.pause("upload")
+        manager = _manager(builder, Persistence())
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        install = asyncio.create_task(
+            manager.async_confirm_install(preview.transaction_id, "admin")
+        )
+        await asyncio.wait_for(builder.started["upload"].wait(), 1)
+
+        live = manager.status(preview.transaction_id)
+        assert live.state is ConfigTransactionState.INSTALLING
+        assert len(live.upload_progress) <= 32
+        assert live.upload_progress[-1].percentage == 100
+        assert all(
+            item.stage is JobProgressStage.UPLOADING for item in live.upload_progress
+        )
+        assert len(repr(live.upload_progress).encode()) <= 2_048
+
+        release.set()
+        assert (await install).state is ConfigTransactionState.VERIFIED
 
     asyncio.run(run())
 

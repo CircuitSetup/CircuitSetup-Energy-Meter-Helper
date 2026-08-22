@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -11,7 +11,13 @@ from hashlib import sha256
 from typing import Protocol
 from uuid import uuid4
 
-from .device_builder import ESPHomeConfigSnapshot, JobResult
+from .device_builder import (
+    ConfigChangedError,
+    ESPHomeConfigSnapshot,
+    JobProgress,
+    JobProgressStage,
+    JobResult,
+)
 from .models import (
     ConfigMutationPlan,
     MeterTopology,
@@ -24,6 +30,8 @@ MAX_VISIBLE_DIFF_BYTES = 32_768
 MAX_VISIBLE_DIFF_LINES = 512
 MAX_EVIDENCE_BYTES = 2_048
 MAX_EVIDENCE_LINES = 32
+MAX_UPLOAD_PROGRESS_BYTES = 2_048
+MAX_UPLOAD_PROGRESS_LINES = 32
 
 
 class ConfigTransactionState(StrEnum):
@@ -46,6 +54,9 @@ class TransactionEvidenceCode(StrEnum):
     """Allowlisted failure evidence safe to serialize to the panel."""
 
     WRITE_FAILED = "write_failed"
+    WRITE_NOT_APPLIED = "write_not_applied"
+    WRITE_RECOVERY_REQUIRED = "write_recovery_required"
+    SOURCE_CHANGED = "source_changed"
     VALIDATION_FAILED = "validation_failed"
     VALIDATION_UNAVAILABLE = "validation_unavailable"
     COMPILE_FAILED = "compile_failed"
@@ -77,6 +88,8 @@ class RollbackFailedError(RuntimeError):
 
 
 class DeviceBuilder(Protocol):
+    async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot: ...
+
     async def async_update_config(
         self, snapshot: ESPHomeConfigSnapshot, proposed_content: str
     ) -> None: ...
@@ -85,7 +98,11 @@ class DeviceBuilder(Protocol):
 
     async def async_compile(self, configuration: str) -> JobResult: ...
 
-    async def async_upload(self, configuration: str) -> JobResult: ...
+    async def async_upload(
+        self,
+        configuration: str,
+        progress: Callable[[JobProgress], None] | None = None,
+    ) -> JobResult: ...
 
     async def async_restore_content(self, configuration: str, content: str) -> None: ...
 
@@ -111,6 +128,15 @@ class ReconnectVerifier(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class ValidationDetail:
+    """Useful validation counts and code without arbitrary builder text."""
+
+    code: int | None
+    error_count: int
+    warning_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class TransactionStatus:
     """The complete and deliberately YAML-free public transaction surface."""
 
@@ -122,6 +148,8 @@ class TransactionStatus:
     rollback_available: bool = False
     evidence: tuple[TransactionEvidenceCode, ...] = ()
     progress: tuple[TransactionProgress, ...] = ()
+    validation_detail: ValidationDetail | None = None
+    upload_progress: tuple[JobProgress, ...] = ()
 
 
 @dataclass(slots=True)
@@ -141,6 +169,8 @@ class _ConfigTransaction:
     rollback_available: bool = False
     evidence: list[TransactionEvidenceCode] = field(default_factory=list)
     progress: list[TransactionProgress] = field(default_factory=list)
+    validation_detail: ValidationDetail | None = None
+    upload_progress: list[JobProgress] = field(default_factory=list)
     lease: ConfigLease | None = field(default=None, repr=False)
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     active_tasks: set[asyncio.Task[object]] = field(default_factory=set, repr=False)
@@ -225,18 +255,21 @@ class ConfigTransactionManager:
                 await self._device_builder.async_update_config(
                     snapshot, plan.proposed_content
                 )
-            except asyncio.CancelledError:
+            except ConfigChangedError:
                 self._finish(
                     transaction,
                     ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.CANCELLED,
+                    TransactionEvidenceCode.SOURCE_CHANGED,
+                )
+                raise
+            except asyncio.CancelledError:
+                await self._drain_uncertain_update(
+                    transaction, TransactionEvidenceCode.CANCELLED
                 )
                 raise
             except Exception:
-                self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.WRITE_FAILED,
+                return await self._drain_uncertain_update(
+                    transaction, TransactionEvidenceCode.WRITE_FAILED
                 )
                 raise
             transaction.state = ConfigTransactionState.WRITTEN
@@ -249,16 +282,65 @@ class ConfigTransactionManager:
                 await self._rollback_after_cancellation(transaction)
                 raise
             except Exception:  # noqa: BLE001 - external validation boundary
+                transaction.validation_detail = ValidationDetail(None, 0, 0)
                 return await self._rollback_locked(
                     transaction, TransactionEvidenceCode.VALIDATION_UNAVAILABLE
                 )
             if not validation.success:
+                transaction.validation_detail = _validation_detail(validation)
                 return await self._rollback_locked(
                     transaction, TransactionEvidenceCode.VALIDATION_FAILED
                 )
             transaction.state = ConfigTransactionState.VALIDATED
             _progress(transaction, TransactionProgress.CONFIG_VALIDATED)
             return await self._compile_locked(transaction)
+
+    async def _drain_uncertain_update(
+        self,
+        transaction: _ConfigTransaction,
+        cause: TransactionEvidenceCode,
+    ) -> TransactionStatus:
+        """Finish reconciliation even when the initiating caller is cancelled."""
+        cleanup = asyncio.create_task(
+            self._reconcile_uncertain_update(transaction, cause)
+        )
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+        return cleanup.result()
+
+    async def _reconcile_uncertain_update(
+        self,
+        transaction: _ConfigTransaction,
+        cause: TransactionEvidenceCode,
+    ) -> TransactionStatus:
+        plan, _ = _sensitive(transaction)
+        _evidence(transaction, cause)
+        try:
+            current = await self._device_builder.async_get_config(plan.configuration)
+        except Exception:  # noqa: BLE001 - uncertainty must remain recoverable
+            return self._retain_write_recovery(transaction)
+        if current.sha256 == transaction.source_sha256:
+            return self._finish(
+                transaction,
+                ConfigTransactionState.FAILED,
+                TransactionEvidenceCode.WRITE_NOT_APPLIED,
+            )
+        proposed_sha256 = sha256(plan.proposed_content.encode()).hexdigest()
+        if current.sha256 == proposed_sha256:
+            return await self._rollback_locked(transaction)
+        return self._retain_write_recovery(transaction)
+
+    @staticmethod
+    def _retain_write_recovery(
+        transaction: _ConfigTransaction,
+    ) -> TransactionStatus:
+        transaction.state = ConfigTransactionState.FAILED
+        transaction.rollback_available = False
+        _evidence(transaction, TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED)
+        return _status(transaction)
 
     async def async_compile(self, transaction_id: str) -> TransactionStatus:
         """Compile one valid edit; concurrent/replayed calls cannot claim it twice."""
@@ -306,7 +388,10 @@ class ConfigTransactionManager:
             transaction.state = ConfigTransactionState.INSTALLING
             plan, _ = _sensitive(transaction)
             try:
-                result = await self._device_builder.async_upload(plan.configuration)
+                result = await self._device_builder.async_upload(
+                    plan.configuration,
+                    lambda update: _upload_progress(transaction, update),
+                )
             except asyncio.CancelledError:
                 self._finish(
                     transaction,
@@ -481,6 +566,8 @@ def _status(transaction: _ConfigTransaction) -> TransactionStatus:
     progress = tuple(transaction.progress[-MAX_EVIDENCE_LINES:])
     if len("\n".join((*evidence, *progress)).encode()) > MAX_EVIDENCE_BYTES:
         raise RuntimeError("allowlisted transaction evidence exceeded its byte cap")
+    if len(repr(transaction.upload_progress).encode()) > MAX_UPLOAD_PROGRESS_BYTES:
+        raise RuntimeError("structured upload progress exceeded its byte cap")
     return TransactionStatus(
         transaction.transaction_id,
         transaction.state,
@@ -490,6 +577,8 @@ def _status(transaction: _ConfigTransaction) -> TransactionStatus:
         transaction.rollback_available,
         evidence,
         progress,
+        transaction.validation_detail,
+        tuple(transaction.upload_progress),
     )
 
 
@@ -501,6 +590,35 @@ def _evidence(transaction: _ConfigTransaction, code: TransactionEvidenceCode) ->
 def _progress(transaction: _ConfigTransaction, progress: TransactionProgress) -> None:
     if progress not in transaction.progress:
         transaction.progress.append(progress)
+
+
+def _upload_progress(transaction: _ConfigTransaction, progress: JobProgress) -> None:
+    """Retain only bounded, typed stage/percentage upload progress."""
+    if (
+        not isinstance(progress, JobProgress)
+        or not isinstance(progress.stage, JobProgressStage)
+        or progress.percentage is not None
+        and not 0 <= progress.percentage <= 100
+    ):
+        return
+    transaction.upload_progress.append(progress)
+    del transaction.upload_progress[:-MAX_UPLOAD_PROGRESS_LINES]
+    while (
+        transaction.upload_progress
+        and len(repr(transaction.upload_progress).encode()) > MAX_UPLOAD_PROGRESS_BYTES
+    ):
+        del transaction.upload_progress[0]
+
+
+def _validation_detail(result: JobResult) -> ValidationDetail:
+    """Count diagnostic categories without retaining validation text."""
+    lines = (result.summary, *result.output_tail)
+    code = result.code
+    return ValidationDetail(
+        code if isinstance(code, int) and -32_768 <= code <= 32_767 else None,
+        min(999, sum(line.lower().count("error") for line in lines)),
+        min(999, sum(line.lower().count("warning") for line in lines)),
+    )
 
 
 def _validate_changes(changes: tuple[SubstitutionChange, ...]) -> None:

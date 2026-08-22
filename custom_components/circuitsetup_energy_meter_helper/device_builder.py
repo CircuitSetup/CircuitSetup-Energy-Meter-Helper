@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from hashlib import sha256
 from typing import Any, Protocol
 
@@ -38,6 +40,25 @@ class JobResult:
     summary: str
     output_tail: tuple[str, ...]
     job_id: str | None = None
+
+
+class JobProgressStage(StrEnum):
+    """Allowlisted upload stages derived without forwarding job text."""
+
+    CONNECTING = "connecting"
+    UPLOADING = "uploading"
+    WRITING = "writing"
+    VERIFYING = "verifying"
+    COMPLETED = "completed"
+    TRANSFER = "transfer"
+
+
+@dataclass(frozen=True, slots=True)
+class JobProgress:
+    """One text-free progress update safe for transaction subscribers."""
+
+    stage: JobProgressStage
+    percentage: int | None = None
 
 
 class ConfigChangedError(RuntimeError):
@@ -91,7 +112,9 @@ class DeviceBuilderClient:
                 raise ConnectionError("Device Builder requires an issued bearer token")
             future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
             self._pending["0"] = future
-            await self._ws.send_json({"command": "auth", "message_id": "0", "args": {"token": self._token}})
+            await self._ws.send_json(
+                {"command": "auth", "message_id": "0", "args": {"token": self._token}}
+            )
             try:
                 await future
             finally:
@@ -124,20 +147,28 @@ class DeviceBuilderClient:
             self._pending.pop(message_id, None)
 
     async def _async_stream_command(
-        self, command: str, args: dict[str, Any]
+        self,
+        command: str,
+        args: dict[str, Any],
+        progress: Callable[[JobProgress], None] | None = None,
     ) -> tuple[dict[str, Any], tuple[str, ...]]:
         """Run a pinned streaming command until its `result` event."""
         if self._ws is None:
             raise ConnectionError("Device Builder is disconnected")
         self._next_message_id += 1
         message_id = str(self._next_message_id)
-        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_running_loop().create_future()
+        )
         output: list[str] = []
 
         def handle(event: dict[str, Any]) -> None:
             if event["event"] == "output":
-                output.append(str(event.get("data", "")))
-                del output[:-self._output_tail_size]
+                line = str(event.get("data", ""))
+                output.append(line)
+                del output[: -self._output_tail_size]
+                if progress is not None and (update := _job_progress(line)) is not None:
+                    progress(update)
             elif event["event"] == "result" and not future.done():
                 data = event.get("data", {})
                 future.set_result(data if isinstance(data, dict) else {})
@@ -189,21 +220,28 @@ class DeviceBuilderClient:
         return self._validation_result(terminal, output)
 
     async def async_compile(self, configuration: str) -> JobResult:
-        result = await self.async_command("firmware/compile", {"configuration": configuration})
+        result = await self.async_command(
+            "firmware/compile", {"configuration": configuration}
+        )
         return await self._async_follow_job(result)
 
-    async def async_upload(self, configuration: str) -> JobResult:
+    async def async_upload(
+        self,
+        configuration: str,
+        progress: Callable[[JobProgress], None] | None = None,
+    ) -> JobResult:
         result = await self.async_command(
             "firmware/upload", {"configuration": configuration, "port": "OTA"}
         )
-        return await self._async_follow_job(result)
+        return await self._async_follow_job(result, progress)
 
     async def async_restore_content(self, configuration: str, content: str) -> None:
         """Restore exact content and raise a distinct error if validation fails."""
         try:
             current = await self.async_get_config(configuration)
             await self.async_command(
-                "devices/update_config", {"configuration": current.configuration, "content": content}
+                "devices/update_config",
+                {"configuration": current.configuration, "content": content},
             )
             validation = await self.async_validate(configuration)
             if not validation.success:
@@ -213,10 +251,14 @@ class DeviceBuilderClient:
         except Exception as err:
             raise RollbackError("Device Builder rollback failed") from err
 
-    async def _async_follow_job(self, result: dict[str, Any]) -> JobResult:
+    async def _async_follow_job(
+        self,
+        result: dict[str, Any],
+        progress: Callable[[JobProgress], None] | None = None,
+    ) -> JobResult:
         job_id = result["job_id"]
         terminal, output = await self._async_stream_command(
-            "firmware/follow_job", {"job_id": job_id}
+            "firmware/follow_job", {"job_id": job_id}, progress
         )
         return self._job_result(terminal, job_id, output)
 
@@ -253,20 +295,32 @@ class DeviceBuilderClient:
         try:
             while message := await self._ws.receive_json():
                 message_id = message.get("message_id")
-                if isinstance(message_id, str) and "event" in message and message_id in self._stream_handlers:
+                if (
+                    isinstance(message_id, str)
+                    and "event" in message
+                    and message_id in self._stream_handlers
+                ):
                     self._stream_handlers[message_id](message)
                     continue
                 if not isinstance(message_id, str):
                     continue
                 stream_future = self._stream_futures.get(message_id)
-                if "error_code" in message and stream_future is not None and not stream_future.done():
-                    stream_future.set_exception(ConnectionError("Device Builder command failed"))
+                if (
+                    "error_code" in message
+                    and stream_future is not None
+                    and not stream_future.done()
+                ):
+                    stream_future.set_exception(
+                        ConnectionError("Device Builder command failed")
+                    )
                     continue
                 future = self._pending.get(message_id)
                 if future is None or future.done():
                     continue
                 if "error_code" in message:
-                    future.set_exception(ConnectionError("Device Builder command failed"))
+                    future.set_exception(
+                        ConnectionError("Device Builder command failed")
+                    )
                 elif "result" in message:
                     future.set_result(message["result"])
         finally:
@@ -280,3 +334,34 @@ class DeviceBuilderClient:
         for future in self._stream_futures.values():
             if not future.done():
                 future.set_exception(ConnectionError("Device Builder disconnected"))
+
+
+_PERCENT_RE = re.compile(r"(?<!\d)(100|[1-9]?\d)\s*%")
+
+
+def _job_progress(line: str) -> JobProgress | None:
+    """Reduce arbitrary builder output to allowlisted stage and percentage fields."""
+    lowered = line.lower()
+    stage = next(
+        (
+            value
+            for marker, value in (
+                ("successfully uploaded", JobProgressStage.COMPLETED),
+                ("verif", JobProgressStage.VERIFYING),
+                ("writing", JobProgressStage.WRITING),
+                ("upload", JobProgressStage.UPLOADING),
+                ("connect", JobProgressStage.CONNECTING),
+            )
+            if marker in lowered
+        ),
+        None,
+    )
+    match = _PERCENT_RE.search(line)
+    percentage = int(match.group(1)) if match else None
+    if stage is None and percentage is not None:
+        stage = JobProgressStage.TRANSFER
+    if stage is None:
+        return None
+    if stage is JobProgressStage.COMPLETED and percentage is None:
+        percentage = 100
+    return JobProgress(stage, percentage)
