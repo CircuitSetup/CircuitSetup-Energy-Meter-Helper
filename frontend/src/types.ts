@@ -27,6 +27,7 @@ export interface DiscoveredDevice {
   entry_id: string;
   title: string;
   project_name: string;
+  project_version: string | null;
   importable: boolean | null;
   configuration: string | null;
 }
@@ -136,6 +137,7 @@ export type TransactionState =
   | "failed";
 
 export interface SubstitutionChange {
+  key: string;
   old_value: string | null;
   new_value: string;
 }
@@ -156,7 +158,7 @@ export interface TransactionStatus {
     error_record_count: number;
     warning_record_count: number;
   } | null;
-  upload_progress?: Array<{ stage: string; progress: number | null }>;
+  upload_progress?: Array<{ stage: string; progress?: number | null; percentage?: number | null }>;
 }
 
 export interface PreflightIssue {
@@ -197,6 +199,22 @@ export interface CalibrationResult {
   retry_allowed: boolean;
   gain_evidence?: Record<string, unknown> | null;
   restore_evidence?: Record<string, unknown> | null;
+}
+
+export interface RestartVerificationResult {
+  mac: string;
+  config_filename: string;
+  config_sha256: string;
+  topology_addon_count: number;
+  topology_project_name: string;
+  topology_connection_type: ConnectionType;
+  topology_voltage_layout: string;
+  connection_generation: number;
+  groups: Array<{ instance_id: string; phase_gains: number[][] }>;
+  verification_id: string;
+  source_authority: "saved_flash";
+  source_handoff_available: boolean;
+  source_handoff_transaction_id: string | null;
 }
 
 export type PanelStep =

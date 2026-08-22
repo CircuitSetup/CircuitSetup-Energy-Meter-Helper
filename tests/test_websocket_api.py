@@ -42,6 +42,9 @@ from custom_components.circuitsetup_energy_meter_helper.provisioning import (
 from custom_components.circuitsetup_energy_meter_helper.session_manager import (
     SessionManager,
 )
+from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
+    SensorSampleWindow,
+)
 from custom_components.circuitsetup_energy_meter_helper.store import HelperStore
 from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
     ALL_COMMANDS,
@@ -53,9 +56,25 @@ from custom_components.circuitsetup_energy_meter_helper.workflow import (
     EntryWorkflow,
     LazyDeviceBuilder,
     WorkflowHandleError,
+    _public_sample_window,
 )
 
 _MISSING = object()
+
+
+def test_stability_browser_evidence_has_samples_and_standard_deviation() -> None:
+    """The browser DTO excludes timestamps but retains every required statistic."""
+    result = _public_sample_window(
+        SensorSampleWindow((9.0, 10.0, 11.0), (1.0, 2.0, 3.0), 10.0, 9.0, 11.0, 20.0)
+    )
+
+    assert result == {
+        "samples": (9.0, 10.0, 11.0),
+        "mean": 10.0,
+        "standard_deviation": pytest.approx(0.8164965809),
+        "range_percent": 20.0,
+    }
+    assert "received_at" not in result
 
 
 @dataclass

@@ -24,6 +24,7 @@ class FakeDeviceInfo:
     """Runtime project identity supplied by ESPHome."""
 
     project_name: str
+    project_version: str = "2026.8.0"
 
 
 @dataclass
@@ -124,6 +125,7 @@ def test_rescan_requires_circuitsetup_runtime_project_prefix() -> None:
         assert snapshot.state == SetupState.DEVICE_DISCOVERED
         assert not snapshot.configuration_authoritative
         assert snapshot.devices[0].importable is None
+        assert snapshot.devices[0].project_version == "2026.8.0"
 
     asyncio.run(run())
 

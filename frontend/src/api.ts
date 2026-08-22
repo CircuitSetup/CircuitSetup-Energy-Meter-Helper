@@ -5,6 +5,7 @@ import type {
   CtInventory,
   DiscoveredDevice,
   MeterTopology,
+  RestartVerificationResult,
   SessionStatus,
   SetupSnapshot,
   StabilityResult,
@@ -23,6 +24,124 @@ export interface HomeAssistant {
 
 const PREFIX = "circuitsetup_energy_meter_helper/";
 const PRIVATE_FIELD = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
+const SECRET_VALUE = /(?:api[_ -]?key|password|secret|ssid|token)\s*[:=]/i;
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
+const SETUP_STATES = new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]);
+const TRANSACTION_STATES = new Set(["previewed", "write_confirmed", "written", "validated", "compiled", "install_confirmation_required", "installing", "reconnecting", "verified", "rolled_back", "failed"]);
+const SESSION_STATES = new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "indeterminate", "verified", "cancelled"]);
+const CONNECTIONS = new Set(["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]);
+const EVIDENCE_SOURCES = new Set(["config_project", "config_packages", "dashboard_import", "native_project", "native_entity_counts"]);
+const PHASES = new Set(["A", "B", "C"]);
+const JOB_STAGES = new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
+const TRANSACTION_EVIDENCE = new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
+const TRANSACTION_PROGRESS = new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
+const PREFLIGHT_CODES = new Set(["invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
+
+type PublicRecord = Record<string, unknown>;
+type Validator<T> = (value: unknown) => T;
+
+function record(value: unknown, label: string): PublicRecord {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} response is invalid`);
+  return value as PublicRecord;
+}
+function array(value: unknown, label: string): unknown[] {
+  if (!Array.isArray(value)) throw new Error(`${label} response is invalid`);
+  return value;
+}
+function string(value: unknown, label: string, nullable = false): string | null {
+  if (nullable && value === null) return null;
+  if (typeof value !== "string" || value.length === 0) throw new Error(`${label} response is invalid`);
+  return value;
+}
+function number(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${label} response is invalid`);
+  return value;
+}
+function integer(value: unknown, label: string): number {
+  const result = number(value, label);
+  if (!Number.isInteger(result)) throw new Error(`${label} response is invalid`);
+  return result;
+}
+function boolean(value: unknown, label: string, nullable = false): boolean | null {
+  if (nullable && value === null) return null;
+  if (typeof value !== "boolean") throw new Error(`${label} response is invalid`);
+  return value;
+}
+function enumeration(value: unknown, values: Set<string>, label: string): string {
+  const result = string(value, label);
+  if (!values.has(result!)) throw new Error(`${label} response is invalid`);
+  return result!;
+}
+function optionalString(value: unknown, label: string): void {
+  if (value !== undefined) string(value, label, true);
+}
+
+function device(value: unknown, label: string): void {
+  const item = record(value, label);
+  string(item.entry_id, label); string(item.title, label); string(item.project_name, label);
+  string(item.project_version, label, true); boolean(item.importable, label, true); string(item.configuration, label, true);
+}
+function setup(value: unknown, label: string): SetupSnapshot {
+  const item = record(value, label); enumeration(item.state, SETUP_STATES, label);
+  array(item.devices, label).forEach((entry) => device(entry, label));
+  if (item.configuration_authoritative !== undefined) boolean(item.configuration_authoritative, label);
+  if (item.installer_intent !== undefined) {
+    const intent = record(item.installer_intent, label); const count = integer(intent.addon_count, label);
+    if (count < 0 || count > 6) throw new Error(`${label} response is invalid`);
+    const connection = enumeration(intent.connection_type, CONNECTIONS, label);
+    if (connection === "unknown") throw new Error(`${label} response is invalid`);
+  }
+  return value as SetupSnapshot;
+}
+function topology(value: unknown, label: string): MeterTopology {
+  const item = record(value, label);
+  for (const key of ["addon_count", "board_count", "ct_count", "group_count"] as const) integer(item[key], label);
+  enumeration(item.connection_type, CONNECTIONS, label); string(item.voltage_layout, label); string(item.project_name, label);
+  array(item.evidence, label).forEach((entry) => { const evidence = record(entry, label); enumeration(evidence.source, EVIDENCE_SOURCES, label); integer(evidence.addon_count, label); string(evidence.detail, label); });
+  return value as MeterTopology;
+}
+function topologyResponse(value: unknown, label: string): MeterTopology | { topology: MeterTopology } {
+  const item = record(value, label);
+  if ("topology" in item) { topology(item.topology, label); if (item.configuration_authoritative !== undefined) boolean(item.configuration_authoritative, label); return value as { topology: MeterTopology }; }
+  return topology(value, label);
+}
+function ctInventory(value: unknown, label: string): CtInventory {
+  const item = record(value, label); string(item.plan_id, label); string(item.source_sha256, label);
+  array(item.channels, label).forEach((entry) => { const channel = record(entry, label); integer(channel.channel, label); string(channel.name, label); integer(channel.raw_gain_ct, label); number(channel.reporting_multiplier, label); optionalString(channel.selected_model_id, label); boolean(channel.selection_verified_against_config, label); optionalString(channel.display_label, label); const address = record(channel.address, label); integer(address.channel, label); integer(address.board_index, label); integer(address.group_index, label); enumeration(address.phase, PHASES, label); });
+  const catalog = record(item.catalog, label); string(catalog.source_repository, label); string(catalog.source_ref, label); integer(catalog.schema_version, label);
+  array(catalog.presets, label).forEach((entry) => { const preset = record(entry, label); string(preset.model_id, label); string(preset.label, label); number(preset.rated_current_a, label); string(preset.secondary, label); if (preset.default_gain_ct !== null) integer(preset.default_gain_ct, label); boolean(preset.requires_burden_jumper_cut, label); string(preset.notes, label); });
+  return value as CtInventory;
+}
+function transaction(value: unknown, label: string): TransactionStatus {
+  const item = record(value, label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); string(item.source_sha256, label); boolean(item.rollback_available, label); string(item.redacted_diff, label);
+  array(item.changes, label).forEach((entry) => { const change = record(entry, label); string(change.key, label); if (change.old_value !== null) string(change.old_value, label); string(change.new_value, label); });
+  array(item.evidence, label).forEach((entry) => enumeration(entry, TRANSACTION_EVIDENCE, label)); array(item.progress, label).forEach((entry) => enumeration(entry, TRANSACTION_PROGRESS, label));
+  if (item.validation_detail != null) { const detail = record(item.validation_detail, label); for (const key of ["reported_error_count", "reported_warning_count"] as const) if (detail[key] !== null) integer(detail[key], label); if (detail.code !== null) integer(detail.code, label); integer(detail.error_record_count, label); integer(detail.warning_record_count, label); }
+  if (item.upload_progress !== undefined) array(item.upload_progress, label).forEach((entry) => { const progress = record(entry, label); enumeration(progress.stage, JOB_STAGES, label); if (progress.progress !== null && progress.percentage !== null && progress.progress !== undefined && progress.percentage !== undefined) throw new Error(`${label} response is invalid`); const amount = progress.progress ?? progress.percentage; if (amount !== null && amount !== undefined) { const percent = integer(amount, label); if (percent < 0 || percent > 100) throw new Error(`${label} response is invalid`); } });
+  return value as TransactionStatus;
+}
+function session(value: unknown, label: string): SessionStatus {
+  const item = record(value, label); string(item.session_id, label); string(item.device_id, label); enumeration(item.state, SESSION_STATES, label); boolean(item.safety_acknowledged, label);
+  const preflight = record(item.preflight, label); array(preflight.issues, label).forEach((entry) => { const issue = record(entry, label); enumeration(issue.code, PREFLIGHT_CODES, label); string(issue.role, label); string(issue.detail, label); }); array(preflight.zeroed_roles, label).forEach((entry) => string(entry, label));
+  return value as SessionStatus;
+}
+function stability(value: unknown, label: string): StabilityResult {
+  const item = record(value, label); const target = enumeration(item.target, new Set(["voltage", "current"]), label); void target; string(item.target_id, label); boolean(item.stable, label);
+  array(item.windows, label).forEach((entry) => { const window = record(entry, label); array(window.samples, label).forEach((sample) => number(sample, label)); number(window.mean, label); number(window.standard_deviation, label); number(window.range_percent, label); });
+  return value as StabilityResult;
+}
+function calibration(value: unknown, label: string): CalibrationResult {
+  const item = record(value, label); enumeration(item.state, new Set(["applied_pending_restart_verification", "result_outside_tolerance", "indeterminate"]), label); string(item.group_key, label); if (item.phase !== null) enumeration(item.phase, PHASES, label); integer(item.iteration, label); boolean(item.retry_allowed, label);
+  for (const key of ["changed_channels", "before_values", "after_values", "error_percent_values"] as const) array(item[key], label).forEach((entry) => number(entry, label));
+  if (item.gain_evidence != null) record(item.gain_evidence, label); if (item.restore_evidence != null) record(item.restore_evidence, label);
+  return value as CalibrationResult;
+}
+function restart(value: unknown, label: string): RestartVerificationResult {
+  const item = record(value, label); for (const key of ["mac", "config_filename", "config_sha256", "topology_project_name", "topology_voltage_layout", "verification_id"] as const) string(item[key], label);
+  integer(item.topology_addon_count, label); enumeration(item.topology_connection_type, CONNECTIONS, label); integer(item.connection_generation, label); enumeration(item.source_authority, new Set(["saved_flash"]), label); boolean(item.source_handoff_available, label); optionalString(item.source_handoff_transaction_id, label);
+  array(item.groups, label).forEach((entry) => { const group = record(entry, label); string(group.instance_id, label); const phases = array(group.phase_gains, label); if (phases.length !== 3) throw new Error(`${label} response is invalid`); phases.forEach((phase) => { const gains = array(phase, label); if (gains.length !== 2) throw new Error(`${label} response is invalid`); gains.forEach((gain) => { const amount = integer(gain, label); if (amount < 1 || amount > 65535) throw new Error(`${label} response is invalid`); }); }); });
+  return value as RestartVerificationResult;
+}
 
 export class HelperApi {
   public constructor(
@@ -30,10 +149,18 @@ export class HelperApi {
     private readonly entryId: string,
   ) {}
 
-  public static assertPublicPayload(value: unknown, depth = 0): void {
+  public static assertPublicPayload(value: unknown, depth = 0, field = ""): void {
     if (depth > 8) throw new Error("payload nesting is too deep");
     if (Array.isArray(value)) {
-      for (const item of value) this.assertPublicPayload(item, depth + 1);
+      for (const item of value) this.assertPublicPayload(item, depth + 1, field);
+      return;
+    }
+    if (typeof value === "string") {
+      const multiline = value.includes("\n") || value.includes("\r");
+      const limit = field === "redacted_diff" ? 32_768 : 4_096;
+      if (value.length > limit || CONTROL.test(value) || SECRET_VALUE.test(value) || (multiline && field !== "redacted_diff") || (field === "redacted_diff" && value.includes("\r"))) {
+        throw new Error(`unsafe string ${field || "value"} refused`);
+      }
       return;
     }
     if (value === null || typeof value !== "object") return;
@@ -41,58 +168,59 @@ export class HelperApi {
       if (key.toLowerCase() !== "raw_gain_ct" && PRIVATE_FIELD.test(key)) {
         throw new Error(`private field ${key} refused`);
       }
-      this.assertPublicPayload(item, depth + 1);
+      this.assertPublicPayload(item, depth + 1, key.toLowerCase());
     }
   }
 
-  private async call<T>(operation: string, data: Record<string, unknown> = {}): Promise<T> {
-    const result = await this.hass.callWS<T>({
+  private async call<T>(operation: string, validator: Validator<T>, data: Record<string, unknown> = {}): Promise<T> {
+    const result = await this.hass.callWS<unknown>({
       type: `${PREFIX}${operation}`,
       entry_id: this.entryId,
       ...data,
     });
     HelperApi.assertPublicPayload(result);
-    return result;
+    return validator(result);
   }
 
   private subscribe<T>(
     operation: string,
     data: Record<string, unknown>,
+    validator: Validator<T>,
     callback: (message: T) => void,
   ): Promise<() => void> {
     return this.hass.connection.subscribeMessage<T>((message) => {
       HelperApi.assertPublicPayload(message);
-      callback(message);
+      callback(validator(message));
     }, { type: `${PREFIX}${operation}`, entry_id: this.entryId, ...data });
   }
 
-  public setupStatus = () => this.call<SetupSnapshot>("setup_status");
-  public listMeters = () => this.call<DiscoveredDevice[]>("list_meters");
+  public setupStatus = () => this.call("setup_status", (value) => setup(value, "setup_status"));
+  public listMeters = () => this.call("list_meters", (value) => { array(value, "list_meters").forEach((item) => device(item, "list_meters")); return value as DiscoveredDevice[]; });
   public getTopology = (deviceId: string) =>
-    this.call<MeterTopology | { topology: MeterTopology }>("get_topology", { device_id: deviceId });
+    this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
   public getCtInventory = (deviceId: string) =>
-    this.call<CtInventory>("get_ct_inventory", { device_id: deviceId });
+    this.call("get_ct_inventory", (value) => ctInventory(value, "get_ct_inventory"), { device_id: deviceId });
   public getSession = (sessionId: string) =>
-    this.call<SessionStatus>("get_session", { session_id: sessionId });
-  public getDiagnosticsSummary = () => this.call<Record<string, unknown>>("get_diagnostics_summary");
+    this.call("get_session", (value) => session(value, "get_session"), { session_id: sessionId });
+  public getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (value) => record(value, "get_diagnostics_summary"));
   public setInstallerIntent = (addonCount: number, connectionType: Exclude<ConnectionType, "unknown">) =>
-    this.call<SetupSnapshot>("set_installer_intent", { addon_count: addonCount, connection_type: connectionType });
-  public rescan = () => this.call<SetupSnapshot>("rescan");
+    this.call("set_installer_intent", (value) => setup(value, "set_installer_intent"), { addon_count: addonCount, connection_type: connectionType });
+  public rescan = () => this.call("rescan", (value) => setup(value, "rescan"));
   public adoptDevice = (deviceId: string) =>
-    this.call<{ device_id: string; configuration: string }>("adopt_device", { device_id: deviceId });
+    this.call("adopt_device", (value) => { const item = record(value, "adopt_device"); string(item.device_id, "adopt_device"); string(item.configuration, "adopt_device"); return value as { device_id: string; configuration: string }; }, { device_id: deviceId });
   public previewCtConfig = (
     deviceId: string,
     planId: string,
     sourceSha256: string,
     changes: CtChange[],
-  ) => this.call<TransactionStatus>("preview_ct_config", {
+  ) => this.call("preview_ct_config", (value) => transaction(value, "preview_ct_config"), {
     device_id: deviceId,
     plan_id: planId,
     source_sha256: sourceSha256,
     changes,
   });
   private transaction = (operation: string, deviceId: string, transactionId: string, sourceSha256: string) =>
-    this.call<TransactionStatus>(operation, {
+    this.call(operation, (value) => transaction(value, operation), {
       device_id: deviceId,
       transaction_id: transactionId,
       source_sha256: sourceSha256,
@@ -106,31 +234,31 @@ export class HelperApi {
   public rollbackCtConfig = (deviceId: string, transactionId: string, sourceSha256: string) =>
     this.transaction("rollback_ct_config", deviceId, transactionId, sourceSha256);
   public startSession = (deviceId: string) =>
-    this.call<SessionStatus>("start_session", { device_id: deviceId });
+    this.call("start_session", (value) => session(value, "start_session"), { device_id: deviceId });
   public acknowledgeSafety = (sessionId: string) =>
-    this.call<SessionStatus>("acknowledge_safety", { session_id: sessionId, acknowledged: true });
+    this.call("acknowledge_safety", (value) => session(value, "acknowledge_safety"), { session_id: sessionId, acknowledged: true });
   public checkStability = (sessionId: string, target: "voltage" | "current", targetId: string) =>
-    this.call<StabilityResult>("check_stability", { session_id: sessionId, target, target_id: targetId });
+    this.call("check_stability", (value) => stability(value, "check_stability"), { session_id: sessionId, target, target_id: targetId });
   public calibrateVoltage = (sessionId: string, groupKey: string, reference: number, confirmIteration: boolean) =>
-    this.call<CalibrationResult>("calibrate_voltage", {
+    this.call("calibrate_voltage", (value) => calibration(value, "calibrate_voltage"), {
       session_id: sessionId,
       group_key: groupKey,
       reference,
       confirm_iteration: confirmIteration,
     });
   public calibrateCurrent = (sessionId: string, channel: number, reference: number, confirmIteration: boolean) =>
-    this.call<CalibrationResult>("calibrate_current", {
+    this.call("calibrate_current", (value) => calibration(value, "calibrate_current"), {
       session_id: sessionId,
       channel,
       reference,
       confirm_iteration: confirmIteration,
     });
   public restartAndVerify = (sessionId: string) =>
-    this.call<Record<string, unknown>>("restart_and_verify", { session_id: sessionId });
+    this.call("restart_and_verify", (value) => restart(value, "restart_and_verify"), { session_id: sessionId });
   public cancelSession = (sessionId: string) =>
-    this.call<SessionStatus>("cancel_session", { session_id: sessionId });
+    this.call("cancel_session", (value) => session(value, "cancel_session"), { session_id: sessionId });
   public subscribeSetup = (callback: (message: SetupSnapshot) => void) =>
-    this.subscribe("subscribe_setup", {}, callback);
+    this.subscribe("subscribe_setup", {}, (value) => setup(value, "subscribe_setup"), callback);
   public subscribeConfigTransaction = (
     deviceId: string,
     transactionId: string,
@@ -140,7 +268,7 @@ export class HelperApi {
     device_id: deviceId,
     transaction_id: transactionId,
     source_sha256: sourceSha256,
-  }, callback);
+  }, (value) => transaction(value, "subscribe_config_transaction"), callback);
   public subscribeSession = (sessionId: string, callback: (message: SessionStatus) => void) =>
-    this.subscribe("subscribe_session", { session_id: sessionId }, callback);
+    this.subscribe("subscribe_session", { session_id: sessionId }, (value) => session(value, "subscribe_session"), callback);
 }

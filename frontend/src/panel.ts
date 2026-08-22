@@ -19,6 +19,7 @@ import type {
   CtInventory,
   MeterTopology,
   PanelStep,
+  RestartVerificationResult,
   SessionStatus,
   SetupSnapshot,
   StabilityResult,
@@ -63,8 +64,9 @@ export class CircuitSetupPanel extends LitElement {
   private inventory: CtInventory | null = null;
   private transaction: TransactionStatus | null = null;
   private session: SessionStatus | null = null;
-  private stability: StabilityResult | null = null;
-  private calibration: CalibrationResult | null = null;
+  private stabilityByTarget = new Map<string, StabilityResult>();
+  private calibrationByTarget = new Map<string, CalibrationResult>();
+  private restartResult: RestartVerificationResult | null = null;
   private addonCount = 0;
   private connection: Exclude<ConnectionType, "unknown"> = "wifi";
   private board = 0;
@@ -77,48 +79,78 @@ export class CircuitSetupPanel extends LitElement {
   private error = "";
   private announcement = "";
   private unsubs: Array<() => void> = [];
+  private connectionGeneration = 0;
+  private mobileStepsOpen = false;
+  private focusHeading = false;
 
   public override connectedCallback(): void {
     super.connectedCallback();
-    void this.ensureApi();
+    const generation = ++this.connectionGeneration;
+    void this.ensureApi(generation);
   }
 
   public override disconnectedCallback(): void {
-    for (const unsub of this.unsubs.splice(0)) unsub();
+    ++this.connectionGeneration;
+    for (const unsub of this.unsubs.splice(0)) {
+      try { unsub(); } catch { /* A later attach must still get a fresh generation. */ }
+    }
+    this.api = null;
     super.disconnectedCallback();
   }
 
   protected override updated(changed: PropertyValues<this>): void {
-    if (changed.has("hass") || changed.has("panel")) void this.ensureApi();
+    if ((changed.has("hass") || changed.has("panel")) && this.isConnected) void this.ensureApi(this.connectionGeneration);
     if (this.error) this.shadowRoot?.querySelector<HTMLElement>("[role=alert]")?.focus();
+    else if (this.focusHeading) {
+      this.focusHeading = false;
+      this.shadowRoot?.querySelector<HTMLElement>("#step-heading")?.focus();
+    }
   }
 
-  private async ensureApi(): Promise<void> {
-    if (this.api || !this.hass || !this.panel?.config.entry_id) return;
-    this.api = new HelperApi(this.hass, this.panel.config.entry_id);
+  private async ensureApi(generation: number): Promise<void> {
+    if (this.api || !this.isConnected || !this.hass || !this.panel?.config.entry_id) return;
+    const api = new HelperApi(this.hass, this.panel.config.entry_id);
+    this.api = api;
     try {
-      this.setup = await this.api.setupStatus();
+      const setup = await api.setupStatus();
+      if (!this.owns(generation, api)) return;
+      this.setup = setup;
       const intent = this.setup.installer_intent;
       if (intent) {
         this.addonCount = intent.addon_count;
         this.connection = intent.connection_type;
       }
       if (this.setup.devices.length) this.selectedDeviceId = this.setup.devices[0]?.entry_id ?? null;
-      const unsub = await this.api.subscribeSetup((snapshot) => {
+      await this.ownSubscription(api.subscribeSetup((snapshot) => {
+        if (!this.owns(generation, api)) return;
         this.setup = snapshot;
         if (!this.selectedDeviceId && snapshot.devices.length) this.selectedDeviceId = snapshot.devices[0]?.entry_id ?? null;
         this.requestUpdate();
-      });
-      this.unsubs.push(unsub);
+      }), generation, api);
+      if (this.transaction) await this.subscribeTransaction(generation);
+      if (this.session && this.session.state !== "cancelled") await this.subscribeSession(generation);
     } catch (error) {
-      this.fail(error, "Setup status could not be loaded.");
+      if (this.owns(generation, api)) this.fail(error, "Setup status could not be loaded.");
     }
     this.requestUpdate();
   }
 
+  private owns(generation: number, api: HelperApi): boolean {
+    return this.isConnected && generation === this.connectionGeneration && api === this.api;
+  }
+
+  private async ownSubscription(pending: Promise<() => void>, generation: number, api: HelperApi): Promise<void> {
+    const unsubscribe = await pending;
+    if (!this.owns(generation, api)) {
+      try { unsubscribe(); } catch { /* The stale generation no longer owns panel state. */ }
+      return;
+    }
+    this.unsubs.push(unsubscribe);
+  }
+
   public showTopology(topology: MeterTopology): void {
     this.topology = topology;
-    this.step = "topology";
+    this.navigate("topology");
     this.error = topology.evidence.some((item) => item.addon_count !== topology.addon_count)
       || topology.ct_count !== 6 * topology.board_count
       || topology.group_count !== 2 * topology.board_count
@@ -133,23 +165,41 @@ export class CircuitSetupPanel extends LitElement {
       name: channel.name,
       modelId: channel.selected_model_id ?? "",
       multiplier: channel.reporting_multiplier,
+      customGainCt: channel.selected_model_id === null ? channel.raw_gain_ct : undefined,
+      customLabel: channel.display_label ?? undefined,
+      burdenAcknowledged: false,
       expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518,
     }]));
-    this.step = "ct";
+    this.navigate("ct");
     this.error = "";
     this.requestUpdate();
   }
 
   public showState(step: PanelStep): void {
+    this.navigate(step);
+  }
+
+  private navigate(step: PanelStep): void {
     this.step = step;
     this.error = "";
+    this.mobileStepsOpen = false;
+    this.focusHeading = true;
     this.requestUpdate();
+  }
+
+  private back(): void {
+    const index = STEPS.findIndex(([step]) => step === this.step);
+    if (index > 0) this.navigate(STEPS[index - 1]![0]);
+  }
+
+  private selectedProjectVersion(): string | null {
+    return this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.project_version ?? null;
   }
 
   public showRecovery(state: "calibration_outcome_indeterminate" | "restart_failed"): void {
     if (state === "calibration_outcome_indeterminate") {
-      this.step = "current";
-      this.calibration = {
+      this.navigate("current");
+      this.calibrationByTarget = new Map(this.calibrationByTarget).set(`current:${this.channel}`, {
         state,
         group_key: "",
         phase: null,
@@ -159,9 +209,9 @@ export class CircuitSetupPanel extends LitElement {
         after_values: [],
         error_percent_values: [],
         retry_allowed: false,
-      };
+      });
     } else {
-      this.step = "restart";
+      this.navigate("restart");
       if (this.session) this.session = { ...this.session, state };
       else this.error = "Restart verification failed; review rollback and recovery evidence.";
     }
@@ -177,7 +227,7 @@ export class CircuitSetupPanel extends LitElement {
       this.setup = setup;
       if (setup.devices.length) {
         this.selectedDeviceId = setup.devices[0]?.entry_id ?? null;
-        this.step = "discover";
+        this.navigate("discover");
         this.announcement = "Compatible meter discovered.";
       } else {
         this.announcement = "No compatible meter found. Check the network and rescan.";
@@ -238,20 +288,20 @@ export class CircuitSetupPanel extends LitElement {
         this.inventory!.source_sha256,
         changes,
       ) ?? null;
-      this.step = "build";
-      await this.subscribeTransaction();
+      this.navigate("build");
+      await this.subscribeTransaction(this.connectionGeneration);
     }, "The configuration preview is stale. Reload the CT inventory and review again.");
   }
 
-  private async subscribeTransaction(): Promise<void> {
+  private async subscribeTransaction(generation: number): Promise<void> {
     if (!this.api || !this.transaction || !this.selectedDeviceId) return;
-    const unsub = await this.api.subscribeConfigTransaction(
+    const api = this.api;
+    await this.ownSubscription(api.subscribeConfigTransaction(
       this.selectedDeviceId,
       this.transaction.transaction_id,
       this.transaction.source_sha256,
-      (status) => { this.transaction = status; this.requestUpdate(); },
-    );
-    this.unsubs.push(unsub);
+      (status) => { if (this.owns(generation, api)) { this.transaction = status; this.requestUpdate(); } },
+    ), generation, api);
   }
 
   private async transactionAction(action: "apply" | "compile" | "install" | "rollback"): Promise<void> {
@@ -270,20 +320,24 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.selectedDeviceId) return;
     await this.run(async () => {
       this.session = await this.api!.startSession(this.selectedDeviceId!);
-      this.step = "safety";
-      const unsub = await this.api!.subscribeSession(this.session.session_id, (session) => {
-        this.session = session;
-        this.requestUpdate();
-      });
-      this.unsubs.push(unsub);
+      this.navigate("safety");
+      await this.subscribeSession(this.connectionGeneration);
     }, "Calibration session could not be started.");
+  }
+
+  private async subscribeSession(generation: number): Promise<void> {
+    if (!this.api || !this.session) return;
+    const api = this.api;
+    await this.ownSubscription(api.subscribeSession(this.session.session_id, (session) => {
+      if (this.owns(generation, api)) { this.session = session; this.requestUpdate(); }
+    }), generation, api);
   }
 
   private async acknowledgeSafety(): Promise<void> {
     if (!this.api || !this.session) return;
     await this.run(async () => {
       this.session = await this.api!.acknowledgeSafety(this.session!.session_id);
-      this.step = "voltage";
+      this.navigate("voltage");
     }, "Safety acknowledgement could not be accepted.");
   }
 
@@ -291,17 +345,20 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.session) return;
     const targetId = target === "voltage" ? this.groupKey(this.group) : String(this.channel);
     await this.run(async () => {
-      this.stability = await this.api!.checkStability(this.session!.session_id, target, targetId);
+      const result = await this.api!.checkStability(this.session!.session_id, target, targetId);
+      this.stabilityByTarget = new Map(this.stabilityByTarget).set(`${target}:${targetId}`, result);
     }, "Stable samples could not be collected.");
   }
 
   private async calibrate(target: "voltage" | "current"): Promise<void> {
     if (!this.api || !this.session) return;
+    const targetId = target === "voltage" ? this.groupKey(this.group) : String(this.channel);
     await this.run(async () => {
-      this.calibration = target === "voltage"
+      const result = target === "voltage"
         ? await this.api!.calibrateVoltage(this.session!.session_id, this.groupKey(this.group), this.reference, true)
         : await this.api!.calibrateCurrent(this.session!.session_id, this.channel, this.reference, true);
-      this.announcement = `Calibration iteration ${this.calibration.iteration} finished with state ${this.calibration.state}.`;
+      this.calibrationByTarget = new Map(this.calibrationByTarget).set(`${target}:${targetId}`, result);
+      this.announcement = `Calibration iteration ${result.iteration} finished with state ${result.state}.`;
     }, "Calibration did not complete. Reconnect and inspect before another attempt.");
   }
 
@@ -314,9 +371,9 @@ export class CircuitSetupPanel extends LitElement {
   private async restart(): Promise<void> {
     if (!this.api || !this.session) return;
     await this.run(async () => {
-      await this.api!.restartAndVerify(this.session!.session_id);
+      this.restartResult = await this.api!.restartAndVerify(this.session!.session_id);
       this.session = { ...this.session!, state: "verified" };
-      this.step = "summary";
+      this.navigate("summary");
     }, "Restart verification failed; review recovery evidence before rollback.");
   }
 
@@ -324,8 +381,28 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.session) return;
     await this.run(async () => {
       this.session = await this.api!.cancelSession(this.session!.session_id);
-      this.step = "summary";
+      this.restartResult = null;
+      this.navigate("safety");
+      this.announcement = "Calibration session cancelled; cleanup completed without restart verification.";
     }, "The session cleanup could not be confirmed.");
+  }
+
+  private async reconnectSession(): Promise<void> {
+    if (!this.api || !this.session) return;
+    await this.run(async () => {
+      this.session = await this.api!.getSession(this.session!.session_id);
+      this.announcement = `Session reconnected with state ${this.session.state}.`;
+    }, "Session reconnection failed. Retry only after checking the meter connection.");
+  }
+
+  private resultFor(target: "voltage" | "current"): CalibrationResult | null {
+    const targetId = target === "voltage" ? this.groupKey(this.group) : String(this.channel);
+    return this.calibrationByTarget.get(`${target}:${targetId}`) ?? null;
+  }
+
+  private stabilityFor(target: "voltage" | "current"): StabilityResult | null {
+    const targetId = target === "voltage" ? this.groupKey(this.group) : String(this.channel);
+    return this.stabilityByTarget.get(`${target}:${targetId}`) ?? null;
   }
 
   private async run(operation: () => Promise<void>, fallback: string): Promise<void> {
@@ -351,48 +428,48 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.connection = value; this.requestUpdate(); },
       () => void this.rescan());
     if (this.step === "discover") return adoptionStep(this.setup?.devices ?? [], this.selectedDeviceId,
-      (id) => { this.selectedDeviceId = id; this.requestUpdate(); }, () => void this.adopt(), () => void this.loadTopology());
-    if (this.step === "topology" && this.topology) return topologyStep(this.topology, () => void this.loadInventory());
+      (id) => { this.selectedDeviceId = id; this.requestUpdate(); }, () => void this.adopt(), () => this.back(), () => void this.loadTopology());
+    if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(), () => this.back(), () => void this.loadInventory());
     if (this.step === "ct" && this.inventory) return ctInventoryStep(this.inventory, this.board, this.ctGroup, this.drafts,
       (board) => { this.board = board; this.ctGroup = 0; this.requestUpdate(); },
-      (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => void this.reviewChanges());
+      (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.reviewChanges());
     if (this.step === "build") return buildInstallStep(this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
-      () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => void this.startSession());
+      () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(), () => void this.startSession());
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
-      (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession());
-    if (this.step === "voltage") return html`${voltageStep(this.topology, this.group, this.reference, this.stability,
-      (value) => { this.group = value; this.stability = null; this.requestUpdate(); },
-      (value) => { this.reference = value; this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"))}
-      <footer class="action-footer"><button class="secondary">Back</button><button class="primary" @click=${() => this.showState("current")}>Continue</button></footer>`;
-    if (this.step === "current") return html`${currentStep(this.topology, this.inventory, this.channel, this.reference, this.stability, this.calibration,
-      (value) => { this.channel = value; this.stability = null; this.requestUpdate(); },
-      (value) => { this.reference = value; this.requestUpdate(); }, () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.api?.getSession(this.session?.session_id ?? ""))}
-      <footer class="action-footer"><button class="secondary">Back</button><button class="primary" @click=${() => this.showState("restart")}>Continue</button></footer>`;
-    if (this.step === "restart") return restartStep(this.session?.state ?? this.error, () => void this.restart(), () => void this.transactionAction("rollback"));
-    return summaryStep(this.topology, this.session, this.transaction, this.stability);
+      (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back());
+    if (this.step === "voltage") return html`${voltageStep(this.topology, this.group, this.reference, this.stabilityFor("voltage"), this.resultFor("voltage"),
+      (value) => { this.group = value; this.requestUpdate(); },
+      (value) => { this.reference = value; this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
+      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.navigate("current")}>Continue</button></footer>`;
+    if (this.step === "current") return html`${currentStep(this.topology, this.inventory, this.channel, this.reference, this.stabilityFor("current"), this.resultFor("current"),
+      (value) => { this.channel = value; this.requestUpdate(); },
+      (value) => { this.reference = value; this.requestUpdate(); }, () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession())}
+      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.navigate("restart")}>Continue</button></footer>`;
+    if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult, () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());
+    return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.selectedProjectVersion(), () => this.back());
   }
 
   public override render(): TemplateResult {
     const currentIndex = STEPS.findIndex(([step]) => step === this.step);
     return html`
       <div class="app">
-        <aside class="workflow">
+        <aside class=${this.mobileStepsOpen ? "workflow mobile-open" : "workflow"}>
           <div class="brand">CircuitSetup</div>
           <nav aria-label="Setup progress"><ol>${STEPS.map(([step, label], index) => html`
             <li class=${index === currentIndex ? "current" : ""}>
               <button class="step-button" aria-current=${index === currentIndex ? "step" : nothing} ?disabled=${index > currentIndex}
-                @click=${() => index <= currentIndex && this.showState(step)}><span class="number">${index + 1}</span><span>${label}</span></button>
+                @click=${() => index <= currentIndex && this.navigate(step)}><span class="number">${index + 1}</span><span>${label}</span></button>
             </li>
           `)}</ol></nav>
         </aside>
         <main>
           <div class="product-title">CircuitSetup Energy Meter Helper</div>
-          <div class="mobile-progress"><span>${currentIndex + 1} of 10 — ${STEPS[currentIndex]?.[1]}</span><button aria-label="Show setup steps">Steps</button></div>
+          <div class="mobile-progress"><span>${currentIndex + 1} of 10 — ${STEPS[currentIndex]?.[1]}</span><button aria-label="Show setup steps" aria-expanded=${this.mobileStepsOpen} @click=${() => { this.mobileStepsOpen = !this.mobileStepsOpen; this.requestUpdate(); }}>Steps</button></div>
           <h1 id="step-heading" tabindex="-1">${STEPS[currentIndex]?.[1]}</h1>
           ${this.error ? html`<div class="error-panel" role="alert" tabindex="-1"><strong>${this.error}</strong></div>` : nothing}
           ${this.stepBody()}
-          ${currentIndex >= 4 && this.step !== "summary" ? technicalDetails(this.topology, this.session, this.transaction, this.stability) : nothing}
+          ${currentIndex >= 4 && this.step !== "summary" ? technicalDetails(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult) : nothing}
           <div class="sr-status" role="status" aria-live="polite">${this.announcement}</div>
         </main>
       </div>

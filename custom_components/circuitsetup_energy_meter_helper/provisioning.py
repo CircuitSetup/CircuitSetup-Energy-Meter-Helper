@@ -32,6 +32,7 @@ class DiscoveredDevice:
     entry_id: str
     title: str
     project_name: str
+    project_version: str | None = None
     importable: bool | None = None
     configuration: str | None = None
 
@@ -58,6 +59,14 @@ def _project_name(entry: Any) -> str | None:
     runtime_data = getattr(entry, "runtime_data", None)
     device_info = getattr(runtime_data, "device_info", None)
     return getattr(device_info, "project_name", None)
+
+
+def _project_version(entry: Any) -> str | None:
+    """Read ESPHome's approved runtime project version metadata."""
+    runtime_data = getattr(entry, "runtime_data", None)
+    device_info = getattr(runtime_data, "device_info", None)
+    version = getattr(device_info, "project_version", None)
+    return version if isinstance(version, str) else None
 
 
 class ProvisioningCoordinator:
@@ -147,6 +156,7 @@ class ProvisioningCoordinator:
             entry.entry_id,
             entry.title,
             project_name,
+            _project_version(entry),
             status.importable,
             status.configuration,
         )

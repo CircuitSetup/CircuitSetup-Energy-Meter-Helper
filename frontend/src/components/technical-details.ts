@@ -1,11 +1,14 @@
 import { html, type TemplateResult } from "lit";
-import type { MeterTopology, SessionStatus, StabilityResult, TransactionStatus } from "../types";
+import type { CalibrationResult, MeterTopology, RestartVerificationResult, SessionStatus, StabilityResult, TransactionStatus } from "../types";
+import { calibrationEvidence, stabilityEvidence } from "./measurement-evidence";
 
 export function technicalDetails(
   topology: MeterTopology | null,
   session: SessionStatus | null,
   transaction: TransactionStatus | null,
-  stability: StabilityResult | null,
+  stability: Map<string, StabilityResult>,
+  calibration: Map<string, CalibrationResult>,
+  restart: RestartVerificationResult | null = null,
 ): TemplateResult {
   return html`
     <details>
@@ -13,9 +16,13 @@ export function technicalDetails(
       <div class="technical-grid">
         <section><h3>Configuration and project evidence</h3><ul>${topology?.evidence.map((item) => html`<li>${item.source}: ${item.detail}</li>`) ?? "No evidence loaded."}</ul></section>
         <section><h3>Semantic API mapping</h3><p>${session?.preflight.zeroed_roles.length ?? 0} reference roles verified and zeroed.</p></section>
-        <section><h3>Sample windows</h3><p>${stability?.windows.length ?? 0} bounded sample windows.</p></section>
-        <section><h3>Gains and parsed matching lines</h3><p>${transaction?.progress.join(", ") || "No transaction evidence."}</p></section>
-        <section><h3>Authority source</h3><p>${topology ? "Configuration and verified native API evidence" : "Not yet established"}</p></section>
+        <section><h3>Sample windows by target</h3>${[...stability.entries()].map(([target, result]) => html`<div data-target=${target}>${stabilityEvidence(result)}</div>`) || "No sample evidence."}</section>
+        <section><h3>Calibration results by target</h3>${[...calibration.entries()].map(([target, result]) => html`<div data-target=${target}>${calibrationEvidence(result)}</div>`) || "No calibration evidence."}</section>
+        <section><h3>Build evidence</h3><p>${transaction?.evidence.join(", ") || "No build evidence."}</p><p>${transaction?.progress.join(", ") || "No transaction progress."}</p>
+          ${transaction?.validation_detail ? html`<p>Validation code ${transaction.validation_detail.code ?? "unavailable"}; ${transaction.validation_detail.error_record_count} error records; ${transaction.validation_detail.warning_record_count} warning records.</p>` : ""}
+          ${transaction?.upload_progress?.length ? html`<ul>${transaction.upload_progress.map((item) => html`<li>${item.stage}: ${item.percentage ?? item.progress ?? "in progress"}${item.percentage != null || item.progress != null ? "%" : ""}</li>`)}</ul>` : ""}
+        </section>
+        <section><h3>Authority source</h3><p>${restart?.source_authority.replaceAll("_", " ") ?? "Not yet established"}</p><p>${restart ? `Verification ${restart.verification_id}, generation ${restart.connection_generation}` : "No authoritative restart result."}</p></section>
       </div>
     </details>
   `;

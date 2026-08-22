@@ -7,6 +7,7 @@ const device = {
   entry_id: "meter-live-1",
   title: "CircuitSetup meter",
   project_name: "circuitsetup.6c-energy-meter",
+  project_version: "2026.8.0",
   importable: true,
   configuration: null,
 };
@@ -80,7 +81,7 @@ const hass: HomeAssistant = {
       transaction_id: "transaction-qa",
       state: "previewed",
       source_sha256: "a".repeat(64),
-      changes: [{ old_value: "CT1", new_value: "Grid Import" }],
+      changes: [{ key: "ct1_name", old_value: "CT1", new_value: "Grid Import" }],
       redacted_diff: "- ct1_name: CT1\n+ ct1_name: Grid Import",
       rollback_available: false,
       evidence: [],

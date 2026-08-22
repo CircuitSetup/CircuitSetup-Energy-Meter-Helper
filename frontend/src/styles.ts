@@ -51,6 +51,7 @@ export const panelStyles = css`
   .choice-field > p { margin: 3px 0 12px; }
   .addon-options { display: grid; grid-template-columns: repeat(7, minmax(52px, 1fr)); gap: 12px; max-width: 760px; }
   .addon-options label, .connection-options label { display: flex; align-items: center; border: 1px solid #b8c1cc; border-radius: 5px; cursor: pointer; }
+  .addon-options label:focus-within, .connection-options label:focus-within, .meter-row:focus-within { outline: 3px solid #1769d3; outline-offset: 2px; }
   .addon-options label { justify-content: center; min-height: 56px; font-size: 18px; font-weight: 700; }
   .addon-options input, .connection-options input, .meter-row input { position: absolute; opacity: 0; pointer-events: none; }
   .addon-options .selected { color: #fff; background: var(--navy); border-color: var(--navy); }
@@ -102,6 +103,9 @@ export const panelStyles = css`
   .group-grid button { width: 33.333%; border-width: 0 1px 0 0; border-radius: 0; }
   .group-grid button.selected { color: var(--orange); border-color: var(--orange); }
   .progress-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 20px 0; padding: 18px 18px 18px 42px; border: 1px solid var(--border); }
+  .measurement-evidence { margin: 14px 0; padding: 12px 16px; border: 1px solid var(--border); background: var(--band); }
+  .measurement-evidence h3 { margin-top: 0; }
+  .measurement-evidence dl, .evidence-list, .upload-progress { display: grid; gap: 6px; }
   details { margin-top: 18px; border: 1px solid var(--border); }
   summary { display: flex; align-items: center; padding: 12px 16px; cursor: pointer; font-weight: 700; }
   .technical-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 28px; padding: 0 16px 16px; }
@@ -113,6 +117,7 @@ export const panelStyles = css`
   @media (max-width: 720px) {
     .app { display: block; }
     aside.workflow { display: none; }
+    aside.workflow.mobile-open { display: block; position: fixed; z-index: 5; inset: 0 18% 0 0; overflow-y: auto; box-shadow: 10px 0 24px rgb(0 0 0 / 28%); }
     main { padding: 22px 18px 92px; }
     .product-title { font-size: 23px; text-align: center; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
     .mobile-progress { display: flex; justify-content: space-between; align-items: center; margin: 0 -18px 24px; padding: 12px 18px; background: var(--band); border-bottom: 1px solid var(--border); }

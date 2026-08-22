@@ -1,15 +1,19 @@
 import { html, type TemplateResult } from "lit";
-import type { MeterTopology, StabilityResult } from "../types";
+import type { CalibrationResult, MeterTopology, StabilityResult } from "../types";
+import { calibrationEvidence, stabilityEvidence } from "./measurement-evidence";
 
 export function voltageStep(
   topology: MeterTopology | null,
   groupIndex: number,
   reference: number,
   stability: StabilityResult | null,
+  result: CalibrationResult | null,
   select: (group: number) => void,
   setReference: (value: number) => void,
   check: () => void,
   calibrate: () => void,
+  reconnect: () => void,
+  cancel: () => void,
 ): TemplateResult {
   const count = topology?.group_count ?? 2;
   return html`
@@ -21,8 +25,11 @@ export function voltageStep(
       <label>Trusted instrument reference <input type="number" .value=${String(reference)} @input=${(event: Event) => setReference(Number((event.target as HTMLInputElement).value))} /></label>
       <button class="secondary" @click=${check}>Check stability</button>
       ${stability ? html`<div class=${stability.stable ? "success-band" : "warning-band"} role="status">${stability.stable ? "Stable sample window" : "Samples are not stable yet"}</div>` : ""}
+      ${stabilityEvidence(stability)}
+      ${calibrationEvidence(result)}
       <ol class="progress-steps"><li>Set reference</li><li>Verify acknowledgement</li><li>Run iteration</li><li>Verify gain</li><li>Zero reference</li></ol>
-      <button class="primary" @click=${calibrate} ?disabled=${!stability?.stable}>Calibrate voltage</button>
+      <button class="primary" @click=${calibrate} ?disabled=${!stability?.stable || Boolean(result && !result.retry_allowed && result.iteration > 0)}> ${result?.retry_allowed ? "Retry voltage calibration" : "Calibrate voltage"}</button>
+      ${result?.state === "indeterminate" ? html`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${reconnect}>Reconnect and inspect</button><button class="danger" @click=${cancel}>Cancel session</button></aside>` : ""}
     </section>
   `;
 }

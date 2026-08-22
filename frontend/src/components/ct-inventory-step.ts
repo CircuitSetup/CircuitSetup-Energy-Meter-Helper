@@ -5,13 +5,16 @@ export interface CtDraft {
   name: string;
   modelId: string;
   multiplier: number;
+  customGainCt?: number | undefined;
+  customLabel?: string | undefined;
+  burdenAcknowledged: boolean;
   expanded: boolean;
 }
 
-const resultingGain = (preset: CtPreset | undefined, multiplier: number) =>
-  preset?.default_gain_ct == null || !Number.isFinite(multiplier) || multiplier <= 0
+const resultingGain = (preset: CtPreset | undefined, multiplier: number, customGain?: number) =>
+  (preset?.default_gain_ct ?? customGain) == null || !Number.isFinite(multiplier) || multiplier <= 0
     ? null
-    : Math.round(preset.default_gain_ct / multiplier);
+    : Math.round((preset?.default_gain_ct ?? customGain!) / multiplier);
 
 export function ctInventoryStep(
   inventory: CtInventory,
@@ -21,6 +24,7 @@ export function ctInventoryStep(
   setBoard: (board: number) => void,
   setGroup: (group: number) => void,
   update: (channel: number, patch: Partial<CtDraft>) => void,
+  back: () => void,
   review: () => void,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
@@ -48,10 +52,11 @@ export function ctInventoryStep(
               name: channel.name,
               modelId: channel.selected_model_id ?? "",
               multiplier: channel.reporting_multiplier,
+              burdenAcknowledged: false,
               expanded: false,
             };
             const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
-            const gain = resultingGain(preset, draft.multiplier);
+            const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : undefined);
             const dirty = draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier;
             return html`
               <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index - 1} role="row" aria-label=${`CT${channel.channel}`}>
@@ -72,6 +77,19 @@ export function ctInventoryStep(
                   ${draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}
                 </button>
               </div>
+              ${draft.modelId === "custom" ? html`<div class="ct-detail custom-fields">
+                <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
+                  .value=${draft.customGainCt === undefined ? "" : String(draft.customGainCt)}
+                  @input=${(event: Event) => update(channel.channel, { customGainCt: Number((event.target as HTMLInputElement).value) })} /></label>
+                <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} .value=${draft.customLabel ?? ""}
+                  @input=${(event: Event) => update(channel.channel, { customLabel: (event.target as HTMLInputElement).value })} /></label>
+              </div>` : nothing}
+              ${draft.modelId === "custom" || preset?.requires_burden_jumper_cut ? html`<div class="warning-band">
+                <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
+                  .checked=${draft.burdenAcknowledged}
+                  @change=${(event: Event) => update(channel.channel, { burdenAcknowledged: (event.target as HTMLInputElement).checked })} />
+                  I checked the burden-output requirement for CT${channel.channel}</label>
+              </div>` : nothing}
               ${preset && preset.rated_current_a > 65.535 && draft.multiplier === 1 ? html`<div class="warning-band" role="status">CT${channel.channel}: rated current exceeds the unscaled 65.535 A register range.</div>` : nothing}
               ${draft.expanded && preset ? html`
                 <dl class="ct-detail">
@@ -87,11 +105,8 @@ export function ctInventoryStep(
       </div>
       <p class="row-count">Showing ${rows.length} of ${inventory.channels.length} CTs</p>
       <footer class="action-footer">
-        <button class="secondary">Back</button>
-        <button class="primary" ?disabled=${[...drafts.values()].every((draft, index) => {
-          const channel = inventory.channels[index];
-          return channel !== undefined && draft.name === channel.name && draft.modelId === (channel.selected_model_id ?? "") && draft.multiplier === channel.reporting_multiplier;
-        })} @click=${review}>Review changes</button>
+        <button class="secondary" @click=${back}>Back</button>
+        <button class="primary" ?disabled=${!hasValidChanges(inventory, drafts)} @click=${review}>Review changes</button>
       </footer>
     </section>
   `;
@@ -100,7 +115,42 @@ export function ctInventoryStep(
 export function changesFromDrafts(inventory: CtInventory, drafts: Map<number, CtDraft>): CtChange[] {
   return inventory.channels.flatMap((channel) => {
     const draft = drafts.get(channel.channel);
-    if (!draft || (draft.name === channel.name && draft.modelId === (channel.selected_model_id ?? "") && draft.multiplier === channel.reporting_multiplier)) return [];
-    return [{ channel: channel.channel, name: draft.name, model_id: draft.modelId, reporting_multiplier: draft.multiplier }];
+    if (!draft || !isDirty(channel, draft)) return [];
+    const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
+    const change: CtChange = { channel: channel.channel, name: draft.name.trim(), model_id: draft.modelId, reporting_multiplier: draft.multiplier };
+    if (draft.modelId === "custom") {
+      if (draft.customGainCt !== undefined) change.custom_gain_ct = draft.customGainCt;
+      if (draft.customLabel !== undefined) change.custom_label = draft.customLabel.trim();
+      change.burden_output_acknowledged = draft.burdenAcknowledged;
+    } else if (preset?.requires_burden_jumper_cut) {
+      change.burden_output_acknowledged = draft.burdenAcknowledged;
+    }
+    return [change];
   });
+}
+
+function isDirty(channel: CtInventory["channels"][number], draft: CtDraft): boolean {
+  return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier
+    || draft.modelId === "custom" && (draft.customGainCt !== channel.raw_gain_ct || draft.customLabel?.trim() !== (channel.display_label ?? ""));
+}
+
+function validDraft(inventory: CtInventory, draft: CtDraft): boolean {
+  if (!draft.name.trim() || !draft.modelId || !Number.isFinite(draft.multiplier) || draft.multiplier <= 0) return false;
+  if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt! >= 1 && draft.customGainCt! <= 65535
+    && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel!) && draft.burdenAcknowledged;
+  const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
+  return Boolean(preset) && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged);
+}
+
+function hasValidChanges(inventory: CtInventory, drafts: Map<number, CtDraft>): boolean {
+  let dirty = false;
+  for (const channel of inventory.channels) {
+    const draft = drafts.get(channel.channel);
+    if (!draft) return false;
+    if (isDirty(channel, draft)) {
+      dirty = true;
+      if (!validDraft(inventory, draft)) return false;
+    }
+  }
+  return dirty;
 }

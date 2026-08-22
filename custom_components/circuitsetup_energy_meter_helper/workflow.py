@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
+from statistics import pstdev
 from threading import RLock
 from time import monotonic
 from typing import Any
@@ -41,6 +42,7 @@ from .models import MeterTopology, StoredCTSelection, canonical_mac
 from .preflight import PreflightResult, async_preflight
 from .provisioning import DiscoveredDevice, ProvisioningCoordinator
 from .session_manager import CalibrationBusyError, SessionManager
+from .state_tracker import SensorSampleWindow
 from .store import HelperStore
 from .topology import topology_from_config, topology_from_native
 
@@ -51,6 +53,16 @@ ESPHOME_DEVICE_BUILDER_SLUG = "5c53de3b_esphome"
 _INGRESS_ENTRY_PREFIX = "/api/hassio_ingress/"
 _INGRESS_SESSION_COOKIE = "ingress_session"
 _SUPERVISOR_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,256}\Z", re.ASCII)
+
+
+def _public_sample_window(window: SensorSampleWindow) -> dict[str, Any]:
+    """Expose only bounded measurement evidence needed by the browser."""
+    return {
+        "samples": window.values,
+        "mean": window.mean,
+        "standard_deviation": pstdev(window.values),
+        "range_percent": window.range_percent,
+    }
 
 
 class WorkflowCapabilityUnavailable(RuntimeError):
@@ -481,7 +493,7 @@ class EntryWorkflow:
                 "target": target,
                 "target_id": target_id,
                 "stable": stable,
-                "windows": windows,
+                "windows": tuple(_public_sample_window(window) for window in windows),
             }
         finally:
             self._release_claim(handle, revision)
