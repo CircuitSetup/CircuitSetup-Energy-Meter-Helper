@@ -1,0 +1,14 @@
+[I][atm90e32:374] [CALIBRATION][meter_main1] ============== Restored offset calibration from memory ==============
+[I][atm90e32:378] [CALIBRATION][meter_main1] |   A   |        -12      |         31      |
+[I][atm90e32:378] [CALIBRATION][meter_main1] |   B   |        -13      |         32      |
+[I][atm90e32:378] [CALIBRATION][meter_main1] |   C   |        -14      |         33      |
+[I][atm90e32:385] [CALIBRATION][meter_main1] ============ Restored power offset calibration from memory ============
+[I][atm90e32:389] [CALIBRATION][meter_main1] |   A   |          101        |          -201        |
+[I][atm90e32:389] [CALIBRATION][meter_main1] |   B   |          102        |          -202        |
+[I][atm90e32:389] [CALIBRATION][meter_main1] |   C   |          103        |          -203        |
+[I][atm90e32:397] [CALIBRATION][meter_main1] ============ Restoring saved gain calibrations to registers ============
+[I][atm90e32:400] [CALIBRATION][meter_main1] | Phase | voltage_gain | current_gain |
+[I][atm90e32:404] [CALIBRATION][meter_main1] |   A   |      7305    |     27518    |
+[I][atm90e32:404] [CALIBRATION][meter_main1] |   B   |      7305    |     28312    |
+[I][atm90e32:404] [CALIBRATION][meter_main1] |   C   |      7305    |     27518    |
+[I][atm90e32:406] [CALIBRATION][meter_main1] Gain calibration loaded and verified successfully.

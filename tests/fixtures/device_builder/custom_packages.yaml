@@ -1,0 +1,17 @@
+substitutions:
+  ct0_name: ignored
+  ct42_name: 'Garage: EV'
+  current_cal_ct42: '12345'
+  ct43_name: ignored
+
+esphome:
+  project:
+    name: circuitsetup.6c-energy-meter-6-addons-ethernet
+
+packages:
+  local_only: !include local.yaml
+  remote_main: github://CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter/Software/ESPHome/meter_sensors/main.yaml@feature/ref
+  remote_addon:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    files:
+      - 'Software\ESPHome\meter_sensors\6chan_addon1.yaml'

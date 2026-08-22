@@ -1,0 +1,20 @@
+substitutions:
+  ct24_name: 'Workshop #4'
+  current_cal_ct24: 39473
+
+esphome:
+  project:
+    name: circuitsetup.6c-energy-meter-3-addons-2-voltages
+    version: "1.8"
+
+dashboard_import:
+  package_import_url: github://CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter/Software/ESPHome/6-channel-energy-meter-3-addons-2-voltages.yaml@master
+
+packages:
+  - url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
+    files:
+      - Software/ESPHome/meter_sensors/main.yaml
+      - Software/ESPHome/meter_sensors/6chan_addon1.yaml
+      - Software/ESPHome/meter_sensors/6chan_addon2.yaml
+      - Software/ESPHome/meter_sensors/6chan_addon3.yaml

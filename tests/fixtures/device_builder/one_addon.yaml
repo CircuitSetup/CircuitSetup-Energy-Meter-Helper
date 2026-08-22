@@ -1,0 +1,21 @@
+substitutions:
+  ct1_name: "CT1"
+  current_cal_ct1: "27518"
+  ct12_name: "CT12"
+  current_cal_ct12: "27518"
+
+esphome:
+  project:
+    name: circuitsetup.6c-energy-meter-1-addon
+    version: "1.8"
+
+dashboard_import:
+  package_import_url: github://CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter/Software/ESPHome/6-channel-energy-meter-1-addon.yaml@master
+
+packages:
+  circuitsetup_meter:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
+    files:
+      - Software/ESPHome/meter_sensors/main.yaml
+      - Software/ESPHome/meter_sensors/6chan_addon1.yaml

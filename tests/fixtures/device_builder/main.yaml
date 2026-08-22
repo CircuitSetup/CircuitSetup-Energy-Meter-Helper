@@ -1,0 +1,16 @@
+substitutions:
+  ct1_name: "Main CT 1"  # preserve this comment
+  current_cal_ct1: '27518'
+  wifi_password: !secret wifi_password
+
+esphome:
+  name: circuitsetup-meter
+  project:
+    name: circuitsetup.6c-energy-meter
+    version: "1.8"
+
+dashboard_import:
+  package_import_url: github://CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter/Software/ESPHome/6-channel-energy-meter.yaml@master
+
+packages:
+  meter: github://CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter/Software/ESPHome/meter_sensors/main.yaml@master
