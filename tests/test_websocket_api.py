@@ -9,6 +9,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from aiohasupervisor.models import AddonState as SupervisorAddonState
+from homeassistant.components.hassio import HassIO
+from homeassistant.components.hassio.const import DATA_COMPONENT
 from homeassistant.exceptions import Unauthorized
 
 from custom_components.circuitsetup_energy_meter_helper import (
@@ -48,6 +51,7 @@ from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
 )
 from custom_components.circuitsetup_energy_meter_helper.workflow import (
     EntryWorkflow,
+    LazyDeviceBuilder,
     WorkflowHandleError,
 )
 
@@ -261,10 +265,6 @@ substitutions:
     digest = sha256(content.encode()).hexdigest()
     calls: list[str] = []
 
-    async def connect(client: DeviceBuilderClient) -> None:
-        del client
-        calls.append("connect")
-
     async def list_devices(client: DeviceBuilderClient) -> dict[str, Any]:
         del client
         return {"configured": [{"name": "meter", "configuration": "meter.yaml"}]}
@@ -295,7 +295,6 @@ substitutions:
         calls.append("compile")
         return JobResult(True, 0, "", ())
 
-    monkeypatch.setattr(DeviceBuilderClient, "async_connect", connect)
     monkeypatch.setattr(DeviceBuilderClient, "async_list_devices", list_devices)
     monkeypatch.setattr(DeviceBuilderClient, "async_get_config", get_config)
     monkeypatch.setattr(DeviceBuilderClient, "async_update_config", update)
@@ -303,6 +302,29 @@ substitutions:
     monkeypatch.setattr(DeviceBuilderClient, "async_compile", compile_config)
 
     async def run() -> None:
+        class TransportWebSocket:
+            def __init__(self) -> None:
+                self.received: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+                self.received.put_nowait(
+                    {"server_version": "2026.8", "requires_auth": False}
+                )
+
+            async def send_json(self, message: dict[str, Any]) -> None:
+                del message
+
+            async def receive_json(self) -> dict[str, Any] | None:
+                return await self.received.get()
+
+            async def close(self) -> None:
+                self.received.put_nowait(None)
+
+        websocket = TransportWebSocket()
+        transport_calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def ws_connect(url: str, **kwargs: Any) -> TransportWebSocket:
+            transport_calls.append((url, kwargs))
+            return websocket
+
         device_info = SimpleNamespace(project_name="circuitsetup.6c-energy-meter")
         esphome_entry = SimpleNamespace(
             domain="esphome",
@@ -313,8 +335,36 @@ substitutions:
             runtime_data=SimpleNamespace(device_info=device_info),
         )
         hass = FakeHass((esphome_entry,))
-        hass.data["esphome_dashboard_manager"] = SimpleNamespace(
-            async_get=lambda: SimpleNamespace(url="http://device-builder")
+        hass.data[DATA_COMPONENT] = HassIO(
+            asyncio.get_running_loop(),
+            SimpleNamespace(ws_connect=ws_connect),
+            "supervisor",
+        )
+        supervisor_calls: list[str] = []
+        supervisor = SimpleNamespace(
+            addons=SimpleNamespace(
+                addon_info=lambda slug: _async_value(
+                    supervisor_calls,
+                    "addon_info:" + slug,
+                    SimpleNamespace(
+                        name="ESPHome Device Builder",
+                        slug="5c53de3b_esphome",
+                        state=SupervisorAddonState.STARTED,
+                        ingress=True,
+                        ingress_entry="/api/hassio_ingress/official-entry",
+                    ),
+                )
+            ),
+            ingress=SimpleNamespace(
+                create_session=lambda: _async_value(
+                    supervisor_calls, "ingress_session", "issued-session"
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.workflow.get_supervisor_client",
+            lambda owner: supervisor,
+            raising=False,
         )
         entry = FakeEntry(data={"esphome_entry_id": "meter"})
 
@@ -365,11 +415,32 @@ substitutions:
             "admin",
         )
         assert compiled.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
-        assert calls == ["connect", "write", "validate", "compile"]
+        assert calls == ["write", "validate", "compile"]
+        assert supervisor_calls == [
+            "addon_info:5c53de3b_esphome",
+            "ingress_session",
+        ]
+        assert transport_calls == [
+            (
+                "http://supervisor/ingress/official-entry/ws",
+                {
+                    "headers": {
+                        "Cookie": "ingress_session=issued-session",
+                        "X-Hass-Source": "core.ingress",
+                        "X-Ingress-Path": "/api/hassio_ingress/official-entry",
+                    },
+                },
+            )
+        ]
 
         await async_unload_entry(hass, entry)
 
     asyncio.run(run())
+
+
+async def _async_value(calls: list[str], call: str, value: Any) -> Any:
+    calls.append(call)
+    return value
 
 
 def test_server_plan_and_session_handles_expire_before_use_or_subscription(
@@ -464,6 +535,19 @@ substitutions:
         )
         inventory = await workflow.async_get_ct_inventory("meter")
         session = await workflow.async_start_session("meter")
+        with pytest.raises(WorkflowHandleError, match="already active"):
+            await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(session.session_id, True)
+        with pytest.raises(WorkflowHandleError, match="current target"):
+            await workflow.async_check_stability(session.session_id, "current", "0")
+
+        old_plan_id = inventory["plan_id"]
+        for _ in range(12):
+            latest_inventory = await workflow.async_get_ct_inventory("meter")
+        assert len(workflow._plans) == 1
+        with pytest.raises(WorkflowHandleError, match="plan is stale"):
+            await workflow.async_preview_ct_config("meter", old_plan_id, digest, ())
+        assert latest_inventory["plan_id"] in workflow._plans
         now = 16.0
 
         with pytest.raises(WorkflowHandleError):
@@ -485,6 +569,121 @@ substitutions:
             await workflow.async_get_session(session.session_id)
 
         await workflow.async_close()
+
+    from custom_components.circuitsetup_energy_meter_helper.topology import (
+        topology_from_native,
+    )
+
+    asyncio.run(run())
+
+
+def test_cancel_revokes_session_before_waiting_calibration_can_mutate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A task paused before its mutation claim cannot resume after cancellation."""
+
+    async def run() -> None:
+        topology = topology_from_native("circuitsetup.6c-energy-meter")
+        content = """esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\nsubstitutions:\n  ct1_name: CT 1\n  current_cal_ct1: '27518'\n"""
+        digest = sha256(content.encode()).hexdigest()
+
+        class Builder:
+            async def async_list_devices(self) -> dict[str, Any]:
+                return {
+                    "configured": [{"name": "meter", "configuration": "meter.yaml"}]
+                }
+
+            async def async_get_config(
+                self, configuration: str
+            ) -> ESPHomeConfigSnapshot:
+                return ESPHomeConfigSnapshot(configuration, content, digest)
+
+            async def async_close(self) -> None:
+                return None
+
+        class Api:
+            entities: tuple[Any, ...] = ()
+            connection_generation = 1
+
+            async def async_connect(self) -> None:
+                return None
+
+        device_info = SimpleNamespace(project_name=topology.project_name)
+        entry = SimpleNamespace(
+            domain="esphome",
+            entry_id="meter",
+            title="Meter",
+            unique_id="aa:bb:cc:dd:ee:ff",
+            data={"device_name": "meter"},
+            runtime_data=SimpleNamespace(device_info=device_info),
+        )
+        hass = FakeHass((entry,))
+        provisioning = ProvisioningCoordinator(hass)
+        await provisioning.async_rescan()
+        fake_binding = SimpleNamespace(
+            topology=topology,
+            connection_generation=1,
+            groups=(),
+            channels=(),
+        )
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.workflow.EntityCatalog",
+            lambda *args: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.workflow.bind_meter",
+            lambda *args: fake_binding,
+        )
+
+        async def preflight(*args: Any) -> PreflightResult:
+            return PreflightResult(())
+
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.workflow.async_preflight",
+            preflight,
+        )
+        workflow = EntryWorkflow(
+            hass,
+            provisioning,
+            SessionManager(),
+            HelperStore(hass),
+            "meter",
+            Api(),  # type: ignore[arg-type]
+            Builder(),  # type: ignore[arg-type]
+        )
+        session = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(session.session_id, True)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def inventory(handle: Any) -> Any:
+            del handle
+            entered.set()
+            await release.wait()
+            return SimpleNamespace(
+                channels=(SimpleNamespace(reporting_multiplier=1.0),)
+            )
+
+        mutated: list[dict[str, str]] = []
+
+        class Calibration:
+            async def async_calibrate_current(self, *args: Any, **kwargs: Any) -> Any:
+                del args
+                mutated.append(dict(kwargs["substitutions"]))
+                return SimpleNamespace(state="done")
+
+        workflow._inventory_for_handle = inventory  # type: ignore[method-assign]
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+        task = asyncio.create_task(
+            workflow.async_calibrate_current(session.session_id, 1, 5.0, False)
+        )
+        await entered.wait()
+        cancelled = await workflow.async_cancel_session(session.session_id)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cancelled.state == "cancelled"
+        assert mutated == []
 
     from custom_components.circuitsetup_energy_meter_helper.topology import (
         topology_from_native,
@@ -880,6 +1079,99 @@ def test_subscription_preserves_setup_race_fifo_and_blocks_late_callback() -> No
     asyncio.run(run())
 
 
+def test_failed_snapshot_disables_callback_and_retains_throwing_unsubscribe() -> None:
+    """Snapshot failure deactivates first and leaves teardown retry ownership."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+        callback: Any = None
+        unsubscribe_calls = 0
+
+        async def snapshot(*args: Any) -> Any:
+            del args
+            raise RuntimeError("snapshot failed")
+
+        def subscribe(*args: Any) -> Any:
+            nonlocal callback
+            callback = args[-1]
+
+            def unsubscribe() -> None:
+                nonlocal unsubscribe_calls
+                unsubscribe_calls += 1
+                raise RuntimeError("transport cleanup failed")
+
+            return unsubscribe
+
+        controller.async_snapshot = snapshot  # type: ignore[method-assign]
+        controller.provisioning.subscribe = subscribe  # type: ignore[method-assign]
+        connection = FakeConnection()
+        await _invoke(hass, connection, _message(f"{DOMAIN}/subscribe_setup"))
+        callback({"seq": 1})
+
+        router = hass.data[DOMAIN]["_websocket_router"]
+        assert connection.events == []
+        assert router.subscriptions["helper"]
+        assert controller._subscriptions
+        assert unsubscribe_calls == 1
+        with pytest.raises(BaseExceptionGroup):
+            router.remove("helper")
+        assert unsubscribe_calls == 2
+
+    asyncio.run(run())
+
+
+def test_lazy_builder_reconnects_after_remote_drop_and_close_is_shielded() -> None:
+    """The client websocket is authoritative and disconnect settles before cancel."""
+
+    async def run() -> None:
+        connected = 0
+        close_started = asyncio.Event()
+        close_release = asyncio.Event()
+
+        class Client:
+            _ws: object | None = None
+
+            @property
+            def connected(self) -> bool:
+                return self._ws is not None
+
+            async def async_connect(self) -> None:
+                nonlocal connected
+                connected += 1
+                self._ws = object()
+
+            async def async_list_devices(self) -> dict[str, Any]:
+                if self._ws is None:
+                    raise ConnectionError("dropped")
+                return {}
+
+            async def async_disconnect(self) -> None:
+                close_started.set()
+                await close_release.wait()
+                self._ws = None
+
+        client = Client()
+        lazy = LazyDeviceBuilder(client)  # type: ignore[arg-type]
+        assert await lazy.async_list_devices() == {}
+        client._ws = None
+        assert await lazy.async_list_devices() == {}
+        assert connected == 2
+
+        closing = asyncio.create_task(lazy.async_close())
+        await close_started.wait()
+        closing.cancel()
+        await asyncio.sleep(0)
+        assert not closing.done()
+        close_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        assert client._ws is None
+
+    asyncio.run(run())
+
+
 def test_subscription_overflow_requests_resync_and_terminates() -> None:
     """A setup race beyond the bounded FIFO fails explicitly without late sends."""
 
@@ -937,19 +1229,25 @@ def test_cleanup_failure_still_scrubs_and_unloads_all_owners() -> None:
         controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
         workflow = Workflow()
         controller.workflow = workflow  # type: ignore[assignment]
+        cleanup_calls = 0
 
         def broken_unsubscribe() -> None:
+            nonlocal cleanup_calls
+            cleanup_calls += 1
             raise RuntimeError("provider cleanup failed")
 
         controller._subscriptions.add(broken_unsubscribe)
         with pytest.raises(BaseExceptionGroup):
             await controller.async_close()
 
-        assert not controller._subscriptions
+        assert controller._subscriptions == {broken_unsubscribe}
         assert controller.workflow is None
         assert controller.transactions is None
         assert workflow.closed
         assert controller.sessions._closed
+        with pytest.raises(BaseExceptionGroup):
+            await controller.async_close()
+        assert cleanup_calls == 2
 
     asyncio.run(run())
 
@@ -971,7 +1269,8 @@ def test_integration_unload_reports_after_provider_cleanup_and_runtime_scrub(
         def unregister(*args: Any) -> None:
             del args
             calls.append("router")
-            raise RuntimeError("router cleanup failed")
+            if calls.count("router") == 1:
+                raise RuntimeError("router cleanup failed")
 
         async def close() -> None:
             calls.append("controller")
@@ -997,6 +1296,7 @@ def test_integration_unload_reports_after_provider_cleanup_and_runtime_scrub(
         assert runtime == {}
         assert "helper" not in hass.data[DOMAIN]
         assert await async_unload_entry(hass, entry)
+        assert calls[-1] == "router"
 
     asyncio.run(run())
 

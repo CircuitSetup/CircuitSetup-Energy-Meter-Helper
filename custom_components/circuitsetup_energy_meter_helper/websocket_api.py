@@ -392,8 +392,8 @@ class EntryWebsocketController:
         def tracked_unsubscribe() -> None:
             if tracked_unsubscribe not in self._subscriptions:
                 return
-            self._subscriptions.discard(tracked_unsubscribe)
             unsubscribe()
+            self._subscriptions.discard(tracked_unsubscribe)
 
         self._subscriptions.add(tracked_unsubscribe)
         return tracked_unsubscribe
@@ -411,12 +411,11 @@ class EntryWebsocketController:
 
     async def async_close(self) -> None:
         """Remove providers/callbacks and scrub owner handles exactly once."""
-        if self._closed:
+        if self._closed and not self._subscriptions:
             return
         self._closed = True
         errors: list[BaseException] = []
         subscriptions = tuple(self._subscriptions)
-        self._subscriptions.clear()
         self._diagnostics_provider = None
         transactions, self.transactions = self.transactions, None
         workflow, self.workflow = self.workflow, None
@@ -425,6 +424,8 @@ class EntryWebsocketController:
                 unsubscribe()
             except BaseException as error:  # noqa: BLE001 - complete all teardown
                 errors.append(error)
+            else:
+                self._subscriptions.discard(unsubscribe)
         if transactions is not None:
             clear_subscribers = getattr(transactions, "clear_subscribers", None)
             if clear_subscribers is not None:
@@ -461,13 +462,19 @@ class _Router:
 
     def remove(self, entry_id: str) -> None:
         errors: list[BaseException] = []
-        subscriptions = tuple(self.subscriptions.pop(entry_id, ()))
+        tracked = self.subscriptions.get(entry_id)
+        subscriptions = tuple(tracked or ())
         self.controllers.pop(entry_id, None)
         for unsubscribe in subscriptions:
             try:
                 unsubscribe()
             except BaseException as error:  # noqa: BLE001 - remove every callback
                 errors.append(error)
+            else:
+                if tracked is not None:
+                    tracked.discard(unsubscribe)
+        if tracked is not None and not tracked:
+            self.subscriptions.pop(entry_id, None)
         if errors:
             raise BaseExceptionGroup("websocket router cleanup failed", errors)
 
@@ -498,6 +505,22 @@ class _Router:
             initial_sent = False
             active = True
             overflowed = False
+            provider_unsubscribe: Unsubscribe | None = None
+            removed = False
+            tracked = self.subscriptions.setdefault(entry_id, set())
+
+            def remove() -> None:
+                nonlocal active, removed
+                active = False
+                pending.clear()
+                if removed:
+                    return
+                if provider_unsubscribe is not None:
+                    provider_unsubscribe()
+                removed = True
+                tracked.discard(remove)
+                if not tracked:
+                    self.subscriptions.pop(entry_id, None)
 
             def forward(event: Any) -> None:
                 nonlocal active, overflowed
@@ -514,30 +537,38 @@ class _Router:
                 try:
                     connection.send_event(msg_id, sanitize_payload(event))
                 except Exception:  # noqa: BLE001 - never leak provider failures
-                    active = False
-                    connection.send_event(
-                        msg_id,
-                        {"error": {"code": "operation_failed"}},
-                    )
+                    connection.subscriptions.pop(msg_id, None)
+                    try:
+                        remove()
+                    except BaseException:  # noqa: BLE001 - retained for unload retry
+                        active = False
+                    try:
+                        connection.send_event(
+                            msg_id,
+                            {"error": {"code": "operation_failed"}},
+                        )
+                    except Exception:  # noqa: BLE001 - connection is already unusable
+                        active = False
 
-            unsubscribe = controller.subscribe(msg["type"], msg, forward)
+            try:
+                provider_unsubscribe = controller.subscribe(msg["type"], msg, forward)
+            except BaseException:
+                if not tracked:
+                    self.subscriptions.pop(entry_id, None)
+                raise
+            tracked.add(remove)
             try:
                 snapshot = await controller.async_snapshot(msg["type"], msg)
                 safe_snapshot = sanitize_payload(snapshot)
-            except BaseException:
-                unsubscribe()
+            except BaseException as error:
+                try:
+                    remove()
+                except BaseException as cleanup_error:  # noqa: BLE001
+                    error.add_note(
+                        "subscription cleanup failed with "
+                        f"{type(cleanup_error).__name__}"
+                    )
                 raise
-            tracked = self.subscriptions.setdefault(entry_id, set())
-
-            def remove() -> None:
-                nonlocal active
-                active = False
-                if remove not in tracked:
-                    return
-                tracked.discard(remove)
-                unsubscribe()
-
-            tracked.add(remove)
             connection.subscriptions[msg_id] = remove
             try:
                 connection.send_result(msg_id)

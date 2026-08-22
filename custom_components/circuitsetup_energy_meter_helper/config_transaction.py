@@ -842,9 +842,17 @@ class ConfigTransactionManager:
         transaction.state = ConfigTransactionState.FAILED
         self.publish_status(_status(transaction))
         if transaction.reservation_claimed and not transaction.write_started:
-            cleanup = asyncio.create_task(transaction.async_release_reservation())
+            _release(transaction)
+
+            async def release_then_scrub() -> None:
+                await transaction.async_release_reservation()
+                transaction.scrub()
+                self.sessions._remove_transaction(transaction.transaction_id)
+                self._subscribers.pop(transaction.transaction_id, None)
+
+            cleanup = asyncio.create_task(release_then_scrub())
             transaction.active_tasks.add(cleanup)
-            cleanup.add_done_callback(transaction.active_tasks.discard)
+            return
         _release(transaction)
         transaction.scrub()
         self.sessions._remove_transaction(transaction.transaction_id)

@@ -1426,6 +1426,104 @@ def test_unload_releases_unwritten_exact_reservation_before_scrubbing() -> None:
     asyncio.run(run())
 
 
+def test_expired_reservation_cleanup_remains_owned_until_unload_drains_it() -> None:
+    """Expiry cannot detach durable release after removing the transaction map entry."""
+
+    async def run() -> None:
+        now = 10.0
+        source = _snapshot()
+        record = _record(source, ((7301, 1),) * 3)
+
+        class BlockingPersistence(CalibrationPersistence):
+            def __init__(self) -> None:
+                super().__init__((record,))
+                self.release_started = asyncio.Event()
+                self.release_allowed = asyncio.Event()
+                self.release_finished = False
+
+            async def async_release_verified_calibration(
+                self, mac: str, verification_id: str, transaction_id: str
+            ) -> bool:
+                self.release_started.set()
+                await self.release_allowed.wait()
+                released = await super().async_release_verified_calibration(
+                    mac, verification_id, transaction_id
+                )
+                self.release_finished = True
+                return released
+
+        persistence = BlockingPersistence()
+        sessions = SessionManager()
+        manager = ConfigTransactionManager(
+            Builder(remote_content=source.content),
+            Verifier(RuntimeError()),
+            persistence,
+            sessions,
+            confirmation_ttl=5.0,
+            clock=lambda: now,
+        )
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+        now = 16.0
+        with pytest.raises(KeyError, match="expired"):
+            manager.status(preview.transaction_id)
+        await persistence.release_started.wait()
+
+        unload = asyncio.create_task(sessions.async_unload())
+        await asyncio.sleep(0)
+        try:
+            assert not unload.done()
+        finally:
+            persistence.release_allowed.set()
+        await unload
+        assert persistence.release_finished
+        assert persistence.claimed == {}
+        assert sessions._config_transactions == {}
+
+    asyncio.run(run())
+
+
+def test_expired_reservation_release_error_is_owned_and_reported_on_unload() -> None:
+    """A background release error remains observable until final teardown."""
+
+    async def run() -> None:
+        now = 10.0
+        source = _snapshot()
+        record = _record(source, ((7301, 1),) * 3)
+
+        class FailingPersistence(CalibrationPersistence):
+            async def async_release_verified_calibration(
+                self, mac: str, verification_id: str, transaction_id: str
+            ) -> bool:
+                del mac, verification_id, transaction_id
+                raise OSError("durable release failed")
+
+        persistence = FailingPersistence((record,))
+        sessions = SessionManager()
+        manager = ConfigTransactionManager(
+            Builder(remote_content=source.content),
+            Verifier(RuntimeError()),
+            persistence,
+            sessions,
+            confirmation_ttl=5.0,
+            clock=lambda: now,
+        )
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+        now = 16.0
+        with pytest.raises(KeyError, match="expired"):
+            manager.status(preview.transaction_id)
+        await asyncio.sleep(0)
+
+        with pytest.raises(BaseExceptionGroup, match="reservation cleanup"):
+            await sessions.async_unload()
+        assert sessions._config_transactions == {}
+
+    asyncio.run(run())
+
+
 def test_cancelled_source_revalidation_releases_config_ownership() -> None:
     async def run() -> None:
         source = _snapshot()

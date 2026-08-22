@@ -315,14 +315,22 @@ class SessionManager:
         pending: set[asyncio.Task[Any]] = set()
         cleanup_errors: list[BaseException] = []
         transactions = tuple(self._config_transactions.values())
-        tasks = tuple(
+        owned_tasks = tuple(
             {
                 task
                 for transaction in transactions
                 for task in tuple(getattr(transaction, "active_tasks", ()))
-                if not task.done()
             }
         )
+        tasks = tuple(task for task in owned_tasks if not task.done())
+        for task in owned_tasks:
+            if not task.done() or task.cancelled():
+                continue
+            try:
+                if (task_error := task.exception()) is not None:
+                    cleanup_errors.append(task_error)
+            except BaseException as error:  # noqa: BLE001 - aggregate cleanup
+                cleanup_errors.append(error)
         calibration_tasks = tuple(
             lease.task
             for lease in self._calibration_leases.values()
@@ -341,7 +349,17 @@ class SessionManager:
             task.cancel()
         waited_tasks = tuple(task for task in all_tasks if task is not current)
         if waited_tasks:
-            _, pending = await asyncio.wait(waited_tasks, timeout=self._unload_timeout)
+            done, pending = await asyncio.wait(
+                waited_tasks, timeout=self._unload_timeout
+            )
+            for task in done:
+                if task.cancelled():
+                    continue
+                try:
+                    if (task_error := task.exception()) is not None:
+                        cleanup_errors.append(task_error)
+                except BaseException as error:  # noqa: BLE001 - aggregate cleanup
+                    cleanup_errors.append(error)
             for task in pending:
                 task.cancel()
         for transaction in transactions:

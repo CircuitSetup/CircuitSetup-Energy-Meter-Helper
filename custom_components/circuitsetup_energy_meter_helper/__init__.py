@@ -32,7 +32,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     api_session = (
         ESPHomeApiSession(hass, esphome_entry_id) if esphome_entry_id else None
     )
-    device_builder = create_device_builder(hass)
+    device_builder = await create_device_builder(hass)
     workflow = EntryWorkflow(
         hass,
         coordinator,
@@ -71,6 +71,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload the helper config entry."""
     domain_data = hass.data.get(DOMAIN, {})
     data = domain_data.get(entry.entry_id)
+    if data is None:
+        try:
+            async_unregister_entry(hass, entry.entry_id)
+        except BaseException as error:
+            raise BaseExceptionGroup("integration unload failed", [error]) from error
+        return True
     if data is not None:
         errors: list[BaseException] = []
         try:

@@ -5,10 +5,21 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from http.cookies import SimpleCookie
+from threading import RLock
 from time import monotonic
 from typing import Any
 from uuid import uuid4
 
+from aiohasupervisor import SupervisorError
+from aiohasupervisor.models import AddonState as SupervisorAddonState
+from aiohttp import hdrs
+from homeassistant.components.hassio import HassIO, get_supervisor_client
+from homeassistant.components.hassio.const import (
+    DATA_COMPONENT,
+    X_HASS_SOURCE,
+    X_INGRESS_PATH,
+)
 from homeassistant.core import HomeAssistant
 
 from .calibration_engine import CalibrationEngine
@@ -30,6 +41,10 @@ from .topology import topology_from_config, topology_from_native
 
 DEFAULT_HANDLE_TTL = 15 * 60.0
 MAX_HANDLE_TTL = 60 * 60.0
+MAX_PLAN_HANDLES = 8
+ESPHOME_DEVICE_BUILDER_SLUG = "5c53de3b_esphome"
+_INGRESS_ENTRY_PREFIX = "/api/hassio_ingress/"
+_INGRESS_SESSION_COOKIE = "ingress_session"
 
 
 class WorkflowCapabilityUnavailable(RuntimeError):
@@ -76,6 +91,9 @@ class _SessionHandle:
     expires_at: float
     safety_acknowledged: bool = False
     state: str = "safety_required"
+    revision: int = 0
+    active_task: asyncio.Task[Any] | None = None
+    revoked: bool = False
 
     def status(self) -> SessionStatus:
         return SessionStatus(
@@ -95,13 +113,12 @@ class LazyDeviceBuilder:
 
     def __init__(self, client: DeviceBuilderClient) -> None:
         self._client = client
-        self._connected = False
         self._lock = asyncio.Lock()
 
     async def _ready(self) -> DeviceBuilderClient:
-        if not self._connected:
+        if not self._client.connected:
             async with self._lock:
-                if not self._connected:
+                if not self._client.connected:
                     try:
                         await self._client.async_connect()
                     except BaseException as error:
@@ -113,7 +130,6 @@ class LazyDeviceBuilder:
                                 f"{type(cleanup_error).__name__}"
                             )
                         raise
-                    self._connected = True
         return self._client
 
     async def async_list_devices(self) -> dict[str, Any]:
@@ -154,8 +170,13 @@ class LazyDeviceBuilder:
         )
 
     async def async_close(self) -> None:
-        self._connected = False
-        await self._client.async_disconnect()
+        async with self._lock:
+            disconnect = asyncio.create_task(self._client.async_disconnect())
+            try:
+                await asyncio.shield(disconnect)
+            except asyncio.CancelledError:
+                await disconnect
+                raise
 
 
 class EntryWorkflow:
@@ -187,6 +208,7 @@ class EntryWorkflow:
         self._clock = clock
         self._plans: dict[str, _PlanHandle] = {}
         self._sessions: dict[str, _SessionHandle] = {}
+        self._session_guards: dict[str, RLock] = {}
         self._subscribers: dict[str, set[Callable[[SessionStatus], None]]] = {}
         self.transactions: ConfigTransactionManager | None = None
         self._closed = False
@@ -225,6 +247,11 @@ class EntryWorkflow:
             document, topology, CTPresetCatalog.load(), snapshot.sha256
         )
         plan_id = uuid4().hex
+        self._discard_device_plans(mac)
+        while len(self._plans) >= MAX_PLAN_HANDLES:
+            oldest = next(iter(self._plans))
+            evicted = self._plans.pop(oldest)
+            evicted.scrub()
         self._plans[plan_id] = _PlanHandle(
             plan_id,
             device_id,
@@ -356,60 +383,80 @@ class EntryWorkflow:
             self._deadline(),
             state="safety_required" if preflight.ok else "preflight_failed",
         )
-        self._sessions[session_id] = handle
-        self._prune_sessions()
+        with self._guard(mac):
+            self._prune_device_sessions_locked(mac)
+            if any(item.mac == mac for item in self._sessions.values()):
+                handle.scrub()
+                raise WorkflowHandleError(
+                    "a calibration session is already active for this device"
+                )
+            self._sessions[session_id] = handle
         return handle.status()
 
     async def async_acknowledge_safety(
         self, session_id: str, acknowledged: bool
     ) -> SessionStatus:
         handle = self._session(session_id)
-        if not handle.preflight.ok or not acknowledged:
-            raise WorkflowHandleError("session is not ready for safety confirmation")
-        handle.safety_acknowledged = True
-        handle.state = "ready"
-        self._refresh(handle)
-        return self._publish(handle)
+        with self._guard(handle.mac):
+            handle = self._session_locked(session_id)
+            if not handle.preflight.ok or not acknowledged:
+                raise WorkflowHandleError(
+                    "session is not ready for safety confirmation"
+                )
+            handle.safety_acknowledged = True
+            handle.state = "ready"
+            self._refresh(handle)
+            return self._publish(handle)
 
     async def async_check_stability(
         self, session_id: str, target: str, target_id: str
     ) -> dict[str, Any]:
-        handle = self._ready_session(session_id)
+        handle, revision = self._claim_ready_session(session_id)
         api = self._require_api()
-        entities: tuple[Any, ...]
-        if target == "voltage":
-            group = next(
-                (item for item in handle.binding.groups if item.key == target_id), None
-            )
-            if group is None:
-                raise WorkflowHandleError("unknown voltage target")
-            entities = group.voltage_sensors
-        else:
-            try:
-                channel = int(target_id)
-                entities = (handle.binding.channels[channel - 1].current_sensor,)
-            except ValueError, IndexError:
-                raise WorkflowHandleError("unknown current target") from None
-        windows = tuple(
-            [
-                await api.async_wait_for_sensor_window(
-                    entity.descriptor.key,
-                    device_id=entity.descriptor.device_id,
-                    sample_count=3,
+        try:
+            entities: tuple[Any, ...]
+            if target == "voltage":
+                group = next(
+                    (item for item in handle.binding.groups if item.key == target_id),
+                    None,
                 )
-                for entity in entities
-            ]
-        )
-        stable = all(window.range_percent <= 1.0 for window in windows)
-        handle.state = "stable" if stable else "unstable"
-        self._refresh(handle)
-        self._publish(handle)
-        return {
-            "target": target,
-            "target_id": target_id,
-            "stable": stable,
-            "windows": windows,
-        }
+                if group is None:
+                    raise WorkflowHandleError("unknown voltage target")
+                entities = group.voltage_sensors
+            else:
+                try:
+                    channel = int(target_id)
+                except ValueError:
+                    raise WorkflowHandleError("unknown current target") from None
+                if not 1 <= channel <= handle.topology.ct_count:
+                    raise WorkflowHandleError("unknown current target")
+                try:
+                    entities = (handle.binding.channels[channel - 1].current_sensor,)
+                except IndexError:
+                    raise WorkflowHandleError("unknown current target") from None
+            windows = tuple(
+                [
+                    await api.async_wait_for_sensor_window(
+                        entity.descriptor.key,
+                        device_id=entity.descriptor.device_id,
+                        sample_count=3,
+                    )
+                    for entity in entities
+                ]
+            )
+            stable = all(window.range_percent <= 1.0 for window in windows)
+            self._assert_claim(handle, revision)
+            handle.state = "stable" if stable else "unstable"
+            self._refresh(handle)
+            self._publish(handle)
+            return {
+                "target": target,
+                "target_id": target_id,
+                "stable": stable,
+                "windows": windows,
+            }
+        finally:
+            self._release_claim(handle, revision)
 
     async def async_calibrate_voltage(
         self,
@@ -418,25 +465,30 @@ class EntryWorkflow:
         reference: float,
         confirm_iteration: bool,
     ) -> Any:
-        handle = self._ready_session(session_id)
-        iteration = self._sessions_owner.next_calibration_iteration(
-            handle.mac, f"voltage:{group_key}"
-        )
-        result = await self._calibration.async_calibrate_voltage(
-            handle.mac,
-            self._require_api(),
-            handle.binding,
-            group_key,
-            reference,
-            1.0,
-            iteration=iteration,
-            confirm_iteration=confirm_iteration,
-            substitutions=handle.substitutions,
-        )
-        handle.state = str(result.state)
-        self._refresh(handle)
-        self._publish(handle)
-        return result
+        handle, revision = self._claim_ready_session(session_id)
+        try:
+            iteration = self._sessions_owner.next_calibration_iteration(
+                handle.mac, f"voltage:{group_key}"
+            )
+            self._assert_claim(handle, revision)
+            result = await self._calibration.async_calibrate_voltage(
+                handle.mac,
+                self._require_api(),
+                handle.binding,
+                group_key,
+                reference,
+                1.0,
+                iteration=iteration,
+                confirm_iteration=confirm_iteration,
+                substitutions=handle.substitutions,
+            )
+            self._assert_claim(handle, revision)
+            handle.state = str(result.state)
+            self._refresh(handle)
+            self._publish(handle)
+            return result
+        finally:
+            self._release_claim(handle, revision)
 
     async def async_calibrate_current(
         self,
@@ -445,51 +497,71 @@ class EntryWorkflow:
         reference: float,
         confirm_iteration: bool,
     ) -> Any:
-        handle = self._ready_session(session_id)
-        inventory = await self._inventory_for_handle(handle)
-        multiplier = inventory.channels[channel - 1].reporting_multiplier
-        iteration = self._sessions_owner.next_calibration_iteration(
-            handle.mac, f"current:{channel}"
-        )
-        result = await self._calibration.async_calibrate_current(
-            handle.mac,
-            self._require_api(),
-            handle.binding,
-            channel,
-            reference,
-            multiplier,
-            1.0,
-            iteration=iteration,
-            confirm_iteration=confirm_iteration,
-            substitutions=handle.substitutions,
-        )
-        handle.state = str(result.state)
-        self._refresh(handle)
-        self._publish(handle)
-        return result
+        handle, revision = self._claim_ready_session(session_id)
+        try:
+            inventory = await self._inventory_for_handle(handle)
+            if not 1 <= channel <= handle.topology.ct_count:
+                raise WorkflowHandleError("unknown current channel")
+            multiplier = inventory.channels[channel - 1].reporting_multiplier
+            iteration = self._sessions_owner.next_calibration_iteration(
+                handle.mac, f"current:{channel}"
+            )
+            self._assert_claim(handle, revision)
+            result = await self._calibration.async_calibrate_current(
+                handle.mac,
+                self._require_api(),
+                handle.binding,
+                channel,
+                reference,
+                multiplier,
+                1.0,
+                iteration=iteration,
+                confirm_iteration=confirm_iteration,
+                substitutions=handle.substitutions,
+            )
+            self._assert_claim(handle, revision)
+            handle.state = str(result.state)
+            self._refresh(handle)
+            self._publish(handle)
+            return result
+        finally:
+            self._release_claim(handle, revision)
 
     async def async_restart_and_verify(self, session_id: str) -> Any:
-        handle = self._ready_session(session_id)
-        result = await self._calibration.async_verify_after_restart(
-            handle.mac,
-            self._require_api(),
-            handle.binding,
-            substitutions=handle.substitutions,
-        )
-        handle.binding = result.binding
-        handle.state = "verified"
-        self._refresh(handle)
-        self._publish(handle)
-        return result.record
+        handle, revision = self._claim_ready_session(session_id)
+        try:
+            self._assert_claim(handle, revision)
+            result = await self._calibration.async_verify_after_restart(
+                handle.mac,
+                self._require_api(),
+                handle.binding,
+                substitutions=handle.substitutions,
+            )
+            self._assert_claim(handle, revision)
+            handle.binding = result.binding
+            handle.state = "verified"
+            self._refresh(handle)
+            self._publish(handle)
+            return result.record
+        finally:
+            self._release_claim(handle, revision)
 
     async def async_cancel_session(self, session_id: str) -> SessionStatus:
         handle = self._session(session_id)
-        handle.state = "cancelled"
-        status = self._publish(handle)
-        self._sessions_owner.abandon_calibration(handle.mac)
-        self._sessions.pop(session_id, None)
-        self._subscribers.pop(session_id, None)
-        handle.scrub()
+        with self._guard(handle.mac):
+            handle = self._session_locked(session_id)
+            handle.revoked = True
+            handle.revision += 1
+            handle.state = "cancelled"
+            status = self._publish(handle)
+            self._sessions.pop(session_id, None)
+            self._subscribers.pop(session_id, None)
+            active_task = handle.active_task
+            if active_task is not None and active_task is not asyncio.current_task():
+                active_task.cancel()
+        if active_task is not None and active_task is not asyncio.current_task():
+            await asyncio.gather(active_task, return_exceptions=True)
+        self._finalize_revoked(handle)
         return status
 
     def subscribe_session(
@@ -556,10 +628,26 @@ class EntryWorkflow:
         errors: list[BaseException] = []
         plans = tuple(self._plans.values())
         sessions = tuple(self._sessions.values())
+        active_tasks: set[asyncio.Task[Any]] = set()
+        current = asyncio.current_task()
+        for session in sessions:
+            with self._guard(session.mac):
+                session.revoked = True
+                session.revision += 1
+                if (
+                    session.active_task is not None
+                    and session.active_task is not current
+                    and not session.active_task.done()
+                ):
+                    session.active_task.cancel()
+                    active_tasks.add(session.active_task)
+        if active_tasks:
+            await asyncio.gather(*active_tasks, return_exceptions=True)
         self._plans.clear()
         self._sessions.clear()
         self._subscribers.clear()
-        builder, self._builder = self._builder, None
+        self._session_guards.clear()
+        builder = self._builder
         self.transactions = None
         self._api = None
         for plan in plans:
@@ -581,6 +669,8 @@ class EntryWorkflow:
                 await builder.async_close()
             except BaseException as error:  # noqa: BLE001 - report after local scrub
                 errors.append(error)
+            finally:
+                self._builder = None
         if errors:
             raise BaseExceptionGroup("workflow cleanup failed", errors)
 
@@ -687,23 +777,86 @@ class EntryWorkflow:
 
     def _session(self, session_id: str) -> _SessionHandle:
         handle = self._sessions.get(session_id)
-        if handle is None or self._clock() >= handle.expires_at:
+        if handle is None:
+            raise WorkflowHandleError("session is stale")
+        with self._guard(handle.mac):
+            return self._session_locked(session_id)
+
+    def _session_locked(self, session_id: str) -> _SessionHandle:
+        handle = self._sessions.get(session_id)
+        if handle is None or handle.revoked or self._clock() >= handle.expires_at:
             if handle is not None:
-                self._sessions.pop(session_id, None)
-                self._subscribers.pop(session_id, None)
-                try:
-                    self._sessions_owner.abandon_calibration(handle.mac)
-                except CalibrationBusyError:
-                    pass
-                handle.scrub()
+                self._revoke_expired_locked(handle)
             raise WorkflowHandleError("session is stale")
         return handle
 
-    def _ready_session(self, session_id: str) -> _SessionHandle:
+    def _claim_ready_session(self, session_id: str) -> tuple[_SessionHandle, int]:
         handle = self._session(session_id)
-        if not handle.safety_acknowledged or not handle.preflight.ok:
-            raise WorkflowHandleError("session safety confirmation is absent")
-        return handle
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("calibration operations require an asyncio task")
+        with self._guard(handle.mac):
+            handle = self._session_locked(session_id)
+            if not handle.safety_acknowledged or not handle.preflight.ok:
+                raise WorkflowHandleError("session safety confirmation is absent")
+            if handle.active_task is not None:
+                raise WorkflowHandleError("session already has an active operation")
+            handle.revision += 1
+            handle.active_task = task
+            return handle, handle.revision
+
+    def _assert_claim(self, handle: _SessionHandle, revision: int) -> None:
+        with self._guard(handle.mac):
+            if (
+                self._sessions.get(handle.session_id) is not handle
+                or handle.revoked
+                or handle.revision != revision
+                or handle.active_task is not asyncio.current_task()
+                or self._clock() >= handle.expires_at
+            ):
+                raise WorkflowHandleError("session is stale")
+
+    def _release_claim(self, handle: _SessionHandle, revision: int) -> None:
+        with self._guard(handle.mac):
+            if (
+                handle.revision == revision
+                and handle.active_task is asyncio.current_task()
+            ):
+                handle.active_task = None
+
+    def _guard(self, mac: str) -> RLock:
+        return self._session_guards.setdefault(mac, RLock())
+
+    def _prune_device_sessions_locked(self, mac: str) -> None:
+        for handle in tuple(self._sessions.values()):
+            if handle.mac == mac and self._clock() >= handle.expires_at:
+                self._revoke_expired_locked(handle)
+
+    def _revoke_expired_locked(self, handle: _SessionHandle) -> None:
+        if handle.revoked:
+            return
+        handle.revoked = True
+        handle.revision += 1
+        self._sessions.pop(handle.session_id, None)
+        self._subscribers.pop(handle.session_id, None)
+        task = handle.active_task
+        if task is None or task.done():
+            self._finalize_revoked(handle)
+            return
+        if task is not asyncio.current_task():
+            task.cancel()
+
+        def finish(_task: asyncio.Task[Any]) -> None:
+            self._finalize_revoked(handle)
+
+        task.add_done_callback(finish)
+
+    def _finalize_revoked(self, handle: _SessionHandle) -> None:
+        try:
+            self._sessions_owner.abandon_calibration(handle.mac)
+        except CalibrationBusyError:
+            return
+        handle.scrub()
 
     def _publish(self, handle: _SessionHandle) -> SessionStatus:
         status = handle.status()
@@ -736,25 +889,49 @@ class EntryWorkflow:
                 self._plans.pop(plan_id)
                 plan.scrub()
 
-    def _prune_sessions(self) -> None:
-        for session_id in tuple(self._sessions):
-            try:
-                self._session(session_id)
-            except WorkflowHandleError:
-                pass
+    def _discard_device_plans(self, mac: str) -> None:
+        for plan_id, plan in tuple(self._plans.items()):
+            if plan.mac == mac:
+                self._plans.pop(plan_id)
+                plan.scrub()
 
 
-def create_device_builder(hass: HomeAssistant) -> LazyDeviceBuilder | None:
-    """Derive Device Builder access from Home Assistant's ESPHome dashboard owner."""
-    manager = hass.data.get("esphome_dashboard_manager")
-    dashboard = manager.async_get() if manager is not None else None
-    url = getattr(dashboard, "url", None)
-    if not isinstance(url, str) or not url:
+async def create_device_builder(hass: HomeAssistant) -> LazyDeviceBuilder | None:
+    """Discover the official supervised Device Builder and use trusted ingress."""
+    hassio = hass.data.get(DATA_COMPONENT)
+    if not isinstance(hassio, HassIO):
         return None
+    supervisor = get_supervisor_client(hass)
+    try:
+        addon = await supervisor.addons.addon_info(ESPHOME_DEVICE_BUILDER_SLUG)
+    except SupervisorError:
+        return None
+    if (
+        addon.slug != ESPHOME_DEVICE_BUILDER_SLUG
+        or addon.name != "ESPHome Device Builder"
+        or addon.state is not SupervisorAddonState.STARTED
+        or addon.ingress is not True
+        or not isinstance(addon.ingress_entry, str)
+        or not addon.ingress_entry.startswith(_INGRESS_ENTRY_PREFIX)
+    ):
+        return None
+    ingress_entry = addon.ingress_entry
+    ingress_token = ingress_entry.removeprefix(_INGRESS_ENTRY_PREFIX).strip("/")
+    if not ingress_token or "/" in ingress_token:
+        return None
+    url = str(hassio.base_url.with_path(f"/ingress/{ingress_token}"))
 
     async def connect(websocket_url: str) -> Any:
-        from homeassistant.helpers.aiohttp_client import async_get_clientsession
-
-        return await async_get_clientsession(hass).ws_connect(websocket_url)
+        session = await supervisor.ingress.create_session()
+        cookie = SimpleCookie()
+        cookie[_INGRESS_SESSION_COOKIE] = session
+        return await hassio.websession.ws_connect(
+            websocket_url,
+            headers={
+                hdrs.COOKIE: cookie.output(header="", sep="").strip(),
+                X_HASS_SOURCE: "core.ingress",
+                X_INGRESS_PATH: ingress_entry,
+            },
+        )
 
     return LazyDeviceBuilder(DeviceBuilderClient(url, connect=connect))

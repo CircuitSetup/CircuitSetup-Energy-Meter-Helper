@@ -101,6 +101,11 @@ class DeviceBuilderClient:
     def __repr__(self) -> str:
         return f"DeviceBuilderClient(base_url={self._base_url!r}, connected={self._ws is not None})"
 
+    @property
+    def connected(self) -> bool:
+        """Return whether the authoritative transport is currently attached."""
+        return self._ws is not None
+
     async def async_connect(self) -> None:
         """Connect to `/ws` and perform opaque-token auth only if requested."""
         connection = self._connect(f"{self._base_url}/ws")
@@ -127,10 +132,24 @@ class DeviceBuilderClient:
         listener, self._listener = self._listener, None
         if listener is not None:
             listener.cancel()
-        if self._ws is not None:
-            await self._ws.close()
-            self._ws = None
-        self._fail_pending()
+        websocket = self._ws
+        if websocket is None:
+            self._fail_pending()
+            return
+        close_task = asyncio.create_task(websocket.close())
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            try:
+                await close_task
+            finally:
+                self._ws = None
+                self._fail_pending()
+            raise
+        finally:
+            if close_task.done():
+                self._ws = None
+                self._fail_pending()
 
     async def async_command(self, command: str, args: dict[str, Any]) -> Any:
         """Send one pinned protocol command and await its matching envelope."""
@@ -256,7 +275,7 @@ class DeviceBuilderClient:
             validation = await self.async_validate(configuration)
             if not validation.success:
                 raise RollbackError("Device Builder rollback validation failed")
-        except (ConfigChangedError, RollbackError):
+        except ConfigChangedError, RollbackError:
             raise
         except Exception as err:
             raise RollbackError("Device Builder rollback failed") from err
@@ -383,8 +402,6 @@ def _structured_count(value: object) -> int | None:
     """Accept only small non-boolean integer protocol counts."""
     return (
         value
-        if isinstance(value, int)
-        and not isinstance(value, bool)
-        and 0 <= value <= 999
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 999
         else None
     )
