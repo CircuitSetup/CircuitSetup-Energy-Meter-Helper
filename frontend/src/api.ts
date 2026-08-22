@@ -25,7 +25,7 @@ export interface HomeAssistant {
 const PREFIX = "circuitsetup_energy_meter_helper/";
 const PRIVATE_FIELD = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
 const SECRET_VALUE = /(?:api[_ -]?key|password|secret|ssid|token)\s*[:=]/i;
-const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
+const CONTROL = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const SETUP_STATES = new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]);
 const TRANSACTION_STATES = new Set(["previewed", "write_confirmed", "written", "validated", "compiled", "install_confirmation_required", "installing", "reconnecting", "verified", "rolled_back", "failed"]);
 const SESSION_STATES = new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "indeterminate", "verified", "cancelled"]);
@@ -95,9 +95,21 @@ function setup(value: unknown, label: string): SetupSnapshot {
 }
 function topology(value: unknown, label: string): MeterTopology {
   const item = record(value, label);
-  for (const key of ["addon_count", "board_count", "ct_count", "group_count"] as const) integer(item[key], label);
+  const addonCount = integer(item.addon_count, label);
+  const boardCount = integer(item.board_count, label);
+  const ctCount = integer(item.ct_count, label);
+  const groupCount = integer(item.group_count, label);
+  if (addonCount < 0 || addonCount > 6
+    || boardCount < 1 || boardCount > 7
+    || ctCount < 6 || ctCount > 42
+    || groupCount < 2 || groupCount > 14
+    || boardCount !== addonCount + 1
+    || ctCount !== 6 * boardCount
+    || groupCount !== 2 * boardCount) throw new Error(`${label} response is invalid`);
   enumeration(item.connection_type, CONNECTIONS, label); string(item.voltage_layout, label); string(item.project_name, label);
-  array(item.evidence, label).forEach((entry) => { const evidence = record(entry, label); enumeration(evidence.source, EVIDENCE_SOURCES, label); integer(evidence.addon_count, label); string(evidence.detail, label); });
+  const evidenceItems = array(item.evidence, label);
+  if (evidenceItems.length > EVIDENCE_SOURCES.size) throw new Error(`${label} response is invalid`);
+  evidenceItems.forEach((entry) => { const evidence = record(entry, label); enumeration(evidence.source, EVIDENCE_SOURCES, label); const evidenceAddons = integer(evidence.addon_count, label); if (evidenceAddons < 0 || evidenceAddons > 6) throw new Error(`${label} response is invalid`); string(evidence.detail, label); });
   return value as MeterTopology;
 }
 function topologyResponse(value: unknown, label: string): MeterTopology | { topology: MeterTopology } {
@@ -107,9 +119,13 @@ function topologyResponse(value: unknown, label: string): MeterTopology | { topo
 }
 function ctInventory(value: unknown, label: string): CtInventory {
   const item = record(value, label); string(item.plan_id, label); string(item.source_sha256, label);
-  array(item.channels, label).forEach((entry) => { const channel = record(entry, label); integer(channel.channel, label); string(channel.name, label); integer(channel.raw_gain_ct, label); number(channel.reporting_multiplier, label); optionalString(channel.selected_model_id, label); boolean(channel.selection_verified_against_config, label); optionalString(channel.display_label, label); const address = record(channel.address, label); integer(address.channel, label); integer(address.board_index, label); integer(address.group_index, label); enumeration(address.phase, PHASES, label); });
+  const channels = array(item.channels, label);
+  if (channels.length < 6 || channels.length > 42 || channels.length % 6 !== 0) throw new Error(`${label} response is invalid`);
+  channels.forEach((entry, index) => { const channel = record(entry, label); const channelNumber = integer(channel.channel, label); string(channel.name, label); integer(channel.raw_gain_ct, label); number(channel.reporting_multiplier, label); optionalString(channel.selected_model_id, label); boolean(channel.selection_verified_against_config, label); optionalString(channel.display_label, label); const address = record(channel.address, label); const addressChannel = integer(address.channel, label); const boardIndex = integer(address.board_index, label); const groupIndex = integer(address.group_index, label); const phase = enumeration(address.phase, PHASES, label); const expectedChannel = index + 1; if (channelNumber !== expectedChannel || addressChannel !== expectedChannel || boardIndex !== Math.floor(index / 6) || groupIndex !== Math.floor((index % 6) / 3) + 1 || phase !== ["A", "B", "C"][index % 3]) throw new Error(`${label} response is invalid`); });
   const catalog = record(item.catalog, label); string(catalog.source_repository, label); string(catalog.source_ref, label); integer(catalog.schema_version, label);
-  array(catalog.presets, label).forEach((entry) => { const preset = record(entry, label); string(preset.model_id, label); string(preset.label, label); number(preset.rated_current_a, label); string(preset.secondary, label); if (preset.default_gain_ct !== null) integer(preset.default_gain_ct, label); boolean(preset.requires_burden_jumper_cut, label); string(preset.notes, label); });
+  const presets = array(catalog.presets, label);
+  if (presets.length > 64) throw new Error(`${label} response is invalid`);
+  presets.forEach((entry) => { const preset = record(entry, label); string(preset.model_id, label); string(preset.label, label); number(preset.rated_current_a, label); string(preset.secondary, label); if (preset.default_gain_ct !== null) integer(preset.default_gain_ct, label); boolean(preset.requires_burden_jumper_cut, label); string(preset.notes, label); });
   return value as CtInventory;
 }
 function transaction(value: unknown, label: string): TransactionStatus {

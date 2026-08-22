@@ -80,6 +80,10 @@ export class CircuitSetupPanel extends LitElement {
   private announcement = "";
   private unsubs: Array<() => void> = [];
   private connectionGeneration = 0;
+  private transactionSubscriptionScope = 0;
+  private sessionSubscriptionScope = 0;
+  private transactionUnsub: (() => void) | null = null;
+  private sessionUnsub: (() => void) | null = null;
   private mobileStepsOpen = false;
   private focusHeading = false;
 
@@ -91,9 +95,13 @@ export class CircuitSetupPanel extends LitElement {
 
   public override disconnectedCallback(): void {
     ++this.connectionGeneration;
+    ++this.transactionSubscriptionScope;
+    ++this.sessionSubscriptionScope;
     for (const unsub of this.unsubs.splice(0)) {
       try { unsub(); } catch { /* A later attach must still get a fresh generation. */ }
     }
+    this.transactionUnsub = null;
+    this.sessionUnsub = null;
     this.api = null;
     super.disconnectedCallback();
   }
@@ -120,11 +128,11 @@ export class CircuitSetupPanel extends LitElement {
         this.addonCount = intent.addon_count;
         this.connection = intent.connection_type;
       }
-      if (this.setup.devices.length) this.selectedDeviceId = this.setup.devices[0]?.entry_id ?? null;
+      if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.setup.devices[0]?.entry_id ?? null);
       await this.ownSubscription(api.subscribeSetup((snapshot) => {
         if (!this.owns(generation, api)) return;
         this.setup = snapshot;
-        if (!this.selectedDeviceId && snapshot.devices.length) this.selectedDeviceId = snapshot.devices[0]?.entry_id ?? null;
+        if (!this.selectedDeviceId && snapshot.devices.length) this.selectDevice(snapshot.devices[0]?.entry_id ?? null);
         this.requestUpdate();
       }), generation, api);
       if (this.transaction) await this.subscribeTransaction(generation);
@@ -139,13 +147,57 @@ export class CircuitSetupPanel extends LitElement {
     return this.isConnected && generation === this.connectionGeneration && api === this.api;
   }
 
-  private async ownSubscription(pending: Promise<() => void>, generation: number, api: HelperApi): Promise<void> {
+  private async ownSubscription(
+    pending: Promise<() => void>,
+    generation: number,
+    api: HelperApi,
+    isCurrent: () => boolean = () => true,
+    onOwned: (unsubscribe: () => void) => void = () => undefined,
+  ): Promise<void> {
     const unsubscribe = await pending;
-    if (!this.owns(generation, api)) {
+    if (!this.owns(generation, api) || !isCurrent()) {
       try { unsubscribe(); } catch { /* The stale generation no longer owns panel state. */ }
       return;
     }
     this.unsubs.push(unsubscribe);
+    onOwned(unsubscribe);
+  }
+
+  private clearSubscription(kind: "transaction" | "session"): void {
+    if (kind === "transaction") ++this.transactionSubscriptionScope;
+    else ++this.sessionSubscriptionScope;
+    const unsubscribe = kind === "transaction" ? this.transactionUnsub : this.sessionUnsub;
+    if (kind === "transaction") this.transactionUnsub = null;
+    else this.sessionUnsub = null;
+    if (!unsubscribe) return;
+    const index = this.unsubs.indexOf(unsubscribe);
+    if (index >= 0) this.unsubs.splice(index, 1);
+    try { unsubscribe(); } catch { /* Replacement ownership must still advance. */ }
+  }
+
+  private resetCalibrationRun(): void {
+    this.safetyAcknowledged = false;
+    this.stabilityByTarget = new Map();
+    this.calibrationByTarget = new Map();
+    this.restartResult = null;
+    this.group = 0;
+    this.channel = 1;
+    this.reference = 0;
+  }
+
+  private selectDevice(deviceId: string | null): void {
+    if (deviceId === this.selectedDeviceId) return;
+    this.clearSubscription("transaction");
+    this.clearSubscription("session");
+    this.selectedDeviceId = deviceId;
+    this.topology = null;
+    this.inventory = null;
+    this.transaction = null;
+    this.session = null;
+    this.drafts = new Map();
+    this.board = 0;
+    this.ctGroup = 0;
+    this.resetCalibrationRun();
   }
 
   public showTopology(topology: MeterTopology): void {
@@ -226,7 +278,7 @@ export class CircuitSetupPanel extends LitElement {
       const setup = await api.rescan();
       this.setup = setup;
       if (setup.devices.length) {
-        this.selectedDeviceId = setup.devices[0]?.entry_id ?? null;
+        this.selectDevice(setup.devices[0]?.entry_id ?? null);
         this.navigate("discover");
         this.announcement = "Compatible meter discovered.";
       } else {
@@ -281,6 +333,8 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.inventory || !this.selectedDeviceId) return;
     const changes = changesFromDrafts(this.inventory, this.drafts);
     if (!changes.length) return this.fail(new Error(), "Select at least one CT change before review.");
+    this.clearSubscription("transaction");
+    this.transaction = null;
     await this.run(async () => {
       this.transaction = await this.api?.previewCtConfig(
         this.selectedDeviceId!,
@@ -296,12 +350,32 @@ export class CircuitSetupPanel extends LitElement {
   private async subscribeTransaction(generation: number): Promise<void> {
     if (!this.api || !this.transaction || !this.selectedDeviceId) return;
     const api = this.api;
+    this.clearSubscription("transaction");
+    const scope = this.transactionSubscriptionScope;
+    const deviceId = this.selectedDeviceId;
+    const transactionId = this.transaction.transaction_id;
+    const sourceSha256 = this.transaction.source_sha256;
     await this.ownSubscription(api.subscribeConfigTransaction(
-      this.selectedDeviceId,
-      this.transaction.transaction_id,
-      this.transaction.source_sha256,
-      (status) => { if (this.owns(generation, api)) { this.transaction = status; this.requestUpdate(); } },
-    ), generation, api);
+      deviceId,
+      transactionId,
+      sourceSha256,
+      (status) => {
+        if (this.owns(generation, api)
+          && scope === this.transactionSubscriptionScope
+          && this.selectedDeviceId === deviceId
+          && this.transaction?.transaction_id === transactionId
+          && this.transaction.source_sha256 === sourceSha256
+          && status.transaction_id === transactionId
+          && status.source_sha256 === sourceSha256) {
+          this.transaction = status;
+          this.requestUpdate();
+        }
+      },
+    ), generation, api, () => scope === this.transactionSubscriptionScope
+      && this.selectedDeviceId === deviceId
+      && this.transaction?.transaction_id === transactionId
+      && this.transaction.source_sha256 === sourceSha256,
+    (unsubscribe) => { this.transactionUnsub = unsubscribe; });
   }
 
   private async transactionAction(action: "apply" | "compile" | "install" | "rollback"): Promise<void> {
@@ -318,6 +392,9 @@ export class CircuitSetupPanel extends LitElement {
 
   private async startSession(): Promise<void> {
     if (!this.api || !this.selectedDeviceId) return;
+    this.clearSubscription("session");
+    this.session = null;
+    this.resetCalibrationRun();
     await this.run(async () => {
       this.session = await this.api!.startSession(this.selectedDeviceId!);
       this.navigate("safety");
@@ -328,9 +405,24 @@ export class CircuitSetupPanel extends LitElement {
   private async subscribeSession(generation: number): Promise<void> {
     if (!this.api || !this.session) return;
     const api = this.api;
-    await this.ownSubscription(api.subscribeSession(this.session.session_id, (session) => {
-      if (this.owns(generation, api)) { this.session = session; this.requestUpdate(); }
-    }), generation, api);
+    this.clearSubscription("session");
+    const scope = this.sessionSubscriptionScope;
+    const sessionId = this.session.session_id;
+    const deviceId = this.session.device_id;
+    await this.ownSubscription(api.subscribeSession(sessionId, (session) => {
+      if (this.owns(generation, api)
+        && scope === this.sessionSubscriptionScope
+        && this.session?.session_id === sessionId
+        && this.session.device_id === deviceId
+        && session.session_id === sessionId
+        && session.device_id === deviceId) {
+        this.session = session;
+        this.requestUpdate();
+      }
+    }), generation, api, () => scope === this.sessionSubscriptionScope
+      && this.session?.session_id === sessionId
+      && this.session.device_id === deviceId,
+    (unsubscribe) => { this.sessionUnsub = unsubscribe; });
   }
 
   private async acknowledgeSafety(): Promise<void> {
@@ -380,7 +472,9 @@ export class CircuitSetupPanel extends LitElement {
   private async cancelSession(): Promise<void> {
     if (!this.api || !this.session) return;
     await this.run(async () => {
-      this.session = await this.api!.cancelSession(this.session!.session_id);
+      const cancelled = await this.api!.cancelSession(this.session!.session_id);
+      this.clearSubscription("session");
+      this.session = cancelled;
       this.restartResult = null;
       this.navigate("safety");
       this.announcement = "Calibration session cancelled; cleanup completed without restart verification.";
@@ -428,7 +522,7 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.connection = value; this.requestUpdate(); },
       () => void this.rescan());
     if (this.step === "discover") return adoptionStep(this.setup?.devices ?? [], this.selectedDeviceId,
-      (id) => { this.selectedDeviceId = id; this.requestUpdate(); }, () => void this.adopt(), () => this.back(), () => void this.loadTopology());
+      (id) => { this.selectDevice(id); this.requestUpdate(); }, () => void this.adopt(), () => this.back(), () => void this.loadTopology());
     if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(), () => this.back(), () => void this.loadInventory());
     if (this.step === "ct" && this.inventory) return ctInventoryStep(this.inventory, this.board, this.ctGroup, this.drafts,
       (board) => { this.board = board; this.ctGroup = 0; this.requestUpdate(); },

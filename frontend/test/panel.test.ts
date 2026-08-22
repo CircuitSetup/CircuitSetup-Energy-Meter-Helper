@@ -331,6 +331,83 @@ describe("CircuitSetup panel", () => {
     expect(operations).toEqual(["subscribe_setup", "subscribe_setup", "subscribe_config_transaction", "subscribe_session"]);
   });
 
+  it("revokes replaced transaction and session subscriptions and ignores captured old callbacks", async () => {
+    const callbacks: Array<(message: unknown) => void> = [];
+    const unsubscriptions: number[] = [];
+    const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] } });
+    hass.connection.subscribeMessage = async (callback, message) => {
+      callbacks.push(callback as (message: unknown) => void);
+      const index = callbacks.length - 1;
+      return () => { unsubscriptions.push(index); };
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & {
+      subscribeTransaction(generation: number): Promise<void>;
+      subscribeSession(generation: number): Promise<void>;
+    };
+    const generation = state.connectionGeneration as number;
+    state.selectedDeviceId = "meter-1";
+    state.transaction = { transaction_id: "tx-old", state: "previewed", source_sha256: "a".repeat(64),
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [] };
+    await state.subscribeTransaction(generation);
+    state.transaction = { transaction_id: "tx-new", state: "previewed", source_sha256: "b".repeat(64),
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [] };
+    await state.subscribeTransaction(generation);
+    callbacks[1]?.({ transaction_id: "tx-old", state: "failed", source_sha256: "a".repeat(64),
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [] });
+    expect((state.transaction as { transaction_id: string }).transaction_id).toBe("tx-new");
+    expect(unsubscriptions).toContain(1);
+
+    state.session = { session_id: "session-old", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] } };
+    await state.subscribeSession(generation);
+    state.session = { session_id: "session-new", device_id: "meter-1", state: "ready", safety_acknowledged: false,
+      preflight: { issues: [], zeroed_roles: [] } };
+    await state.subscribeSession(generation);
+    callbacks[3]?.({ session_id: "session-old", device_id: "meter-1", state: "cancelled", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] } });
+    expect((state.session as { session_id: string }).session_id).toBe("session-new");
+    expect(unsubscriptions).toContain(3);
+  });
+
+  it("requires fresh calibration safety and restart evidence for a replacement session or device", async () => {
+    const freshSession = { session_id: "session-new", device_id: "meter-1", state: "safety_required",
+      safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } };
+    const panel = await mount(makeHass({
+      setup_status: { state: "device_discovered", devices: [device] },
+      start_session: freshSession,
+    }));
+    const state = panel as unknown as Record<string, unknown> & {
+      startSession(): Promise<void>;
+      selectDevice(deviceId: string): void;
+    };
+    state.safetyAcknowledged = true;
+    state.reference = 25;
+    state.stabilityByTarget = new Map([["current:1", { target: "current", target_id: "1", stable: true,
+      windows: [{ samples: [1, 1, 1], mean: 1, standard_deviation: 0, range_percent: 0 }] }]]);
+    state.calibrationByTarget = new Map([["current:1", { state: "applied_pending_restart_verification",
+      group_key: "meter_main1", phase: null, changed_channels: [1], iteration: 1, before_values: [5500],
+      after_values: [5501], error_percent_values: [0.1], retry_allowed: false }]]);
+    state.restartResult = { verification_id: "stale" };
+    await state.startSession();
+    expect(state.safetyAcknowledged).toBe(false);
+    expect(state.reference).toBe(0);
+    expect((state.stabilityByTarget as Map<string, unknown>).size).toBe(0);
+    expect((state.calibrationByTarget as Map<string, unknown>).size).toBe(0);
+    expect(state.restartResult).toBeNull();
+
+    state.safetyAcknowledged = true;
+    state.reference = 120;
+    state.restartResult = { verification_id: "also-stale" };
+    state.selectDevice("meter-2");
+    expect(state.selectedDeviceId).toBe("meter-2");
+    expect(state.session).toBeNull();
+    expect(state.transaction).toBeNull();
+    expect(state.safetyAcknowledged).toBe(false);
+    expect(state.reference).toBe(0);
+    expect(state.restartResult).toBeNull();
+  });
+
   it("makes Back and mobile Steps navigation functional with deterministic heading focus", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     panel.showState("safety"); await panel.updateComplete;

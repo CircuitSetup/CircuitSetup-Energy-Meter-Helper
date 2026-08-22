@@ -35,9 +35,10 @@ const topology = {
 };
 const inventory = {
   plan_id: "plan-1", source_sha256: "a".repeat(64),
-  channels: [{ channel: 1, name: "CT1", raw_gain_ct: 5500, reporting_multiplier: 1,
-    selected_model_id: "model", selection_verified_against_config: true,
-    address: { channel: 1, board_index: 0, group_index: 1, phase: "A" } }],
+  channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`,
+    raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model",
+    selection_verified_against_config: true, address: { channel: index + 1, board_index: 0,
+      group_index: Math.floor(index / 3) + 1, phase: (["A", "B", "C"] as const)[index % 3] } })),
   catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
     secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }],
     source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
@@ -182,10 +183,41 @@ describe("HelperApi", () => {
     expect(() => HelperApi.assertPublicPayload({ authentication_token_value: "no" })).toThrow(
       "private field",
     );
-    for (const hostile of ["line one\nline two", "safe\u001b[31mred", "safe\u0085next", "password=secret"]) {
+    for (const hostile of ["safe\tlabel", "line one\nline two", "safe\u001b[31mred", "safe\u0085next", "password=secret"]) {
       expect(() => HelperApi.assertPublicPayload({ detail: hostile })).toThrow("unsafe string");
     }
+    expect(() => HelperApi.assertPublicPayload({ detail: "ordinary safe whitespace" })).not.toThrow();
     expect(() => HelperApi.assertPublicPayload({ redacted_diff: "- old\n+ new" })).not.toThrow();
+  });
+
+  it("rejects impossible topology counts and bounded collections before rendering", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    for (const invalid of [
+      { ...topology, addon_count: 7, board_count: 8, ct_count: 48, group_count: 16 },
+      { ...topology, board_count: 8 },
+      { ...topology, ct_count: 48 },
+      { ...topology, group_count: 16 },
+    ]) {
+      hass.responses.get_topology = invalid;
+      await expect(api.getTopology("meter-1")).rejects.toThrow("get_topology");
+    }
+    hass.responses.get_topology = {
+      ...topology,
+      evidence: Array.from({ length: 6 }, () => topology.evidence[0]),
+    };
+    await expect(api.getTopology("meter-1")).rejects.toThrow("get_topology");
+
+    const channel = inventory.channels[0]!;
+    hass.responses.get_ct_inventory = {
+      ...inventory,
+      channels: Array.from({ length: 43 }, (_, index) => ({
+        ...channel,
+        channel: index + 1,
+        address: { ...channel.address, channel: index + 1 },
+      })),
+    };
+    await expect(api.getCtInventory("meter-1")).rejects.toThrow("get_ct_inventory");
   });
 
   it("fails closed on command-specific shapes and enums before returning data", async () => {
