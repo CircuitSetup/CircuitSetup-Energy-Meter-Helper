@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -36,27 +37,26 @@ class EntityBindingError(ValueError):
 
 
 class EntityBindingMissing(EntityBindingError):
-    def __init__(self, role: str) -> None:
+    def __init__(
+        self,
+        role: str,
+        manual_options: tuple[ManualMappingOption, ...] = (),
+        reason: str = "missing required entity",
+    ) -> None:
         self.role = role
-        super().__init__(f"missing required entity for {role}")
+        self.manual_options = manual_options
+        super().__init__(f"{reason} for {role}")
 
 
 class EntityBindingAmbiguity(EntityBindingError):
     def __init__(
         self,
         role: str,
-        candidates: tuple[EntityDescriptor, ...],
+        manual_options: tuple[ManualMappingOption, ...] = (),
         reason: str = "ambiguous candidates",
     ) -> None:
         self.role = role
-        self.manual_options = tuple(
-            ManualMappingOption(
-                role,
-                candidate.object_id,
-                f"{candidate.name} — {candidate.kind} ({candidate.unit or 'no unit'})",
-            )
-            for candidate in candidates
-        )
+        self.manual_options = manual_options
         super().__init__(f"{role}: {reason}")
 
 
@@ -176,6 +176,27 @@ def bind_meter(
     groups: list[GroupBinding] = []
     channels: list[ChannelBinding] = []
 
+    def repair_options(
+        spec: _RoleSpec,
+    ) -> tuple[tuple[ManualMappingOption, ...], bool]:
+        compatible = tuple(
+            candidate
+            for candidate in catalog.by_kind(spec.kind)
+            if candidate.unit == spec.unit
+        )
+        object_id_counts = Counter(candidate.object_id for candidate in compatible)
+        options = tuple(
+            ManualMappingOption(
+                spec.role,
+                candidate.object_id,
+                f"{candidate.name} — {candidate.kind} ({candidate.unit or 'no unit'})",
+            )
+            for candidate in compatible
+            if candidate.raw_key not in used
+            and object_id_counts[candidate.object_id] == 1
+        )
+        return options, any(count > 1 for count in object_id_counts.values())
+
     def resolve(spec: _RoleSpec) -> BoundEntity:
         tiers: tuple[tuple[ResolutionSource, tuple[EntityDescriptor, ...]], ...] = (
             (
@@ -208,16 +229,28 @@ def bind_meter(
         for source, candidates in tiers:
             if not candidates:
                 continue
+            options, has_duplicate_ids = repair_options(spec)
             if len(candidates) != 1:
-                raise EntityBindingAmbiguity(spec.role, candidates)
+                reason = (
+                    "duplicate object IDs cannot be persisted"
+                    if has_duplicate_ids and not options
+                    else "ambiguous candidates"
+                )
+                raise EntityBindingAmbiguity(spec.role, options, reason)
             candidate = candidates[0]
             if candidate.raw_key in used:
                 raise EntityBindingAmbiguity(
-                    spec.role, candidates, "candidate is already bound"
+                    spec.role, options, "candidate is already bound"
                 )
             used.add(candidate.raw_key)
             return BoundEntity(spec.role, candidate, source)
-        raise EntityBindingMissing(spec.role)
+        options, has_duplicate_ids = repair_options(spec)
+        reason = (
+            "duplicate object IDs cannot be persisted"
+            if has_duplicate_ids and not options
+            else "missing required entity"
+        )
+        raise EntityBindingMissing(spec.role, options, reason)
 
     for board_index in range(topology.board_count):
         for group_index in range(2):
@@ -367,12 +400,45 @@ def _matches_pattern(
     candidate: EntityDescriptor, pattern_terms: tuple[str, ...]
 ) -> bool:
     raw = f"{candidate.object_id} {candidate.name}".casefold()
-    searchable = re.sub(r"[^a-z0-9]", "", raw)
+    raw_tokens = re.findall(r"[a-z]+|\d+", raw)
+    tokens: list[str] = []
+    index = 0
+    while index < len(raw_tokens):
+        if raw_tokens[index : index + 2] == ["add", "on"]:
+            tokens.append("addon")
+            index += 2
+            continue
+        tokens.append("amp" if raw_tokens[index] == "amps" else raw_tokens[index])
+        index += 1
+
+    def contains(expected: tuple[str, ...]) -> bool:
+        return any(
+            tuple(tokens[start : start + len(expected)]) == expected
+            for start in range(len(tokens) - len(expected) + 1)
+        )
+
     for term in pattern_terms:
-        if channel := re.fullmatch(r"ct(\d+)", term.casefold()):
-            if re.search(rf"ct{int(channel.group(1))}(?!\d)", raw) is None:
-                return False
-        elif re.sub(r"[^a-z0-9]", "", term.casefold()) not in searchable:
+        normalized = term.casefold()
+        alternatives: tuple[tuple[str, ...], ...]
+        if channel := re.fullmatch(r"ct(\d+)", normalized):
+            alternatives = (("ct", str(int(channel.group(1)))),)
+        elif group := re.fullmatch(r"(main|addon\d+)_(\d+)", normalized):
+            board, group_number = group.groups()
+            if board == "main":
+                alternatives = (
+                    ("main", group_number),
+                    ("meter", "main", group_number),
+                    ("main", "meter", group_number),
+                )
+            else:
+                board_number = board.removeprefix("addon")
+                alternatives = (
+                    ("addon", board_number, group_number),
+                    ("addon", board_number, "meter", group_number),
+                )
+        else:
+            alternatives = (("amp" if normalized == "amps" else normalized,),)
+        if not any(contains(alternative) for alternative in alternatives):
             return False
     return True
 

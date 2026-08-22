@@ -247,7 +247,9 @@ def test_missing_and_ambiguous_roles_fail_closed_with_manual_repair_metadata() -
         bind_meter(EntityCatalog(ambiguous, 1), topology(0), values)
 
     assert error.value.role == "ct1.current_sensor"
-    assert len(error.value.manual_options) == 2
+    option_ids = {option.object_id for option in error.value.manual_options}
+    assert {"legacy_ct1_amps_one", "legacy_ct1_amps_two"} <= option_ids
+    assert len(option_ids) == len(error.value.manual_options)
     assert all(
         "sensor" in option.label and "A" in option.label
         for option in error.value.manual_options
@@ -257,11 +259,11 @@ def test_missing_and_ambiguous_roles_fail_closed_with_manual_repair_metadata() -
     }
 
 
-def test_one_native_entity_cannot_serve_two_semantic_roles() -> None:
+def test_one_native_entity_cannot_serve_two_roles_and_offers_unused_repair() -> None:
     entities = synthetic_entities(0)
     entities.append(SensorInfo("shared", 900, "Shared", "A", 1))
 
-    with pytest.raises(EntityBindingAmbiguity, match="already bound"):
+    with pytest.raises(EntityBindingAmbiguity, match="already bound") as error:
         bind_meter(
             EntityCatalog(entities, 1),
             topology(0),
@@ -271,6 +273,10 @@ def test_one_native_entity_cannot_serve_two_semantic_roles() -> None:
                 "ct2.current_sensor": "shared",
             },
         )
+
+    object_ids = {option.object_id for option in error.value.manual_options}
+    assert "shared" not in object_ids
+    assert "ct2amps" in object_ids
 
 
 def test_rebind_after_rename_discards_old_generation_keys() -> None:
@@ -299,13 +305,111 @@ def test_rebind_after_rename_discards_old_generation_keys() -> None:
     )
 
 
-def test_channel_pattern_does_not_confuse_ct1_with_ct10_through_ct19() -> None:
+def test_channel_pattern_requires_both_ct1_token_boundaries() -> None:
     entities = synthetic_entities(6)
     ct1 = next(entity for entity in entities if entity.object_id == "ct1amps")
     entities[entities.index(ct1)] = replace(
         ct1, object_id="legacy_ct1_amp_sensor", name="Legacy CT1 amp sensor"
     )
+    entities.append(
+        SensorInfo("product1_amp_sensor", 5000, "Product1 amp sensor", "A", 99)
+    )
 
     binding = bind_meter(EntityCatalog(entities, 1), topology(6), substitutions(6))
 
     assert binding.role("ct1.current_sensor").source == ResolutionSource.PATTERN
+
+
+@pytest.mark.parametrize(
+    ("board_index", "group_index", "group_label"),
+    (
+        (0, 0, "Main Meter 1"),
+        (1, 1, "Add-on 1 Meter 2"),
+    ),
+)
+def test_group_pattern_matches_exact_phase_for_main_and_addon(
+    board_index: int, group_index: int, group_label: str
+) -> None:
+    entities = synthetic_entities(1)
+    key = group_key(board_index, group_index)
+    for phase in "abc":
+        expected_object_id = (
+            "ic1volts"
+            if board_index == 0 and group_index == 0 and phase == "a"
+            else (
+                f"meter_main{group_index + 1}_voltage_{phase}_calibration"
+                if board_index == 0
+                else f"addon{board_index}_{group_index + 1}_voltage_{phase}_calibration"
+            )
+        )
+        sensor = next(
+            entity
+            for entity in entities
+            if isinstance(entity, SensorInfo) and entity.object_id == expected_object_id
+        )
+        entities[entities.index(sensor)] = replace(
+            sensor,
+            object_id=f"legacy_{key}_voltage_{phase}_input",
+            name=f"Legacy {group_label} Voltage {phase.upper()} Input",
+        )
+
+    binding = bind_meter(EntityCatalog(entities, 1), topology(1), substitutions(1))
+
+    for phase in "abc":
+        entity = binding.role(f"{key}.voltage_{phase}")
+        assert entity.source == ResolutionSource.PATTERN
+        assert entity.descriptor.object_id == f"legacy_{key}_voltage_{phase}_input"
+
+
+def test_main_group_pattern_accepts_official_name_form() -> None:
+    entities = synthetic_entities(0)
+    reference = next(
+        entity
+        for entity in entities
+        if isinstance(entity, NumberInfo) and entity.name == "Main Meter 1 Ref V 1"
+    )
+    entities[entities.index(reference)] = replace(
+        reference,
+        object_id="legacy_main_reference_voltage",
+        name="Legacy Main Meter 1 Ref V Input",
+    )
+
+    binding = bind_meter(EntityCatalog(entities, 1), topology(0), substitutions(0))
+
+    assert binding.role("main_1.reference_voltage").source == ResolutionSource.PATTERN
+
+
+def test_missing_heuristics_offer_unused_same_kind_unit_manual_choices() -> None:
+    entities = synthetic_entities(0)
+    ct1 = next(entity for entity in entities if entity.object_id == "ct1amps")
+    entities[entities.index(ct1)] = replace(
+        ct1, object_id="completely_custom", name="Unrelated custom input"
+    )
+
+    with pytest.raises(EntityBindingMissing) as error:
+        bind_meter(EntityCatalog(entities, 1), topology(0), substitutions(0))
+
+    options = error.value.manual_options
+    assert "completely_custom" in {option.object_id for option in options}
+    assert len({option.object_id for option in options}) == len(options)
+    assert all("sensor" in option.label and "A" in option.label for option in options)
+
+
+def test_duplicate_object_ids_are_explicitly_unrepairable() -> None:
+    entities = synthetic_entities(0)
+    current_sensors = [
+        entity
+        for entity in entities
+        if isinstance(entity, SensorInfo) and entity.unit_of_measurement == "A"
+    ]
+    for pair_index, entity in enumerate(current_sensors):
+        entities[entities.index(entity)] = replace(
+            entity,
+            object_id=f"duplicate_pair_{pair_index // 2}",
+            name=f"Unrelated input {pair_index}",
+        )
+
+    with pytest.raises(EntityBindingMissing, match="duplicate object IDs") as error:
+        bind_meter(EntityCatalog(entities, 1), topology(0), substitutions(0))
+
+    assert error.value.manual_options == ()
