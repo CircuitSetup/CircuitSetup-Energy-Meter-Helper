@@ -39,6 +39,7 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeApiRepairRequired,
     ESPHomeApiSession,
     ESPHomeIdentityError,
+    ESPHomeReconnectError,
     ESPHomeSecurityError,
     ESPHomeSessionDisconnectedError,
 )
@@ -818,5 +819,18 @@ def test_disconnect_future_is_armed_before_restart_and_reconnect_dumps_config() 
         assert replacement.dump_configs == [True]
         assert session.connection_generation == 2
         await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+def test_reconnect_wraps_transient_client_start_failure_for_bounded_retry() -> None:
+    async def run() -> None:
+        session = make_session(
+            [FakeClient(), FakeClient(connect_error=RuntimeError("still booting"))]
+        )
+        await session.async_connect()
+        with pytest.raises(ESPHomeReconnectError, match="reconnect failed"):
+            await session.async_reconnect(dump_config=True)
+        assert not session.connected
 
     asyncio.run(run())

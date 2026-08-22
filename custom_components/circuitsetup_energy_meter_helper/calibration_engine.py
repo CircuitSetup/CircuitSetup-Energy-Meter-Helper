@@ -12,6 +12,7 @@ from enum import StrEnum
 from statistics import fmean
 from time import monotonic
 from typing import Any, cast
+from uuid import uuid4
 
 from .entity_binding import BoundEntity, EntityBindingError, GroupBinding, MeterBinding
 from .entity_catalog import EntityCatalog, EntityCatalogError
@@ -28,11 +29,10 @@ from .models import StoredInterruptedSession
 from .preflight import ReferenceZeroError, zero_reference_guard
 from .session_manager import SessionManager
 from .state_tracker import SensorSampleWindow
-from .store import VerifiedCalibrationRecord, VerifiedGainGroup
+from .store import PhaseGainTable, VerifiedCalibrationRecord, VerifiedGainGroup
 
 type MarkerWriter = Callable[[str, StoredInterruptedSession | None], Awaitable[None]]
 type VerifiedWriter = Callable[[VerifiedCalibrationRecord], Awaitable[None]]
-type PhaseGainTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
 
 
 class CalibrationState(StrEnum):
@@ -125,6 +125,7 @@ class CalibrationEngine:
         persist_verified: VerifiedWriter | None = None,
         restart_disconnect_timeout: float = 20.0,
         restart_restore_timeout: float = 120.0,
+        restart_backoff_initial: float = 0.25,
     ) -> None:
         if sample_count < 1 or zero_concurrency < 1:
             raise ValueError("sample count and zero concurrency must be positive")
@@ -133,6 +134,7 @@ class CalibrationEngine:
             evidence_timeout,
             restart_disconnect_timeout,
             restart_restore_timeout,
+            restart_backoff_initial,
         ):
             raise ValueError("calibration limits must be finite and positive")
         self.sessions = sessions
@@ -144,6 +146,7 @@ class CalibrationEngine:
         self._persist_verified = persist_verified
         self._restart_disconnect_timeout = restart_disconnect_timeout
         self._restart_restore_timeout = restart_restore_timeout
+        self._restart_backoff_initial = restart_backoff_initial
         self._operation_sequences: dict[str, int] = {}
 
     async def async_verify_after_restart(
@@ -151,29 +154,33 @@ class CalibrationEngine:
         mac: str,
         session: Any,
         binding: MeterBinding,
-        expected_phase_gains: Mapping[str, PhaseGainTable],
         *,
-        config_filename: str,
-        config_sha256: str,
         substitutions: Mapping[str, str],
     ) -> RestartVerificationResult:
         """Restart once and persist only exact flash evidence for changed groups."""
         if self._persist_verified is None:
             raise RestartVerificationError("verified calibration persistence is absent")
-        expected = dict(expected_phase_gains)
-        if not expected:
-            raise RestartVerificationError(
-                "no changed groups need restart verification"
-            )
-        try:
-            groups = tuple(
-                VerifiedGainGroup(instance_id, gains)
-                for instance_id, gains in expected.items()
-            )
-        except ValueError as error:
-            raise RestartVerificationError("expected gain table is invalid") from error
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
+            pending = self.sessions.pending_calibration(mac)
+            if pending is None or not pending.expected_phase_gains:
+                raise RestartVerificationError(
+                    "server-owned calibration origin is missing"
+                )
+            if pending.topology != binding.topology or pending.mac != mac.casefold():
+                raise RestartVerificationError(
+                    "server-owned calibration origin is inconsistent"
+                )
+            expected = pending.expected_phase_gains
+            try:
+                groups = tuple(
+                    VerifiedGainGroup(instance_id, gains)
+                    for instance_id, gains in expected.items()
+                )
+            except ValueError as error:
+                raise RestartVerificationError(
+                    "server-owned expected gain table is invalid"
+                ) from error
             self._validate_binding_generation(session, binding)
             if unknown := set(expected).difference(
                 _instance_id(group.key) for group in binding.groups
@@ -212,19 +219,21 @@ class CalibrationEngine:
 
             restore_started = monotonic()
             baseline = tuple(getattr(session, "log_lines", ()))
+            deadline = monotonic() + self._restart_restore_timeout
             try:
-                async with asyncio.timeout(self._restart_restore_timeout):
-                    await session.async_reconnect(dump_config=True)
-                    rebound = self._rebind_after_reconnect(
-                        session, binding, substitutions
-                    )
+                await self._reconnect_after_restart(session, deadline)
+                rebound = self._rebind_after_reconnect(session, binding, substitutions)
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                async with asyncio.timeout(remaining):
                     evidence = await self._wait_restore(
                         session,
                         generation=int(session.connection_generation),
                         expected_instance_ids=set(expected),
                         started_after=restore_started,
                         baseline=baseline,
-                        timeout=self._restart_restore_timeout,
+                        timeout=remaining,
                     )
             except TimeoutError as error:
                 raise RestartVerificationError(
@@ -236,16 +245,47 @@ class CalibrationEngine:
                 generation=int(session.connection_generation),
             )
             record = VerifiedCalibrationRecord(
-                mac,
-                config_filename,
-                config_sha256,
-                int(session.connection_generation),
-                groups,
+                mac=mac.casefold(),
+                config_filename=pending.config_filename,
+                config_sha256=pending.config_sha256,
+                topology_addon_count=pending.topology.addon_count,
+                topology_project_name=pending.topology.project_name,
+                topology_connection_type=pending.topology.connection_type,
+                topology_voltage_layout=pending.topology.voltage_layout,
+                connection_generation=int(session.connection_generation),
+                groups=groups,
+                verification_id=uuid4().hex,
             )
             await self._persist_verified(record)
+            self.sessions.consume_calibration_origin(mac, pending.operation_id)
             return RestartVerificationResult(record, rebound)
         finally:
             lease.release()
+
+    async def _reconnect_after_restart(self, session: Any, deadline: float) -> None:
+        """Retry transient boot-time connection failures within one deadline."""
+        attempt = 0
+        last_error: BaseException | None = None
+        while (remaining := deadline - monotonic()) > 0:
+            try:
+                async with asyncio.timeout(remaining):
+                    await session.async_reconnect(dump_config=True)
+                return
+            except asyncio.CancelledError:
+                raise
+            except (ConnectionError, OSError, TimeoutError) as error:
+                last_error = error
+            delay = min(
+                self._restart_backoff_initial * (2**attempt),
+                5.0,
+                max(0.0, deadline - monotonic()),
+            )
+            attempt += 1
+            if delay:
+                await asyncio.sleep(delay)
+        raise RestartVerificationError(
+            "ESPHome reconnect attempts exhausted before the restore deadline"
+        ) from last_error
 
     async def async_zero_all_references(
         self, session: Any, binding: MeterBinding
@@ -312,6 +352,12 @@ class CalibrationEngine:
                         group, channels, attempt, before, restore
                     )
                 self._validate_voltage_evidence(evidence, trusted_voltage)
+                self.sessions.record_calibration_group(
+                    mac,
+                    binding.topology,
+                    evidence.instance_id,
+                    _phase_gain_table(evidence),
+                )
                 after = await self._windows(session, group.voltage_sensors)
                 errors = tuple(
                     _error_percent(window.mean, trusted_voltage) for window in after
@@ -383,6 +429,12 @@ class CalibrationEngine:
                     evidence,
                     phase_index,
                     trusted_current / reporting_multiplier,
+                )
+                self.sessions.record_calibration_group(
+                    mac,
+                    binding.topology,
+                    evidence.instance_id,
+                    _phase_gain_table(evidence),
                 )
                 after = (await self._window(session, sensor),)
                 errors = (_error_percent(after[0].mean, trusted_current),)
@@ -905,6 +957,14 @@ def _validate_restart_evidence(
             raise RestartVerificationError(
                 f"{instance_id}: restored gains do not exactly match expected gains"
             )
+
+
+def _phase_gain_table(evidence: GainRunEvidence) -> PhaseGainTable:
+    return (
+        (evidence.phases[0].new_voltage_gain, evidence.phases[0].new_current_gain),
+        (evidence.phases[1].new_voltage_gain, evidence.phases[1].new_current_gain),
+        (evidence.phases[2].new_voltage_gain, evidence.phases[2].new_current_gain),
+    )
 
 
 def _sample_window(raw: Any) -> SensorSampleWindow:

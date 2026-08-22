@@ -56,6 +56,10 @@ class ESPHomeSessionDisconnectedError(ConnectionError):
     """The transport disconnected while a session operation was pending."""
 
 
+class ESPHomeReconnectError(ConnectionError):
+    """A transient native-API reconnect candidate could not become ready."""
+
+
 def _canonical_mac(value: str) -> str:
     compact = value.casefold().replace(":", "").replace("-", "")
     if re.fullmatch(r"[0-9a-f]{12}", compact) is None:
@@ -317,8 +321,21 @@ class ESPHomeApiSession:
         async with self._lifecycle_lock:
             if self._closed:
                 raise ESPHomeApiRepairRequired("The ESPHome API session is closed")
-            await self._async_disconnect(shutdown=False)
-            await self._async_connect_locked(dump_config=dump_config)
+            try:
+                await self._async_disconnect(shutdown=False)
+                await self._async_connect_locked(dump_config=dump_config)
+            except asyncio.CancelledError:
+                raise
+            except (
+                ESPHomeApiRepairRequired,
+                ESPHomeIdentityError,
+                ESPHomeSecurityError,
+            ):
+                raise
+            except Exception as error:
+                raise ESPHomeReconnectError(
+                    "ESPHome native API reconnect failed"
+                ) from error
 
     async def async_shutdown(self) -> None:
         """Cancel pending work and release the secondary connection once."""

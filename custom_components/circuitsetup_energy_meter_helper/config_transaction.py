@@ -12,7 +12,7 @@ from hashlib import sha256
 from typing import Protocol
 from uuid import uuid4
 
-from .config_mutator import build_calibrated_gain_mutation
+from .config_mutator import ConfigMutationError, build_calibrated_gain_mutation
 from .device_builder import (
     ConfigChangedError,
     ESPHomeConfigSnapshot,
@@ -119,6 +119,14 @@ class VerifiedPersistence(Protocol):
     async def async_save_verified_ct_selections(
         self, mac: str, selections: tuple[StoredCTSelection, ...]
     ) -> None: ...
+
+    async def async_get_verified_calibration(
+        self, mac: str
+    ) -> VerifiedCalibrationRecord | None: ...
+
+    async def async_claim_verified_calibration(
+        self, mac: str, verification_id: str
+    ) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,11 +262,34 @@ class ConfigTransactionManager:
         self,
         mac: str,
         topology: MeterTopology,
-        verified: VerifiedCalibrationRecord,
+        verification_id: str,
     ) -> TransactionStatus:
         """Re-read YAML and open the normal reviewed transaction for final gains."""
+        mac = canonical_mac(mac)
+        verified = await self._persistence.async_get_verified_calibration(mac)
+        if verified is None or verified.verification_id != verification_id:
+            raise ConfigMutationError(
+                "request does not identify the current verified calibration"
+            )
+        if verified.mac != mac:
+            raise ConfigMutationError("verified calibration belongs to another device")
+        if (
+            verified.topology_addon_count != topology.addon_count
+            or verified.topology_project_name != topology.project_name
+            or verified.topology_connection_type != topology.connection_type
+            or verified.topology_voltage_layout != topology.voltage_layout
+        ):
+            raise ConfigMutationError(
+                "verified calibration topology does not match target"
+            )
+        if not verified.source_handoff_available:
+            raise ConfigMutationError("verified calibration has already been used")
         snapshot = await self._device_builder.async_get_config(verified.config_filename)
         plan = build_calibrated_gain_mutation(snapshot, topology, verified)
+        if not await self._persistence.async_claim_verified_calibration(
+            mac, verification_id
+        ):
+            raise ConfigMutationError("verified calibration has already been used")
         return await self.async_preview(mac, topology, plan, snapshot)
 
     def status(self, transaction_id: str) -> TransactionStatus:

@@ -113,6 +113,13 @@ def build_calibrated_gain_mutation(
         raise ConfigMutationError(
             "calibration origin no longer matches current YAML; re-read configuration"
         )
+    if (
+        verified.topology_addon_count != topology.addon_count
+        or verified.topology_project_name != topology.project_name
+        or verified.topology_connection_type != topology.connection_type
+        or verified.topology_voltage_layout != topology.voltage_layout
+    ):
+        raise ConfigMutationError("verified calibration topology does not match target")
     document = ESPHomeConfigDocument.parse(snapshot.content)
     changes: list[SubstitutionChange] = []
     values: dict[str, str] = {}
@@ -143,10 +150,36 @@ def build_calibrated_gain_mutation(
                 document.substitutions,
             )
 
-    if any(len(gains) > 1 for gains in voltage_values.values()):
+    covered_instances = {
+        group_index: {
+            instance_id
+            for instance_id, _, candidate_index, _ in addressed
+            if candidate_index == group_index
+        }
+        for group_index in (1, 2)
+    }
+    required_instances = {
+        group_index: {
+            f"meter_main{group_index}"
+            if board_index == 0
+            else f"addon{board_index}_{group_index}"
+            for board_index in range(topology.board_count)
+        }
+        for group_index in (1, 2)
+    }
+    unsafe_voltage_keys = {
+        group_index
+        for group_index, gains in voltage_values.items()
+        if gains
+        and (
+            len(gains) > 1
+            or covered_instances[group_index] != required_instances[group_index]
+        )
+    }
+    if unsafe_voltage_keys:
         raise ConfigMutationError(
             "per-phase voltage gains require manual review",
-            snippet=_calibrated_gain_snippet(verified, addressed),
+            snippet=_calibrated_gain_snippet(verified, addressed, unsafe_voltage_keys),
         )
     for group_index, gains in voltage_values.items():
         if not gains:
@@ -185,6 +218,7 @@ def _gain_group_address(instance_id: str, topology: MeterTopology) -> tuple[int,
 def _calibrated_gain_snippet(
     verified: VerifiedCalibrationRecord,
     addressed: list[tuple[str, int, int, tuple[int, int, int]]],
+    unsafe_voltage_keys: set[int],
 ) -> str:
     lines = ["substitutions:"]
     group_by_id = {group.instance_id: group for group in verified.groups}
@@ -203,11 +237,11 @@ def _calibrated_gain_snippet(
         for group_index in (1, 2)
     }
     for group_index, gains in voltage_values.items():
-        if len(gains) == 1:
+        if gains and group_index not in unsafe_voltage_keys:
             lines.append(f"  voltage_cal{group_index}: {next(iter(gains))}")
     lines.append("sensor:")
     for instance_id, _, group_index, voltage_gains in addressed:
-        if len(voltage_values[group_index]) == 1:
+        if group_index not in unsafe_voltage_keys:
             continue
         lines.append(f"  - id: !extend {instance_id}")
         for phase, gain in zip("abc", voltage_gains, strict=True):

@@ -45,6 +45,20 @@ class VerifiedGainGroup:
             is None
         ):
             raise ValueError("instance_id is not a supported ATM90E32 group")
+        if (
+            type(self.phase_gains) is not tuple
+            or len(self.phase_gains) != 3
+            or any(
+                type(phase) is not tuple or len(phase) != 2
+                for phase in self.phase_gains
+            )
+            or any(
+                type(value) is not int for phase in self.phase_gains for value in phase
+            )
+        ):
+            raise ValueError(
+                "verified gains require three phases of two non-boolean integers"
+            )
         if any(
             not 1 <= value <= 65_535 for phase in self.phase_gains for value in phase
         ):
@@ -58,11 +72,17 @@ class VerifiedCalibrationRecord:
     mac: str
     config_filename: str
     config_sha256: str
+    topology_addon_count: int
+    topology_project_name: str
+    topology_connection_type: str
+    topology_voltage_layout: str
     connection_generation: int
     groups: tuple[VerifiedGainGroup, ...]
+    verification_id: str
     source_authority: CalibrationSourceAuthority = (
         CalibrationSourceAuthority.SAVED_FLASH
     )
+    source_handoff_available: bool = True
 
     def __post_init__(self) -> None:
         if re.fullmatch(r"[0-9a-f]{12}", self.mac) is None:
@@ -75,8 +95,22 @@ class VerifiedCalibrationRecord:
             raise ValueError("configuration filename must be a non-empty single line")
         if re.fullmatch(r"[0-9a-f]{64}", self.config_sha256) is None:
             raise ValueError("configuration hash must be SHA-256")
+        if not 0 <= self.topology_addon_count <= 6:
+            raise ValueError("topology add-on count is invalid")
+        if (
+            not self.topology_project_name
+            or "\n" in self.topology_project_name
+            or "\r" in self.topology_project_name
+        ):
+            raise ValueError("topology project name must be a non-empty single line")
+        if not self.topology_connection_type or not self.topology_voltage_layout:
+            raise ValueError("topology connection and voltage layout are required")
         if self.connection_generation < 1 or not self.groups:
             raise ValueError("verified calibration requires a generation and groups")
+        if re.fullmatch(r"[0-9a-f]{32}", self.verification_id) is None:
+            raise ValueError("verification ID must be a server-generated identifier")
+        if type(self.source_handoff_available) is not bool:
+            raise ValueError("source handoff state must be boolean")
         instance_ids = tuple(group.instance_id for group in self.groups)
         if len(instance_ids) != len(set(instance_ids)):
             raise ValueError("verified calibration groups must be unique")
@@ -173,8 +207,13 @@ def _serialize_verified_calibration(
     if not isinstance(record, VerifiedCalibrationRecord):
         raise TypeError("record must be VerifiedCalibrationRecord")
     return {
+        "verification_id": record.verification_id,
         "config_filename": record.config_filename,
         "config_sha256": record.config_sha256,
+        "topology_addon_count": record.topology_addon_count,
+        "topology_project_name": record.topology_project_name,
+        "topology_connection_type": record.topology_connection_type,
+        "topology_voltage_layout": record.topology_voltage_layout,
         "connection_generation": record.connection_generation,
         "groups": [
             {
@@ -184,7 +223,62 @@ def _serialize_verified_calibration(
             for group in record.groups
         ],
         "source_authority": record.source_authority.value,
+        "source_handoff_available": record.source_handoff_available,
     }
+
+
+def _deserialize_verified_calibration(
+    mac: str, raw: object
+) -> VerifiedCalibrationRecord:
+    """Reject malformed cached calibration metadata before it can be reused."""
+    if not isinstance(raw, dict):
+        raise TypeError("stored verified calibration must be a mapping")
+    raw_groups = raw.get("groups")
+    if not isinstance(raw_groups, list):
+        raise TypeError("stored verified calibration groups must be a list")
+    groups: list[VerifiedGainGroup] = []
+    for item in raw_groups:
+        if not isinstance(item, dict):
+            raise TypeError("stored verified calibration group must be a mapping")
+        instance_id = item.get("instance_id")
+        phase_gains = item.get("phase_gains")
+        if not isinstance(instance_id, str) or not isinstance(phase_gains, list):
+            raise TypeError("stored verified calibration group fields are invalid")
+        if len(phase_gains) != 3 or any(
+            not isinstance(phase, list) or len(phase) != 2 for phase in phase_gains
+        ):
+            raise ValueError("stored verified calibration gains have an invalid shape")
+        groups.append(
+            VerifiedGainGroup(
+                instance_id,
+                (
+                    (phase_gains[0][0], phase_gains[0][1]),
+                    (phase_gains[1][0], phase_gains[1][1]),
+                    (phase_gains[2][0], phase_gains[2][1]),
+                ),
+            )
+        )
+    try:
+        raw_authority = raw.get("source_authority")
+        if not isinstance(raw_authority, str):
+            raise TypeError("stored source authority must be a string")
+        authority = CalibrationSourceAuthority(raw_authority)
+        return VerifiedCalibrationRecord(
+            mac=mac,
+            config_filename=raw["config_filename"],
+            config_sha256=raw["config_sha256"],
+            topology_addon_count=raw["topology_addon_count"],
+            topology_project_name=raw["topology_project_name"],
+            topology_connection_type=raw["topology_connection_type"],
+            topology_voltage_layout=raw["topology_voltage_layout"],
+            connection_generation=raw["connection_generation"],
+            groups=tuple(groups),
+            verification_id=raw["verification_id"],
+            source_authority=authority,
+            source_handoff_available=raw["source_handoff_available"],
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("stored verified calibration is invalid") from error
 
 
 def serialize_meter_record(record: StoredMeterRecord) -> dict[str, Any]:
@@ -258,3 +352,30 @@ class HelperStore:
             meter = meters.setdefault(record.mac, {})
             meter["verified_calibration"] = _serialize_verified_calibration(record)
             await self._store.async_save(data)
+
+    async def async_get_verified_calibration(
+        self, mac: str
+    ) -> VerifiedCalibrationRecord | None:
+        """Load the latest strict verified record for one canonical MAC."""
+        data = await self.async_load()
+        raw = data.get("meters", {}).get(mac, {}).get("verified_calibration")
+        return None if raw is None else _deserialize_verified_calibration(mac, raw)
+
+    async def async_claim_verified_calibration(
+        self, mac: str, verification_id: str
+    ) -> bool:
+        """Atomically consume one record's reviewed source-handoff preview."""
+        async with self._update_lock:
+            data = await self.async_load()
+            raw = data.get("meters", {}).get(mac, {}).get("verified_calibration")
+            if raw is None:
+                return False
+            record = _deserialize_verified_calibration(mac, raw)
+            if (
+                record.verification_id != verification_id
+                or not record.source_handoff_available
+            ):
+                return False
+            raw["source_handoff_available"] = False
+            await self._store.async_save(data)
+            return True

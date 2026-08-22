@@ -236,7 +236,21 @@ def parse_restore(
         key=lambda item: item.arrived_at,
     )
     evidence: dict[str, RestoreEvidence] = {}
-    for instance_id in expected_instance_ids:
+    restore_terms = (
+        "Restoring saved gain calibrations to registers",
+        "Gain calibration loaded and verified successfully.",
+        "Gain mismatch: using flash values",
+        "No stored gain calibrations found",
+        "Gain calibration is disabled",
+        "Gain verification failed!",
+    )
+    observed_instance_ids = {
+        instance_id
+        for item in matching
+        if any(term in item.line for term in restore_terms)
+        if (instance_id := _instance(item.line)) is not None
+    }
+    for instance_id in expected_instance_ids | observed_instance_ids:
         instance_lines = [
             item for item in matching if _instance(item.line) == instance_id
         ]
