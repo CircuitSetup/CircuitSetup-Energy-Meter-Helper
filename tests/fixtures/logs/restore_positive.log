@@ -1,0 +1,6 @@
+[I][atm90e32:397] [CALIBRATION][meter_main1] ============ Restoring saved gain calibrations to registers ============
+[I][atm90e32:400] [CALIBRATION][meter_main1] | Phase | voltage_gain | current_gain |
+[I][atm90e32:404] [CALIBRATION][meter_main1] |   A   |      7305    |     27518    |
+[I][atm90e32:404] [CALIBRATION][meter_main1] |   B   |      7305    |     28312    |
+[I][atm90e32:404] [CALIBRATION][meter_main1] |   C   |      7305    |     27518    |
+[I][atm90e32:406] [CALIBRATION][meter_main1] Gain calibration loaded and verified successfully.
