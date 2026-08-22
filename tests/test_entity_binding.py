@@ -1,0 +1,311 @@
+"""Tests for strict CircuitSetup calibration entity binding."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, replace
+
+import pytest
+
+from custom_components.circuitsetup_energy_meter_helper.entity_binding import (
+    EntityBindingAmbiguity,
+    EntityBindingMissing,
+    ResolutionSource,
+    bind_meter,
+    group_key,
+)
+from custom_components.circuitsetup_energy_meter_helper.entity_catalog import (
+    EntityCatalog,
+)
+from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
+
+
+@dataclass(slots=True)
+class SensorInfo:
+    object_id: str
+    key: int
+    name: str
+    unit_of_measurement: str
+    device_id: int = 0
+    disabled_by_default: bool = False
+
+
+@dataclass(slots=True)
+class NumberInfo:
+    object_id: str
+    key: int
+    name: str
+    unit_of_measurement: str
+    device_id: int = 0
+    disabled_by_default: bool = True
+
+
+@dataclass(slots=True)
+class ButtonInfo:
+    object_id: str
+    key: int
+    name: str
+    unit_of_measurement: str = ""
+    device_id: int = 0
+    disabled_by_default: bool = True
+
+
+def slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9_-]", "", value.casefold().replace(" ", "_"))
+
+
+def topology(addon_count: int) -> MeterTopology:
+    return MeterTopology.from_addon_count(
+        addon_count,
+        connection_type="wifi",
+        voltage_layout="single",
+        project_name="circuitsetup.6c-energy-meter",
+        evidence=(),
+    )
+
+
+def substitutions(addon_count: int, prefix: str = "CT") -> dict[str, str]:
+    values = {
+        f"ct{channel}_name": f"{prefix}{channel}"
+        for channel in range(1, 6 * (addon_count + 1) + 1)
+    }
+    values.update(
+        {"main_meter_name1": "Main Meter 1", "main_meter_name2": "Main Meter 2"}
+    )
+    for board in range(1, addon_count + 1):
+        values[f"addon{board}_name1"] = f"Add-on {board} Meter 1"
+        values[f"addon{board}_name2"] = f"Add-on {board} Meter 2"
+    return values
+
+
+def synthetic_entities(
+    addon_count: int,
+    *,
+    prefix: str = "CT",
+    key_offset: int = 0,
+) -> list[object]:
+    values = substitutions(addon_count, prefix)
+    entities: list[object] = []
+    key = key_offset
+    phases = "abc"
+    for board_index in range(addon_count + 1):
+        for group_index in range(2):
+            group_name_key = (
+                f"main_meter_name{group_index + 1}"
+                if board_index == 0
+                else f"addon{board_index}_name{group_index + 1}"
+            )
+            group_name = values[group_name_key]
+            device_id = board_index + 1
+            first_channel = board_index * 6 + group_index * 3 + 1
+
+            def add(info: object) -> None:
+                nonlocal key
+                key += 1
+                info.key = key
+                entities.append(info)
+
+            voltage_ref_name = f"{group_name} Ref V {group_index + 1}"
+            add(NumberInfo(slug(voltage_ref_name), 0, voltage_ref_name, "V", device_id))
+            for channel in range(first_channel, first_channel + 3):
+                ct_name = values[f"ct{channel}_name"]
+                ref_name = f"{ct_name} Ref Current"
+                add(NumberInfo(slug(ref_name), 0, ref_name, "A", device_id))
+
+            run_name = f"3. Run {group_name} Gain Cal"
+            clear_name = f"z3. Clear {group_name} Gain Cal"
+            add(ButtonInfo(slug(run_name), 0, run_name, device_id=device_id))
+            add(ButtonInfo(slug(clear_name), 0, clear_name, device_id=device_id))
+
+            for phase_index, phase in enumerate(phases):
+                if board_index == 0 and group_index == 0 and phase == "a":
+                    object_id = "ic1volts"
+                    name = "Voltage 1"
+                else:
+                    object_id = (
+                        f"meter_main{group_index + 1}_voltage_{phase}_calibration"
+                        if board_index == 0
+                        else f"addon{board_index}_{group_index + 1}_voltage_{phase}_calibration"
+                    )
+                    name = f"{group_name} Voltage {phase.upper()} Calibration"
+                add(SensorInfo(object_id, 0, name, "V", device_id, True))
+
+                channel = first_channel + phase_index
+                ct_name = values[f"ct{channel}_name"]
+                add(
+                    SensorInfo(
+                        f"ct{channel}amps",
+                        0,
+                        f"{ct_name} Amps",
+                        "A",
+                        device_id,
+                    )
+                )
+    return entities
+
+
+@pytest.mark.parametrize("addon_count", (0, 1, 6))
+def test_binds_complete_unique_topology_for_every_supported_scale(
+    addon_count: int,
+) -> None:
+    expected_topology = topology(addon_count)
+    catalog = EntityCatalog(
+        synthetic_entities(addon_count), connection_generation=addon_count + 1
+    )
+
+    binding = bind_meter(catalog, expected_topology, substitutions(addon_count))
+
+    assert len(binding.groups) == expected_topology.group_count
+    assert len(binding.channels) == expected_topology.ct_count
+    assert [channel.channel for channel in binding.channels] == list(
+        range(1, expected_topology.ct_count + 1)
+    )
+    assert all(len(group.references) == 4 for group in binding.groups)
+    assert all(len(group.buttons) == 2 for group in binding.groups)
+    assert all(len(group.voltage_sensors) == 3 for group in binding.groups)
+    assert all(len(group.current_sensors) == 3 for group in binding.groups)
+    raw_keys = [entity.descriptor.raw_key for entity in binding.entities]
+    assert len(raw_keys) == len(set(raw_keys)) == 12 * expected_topology.group_count
+    assert any(entity.descriptor.disabled_by_default for entity in binding.entities)
+    assert binding.connection_generation == addon_count + 1
+
+
+def test_group_key_is_exact_and_bounded() -> None:
+    assert group_key(0, 0) == "main_1"
+    assert group_key(6, 1) == "addon6_2"
+    with pytest.raises(ValueError):
+        group_key(-1, 0)
+    with pytest.raises(ValueError):
+        group_key(0, 2)
+
+
+def test_resolution_order_prefers_stored_then_id_then_name_then_pattern() -> None:
+    values = substitutions(0)
+    entities = synthetic_entities(0)
+    ct1 = next(entity for entity in entities if entity.object_id == "ct1amps")
+    manual = SensorInfo("manual_ct1", 500, "Manual channel", "A", 1)
+    duplicate_name = SensorInfo("duplicate_name", 501, ct1.name, "A", 1)
+
+    stored = bind_meter(
+        EntityCatalog((*entities, manual, duplicate_name), connection_generation=1),
+        topology(0),
+        values,
+        stored_mapping={"ct1.current_sensor": "manual_ct1"},
+    )
+    assert stored.role("ct1.current_sensor").descriptor.object_id == "manual_ct1"
+    assert stored.role("ct1.current_sensor").source == ResolutionSource.STORED
+
+    by_id = bind_meter(
+        EntityCatalog((*entities, duplicate_name), connection_generation=1),
+        topology(0),
+        values,
+    )
+    assert by_id.role("ct1.current_sensor").descriptor.object_id == "ct1amps"
+    assert by_id.role("ct1.current_sensor").source == ResolutionSource.OBJECT_ID
+
+    by_name_entities = [
+        replace(entity, object_id="legacy_current") if entity is ct1 else entity
+        for entity in entities
+    ]
+    by_name = bind_meter(
+        EntityCatalog(by_name_entities, connection_generation=1), topology(0), values
+    )
+    assert by_name.role("ct1.current_sensor").source == ResolutionSource.NAME_UNIT
+
+    by_pattern_entities = [
+        replace(
+            entity,
+            object_id="legacy_ct1_amps_sensor",
+            name="Legacy CT1 channel amps",
+        )
+        if entity is ct1
+        else entity
+        for entity in entities
+    ]
+    by_pattern = bind_meter(
+        EntityCatalog(by_pattern_entities, connection_generation=1),
+        topology(0),
+        values,
+    )
+    assert by_pattern.role("ct1.current_sensor").source == ResolutionSource.PATTERN
+
+
+def test_missing_and_ambiguous_roles_fail_closed_with_manual_repair_metadata() -> None:
+    values = substitutions(0)
+    entities = synthetic_entities(0)
+    without_ct1 = [entity for entity in entities if entity.object_id != "ct1amps"]
+
+    with pytest.raises(EntityBindingMissing, match="ct1.current_sensor"):
+        bind_meter(EntityCatalog(without_ct1, 1), topology(0), values)
+
+    ambiguous = [
+        *without_ct1,
+        SensorInfo("legacy_ct1_amps_one", 700, "Legacy CT1 amps one", "A", 1),
+        SensorInfo("legacy_ct1_amps_two", 701, "Legacy CT1 amps two", "A", 1),
+    ]
+    with pytest.raises(EntityBindingAmbiguity) as error:
+        bind_meter(EntityCatalog(ambiguous, 1), topology(0), values)
+
+    assert error.value.role == "ct1.current_sensor"
+    assert len(error.value.manual_options) == 2
+    assert all(
+        "sensor" in option.label and "A" in option.label
+        for option in error.value.manual_options
+    )
+    assert error.value.manual_options[0].persisted_mapping == {
+        "ct1.current_sensor": error.value.manual_options[0].object_id
+    }
+
+
+def test_one_native_entity_cannot_serve_two_semantic_roles() -> None:
+    entities = synthetic_entities(0)
+    entities.append(SensorInfo("shared", 900, "Shared", "A", 1))
+
+    with pytest.raises(EntityBindingAmbiguity, match="already bound"):
+        bind_meter(
+            EntityCatalog(entities, 1),
+            topology(0),
+            substitutions(0),
+            stored_mapping={
+                "ct1.current_sensor": "shared",
+                "ct2.current_sensor": "shared",
+            },
+        )
+
+
+def test_rebind_after_rename_discards_old_generation_keys() -> None:
+    old_catalog = EntityCatalog(synthetic_entities(1), connection_generation=1)
+    old_binding = bind_meter(old_catalog, topology(1), substitutions(1))
+    old_keys = {entity.descriptor.raw_key for entity in old_binding.entities}
+
+    new_catalog = EntityCatalog(
+        synthetic_entities(1, prefix="Renamed Panel ", key_offset=1000),
+        connection_generation=2,
+    )
+    new_binding = old_binding.rebind(new_catalog, substitutions(1, "Renamed Panel "))
+    new_keys = {entity.descriptor.raw_key for entity in new_binding.entities}
+
+    assert new_binding.connection_generation == 2
+    assert old_keys.isdisjoint(new_keys)
+    assert (
+        new_binding.role("ct1.current_sensor").descriptor.name == "Renamed Panel 1 Amps"
+    )
+    assert (
+        new_binding.role("ct1.reference_current").descriptor.name
+        == "Renamed Panel 1 Ref Current"
+    )
+    assert new_binding.semantic_mapping["ct1.reference_current"] == slug(
+        "Renamed Panel 1 Ref Current"
+    )
+
+
+def test_channel_pattern_does_not_confuse_ct1_with_ct10_through_ct19() -> None:
+    entities = synthetic_entities(6)
+    ct1 = next(entity for entity in entities if entity.object_id == "ct1amps")
+    entities[entities.index(ct1)] = replace(
+        ct1, object_id="legacy_ct1_amp_sensor", name="Legacy CT1 amp sensor"
+    )
+
+    binding = bind_meter(EntityCatalog(entities, 1), topology(6), substitutions(6))
+
+    assert binding.role("ct1.current_sensor").source == ResolutionSource.PATTERN
