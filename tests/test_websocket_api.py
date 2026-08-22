@@ -357,6 +357,13 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
                 }
             ],
         }
+    elif suffix == "set_ha_labels":
+        base |= {
+            "device_id": "meter",
+            "plan_id": "plan",
+            "source_sha256": "a" * 64,
+            "changes": [{"channel": 1, "name": "Kitchen"}],
+        }
     elif suffix in {
         "apply_ct_config",
         "compile_ct_config",

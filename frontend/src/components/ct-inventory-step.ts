@@ -37,6 +37,7 @@ export function ctInventoryStep(
   update: (channel: number, patch: Partial<CtDraft>) => void,
   back: () => void,
   review: () => void,
+  labelOnly = false,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -76,7 +77,7 @@ export function ctInventoryStep(
               <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index - 1} role="row" aria-label=${`CT${channel.channel}`}>
                 <label><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
                   @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
-                <label><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`}
+                <label><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} ?disabled=${labelOnly}
                   @change=${(event: Event) => {
                     const modelId = (event.target as HTMLSelectElement).value;
                     const selectedPreset = inventory.catalog.presets.find((item) => item.model_id === modelId);
@@ -93,7 +94,7 @@ export function ctInventoryStep(
                   <option value="custom" ?selected=${draft.modelId === "custom"}>Custom</option>
                 </select></label>
                 <span><span class="mobile-label">Current gain</span>${channel.raw_gain_ct}</span>
-                <label><span class="mobile-label">Multiplier</span><input type="number" min="0.001" step="0.001" aria-label=${`CT${channel.channel} multiplier`}
+                <label><span class="mobile-label">Multiplier</span><input type="number" min="0.001" step="0.001" aria-label=${`CT${channel.channel} multiplier`} ?disabled=${labelOnly}
                   .value=${String(draft.multiplier)} @input=${(event: Event) => update(channel.channel, { multiplier: Number((event.target as HTMLInputElement).value) })} /></label>
                 <span><span class="mobile-label">Resulting gain</span>${gain ?? "—"}</span>
                 <span><span class="mobile-label">Burden</span>${preset?.requires_burden_jumper_cut ? "Check jumper" : "—"}</span>
@@ -131,7 +132,7 @@ export function ctInventoryStep(
       <p class="row-count">Showing ${rows.length} of ${inventory.channels.length} CTs</p>
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        <button class="primary" ?disabled=${!hasValidChanges(inventory, drafts)} @click=${review}>Review changes</button>
+        <button class="primary" ?disabled=${labelOnly ? ![...drafts].some(([channel, draft]) => draft.name !== inventory.channels.find((item) => item.channel === channel)?.name) : !hasValidChanges(inventory, drafts)} @click=${review}>${labelOnly ? "Save Home Assistant labels" : "Review changes"}</button>
       </footer>
     </section>
   `;

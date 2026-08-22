@@ -3,6 +3,7 @@ import type {
   ConnectionType,
   CtChange,
   CtInventory,
+  LabelUpdateResult,
   DiscoveredDevice,
   MeterTopology,
   RestartVerificationResult,
@@ -365,6 +366,10 @@ export class HelperApi {
     source_sha256: sourceSha256,
     changes,
   });
+  public setHaLabels = (deviceId: string, planId: string, sourceSha256: string, changes: Array<{ channel: number; name: string }>) =>
+    this.call("set_ha_labels", (value) => value as LabelUpdateResult, {
+      device_id: deviceId, plan_id: planId, source_sha256: sourceSha256, changes,
+    });
   private transaction = (operation: string, deviceId: string, transactionId: string, sourceSha256: string) =>
     this.call(operation, (value) => transaction(value, operation), {
       device_id: deviceId,

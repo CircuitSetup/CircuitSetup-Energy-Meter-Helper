@@ -123,6 +123,11 @@ export interface CtChange {
   burden_output_acknowledged?: boolean;
 }
 
+export interface LabelUpdateResult {
+  mode: "home_assistant_labels";
+  results: Array<{ channel: number; state: "updated" | "unchanged" }>;
+}
+
 export type TransactionState =
   | "previewed"
   | "write_confirmed"

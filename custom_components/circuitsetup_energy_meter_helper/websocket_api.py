@@ -45,6 +45,7 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}rescan",
     f"{_PREFIX}adopt_device",
     f"{_PREFIX}preview_ct_config",
+    f"{_PREFIX}set_ha_labels",
     f"{_PREFIX}apply_ct_config",
     f"{_PREFIX}compile_ct_config",
     f"{_PREFIX}install_ct_config",
@@ -153,6 +154,10 @@ class WorkflowOwner(Protocol):
         plan_id: str,
         source_sha256: str,
         changes: tuple[Mapping[str, Any], ...],
+    ) -> Any: ...
+
+    async def async_set_ha_labels(
+        self, device_id: str, plan_id: str, source_sha256: str, changes: tuple[Mapping[str, Any], ...]
     ) -> Any: ...
 
     async def async_start_session(self, device_id: str) -> Any: ...
@@ -288,6 +293,10 @@ class EntryWebsocketController:
                 msg["plan_id"],
                 msg["source_sha256"],
                 tuple(msg["changes"]),
+            )
+        if operation == "set_ha_labels" and workflow is not None:
+            return await workflow.async_set_ha_labels(
+                msg["device_id"], msg["plan_id"], msg["source_sha256"], tuple(msg["changes"])
             )
         if operation in {
             "apply_ct_config",
@@ -717,6 +726,16 @@ def _schema(command: str) -> dict[Any, Any]:
                 ],
                 vol.Length(min=1, max=42),
             ),
+        }
+    elif operation == "set_ha_labels":
+        schema |= {
+            vol.Required("device_id"): _ID,
+            vol.Required("plan_id"): _ID,
+            vol.Required("source_sha256"): _SHA256,
+            vol.Required("changes"): vol.All([
+                {vol.Required("channel"): vol.All(int, vol.Range(min=1, max=42)),
+                 vol.Required("name"): vol.All(str, vol.Length(min=1, max=64))}
+            ], vol.Length(min=1, max=42)),
         }
     elif operation in {
         "apply_ct_config",

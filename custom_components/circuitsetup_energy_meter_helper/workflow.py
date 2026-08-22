@@ -23,6 +23,7 @@ from homeassistant.components.hassio.const import (
     X_INGRESS_PATH,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 from .calibration_engine import CalibrationEngine
 from .config_document import ESPHomeConfigDocument
@@ -387,6 +388,44 @@ class EntryWorkflow:
         self._plans.pop(plan_id, None)
         plan.scrub()
         return status
+
+    async def async_set_ha_labels(
+        self, device_id: str, plan_id: str, source_sha256: str, changes: tuple[Mapping[str, Any], ...]
+    ) -> dict[str, Any]:
+        """Persist display names only; this path never opens a transaction."""
+        plan = self._plan(plan_id, device_id, source_sha256)
+        api = self._require_api()
+        await api.async_connect()
+        document = ESPHomeConfigDocument.parse(plan.snapshot.content)
+        binding = bind_meter(EntityCatalog(api.entities, api.connection_generation), plan.topology,
+            {key: scalar.value for key, scalar in document.substitutions.items()})
+        requested: dict[int, str] = {}
+        for change in changes:
+            channel, name = change.get("channel"), change.get("name")
+            label = name.strip() if isinstance(name, str) else ""
+            if not isinstance(channel, int) or not label or len(label) > 64 or "\n" in label or "\r" in label or channel in requested:
+                raise WorkflowHandleError("label changes are malformed")
+            requested[channel] = label
+        channels = {item.channel: item for item in binding.channels}
+        if not requested.keys() <= channels.keys() or not requested.keys() <= {item.channel for item in plan.inventory.channels}:
+            raise WorkflowHandleError("channel is not owned by this inventory")
+        registry = er.async_get(self._hass)
+        results: list[dict[str, Any]] = []
+        for channel, label in requested.items():
+            descriptor = channels[channel].current_sensor.descriptor
+            entity_id = registry.async_get_entity_id("sensor", "esphome", descriptor.object_id)
+            if entity_id is None:
+                raise WorkflowHandleError("bound entity is not owned by this device")
+            entry = registry.async_get(entity_id)
+            if entry is None or getattr(entry, "config_entry_id", None) != device_id:
+                raise WorkflowHandleError("bound entity is not owned by this device")
+            if any(item.entity_id != entity_id and getattr(item, "config_entry_id", None) == device_id and getattr(item, "name", None) == label for item in registry.entities.values()):
+                raise WorkflowHandleError("label conflicts with another meter entity")
+            previous = getattr(entry, "name", None)
+            if previous != label:
+                registry.async_update_entity(entity_id, name=label)
+            results.append({"channel": channel, "state": "unchanged" if previous == label else "updated"})
+        return {"mode": "home_assistant_labels", "results": results}
 
     async def async_start_session(self, device_id: str) -> SessionStatus:
         device = self._device(device_id)

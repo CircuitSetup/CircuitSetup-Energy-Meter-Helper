@@ -76,6 +76,7 @@ export class CircuitSetupPanel extends LitElement {
   private reference = 0;
   private safetyAcknowledged = false;
   private drafts = new Map<number, CtDraft>();
+  private labelOnly = false;
   private error = "";
   private announcement = "";
   private unsubs: Array<() => void> = [];
@@ -363,6 +364,19 @@ export class CircuitSetupPanel extends LitElement {
     const generation = ++this.operationGeneration;
     this.clearSubscription("transaction");
     this.transaction = null;
+    if (this.labelOnly) {
+      const labels = changes.filter((change) => change.name !== this.inventory!.channels.find((item) => item.channel === change.channel)?.name)
+        .map(({ channel, name }) => ({ channel, name }));
+      if (!labels.length || changes.some((change) => {
+        const current = this.inventory!.channels.find((item) => item.channel === change.channel);
+        return !current || change.model_id !== (current.selected_model_id ?? "") || (change.reporting_multiplier ?? 1) !== current.reporting_multiplier;
+      })) {
+        return this.fail(new Error(), "Home Assistant label mode only permits display-name edits.");
+      }
+      await this.run(async () => { await api.setHaLabels(deviceId, inventory.plan_id, inventory.source_sha256, labels); this.announcement = "Home Assistant labels saved."; },
+        "Home Assistant labels could not be saved.", () => this.ownsOperation(generation, api, deviceId));
+      return;
+    }
     await this.run(async () => {
       const transaction = await api.previewCtConfig(
         deviceId,
@@ -609,9 +623,9 @@ export class CircuitSetupPanel extends LitElement {
       (id) => { this.selectDevice(id); this.requestUpdate(); }, () => void this.adopt(), () => this.back(), () => void this.loadTopology());
     if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(),
       () => this.back(), () => void this.loadInventory(), Boolean(this.error));
-    if (this.step === "ct" && this.inventory) return ctInventoryStep(this.inventory, this.board, this.ctGroup, this.drafts,
+    if (this.step === "ct" && this.inventory) return html`<fieldset><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}> ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}> Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.ctGroup, this.drafts,
       (board) => { this.board = board; this.ctGroup = 0; this.requestUpdate(); },
-      (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.reviewChanges());
+      (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.reviewChanges(), this.labelOnly)}`;
     if (this.step === "build") return buildInstallStep(this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(), () => void this.startSession());
