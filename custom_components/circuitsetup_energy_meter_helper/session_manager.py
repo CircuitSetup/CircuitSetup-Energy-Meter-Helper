@@ -65,8 +65,8 @@ class PendingCalibrationOrigin:
     mac: str
     session_identity: int
     topology: MeterTopology
-    config_filename: str
-    config_sha256: str
+    config_filename: str | None
+    config_sha256: str | None
     gain_groups: tuple[tuple[str, PhaseGainTable], ...]
     claimed_revision: int | None = None
 
@@ -173,7 +173,7 @@ class SessionManager:
         lease: CalibrationLease,
         session: Any,
         binding: MeterBinding,
-        snapshot: ESPHomeConfigSnapshot,
+        snapshot: ESPHomeConfigSnapshot | None,
     ) -> PendingCalibrationOrigin:
         """Freeze an internally fetched configuration under its active lease."""
         self._require_active_calibration_lease(lease)
@@ -185,8 +185,8 @@ class SessionManager:
             mac=lease.mac,
             session_identity=id(session),
             topology=binding.topology,
-            config_filename=snapshot.configuration,
-            config_sha256=snapshot.sha256,
+            config_filename=(snapshot.configuration if snapshot is not None else None),
+            config_sha256=(snapshot.sha256 if snapshot is not None else None),
             gain_groups=(),
         )
         self._pending_calibrations[lease.mac] = pending

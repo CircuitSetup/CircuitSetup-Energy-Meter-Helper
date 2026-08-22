@@ -1,8 +1,11 @@
-"""The eight supported repair issues and their Home Assistant lifecycle."""
+"""The eight supported repair issues and their scoped lifecycle."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable, Mapping
+from dataclasses import fields, is_dataclass
+from enum import Enum
 
 from homeassistant.components.repairs import RepairsFlow
 from homeassistant.core import HomeAssistant
@@ -12,54 +15,107 @@ from homeassistant.helpers import issue_registry
 from .const import DOMAIN
 
 ISSUES = {
-    "device_builder_unavailable": {"DEVICE_NOT_ADOPTED"},
+    "device_builder_unavailable": {"DEVICE_BUILDER_UNAVAILABLE"},
     "topology_project_package_mismatch": {"TOPOLOGY_PROJECT_PACKAGE_MISMATCH"},
     "runtime_entity_count_mismatch": {"TOPOLOGY_RUNTIME_MISMATCH"},
     "calibration_package_missing": {"CALIBRATION_PACKAGE_MISSING"},
     "reference_zero_not_supported": {"REFERENCE_ZERO_NOT_SUPPORTED"},
     "ct_preset_metadata_diverged": {"CT_PRESET_METADATA_DIVERGED"},
-    "compile_install_interrupted": {"COMPILE_FAILED", "UPLOAD_FAILED"},
+    "compile_install_interrupted": {"CANCELLED", "COMPILE_FAILED", "UPLOAD_FAILED"},
     "restore_verification_failed": {"CONFIG_ROLLBACK_FAILED", "RESTORE_GAIN_MISMATCH"},
+}
+_OPERATION_ISSUES = {
+    "adopt_device": {"device_builder_unavailable"},
+    "get_topology": {"topology_project_package_mismatch"},
+    "get_ct_inventory": {"device_builder_unavailable", "topology_project_package_mismatch", "ct_preset_metadata_diverged"},
+    "preview_ct_config": {"device_builder_unavailable", "topology_project_package_mismatch", "ct_preset_metadata_diverged"},
+    "apply_ct_config": {"device_builder_unavailable"},
+    "start_session": {"device_builder_unavailable", "topology_project_package_mismatch", "runtime_entity_count_mismatch", "calibration_package_missing", "reference_zero_not_supported"},
+    "calibrate_voltage": {"reference_zero_not_supported"},
+    "calibrate_current": {"reference_zero_not_supported"},
+    "compile_ct_config": {"device_builder_unavailable", "compile_install_interrupted"},
+    "install_ct_config": {"device_builder_unavailable", "compile_install_interrupted"},
+    "rollback_ct_config": {"device_builder_unavailable", "restore_verification_failed"},
+    "restart_and_verify": {"restore_verification_failed"},
 }
 
 
 class _RepairFlow(RepairsFlow):
     async def async_step_init(self, user_input: None = None) -> FlowResult:
-        """Direct users to the panel, which owns the safe repair operations."""
         return self.async_abort(reason="see_panel")
 
 
-async def async_create_fix_flow(
-    hass: HomeAssistant, issue_id: str, data: dict[str, str] | None
-) -> RepairsFlow:
-    """Offer a standard repairs-flow entry point for every allowed issue."""
+def _base_issue_id(issue_id: str) -> str | None:
+    return next((base for base in ISSUES if issue_id == base or issue_id.startswith(f"{base}_")), None)
+
+
+async def async_create_fix_flow(hass: HomeAssistant, issue_id: str, data: dict[str, str] | None) -> RepairsFlow:
     del hass, data
-    if issue_id not in ISSUES:
+    if _base_issue_id(issue_id) is None:
         raise ValueError("unsupported repair issue")
     return _RepairFlow()
 
 
+def scoped_issue_id(issue_id: str, entry_id: str) -> str:
+    return f"{issue_id}_{entry_id}"
+
+
 async def async_reconcile_issues(
-    hass: HomeAssistant, signals: Iterable[str]
+    hass: HomeAssistant,
+    entry_id: str,
+    operation: str,
+    signals: Iterable[str],
+    *,
+    authoritative: bool = True,
 ) -> None:
-    """Create current plan issues and delete resolved ones; unknown signals stay private."""
+    """Evaluate only issues belonging to this operation; other failures persist."""
+    candidates = _OPERATION_ISSUES.get(operation, set())
     active = {signal.upper() for signal in signals if isinstance(signal, str)}
-    for issue_id, codes in ISSUES.items():
-        if active.intersection(codes):
-            issue_registry.async_create_issue(
-                hass,
-                DOMAIN,
-                issue_id,
-                is_fixable=True,
-                severity=issue_registry.IssueSeverity.WARNING,
-                translation_key=issue_id,
-            )
-        else:
-            issue_registry.async_delete_issue(hass, DOMAIN, issue_id)
+    for issue_id in candidates:
+        scoped_id = scoped_issue_id(issue_id, entry_id)
+        if active.intersection(ISSUES[issue_id]):
+            issue_registry.async_create_issue(hass, DOMAIN, scoped_id, is_fixable=True, severity=issue_registry.IssueSeverity.WARNING, translation_key=issue_id)
+        elif authoritative:
+            issue_registry.async_delete_issue(hass, DOMAIN, scoped_id)
 
 
 def signals_from_result(result: object) -> set[str]:
-    """Extract only bounded public evidence fields from a live DTO."""
+    """Extract only allowlisted codes from frozen public results and exceptions."""
+    if isinstance(result, BaseException):
+        if isinstance(result, BaseExceptionGroup):
+            return set().union(*(signals_from_result(item) for item in result.exceptions))
+        if isinstance(result, asyncio.CancelledError):
+            return {"CANCELLED"}
+        names = {type(result).__name__}
+        code = getattr(result, "code", None)
+        if code == "config_rollback_failed":
+            return {"CONFIG_ROLLBACK_FAILED"}
+        if names & {"WorkflowCapabilityUnavailable", "CapabilityUnavailable"}:
+            return {"DEVICE_BUILDER_UNAVAILABLE"}
+        if "TopologyMismatchError" in names:
+            return {"TOPOLOGY_PROJECT_PACKAGE_MISMATCH", "TOPOLOGY_RUNTIME_MISMATCH"}
+        if "EntityBindingMissing" in names:
+            role = str(getattr(result, "role", ""))
+            if any(
+                suffix in role
+                for suffix in (
+                    ".reference_current",
+                    ".voltage_reference",
+                    ".run_gain",
+                    ".restore_gain",
+                )
+            ):
+                return {"CALIBRATION_PACKAGE_MISSING"}
+            return {"TOPOLOGY_RUNTIME_MISMATCH"}
+        if names & {"EntityBindingError", "EntityBindingAmbiguity"}:
+            return {"TOPOLOGY_RUNTIME_MISMATCH"}
+        if names & {"ReferenceZeroError", "ReferenceCleanupError"}:
+            return {"REFERENCE_ZERO_NOT_SUPPORTED"}
+        if names & {"RollbackFailedError", "RestartVerificationError"}:
+            return {"CONFIG_ROLLBACK_FAILED", "RESTORE_GAIN_MISMATCH"}
+        return set()
+    if is_dataclass(result):
+        result = {field.name: getattr(result, field.name) for field in fields(result)}
     if not isinstance(result, Mapping):
         return set()
     values: set[str] = set()
@@ -67,8 +123,41 @@ def signals_from_result(result: object) -> set[str]:
         raw = result.get(key, ())
         if isinstance(raw, tuple | list):
             for item in raw:
-                if isinstance(item, str):
+                if isinstance(item, Enum):
+                    values.add(str(item.value))
+                elif isinstance(item, str):
                     values.add(item)
+                elif is_dataclass(item):
+                    code = getattr(item, "code", None)
+                    values.add(str(code.value if isinstance(code, Enum) else code)) if code is not None else None
                 elif isinstance(item, Mapping) and isinstance(item.get("code"), str):
                     values.add(item["code"])
-    return values
+    preflight = result.get("preflight")
+    if is_dataclass(preflight):
+        preflight = {
+            field.name: getattr(preflight, field.name) for field in fields(preflight)
+        }
+    if isinstance(preflight, Mapping):
+        for item in preflight.get("issues", ()):
+            code = getattr(item, "code", None)
+            if isinstance(code, Enum):
+                values.add(str(code.value))
+            elif isinstance(code, str):
+                values.add(code)
+    if any(value in {"sensor_count_mismatch", "entity_mismatch", "topology_mismatch"} for value in values):
+        values.add("TOPOLOGY_RUNTIME_MISMATCH")
+    if "count_mismatch" in values:
+        values.add("CALIBRATION_PACKAGE_MISSING")
+        values.add("TOPOLOGY_RUNTIME_MISMATCH")
+    if "invalid_range" in values or "zero_ack" in values:
+        values.add("REFERENCE_ZERO_NOT_SUPPORTED")
+    if "rollback_failed" in values:
+        values.add("CONFIG_ROLLBACK_FAILED")
+    channels = result.get("channels", ())
+    if isinstance(channels, tuple | list) and any(
+        bool(getattr(channel, "stored_selection_present", False))
+        and not bool(getattr(channel, "selection_verified_against_config", False))
+        for channel in channels
+    ):
+        values.add("CT_PRESET_METADATA_DIVERGED")
+    return {value.upper() for value in values}

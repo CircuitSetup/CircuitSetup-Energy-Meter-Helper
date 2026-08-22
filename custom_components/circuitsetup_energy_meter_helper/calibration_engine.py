@@ -277,6 +277,7 @@ class CalibrationEngine:
                 connection_generation=generation,
                 groups=groups,
                 verification_id=uuid4().hex,
+                source_handoff_available=pending.config_filename is not None,
             )
             connection_guard = getattr(session, "hold_connection_generation", None)
             if connection_guard is None:
@@ -339,7 +340,16 @@ class CalibrationEngine:
         """Revalidate the authoritative source before each leased mutation."""
         pending = self.sessions.calibration_origin_for_update(lease, session, binding)
         if self._calibration_snapshot_reader is None:
-            raise ValueError("authoritative configuration snapshot reader is required")
+            if pending is not None:
+                if (
+                    pending.config_filename is not None
+                    or pending.config_sha256 is not None
+                ):
+                    raise ValueError("calibration source authority changed")
+                return pending
+            return self.sessions._begin_calibration_origin(
+                lease, session, binding, None
+            )
         snapshot = await self._calibration_snapshot_reader(lease.mac, binding.topology)
         if (
             not isinstance(snapshot, ESPHomeConfigSnapshot)

@@ -463,6 +463,9 @@ def _label_workflow(monkeypatch: pytest.MonkeyPatch) -> tuple[EntryWorkflow, _La
         f"  {key}: '{value}'\n" for key, value in values.items()
     ) + "".join(f"  current_cal_ct{channel}: '5500'\n" for channel in range(1, 7))
     digest = sha256(content.encode()).hexdigest()
+    async def no_stored_selections(_store: HelperStore, _mac: str) -> tuple[Any, ...]:
+        return ()
+    monkeypatch.setattr(HelperStore, "async_get_ct_selections", no_stored_selections)
     calls = {name: 0 for name in ("list", "get", "update", "validate", "compile", "upload", "restart")}
 
     class Builder:

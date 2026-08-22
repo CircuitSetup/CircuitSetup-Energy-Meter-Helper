@@ -381,7 +381,11 @@ class ConfigTransactionManager:
                 raise ConfigMutationError(
                     "verified calibration topology does not match target"
                 )
-            if not verified.source_handoff_available:
+            if (
+                not verified.source_handoff_available
+                or verified.config_filename is None
+                or verified.config_sha256 is None
+            ):
                 raise ConfigMutationError("verified calibration has already been used")
             snapshot = await self._device_builder.async_get_config(
                 verified.config_filename
@@ -628,7 +632,10 @@ class ConfigTransactionManager:
         if transaction.closed:
             return _status(transaction)
         transaction.state = ConfigTransactionState.FAILED
-        transaction.rollback_available = False
+        transaction.rollback_available = (
+            transaction.plan is not None and transaction.prior_content is not None
+        )
+        self._refresh_deadline(transaction)
         _evidence(transaction, TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED)
         status = _status(transaction)
         self.publish_status(status)
@@ -794,20 +801,14 @@ class ConfigTransactionManager:
                     expected_current_sha256=expected_current_sha256,
                 )
         except asyncio.CancelledError:
-            self._finish(
-                transaction,
-                ConfigTransactionState.FAILED,
-                TransactionEvidenceCode.CANCELLED,
-            )
+            _evidence(transaction, TransactionEvidenceCode.CANCELLED)
+            self._retain_write_recovery(transaction)
             raise
         except (TimeoutError, ConfigChangedError):
             return self._retain_write_recovery(transaction)
         except Exception as error:
-            self._finish(
-                transaction,
-                ConfigTransactionState.FAILED,
-                TransactionEvidenceCode.ROLLBACK_FAILED,
-            )
+            _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
+            self._retain_write_recovery(transaction)
             raise RollbackFailedError("configuration rollback failed") from error
         _progress(transaction, TransactionProgress.CONFIG_RESTORED)
         self.publish_status(_status(transaction))
@@ -836,10 +837,33 @@ class ConfigTransactionManager:
         transaction.expires_at = self._clock() + self._confirmation_ttl
 
     def _expire(self, transaction: _ConfigTransaction) -> None:
-        """Refuse an expired handle and release its local sensitive ownership."""
+        """Refuse an expired handle and recover any uncompiled remote write."""
         if transaction.closed:
             return
+        recover_write = transaction.write_started and transaction.state not in {
+            ConfigTransactionState.COMPILED,
+            ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
+            ConfigTransactionState.INSTALLING,
+            ConfigTransactionState.RECONNECTING,
+            ConfigTransactionState.VERIFIED,
+        }
         transaction.state = ConfigTransactionState.FAILED
+        if recover_write:
+            transaction.rollback_available = True
+            self._refresh_deadline(transaction)
+            self.publish_status(_status(transaction))
+
+            async def recover_then_settle() -> None:
+                try:
+                    async with _operation(transaction):
+                        await self._rollback_locked(transaction)
+                except (RollbackFailedError, asyncio.CancelledError):
+                    pass
+
+            cleanup = asyncio.create_task(recover_then_settle())
+            transaction.active_tasks.add(cleanup)
+            cleanup.add_done_callback(transaction.active_tasks.discard)
+            return
         self.publish_status(_status(transaction))
         if transaction.reservation_claimed and not transaction.write_started:
             _release(transaction)

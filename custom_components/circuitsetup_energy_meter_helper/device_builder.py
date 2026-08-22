@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 
 async def _wait_for_owned_cleanup[T](task: asyncio.Task[T]) -> bool:
@@ -129,7 +130,16 @@ class DeviceBuilderClient:
         self._disconnect_task: asyncio.Task[None] | None = None
 
     def __repr__(self) -> str:
-        return f"DeviceBuilderClient(base_url={self._base_url!r}, connected={self._ws is not None})"
+        parsed = urlsplit(self._base_url)
+        hostname = parsed.hostname
+        if parsed.scheme and hostname:
+            host = f"[{hostname}]" if ":" in hostname else hostname
+            origin = f"{parsed.scheme}://{host}"
+            if parsed.port is not None:
+                origin += f":{parsed.port}"
+        else:
+            origin = "<configured>"
+        return f"DeviceBuilderClient(origin={origin!r}, connected={self._ws is not None})"
 
     @property
     def connected(self) -> bool:
@@ -308,17 +318,25 @@ class DeviceBuilderClient:
     ) -> None:
         """Restore exact content and raise a distinct error if validation fails."""
         try:
+            restored_sha256 = sha256(content.encode()).hexdigest()
             if expected_current_sha256 is None:
                 expected_current_sha256 = (
                     await self.async_get_config(configuration)
                 ).sha256
-            await self.async_update_config(
-                ESPHomeConfigSnapshot(configuration, "", expected_current_sha256),
-                content,
-            )
+            try:
+                await self.async_update_config(
+                    ESPHomeConfigSnapshot(configuration, "", expected_current_sha256),
+                    content,
+                )
+            except ConfigChangedError:
+                if (await self.async_get_config(configuration)).sha256 != restored_sha256:
+                    raise
             validation = await self.async_validate(configuration)
             if not validation.success:
                 raise RollbackError("Device Builder rollback validation failed")
+            restored = await self.async_get_config(configuration)
+            if restored.sha256 != restored_sha256:
+                raise RollbackError("Device Builder rollback verification failed")
         except (ConfigChangedError, RollbackError):
             raise
         except Exception as err:

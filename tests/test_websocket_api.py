@@ -15,11 +15,13 @@ import pytest
 from aiohttp import ClientConnectionError
 from homeassistant.components.hassio import HassIO
 from homeassistant.components.hassio.const import DATA_COMPONENT
+from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.exceptions import ConfigEntryNotReady, Unauthorized
 
 from custom_components.circuitsetup_energy_meter_helper import (
     async_setup_entry,
     async_unload_entry,
+    repairs,
 )
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
     ConfigTransactionManager,
@@ -32,6 +34,7 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
 from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
     MeterTopology,
+    StoredCTSelection,
     SubstitutionChange,
     TopologyEvidence,
     TopologyEvidenceSource,
@@ -61,6 +64,76 @@ from custom_components.circuitsetup_energy_meter_helper.workflow import (
 )
 
 _MISSING = object()
+
+
+async def _native_only_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    preflight: Any | None = None,
+) -> tuple[EntryWorkflow, Any, SessionManager]:
+    from custom_components.circuitsetup_energy_meter_helper.topology import (
+        topology_from_native,
+    )
+
+    topology = topology_from_native("circuitsetup.6c-energy-meter")
+    entry = SimpleNamespace(
+        domain="esphome",
+        entry_id="meter",
+        title="Meter",
+        unique_id="aa:bb:cc:dd:ee:ff",
+        data={"device_name": "meter"},
+        runtime_data=SimpleNamespace(
+            device_info=SimpleNamespace(project_name=topology.project_name)
+        ),
+    )
+    hass = FakeHass((entry,))
+    provisioning = ProvisioningCoordinator(hass)
+    await provisioning.async_rescan()
+    binding = SimpleNamespace(
+        topology=topology,
+        connection_generation=1,
+        groups=(),
+        channels=(),
+    )
+    monkeypatch.setattr(
+        "custom_components.circuitsetup_energy_meter_helper.workflow.bind_meter",
+        lambda *_args: binding,
+    )
+
+    async def ready_preflight(*_args: Any) -> PreflightResult:
+        return PreflightResult(())
+
+    monkeypatch.setattr(
+        "custom_components.circuitsetup_energy_meter_helper.workflow.async_preflight",
+        preflight or ready_preflight,
+    )
+
+    class Api:
+        entities: tuple[Any, ...] = ()
+        connection_generation = 1
+
+        async def async_connect(self) -> None:
+            return None
+
+    store = HelperStore(hass)
+
+    async def selections(_mac: str) -> tuple[StoredCTSelection, ...]:
+        return (
+            StoredCTSelection(1, None, None, 27_518, 2.0, "0" * 64),
+        )
+
+    store.async_get_ct_selections = selections  # type: ignore[method-assign]
+    sessions = SessionManager()
+    workflow = EntryWorkflow(
+        hass,
+        provisioning,
+        sessions,
+        store,
+        "meter",
+        Api(),  # type: ignore[arg-type]
+        None,
+    )
+    return workflow, binding, sessions
 
 
 def test_stability_browser_evidence_has_samples_and_standard_deviation() -> None:
@@ -112,11 +185,16 @@ class FakeHass:
     def __init__(self, entries: tuple[object, ...] = ()) -> None:
         self.data: dict[str, Any] = {}
         self.config_entries = FakeConfigEntries(entries)
-        self.config = SimpleNamespace(config_dir=".")
+        self.loop = asyncio.get_event_loop()
+        self.config = SimpleNamespace(config_dir=".", path=lambda *parts: str(Path(".").joinpath(*parts)))
         self.tasks: list[asyncio.Task[None]] = []
 
     def verify_event_loop_thread(self, name: str) -> None:
         del name
+
+    async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
+        del target, args
+        return {}
 
     def async_create_task(self, coroutine: Any) -> asyncio.Task[Any]:
         return asyncio.create_task(coroutine)
@@ -915,6 +993,142 @@ substitutions:
     asyncio.run(run())
 
 
+def test_native_only_session_starts_without_yaml_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+
+        status = await workflow.async_start_session("meter")
+
+        handle = workflow._sessions[status.session_id]
+        assert status.state == "safety_required"
+        assert handle.configuration is None
+        assert handle.substitutions == {}
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_native_only_current_uses_persisted_reporting_multiplier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+        class Calibration:
+            async def async_calibrate_current(
+                self, *args: Any, **kwargs: Any
+            ) -> Any:
+                calls.append((args, kwargs))
+                return SimpleNamespace(state="applied_pending_restart_verification")
+
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+
+        await workflow.async_calibrate_current(status.session_id, 1, 5.0, False)
+
+        assert calls[0][0][5] == 2.0
+        assert calls[0][1]["substitutions"] == {}
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_native_only_voltage_calibration_needs_no_builder_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        calls: list[dict[str, Any]] = []
+
+        class Calibration:
+            async def async_calibrate_voltage(
+                self, *_args: Any, **kwargs: Any
+            ) -> Any:
+                calls.append(kwargs)
+                return SimpleNamespace(state="applied_pending_restart_verification")
+
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+
+        await workflow.async_calibrate_voltage(
+            status.session_id, "main_1", 120.0, False
+        )
+
+        assert calls == [{"iteration": 1, "confirm_iteration": False, "substitutions": {}}]
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_native_only_restart_verification_persists_without_source_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        record = SimpleNamespace(
+            config_filename=None,
+            config_sha256=None,
+            source_handoff_available=False,
+        )
+
+        class Calibration:
+            async def async_verify_after_restart(
+                self, *_args: Any, **kwargs: Any
+            ) -> Any:
+                assert kwargs["substitutions"] == {}
+                return SimpleNamespace(record=record, binding=binding)
+
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+
+        result = await workflow.async_restart_and_verify(status.session_id)
+
+        assert result is record
+        assert (await workflow.async_get_session(status.session_id)).state == "verified"
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_session_preflight_holds_shared_config_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_preflight(*_args: Any) -> PreflightResult:
+            entered.set()
+            await release.wait()
+            return PreflightResult(())
+
+        workflow, _binding, sessions = await _native_only_workflow(
+            monkeypatch, preflight=blocked_preflight
+        )
+        starting = asyncio.create_task(workflow.async_start_session("meter"))
+        await entered.wait()
+        config = asyncio.create_task(sessions.async_acquire_config("aabbccddeeff"))
+        await asyncio.sleep(0)
+
+        assert sessions.is_config_locked("aabbccddeeff")
+        assert not config.done()
+
+        release.set()
+        status = await starting
+        lease = await config
+        lease.release()
+        await workflow.async_cancel_session(status.session_id)
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("cancel_count", (1, 3))
 def test_cancel_revokes_session_before_waiting_calibration_can_mutate(
     monkeypatch: pytest.MonkeyPatch,
@@ -1198,6 +1412,46 @@ def test_success_error_snapshot_and_event_are_recursively_redacted() -> None:
     asyncio.run(run())
 
 
+def test_cancelled_compile_reconciles_interruption_then_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+        created: list[str] = []
+        deleted: list[str] = []
+        monkeypatch.setattr(
+            repairs.issue_registry,
+            "async_create_issue",
+            lambda _h, _d, issue_id, **_kwargs: created.append(issue_id),
+        )
+        monkeypatch.setattr(
+            repairs.issue_registry,
+            "async_delete_issue",
+            lambda _h, _d, issue_id: deleted.append(issue_id),
+        )
+
+        async def cancelled(*_args: Any) -> Any:
+            raise asyncio.CancelledError
+
+        controller.async_call = cancelled  # type: ignore[method-assign]
+        connection = FakeConnection()
+
+        with pytest.raises(asyncio.CancelledError):
+            await _invoke(
+                hass,
+                connection,
+                _message(f"{DOMAIN}/compile_ct_config"),
+            )
+
+        assert created == ["compile_install_interrupted_helper"]
+        assert deleted == []
+        assert tuple(controller.diagnostics.errors)[-1] == "cancelled"
+
+    asyncio.run(run())
+
+
 def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> None:
     """The Task 19 command and HA diagnostics share one allowlisted provider."""
 
@@ -1212,13 +1466,14 @@ def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> N
             1,
             {
                 "integration_version": "0.1.0",
-                "home_assistant_version": "unknown",
+                "home_assistant_version": HA_VERSION,
                 "config_entry_version": 1,
                 "setup_state": "no_device",
                 "meter_count": 0,
                 "meters": [],
                 "topology": None,
                 "entity_role_counts": {},
+                "ct_models": [],
                 "ct_presets": [],
                 "last_transaction": None,
                 "last_session": None,
