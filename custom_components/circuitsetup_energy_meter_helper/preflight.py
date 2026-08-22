@@ -257,24 +257,25 @@ async def zero_reference_guard(engine: Any, session: Any) -> AsyncIterator[None]
 async def _drain_final_zero(
     engine: Any, session: Any
 ) -> tuple[tuple[BaseException, ...], asyncio.CancelledError | None]:
-    task = asyncio.create_task(engine.async_zero_all_references(session))
+    async def capture_outcome() -> tuple[
+        tuple[BaseException, ...], asyncio.CancelledError | None
+    ]:
+        try:
+            await engine.async_zero_all_references(session)
+        except ReferenceZeroError as error:
+            return error.failures, None
+        except asyncio.CancelledError as error:
+            return (), error
+        except BaseException as error:  # noqa: BLE001 - return owned cleanup failure
+            return (error,), None
+        return (), None
+
+    task = asyncio.create_task(capture_outcome())
     caller_cancelled: asyncio.CancelledError | None = None
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError as error:
             caller_cancelled = caller_cancelled or error
-        except BaseException:  # noqa: BLE001 - inspect the owned task below
-            break
-    try:
-        task.result()
-    except ReferenceZeroError as error:
-        failures = error.failures
-    except asyncio.CancelledError as error:
-        caller_cancelled = caller_cancelled or error
-        failures = ()
-    except BaseException as error:  # noqa: BLE001 - report cleanup, preserve caller
-        failures = (error,)
-    else:
-        failures = ()
-    return failures, caller_cancelled
+    failures, cleanup_cancelled = task.result()
+    return failures, caller_cancelled or cleanup_cancelled

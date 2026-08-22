@@ -281,7 +281,10 @@ def test_zero_guard_preserves_original_and_accumulates_cleanup_failures() -> Non
     asyncio.run(run())
 
 
-def test_zero_guard_drains_cleanup_but_preserves_caller_cancellation() -> None:
+@pytest.mark.parametrize("cancel_count", (1, 3))
+def test_zero_guard_drains_cleanup_without_unhandled_shield_exception(
+    cancel_count: int,
+) -> None:
     class Engine:
         def __init__(self) -> None:
             self.calls = 0
@@ -300,20 +303,32 @@ def test_zero_guard_drains_cleanup_but_preserves_caller_cancellation() -> None:
 
     async def run() -> None:
         engine = Engine()
+        loop = asyncio.get_running_loop()
+        unhandled: list[dict[str, object]] = []
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
 
         async def guarded() -> None:
             async with zero_reference_guard(engine, object()):
                 pass
 
-        task = asyncio.create_task(guarded())
-        await engine.cleanup_started.wait()
-        task.cancel()
-        await asyncio.sleep(0)
-        assert not task.done()
-        engine.release_cleanup.set()
-        with pytest.raises(asyncio.CancelledError) as cancelled:
-            await task
-        assert engine.cleanup_finished
-        assert [str(item) for item in cancelled.value.cleanup_errors] == ["ct1 cleanup"]
+        try:
+            task = asyncio.create_task(guarded())
+            await engine.cleanup_started.wait()
+            for _ in range(cancel_count):
+                task.cancel()
+                await asyncio.sleep(0)
+                assert not task.done()
+            engine.release_cleanup.set()
+            with pytest.raises(asyncio.CancelledError) as cancelled:
+                await task
+            await asyncio.sleep(0)
+            assert engine.cleanup_finished
+            assert [str(item) for item in cancelled.value.cleanup_errors] == [
+                "ct1 cleanup"
+            ]
+            assert unhandled == []
+        finally:
+            loop.set_exception_handler(previous_handler)
 
     asyncio.run(run())
