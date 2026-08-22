@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+      - run: uv sync --all-groups
+      - run: uv run ruff check .
+      - run: uv run mypy custom_components/circuitsetup_energy_meter_helper
+      - run: uv run pytest -q --cov=custom_components.circuitsetup_energy_meter_helper --cov-report=term-missing
+      - run: uv pip check
+      - uses: hacs/action@main
+        with:
+          category: integration
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm audit --omit=dev
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  firmware-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+          ref: 4d1d14f732291a7e4e8aaba57a1d7815c94ec508
+          path: firmware
+      - name: Verify catalog schema and supported project patterns
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          helper = json.loads(Path("custom_components/circuitsetup_energy_meter_helper/data/ct_presets.json").read_text())
+          firmware = json.loads(Path("firmware/Software/ESPHome/ct_presets.json").read_text())
+          assert helper == firmware, "CT catalog differs from pinned firmware"
+          configs = list(Path("firmware/Software/ESPHome").glob("6chan_energy_meter*.yaml"))
+          assert any(path.name == "6chan_energy_meter_main_board.yaml" for path in configs)
+          assert any("6-addons" in path.name for path in configs)
+          assert any("2-voltages" in path.name for path in configs)
+          assert any("ethernet_waveshare" in path.name for path in configs)
+          PY

@@ -179,7 +179,7 @@ class ESPHomeApiSession:
             ensure_attempt_is_live()
             try:
                 actual_mac = canonical_mac(device_info.mac_address)
-            except AttributeError, ValueError:
+            except (AttributeError, ValueError):
                 actual_mac = ""
             if actual_mac != expected_mac:
                 raise ESPHomeIdentityError(
@@ -250,7 +250,7 @@ class ESPHomeApiSession:
                 from homeassistant.components.esphome.manager import (
                     async_create_api_client,
                 )
-            except AttributeError, ImportError:
+            except (AttributeError, ImportError):
                 raise ESPHomeApiRepairRequired(
                     "Home Assistant's compatible ESPHome API helper is unavailable"
                 ) from None

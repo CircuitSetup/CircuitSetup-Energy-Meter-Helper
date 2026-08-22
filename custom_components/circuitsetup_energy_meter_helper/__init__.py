@@ -13,6 +13,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from .config_transaction import ConfigTransactionManager
 from .const import CONF_ESPHOME_ENTRY_ID, DOMAIN
 from .device_builder import _wait_for_owned_cleanup
+from .diagnostics import async_get_config_entry_diagnostics
 from .esphome_api import ESPHomeApiSession
 from .panel import async_register_panel, async_unregister_panel
 from .provisioning import ProvisioningCoordinator
@@ -65,6 +66,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         workflow.transactions = transactions
         controller = EntryWebsocketController(coordinator, sessions, store)
+        controller.set_diagnostics_provider(
+            lambda: async_get_config_entry_diagnostics(hass, entry)
+        )
         controller.workflow = workflow
         controller.transactions = transactions
         runtime: dict[str, Any] = {

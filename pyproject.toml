@@ -8,6 +8,7 @@ dev = [
   "homeassistant==2026.8.0",
   "mypy>=1.18",
   "pytest>=9.0",
+  "pytest-cov>=7.0",
   "ruff>=0.15.0",
 ]
 

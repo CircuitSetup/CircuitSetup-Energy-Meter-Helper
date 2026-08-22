@@ -1191,6 +1191,30 @@ def test_success_error_snapshot_and_event_are_recursively_redacted() -> None:
     asyncio.run(run())
 
 
+def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> None:
+    """The Task 19 command and HA diagnostics share one allowlisted provider."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        connection = FakeConnection()
+
+        await _invoke(hass, connection, _message(f"{DOMAIN}/get_diagnostics_summary"))
+
+        assert connection.results[-1] == (
+            1,
+            {
+                "integration_version": "0.1.0",
+                "config_entry_version": 1,
+                "setup_state": "no_device",
+                "meter_count": 0,
+                "meters": [],
+            },
+        )
+
+    asyncio.run(run())
+
+
 def test_transaction_confirmation_rejects_hash_device_and_replay_before_mutation() -> (
     None
 ):

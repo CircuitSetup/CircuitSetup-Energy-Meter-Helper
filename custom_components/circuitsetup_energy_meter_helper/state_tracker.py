@@ -134,7 +134,7 @@ class StateTracker:
                 continue
             try:
                 value = float(state.state)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 waiter.future.set_exception(
                     StateUnavailableError("state is non-finite")
                 )
@@ -192,7 +192,7 @@ class StateTracker:
             raise FreshWindowError("sensor sample is unavailable")
         try:
             values = tuple(float(record.state.state) for record in records)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             raise FreshWindowError("sensor sample is non-finite") from None
         if not all(math.isfinite(value) for value in values):
             raise FreshWindowError("sensor sample is non-finite")

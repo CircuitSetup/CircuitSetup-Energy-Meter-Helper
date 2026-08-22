@@ -185,7 +185,7 @@ def _validate_binding(binding: MeterBinding) -> list[PreflightIssue]:
 def _finite_attr(info: Any, name: str) -> float | None:
     try:
         value = float(getattr(info, name))
-    except AttributeError, TypeError, ValueError:
+    except (AttributeError, TypeError, ValueError):
         return None
     return value if math.isfinite(value) else None
 

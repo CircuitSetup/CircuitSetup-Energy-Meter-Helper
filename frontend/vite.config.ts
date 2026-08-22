@@ -1,6 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
+import { configDefaults } from "vitest/config";
 
 const bundleName = "circuitsetup-energy-meter-helper-panel.js";
 const componentDir = resolve(import.meta.dirname, "../custom_components/circuitsetup_energy_meter_helper/frontend");
@@ -26,6 +27,7 @@ export default defineConfig({
   plugins: [copyStableBundle()],
   test: {
     environment: "jsdom",
+    exclude: [...configDefaults.exclude, "test/e2e/**"],
   },
   build: {
     target: "es2022",

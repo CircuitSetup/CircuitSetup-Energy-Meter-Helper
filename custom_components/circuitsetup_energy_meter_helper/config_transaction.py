@@ -800,7 +800,7 @@ class ConfigTransactionManager:
                 TransactionEvidenceCode.CANCELLED,
             )
             raise
-        except TimeoutError, ConfigChangedError:
+        except (TimeoutError, ConfigChangedError):
             return self._retain_write_recovery(transaction)
         except Exception as error:
             self._finish(

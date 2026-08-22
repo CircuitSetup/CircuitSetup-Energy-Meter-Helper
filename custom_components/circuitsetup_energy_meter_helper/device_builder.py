@@ -319,7 +319,7 @@ class DeviceBuilderClient:
             validation = await self.async_validate(configuration)
             if not validation.success:
                 raise RollbackError("Device Builder rollback validation failed")
-        except ConfigChangedError, RollbackError:
+        except (ConfigChangedError, RollbackError):
             raise
         except Exception as err:
             raise RollbackError("Device Builder rollback failed") from err
