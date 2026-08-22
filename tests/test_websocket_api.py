@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from types import SimpleNamespace
@@ -53,6 +54,8 @@ from custom_components.circuitsetup_energy_meter_helper.workflow import (
     LazyDeviceBuilder,
     WorkflowHandleError,
 )
+
+_MISSING = object()
 
 
 @dataclass
@@ -260,10 +263,16 @@ class SupervisorTransport:
         *,
         request_error: BaseException | None = None,
         addon_status: int = 200,
+        addon_overrides: Mapping[str, Any] | None = None,
+        addon_missing: str | None = None,
+        session_value: Any = "issued-session",
     ) -> None:
         self.websocket = websocket
         self.request_error = request_error
         self.addon_status = addon_status
+        self.addon_overrides = dict(addon_overrides or {})
+        self.addon_missing = addon_missing
+        self.session_value = session_value
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
         self.websocket_requests: list[tuple[str, dict[str, Any]]] = []
 
@@ -272,9 +281,17 @@ class SupervisorTransport:
         if self.request_error is not None:
             raise self.request_error
         if str(url).endswith("/addons/5c53de3b_esphome/info"):
-            return SupervisorResponse(_official_addon_info(), self.addon_status)
+            addon = _official_addon_info()
+            addon.update(self.addon_overrides)
+            if self.addon_missing is not None:
+                addon.pop(self.addon_missing, None)
+            return SupervisorResponse(addon, self.addon_status)
         if str(url).endswith("/ingress/session"):
-            return SupervisorResponse({"session": "issued-session"})
+            return SupervisorResponse(
+                {}
+                if self.session_value is _MISSING
+                else {"session": self.session_value}
+            )
         raise AssertionError(f"unexpected Supervisor request {url}")
 
     async def ws_connect(self, url: str, **kwargs: Any) -> BuilderTransportWebSocket:
@@ -516,6 +533,7 @@ substitutions:
         assert [(method, url) for method, url, _ in transport.requests] == [
             ("GET", "http://supervisor/addons/5c53de3b_esphome/info"),
             ("POST", "http://supervisor/ingress/session"),
+            ("POST", "http://supervisor/ingress/session"),
         ]
         assert transport.websocket_requests == [
             (
@@ -574,6 +592,98 @@ def test_supervisor_operational_failure_retries_after_setup_owner_unwind(
         assert await async_setup_entry(absent_hass, entry)
         assert absent_hass.data[DOMAIN][entry.entry_id]["device_builder"] is None
         await async_unload_entry(absent_hass, entry)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("addon_overrides", "addon_missing", "session_value"),
+    (
+        ({"slug": "unexpected"}, None, "issued-session"),
+        ({"name": "Impostor Builder"}, None, "issued-session"),
+        ({}, "slug", "issued-session"),
+        (
+            {"ingress_entry": "/api/hassio_ingress/../nested"},
+            None,
+            "issued-session",
+        ),
+        (
+            {"ingress_entry": "/api/hassio_ingress/control\x1btoken"},
+            None,
+            "issued-session",
+        ),
+        ({}, None, ""),
+        ({}, None, _MISSING),
+        ({}, None, "nested/session"),
+        ({}, None, "control\r\nsession"),
+    ),
+    ids=(
+        "wrong-slug",
+        "wrong-name",
+        "missing-slug",
+        "path-shaped-ingress",
+        "control-ingress",
+        "empty-session",
+        "missing-session",
+        "path-shaped-session",
+        "control-session",
+    ),
+)
+def test_malformed_successful_supervisor_metadata_is_retryable_setup_failure(
+    addon_overrides: Mapping[str, Any],
+    addon_missing: str | None,
+    session_value: Any,
+) -> None:
+    """Successful but contradictory Supervisor metadata fails closed and retries."""
+
+    async def run() -> None:
+        websocket = BuilderTransportWebSocket("")
+        transport = SupervisorTransport(
+            websocket,
+            addon_overrides=addon_overrides,
+            addon_missing=addon_missing,
+            session_value=session_value,
+        )
+        hass = FakeHass()
+        hass.data[DATA_COMPONENT] = HassIO(
+            asyncio.get_running_loop(),
+            transport,
+            "supervisor",  # type: ignore[arg-type]
+        )
+        entry = FakeEntry(data={})
+
+        with pytest.raises(ConfigEntryNotReady, match="temporarily unavailable"):
+            await async_setup_entry(hass, entry)
+
+        assert entry.entry_id not in hass.data[DOMAIN]
+        assert "issued-session" not in repr(hass.data.get(DOMAIN, {}))
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("addon_overrides", ({"state": "stopped"}, {"ingress": False}))
+def test_verified_official_addon_unavailable_state_is_optional_capability(
+    addon_overrides: Mapping[str, Any],
+) -> None:
+    """Only a correctly identified stopped/non-ingress official add-on is absent."""
+
+    async def run() -> None:
+        websocket = BuilderTransportWebSocket("")
+        transport = SupervisorTransport(websocket, addon_overrides=addon_overrides)
+        hass = FakeHass()
+        hass.data[DATA_COMPONENT] = HassIO(
+            asyncio.get_running_loop(),
+            transport,
+            "supervisor",  # type: ignore[arg-type]
+        )
+        entry = FakeEntry(data={})
+
+        assert await async_setup_entry(hass, entry)
+        assert hass.data[DOMAIN][entry.entry_id]["device_builder"] is None
+        assert [url for _, url, _ in transport.requests] == [
+            "http://supervisor/addons/5c53de3b_esphome/info"
+        ]
+        await async_unload_entry(hass, entry)
 
     asyncio.run(run())
 
@@ -897,6 +1007,76 @@ def test_cancel_revokes_session_before_waiting_calibration_can_mutate(
     from custom_components.circuitsetup_energy_meter_helper.topology import (
         topology_from_native,
     )
+
+    asyncio.run(run())
+
+
+def test_cancel_session_reports_attached_reference_cleanup_failure_after_scrub() -> (
+    None
+):
+    """Expected task cancellation cannot hide zero-reference cleanup failures."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        workflow = EntryWorkflow(
+            hass,
+            ProvisioningCoordinator(hass),
+            SessionManager(),
+            HelperStore(hass),
+            None,
+            None,
+            None,
+        )
+        active_started = asyncio.Event()
+
+        async def active_operation() -> None:
+            active_started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError as error:
+                error.cleanup_errors = (  # type: ignore[attr-defined]
+                    RuntimeError("reference zero failed"),
+                )
+                raise
+
+        active_task = asyncio.create_task(active_operation())
+        await active_started.wait()
+
+        class Handle:
+            def __init__(self, task: asyncio.Task[None]) -> None:
+                self.session_id = "session"
+                self.mac = "aabbccddeeff"
+                self.revoked = False
+                self.revision = 0
+                self.state = "ready"
+                self.active_task: asyncio.Task[None] | None = task
+                self.expires_at = float("inf")
+                self.substitutions = {"secret": "value"}
+
+            def status(self) -> Any:
+                return SimpleNamespace(state=self.state)
+
+            def scrub(self) -> None:
+                self.substitutions.clear()
+
+        handle = Handle(active_task)
+        workflow._sessions[handle.session_id] = handle  # type: ignore[assignment]
+
+        with pytest.raises(
+            BaseExceptionGroup, match="calibration session cleanup failed"
+        ) as caught:
+            await workflow.async_cancel_session(handle.session_id)
+
+        assert any(
+            isinstance(error, RuntimeError) and str(error) == "reference zero failed"
+            for error in caught.value.exceptions
+        )
+        assert handle.substitutions == {}
+        assert workflow._sessions == {}
+        assert workflow._session_cleanup_tasks == {}
+        assert workflow._cleaning_macs == set()
+        assert active_task.cancelled()
+        await workflow.async_close()
 
     asyncio.run(run())
 

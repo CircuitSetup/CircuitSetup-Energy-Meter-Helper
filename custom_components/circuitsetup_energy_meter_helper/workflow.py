@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
@@ -11,7 +12,7 @@ from time import monotonic
 from typing import Any
 from uuid import uuid4
 
-from aiohasupervisor import SupervisorNotFoundError
+from aiohasupervisor import SupervisorNotFoundError, SupervisorResponseError
 from aiohasupervisor.models import AddonState as SupervisorAddonState
 from aiohttp import hdrs
 from homeassistant.components.hassio import HassIO, get_supervisor_client
@@ -49,6 +50,7 @@ MAX_PLAN_HANDLES = 8
 ESPHOME_DEVICE_BUILDER_SLUG = "5c53de3b_esphome"
 _INGRESS_ENTRY_PREFIX = "/api/hassio_ingress/"
 _INGRESS_SESSION_COOKIE = "ingress_session"
+_SUPERVISOR_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,256}\Z", re.ASCII)
 
 
 class WorkflowCapabilityUnavailable(RuntimeError):
@@ -898,8 +900,19 @@ class EntryWorkflow:
                 active_task.cancel()
             try:
                 await _wait_for_owned_cleanup(active_task)
-            except asyncio.CancelledError:
-                pass
+            except asyncio.CancelledError as error:
+                cleanup_outcomes = getattr(error, "cleanup_errors", ())
+                if cleanup_outcomes:
+                    if isinstance(cleanup_outcomes, tuple) and all(
+                        isinstance(item, BaseException) for item in cleanup_outcomes
+                    ):
+                        errors.extend(cleanup_outcomes)
+                    else:
+                        errors.append(
+                            RuntimeError(
+                                "calibration cancellation cleanup outcome was invalid"
+                            )
+                        )
             except BaseException as error:  # noqa: BLE001 - finish local scrub
                 errors.append(error)
         try:
@@ -966,23 +979,41 @@ async def create_device_builder(hass: HomeAssistant) -> LazyDeviceBuilder | None
         addon = await supervisor.addons.addon_info(ESPHOME_DEVICE_BUILDER_SLUG)
     except SupervisorNotFoundError:
         return None
+    except (LookupError, TypeError, ValueError) as error:
+        raise SupervisorResponseError(
+            "Supervisor returned malformed Device Builder metadata"
+        ) from error
     if (
         addon.slug != ESPHOME_DEVICE_BUILDER_SLUG
         or addon.name != "ESPHome Device Builder"
-        or addon.state is not SupervisorAddonState.STARTED
-        or addon.ingress is not True
-        or not isinstance(addon.ingress_entry, str)
-        or not addon.ingress_entry.startswith(_INGRESS_ENTRY_PREFIX)
     ):
+        raise SupervisorResponseError(
+            "Supervisor returned inconsistent Device Builder identity"
+        )
+    if addon.state is SupervisorAddonState.STOPPED or addon.ingress is False:
         return None
+    if (
+        addon.state is not SupervisorAddonState.STARTED
+        or addon.available is not True
+        or addon.ingress is not True
+    ):
+        raise SupervisorResponseError(
+            "Supervisor returned inconsistent Device Builder availability"
+        )
     ingress_entry = addon.ingress_entry
-    ingress_token = ingress_entry.removeprefix(_INGRESS_ENTRY_PREFIX).strip("/")
-    if not ingress_token or "/" in ingress_token:
-        return None
+    if not isinstance(ingress_entry, str) or not ingress_entry.startswith(
+        _INGRESS_ENTRY_PREFIX
+    ):
+        raise SupervisorResponseError(
+            "Supervisor returned malformed Device Builder ingress metadata"
+        )
+    ingress_token = ingress_entry.removeprefix(_INGRESS_ENTRY_PREFIX)
+    _validate_supervisor_token(ingress_token, "Device Builder ingress")
+    await _async_validated_ingress_session(supervisor)
     url = str(hassio.base_url.with_path(f"/ingress/{ingress_token}"))
 
     async def connect(websocket_url: str) -> Any:
-        session = await supervisor.ingress.create_session()
+        session = await _async_validated_ingress_session(supervisor)
         cookie = SimpleCookie()
         cookie[_INGRESS_SESSION_COOKIE] = session
         return await hassio.websession.ws_connect(
@@ -995,3 +1026,21 @@ async def create_device_builder(hass: HomeAssistant) -> LazyDeviceBuilder | None
         )
 
     return LazyDeviceBuilder(DeviceBuilderClient(url, connect=connect))
+
+
+def _validate_supervisor_token(value: Any, label: str) -> None:
+    """Reject control, cookie, and path-shaped successful Supervisor tokens."""
+    if not isinstance(value, str) or _SUPERVISOR_TOKEN.fullmatch(value) is None:
+        raise SupervisorResponseError(f"Supervisor returned malformed {label} metadata")
+
+
+async def _async_validated_ingress_session(supervisor: Any) -> str:
+    """Issue one safe Supervisor cookie token or raise a retryable response error."""
+    try:
+        session = await supervisor.ingress.create_session()
+    except (LookupError, TypeError, ValueError) as error:
+        raise SupervisorResponseError(
+            "Supervisor returned malformed ingress session metadata"
+        ) from error
+    _validate_supervisor_token(session, "ingress session")
+    return session
