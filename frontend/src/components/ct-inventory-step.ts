@@ -16,6 +16,17 @@ const resultingGain = (preset: CtPreset | undefined, multiplier: number, customG
     ? null
     : Math.round((preset?.default_gain_ct ?? customGain!) / multiplier);
 
+const moveBoardTab = (event: KeyboardEvent, index: number) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const tab = event.currentTarget as HTMLButtonElement;
+  const tabs = [...(tab.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])];
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+    : (index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+  tabs[next]?.click();
+  tabs[next]?.focus();
+};
+
 export function ctInventoryStep(
   inventory: CtInventory,
   board: number,
@@ -31,9 +42,11 @@ export function ctInventoryStep(
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
   return html`
     <section class="step-content ct-step" aria-labelledby="step-heading">
-      <div class="board-tabs" role="tablist" aria-label="Meter boards">
+      <div class="board-tabs" role="tablist" aria-label="Meter boards" aria-orientation="horizontal">
         ${Array.from({ length: boardCount }, (_, index) => html`
-          <button role="tab" data-board-tab=${index} aria-selected=${index === board}
+          <button role="tab" id=${`board-tab-${index}`} data-board-tab=${index} aria-selected=${index === board}
+            aria-controls="board-panel" tabindex=${index === board ? "0" : "-1"}
+            @keydown=${(event: KeyboardEvent) => moveBoardTab(event, index)}
             @click=${() => setBoard(index)}>${index === 0 ? "Main Board" : `Add-on ${index}`}</button>
         `)}
       </div>
@@ -42,6 +55,7 @@ export function ctInventoryStep(
         <button data-group-nav aria-current=${group === 1} @click=${() => setGroup(1)}>Group 2 · CT${board * 6 + 4}–${board * 6 + 6}</button>
       </div>
       <p>Configure each CT on this board. Select its model, adjust the multiplier, and review the resulting gain.</p>
+      <div id="board-panel" role="tabpanel" aria-labelledby=${`board-tab-${board}`}>
       <div class="ct-table" role="table" aria-rowcount=${inventory.channels.length}>
         <div class="ct-header" role="row">
           <span>Name</span><span>Model</span><span>Current gain</span><span>Multiplier</span><span>Resulting gain</span><span>Burden</span><span>Status</span>
@@ -112,6 +126,7 @@ export function ctInventoryStep(
             `;
           })}
         </div>
+      </div>
       </div>
       <p class="row-count">Showing ${rows.length} of ${inventory.channels.length} CTs</p>
       <footer class="action-footer">

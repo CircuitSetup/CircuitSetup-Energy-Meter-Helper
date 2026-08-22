@@ -176,10 +176,20 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
 
     expect(panel.shadowRoot?.querySelectorAll("[data-board-tab]")).toHaveLength(7);
+    const tabs = panel.shadowRoot?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    expect(tabs?.[0]?.getAttribute("aria-controls")).toBe("board-panel");
+    expect(tabs?.[0]?.getAttribute("tabindex")).toBe("0");
+    expect(tabs?.[1]?.getAttribute("tabindex")).toBe("-1");
+    expect(panel.shadowRoot?.querySelector('[role="tabpanel"]')?.getAttribute("aria-labelledby")).toBe("board-tab-0");
     expect(panel.shadowRoot?.querySelectorAll("[data-ct-row]").length).toBeLessThanOrEqual(8);
     expect(panel.shadowRoot?.querySelectorAll("[data-group-nav]")).toHaveLength(2);
     expect(text(panel)).toContain("Choose model");
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('select[aria-label="CT2 model"]')?.value).toBe("cs-ct-200a");
+
+    tabs?.[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await panel.updateComplete;
+    expect(tabs?.[1]?.getAttribute("aria-selected")).toBe("true");
+    expect(panel.shadowRoot?.activeElement).toBe(tabs?.[1]);
 
     panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-board-tab="6"]')?.click();
     await panel.updateComplete;

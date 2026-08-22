@@ -2,6 +2,8 @@
 
 Automated tests validate contracts only. None of the rows below has physical bench
 evidence attached to this repository, so every row remains unchecked.
+The release workflow reads the exact six-row machine record in
+`docs/hardware-validation.json`; it deliberately fails while any row is false.
 
 | Topology | Connection | Required validation | Bench evidence |
 | --- | --- | --- | --- |

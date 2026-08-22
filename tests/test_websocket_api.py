@@ -1205,10 +1205,17 @@ def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> N
             1,
             {
                 "integration_version": "0.1.0",
+                "home_assistant_version": "unknown",
                 "config_entry_version": 1,
                 "setup_state": "no_device",
                 "meter_count": 0,
                 "meters": [],
+                "topology": None,
+                "entity_role_counts": {},
+                "ct_presets": [],
+                "last_transaction": None,
+                "last_session": None,
+                "error_codes": [],
             },
         )
 

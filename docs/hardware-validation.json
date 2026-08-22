@@ -1,0 +1,8 @@
+[
+  {"topology":"main","connection":"wifi","validated":false},
+  {"topology":"one-addon","connection":"wifi","validated":false},
+  {"topology":"three-addon-special-voltage","connection":"special","validated":false},
+  {"topology":"six-addon","connection":"wifi","validated":false},
+  {"topology":"addons","connection":"lilygo-ethernet","validated":false},
+  {"topology":"addons","connection":"waveshare-ethernet","validated":false}
+]
