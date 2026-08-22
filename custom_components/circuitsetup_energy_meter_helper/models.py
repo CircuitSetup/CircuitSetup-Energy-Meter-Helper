@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from enum import StrEnum
@@ -24,6 +25,18 @@ _EVIDENCE_SOURCES = {
 
 ConnectionType = Literal["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]
 Phase = Literal["A", "B", "C"]
+
+_MAC = re.compile(
+    r"(?:[0-9a-fA-F]{12}|[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}|"
+    r"[0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})"
+)
+
+
+def canonical_mac(value: str) -> str:
+    """Return one compact device identity without accepting malformed aliases."""
+    if not isinstance(value, str) or _MAC.fullmatch(value) is None:
+        raise ValueError("MAC must be 12 hexadecimal digits or six octets")
+    return value.replace(":", "").replace("-", "").casefold()
 
 
 class SetupState(StrEnum):
@@ -275,7 +288,7 @@ class StoredMeterRecord:
     interrupted_session: StoredInterruptedSession | None = None
 
     def __post_init__(self) -> None:
-        _safe_line(self.mac, "mac")
+        object.__setattr__(self, "mac", canonical_mac(self.mac))
         _safe_line(self.setup_intent, "setup_intent")
         if self.config_filename is not None:
             _safe_line(self.config_filename, "config_filename")

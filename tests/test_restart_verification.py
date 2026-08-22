@@ -11,7 +11,9 @@ from typing import Any
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
-    CalibrationEngine,
+    CalibrationEngine as ProductionCalibrationEngine,
+)
+from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
     RestartDisconnectTimeoutError,
     RestartVerificationError,
 )
@@ -24,6 +26,7 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     ConfigTransactionState,
 )
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
+    ConfigChangedError,
     ESPHomeConfigSnapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.entity_binding import bind_meter
@@ -44,7 +47,11 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
     VerifiedGainGroup,
 )
 from tests.test_calibration_engine_current import native_meter
-from tests.test_calibration_engine_voltage import FakeCalibrationSession, gain_evidence
+from tests.test_calibration_engine_voltage import (
+    FakeCalibrationSession,
+    gain_evidence,
+    sample_window,
+)
 from tests.test_config_transaction import Builder, Persistence, Verifier
 from tests.test_entity_binding import (
     ButtonInfo,
@@ -54,6 +61,21 @@ from tests.test_entity_binding import (
 )
 
 GainTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
+
+
+class CalibrationEngine(ProductionCalibrationEngine):
+    """Supply the exact snapshot used by the test's server-owned origin."""
+
+    def __init__(self, sessions: SessionManager, persist: Any, **kwargs: Any) -> None:
+        snapshot = getattr(sessions, "_test_calibration_snapshot", None)
+        if snapshot is not None and "calibration_snapshot_reader" not in kwargs:
+
+            async def read_snapshot(mac: str, target_topology: object) -> object:
+                del mac, target_topology
+                return snapshot
+
+            kwargs["calibration_snapshot_reader"] = read_snapshot
+        super().__init__(sessions, persist, **kwargs)
 
 
 def _restore(instance_id: str, gains: GainTable) -> RestoreEvidence:
@@ -242,7 +264,12 @@ async def _prime_origin(
     *,
     snapshot: ESPHomeConfigSnapshot | None = None,
 ) -> ESPHomeConfigSnapshot:
-    snapshot = snapshot or _snapshot()
+    if snapshot is None:
+        content = f"esphome:\n  project:\n    name: {binding.topology.project_name}\n"
+        snapshot = ESPHomeConfigSnapshot(
+            "meter.yaml", content, sha256(content.encode()).hexdigest()
+        )
+    sessions._test_calibration_snapshot = snapshot
     lease = await sessions.async_acquire_calibration("aabbccddeeff")
     try:
         pending = sessions._begin_calibration_origin(lease, session, binding, snapshot)
@@ -277,15 +304,21 @@ def test_restart_arms_disconnect_rebinds_and_persists_exact_changed_set() -> Non
             EntityCatalog(session.entities, 1), topology(1), substitutions(1)
         )
         saved: list[VerifiedCalibrationRecord] = []
+        markers: list[object] = []
 
         async def persist(record: VerifiedCalibrationRecord) -> None:
             saved.append(record)
 
+        async def persist_marker(mac: str, marker: object) -> None:
+            assert mac == "aabbccddeeff"
+            markers.append(marker)
+
         sessions = SessionManager()
         snapshot = await _prime_origin(sessions, session, original, expected)
+        assert sessions.pending_calibration("AA:BB:CC:DD:EE:FF") is not None
         engine = CalibrationEngine(
             sessions,
-            _ignore_marker,
+            persist_marker,
             persist_verified=persist,
         )
         result = await engine.async_verify_after_restart(
@@ -316,6 +349,7 @@ def test_restart_arms_disconnect_rebinds_and_persists_exact_changed_set() -> Non
             "Saved flash calibration remains authoritative until it is explicitly cleared."
         )
         assert saved == [result.record]
+        assert markers == [None]
         event_count = len(session.events)
         with pytest.raises(RestartVerificationError, match="origin"):
             await engine.async_verify_after_restart(
@@ -594,8 +628,25 @@ def test_restart_requires_and_consumes_server_owned_complete_origin() -> None:
             EntityCatalog(session.entities, 1), topology(0), substitutions(0)
         )
         sessions = SessionManager()
+        snapshot = ESPHomeConfigSnapshot(
+            "meter.yaml",
+            "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n",
+            sha256(
+                b"esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
+            ).hexdigest(),
+        )
+
+        async def authoritative_snapshot(
+            mac: str, target_topology: object
+        ) -> ESPHomeConfigSnapshot:
+            del mac, target_topology
+            return snapshot
+
         engine = CalibrationEngine(
-            sessions, _ignore_marker, persist_verified=_ignore_verified
+            sessions,
+            _ignore_marker,
+            persist_verified=_ignore_verified,
+            calibration_snapshot_reader=authoritative_snapshot,
         )
         with pytest.raises(RestartVerificationError, match="origin"):
             await engine.async_verify_after_restart(
@@ -603,7 +654,7 @@ def test_restart_requires_and_consumes_server_owned_complete_origin() -> None:
             )
         assert session.events == []
 
-        await _prime_origin(sessions, session, binding, all_expected)
+        await _prime_origin(sessions, session, binding, all_expected, snapshot=snapshot)
         with pytest.raises(RestartVerificationError, match="missing"):
             await engine.async_verify_after_restart(
                 "aabbccddeeff", session, binding, substitutions=substitutions(0)
@@ -815,7 +866,7 @@ def test_successful_task17_gain_updates_server_owned_pending_table() -> None:
         )
         await engine.async_calibrate_current(
             "aabbccddeeff",
-            FakeCalibrationSession(evidence),
+            FakeCalibrationSession(evidence, after=sample_window(10.0, 10.0, 10.0)),
             native_meter(),
             1,
             10.0,
@@ -1413,6 +1464,41 @@ def test_cancelled_source_revalidation_releases_config_ownership() -> None:
         assert persistence.claimed == {}
         assert not sessions.is_config_locked(record.mac)
         assert not sessions.is_calibration_locked(record.mac)
+        retry = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+        assert retry.state is ConfigTransactionState.PREVIEWED
+
+    asyncio.run(run())
+
+
+def test_proven_prewrite_config_change_releases_handoff_for_retry() -> None:
+    class ChangedBuilder(Builder):
+        async def async_update_config(
+            self, snapshot: ESPHomeConfigSnapshot, proposed: str
+        ) -> None:
+            del proposed
+            self.calls.append("write")
+            raise ConfigChangedError(snapshot.sha256, "f" * 64)
+
+    async def run() -> None:
+        source = _snapshot()
+        record = _record(source, ((7301, 1),) * 3)
+        persistence = CalibrationPersistence((record,))
+        manager = ConfigTransactionManager(
+            ChangedBuilder(remote_content=source.content),
+            Verifier(RuntimeError()),
+            persistence,
+            SessionManager(),
+        )
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+
+        with pytest.raises(ConfigChangedError):
+            await manager.async_confirm_write(preview.transaction_id, "admin-user")
+
+        assert persistence.claimed == {}
         retry = await manager.async_preview_calibrated_gains(
             record.mac, topology(0), record.verification_id
         )

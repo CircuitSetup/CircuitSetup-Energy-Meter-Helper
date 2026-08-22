@@ -25,8 +25,9 @@ from .models import (
     MeterTopology,
     StoredCTSelection,
     SubstitutionChange,
+    canonical_mac,
 )
-from .session_manager import ConfigLease, SessionManager, canonical_mac
+from .session_manager import ConfigLease, SessionManager
 from .store import VerifiedCalibrationRecord
 
 MAX_VISIBLE_DIFF_BYTES = 32_768
@@ -425,12 +426,21 @@ class ConfigTransactionManager:
                 await self._device_builder.async_update_config(
                     snapshot, plan.proposed_content
                 )
-            except ConfigChangedError:
-                self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.SOURCE_CHANGED,
-                )
+            except ConfigChangedError as error:
+                transaction.write_started = False
+                try:
+                    await transaction.async_release_reservation()
+                except BaseException as cleanup_error:  # noqa: BLE001 - preserve conflict
+                    error.add_note(
+                        "exact reservation release also failed with "
+                        f"{type(cleanup_error).__name__}"
+                    )
+                if not transaction.reservation_claimed:
+                    self._finish(
+                        transaction,
+                        ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.SOURCE_CHANGED,
+                    )
                 raise
             except asyncio.CancelledError:
                 await self._drain_uncertain_update(
@@ -935,7 +945,11 @@ def _safe_diff(diff: str) -> str:
 def _verify_reconnect(
     transaction: _ConfigTransaction, evidence: ReconnectEvidence
 ) -> TransactionEvidenceCode | None:
-    if canonical_mac(evidence.mac) != transaction.mac:
+    try:
+        evidence_mac = canonical_mac(evidence.mac)
+    except ValueError:
+        return TransactionEvidenceCode.IDENTITY_MISMATCH
+    if evidence_mac != transaction.mac:
         return TransactionEvidenceCode.IDENTITY_MISMATCH
     if evidence.topology != transaction.topology:
         return TransactionEvidenceCode.TOPOLOGY_MISMATCH

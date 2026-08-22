@@ -260,6 +260,47 @@ def test_preflight_accumulates_zero_ack_failures_and_continues() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("cancel_count", (1, 3))
+def test_cancelled_preflight_drains_every_reference_before_releasing_lock(
+    cancel_count: int,
+) -> None:
+    class GatedSession(FakeSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.second_started = asyncio.Event()
+            self.release_second = asyncio.Event()
+
+        async def async_set_number(self, *args: Any, **kwargs: Any) -> object:
+            result = await super().async_set_number(*args, **kwargs)
+            if len(self.number_calls) == 2:
+                self.second_started.set()
+                await self.release_second.wait()
+            return result
+
+    async def run() -> None:
+        meter = binding(0)
+        session = GatedSession()
+        seeded = session_for(meter).state_cache
+        session.state_cache.update(seeded)
+        lock = asyncio.Lock()
+        task = asyncio.create_task(async_preflight(session, meter, lock))
+        await session.second_started.wait()
+
+        for _ in range(cancel_count):
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert lock.locked()
+        session.release_second.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(session.number_calls) == 8
+        assert not lock.locked()
+
+    asyncio.run(run())
+
+
 def test_zero_guard_preserves_original_and_accumulates_cleanup_failures() -> None:
     class Engine:
         calls = 0

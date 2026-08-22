@@ -16,6 +16,7 @@ from .models import (
     StoredInterruptedSession,
     StoredMeterRecord,
     StoredTopology,
+    canonical_mac,
 )
 
 STORAGE_VERSION = 1
@@ -86,8 +87,7 @@ class VerifiedCalibrationRecord:
     source_handoff_transaction_id: str | None = None
 
     def __post_init__(self) -> None:
-        if re.fullmatch(r"[0-9a-f]{12}", self.mac) is None:
-            raise ValueError("MAC must be canonical")
+        object.__setattr__(self, "mac", canonical_mac(self.mac))
         if (
             not self.config_filename
             or "\n" in self.config_filename
@@ -239,6 +239,7 @@ def _deserialize_verified_calibration(
     mac: str, raw: object
 ) -> VerifiedCalibrationRecord:
     """Reject malformed cached calibration metadata before it can be reused."""
+    mac = canonical_mac(mac)
     if not isinstance(raw, dict):
         raise TypeError("stored verified calibration must be a mapping")
     raw_groups = raw.get("groups")
@@ -328,7 +329,19 @@ class HelperStore:
 
     async def async_load(self) -> dict[str, Any]:
         """Load the known storage schema through the strict version guard."""
-        return (await self._store.async_load()) or {"meters": {}}
+        data = (await self._store.async_load()) or {"meters": {}}
+        raw_meters = data.get("meters", {})
+        if not isinstance(raw_meters, dict):
+            raise TypeError("stored meters must be a mapping")
+        meters: dict[str, Any] = {}
+        for raw_mac, meter in raw_meters.items():
+            mac = canonical_mac(raw_mac)
+            if mac in meters:
+                raise ValueError("stored meter aliases collide")
+            if isinstance(meter, dict) and "mac" in meter:
+                meter = {**meter, "mac": mac}
+            meters[mac] = meter
+        return {**data, "meters": meters}
 
     async def async_save_meter(self, record: StoredMeterRecord) -> None:
         """Save one typed record keyed by MAC address."""
@@ -342,6 +355,7 @@ class HelperStore:
         self, mac: str, selections: tuple[StoredCTSelection, ...]
     ) -> None:
         """Persist only post-reconnect CT metadata, never configuration content."""
+        mac = canonical_mac(mac)
         async with self._update_lock:
             data = await self.async_load()
             meters = data.setdefault("meters", {})
@@ -366,6 +380,7 @@ class HelperStore:
         self, mac: str
     ) -> VerifiedCalibrationRecord | None:
         """Load the latest strict verified record for one canonical MAC."""
+        mac = canonical_mac(mac)
         data = await self.async_load()
         raw = data.get("meters", {}).get(mac, {}).get("verified_calibration")
         return None if raw is None else _deserialize_verified_calibration(mac, raw)
@@ -374,6 +389,7 @@ class HelperStore:
         self, mac: str, verification_id: str, transaction_id: str
     ) -> bool:
         """Atomically consume one record's reviewed source-handoff preview."""
+        mac = canonical_mac(mac)
         if re.fullmatch(r"[0-9a-f]{32}", transaction_id) is None:
             return False
         async with self._update_lock:
@@ -396,6 +412,7 @@ class HelperStore:
         self, mac: str, verification_id: str, transaction_id: str
     ) -> bool:
         """Atomically require the same latest record and preview reservation."""
+        mac = canonical_mac(mac)
         async with self._update_lock:
             data = await self.async_load()
             raw = data.get("meters", {}).get(mac, {}).get("verified_calibration")
@@ -412,6 +429,7 @@ class HelperStore:
         self, mac: str, verification_id: str, transaction_id: str
     ) -> bool:
         """Release only the exact pre-write source-handoff reservation."""
+        mac = canonical_mac(mac)
         async with self._update_lock:
             data = await self.async_load()
             raw = data.get("meters", {}).get(mac, {}).get("verified_calibration")

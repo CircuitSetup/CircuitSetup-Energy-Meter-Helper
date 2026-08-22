@@ -226,7 +226,7 @@ def _selection() -> StoredCTSelection:
     return StoredCTSelection(1, "split-core-100a", "Kitchen", 27518, 1.0, "0" * 64)
 
 
-def _evidence(mac: str = "aa") -> ReconnectEvidence:
+def _evidence(mac: str = "aabbccddeeff") -> ReconnectEvidence:
     return ReconnectEvidence(
         mac,
         _topology(),
@@ -256,7 +256,10 @@ def _manager(
 
 
 async def _preview(
-    manager: ConfigTransactionManager, *, mac: str = "aa", content: str = "prior"
+    manager: ConfigTransactionManager,
+    *,
+    mac: str = "aabbccddeeff",
+    content: str = "prior",
 ) -> TransactionStatus:
     return await manager.async_preview(
         mac, _topology(), _plan(content), _source(content), (_selection(),)
@@ -267,7 +270,7 @@ def test_preview_binds_source_and_exposes_only_bounded_safe_dto() -> None:
     async def run() -> None:
         manager = _manager(Builder(), Persistence())
         status = await manager.async_preview(
-            "AA",
+            "AABBCCDDEEFF",
             _topology(),
             _plan(
                 "prior top-secret",
@@ -283,7 +286,7 @@ def test_preview_binds_source_and_exposes_only_bounded_safe_dto() -> None:
 
         bad = ESPHomeConfigSnapshot("meter.yaml", "different", _source().sha256)
         with pytest.raises(ValueError, match="source snapshot"):
-            await manager.async_preview("aa", _topology(), _plan(), bad)
+            await manager.async_preview("aabbccddeeff", _topology(), _plan(), bad)
 
     asyncio.run(run())
 
@@ -333,7 +336,7 @@ def test_lost_update_response_reconciles_without_overwriting_foreign_content(
         assert builder.remote_content == (
             "foreign concurrent content" if outcome == "foreign" else "prior"
         )
-        assert manager.sessions.is_config_locked("aa") is retained
+        assert manager.sessions.is_config_locked("aabbccddeeff") is retained
         if retained:
             assert manager.status(preview.transaction_id) == status
             await manager.sessions.async_unload()
@@ -360,7 +363,7 @@ def test_cancellation_after_remote_write_commit_is_reconciled_before_cleanup() -
 
         assert builder.remote_content == "prior"
         assert builder.calls == ["write", "read", "restore"]
-        assert not manager.sessions.is_config_locked("aa")
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
         with pytest.raises(KeyError):
             manager.status(preview.transaction_id)
 
@@ -383,21 +386,19 @@ def test_indeterminate_update_retains_typed_recovery_state_and_owned_lease() -> 
 
         assert status.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
         assert builder.calls == ["write", "read"]
-        assert manager.sessions.is_config_locked("aa")
+        assert manager.sessions.is_config_locked("aabbccddeeff")
         assert manager.status(preview.transaction_id) == status
         internal = manager.sessions._get_transaction(preview.transaction_id)
         assert internal.plan is not None and internal.prior_content == "prior"
         await manager.sessions.async_unload()
-        assert not manager.sessions.is_config_locked("aa")
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
 
     asyncio.run(run())
 
 
 def test_foreign_change_between_reconcile_read_and_restore_is_not_overwritten() -> None:
     class RacedBuilder(UncertainUpdateBuilder):
-        async def async_get_config(
-            self, configuration: str
-        ) -> ESPHomeConfigSnapshot:
+        async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
             snapshot = await super().async_get_config(configuration)
             self.remote_content = "foreign after reconciliation read"
             return snapshot
@@ -412,7 +413,7 @@ def test_foreign_change_between_reconcile_read_and_restore_is_not_overwritten() 
         assert status.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
         assert builder.remote_content == "foreign after reconciliation read"
         assert builder.restored_content is None
-        assert manager.sessions.is_config_locked("aa")
+        assert manager.sessions.is_config_locked("aabbccddeeff")
         await manager.sessions.async_unload()
 
     asyncio.run(run())
@@ -424,9 +425,7 @@ def test_hung_reconciliation_read_times_out_to_retained_recovery() -> None:
             super().__init__("proposed")
             self.read_started = asyncio.Event()
 
-        async def async_get_config(
-            self, configuration: str
-        ) -> ESPHomeConfigSnapshot:
+        async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
             del configuration
             self.calls.append("read")
             self.read_started.set()
@@ -443,7 +442,7 @@ def test_hung_reconciliation_read_times_out_to_retained_recovery() -> None:
         )
 
         assert status.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
-        assert manager.sessions.is_config_locked("aa")
+        assert manager.sessions.is_config_locked("aabbccddeeff")
         await manager.sessions.async_unload()
 
     asyncio.run(run())
@@ -471,7 +470,7 @@ def test_hung_reconciliation_restore_times_out_to_retained_recovery() -> None:
         )
 
         assert status.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
-        assert manager.sessions.is_config_locked("aa")
+        assert manager.sessions.is_config_locked("aabbccddeeff")
         await manager.sessions.async_unload()
 
     asyncio.run(run())
@@ -483,9 +482,7 @@ def test_unload_bounds_hung_reconciliation_then_marks_and_scrubs() -> None:
             super().__init__("proposed")
             self.read_started = asyncio.Event()
 
-        async def async_get_config(
-            self, configuration: str
-        ) -> ESPHomeConfigSnapshot:
+        async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
             del configuration
             self.calls.append("read")
             self.read_started.set()
@@ -510,7 +507,7 @@ def test_unload_bounds_hung_reconciliation_then_marks_and_scrubs() -> None:
 
         await asyncio.wait_for(sessions.async_unload(), 1)
 
-        assert not sessions.is_config_locked("aa")
+        assert not sessions.is_config_locked("aabbccddeeff")
         assert internal.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
         assert internal.plan is None and internal.prior_content is None
         assert write.done()
@@ -526,9 +523,7 @@ def test_unload_timeout_does_not_wait_for_cancellation_suppression() -> None:
             self.cancel_seen = asyncio.Event()
             self.release = asyncio.Event()
 
-        async def async_get_config(
-            self, configuration: str
-        ) -> ESPHomeConfigSnapshot:
+        async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
             del configuration
             self.calls.append("read")
             self.read_started.set()
@@ -559,7 +554,7 @@ def test_unload_timeout_does_not_wait_for_cancellation_suppression() -> None:
 
         assert builder.cancel_seen.is_set()
         assert not write.done()
-        assert not sessions.is_config_locked("aa")
+        assert not sessions.is_config_locked("aabbccddeeff")
         assert internal.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
         assert internal.plan is None and internal.prior_content is None
         builder.release.set()
@@ -588,7 +583,7 @@ def test_confirmations_and_verified_persistence_are_separate() -> None:
         assert (
             saved.config_sha256 == sha256(_plan().proposed_content.encode()).hexdigest()
         )
-        assert not manager.sessions.is_config_locked("aa")
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
         with pytest.raises(KeyError):
             manager.status(preview.transaction_id)
 
@@ -614,7 +609,7 @@ def test_validation_failure_or_disconnect_restores_exact_source_once(
         assert builder.calls == ["write", "validate", "restore"]
         assert builder.restored_content == "exact prior bytes\n"
         assert "secret" not in repr(status)
-        assert not manager.sessions.is_config_locked("aa")
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
 
     asyncio.run(run())
 
@@ -674,7 +669,7 @@ def test_rollback_failure_is_typed_terminal_and_not_double_validated() -> None:
         with pytest.raises(RollbackFailedError, match="rollback failed"):
             await manager.async_confirm_write(preview.transaction_id, "admin")
         assert builder.calls == ["write", "validate", "restore"]
-        assert not manager.sessions.is_config_locked("aa")
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
         with pytest.raises(KeyError):
             manager.status(preview.transaction_id)
 
@@ -694,7 +689,9 @@ def test_compile_failure_has_one_shot_rollback_and_no_raw_output() -> None:
         )
         assert status.evidence == (TransactionEvidenceCode.COMPILE_FAILED,)
         assert "credential" not in repr(status) and len(repr(status)) < 4_096
-        assert "upload" not in builder.calls and manager.sessions.is_config_locked("aa")
+        assert "upload" not in builder.calls and manager.sessions.is_config_locked(
+            "aabbccddeeff"
+        )
         assert (
             await manager.async_rollback(preview.transaction_id)
         ).state is ConfigTransactionState.ROLLED_BACK
@@ -777,7 +774,7 @@ def test_upload_disconnect_is_terminal_and_never_persists() -> None:
         assert status.state is ConfigTransactionState.FAILED
         assert status.evidence == (TransactionEvidenceCode.UPLOAD_FAILED,)
         assert "token" not in repr(status) and not persistence.saved
-        assert not manager.sessions.is_config_locked("aa")
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
 
     asyncio.run(run())
 
@@ -814,21 +811,21 @@ def test_upload_progress_is_live_structured_and_bounded() -> None:
     (
         (_evidence("bb"), TransactionEvidenceCode.IDENTITY_MISMATCH),
         (
-            ReconnectEvidence("aa", _topology(1), _evidence().ct_names, 6),
+            ReconnectEvidence("aabbccddeeff", _topology(1), _evidence().ct_names, 6),
             TransactionEvidenceCode.TOPOLOGY_MISMATCH,
         ),
         (
-            ReconnectEvidence("aa", _topology(), {}, 6),
+            ReconnectEvidence("aabbccddeeff", _topology(), {}, 6),
             TransactionEvidenceCode.ENTITY_MISMATCH,
         ),
         (
             ReconnectEvidence(
-                "aa", _topology(), {**_evidence().ct_names, 1: "Wrong"}, 6
+                "aabbccddeeff", _topology(), {**_evidence().ct_names, 1: "Wrong"}, 6
             ),
             TransactionEvidenceCode.ENTITY_MISMATCH,
         ),
         (
-            ReconnectEvidence("aa", _topology(), _evidence().ct_names, 5),
+            ReconnectEvidence("aabbccddeeff", _topology(), _evidence().ct_names, 5),
             TransactionEvidenceCode.SENSOR_COUNT_MISMATCH,
         ),
     ),
@@ -845,7 +842,9 @@ def test_reconnect_rejects_wrong_identity_topology_entities_or_count(
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
         assert status.state is ConfigTransactionState.FAILED
         assert status.evidence == (code,)
-        assert not persistence.saved and not manager.sessions.is_config_locked("aa")
+        assert not persistence.saved and not manager.sessions.is_config_locked(
+            "aabbccddeeff"
+        )
 
     asyncio.run(run())
 
@@ -858,7 +857,7 @@ def test_persistence_failure_is_terminal_and_releases_lease() -> None:
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
         assert status.evidence == (TransactionEvidenceCode.PERSISTENCE_FAILED,)
         assert "secret" not in repr(status)
-        assert not manager.sessions.is_config_locked("aa")
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
 
     asyncio.run(run())
 
@@ -877,7 +876,7 @@ def test_cancellation_after_write_restores_and_upload_cancel_cleans_up() -> None
         with pytest.raises(asyncio.CancelledError):
             await task
         assert builder.calls == ["write", "validate", "restore"]
-        assert not manager.sessions.is_config_locked("aa")
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
 
         builder2, persistence2 = Builder(), Persistence()
         builder2.pause("upload")
@@ -891,7 +890,9 @@ def test_cancellation_after_write_restores_and_upload_cancel_cleans_up() -> None
         task2.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task2
-        assert not persistence2.saved and not manager2.sessions.is_config_locked("aa")
+        assert not persistence2.saved and not manager2.sessions.is_config_locked(
+            "aabbccddeeff"
+        )
         with pytest.raises(KeyError):
             manager2.status(preview2.transaction_id)
 
@@ -904,8 +905,8 @@ def test_unload_cancels_tasks_and_mac_case_uses_one_lock() -> None:
         builder.pause("validate")
         manager = _manager(builder, Persistence(), sessions=sessions)
         first, second = (
-            await _preview(manager, mac="AA"),
-            await _preview(manager, mac="aa"),
+            await _preview(manager, mac="AABBCCDDEEFF"),
+            await _preview(manager, mac="aabbccddeeff"),
         )
         task1 = asyncio.create_task(
             manager.async_confirm_write(first.transaction_id, "admin")
@@ -915,10 +916,13 @@ def test_unload_cancels_tasks_and_mac_case_uses_one_lock() -> None:
             manager.async_confirm_write(second.transaction_id, "admin")
         )
         await asyncio.sleep(0)
-        assert sessions.is_config_locked("AA") and builder.calls.count("write") == 1
+        assert (
+            sessions.is_config_locked("AABBCCDDEEFF")
+            and builder.calls.count("write") == 1
+        )
         await sessions.async_unload()
         assert task1.cancelled() and task2.cancelled()
-        assert not sessions.is_config_locked("aa")
+        assert not sessions.is_config_locked("aabbccddeeff")
         with pytest.raises(KeyError):
             manager.status(first.transaction_id)
 
@@ -929,20 +933,20 @@ def test_stale_rollback_cannot_release_new_lease() -> None:
     async def run() -> None:
         sessions, builder = SessionManager(), Builder(compile=Job(False))
         manager = _manager(builder, Persistence(), sessions=sessions)
-        first = await _preview(manager, mac="AA")
+        first = await _preview(manager, mac="AABBCCDDEEFF")
         await manager.async_confirm_write(first.transaction_id, "admin")
         builder.pause("validate")
-        second = await _preview(manager, mac="aa")
+        second = await _preview(manager, mac="aabbccddeeff")
         second_task = asyncio.create_task(
             manager.async_confirm_write(second.transaction_id, "admin")
         )
         await asyncio.sleep(0)
         await manager.async_rollback(first.transaction_id)
         await asyncio.wait_for(builder.started["validate"].wait(), 1)
-        assert sessions.is_config_locked("aa")
+        assert sessions.is_config_locked("aabbccddeeff")
         with pytest.raises(KeyError):
             await manager.async_rollback(first.transaction_id)
-        assert sessions.is_config_locked("aa")
+        assert sessions.is_config_locked("aabbccddeeff")
         await sessions.async_unload()
         with pytest.raises(asyncio.CancelledError):
             await second_task
@@ -966,6 +970,6 @@ def test_concurrent_edit_does_not_restore_foreign_content() -> None:
         with pytest.raises(ConfigChangedError):
             await manager.async_confirm_write(preview.transaction_id, "admin")
         assert builder.calls == ["write"]
-        assert not manager.sessions.is_config_locked("aa")
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
 
     asyncio.run(run())

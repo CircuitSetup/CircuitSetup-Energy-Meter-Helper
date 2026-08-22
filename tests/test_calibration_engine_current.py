@@ -118,7 +118,7 @@ def test_current_channel_mapping_multiplier_and_invariants(
         engine = CalibrationEngine(SessionManager(), persist)
 
         result = await engine.async_calibrate_current(
-            "meter",
+            "aabbccddeeff",
             session,
             meter,
             channel,
@@ -153,7 +153,7 @@ def test_current_rejects_non_target_or_voltage_gain_change() -> None:
 
         with pytest.raises(CalibrationInvariantError):
             await engine.async_calibrate_current(
-                "meter", session, meter, 1, 10.0, 1.0, 1.0
+                "aabbccddeeff", session, meter, 1, 10.0, 1.0, 1.0
             )
 
     asyncio.run(run())
@@ -172,12 +172,12 @@ def test_outside_tolerance_never_auto_repeats_and_caps_retry() -> None:
         )
         _, persist = marker_writer(session.events)
         sessions = SessionManager()
-        sessions.record_calibration_iteration("meter", "current:1", 1)
-        sessions.record_calibration_iteration("meter", "current:1", 2)
+        sessions.record_calibration_iteration("aabbccddeeff", "current:1", 1)
+        sessions.record_calibration_iteration("aabbccddeeff", "current:1", 2)
         engine = CalibrationEngine(sessions, persist)
 
         result = await engine.async_calibrate_current(
-            "meter",
+            "aabbccddeeff",
             session,
             meter,
             1,
@@ -202,8 +202,8 @@ def test_post_dispatch_disconnect_is_indeterminate_and_never_resends() -> None:
 
         class LockCheckingSession(FakeCalibrationSession):
             async def async_reconnect(self) -> None:
-                assert sessions.is_config_locked("meter")
-                assert sessions.is_calibration_locked("meter")
+                assert sessions.is_config_locked("aabbccddeeff")
+                assert sessions.is_calibration_locked("aabbccddeeff")
                 await super().async_reconnect()
                 self.connection_generation = 2
                 self.entities = tuple(native_entities(key_offset=1000))
@@ -215,7 +215,7 @@ def test_post_dispatch_disconnect_is_indeterminate_and_never_resends() -> None:
         engine = CalibrationEngine(sessions, persist)
 
         result = await engine.async_calibrate_current(
-            "meter",
+            "aabbccddeeff",
             session,
             meter,
             1,
@@ -257,7 +257,7 @@ def test_restart_recovery_marks_interrupted_then_reconnects_and_zeros() -> None:
         marker = StoredInterruptedSession("active", "2026-08-21T12:00:00Z", (1,))
 
         await engine.async_recover_interrupted(
-            "meter",
+            "aabbccddeeff",
             session,
             meter,
             marker,
@@ -306,7 +306,7 @@ def test_disconnect_refuses_absent_metadata_or_missing_rebind_substitutions(
 
         with pytest.raises(CalibrationRebindError):
             await engine.async_calibrate_current(
-                "meter",
+                "aabbccddeeff",
                 session,
                 meter,
                 1,
@@ -342,7 +342,7 @@ def test_interrupted_recovery_refuses_to_zero_without_fresh_metadata() -> None:
 
         with pytest.raises(CalibrationRebindError):
             await engine.async_recover_interrupted(
-                "meter",
+                "aabbccddeeff",
                 session,
                 meter,
                 marker,
@@ -399,7 +399,7 @@ def test_streaming_gain_waits_for_delayed_register_mismatch(
 
         with pytest.raises(CalibrationInvariantError, match="verification"):
             await engine.async_calibrate_current(
-                "meter", session, meter, 2, 12.43, 1.0, 1.0
+                "aabbccddeeff", session, meter, 2, 12.43, 1.0, 1.0
             )
 
         assert [event[0] for event in session.events].count("button") == 1
@@ -534,7 +534,7 @@ def test_streaming_gain_success_waits_for_complete_collection_window() -> None:
 
         started = monotonic()
         result = await engine.async_calibrate_current(
-            "meter", session, meter, 2, 12.43, 1.0, 1.0
+            "aabbccddeeff", session, meter, 2, 12.43, 1.0, 1.0
         )
 
         assert monotonic() - started >= 0.22
@@ -572,8 +572,8 @@ def test_cancellation_runs_final_zero_under_lock_and_releases_session() -> None:
                 tolerance: float = 1e-6,
                 timeout: float = 10.0,
             ) -> object:
-                assert sessions.is_config_locked("meter")
-                assert sessions.is_calibration_locked("meter")
+                assert sessions.is_config_locked("aabbccddeeff")
+                assert sessions.is_calibration_locked("aabbccddeeff")
                 return await super().async_set_number(
                     key,
                     state,
@@ -586,7 +586,9 @@ def test_cancellation_runs_final_zero_under_lock_and_releases_session() -> None:
         _, persist = marker_writer(session.events)
         engine = CalibrationEngine(sessions, persist)
         task = asyncio.create_task(
-            engine.async_calibrate_current("meter", session, meter, 1, 10.0, 1.0, 1.0)
+            engine.async_calibrate_current(
+                "aabbccddeeff", session, meter, 1, 10.0, 1.0, 1.0
+            )
         )
         await session.pressed.wait()
         task.cancel()
@@ -595,8 +597,8 @@ def test_cancellation_runs_final_zero_under_lock_and_releases_session() -> None:
 
         assert [event[0] for event in session.events].count("button") == 1
         assert [event[0] for event in session.events].count("number") == 17
-        assert not sessions.is_config_locked("meter")
-        assert not sessions.is_calibration_locked("meter")
+        assert not sessions.is_config_locked("aabbccddeeff")
+        assert not sessions.is_calibration_locked("aabbccddeeff")
 
     asyncio.run(run())
 
@@ -614,7 +616,7 @@ def test_wrong_operation_correlation_fails_closed() -> None:
 
         with pytest.raises(CalibrationInvariantError, match="correlation"):
             await engine.async_calibrate_current(
-                "meter", session, meter, 1, 10.0, 1.0, 1.0
+                "aabbccddeeff", session, meter, 1, 10.0, 1.0, 1.0
             )
 
         assert [event[0] for event in session.events].count("button") == 1
@@ -638,12 +640,12 @@ def test_marker_persistence_failure_prevents_every_mutation() -> None:
         engine = CalibrationEngine(sessions, fail_persistence)
         with pytest.raises(OSError, match="store unavailable"):
             await engine.async_calibrate_current(
-                "meter", session, meter, 1, 10.0, 1.0, 1.0
+                "aabbccddeeff", session, meter, 1, 10.0, 1.0, 1.0
             )
 
         assert not any(event[0] in {"number", "button"} for event in session.events)
-        assert not sessions.is_config_locked("meter")
-        assert not sessions.is_calibration_locked("meter")
+        assert not sessions.is_config_locked("aabbccddeeff")
+        assert not sessions.is_calibration_locked("aabbccddeeff")
 
     asyncio.run(run())
 
@@ -671,13 +673,13 @@ def test_iteration_cannot_be_reset_replayed_or_jump_directly() -> None:
         reset_markers, reset_persist = marker_writer(reset_session.events)
         reset_engine = CalibrationEngine(SessionManager(), reset_persist)
         await reset_engine.async_calibrate_current(
-            "meter", reset_session, meter, 1, 10.0, 1.0, 1.0
+            "aabbccddeeff", reset_session, meter, 1, 10.0, 1.0, 1.0
         )
         reset_engine = CalibrationEngine(reset_engine.sessions, reset_persist)
         for _ in range(3):
             with pytest.raises(IterationConfirmationRequired):
                 await reset_engine.async_calibrate_current(
-                    "meter", reset_session, meter, 1, 10.0, 1.0, 1.0
+                    "aabbccddeeff", reset_session, meter, 1, 10.0, 1.0, 1.0
                 )
         assert len(reset_markers) == 1
         assert [event[0] for event in reset_session.events].count("button") == 1
@@ -689,7 +691,7 @@ def test_iteration_cannot_be_reset_replayed_or_jump_directly() -> None:
         direct_engine = CalibrationEngine(SessionManager(), direct_persist)
         with pytest.raises(IterationConfirmationRequired):
             await direct_engine.async_calibrate_current(
-                "meter",
+                "aabbccddeeff",
                 direct_session,
                 meter,
                 1,
@@ -707,12 +709,12 @@ def test_iteration_cannot_be_reset_replayed_or_jump_directly() -> None:
         replay_markers, replay_persist = marker_writer(replay_session.events)
         replay_engine = CalibrationEngine(SessionManager(), replay_persist)
         await replay_engine.async_calibrate_current(
-            "meter", replay_session, meter, 1, 10.0, 1.0, 1.0
+            "aabbccddeeff", replay_session, meter, 1, 10.0, 1.0, 1.0
         )
         before_missing_confirmation = len(replay_session.events)
         with pytest.raises(IterationConfirmationRequired):
             await replay_engine.async_calibrate_current(
-                "meter",
+                "aabbccddeeff",
                 replay_session,
                 meter,
                 1,
@@ -723,7 +725,7 @@ def test_iteration_cannot_be_reset_replayed_or_jump_directly() -> None:
             )
         assert len(replay_session.events) == before_missing_confirmation
         await replay_engine.async_calibrate_current(
-            "meter",
+            "aabbccddeeff",
             replay_session,
             meter,
             1,
@@ -735,7 +737,7 @@ def test_iteration_cannot_be_reset_replayed_or_jump_directly() -> None:
         )
         with pytest.raises(IterationConfirmationRequired):
             await replay_engine.async_calibrate_current(
-                "meter",
+                "aabbccddeeff",
                 replay_session,
                 meter,
                 1,
@@ -746,7 +748,7 @@ def test_iteration_cannot_be_reset_replayed_or_jump_directly() -> None:
                 confirm_iteration=True,
             )
         await replay_engine.async_calibrate_current(
-            "meter",
+            "aabbccddeeff",
             replay_session,
             meter,
             1,
@@ -759,7 +761,7 @@ def test_iteration_cannot_be_reset_replayed_or_jump_directly() -> None:
         before_refusal = len(replay_session.events)
         with pytest.raises(CalibrationIterationLimitError):
             await replay_engine.async_calibrate_current(
-                "meter", replay_session, meter, 1, 10.0, 1.0, 1.0
+                "aabbccddeeff", replay_session, meter, 1, 10.0, 1.0, 1.0
             )
         assert len(replay_markers) == 3
         assert [event[0] for event in replay_session.events].count("button") == 3

@@ -87,10 +87,34 @@ def test_concurrent_verified_updates_cannot_overwrite_another_meter() -> None:
         )
 
         await asyncio.gather(
-            store.async_save_verified_ct_selections("aa", (selection,)),
-            store.async_save_verified_ct_selections("bb", (selection,)),
+            store.async_save_verified_ct_selections("00:11:22:33:44:55", (selection,)),
+            store.async_save_verified_ct_selections("AA-BB-CC-DD-EE-FF", (selection,)),
         )
 
-        assert set(backend.data["meters"]) == {"aa", "bb"}  # type: ignore[arg-type]
+        assert set(backend.data["meters"]) == {  # type: ignore[arg-type]
+            "001122334455",
+            "aabbccddeeff",
+        }
+
+        for malformed in ("00112233445", "00:11-22:33:44:55"):
+            with pytest.raises(ValueError, match="MAC"):
+                await store.async_save_verified_ct_selections(malformed, (selection,))
+
+    asyncio.run(run())
+
+
+def test_load_normalizes_legacy_aliases_and_rejects_colliding_identity_keys() -> None:
+    async def run() -> None:
+        backend = _CopyingStorage()
+        backend.data = {"meters": {"AA:BB:CC:DD:EE:FF": {}}}
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+
+        assert set((await store.async_load())["meters"]) == {"aabbccddeeff"}
+
+        backend.data = {"meters": {"AA:BB:CC:DD:EE:FF": {}, "aabbccddeeff": {}}}
+        with pytest.raises(ValueError, match="aliases collide"):
+            await store.async_load()
 
     asyncio.run(run())

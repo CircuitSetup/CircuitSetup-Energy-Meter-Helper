@@ -47,6 +47,7 @@ class SensorSampleWindow:
 
 @dataclass(slots=True)
 class _NumberWaiter:
+    state_type: type[Any] | None
     target: float
     tolerance: float
     dispatched_after: float
@@ -64,7 +65,8 @@ class StateTracker:
         self._history: dict[StateCacheKey, deque[CachedState]] = defaultdict(
             lambda: deque(maxlen=self._history_size)
         )
-        self._waiters: dict[StateCacheKey, list[_NumberWaiter]] = defaultdict(list)
+        self._waiters: dict[tuple[int, int], list[_NumberWaiter]] = defaultdict(list)
+        self._state_event = asyncio.Event()
         self.connection_generation = 0
         self.connected = False
 
@@ -81,6 +83,7 @@ class StateTracker:
         self._history.clear()
         self.connection_generation = connection_generation
         self.connected = True
+        self._wake_waiters()
 
     def disconnect(self) -> None:
         self.connected = False
@@ -93,6 +96,15 @@ class StateTracker:
                 if not waiter.future.done():
                     waiter.future.set_exception(StateDisconnectedError(str(error)))
         self._waiters.clear()
+        self._wake_waiters()
+
+    def cancel_waiters(self) -> None:
+        """Cancel pending acknowledgements during caller-owned shutdown."""
+        for waiters in self._waiters.values():
+            for waiter in waiters:
+                waiter.future.cancel()
+        self._waiters.clear()
+        self._wake_waiters()
 
     def record(self, state: Any, *, received_at: float) -> None:
         if not self.connected:
@@ -103,10 +115,16 @@ class StateTracker:
         record = CachedState(state, received_at)
         self._cache[key] = record
         self._history[key].append(record)
-        waiters = self._waiters.get(key)
+        self._wake_waiters()
+        if type(state).__name__ != "NumberState":
+            return
+        waiter_key = (int(state.device_id), int(state.key))
+        waiters = self._waiters.get(waiter_key)
         if not waiters:
             return
         for waiter in tuple(waiters):
+            if waiter.state_type is not None and waiter.state_type is not type(state):
+                continue
             if waiter.future.done() or received_at <= waiter.dispatched_after:
                 continue
             if bool(getattr(state, "missing_state", False)):
@@ -127,9 +145,11 @@ class StateTracker:
                 )
             elif abs(value - waiter.target) <= waiter.tolerance:
                 waiter.future.set_result(value)
-        self._waiters[key] = [waiter for waiter in waiters if not waiter.future.done()]
-        if not self._waiters[key]:
-            self._waiters.pop(key, None)
+        self._waiters[waiter_key] = [
+            waiter for waiter in waiters if not waiter.future.done()
+        ]
+        if not self._waiters[waiter_key]:
+            self._waiters.pop(waiter_key, None)
 
     def current(self, state_type: type[Any], key: int, *, device_id: int = 0) -> Any:
         record = self._cache.get((state_type, device_id, key))
@@ -190,9 +210,48 @@ class StateTracker:
             100.0 * (maximum - minimum) / abs(mean),
         )
 
+    async def wait_sensor_states(
+        self,
+        key: int,
+        *,
+        fresh_after: float,
+        sample_count: int,
+        device_id: int = 0,
+        timeout: float = 10.0,
+    ) -> tuple[Any, ...]:
+        """Wait for a complete fresh raw sensor window on this generation."""
+        async with asyncio.timeout(timeout):
+            while True:
+                if not self.connected:
+                    raise StateDisconnectedError("native state connection was lost")
+                event = self._state_event
+                records = tuple(
+                    record
+                    for (
+                        state_type,
+                        record_device,
+                        record_key,
+                    ), history in self._history.items()
+                    if state_type.__name__ == "SensorState"
+                    and record_device == device_id
+                    and record_key == key
+                    for record in history
+                    if record.received_at > fresh_after
+                )
+                if len(records) >= sample_count:
+                    records = records[-sample_count:]
+                    if any(
+                        record.stale
+                        or bool(getattr(record.state, "missing_state", False))
+                        for record in records
+                    ):
+                        raise FreshWindowError("sensor sample is unavailable")
+                    return tuple(record.state for record in records)
+                await event.wait()
+
     def expect_number_state(
         self,
-        state_type: type[Any],
+        state_type: type[Any] | None,
         key: int,
         *,
         target: float,
@@ -211,8 +270,8 @@ class StateTracker:
         if not math.isfinite(limit) or limit < 0:
             raise ValueError("number tolerance must be finite and non-negative")
         future = asyncio.get_running_loop().create_future()
-        cache_key = (state_type, device_id, key)
-        waiter = _NumberWaiter(target, limit, dispatched_after, future)
+        cache_key = (device_id, key)
+        waiter = _NumberWaiter(state_type, target, limit, dispatched_after, future)
         self._waiters[cache_key].append(waiter)
 
         def remove_waiter(_: asyncio.Future[float]) -> None:
@@ -225,3 +284,8 @@ class StateTracker:
 
         future.add_done_callback(remove_waiter)
         return future
+
+    def _wake_waiters(self) -> None:
+        event = self._state_event
+        self._state_event = asyncio.Event()
+        event.set()

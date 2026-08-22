@@ -67,27 +67,41 @@ async def async_preflight(
         issues.extend(_validate_state_availability(session, binding))
         if issues:
             return PreflightResult(tuple(issues))
-        zeroed: list[str] = []
-        for entity in _references(binding):
-            step = float(entity.descriptor.info.step)
-            try:
-                await session.async_set_number(
-                    entity.descriptor.key,
-                    0.0,
-                    device_id=entity.descriptor.device_id,
-                    tolerance=step / 2,
-                )
-            except Exception as error:  # noqa: BLE001 - attempt every reference
-                issues.append(
-                    PreflightIssue(
-                        PreflightCode.ZERO_ACK,
-                        entity.role,
-                        f"zero acknowledgement failed: {type(error).__name__}",
+
+        async def zero_all() -> PreflightResult:
+            zeroed: list[str] = []
+            for entity in _references(binding):
+                step = float(entity.descriptor.info.step)
+                try:
+                    await session.async_set_number(
+                        entity.descriptor.key,
+                        0.0,
+                        device_id=entity.descriptor.device_id,
+                        tolerance=step / 2,
                     )
-                )
-            else:
-                zeroed.append(entity.role)
-        return PreflightResult(tuple(issues), tuple(zeroed))
+                except Exception as error:  # noqa: BLE001 - attempt every reference
+                    issues.append(
+                        PreflightIssue(
+                            PreflightCode.ZERO_ACK,
+                            entity.role,
+                            f"zero acknowledgement failed: {type(error).__name__}",
+                        )
+                    )
+                else:
+                    zeroed.append(entity.role)
+            return PreflightResult(tuple(issues), tuple(zeroed))
+
+        zero_task = asyncio.create_task(zero_all())
+        caller_cancelled: asyncio.CancelledError | None = None
+        while not zero_task.done():
+            try:
+                await asyncio.shield(zero_task)
+            except asyncio.CancelledError as error:
+                caller_cancelled = caller_cancelled or error
+        result = zero_task.result()
+        if caller_cancelled is not None:
+            raise caller_cancelled
+        return result
     finally:
         device_lock.release()
 

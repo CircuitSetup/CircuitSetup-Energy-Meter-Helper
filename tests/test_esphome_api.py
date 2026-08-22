@@ -43,6 +43,9 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeSecurityError,
     ESPHomeSessionDisconnectedError,
 )
+from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
+    StateUnavailableError,
+)
 
 
 @dataclass(slots=True)
@@ -50,6 +53,7 @@ class NumberState:
     key: int
     state: float
     device_id: int = 0
+    missing_state: bool = False
 
 
 @dataclass(slots=True)
@@ -391,6 +395,23 @@ def test_commands_register_acknowledgement_first_and_wait_for_fresh_samples() ->
     asyncio.run(run())
 
 
+def test_number_ack_uses_shared_tracker_and_rejects_unavailable_state() -> None:
+    async def run() -> None:
+        client = FakeClient(acknowledge_numbers=False)
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(session.async_set_number(4, 0.0, timeout=0.5))
+        await asyncio.sleep(0)
+        assert client.on_state is not None
+
+        client.on_state(NumberState(4, 0.0, missing_state=True))
+
+        with pytest.raises(StateUnavailableError, match="unavailable"):
+            await pending
+
+    asyncio.run(run())
+
+
 def test_log_buffer_filters_redacts_and_enforces_both_caps() -> None:
     async def run() -> None:
         client = FakeClient()
@@ -675,14 +696,20 @@ def test_log_sanitizer_removes_quoted_unquoted_secrets_and_complete_osc() -> Non
                 message=(
                     b'Voltage calibration password="secret phrase" retained\n'
                     b"Current gain api_key=unquoted secret phrase\n"
+                    b"Gain calibration encryption\x1b[31m_key='enc value'\x1b[0m\n"
+                    b"Restore voltage to\x00ken=token value\n"
+                    b"Current register se\x1b]0;hidden\x07cret: secret value\n"
                     b"Voltage \x1b]0;OSC private payload\x07calibration complete\n"
                 )
             )
         )
         logs = "\n".join(session.log_lines)
 
-        assert "secret" not in logs
+        assert "secret phrase" not in logs
+        assert "secret value" not in logs
         assert "phrase" not in logs
+        assert "enc value" not in logs
+        assert "token value" not in logs
         assert "OSC private payload" not in logs
         assert "calibration complete" in logs
 

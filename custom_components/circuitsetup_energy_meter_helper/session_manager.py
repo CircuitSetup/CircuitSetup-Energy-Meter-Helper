@@ -10,13 +10,9 @@ from uuid import uuid4
 
 from .device_builder import ESPHomeConfigSnapshot
 from .entity_binding import MeterBinding
-from .models import MeterTopology
+from .models import MeterTopology, canonical_mac
 
 type PhaseGainTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
-
-
-def canonical_mac(mac: str) -> str:
-    return mac.lower()
 
 
 @dataclass(slots=True)
@@ -91,9 +87,9 @@ class SessionManager:
         self._unload_timeout = unload_timeout
 
     async def async_acquire_config(self, mac: str) -> ConfigLease:
+        mac = canonical_mac(mac)
         if self._closed:
             raise RuntimeError("session manager is unloading")
-        mac = canonical_mac(mac)
         lock = self._locks(mac).config
         await lock.acquire()
         if self._closed:
@@ -103,9 +99,9 @@ class SessionManager:
 
     async def async_acquire_calibration(self, mac: str) -> CalibrationLease:
         """Acquire config then calibration without waiting behind same-meter work."""
+        mac = canonical_mac(mac)
         if self._closed:
             raise RuntimeError("session manager is unloading")
-        mac = canonical_mac(mac)
         locks = self._locks(mac)
         if locks.config.locked() or locks.calibration.locked():
             raise CalibrationBusyError(f"{mac} is busy")
@@ -308,6 +304,7 @@ class SessionManager:
     async def async_unload(self) -> None:
         self._closed = True
         pending: set[asyncio.Task[Any]] = set()
+        cleanup_errors: list[BaseException] = []
         transactions = tuple(self._config_transactions.values())
         tasks = tuple(
             {
@@ -339,17 +336,27 @@ class SessionManager:
             for task in pending:
                 task.cancel()
         for transaction in transactions:
-            release_reservation = getattr(
-                transaction, "async_release_reservation", None
-            )
-            if release_reservation is not None:
-                await release_reservation()
-            lease = getattr(transaction, "lease", None)
-            if lease:
-                lease.release()
-            scrub = getattr(transaction, "scrub", None)
-            if scrub:
-                scrub()
+            try:
+                release_reservation = getattr(
+                    transaction, "async_release_reservation", None
+                )
+                if release_reservation is not None:
+                    await release_reservation()
+            except BaseException as error:  # noqa: BLE001 - finish local teardown
+                cleanup_errors.append(error)
+            finally:
+                lease = getattr(transaction, "lease", None)
+                if lease:
+                    try:
+                        lease.release()
+                    except BaseException as error:  # noqa: BLE001 - scrub regardless
+                        cleanup_errors.append(error)
+                scrub = getattr(transaction, "scrub", None)
+                if scrub:
+                    try:
+                        scrub()
+                    except BaseException as error:  # noqa: BLE001 - clear maps regardless
+                        cleanup_errors.append(error)
         pending_leases: dict[str, CalibrationLease] = {}
         for lease in tuple(self._calibration_leases.values()):
             task = lease.task
@@ -370,6 +377,8 @@ class SessionManager:
         self._pending_calibrations.clear()
         self._calibration_leases = pending_leases
         self._device_locks = {mac: lease.locks for mac, lease in pending_leases.items()}
+        if cleanup_errors:
+            raise BaseExceptionGroup("reservation cleanup failed", cleanup_errors)
 
     def _locks(self, mac: str) -> DeviceLocks:
         return self._device_locks.setdefault(

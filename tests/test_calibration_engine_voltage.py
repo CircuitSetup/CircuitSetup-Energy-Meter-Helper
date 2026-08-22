@@ -284,7 +284,7 @@ def test_voltage_rejects_unstable_samples_or_changed_current_gain() -> None:
         engine = CalibrationEngine(SessionManager(), persist, stability_limit_percent=1)
         with pytest.raises(CalibrationStabilityError):
             await engine.async_calibrate_voltage(
-                "meter", unstable, meter, "main_1", 120.0, 1.0
+                "aabbccddeeff", unstable, meter, "main_1", 120.0, 1.0
             )
         assert not any(event[0] == "button" for event in unstable.events)
 
@@ -299,9 +299,97 @@ def test_voltage_rejects_unstable_samples_or_changed_current_gain() -> None:
         engine = CalibrationEngine(SessionManager(), persist_changed)
         with pytest.raises(CalibrationInvariantError, match="current"):
             await engine.async_calibrate_voltage(
-                "meter", changed, meter, "main_1", 120.0, 1.0
+                "aabbccddeeff", changed, meter, "main_1", 120.0, 1.0
             )
         assert [event[0] for event in changed.events].count("button") == 1
+
+    asyncio.run(run())
+
+
+def test_failed_post_window_and_outside_tolerance_never_publish_gain_group() -> None:
+    async def run() -> None:
+        meter = binding(0)
+        for after in (
+            sample_window(100.0, 120.0, 140.0),
+            sample_window(100.0, 100.0, 100.0),
+        ):
+            sessions = SessionManager()
+            session = FakeCalibrationSession(
+                gain_evidence(
+                    "meter_main1",
+                    voltage_changes=(True, True, True),
+                    reference_voltages=(120.0, 120.0, 120.0),
+                ),
+                after=after,
+            )
+            _, persist = marker_writer(session.events)
+            engine = CalibrationEngine(sessions, persist, stability_limit_percent=1)
+
+            if after.range_percent > 1:
+                with pytest.raises(CalibrationStabilityError):
+                    await engine.async_calibrate_voltage(
+                        "aabbccddeeff", session, meter, "main_1", 120.0, 1.0
+                    )
+            else:
+                result = await engine.async_calibrate_voltage(
+                    "aabbccddeeff", session, meter, "main_1", 120.0, 1.0
+                )
+                assert result.state is CalibrationState.RESULT_OUTSIDE_TOLERANCE
+
+            pending = sessions.pending_calibration("aabbccddeeff")
+            assert pending is not None
+            assert pending.gain_groups == ()
+
+    asyncio.run(run())
+
+
+def test_each_new_calibration_lease_revalidates_retained_yaml_before_mutation() -> None:
+    async def run() -> None:
+        meter = binding(0)
+        session = FakeCalibrationSession(
+            gain_evidence(
+                "meter_main1",
+                voltage_changes=(True, True, True),
+                reference_voltages=(120.0, 120.0, 120.0),
+            )
+        )
+        contents = [
+            f"esphome:\n  project:\n    name: {meter.topology.project_name}\n# revision {i}\n"
+            for i in (1, 2)
+        ]
+        calls = 0
+
+        async def snapshots(mac: str, topology: MeterTopology) -> ESPHomeConfigSnapshot:
+            nonlocal calls
+            del mac, topology
+            content = contents[min(calls, 1)]
+            calls += 1
+            return ESPHomeConfigSnapshot(
+                "meter.yaml", content, sha256(content.encode()).hexdigest()
+            )
+
+        markers, persist = marker_writer(session.events)
+        engine = CalibrationEngine(
+            SessionManager(), persist, calibration_snapshot_reader=snapshots
+        )
+        await engine.async_calibrate_voltage(
+            "aabbccddeeff", session, meter, "main_1", 120.0, 1.0
+        )
+        session.evidence = gain_evidence(
+            "meter_main2",
+            voltage_changes=(True, True, True),
+            reference_voltages=(120.0, 120.0, 120.0),
+        )
+        event_count = len(session.events)
+
+        with pytest.raises(ValueError, match="configuration changed"):
+            await engine.async_calibrate_voltage(
+                "aa:bb:cc:dd:ee:ff", session, meter, "main_2", 120.0, 1.0
+            )
+
+        assert calls == 2
+        assert len(markers) == 1
+        assert len(session.events) == event_count
 
     asyncio.run(run())
 
@@ -347,7 +435,7 @@ def test_voltage_rejects_unavailable_raw_pre_samples(
 
         with pytest.raises(CalibrationStabilityError, match="unavailable"):
             await engine.async_calibrate_voltage(
-                "meter", session, meter, "main_1", 120.0, 1.0
+                "aabbccddeeff", session, meter, "main_1", 120.0, 1.0
             )
 
         assert not markers
@@ -391,7 +479,7 @@ def test_voltage_rejects_unavailable_raw_post_samples() -> None:
 
         with pytest.raises(CalibrationStabilityError, match="unavailable"):
             await engine.async_calibrate_voltage(
-                "meter", session, meter, "main_1", 120.0, 1.0
+                "aabbccddeeff", session, meter, "main_1", 120.0, 1.0
             )
 
         assert [event[0] for event in session.events].count("button") == 1
@@ -410,7 +498,7 @@ def test_additional_iterations_require_explicit_confirmation_and_stop_at_three()
 
         with pytest.raises(IterationConfirmationRequired):
             await engine.async_calibrate_voltage(
-                "meter",
+                "aabbccddeeff",
                 session,
                 meter,
                 "main_1",
@@ -420,7 +508,7 @@ def test_additional_iterations_require_explicit_confirmation_and_stop_at_three()
             )
         with pytest.raises(ValueError, match="three"):
             await engine.async_calibrate_voltage(
-                "meter",
+                "aabbccddeeff",
                 session,
                 meter,
                 "main_1",

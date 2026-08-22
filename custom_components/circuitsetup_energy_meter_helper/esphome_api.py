@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections import defaultdict, deque
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from time import monotonic
@@ -12,11 +12,15 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
+from .models import canonical_mac
+from .state_tracker import StateDisconnectedError, StateTracker
+
 _ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _ANSI_OSC = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)", re.DOTALL)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _SECRET = re.compile(
-    r"(?i)\b(password|noise(?:_psk)?|api[_ -]?key)\s*[:=]\s*"
+    r"(?i)\b(password|noise(?:_psk)?|api[_ -]?key|encryption[_ -]?key|token|secret)"
+    r"\s*[:=]\s*"
     r"(?:\"[^\"]*\"|'[^']*'|[^\r\n]*)"
 )
 _CALIBRATION_TERMS = (
@@ -36,7 +40,6 @@ _SECURITY_ERRORS = {
 
 type ClientFactory = Callable[..., Any]
 type ZeroconfFactory = Callable[[HomeAssistant], Awaitable[Any]]
-type StateKey = tuple[type[Any], int, int]
 type EntityKey = tuple[int, int]
 
 
@@ -58,13 +61,6 @@ class ESPHomeSessionDisconnectedError(ConnectionError):
 
 class ESPHomeReconnectError(ConnectionError):
     """A transient native-API reconnect candidate could not become ready."""
-
-
-def _canonical_mac(value: str) -> str:
-    compact = value.casefold().replace(":", "").replace("-", "")
-    if re.fullmatch(r"[0-9a-f]{12}", compact) is None:
-        raise ValueError("not a MAC address")
-    return compact
 
 
 class ESPHomeApiSession:
@@ -92,29 +88,27 @@ class ESPHomeApiSession:
         self._unsubscribe_logs: Callable[[], None] | None = None
         self._log_lines: deque[str] = deque()
         self._log_bytes = 0
-        self._state_cache: dict[StateKey, Any] = {}
-        self._state_history: dict[EntityKey, deque[tuple[float, Any]]] = defaultdict(
-            lambda: deque(maxlen=100)
-        )
-        self._state_event = asyncio.Event()
-        self._number_waiters: dict[
-            EntityKey, list[tuple[float, float, asyncio.Future[Any]]]
-        ] = defaultdict(list)
+        self._state_tracker = StateTracker(history_size=100)
         self.key_resolutions: dict[str, EntityKey] = {}
         self.entities: tuple[Any, ...] = ()
-        self.connection_generation = 0
-        self.connected = False
         self._closed = False
-        self._disconnect_error: ESPHomeSessionDisconnectedError | None = None
         self._disconnect_waiters: set[asyncio.Future[None]] = set()
         self._lifecycle_lock = asyncio.Lock()
         self._connection_state_lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task[None] | None = None
 
     @property
-    def state_cache(self) -> dict[StateKey, Any]:
+    def state_cache(self) -> dict[tuple[type[Any], int, int], Any]:
         """Return a snapshot of states received on the current connection."""
-        return dict(self._state_cache)
+        return self._state_tracker.state_cache if self.connected else {}
+
+    @property
+    def connection_generation(self) -> int:
+        return self._state_tracker.connection_generation
+
+    @property
+    def connected(self) -> bool:
+        return self._state_tracker.connected
 
     @property
     def log_lines(self) -> tuple[str, ...]:
@@ -143,7 +137,6 @@ class ESPHomeApiSession:
         client, expected_mac = await self._async_create_client()
         self._client = client
         self._clear_connection_state()
-        self._disconnect_error = None
         attempt_stopped = False
 
         async def on_stop(expected_disconnect: bool) -> None:
@@ -176,7 +169,7 @@ class ESPHomeApiSession:
             device_info, entities, _ = await client.device_info_and_list_entities()
             ensure_attempt_is_live()
             try:
-                actual_mac = _canonical_mac(device_info.mac_address)
+                actual_mac = canonical_mac(device_info.mac_address)
             except AttributeError, ValueError:
                 actual_mac = ""
             if actual_mac != expected_mac:
@@ -209,8 +202,7 @@ class ESPHomeApiSession:
         async with self._connection_state_lock:
             ensure_attempt_is_live()
             self.entities = tuple(entities)
-            self.connection_generation += 1
-            self.connected = True
+            self._state_tracker.connect(self.connection_generation + 1)
 
     @asynccontextmanager
     async def hold_connection_generation(self, generation: int) -> AsyncIterator[None]:
@@ -231,7 +223,7 @@ class ESPHomeApiSession:
         unique_id = getattr(entry, "unique_id", None)
         try:
             expected_mac = (
-                _canonical_mac(unique_id) if isinstance(unique_id, str) else ""
+                canonical_mac(unique_id) if isinstance(unique_id, str) else ""
             )
         except ValueError:
             expected_mac = ""
@@ -279,20 +271,33 @@ class ESPHomeApiSession:
     ) -> Any:
         """Set a number and wait for a new matching NumberState."""
         client = self._ready_client()
-        future = asyncio.get_running_loop().create_future()
-        entity_key = (device_id, key)
-        waiter = (state, tolerance, future)
-        self._number_waiters[entity_key].append(waiter)
+        dispatched_after = monotonic()
+        future = self._state_tracker.expect_number_state(
+            None,
+            key,
+            target=state,
+            step=1.0,
+            tolerance=tolerance,
+            dispatched_after=dispatched_after,
+            device_id=device_id,
+        )
         try:
             client.number_command(key, state, device_id)
-            return await asyncio.wait_for(future, timeout)
-        finally:
-            waiters = self._number_waiters.get(entity_key)
-            if waiters is not None:
-                with suppress(ValueError):
-                    waiters.remove(waiter)
-                if not waiters:
-                    self._number_waiters.pop(entity_key, None)
+            await asyncio.wait_for(future, timeout)
+        except StateDisconnectedError as error:
+            raise ESPHomeSessionDisconnectedError(str(error)) from error
+        for (
+            state_type,
+            record_device,
+            record_key,
+        ), record in self._state_tracker.state_cache.items():
+            if (
+                state_type.__name__ == "NumberState"
+                and record_device == device_id
+                and record_key == key
+            ):
+                return record.state
+        raise ESPHomeApiRepairRequired("The number acknowledgement became unavailable")
 
     async def async_press_button(self, key: int, *, device_id: int = 0) -> None:
         """Press one ESPHome button on the ready connection."""
@@ -312,22 +317,18 @@ class ESPHomeApiSession:
             raise ValueError("sample_count must be positive")
         self._ready_client()
         boundary = monotonic() if after is None else after
-        entity_key = (device_id, key)
-        async with asyncio.timeout(timeout):
-            while True:
-                event = self._state_event
-                samples = tuple(
-                    state
-                    for arrived, state in self._state_history[entity_key]
-                    if arrived > boundary and type(state).__name__ == "SensorState"
-                )
-                if len(samples) >= sample_count:
-                    return samples[-sample_count:]
-                await event.wait()
-                if self._disconnect_error is not None:
-                    raise ESPHomeSessionDisconnectedError(str(self._disconnect_error))
-                if self._closed:
-                    raise asyncio.CancelledError
+        try:
+            return await self._state_tracker.wait_sensor_states(
+                key,
+                device_id=device_id,
+                fresh_after=boundary,
+                sample_count=sample_count,
+                timeout=timeout,
+            )
+        except StateDisconnectedError as error:
+            if self._closed:
+                raise asyncio.CancelledError from None
+            raise ESPHomeSessionDisconnectedError(str(error)) from error
 
     async def async_reconnect(self, *, dump_config: bool = False) -> None:
         """Disconnect and create a fresh client from the current ESPHome entry."""
@@ -355,7 +356,6 @@ class ESPHomeApiSession:
         async with self._lifecycle_lock:
             self._closed = True
             self._cancel_waiters()
-            self._wake_state_waiters()
             if self._cleanup_task is None or (
                 self._cleanup_task.done()
                 and (
@@ -377,17 +377,7 @@ class ESPHomeApiSession:
     def _on_state(self, client: Any, state: Any) -> None:
         if client is not self._client or not self.connected:
             return
-        device_id = state.device_id
-        key = state.key
-        self._state_cache[(type(state), device_id, key)] = state
-        self._state_history[(device_id, key)].append((monotonic(), state))
-        if type(state).__name__ == "NumberState":
-            for target, tolerance, future in tuple(
-                self._number_waiters.get((device_id, key), ())
-            ):
-                if not future.done() and abs(state.state - target) <= tolerance:
-                    future.set_result(state)
-        self._wake_state_waiters()
+        self._state_tracker.record(state, received_at=monotonic())
 
     def _on_log(self, client: Any, message: Any) -> None:
         if client is not self._client or not self.connected:
@@ -417,25 +407,19 @@ class ESPHomeApiSession:
         async with self._connection_state_lock:
             if client is not self._client:
                 return
-            self.connected = False
+            self._state_tracker.disconnect()
             self._resolve_disconnect_waiters()
             self._clear_connection_state()
-            if not expected_disconnect:
-                self._disconnect_error = ESPHomeSessionDisconnectedError(
-                    "The ESPHome API connection was lost"
-                )
-                self._fail_waiters(self._disconnect_error)
-            self._wake_state_waiters()
 
     async def _async_disconnect(self, *, shutdown: bool) -> None:
         client = self._client
         if client is None:
             async with self._connection_state_lock:
-                self.connected = False
+                self._state_tracker.disconnect()
                 self._clear_connection_state()
             return
         async with self._connection_state_lock:
-            self.connected = False
+            self._state_tracker.disconnect()
             self._clear_connection_state()
         self._clear_log_subscription()
         with suppress(Exception):
@@ -443,11 +427,7 @@ class ESPHomeApiSession:
         if shutdown:
             self._cancel_waiters()
         else:
-            self._disconnect_error = ESPHomeSessionDisconnectedError(
-                "The ESPHome API connection is reconnecting"
-            )
-            self._fail_waiters(self._disconnect_error)
-        self._wake_state_waiters()
+            self._state_tracker.disconnect()
         try:
             disconnect_task = asyncio.create_task(client.disconnect())
             caller_cancelled = await self._wait_for_owned_cleanup(disconnect_task)
@@ -478,7 +458,7 @@ class ESPHomeApiSession:
             async with self._connection_state_lock:
                 if self._client is client:
                     self._client = None
-                self.connected = False
+                self._state_tracker.disconnect()
         if caller_cancelled:
             raise asyncio.CancelledError
 
@@ -501,16 +481,11 @@ class ESPHomeApiSession:
         return caller_cancelled
 
     def _clear_connection_state(self) -> None:
-        self._state_cache.clear()
-        self._state_history.clear()
         self.key_resolutions.clear()
         self.entities = ()
 
     def _cancel_waiters(self) -> None:
-        for waiters in self._number_waiters.values():
-            for _, _, future in waiters:
-                future.cancel()
-        self._number_waiters.clear()
+        self._state_tracker.cancel_waiters()
         for waiter in tuple(self._disconnect_waiters):
             waiter.cancel()
 
@@ -518,18 +493,6 @@ class ESPHomeApiSession:
         for waiter in tuple(self._disconnect_waiters):
             if not waiter.done():
                 waiter.set_result(None)
-
-    def _fail_waiters(self, error: ESPHomeSessionDisconnectedError) -> None:
-        for waiters in self._number_waiters.values():
-            for _, _, future in waiters:
-                if not future.done():
-                    future.set_exception(ESPHomeSessionDisconnectedError(str(error)))
-        self._number_waiters.clear()
-
-    def _wake_state_waiters(self) -> None:
-        event = self._state_event
-        self._state_event = asyncio.Event()
-        event.set()
 
     @staticmethod
     def _log_level(name: str) -> object:

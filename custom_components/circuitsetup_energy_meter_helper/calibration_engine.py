@@ -177,6 +177,9 @@ class CalibrationEngine:
         consumed = False
         try:
             try:
+                if self.sessions.pending_calibration(lease.mac) is None:
+                    raise RuntimeError("server-owned calibration origin is missing")
+                await self._calibration_origin(lease, session, binding)
                 pending = self.sessions.claim_calibration_origin(
                     lease, session, binding
                 )
@@ -264,7 +267,7 @@ class CalibrationEngine:
             _require_connected_generation(session, generation)
             rebound = self._rebind_after_reconnect(session, binding, substitutions)
             record = VerifiedCalibrationRecord(
-                mac=mac.casefold(),
+                mac=pending.mac,
                 config_filename=pending.config_filename,
                 config_sha256=pending.config_sha256,
                 topology_addon_count=pending.topology.addon_count,
@@ -289,6 +292,7 @@ class CalibrationEngine:
                         lease, pending.operation_id, pending.revision
                     )
                     consumed = True
+                    await self._persist_interrupted(pending.mac, None)
                     return RestartVerificationResult(record, rebound)
             except ESPHomeSessionDisconnectedError as error:
                 raise RestartVerificationError(
@@ -332,10 +336,8 @@ class CalibrationEngine:
         session: Any,
         binding: MeterBinding,
     ) -> PendingCalibrationOrigin | None:
-        """Load an authoritative source once, before any calibration mutation."""
+        """Revalidate the authoritative source before each leased mutation."""
         pending = self.sessions.calibration_origin_for_update(lease, session, binding)
-        if pending is not None:
-            return pending
         if self._calibration_snapshot_reader is None:
             raise ValueError("authoritative configuration snapshot reader is required")
         snapshot = await self._calibration_snapshot_reader(lease.mac, binding.topology)
@@ -359,6 +361,16 @@ class CalibrationEngine:
             raise ValueError(
                 "authoritative configuration topology does not match the session"
             )
+        if pending is not None:
+            if (
+                snapshot.configuration != pending.config_filename
+                or snapshot.sha256 != pending.config_sha256
+                or not _same_topology_identity(source_topology, pending.topology)
+            ):
+                raise ValueError(
+                    "authoritative configuration changed since calibration began"
+                )
+            return pending
         return self.sessions._begin_calibration_origin(
             lease, session, binding, snapshot
         )
@@ -409,6 +421,7 @@ class CalibrationEngine:
         channels = tuple(_channel_number(entity) for entity in group.current_references)
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
+            mac = lease.mac
             origin = await self._calibration_origin(lease, session, binding)
             before = await self._windows(session, group.voltage_sensors)
             marker = self._marker(channels)
@@ -429,8 +442,16 @@ class CalibrationEngine:
                         group, channels, attempt, before, restore
                     )
                 self._validate_voltage_evidence(evidence, trusted_voltage)
-                if origin is not None:
-                    origin = self.sessions.record_calibration_group(
+                after = await self._windows(session, group.voltage_sensors)
+                errors = tuple(
+                    _error_percent(window.mean, trusted_voltage) for window in after
+                )
+                state = _result_state(errors, tolerance_percent)
+                if (
+                    origin is not None
+                    and state is CalibrationState.APPLIED_PENDING_RESTART_VERIFICATION
+                ):
+                    self.sessions.record_calibration_group(
                         lease,
                         origin.operation_id,
                         origin.revision,
@@ -439,12 +460,8 @@ class CalibrationEngine:
                         evidence.instance_id,
                         _phase_gain_table(evidence),
                     )
-                after = await self._windows(session, group.voltage_sensors)
-                errors = tuple(
-                    _error_percent(window.mean, trusted_voltage) for window in after
-                )
                 return CalibrationResult(
-                    _result_state(errors, tolerance_percent),
+                    state,
                     group.key,
                     None,
                     channels,
@@ -489,6 +506,7 @@ class CalibrationEngine:
         reference = group.current_references[phase_index]
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
+            mac = lease.mac
             origin = await self._calibration_origin(lease, session, binding)
             before = (await self._window(session, sensor),)
             marker = self._marker((channel,))
@@ -512,8 +530,14 @@ class CalibrationEngine:
                     phase_index,
                     trusted_current / reporting_multiplier,
                 )
-                if origin is not None:
-                    origin = self.sessions.record_calibration_group(
+                after = (await self._window(session, sensor),)
+                errors = (_error_percent(after[0].mean, trusted_current),)
+                state = _result_state(errors, tolerance_percent)
+                if (
+                    origin is not None
+                    and state is CalibrationState.APPLIED_PENDING_RESTART_VERIFICATION
+                ):
+                    self.sessions.record_calibration_group(
                         lease,
                         origin.operation_id,
                         origin.revision,
@@ -522,10 +546,8 @@ class CalibrationEngine:
                         evidence.instance_id,
                         _phase_gain_table(evidence),
                     )
-                after = (await self._window(session, sensor),)
-                errors = (_error_percent(after[0].mean, trusted_current),)
                 return CalibrationResult(
-                    _result_state(errors, tolerance_percent),
+                    state,
                     group.key,
                     phase,
                     (channel,),
@@ -551,6 +573,9 @@ class CalibrationEngine:
     ) -> None:
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
+            mac = lease.mac
+            if self.sessions.pending_calibration(mac) is not None:
+                await self._calibration_origin(lease, session, binding)
             await self._persist_interrupted(
                 mac,
                 StoredInterruptedSession(
