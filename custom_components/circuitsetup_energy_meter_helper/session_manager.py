@@ -159,6 +159,15 @@ class SessionManager:
             if key[0] != mac
         }
 
+    def abandon_calibration(self, mac: str) -> None:
+        """Discard one idle browser workflow's in-memory calibration ownership."""
+        mac = canonical_mac(mac)
+        lease = self._calibration_leases.get(mac)
+        if lease is not None and not lease.released:
+            raise CalibrationBusyError("calibration operation is still active")
+        self._pending_calibrations.pop(mac, None)
+        self.reset_calibration_iterations(mac)
+
     def _begin_calibration_origin(
         self,
         lease: CalibrationLease,

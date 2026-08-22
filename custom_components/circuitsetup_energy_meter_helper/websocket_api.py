@@ -6,6 +6,7 @@ import inspect
 import json
 import math
 import re
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import fields, is_dataclass
 from enum import Enum
@@ -19,11 +20,13 @@ from homeassistant.core import HomeAssistant
 from .config_transaction import RollbackFailedError
 from .const import DOMAIN
 from .device_builder import ConfigChangedError
+from .esphome_api import sanitize_control_text
 from .models import InstallerIntent
 from .provisioning import ProvisioningCoordinator
 from .session_manager import CalibrationBusyError, SessionManager
 from .store import HelperStore
 from .topology import topology_from_native
+from .workflow import WorkflowCapabilityUnavailable, WorkflowHandleError
 
 _PREFIX = f"{DOMAIN}/"
 READ_COMMANDS = (
@@ -63,6 +66,7 @@ _MAX_ITEMS = 100
 _MAX_DEPTH = 8
 _MAX_STRING_BYTES = 32_768
 _MAX_PAYLOAD_BYTES = 64 * 1024
+_MAX_PENDING_EVENTS = 32
 _FORBIDDEN_KEY = re.compile(
     r"(?:^|_)(?:api_?key|content|credential|encryption(?:_key)?|logs?|noise_?psk|"
     r"output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|"
@@ -130,7 +134,11 @@ class WorkflowOwner(Protocol):
     async def async_adopt_device(self, device_id: str) -> Any: ...
 
     async def async_preview_ct_config(
-        self, device_id: str, plan_id: str, source_sha256: str
+        self,
+        device_id: str,
+        plan_id: str,
+        source_sha256: str,
+        changes: tuple[Mapping[str, Any], ...],
     ) -> Any: ...
 
     async def async_start_session(self, device_id: str) -> Any: ...
@@ -260,7 +268,10 @@ class EntryWebsocketController:
             return await workflow.async_adopt_device(msg["device_id"])
         if operation == "preview_ct_config" and workflow is not None:
             return await workflow.async_preview_ct_config(
-                msg["device_id"], msg["plan_id"], msg["source_sha256"]
+                msg["device_id"],
+                msg["plan_id"],
+                msg["source_sha256"],
+                tuple(msg["changes"]),
             )
         if operation in {
             "apply_ct_config",
@@ -306,8 +317,9 @@ class EntryWebsocketController:
         if owner is None:
             raise CapabilityUnavailable
         try:
+            device_id = self._transaction_device_id(owner, msg["device_id"])
             owner.assert_confirmation(
-                msg["transaction_id"], msg["device_id"], msg["source_sha256"]
+                msg["transaction_id"], device_id, msg["source_sha256"]
             )
             if operation == "apply_ct_config":
                 result = await owner.async_confirm_write(
@@ -340,7 +352,9 @@ class EntryWebsocketController:
         owner = self.transactions
         if operation == "subscribe_config_transaction" and owner is not None:
             owner.assert_confirmation(
-                msg["transaction_id"], msg["device_id"], msg["source_sha256"]
+                msg["transaction_id"],
+                self._transaction_device_id(owner, msg["device_id"]),
+                msg["source_sha256"],
             )
             status = getattr(owner, "status", None)
             if status is not None:
@@ -361,6 +375,11 @@ class EntryWebsocketController:
         if operation == "subscribe_setup":
             unsubscribe = self.provisioning.subscribe(callback)
         elif operation == "subscribe_config_transaction" and self.transactions:
+            self.transactions.assert_confirmation(
+                msg["transaction_id"],
+                self._transaction_device_id(self.transactions, msg["device_id"]),
+                msg["source_sha256"],
+            )
             subscribe = getattr(self.transactions, "subscribe", None)
             if subscribe is None:
                 raise CapabilityUnavailable
@@ -379,24 +398,51 @@ class EntryWebsocketController:
         self._subscriptions.add(tracked_unsubscribe)
         return tracked_unsubscribe
 
+    def _transaction_device_id(self, owner: TransactionOwner, device_id: str) -> str:
+        workflow = self.workflow
+        resolver = getattr(workflow, "transaction_device_identity", None)
+        if (
+            workflow is not None
+            and getattr(workflow, "transactions", None) is owner
+            and resolver
+        ):
+            return resolver(device_id)
+        return device_id
+
     async def async_close(self) -> None:
         """Remove providers/callbacks and scrub owner handles exactly once."""
         if self._closed:
             return
         self._closed = True
-        for unsubscribe in tuple(self._subscriptions):
-            unsubscribe()
+        errors: list[BaseException] = []
+        subscriptions = tuple(self._subscriptions)
         self._subscriptions.clear()
         self._diagnostics_provider = None
         transactions, self.transactions = self.transactions, None
+        workflow, self.workflow = self.workflow, None
+        for unsubscribe in subscriptions:
+            try:
+                unsubscribe()
+            except BaseException as error:  # noqa: BLE001 - complete all teardown
+                errors.append(error)
         if transactions is not None:
             clear_subscribers = getattr(transactions, "clear_subscribers", None)
             if clear_subscribers is not None:
-                clear_subscribers()
-        workflow, self.workflow = self.workflow, None
+                try:
+                    clear_subscribers()
+                except BaseException as error:  # noqa: BLE001 - complete all teardown
+                    errors.append(error)
         if workflow is not None:
-            await workflow.async_close()
-        await self.sessions.async_unload()
+            try:
+                await workflow.async_close()
+            except BaseException as error:  # noqa: BLE001 - complete all teardown
+                errors.append(error)
+        try:
+            await self.sessions.async_unload()
+        except BaseException as error:  # noqa: BLE001 - scrub before reporting
+            errors.append(error)
+        if errors:
+            raise BaseExceptionGroup("websocket controller cleanup failed", errors)
 
 
 class _Router:
@@ -414,9 +460,16 @@ class _Router:
         self.controllers[entry_id] = controller
 
     def remove(self, entry_id: str) -> None:
-        for unsubscribe in tuple(self.subscriptions.pop(entry_id, ())):
-            unsubscribe()
+        errors: list[BaseException] = []
+        subscriptions = tuple(self.subscriptions.pop(entry_id, ()))
         self.controllers.pop(entry_id, None)
+        for unsubscribe in subscriptions:
+            try:
+                unsubscribe()
+            except BaseException as error:  # noqa: BLE001 - remove every callback
+                errors.append(error)
+        if errors:
+            raise BaseExceptionGroup("websocket router cleanup failed", errors)
 
     def controller(self, entry_id: str) -> EntryWebsocketController:
         try:
@@ -441,16 +494,27 @@ class _Router:
         entry_id = msg["entry_id"]
         msg_id = msg["id"]
         try:
-            pending: list[Any] = []
+            pending: deque[Any] = deque()
             initial_sent = False
+            active = True
+            overflowed = False
 
             def forward(event: Any) -> None:
+                nonlocal active, overflowed
+                if not active:
+                    return
                 if not initial_sent:
-                    pending[:] = (event,)
+                    if len(pending) >= _MAX_PENDING_EVENTS:
+                        overflowed = True
+                        active = False
+                        pending.clear()
+                        return
+                    pending.append(event)
                     return
                 try:
                     connection.send_event(msg_id, sanitize_payload(event))
                 except Exception:  # noqa: BLE001 - never leak provider failures
+                    active = False
                     connection.send_event(
                         msg_id,
                         {"error": {"code": "operation_failed"}},
@@ -466,19 +530,28 @@ class _Router:
             tracked = self.subscriptions.setdefault(entry_id, set())
 
             def remove() -> None:
-                if unsubscribe not in tracked:
+                nonlocal active
+                active = False
+                if remove not in tracked:
                     return
-                tracked.discard(unsubscribe)
+                tracked.discard(remove)
                 unsubscribe()
 
-            tracked.add(unsubscribe)
+            tracked.add(remove)
             connection.subscriptions[msg_id] = remove
             try:
                 connection.send_result(msg_id)
+                if overflowed:
+                    connection.send_event(
+                        msg_id, {"error": {"code": "resync_required"}}
+                    )
+                    connection.subscriptions.pop(msg_id, None)
+                    remove()
+                    return
                 connection.send_event(msg_id, safe_snapshot)
                 initial_sent = True
-                if pending:
-                    forward(pending[-1])
+                while pending and active:
+                    forward(pending.popleft())
             except BaseException:
                 connection.subscriptions.pop(msg_id, None)
                 remove()
@@ -543,6 +616,26 @@ def _schema(command: str) -> dict[Any, Any]:
             vol.Required("device_id"): _ID,
             vol.Required("plan_id"): _ID,
             vol.Required("source_sha256"): _SHA256,
+            vol.Required("changes"): vol.All(
+                [
+                    {
+                        vol.Required("channel"): vol.All(int, vol.Range(min=1, max=42)),
+                        vol.Required("name"): vol.All(str, vol.Length(min=1, max=64)),
+                        vol.Required("model_id"): _ID,
+                        vol.Optional("reporting_multiplier", default=1.0): vol.All(
+                            vol.Coerce(float), vol.Range(min=0, min_included=False)
+                        ),
+                        vol.Optional("custom_gain_ct"): vol.All(
+                            int, vol.Range(min=1, max=65535)
+                        ),
+                        vol.Optional("custom_label"): vol.All(
+                            str, vol.Length(min=1, max=64)
+                        ),
+                        vol.Optional("burden_output_acknowledged", default=False): bool,
+                    }
+                ],
+                vol.Length(min=1, max=42),
+            ),
         }
     elif operation in {
         "apply_ct_config",
@@ -606,9 +699,11 @@ def sanitize_payload(value: Any, *, _depth: int = 0, _field: str = "") -> Any:
     if isinstance(value, Enum):
         return sanitize_payload(value.value, _depth=_depth + 1, _field=_field)
     if isinstance(value, str):
+        had_line_break = "\n" in value or "\r" in value
+        value = sanitize_control_text(value)
         if _FORBIDDEN_VALUE.search(value):
             return "<redacted>"
-        if ("\n" in value or "\r" in value) and _field != "redacted_diff":
+        if had_line_break and _field != "redacted_diff":
             return "<redacted>"
         encoded = value.encode()[:_MAX_STRING_BYTES]
         return encoded.decode("utf-8", "ignore")
@@ -617,13 +712,18 @@ def sanitize_payload(value: Any, *, _depth: int = 0, _field: str = "") -> Any:
     if isinstance(value, Mapping):
         result: dict[str, Any] = {}
         for key, item in list(value.items())[:_MAX_ITEMS]:
+            if isinstance(key, str):
+                key = sanitize_control_text(key)
             if (
                 not isinstance(key, str)
+                or not key
                 or len(key) > 128
                 or key.casefold() in {"entity_key", "key", "raw_key"}
                 or _FORBIDDEN_KEY.search(key)
             ):
                 continue
+            if key in result:
+                raise ValueError("payload keys collide after sanitization")
             result[key] = sanitize_payload(item, _depth=_depth + 1, _field=key)
         _check_payload_size(result)
         return result
@@ -662,8 +762,10 @@ def _send_safe_error(
         code, message = "capability_unavailable", "This capability is not available"
     elif isinstance(error, ApiFailure):
         code, message = error.code, error.safe_message
-    elif isinstance(error, StaleConfirmation):
+    elif isinstance(error, StaleConfirmation | WorkflowHandleError):
         code, message = "stale_confirmation", "The confirmation is stale or invalid"
+    elif isinstance(error, WorkflowCapabilityUnavailable):
+        code, message = "capability_unavailable", "This capability is not available"
     elif isinstance(error, KeyError | ResourceNotFound):
         code, message = "not_found", "The requested resource was not found"
     elif isinstance(error, CalibrationBusyError):

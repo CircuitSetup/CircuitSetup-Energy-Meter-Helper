@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from hashlib import sha256
+from time import monotonic
 from typing import Protocol
 from uuid import uuid4
 
@@ -36,6 +37,8 @@ MAX_EVIDENCE_BYTES = 2_048
 MAX_EVIDENCE_LINES = 32
 MAX_UPLOAD_PROGRESS_BYTES = 2_048
 MAX_UPLOAD_PROGRESS_LINES = 32
+DEFAULT_CONFIRMATION_TTL = 15 * 60.0
+MAX_CONFIRMATION_TTL = 60 * 60.0
 
 
 class ConfigTransactionState(StrEnum):
@@ -184,6 +187,7 @@ class _ConfigTransaction:
     """Sensitive in-memory transaction data; never return this object."""
 
     transaction_id: str
+    expires_at: float
     mac: str
     topology: MeterTopology
     source_sha256: str
@@ -257,12 +261,18 @@ class ConfigTransactionManager:
         sessions: SessionManager,
         *,
         reconciliation_timeout: float = 30.0,
+        confirmation_ttl: float = DEFAULT_CONFIRMATION_TTL,
+        clock: Callable[[], float] = monotonic,
     ) -> None:
+        if not 1.0 <= confirmation_ttl <= MAX_CONFIRMATION_TTL:
+            raise ValueError("confirmation TTL must be between 1 and 3600 seconds")
         self._device_builder = device_builder
         self._verifier = verifier
         self._persistence = persistence
         self.sessions = sessions
         self._reconciliation_timeout = reconciliation_timeout
+        self._confirmation_ttl = confirmation_ttl
+        self._clock = clock
         self._subscribers: dict[str, set[Callable[[TransactionStatus], None]]] = {}
 
     def assert_confirmation(
@@ -329,6 +339,7 @@ class ConfigTransactionManager:
         _validate_changes(plan.changes)
         transaction = _ConfigTransaction(
             uuid4().hex,
+            self._clock() + self._confirmation_ttl,
             canonical_mac(mac),
             topology,
             plan.source_sha256,
@@ -520,8 +531,9 @@ class ConfigTransactionManager:
                 )
             transaction.state = ConfigTransactionState.VALIDATED
             _progress(transaction, TransactionProgress.CONFIG_VALIDATED)
+            self._refresh_deadline(transaction)
             self.publish_status(_status(transaction))
-            return await self._compile_locked(transaction)
+            return _status(transaction)
 
     async def _claim_verified_calibration(
         self, transaction: _ConfigTransaction
@@ -609,8 +621,8 @@ class ConfigTransactionManager:
             )
         return self._retain_write_recovery(transaction)
 
-    @staticmethod
     def _retain_write_recovery(
+        self,
         transaction: _ConfigTransaction,
     ) -> TransactionStatus:
         if transaction.closed:
@@ -618,7 +630,9 @@ class ConfigTransactionManager:
         transaction.state = ConfigTransactionState.FAILED
         transaction.rollback_available = False
         _evidence(transaction, TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED)
-        return _status(transaction)
+        status = _status(transaction)
+        self.publish_status(status)
+        return status
 
     async def async_compile(self, transaction_id: str) -> TransactionStatus:
         """Compile one valid edit; concurrent/replayed calls cannot claim it twice."""
@@ -643,10 +657,13 @@ class ConfigTransactionManager:
             transaction.state = ConfigTransactionState.FAILED
             transaction.rollback_available = True
             _evidence(transaction, TransactionEvidenceCode.COMPILE_FAILED)
-            return _status(transaction)
+            status = _status(transaction)
+            self.publish_status(status)
+            return status
         transaction.state = ConfigTransactionState.COMPILED
         _progress(transaction, TransactionProgress.FIRMWARE_COMPILED)
         transaction.state = ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        self._refresh_deadline(transaction)
         self.publish_status(_status(transaction))
         return _status(transaction)
 
@@ -810,7 +827,28 @@ class ConfigTransactionManager:
         transaction = self.sessions._get_transaction(transaction_id)
         if not isinstance(transaction, _ConfigTransaction):
             raise KeyError("unknown configuration transaction")
+        if self._clock() >= transaction.expires_at:
+            self._expire(transaction)
+            raise KeyError("expired configuration transaction")
         return transaction
+
+    def _refresh_deadline(self, transaction: _ConfigTransaction) -> None:
+        transaction.expires_at = self._clock() + self._confirmation_ttl
+
+    def _expire(self, transaction: _ConfigTransaction) -> None:
+        """Refuse an expired handle and release its local sensitive ownership."""
+        if transaction.closed:
+            return
+        transaction.state = ConfigTransactionState.FAILED
+        self.publish_status(_status(transaction))
+        if transaction.reservation_claimed and not transaction.write_started:
+            cleanup = asyncio.create_task(transaction.async_release_reservation())
+            transaction.active_tasks.add(cleanup)
+            cleanup.add_done_callback(transaction.active_tasks.discard)
+        _release(transaction)
+        transaction.scrub()
+        self.sessions._remove_transaction(transaction.transaction_id)
+        self._subscribers.pop(transaction.transaction_id, None)
 
     def _finish(
         self,

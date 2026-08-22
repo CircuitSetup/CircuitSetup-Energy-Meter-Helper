@@ -15,8 +15,8 @@ from homeassistant.core import HomeAssistant
 from .models import canonical_mac
 from .state_tracker import SensorSampleWindow, StateDisconnectedError, StateTracker
 
-_ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_ANSI_OSC = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)", re.DOTALL)
+_ANSI_CSI = re.compile(r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]")
+_ANSI_OSC = re.compile(r"(?:\x1b\]|\x9d).*?(?:\x07|\x1b\\|\x9c)", re.DOTALL)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _SECRET = re.compile(
     r"(?i)\b(password|noise(?:_psk)?|api[_ -]?key|encryption[_ -]?key|token|secret)"
@@ -41,6 +41,15 @@ _SECURITY_ERRORS = {
 type ClientFactory = Callable[..., Any]
 type ZeroconfFactory = Callable[[HomeAssistant], Awaitable[Any]]
 type EntityKey = tuple[int, int]
+
+
+def sanitize_control_text(value: str) -> str:
+    """Remove terminal escape sequences and C0/C1 controls from untrusted text."""
+    return _CONTROL.sub("", _strip_terminal_sequences(value))
+
+
+def _strip_terminal_sequences(value: str) -> str:
+    return _ANSI_CSI.sub("", _ANSI_OSC.sub("", value))
 
 
 class ESPHomeApiRepairRequired(RuntimeError):
@@ -384,9 +393,9 @@ class ESPHomeApiSession:
             return
         raw = message.message
         text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-        text = _ANSI_CSI.sub("", _ANSI_OSC.sub("", text))
+        text = _strip_terminal_sequences(text)
         for raw_line in text.splitlines():
-            line = _CONTROL.sub("", raw_line).strip()
+            line = sanitize_control_text(raw_line).strip()
             if not line or not any(
                 term in line.casefold() for term in _CALIBRATION_TERMS
             ):

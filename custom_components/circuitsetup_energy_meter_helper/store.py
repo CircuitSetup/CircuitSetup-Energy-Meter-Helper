@@ -365,6 +365,19 @@ class HelperStore:
             ]
             await self._store.async_save(data)
 
+    async def async_save_interrupted_session(
+        self, mac: str, marker: StoredInterruptedSession | None
+    ) -> None:
+        """Persist or clear one recovery marker without retaining calibration values."""
+        mac = canonical_mac(mac)
+        async with self._update_lock:
+            data = await self.async_load()
+            meter = data.setdefault("meters", {}).setdefault(mac, {})
+            meter["interrupted_session"] = (
+                _serialize_interrupted_session(marker) if marker is not None else None
+            )
+            await self._store.async_save(data)
+
     async def async_save_verified_calibration(
         self, record: VerifiedCalibrationRecord
     ) -> None:

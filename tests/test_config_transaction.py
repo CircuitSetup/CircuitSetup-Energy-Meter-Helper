@@ -291,6 +291,71 @@ def test_preview_binds_source_and_exposes_only_bounded_safe_dto() -> None:
     asyncio.run(run())
 
 
+def test_write_and_compile_are_distinct_confirmed_phases() -> None:
+    """Apply stops at validated and the standalone compile owns compilation."""
+
+    async def run() -> None:
+        builder = Builder()
+        manager = _manager(builder, Persistence())
+        preview = await _preview(manager)
+
+        written = await manager.async_confirm_write(preview.transaction_id, "admin")
+        assert written.state is ConfigTransactionState.VALIDATED
+        assert builder.calls == ["write", "validate"]
+
+        compiled = await manager.async_compile(preview.transaction_id)
+        assert compiled.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert builder.calls == ["write", "validate", "compile"]
+
+    asyncio.run(run())
+
+
+def test_confirmation_expiry_refuses_and_scrubs_transaction() -> None:
+    """Monotonic confirmation deadlines are checked before any mutation."""
+
+    async def run() -> None:
+        now = 100.0
+        manager = ConfigTransactionManager(
+            Builder(),
+            Verifier(_evidence()),
+            Persistence(),
+            SessionManager(),
+            confirmation_ttl=5.0,
+            clock=lambda: now,
+        )
+        preview = await _preview(manager)
+        now = 106.0
+
+        with pytest.raises(KeyError):
+            manager.assert_confirmation(
+                preview.transaction_id, "aabbccddeeff", preview.source_sha256
+            )
+        with pytest.raises(KeyError):
+            manager.status(preview.transaction_id)
+
+    asyncio.run(run())
+
+
+def test_compile_failure_publishes_terminal_status() -> None:
+    """Subscribers observe the terminal compile failure before the call returns."""
+
+    async def run() -> None:
+        manager = _manager(Builder(compile=Job(False)), Persistence())
+        preview = await _preview(manager)
+        observed: list[ConfigTransactionState] = []
+        manager.subscribe(
+            preview.transaction_id, lambda status: observed.append(status.state)
+        )
+
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        failed = await manager.async_compile(preview.transaction_id)
+
+        assert failed.state is ConfigTransactionState.FAILED
+        assert observed[-1] is ConfigTransactionState.FAILED
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     ("outcome", "state", "code", "restore_count", "retained"),
     (
@@ -572,6 +637,8 @@ def test_confirmations_and_verified_persistence_are_separate() -> None:
         with pytest.raises(PermissionError):
             await manager.async_confirm_write(preview.transaction_id, "")
         status = await manager.async_confirm_write(preview.transaction_id, "admin")
+        assert status.state is ConfigTransactionState.VALIDATED
+        status = await manager.async_compile(preview.transaction_id)
         assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert not persistence.saved
         with pytest.raises(PermissionError):
@@ -682,7 +749,8 @@ def test_compile_failure_has_one_shot_rollback_and_no_raw_output() -> None:
         builder = Builder(compile=Job(False, huge, (huge,) * 200))
         manager = _manager(builder, Persistence())
         preview = await _preview(manager)
-        status = await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        status = await manager.async_compile(preview.transaction_id)
         internal = manager.sessions._get_transaction(preview.transaction_id)
         assert (
             status.state is ConfigTransactionState.FAILED and status.rollback_available
@@ -727,9 +795,8 @@ def test_write_and_compile_claims_are_atomic_across_awaits() -> None:
         release2 = builder2.pause("compile")
         manager2 = _manager(builder2, Persistence())
         preview2 = await _preview(manager2)
-        first2 = asyncio.create_task(
-            manager2.async_confirm_write(preview2.transaction_id, "admin")
-        )
+        await manager2.async_confirm_write(preview2.transaction_id, "admin")
+        first2 = asyncio.create_task(manager2.async_compile(preview2.transaction_id))
         await asyncio.wait_for(builder2.started["compile"].wait(), 1)
         duplicate2 = asyncio.create_task(
             manager2.async_compile(preview2.transaction_id)
@@ -750,6 +817,7 @@ def test_rollback_claim_is_atomic_and_replay_safe() -> None:
         manager = _manager(builder, Persistence())
         preview = await _preview(manager)
         await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
         first = asyncio.create_task(manager.async_rollback(preview.transaction_id))
         await asyncio.wait_for(builder.started["restore"].wait(), 1)
         duplicate = asyncio.create_task(manager.async_rollback(preview.transaction_id))
@@ -770,6 +838,7 @@ def test_upload_disconnect_is_terminal_and_never_persists() -> None:
         )
         preview = await _preview(manager)
         await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
         assert status.state is ConfigTransactionState.FAILED
         assert status.evidence == (TransactionEvidenceCode.UPLOAD_FAILED,)
@@ -786,6 +855,7 @@ def test_upload_progress_is_live_structured_and_bounded() -> None:
         manager = _manager(builder, Persistence())
         preview = await _preview(manager)
         await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
         install = asyncio.create_task(
             manager.async_confirm_install(preview.transaction_id, "admin")
         )
@@ -839,6 +909,7 @@ def test_reconnect_rejects_wrong_identity_topology_entities_or_count(
         manager = _manager(Builder(), persistence, evidence=evidence)
         preview = await _preview(manager)
         await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
         assert status.state is ConfigTransactionState.FAILED
         assert status.evidence == (code,)
@@ -854,6 +925,7 @@ def test_persistence_failure_is_terminal_and_releases_lease() -> None:
         manager = _manager(Builder(), Persistence(OSError("disk secret")))
         preview = await _preview(manager)
         await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
         assert status.evidence == (TransactionEvidenceCode.PERSISTENCE_FAILED,)
         assert "secret" not in repr(status)
@@ -883,6 +955,7 @@ def test_cancellation_after_write_restores_and_upload_cancel_cleans_up() -> None
         manager2 = _manager(builder2, persistence2)
         preview2 = await _preview(manager2)
         await manager2.async_confirm_write(preview2.transaction_id, "admin")
+        await manager2.async_compile(preview2.transaction_id)
         task2 = asyncio.create_task(
             manager2.async_confirm_install(preview2.transaction_id, "admin")
         )
@@ -935,6 +1008,7 @@ def test_stale_rollback_cannot_release_new_lease() -> None:
         manager = _manager(builder, Persistence(), sessions=sessions)
         first = await _preview(manager, mac="AABBCCDDEEFF")
         await manager.async_confirm_write(first.transaction_id, "admin")
+        await manager.async_compile(first.transaction_id)
         builder.pause("validate")
         second = await _preview(manager, mac="aabbccddeeff")
         second_task = asyncio.create_task(
