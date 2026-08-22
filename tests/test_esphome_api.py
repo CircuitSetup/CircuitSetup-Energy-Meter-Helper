@@ -208,6 +208,41 @@ class GatedClient(FakeClient):
         self.disconnect_finished = True
 
 
+class StopDuringReadyClient(FakeClient):
+    def __init__(self, stop_during: str) -> None:
+        super().__init__()
+        self.stop_during = stop_during
+
+    async def device_info_and_list_entities(
+        self,
+    ) -> tuple[object, list[object], list[object]]:
+        result = await super().device_info_and_list_entities()
+        if self.stop_during == "list":
+            assert self.on_stop is not None
+            await self.on_stop(False)
+        return result
+
+    def subscribe_states(self, callback: Callable[[object], None]) -> None:
+        super().subscribe_states(callback)
+        if self.stop_during == "states":
+            self._stop_synchronously()
+
+    def subscribe_logs(
+        self, callback: Callable[[object], None], log_level: object
+    ) -> Callable[[], None]:
+        unsubscribe = super().subscribe_logs(callback, log_level)
+        if self.stop_during == "logs":
+            self._stop_synchronously()
+        return unsubscribe
+
+    def _stop_synchronously(self) -> None:
+        """Run the callback inline to probe the no-await subscription boundary."""
+        assert self.on_stop is not None
+        stopped = self.on_stop(False)
+        with pytest.raises(StopIteration):
+            stopped.send(None)
+
+
 def make_session(
     clients: list[FakeClient],
     *,
@@ -680,6 +715,52 @@ def test_real_home_assistant_factory_import_path_and_noise_contract(
         await session.async_connect()
 
         assert calls == [(hass, entry, "real-path-zeroconf", "also-do-not-retain")]
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("stop_during", ("list", "states", "logs"))
+def test_stop_during_ready_handshake_never_marks_dead_client_connected(
+    stop_during: str,
+) -> None:
+    async def run() -> None:
+        client = StopDuringReadyClient(stop_during)
+        session = make_session([client])
+
+        with pytest.raises(ESPHomeSessionDisconnectedError):
+            await session.async_connect()
+
+        assert not session.connected
+        assert session.connection_generation == 0
+        assert session.entities == ()
+        assert client.disconnects == 1
+
+    asyncio.run(run())
+
+
+def test_repeated_cancellation_of_reconnect_finishes_old_client_cleanup() -> None:
+    async def run() -> None:
+        old = GatedClient(gate_disconnect=True)
+        replacement = FakeClient()
+        session = make_session([old, replacement])
+        await session.async_connect()
+
+        reconnect = asyncio.create_task(session.async_reconnect())
+        await old.disconnect_started.wait()
+        reconnect.cancel()
+        await asyncio.sleep(0)
+        reconnect.cancel()
+        old.disconnect_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await reconnect
+
+        assert old.disconnect_finished
+        assert old.disconnects == 1
+        assert not session.connected
+        await session.async_connect()
+        assert session.connected
+        assert session.connection_generation == 2
         await session.async_shutdown()
 
     asyncio.run(run())

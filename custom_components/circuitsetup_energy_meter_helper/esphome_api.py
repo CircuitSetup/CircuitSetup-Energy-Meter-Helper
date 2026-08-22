@@ -129,12 +129,22 @@ class ESPHomeApiSession:
         self._client = client
         self._clear_connection_state()
         self._disconnect_error = None
+        attempt_stopped = False
 
         async def on_stop(expected_disconnect: bool) -> None:
+            nonlocal attempt_stopped
+            attempt_stopped = True
             await self._async_on_stop(client, expected_disconnect)
+
+        def ensure_attempt_is_live() -> None:
+            if attempt_stopped or client is not self._client:
+                raise ESPHomeSessionDisconnectedError(
+                    "The ESPHome API connection stopped before it became ready"
+                )
 
         try:
             await client.connect(on_stop, login=True)
+            ensure_attempt_is_live()
         except BaseException as error:
             await self._disconnect_failed_client(client)
             if (
@@ -149,6 +159,7 @@ class ESPHomeApiSession:
 
         try:
             device_info, entities, _ = await client.device_info_and_list_entities()
+            ensure_attempt_is_live()
             try:
                 actual_mac = _canonical_mac(device_info.mac_address)
             except AttributeError, ValueError:
@@ -159,10 +170,12 @@ class ESPHomeApiSession:
                     "in the existing ESPHome entry"
                 )
             client.subscribe_states(lambda state: self._on_state(client, state))
+            ensure_attempt_is_live()
             self._unsubscribe_logs = client.subscribe_logs(
                 lambda message: self._on_log(client, message),
                 self._log_level("LOG_LEVEL_DEBUG"),
             )
+            ensure_attempt_is_live()
         except BaseException:
             await self._disconnect_failed_client(client)
             raise
@@ -383,7 +396,8 @@ class ESPHomeApiSession:
             self._fail_waiters(self._disconnect_error)
         self._wake_state_waiters()
         try:
-            await client.disconnect()
+            disconnect_task = asyncio.create_task(client.disconnect())
+            caller_cancelled = await self._wait_for_owned_cleanup(disconnect_task)
         except BaseException:
             self._clear_connection_state()
             raise
@@ -391,6 +405,8 @@ class ESPHomeApiSession:
             if self._client is client:
                 self._client = None
             self._clear_connection_state()
+        if caller_cancelled:
+            raise asyncio.CancelledError
 
     async def _disconnect_failed_client(self, client: Any) -> None:
         async def disconnect() -> None:
@@ -398,15 +414,27 @@ class ESPHomeApiSession:
                 await client.disconnect(force=True)
 
         cleanup = asyncio.create_task(disconnect())
+        caller_cancelled = False
         try:
-            await asyncio.shield(cleanup)
-        except asyncio.CancelledError:
-            await cleanup
-            raise
+            caller_cancelled = await self._wait_for_owned_cleanup(cleanup)
         finally:
             if self._client is client:
                 self._client = None
             self.connected = False
+        if caller_cancelled:
+            raise asyncio.CancelledError
+
+    @staticmethod
+    async def _wait_for_owned_cleanup(task: asyncio.Task[None]) -> bool:
+        """Finish owned cleanup before reporting repeated caller cancellation."""
+        caller_cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                caller_cancelled = True
+        task.result()
+        return caller_cancelled
 
     def _clear_connection_state(self) -> None:
         self._state_cache.clear()
