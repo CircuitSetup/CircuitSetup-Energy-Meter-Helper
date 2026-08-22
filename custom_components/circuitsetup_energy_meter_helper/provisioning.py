@@ -11,7 +11,7 @@ from homeassistant.config_entries import SIGNAL_CONFIG_ENTRY_CHANGED, ConfigEntr
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .models import SetupState
+from .models import InstallerIntent, SetupState
 
 ESP_WEB_INSTALLER_URL = "https://circuitsetup.github.io/ESPWebInstaller/"
 ADDON_JUMPER_PINS = (
@@ -74,6 +74,7 @@ class ProvisioningCoordinator:
         self._refresh_task: asyncio.Task[None] | None = None
         self._unsub_config_entries: Callable[[], None] | None = None
         self.snapshot = ProvisioningSnapshot(SetupState.NO_DEVICE, ())
+        self.installer_intent: InstallerIntent | None = None
 
     async def async_start(self) -> None:
         """Subscribe to ESPHome entry lifecycle changes and publish the initial scan."""
@@ -90,6 +91,7 @@ class ProvisioningCoordinator:
         if self._refresh_task is not None:
             self._refresh_task.cancel()
             self._refresh_task = None
+        self._subscribers.clear()
 
     def subscribe(
         self, callback: Callable[[ProvisioningSnapshot], None]
@@ -101,6 +103,15 @@ class ProvisioningCoordinator:
     async def async_begin_discovery(self) -> ProvisioningSnapshot:
         """Enter discovery waiting state without claiming installer completion."""
         self.snapshot = ProvisioningSnapshot(SetupState.WAITING_FOR_DISCOVERY, ())
+        self._publish()
+        return self.snapshot
+
+    async def async_set_installer_intent(
+        self, intent: InstallerIntent
+    ) -> ProvisioningSnapshot:
+        """Remember the validated installer choice without claiming a flash."""
+        self.installer_intent = intent
+        self.snapshot = ProvisioningSnapshot(SetupState.INSTALLER_GUIDE, ())
         self._publish()
         return self.snapshot
 
@@ -141,9 +152,7 @@ class ProvisioningCoordinator:
         )
 
     @callback
-    def _async_entry_changed(
-        self, change: ConfigEntryChange, entry: Any
-    ) -> None:
+    def _async_entry_changed(self, change: ConfigEntryChange, entry: Any) -> None:
         """Debounce ESPHome add, update, reload, and remove notifications."""
         if entry.domain != "esphome":
             return

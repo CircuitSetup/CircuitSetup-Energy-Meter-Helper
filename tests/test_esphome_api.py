@@ -99,7 +99,7 @@ class FakeConfigEntries:
 class FakeHass:
     def __init__(self, entry: FakeEntry | None = None) -> None:
         self.config_entries = FakeConfigEntries(entry or FakeEntry())
-        self.config = SimpleNamespace(time_zone="America/New_York")
+        self.config = SimpleNamespace(time_zone="America/New_York", config_dir=".")
         self.data: dict[str, object] = {}
 
     def async_create_task(

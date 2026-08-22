@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 from homeassistant.config_entries import SIGNAL_CONFIG_ENTRY_CHANGED, ConfigEntryChange
@@ -64,6 +65,7 @@ class FakeHass:
 
     def __init__(self) -> None:
         self.config_entries = FakeConfigEntries()
+        self.config = SimpleNamespace(config_dir=".")
         self.data: dict[str, object] = {}
 
     def async_create_task(self, coroutine):

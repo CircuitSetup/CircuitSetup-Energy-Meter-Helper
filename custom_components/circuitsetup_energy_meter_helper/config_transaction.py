@@ -263,6 +263,52 @@ class ConfigTransactionManager:
         self._persistence = persistence
         self.sessions = sessions
         self._reconciliation_timeout = reconciliation_timeout
+        self._subscribers: dict[str, set[Callable[[TransactionStatus], None]]] = {}
+
+    def assert_confirmation(
+        self, transaction_id: str, device_id: str, source_sha256: str
+    ) -> None:
+        """Require the exact live device/hash-bound server transaction."""
+        transaction = self._transaction(transaction_id)
+        try:
+            canonical_device_id = canonical_mac(device_id)
+        except ValueError:
+            raise KeyError("stale configuration transaction") from None
+        if (
+            transaction.mac != canonical_device_id
+            or transaction.source_sha256 != source_sha256
+            or transaction.closed
+        ):
+            raise KeyError("stale configuration transaction")
+
+    def subscribe(
+        self,
+        transaction_id: str,
+        callback: Callable[[TransactionStatus], None],
+    ) -> Callable[[], None]:
+        """Subscribe to safe DTO updates without retaining transaction history."""
+        self._transaction(transaction_id)
+        subscribers = self._subscribers.setdefault(transaction_id, set())
+        subscribers.add(callback)
+
+        def unsubscribe() -> None:
+            subscribers.discard(callback)
+            if not subscribers:
+                self._subscribers.pop(transaction_id, None)
+
+        return unsubscribe
+
+    def publish_status(self, status: TransactionStatus) -> None:
+        """Publish one already-bounded public status to current subscribers."""
+        for callback in tuple(self._subscribers.get(status.transaction_id, ())):
+            try:
+                callback(status)
+            except Exception:  # noqa: BLE001, S110 - subscriber isolation
+                pass
+
+    def clear_subscribers(self) -> None:
+        """Drop websocket callbacks during provider unload."""
+        self._subscribers.clear()
 
     async def async_preview(
         self,
@@ -454,6 +500,7 @@ class ConfigTransactionManager:
                 raise
             transaction.state = ConfigTransactionState.WRITTEN
             _progress(transaction, TransactionProgress.CONFIG_WRITTEN)
+            self.publish_status(_status(transaction))
             try:
                 validation = await self._device_builder.async_validate(
                     plan.configuration
@@ -473,6 +520,7 @@ class ConfigTransactionManager:
                 )
             transaction.state = ConfigTransactionState.VALIDATED
             _progress(transaction, TransactionProgress.CONFIG_VALIDATED)
+            self.publish_status(_status(transaction))
             return await self._compile_locked(transaction)
 
     async def _claim_verified_calibration(
@@ -599,6 +647,7 @@ class ConfigTransactionManager:
         transaction.state = ConfigTransactionState.COMPILED
         _progress(transaction, TransactionProgress.FIRMWARE_COMPILED)
         transaction.state = ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        self.publish_status(_status(transaction))
         return _status(transaction)
 
     async def async_confirm_install(
@@ -616,11 +665,12 @@ class ConfigTransactionManager:
                     "install confirmation is not legal in the current state"
                 )
             transaction.state = ConfigTransactionState.INSTALLING
+            self.publish_status(_status(transaction))
             plan, _ = _sensitive(transaction)
             try:
                 result = await self._device_builder.async_upload(
                     plan.configuration,
-                    lambda update: _upload_progress(transaction, update),
+                    lambda update: self._publish_upload_progress(transaction, update),
                 )
             except asyncio.CancelledError:
                 self._finish(
@@ -639,6 +689,7 @@ class ConfigTransactionManager:
                 )
             _progress(transaction, TransactionProgress.OTA_UPLOADED)
             transaction.state = ConfigTransactionState.RECONNECTING
+            self.publish_status(_status(transaction))
             try:
                 verification = await self._verifier.async_verify(transaction.mac)
             except asyncio.CancelledError:
@@ -657,6 +708,7 @@ class ConfigTransactionManager:
             if error := _verify_reconnect(transaction, verification):
                 return self._finish(transaction, ConfigTransactionState.FAILED, error)
             _progress(transaction, TransactionProgress.DEVICE_VERIFIED)
+            self.publish_status(_status(transaction))
             selections = tuple(
                 replace(
                     selection,
@@ -683,6 +735,12 @@ class ConfigTransactionManager:
                 )
             _progress(transaction, TransactionProgress.METADATA_PERSISTED)
             return self._finish(transaction, ConfigTransactionState.VERIFIED)
+
+    def _publish_upload_progress(
+        self, transaction: _ConfigTransaction, progress: JobProgress
+    ) -> None:
+        _upload_progress(transaction, progress)
+        self.publish_status(_status(transaction))
 
     async def async_rollback(self, transaction_id: str) -> TransactionStatus:
         """Consume the one available rollback and restore through Device Builder once."""
@@ -735,6 +793,7 @@ class ConfigTransactionManager:
             )
             raise RollbackFailedError("configuration rollback failed") from error
         _progress(transaction, TransactionProgress.CONFIG_RESTORED)
+        self.publish_status(_status(transaction))
         return self._finish(transaction, ConfigTransactionState.ROLLED_BACK)
 
     async def _rollback_after_cancellation(
@@ -766,6 +825,7 @@ class ConfigTransactionManager:
         if code is not None:
             _evidence(transaction, code)
         status = _status(transaction)
+        self.publish_status(status)
         _release(transaction)
         transaction.scrub()
         self.sessions._remove_transaction(transaction.transaction_id)
