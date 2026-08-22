@@ -12,6 +12,7 @@ from hashlib import sha256
 from typing import Protocol
 from uuid import uuid4
 
+from .config_mutator import build_calibrated_gain_mutation
 from .device_builder import (
     ConfigChangedError,
     ESPHomeConfigSnapshot,
@@ -26,6 +27,7 @@ from .models import (
     SubstitutionChange,
 )
 from .session_manager import ConfigLease, SessionManager, canonical_mac
+from .store import VerifiedCalibrationRecord
 
 MAX_VISIBLE_DIFF_BYTES = 32_768
 MAX_VISIBLE_DIFF_LINES = 512
@@ -247,6 +249,17 @@ class ConfigTransactionManager:
         )
         self.sessions._register_transaction(transaction.transaction_id, transaction)
         return _status(transaction)
+
+    async def async_preview_calibrated_gains(
+        self,
+        mac: str,
+        topology: MeterTopology,
+        verified: VerifiedCalibrationRecord,
+    ) -> TransactionStatus:
+        """Re-read YAML and open the normal reviewed transaction for final gains."""
+        snapshot = await self._device_builder.async_get_config(verified.config_filename)
+        plan = build_calibrated_gain_mutation(snapshot, topology, verified)
+        return await self.async_preview(mac, topology, plan, snapshot)
 
     def status(self, transaction_id: str) -> TransactionStatus:
         """Return only the safe DTO for a live transaction."""
@@ -511,9 +524,10 @@ class ConfigTransactionManager:
         if cause is not None:
             _evidence(transaction, cause)
         plan, prior_content = _sensitive(transaction)
-        expected_current_sha256 = expected_current_sha256 or sha256(
-            plan.proposed_content.encode()
-        ).hexdigest()
+        expected_current_sha256 = (
+            expected_current_sha256
+            or sha256(plan.proposed_content.encode()).hexdigest()
+        )
         try:
             # DeviceBuilder.async_restore_content owns restore plus exactly one validation.
             async with asyncio.timeout(self._reconciliation_timeout):
@@ -529,7 +543,7 @@ class ConfigTransactionManager:
                 TransactionEvidenceCode.CANCELLED,
             )
             raise
-        except (TimeoutError, ConfigChangedError):
+        except TimeoutError, ConfigChangedError:
             return self._retain_write_recovery(transaction)
         except Exception as error:
             self._finish(
@@ -700,9 +714,7 @@ def _validation_detail(result: JobResult) -> ValidationDetail:
 def _safe_protocol_count(value: object) -> int | None:
     return (
         value
-        if isinstance(value, int)
-        and not isinstance(value, bool)
-        and 0 <= value <= 999
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 999
         else None
     )
 

@@ -28,8 +28,11 @@ from .models import StoredInterruptedSession
 from .preflight import ReferenceZeroError, zero_reference_guard
 from .session_manager import SessionManager
 from .state_tracker import SensorSampleWindow
+from .store import VerifiedCalibrationRecord, VerifiedGainGroup
 
 type MarkerWriter = Callable[[str, StoredInterruptedSession | None], Awaitable[None]]
+type VerifiedWriter = Callable[[VerifiedCalibrationRecord], Awaitable[None]]
+type PhaseGainTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
 
 
 class CalibrationState(StrEnum):
@@ -62,6 +65,14 @@ class CalibrationRebindError(CalibrationError):
     """Fresh native entity metadata cannot produce a generation-local binding."""
 
 
+class RestartVerificationError(CalibrationError):
+    """Post-restart flash evidence is incomplete or does not match exactly."""
+
+
+class RestartDisconnectTimeoutError(RestartVerificationError):
+    """The native Restart command did not disconnect within 20 seconds."""
+
+
 @dataclass(frozen=True, slots=True)
 class CalibrationResult:
     state: CalibrationState
@@ -75,6 +86,14 @@ class CalibrationResult:
     gain_evidence: GainRunEvidence | None
     restore_evidence: dict[str, RestoreEvidence] | dict[str, object] | None
     retry_allowed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RestartVerificationResult:
+    """Verified record plus the refreshed generation-local binding."""
+
+    record: VerifiedCalibrationRecord
+    binding: MeterBinding
 
 
 @dataclass(slots=True)
@@ -103,10 +122,18 @@ class CalibrationEngine:
         stability_limit_percent: float = 1.0,
         zero_concurrency: int = 2,
         evidence_timeout: float = 10.0,
+        persist_verified: VerifiedWriter | None = None,
+        restart_disconnect_timeout: float = 20.0,
+        restart_restore_timeout: float = 120.0,
     ) -> None:
         if sample_count < 1 or zero_concurrency < 1:
             raise ValueError("sample count and zero concurrency must be positive")
-        if not _positive_finite(stability_limit_percent, evidence_timeout):
+        if not _positive_finite(
+            stability_limit_percent,
+            evidence_timeout,
+            restart_disconnect_timeout,
+            restart_restore_timeout,
+        ):
             raise ValueError("calibration limits must be finite and positive")
         self.sessions = sessions
         self._persist_interrupted = persist_interrupted
@@ -114,7 +141,111 @@ class CalibrationEngine:
         self._stability_limit_percent = stability_limit_percent
         self._zero_concurrency = zero_concurrency
         self._evidence_timeout = evidence_timeout
+        self._persist_verified = persist_verified
+        self._restart_disconnect_timeout = restart_disconnect_timeout
+        self._restart_restore_timeout = restart_restore_timeout
         self._operation_sequences: dict[str, int] = {}
+
+    async def async_verify_after_restart(
+        self,
+        mac: str,
+        session: Any,
+        binding: MeterBinding,
+        expected_phase_gains: Mapping[str, PhaseGainTable],
+        *,
+        config_filename: str,
+        config_sha256: str,
+        substitutions: Mapping[str, str],
+    ) -> RestartVerificationResult:
+        """Restart once and persist only exact flash evidence for changed groups."""
+        if self._persist_verified is None:
+            raise RestartVerificationError("verified calibration persistence is absent")
+        expected = dict(expected_phase_gains)
+        if not expected:
+            raise RestartVerificationError(
+                "no changed groups need restart verification"
+            )
+        try:
+            groups = tuple(
+                VerifiedGainGroup(instance_id, gains)
+                for instance_id, gains in expected.items()
+            )
+        except ValueError as error:
+            raise RestartVerificationError("expected gain table is invalid") from error
+        lease = await self.sessions.async_acquire_calibration(mac)
+        try:
+            self._validate_binding_generation(session, binding)
+            if unknown := set(expected).difference(
+                _instance_id(group.key) for group in binding.groups
+            ):
+                raise RestartVerificationError(
+                    "changed gain group is outside the bound topology: "
+                    + ", ".join(sorted(unknown))
+                )
+            catalog = EntityCatalog(session.entities, binding.connection_generation)
+            restart = catalog.by_object_id("button", "restart")
+            if len(restart) != 1 or restart[0].name != "Restart":
+                raise RestartVerificationError(
+                    "the native Restart button is unavailable"
+                )
+            disconnect = _register_disconnect_waiter(session)
+            try:
+                descriptor = restart[0]
+                await session.async_press_button(
+                    descriptor.key, device_id=descriptor.device_id
+                )
+            except BaseException:
+                await _cancel_waiter(disconnect)
+                raise
+            try:
+                async with asyncio.timeout(self._restart_disconnect_timeout):
+                    await asyncio.shield(disconnect)
+            except asyncio.CancelledError:
+                await _cancel_waiter(disconnect)
+                raise
+            except TimeoutError as error:
+                await _cancel_waiter(disconnect)
+                raise RestartDisconnectTimeoutError(
+                    "the native Restart button did not disconnect within the "
+                    "required 20-second window"
+                ) from error
+
+            restore_started = monotonic()
+            baseline = tuple(getattr(session, "log_lines", ()))
+            try:
+                async with asyncio.timeout(self._restart_restore_timeout):
+                    await session.async_reconnect(dump_config=True)
+                    rebound = self._rebind_after_reconnect(
+                        session, binding, substitutions
+                    )
+                    evidence = await self._wait_restore(
+                        session,
+                        generation=int(session.connection_generation),
+                        expected_instance_ids=set(expected),
+                        started_after=restore_started,
+                        baseline=baseline,
+                        timeout=self._restart_restore_timeout,
+                    )
+            except TimeoutError as error:
+                raise RestartVerificationError(
+                    "reconnect and restore evidence timed out"
+                ) from error
+            _validate_restart_evidence(
+                evidence,
+                expected,
+                generation=int(session.connection_generation),
+            )
+            record = VerifiedCalibrationRecord(
+                mac,
+                config_filename,
+                config_sha256,
+                int(session.connection_generation),
+                groups,
+            )
+            await self._persist_verified(record)
+            return RestartVerificationResult(record, rebound)
+        finally:
+            lease.release()
 
     async def async_zero_all_references(
         self, session: Any, binding: MeterBinding
@@ -453,7 +584,9 @@ class CalibrationEngine:
         expected_instance_ids: set[str],
         started_after: float,
         baseline: tuple[str, ...],
+        timeout: float | None = None,
     ) -> dict[str, RestoreEvidence] | dict[str, object]:
+        evidence_timeout = self._evidence_timeout if timeout is None else timeout
         wait = getattr(session, "async_wait_for_restore", None)
         if wait is not None:
             return cast(
@@ -462,10 +595,10 @@ class CalibrationEngine:
                     connection_generation=generation,
                     expected_instance_ids=expected_instance_ids,
                     started_after=started_after,
-                    timeout=self._evidence_timeout,
+                    timeout=evidence_timeout,
                 ),
             )
-        deadline = monotonic() + self._evidence_timeout
+        deadline = monotonic() + evidence_timeout
         last_error: LogEvidenceError | None = None
         while monotonic() < deadline:
             new_lines = _new_log_lines(baseline, tuple(session.log_lines))
@@ -705,6 +838,73 @@ async def _discard_waiter(waiter: Awaitable[GainRunEvidence]) -> None:
         await waiter
     except BaseException:  # noqa: BLE001 - consume the owned waiter outcome
         return
+
+
+def _register_disconnect_waiter(session: Any) -> asyncio.Future[Any]:
+    """Create the disconnect future before dispatching native Restart."""
+    factory = getattr(session, "expect_disconnect", None)
+    if factory is not None:
+        return asyncio.ensure_future(factory())
+
+    async def wait_until_disconnected() -> None:
+        while bool(getattr(session, "connected", False)):
+            await asyncio.sleep(0.05)
+
+    return asyncio.create_task(wait_until_disconnected())
+
+
+async def _cancel_waiter(waiter: asyncio.Future[Any]) -> None:
+    if not waiter.done():
+        waiter.cancel()
+    with suppress(BaseException):
+        await waiter
+
+
+def _validate_restart_evidence(
+    evidence: Mapping[str, object],
+    expected: Mapping[str, PhaseGainTable],
+    *,
+    generation: int,
+) -> None:
+    missing = set(expected).difference(evidence)
+    if missing:
+        raise RestartVerificationError(
+            "missing restore evidence for " + ", ".join(sorted(missing))
+        )
+    unexpected = set(evidence).difference(expected)
+    if unexpected:
+        raise RestartVerificationError(
+            "unexpected restore evidence for " + ", ".join(sorted(unexpected))
+        )
+    for instance_id, expected_gains in expected.items():
+        restored = evidence[instance_id]
+        if not isinstance(restored, RestoreEvidence):
+            raise RestartVerificationError(
+                f"{instance_id}: restore evidence has an invalid shape"
+            )
+        if (
+            restored.instance_id != instance_id
+            or restored.connection_generation != generation
+        ):
+            raise RestartVerificationError(
+                f"{instance_id}: restore evidence correlation does not match"
+            )
+        if restored.source != "flash" or not restored.register_verified:
+            raise RestartVerificationError(
+                f"{instance_id}: saved flash was not verified as authoritative"
+            )
+        if any(
+            "spi" in line.casefold()
+            and ("fail" in line.casefold() or "error" in line.casefold())
+            for line in restored.matching_lines
+        ):
+            raise RestartVerificationError(
+                f"{instance_id}: SPI restore verification failed"
+            )
+        if restored.phase_gains != expected_gains:
+            raise RestartVerificationError(
+                f"{instance_id}: restored gains do not exactly match expected gains"
+            )
 
 
 def _sample_window(raw: Any) -> SensorSampleWindow:

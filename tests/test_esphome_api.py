@@ -126,6 +126,7 @@ class FakeClient:
         self.log_unsubscribed = 0
         self.disconnects = 0
         self.log_levels: list[object] = []
+        self.dump_configs: list[bool | None] = []
 
     async def connect(
         self,
@@ -149,11 +150,15 @@ class FakeClient:
         self.on_state = callback
 
     def subscribe_logs(
-        self, callback: Callable[[object], None], log_level: object
+        self,
+        callback: Callable[[object], None],
+        log_level: object,
+        dump_config: bool | None = None,
     ) -> Callable[[], None]:
         self.events.append("logs")
         self.on_log = callback
         self.log_levels.append(log_level)
+        self.dump_configs.append(dump_config)
 
         def unsubscribe() -> None:
             self.log_unsubscribed += 1
@@ -230,9 +235,12 @@ class StopDuringReadyClient(FakeClient):
             self._stop_synchronously()
 
     def subscribe_logs(
-        self, callback: Callable[[object], None], log_level: object
+        self,
+        callback: Callable[[object], None],
+        log_level: object,
+        dump_config: bool | None = None,
     ) -> Callable[[], None]:
-        unsubscribe = super().subscribe_logs(callback, log_level)
+        unsubscribe = super().subscribe_logs(callback, log_level, dump_config)
         if self.stop_during == "logs":
             self._stop_synchronously()
         return unsubscribe
@@ -790,5 +798,25 @@ def test_failed_log_subscription_cleanup_is_idempotent_and_suppresses_callback_e
         await session.async_shutdown()
         assert client.log_unsubscribed == 1
         assert session._unsubscribe_logs is None
+
+    asyncio.run(run())
+
+
+def test_disconnect_future_is_armed_before_restart_and_reconnect_dumps_config() -> None:
+    async def run() -> None:
+        original = FakeClient()
+        replacement = FakeClient()
+        session = make_session([original, replacement])
+        await session.async_connect()
+
+        disconnected = session.expect_disconnect()
+        assert original.on_stop is not None
+        await original.on_stop(False)
+        await disconnected
+        await session.async_reconnect(dump_config=True)
+
+        assert replacement.dump_configs == [True]
+        assert session.connection_generation == 2
+        await session.async_shutdown()
 
     asyncio.run(run())

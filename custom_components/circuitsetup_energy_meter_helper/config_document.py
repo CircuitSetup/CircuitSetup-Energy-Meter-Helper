@@ -8,10 +8,9 @@ from dataclasses import dataclass, field
 
 CT_NAME_RE = re.compile(r"^ct(?P<channel>[1-9]|[1-3][0-9]|4[0-2])_name$")
 CT_GAIN_RE = re.compile(r"^current_cal_ct(?P<channel>[1-9]|[1-3][0-9]|4[0-2])$")
+VOLTAGE_GAIN_RE = re.compile(r"^voltage_cal[12]$")
 _MAPPING_RE = re.compile(r"^(?P<indent> *)(?P<key>[\w-]+):(?P<rest>.*)$")
-_SEQUENCE_MAPPING_RE = re.compile(
-    r"^(?P<indent> *)-\s+(?P<key>[\w-]+):(?P<rest>.*)$"
-)
+_SEQUENCE_MAPPING_RE = re.compile(r"^(?P<indent> *)-\s+(?P<key>[\w-]+):(?P<rest>.*)$")
 _SEQUENCE_RE = re.compile(r"^(?P<indent> *)-\s+(?P<rest>.+)$")
 _YAML_PATH_RE = re.compile(r"(?i)^(.*?\.ya?ml)(?:@.*)?$")
 
@@ -81,7 +80,9 @@ class _DocumentParser:
             self._offsets.append(offset)
             offset += len(line)
 
-    def parse(self, document_type: type[ESPHomeConfigDocument]) -> ESPHomeConfigDocument:
+    def parse(
+        self, document_type: type[ESPHomeConfigDocument]
+    ) -> ESPHomeConfigDocument:
         project = self._nested_scalar("esphome", "project", "name")
         dashboard = self._section_scalar("dashboard_import", "package_import_url")
         return document_type(
@@ -150,7 +151,11 @@ class _DocumentParser:
             mapping = self._mapping(index)
             if mapping is None:
                 continue
-            if not (CT_NAME_RE.fullmatch(mapping.key) or CT_GAIN_RE.fullmatch(mapping.key)):
+            if not (
+                CT_NAME_RE.fullmatch(mapping.key)
+                or CT_GAIN_RE.fullmatch(mapping.key)
+                or VOLTAGE_GAIN_RE.fullmatch(mapping.key)
+            ):
                 continue
             if mapping.key in substitutions:
                 raise ESPHomeConfigParseError(
@@ -205,9 +210,7 @@ class _DocumentParser:
             if mapping and mapping.indent == child_indent and mapping.key == child_key:
                 children.append((index, mapping))
         if len(children) > 1:
-            raise ESPHomeConfigParseError(
-                f"duplicate {child_key}", children[1][0] + 1
-            )
+            raise ESPHomeConfigParseError(f"duplicate {child_key}", children[1][0] + 1)
         return self._scalar(*children[0]) if children else None
 
     def _section_scalar(self, section_name: str, key: str) -> ConfigScalar | None:

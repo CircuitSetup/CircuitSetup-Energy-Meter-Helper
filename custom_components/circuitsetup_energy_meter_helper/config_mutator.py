@@ -14,6 +14,7 @@ from .config_document import ConfigScalar, ESPHomeConfigDocument
 from .ct_catalog import CTPresetCatalog, custom_preset, raw_gain_for_preset
 from .ct_inventory import CTInventory
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
+from .store import VerifiedCalibrationRecord
 
 _SUBSTITUTIONS_RE = re.compile(r"^substitutions:\s*(?:#.*)?(?:\r?\n)?$")
 _TOP_LEVEL_RE = re.compile(r"^[\w-]+:")
@@ -24,9 +25,14 @@ _YAML_RESERVED = {"null", "true", "false", "yes", "no", "on", "off", "~"}
 class ConfigSnapshot(Protocol):
     """The minimum trusted configuration snapshot needed for a mutation."""
 
-    configuration: str
-    content: str
-    sha256: str
+    @property
+    def configuration(self) -> str: ...
+
+    @property
+    def content(self) -> str: ...
+
+    @property
+    def sha256(self) -> str: ...
 
 
 class ConfigMutationError(ValueError):
@@ -87,6 +93,126 @@ def build_ct_mutation(
         _redacted_diff(changes),
         proposed_content,
     )
+
+
+def build_calibrated_gain_mutation(
+    snapshot: ConfigSnapshot,
+    topology: MeterTopology,
+    verified: VerifiedCalibrationRecord,
+) -> ConfigMutationPlan:
+    """Build a reviewed final-gain plan bound to the calibration source hash."""
+    if getattr(snapshot, "configuration_authoritative", True) is not True:
+        raise ConfigMutationError("configuration snapshot is not authoritative")
+    current_hash = sha256(snapshot.content.encode()).hexdigest()
+    if current_hash != snapshot.sha256:
+        raise ConfigMutationError("configuration snapshot hash does not match content")
+    if (
+        snapshot.configuration != verified.config_filename
+        or snapshot.sha256 != verified.config_sha256
+    ):
+        raise ConfigMutationError(
+            "calibration origin no longer matches current YAML; re-read configuration"
+        )
+    document = ESPHomeConfigDocument.parse(snapshot.content)
+    changes: list[SubstitutionChange] = []
+    values: dict[str, str] = {}
+    voltage_values: dict[int, set[int]] = {1: set(), 2: set()}
+    addressed: list[tuple[str, int, int, tuple[int, int, int]]] = []
+    seen_channels: set[int] = set()
+    for group in verified.groups:
+        board_index, group_index = _gain_group_address(group.instance_id, topology)
+        first_channel = board_index * 6 + (group_index - 1) * 3 + 1
+        channels = (first_channel, first_channel + 1, first_channel + 2)
+        if seen_channels.intersection(channels):
+            raise ConfigMutationError("verified gain groups overlap")
+        seen_channels.update(channels)
+        voltage_gains = (
+            group.phase_gains[0][0],
+            group.phase_gains[1][0],
+            group.phase_gains[2][0],
+        )
+        addressed.append((group.instance_id, first_channel, group_index, voltage_gains))
+        voltage_values[group_index].update(voltage_gains)
+        for channel, (_, current_gain) in zip(channels, group.phase_gains, strict=True):
+            key = f"current_cal_ct{channel}"
+            _append_change(
+                changes,
+                values,
+                key,
+                str(current_gain),
+                document.substitutions,
+            )
+
+    if any(len(gains) > 1 for gains in voltage_values.values()):
+        raise ConfigMutationError(
+            "per-phase voltage gains require manual review",
+            snippet=_calibrated_gain_snippet(verified, addressed),
+        )
+    for group_index, gains in voltage_values.items():
+        if not gains:
+            continue
+        key = f"voltage_cal{group_index}"
+        _append_change(
+            changes,
+            values,
+            key,
+            str(next(iter(gains))),
+            document.substitutions,
+        )
+    proposed_content = _apply_changes(document, changes, values)
+    return ConfigMutationPlan(
+        snapshot.configuration,
+        snapshot.sha256,
+        tuple(changes),
+        _redacted_diff(changes),
+        proposed_content,
+    )
+
+
+def _gain_group_address(instance_id: str, topology: MeterTopology) -> tuple[int, int]:
+    match = re.fullmatch(r"meter_main([12])", instance_id)
+    if match is not None:
+        return 0, int(match.group(1))
+    match = re.fullmatch(r"addon([1-6])_([12])", instance_id)
+    if match is None:
+        raise ConfigMutationError("verified gain group has an unknown instance ID")
+    board_index, group_index = map(int, match.groups())
+    if board_index >= topology.board_count:
+        raise ConfigMutationError("verified gain group is outside topology")
+    return board_index, group_index
+
+
+def _calibrated_gain_snippet(
+    verified: VerifiedCalibrationRecord,
+    addressed: list[tuple[str, int, int, tuple[int, int, int]]],
+) -> str:
+    lines = ["substitutions:"]
+    group_by_id = {group.instance_id: group for group in verified.groups}
+    for instance_id, first_channel, _, _ in addressed:
+        for offset, (_, current_gain) in enumerate(
+            group_by_id[instance_id].phase_gains
+        ):
+            lines.append(f"  current_cal_ct{first_channel + offset}: {current_gain}")
+    voltage_values = {
+        group_index: {
+            gain
+            for _, _, candidate_index, gains in addressed
+            if candidate_index == group_index
+            for gain in gains
+        }
+        for group_index in (1, 2)
+    }
+    for group_index, gains in voltage_values.items():
+        if len(gains) == 1:
+            lines.append(f"  voltage_cal{group_index}: {next(iter(gains))}")
+    lines.append("sensor:")
+    for instance_id, _, group_index, voltage_gains in addressed:
+        if len(voltage_values[group_index]) == 1:
+            continue
+        lines.append(f"  - id: !extend {instance_id}")
+        for phase, gain in zip("abc", voltage_gains, strict=True):
+            lines.extend((f"    phase_{phase}:", f"      gain_voltage: {gain}"))
+    return "\n".join(lines) + "\n"
 
 
 def _validate_requests(
@@ -150,7 +276,7 @@ def _append_change(
 
 
 def _same_value(key: str, old_value: str, new_value: str) -> bool:
-    if key.startswith("current_cal_ct"):
+    if _is_gain_key(key):
         try:
             return int(old_value) == int(new_value)
         except ValueError:
@@ -232,23 +358,23 @@ def _substitution_block(
 
 def _render_value(key: str, value: str, content: str, current: ConfigScalar) -> str:
     old_token = content[current.span.start : current.span.end]
-    if key.startswith("current_cal_ct"):
+    if _is_gain_key(key):
         return _render_gain(value, old_token)
     return _render_name(value, old_token)
 
 
 def _render_missing(change: SubstitutionChange, document: ESPHomeConfigDocument) -> str:
     quote = _prevailing_quote(document, change.key)
-    if change.key.startswith("current_cal_ct"):
+    if _is_gain_key(change.key):
         return _render_gain(change.new_value, quote)
     return _render_name(change.new_value, quote)
 
 
 def _prevailing_quote(document: ESPHomeConfigDocument, key: str) -> str:
-    is_gain = key.startswith("current_cal_ct")
+    is_gain = _is_gain_key(key)
     for same_family in (True, False):
         for candidate_key, scalar in document.substitutions.items():
-            if same_family and (candidate_key.startswith("current_cal_ct") != is_gain):
+            if same_family and (_is_gain_key(candidate_key) != is_gain):
                 continue
             token = document.content[scalar.span.start : scalar.span.end]
             if token.startswith(("'", '"')):
@@ -262,6 +388,10 @@ def _render_gain(value: str, old_token: str) -> str:
     if old_token.startswith('"'):
         return json.dumps(value)
     return value
+
+
+def _is_gain_key(key: str) -> bool:
+    return key.startswith("current_cal_ct") or key in {"voltage_cal1", "voltage_cal2"}
 
 
 def _render_name(value: str, old_token: str) -> str:

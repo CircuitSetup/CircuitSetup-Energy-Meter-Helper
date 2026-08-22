@@ -102,6 +102,7 @@ class ESPHomeApiSession:
         self.connected = False
         self._closed = False
         self._disconnect_error: ESPHomeSessionDisconnectedError | None = None
+        self._disconnect_waiters: set[asyncio.Future[None]] = set()
         self._lifecycle_lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task[None] | None = None
 
@@ -115,12 +116,21 @@ class ESPHomeApiSession:
         """Return the bounded, sanitized calibration log window."""
         return tuple(self._log_lines)
 
+    def expect_disconnect(self) -> asyncio.Future[None]:
+        """Register a one-shot disconnect future before a restart command."""
+        if not self.connected:
+            raise ESPHomeApiRepairRequired("The ESPHome API session is not connected")
+        waiter = asyncio.get_running_loop().create_future()
+        self._disconnect_waiters.add(waiter)
+        waiter.add_done_callback(self._disconnect_waiters.discard)
+        return waiter
+
     async def async_connect(self) -> None:
         """Connect, verify identity, and subscribe before becoming ready."""
         async with self._lifecycle_lock:
             await self._async_connect_locked()
 
-    async def _async_connect_locked(self) -> None:
+    async def _async_connect_locked(self, *, dump_config: bool = False) -> None:
         if self._closed:
             raise ESPHomeApiRepairRequired("The ESPHome API session is closed")
         if self.connected:
@@ -171,10 +181,21 @@ class ESPHomeApiSession:
                 )
             client.subscribe_states(lambda state: self._on_state(client, state))
             ensure_attempt_is_live()
-            self._unsubscribe_logs = client.subscribe_logs(
-                lambda message: self._on_log(client, message),
-                self._log_level("LOG_LEVEL_DEBUG"),
-            )
+
+            def callback(message: Any) -> None:
+                self._on_log(client, message)
+
+            if dump_config:
+                self._unsubscribe_logs = client.subscribe_logs(
+                    callback,
+                    self._log_level("LOG_LEVEL_DEBUG"),
+                    dump_config=True,
+                )
+            else:
+                self._unsubscribe_logs = client.subscribe_logs(
+                    callback,
+                    self._log_level("LOG_LEVEL_DEBUG"),
+                )
             ensure_attempt_is_live()
         except BaseException:
             await self._disconnect_failed_client(client)
@@ -291,13 +312,13 @@ class ESPHomeApiSession:
                 if self._closed:
                     raise asyncio.CancelledError
 
-    async def async_reconnect(self) -> None:
+    async def async_reconnect(self, *, dump_config: bool = False) -> None:
         """Disconnect and create a fresh client from the current ESPHome entry."""
         async with self._lifecycle_lock:
             if self._closed:
                 raise ESPHomeApiRepairRequired("The ESPHome API session is closed")
             await self._async_disconnect(shutdown=False)
-            await self._async_connect_locked()
+            await self._async_connect_locked(dump_config=dump_config)
 
     async def async_shutdown(self) -> None:
         """Cancel pending work and release the secondary connection once."""
@@ -366,6 +387,7 @@ class ESPHomeApiSession:
         if client is not self._client:
             return
         self.connected = False
+        self._resolve_disconnect_waiters()
         self._clear_connection_state()
         if not expected_disconnect:
             self._disconnect_error = ESPHomeSessionDisconnectedError(
@@ -452,6 +474,13 @@ class ESPHomeApiSession:
             for _, _, future in waiters:
                 future.cancel()
         self._number_waiters.clear()
+        for waiter in tuple(self._disconnect_waiters):
+            waiter.cancel()
+
+    def _resolve_disconnect_waiters(self) -> None:
+        for waiter in tuple(self._disconnect_waiters):
+            if not waiter.done():
+                waiter.set_result(None)
 
     def _fail_waiters(self, error: ESPHomeSessionDisconnectedError) -> None:
         for waiters in self._number_waiters.values():
