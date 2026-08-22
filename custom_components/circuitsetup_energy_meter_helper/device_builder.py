@@ -12,6 +12,35 @@ from hashlib import sha256
 from typing import Any, Protocol
 
 
+async def _wait_for_owned_cleanup[T](task: asyncio.Task[T]) -> bool:
+    """Finish owned cleanup before reporting repeated caller cancellation."""
+    caller_cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                break
+            caller_cancelled = True
+        except BaseException as error:
+            if caller_cancelled:
+                raise BaseExceptionGroup(
+                    "owned cleanup failed after caller cancellation",
+                    [asyncio.CancelledError(), error],
+                ) from error
+            raise
+    try:
+        task.result()
+    except BaseException as error:
+        if caller_cancelled:
+            raise BaseExceptionGroup(
+                "owned cleanup failed after caller cancellation",
+                [asyncio.CancelledError(), error],
+            ) from error
+        raise
+    return caller_cancelled
+
+
 class WebSocket(Protocol):
     """The small JSON websocket surface used by Device Builder."""
 
@@ -97,6 +126,7 @@ class DeviceBuilderClient:
         self._stream_handlers: dict[str, Callable[[dict[str, Any]], None]] = {}
         self._stream_futures: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._next_message_id = 0
+        self._disconnect_task: asyncio.Task[None] | None = None
 
     def __repr__(self) -> str:
         return f"DeviceBuilderClient(base_url={self._base_url!r}, connected={self._ws is not None})"
@@ -129,27 +159,41 @@ class DeviceBuilderClient:
 
     async def async_disconnect(self) -> None:
         """Close the websocket and fail all outstanding callers."""
-        listener, self._listener = self._listener, None
-        if listener is not None:
-            listener.cancel()
+        task = self._disconnect_task
+        if task is None or (
+            task.done() and (task.cancelled() or task.exception() is not None)
+        ):
+            if task is not None and task.done() and not task.cancelled():
+                task.exception()
+            task = self._disconnect_task = asyncio.create_task(
+                self._async_disconnect_owned()
+            )
+        caller_cancelled = await _wait_for_owned_cleanup(task)
+        if self._disconnect_task is task:
+            self._disconnect_task = None
+        if caller_cancelled:
+            raise asyncio.CancelledError
+
+    async def _async_disconnect_owned(self) -> None:
+        """Settle the actual transport before publishing disconnected state."""
         websocket = self._ws
+        listener = self._listener
         if websocket is None:
+            if listener is not None and not listener.done():
+                listener.cancel()
+                await asyncio.gather(listener, return_exceptions=True)
+            self._listener = None
             self._fail_pending()
             return
-        close_task = asyncio.create_task(websocket.close())
-        try:
-            await asyncio.shield(close_task)
-        except asyncio.CancelledError:
-            try:
-                await close_task
-            finally:
-                self._ws = None
-                self._fail_pending()
-            raise
-        finally:
-            if close_task.done():
-                self._ws = None
-                self._fail_pending()
+        await websocket.close()
+        if listener is not None and not listener.done():
+            listener.cancel()
+            await asyncio.gather(listener, return_exceptions=True)
+        if self._listener is listener:
+            self._listener = None
+        if self._ws is websocket:
+            self._ws = None
+        self._fail_pending()
 
     async def async_command(self, command: str, args: dict[str, Any]) -> Any:
         """Send one pinned protocol command and await its matching envelope."""

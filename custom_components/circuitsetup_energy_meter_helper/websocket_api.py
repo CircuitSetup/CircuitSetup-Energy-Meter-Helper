@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import math
@@ -19,7 +20,7 @@ from homeassistant.core import HomeAssistant
 
 from .config_transaction import RollbackFailedError
 from .const import DOMAIN
-from .device_builder import ConfigChangedError
+from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .esphome_api import sanitize_control_text
 from .models import InstallerIntent
 from .provisioning import ProvisioningCoordinator
@@ -201,6 +202,8 @@ class EntryWebsocketController:
         self._diagnostics_provider = diagnostics_provider
         self._subscriptions: set[Unsubscribe] = set()
         self._closed = False
+        self._closing = False
+        self._close_task: asyncio.Task[None] | None = None
 
     @property
     def has_subscribers(self) -> bool:
@@ -214,7 +217,7 @@ class EntryWebsocketController:
         self, command: str, msg: Mapping[str, Any], user_id: str | None
     ) -> Any:
         """Route one validated command without retaining a second workflow state."""
-        if self._closed:
+        if self._closed or self._closing:
             raise CapabilityUnavailable
         operation = command.removeprefix(_PREFIX)
         if operation == "setup_status":
@@ -411,14 +414,26 @@ class EntryWebsocketController:
 
     async def async_close(self) -> None:
         """Remove providers/callbacks and scrub owner handles exactly once."""
-        if self._closed and not self._subscriptions:
+        if self._closed:
             return
-        self._closed = True
+        task = self._close_task
+        if task is None or (
+            task.done() and (task.cancelled() or task.exception() is not None)
+        ):
+            if task is not None and task.done() and not task.cancelled():
+                task.exception()
+            self._closing = True
+            task = self._close_task = asyncio.create_task(self._async_close_owned())
+        caller_cancelled = await _wait_for_owned_cleanup(task)
+        if caller_cancelled:
+            raise asyncio.CancelledError
+
+    async def _async_close_owned(self) -> None:
         errors: list[BaseException] = []
         subscriptions = tuple(self._subscriptions)
         self._diagnostics_provider = None
-        transactions, self.transactions = self.transactions, None
-        workflow, self.workflow = self.workflow, None
+        transactions = self.transactions
+        workflow = self.workflow
         for unsubscribe in subscriptions:
             try:
                 unsubscribe()
@@ -444,6 +459,9 @@ class EntryWebsocketController:
             errors.append(error)
         if errors:
             raise BaseExceptionGroup("websocket controller cleanup failed", errors)
+        self.transactions = None
+        self.workflow = None
+        self._closed = True
 
 
 class _Router:

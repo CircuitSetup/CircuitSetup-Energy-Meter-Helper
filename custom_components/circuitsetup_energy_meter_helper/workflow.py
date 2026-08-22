@@ -11,7 +11,7 @@ from time import monotonic
 from typing import Any
 from uuid import uuid4
 
-from aiohasupervisor import SupervisorError
+from aiohasupervisor import SupervisorNotFoundError
 from aiohasupervisor.models import AddonState as SupervisorAddonState
 from aiohttp import hdrs
 from homeassistant.components.hassio import HassIO, get_supervisor_client
@@ -28,7 +28,11 @@ from .config_mutator import CTChangeRequest, build_ct_mutation
 from .config_transaction import ConfigTransactionManager, ReconnectEvidence
 from .ct_catalog import CTPresetCatalog
 from .ct_inventory import CTInventory
-from .device_builder import DeviceBuilderClient, ESPHomeConfigSnapshot
+from .device_builder import (
+    DeviceBuilderClient,
+    ESPHomeConfigSnapshot,
+    _wait_for_owned_cleanup,
+)
 from .entity_binding import MeterBinding, bind_meter
 from .entity_catalog import EntityCatalog
 from .esphome_api import ESPHomeApiSession
@@ -114,8 +118,13 @@ class LazyDeviceBuilder:
     def __init__(self, client: DeviceBuilderClient) -> None:
         self._client = client
         self._lock = asyncio.Lock()
+        self._close_task: asyncio.Task[None] | None = None
+        self._closed = False
+        self._closing = False
 
     async def _ready(self) -> DeviceBuilderClient:
+        if self._closed or self._closing:
+            raise WorkflowCapabilityUnavailable("Device Builder is closing")
         if not self._client.connected:
             async with self._lock:
                 if not self._client.connected:
@@ -170,13 +179,24 @@ class LazyDeviceBuilder:
         )
 
     async def async_close(self) -> None:
+        if self._closed:
+            return
+        task = self._close_task
+        if task is None or (
+            task.done() and (task.cancelled() or task.exception() is not None)
+        ):
+            if task is not None and task.done() and not task.cancelled():
+                task.exception()
+            self._closing = True
+            task = self._close_task = asyncio.create_task(self._async_close_owned())
+        caller_cancelled = await _wait_for_owned_cleanup(task)
+        if caller_cancelled:
+            raise asyncio.CancelledError
+
+    async def _async_close_owned(self) -> None:
         async with self._lock:
-            disconnect = asyncio.create_task(self._client.async_disconnect())
-            try:
-                await asyncio.shield(disconnect)
-            except asyncio.CancelledError:
-                await disconnect
-                raise
+            await self._client.async_disconnect()
+            self._closed = True
 
 
 class EntryWorkflow:
@@ -210,6 +230,10 @@ class EntryWorkflow:
         self._sessions: dict[str, _SessionHandle] = {}
         self._session_guards: dict[str, RLock] = {}
         self._subscribers: dict[str, set[Callable[[SessionStatus], None]]] = {}
+        self._session_cleanup_tasks: dict[str, asyncio.Task[None]] = {}
+        self._cleaning_macs: set[str] = set()
+        self._close_task: asyncio.Task[None] | None = None
+        self._closing = False
         self.transactions: ConfigTransactionManager | None = None
         self._closed = False
         self._calibration = CalibrationEngine(
@@ -385,7 +409,9 @@ class EntryWorkflow:
         )
         with self._guard(mac):
             self._prune_device_sessions_locked(mac)
-            if any(item.mac == mac for item in self._sessions.values()):
+            if mac in self._cleaning_macs or any(
+                item.mac == mac for item in self._sessions.values()
+            ):
                 handle.scrub()
                 raise WorkflowHandleError(
                     "a calibration session is already active for this device"
@@ -550,18 +576,21 @@ class EntryWorkflow:
         handle = self._session(session_id)
         with self._guard(handle.mac):
             handle = self._session_locked(session_id)
+            active_task = handle.active_task
+            cleanup_task = self._start_session_cleanup(handle, active_task)
             handle.revoked = True
             handle.revision += 1
             handle.state = "cancelled"
             status = self._publish(handle)
             self._sessions.pop(session_id, None)
             self._subscribers.pop(session_id, None)
-            active_task = handle.active_task
-            if active_task is not None and active_task is not asyncio.current_task():
-                active_task.cancel()
-        if active_task is not None and active_task is not asyncio.current_task():
-            await asyncio.gather(active_task, return_exceptions=True)
-        self._finalize_revoked(handle)
+        try:
+            caller_cancelled = await _wait_for_owned_cleanup(cleanup_task)
+        finally:
+            if cleanup_task.done():
+                self._session_cleanup_tasks.pop(session_id, None)
+        if caller_cancelled:
+            raise asyncio.CancelledError
         return status
 
     def subscribe_session(
@@ -624,44 +653,46 @@ class EntryWorkflow:
     async def async_close(self) -> None:
         if self._closed:
             return
-        self._closed = True
+        task = self._close_task
+        if task is None or (
+            task.done() and (task.cancelled() or task.exception() is not None)
+        ):
+            if task is not None and task.done() and not task.cancelled():
+                task.exception()
+            self._closing = True
+            task = self._close_task = asyncio.create_task(self._async_close_owned())
+        caller_cancelled = await _wait_for_owned_cleanup(task)
+        if caller_cancelled:
+            raise asyncio.CancelledError
+
+    async def _async_close_owned(self) -> None:
         errors: list[BaseException] = []
         plans = tuple(self._plans.values())
         sessions = tuple(self._sessions.values())
-        active_tasks: set[asyncio.Task[Any]] = set()
-        current = asyncio.current_task()
+        cleanup_tasks = set(self._session_cleanup_tasks.values())
         for session in sessions:
             with self._guard(session.mac):
                 session.revoked = True
                 session.revision += 1
-                if (
-                    session.active_task is not None
-                    and session.active_task is not current
-                    and not session.active_task.done()
-                ):
-                    session.active_task.cancel()
-                    active_tasks.add(session.active_task)
-        if active_tasks:
-            await asyncio.gather(*active_tasks, return_exceptions=True)
+                active_task = session.active_task
+                cleanup_tasks.add(self._start_session_cleanup(session, active_task))
+        if cleanup_tasks:
+            results = await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+            errors.extend(
+                result
+                for result in results
+                if isinstance(result, BaseException)
+                and not isinstance(result, asyncio.CancelledError)
+            )
         self._plans.clear()
         self._sessions.clear()
         self._subscribers.clear()
-        self._session_guards.clear()
+        self._session_cleanup_tasks.clear()
+        self._cleaning_macs.clear()
         builder = self._builder
-        self.transactions = None
-        self._api = None
         for plan in plans:
             try:
                 plan.scrub()
-            except BaseException as error:  # noqa: BLE001 - scrub every handle
-                errors.append(error)
-        for session in sessions:
-            try:
-                self._sessions_owner.abandon_calibration(session.mac)
-            except BaseException as error:  # noqa: BLE001 - scrub every handle
-                errors.append(error)
-            try:
-                session.scrub()
             except BaseException as error:  # noqa: BLE001 - scrub every handle
                 errors.append(error)
         if builder is not None:
@@ -669,10 +700,15 @@ class EntryWorkflow:
                 await builder.async_close()
             except BaseException as error:  # noqa: BLE001 - report after local scrub
                 errors.append(error)
-            finally:
+            else:
                 self._builder = None
         if errors:
             raise BaseExceptionGroup("workflow cleanup failed", errors)
+        self.transactions = None
+        self._api = None
+        self._session_guards.clear()
+        self._closed = True
+        self._closing = False
 
     async def _async_calibration_snapshot(
         self, mac: str, topology: MeterTopology
@@ -721,7 +757,7 @@ class EntryWorkflow:
         return await builder.async_get_config(configuration)
 
     def _device(self, device_id: str) -> DiscoveredDevice:
-        if self._closed:
+        if self._closed or self._closing:
             raise WorkflowHandleError("workflow is closed")
         if self._esphome_entry_id is not None and device_id != self._esphome_entry_id:
             raise WorkflowHandleError("device is not owned by this entry")
@@ -840,23 +876,47 @@ class EntryWorkflow:
         self._sessions.pop(handle.session_id, None)
         self._subscribers.pop(handle.session_id, None)
         task = handle.active_task
-        if task is None or task.done():
-            self._finalize_revoked(handle)
-            return
-        if task is not asyncio.current_task():
-            task.cancel()
+        self._start_session_cleanup(handle, task)
 
-        def finish(_task: asyncio.Task[Any]) -> None:
-            self._finalize_revoked(handle)
+    def _start_session_cleanup(
+        self, handle: _SessionHandle, active_task: asyncio.Task[Any] | None
+    ) -> asyncio.Task[None]:
+        existing = self._session_cleanup_tasks.get(handle.session_id)
+        if existing is not None:
+            return existing
+        cleanup = asyncio.create_task(self._async_finalize_revoked(handle, active_task))
+        self._session_cleanup_tasks[handle.session_id] = cleanup
+        self._cleaning_macs.add(handle.mac)
+        return cleanup
 
-        task.add_done_callback(finish)
-
-    def _finalize_revoked(self, handle: _SessionHandle) -> None:
+    async def _async_finalize_revoked(
+        self, handle: _SessionHandle, active_task: asyncio.Task[Any] | None
+    ) -> None:
+        errors: list[BaseException] = []
+        if active_task is not None and active_task is not asyncio.current_task():
+            if not active_task.done():
+                active_task.cancel()
+            try:
+                await _wait_for_owned_cleanup(active_task)
+            except asyncio.CancelledError:
+                pass
+            except BaseException as error:  # noqa: BLE001 - finish local scrub
+                errors.append(error)
         try:
             self._sessions_owner.abandon_calibration(handle.mac)
-        except CalibrationBusyError:
-            return
-        handle.scrub()
+        except CalibrationBusyError as error:
+            errors.append(error)
+        except BaseException as error:  # noqa: BLE001 - finish local scrub
+            errors.append(error)
+        try:
+            handle.scrub()
+        except BaseException as error:  # noqa: BLE001 - aggregate cleanup
+            errors.append(error)
+        finally:
+            with self._guard(handle.mac):
+                self._cleaning_macs.discard(handle.mac)
+        if errors:
+            raise BaseExceptionGroup("calibration session cleanup failed", errors)
 
     def _publish(self, handle: _SessionHandle) -> SessionStatus:
         status = handle.status()
@@ -904,7 +964,7 @@ async def create_device_builder(hass: HomeAssistant) -> LazyDeviceBuilder | None
     supervisor = get_supervisor_client(hass)
     try:
         addon = await supervisor.addons.addon_info(ESPHOME_DEVICE_BUILDER_SLUG)
-    except SupervisorError:
+    except SupervisorNotFoundError:
         return None
     if (
         addon.slug != ESPHOME_DEVICE_BUILDER_SLUG

@@ -127,6 +127,93 @@ def test_disconnect_fails_pending_request() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("cancel_count", (1, 3))
+def test_disconnect_drains_actual_websocket_close_through_repeated_cancellation(
+    cancel_count: int,
+) -> None:
+    """Caller cancellation cannot cancel the transport close or publish early state."""
+
+    async def run() -> None:
+        close_started = asyncio.Event()
+        close_release = asyncio.Event()
+        close_cancellations = 0
+
+        class GatedWebSocket(FakeWebSocket):
+            async def close(self) -> None:
+                nonlocal close_cancellations
+                close_started.set()
+                try:
+                    await close_release.wait()
+                except asyncio.CancelledError:
+                    close_cancellations += 1
+                    raise
+                await super().close()
+
+        ws = GatedWebSocket({"server_version": "1.0", "requires_auth": False})
+        client = DeviceBuilderClient("http://builder", connect=lambda _: ws)
+        await client.async_connect()
+        closing = asyncio.create_task(client.async_disconnect())
+        await close_started.wait()
+        for _ in range(cancel_count):
+            closing.cancel()
+            await asyncio.sleep(0)
+        assert client.connected
+        assert not closing.done()
+        close_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        assert close_cancellations == 0
+        assert not client.connected
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancel_count", (1, 3))
+def test_disconnect_reports_cancel_and_close_failure_then_retries(
+    cancel_count: int,
+) -> None:
+    """A failed owned close reports cancellation too and retains the transport."""
+
+    async def run() -> None:
+        close_started = asyncio.Event()
+        close_release = asyncio.Event()
+        attempts = 0
+
+        class RetryWebSocket(FakeWebSocket):
+            async def close(self) -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    close_started.set()
+                    await close_release.wait()
+                    raise RuntimeError("transport close failed")
+                await super().close()
+
+        ws = RetryWebSocket({"server_version": "1.0", "requires_auth": False})
+        client = DeviceBuilderClient("http://builder", connect=lambda _: ws)
+        await client.async_connect()
+        closing = asyncio.create_task(client.async_disconnect())
+        await close_started.wait()
+        for _ in range(cancel_count):
+            closing.cancel()
+            await asyncio.sleep(0)
+        close_release.set()
+        with pytest.raises(BaseExceptionGroup) as caught:
+            await closing
+        assert any(
+            isinstance(error, asyncio.CancelledError)
+            for error in caught.value.exceptions
+        )
+        assert any(isinstance(error, RuntimeError) for error in caught.value.exceptions)
+        assert client.connected
+        await client.async_disconnect()
+        assert attempts == 2
+        assert not client.connected
+
+    asyncio.run(run())
+
+
 def test_config_commands_and_hash_precondition() -> None:
     """Config updates re-read their source and reject changed content."""
 

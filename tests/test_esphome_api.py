@@ -651,17 +651,21 @@ def test_unsubscribe_failure_does_not_skip_disconnect() -> None:
     asyncio.run(run())
 
 
-def test_unload_stops_provisioning_and_scrubs_runtime_when_api_cleanup_fails() -> None:
+def test_unload_retains_runtime_until_api_cleanup_retry_succeeds() -> None:
     async def run() -> None:
         from custom_components.circuitsetup_energy_meter_helper import (
             async_unload_entry,
         )
 
         stopped = 0
+        shutdowns = 0
 
         class FailingSession:
             async def async_shutdown(self) -> None:
-                raise RuntimeError("cleanup failed")
+                nonlocal shutdowns
+                shutdowns += 1
+                if shutdowns == 1:
+                    raise RuntimeError("cleanup failed")
 
         class Provisioning:
             async def async_stop(self) -> None:
@@ -681,6 +685,10 @@ def test_unload_stops_provisioning_and_scrubs_runtime_when_api_cleanup_fails() -
         assert stopped == 1
         assert len(caught.value.exceptions) == 1
         assert isinstance(caught.value.exceptions[0], RuntimeError)
+        assert hass.data["circuitsetup_energy_meter_helper"]["helper"] is runtime
+        assert await async_unload_entry(hass, entry)
+        assert shutdowns == 2
+        assert stopped == 2
         assert runtime == {}
         assert "helper" not in hass.data["circuitsetup_energy_meter_helper"]
 
