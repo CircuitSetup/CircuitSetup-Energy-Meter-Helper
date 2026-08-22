@@ -10,6 +10,7 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     DeviceBuilderClient,
     ESPHomeConfigSnapshot,
     JobProgressStage,
+    JobResult,
     RollbackError,
 )
 
@@ -407,10 +408,75 @@ def test_restore_expected_hash_refuses_a_foreign_race() -> None:
         )
         await asyncio.sleep(0)
         await ws.send_result("1", "foreign")
+        await asyncio.sleep(0)
+        await ws.send_result("2", "foreign")
 
         with pytest.raises(ConfigChangedError):
             await task
         assert all(message["command"] != "devices/update_config" for message in ws.sent)
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
+def test_restore_rejects_content_that_does_not_match_the_exact_prior_hash() -> None:
+    """Validation cannot substitute for reading back the exact restored bytes."""
+
+    async def run() -> None:
+        client, _ = await connected_client()
+        reads = iter(
+            (
+                ESPHomeConfigSnapshot("meter.yaml", "proposed", sha256(b"proposed").hexdigest()),
+                ESPHomeConfigSnapshot("meter.yaml", "altered", sha256(b"altered").hexdigest()),
+            )
+        )
+
+        async def read(_configuration: str) -> ESPHomeConfigSnapshot:
+            return next(reads)
+
+        async def update(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        async def validate(_configuration: str) -> JobResult:
+            return JobResult(True, 0, "", ())
+
+        client.async_get_config = read
+        client.async_update_config = update
+        client.async_validate = validate
+
+        with pytest.raises(RollbackError, match="verification"):
+            await client.async_restore_content(
+                "meter.yaml",
+                "prior",
+                expected_current_sha256=sha256(b"proposed").hexdigest(),
+            )
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
+def test_restore_retry_accepts_content_already_written_before_response_loss() -> None:
+    async def run() -> None:
+        client, _ = await connected_client()
+
+        async def changed(*_args: object, **_kwargs: object) -> None:
+            raise ConfigChangedError("proposed", sha256(b"prior").hexdigest())
+
+        async def read(configuration: str) -> ESPHomeConfigSnapshot:
+            return ESPHomeConfigSnapshot(
+                configuration, "prior", sha256(b"prior").hexdigest()
+            )
+
+        async def validate(_configuration: str) -> JobResult:
+            return JobResult(True, 0, "", ())
+
+        client.async_update_config = changed
+        client.async_get_config = read
+        client.async_validate = validate
+
+        await client.async_restore_content(
+            "meter.yaml", "prior", expected_current_sha256="proposed"
+        )
         await client.async_disconnect()
 
     asyncio.run(run())
@@ -454,3 +520,18 @@ def test_rollback_transport_failures_are_wrapped(stage: str) -> None:
         await client.async_disconnect()
 
     asyncio.run(run())
+
+
+def test_repr_never_exposes_supervisor_ingress_credentials() -> None:
+    client = DeviceBuilderClient(
+        "http://url-token@supervisor:8123/api/hassio_ingress/secret-session",
+        token="top-secret-token",
+        connect=lambda _: FakeWebSocket({}),
+    )
+
+    value = repr(client)
+
+    assert value == "DeviceBuilderClient(origin='http://supervisor:8123', connected=False)"
+    assert "url-token" not in value
+    assert "secret-session" not in value
+    assert "top-secret-token" not in value

@@ -25,6 +25,7 @@ class CTChannelConfig:
     selection_verified_against_config: bool
     address: ChannelAddress
     display_label: str | None = None
+    stored_selection_present: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +110,8 @@ class CTInventory:
                     selected_model_id,
                     verified,
                     channel_address(channel, topology),
-                    display_label,
+                display_label,
+                stored is not None,
                 )
             )
         _reject_object_id_collisions(channels)

@@ -131,6 +131,7 @@ class Builder:
             expected_current_sha256 is not None
             and sha256(self.remote_content.encode()).hexdigest()
             != expected_current_sha256
+            and self.remote_content != content
         ):
             raise ConfigChangedError(
                 expected_current_sha256,
@@ -725,7 +726,7 @@ def test_validation_detail_prefers_structured_protocol_counts() -> None:
     asyncio.run(run())
 
 
-def test_rollback_failure_is_typed_terminal_and_not_double_validated() -> None:
+def test_rollback_failure_retains_exact_source_and_retry_handle() -> None:
     async def run() -> None:
         builder = Builder(
             validation=(ConnectionError("validation disconnected"),),
@@ -736,9 +737,51 @@ def test_rollback_failure_is_typed_terminal_and_not_double_validated() -> None:
         with pytest.raises(RollbackFailedError, match="rollback failed"):
             await manager.async_confirm_write(preview.transaction_id, "admin")
         assert builder.calls == ["write", "validate", "restore"]
+        status = manager.status(preview.transaction_id)
+        internal = manager.sessions._get_transaction(preview.transaction_id)
+        assert status.rollback_available
+        assert internal.prior_content == "prior"
+        assert manager.sessions.is_config_locked("aabbccddeeff")
+
+        builder.restore_error = None
+        restored = await manager.async_rollback(preview.transaction_id)
+
+        assert restored.state is ConfigTransactionState.ROLLED_BACK
+        assert builder.remote_content == "prior"
         assert not manager.sessions.is_config_locked("aabbccddeeff")
-        with pytest.raises(KeyError):
+
+    asyncio.run(run())
+
+
+def test_expiry_owns_restore_before_scrubbing_written_configuration() -> None:
+    async def run() -> None:
+        now = 0.0
+        builder = Builder()
+        manager = ConfigTransactionManager(
+            builder,
+            Verifier(_evidence()),
+            Persistence(),
+            SessionManager(),
+            confirmation_ttl=1,
+            clock=lambda: now,
+        )
+        preview = await _preview(manager, content="exact prior bytes\n")
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        internal = manager.sessions._get_transaction(preview.transaction_id)
+        now = 2.0
+
+        with pytest.raises(KeyError, match="expired"):
             manager.status(preview.transaction_id)
+        for _ in range(10):
+            if manager.sessions._get_transaction(preview.transaction_id) is None:
+                break
+            await asyncio.sleep(0)
+
+        assert builder.calls[-1] == "restore"
+        assert builder.remote_content == "exact prior bytes\n"
+        assert internal.prior_content is None
+        assert manager.sessions._get_transaction(preview.transaction_id) is None
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
 
     asyncio.run(run())
 

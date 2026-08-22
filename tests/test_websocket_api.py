@@ -12,26 +12,36 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import voluptuous as vol
+from aioesphomeapi import ButtonInfo as ApiButtonInfo
+from aioesphomeapi import NumberInfo as ApiNumberInfo
+from aioesphomeapi import SensorInfo as ApiSensorInfo
 from aiohttp import ClientConnectionError
 from homeassistant.components.hassio import HassIO
 from homeassistant.components.hassio.const import DATA_COMPONENT
+from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.exceptions import ConfigEntryNotReady, Unauthorized
 
 from custom_components.circuitsetup_energy_meter_helper import (
     async_setup_entry,
     async_unload_entry,
+    repairs,
 )
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
     ConfigTransactionManager,
     ConfigTransactionState,
 )
 from custom_components.circuitsetup_energy_meter_helper.const import DOMAIN
+from custom_components.circuitsetup_energy_meter_helper.ct_inventory import (
+    _esphome_object_id,
+)
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ESPHomeConfigSnapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
     MeterTopology,
+    StoredCTSelection,
     SubstitutionChange,
     TopologyEvidence,
     TopologyEvidenceSource,
@@ -56,11 +66,138 @@ from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
 from custom_components.circuitsetup_energy_meter_helper.workflow import (
     EntryWorkflow,
     LazyDeviceBuilder,
+    WorkflowCapabilityUnavailable,
     WorkflowHandleError,
     _public_sample_window,
 )
 
 _MISSING = object()
+
+
+def _native_entities(addon_count: int = 0) -> tuple[Any, ...]:
+    entities: list[Any] = []
+    key = 0
+    for board in range(addon_count + 1):
+        for group in range(2):
+            start = board * 6 + group * 3 + 1
+            group_name = (
+                f"Meter {start}-{start + 2}"
+                if board == 0
+                else f"Addon{board} {start}-{start + 2}"
+            )
+            device_id = board + 1
+
+            def add(
+                info_type: type[Any],
+                object_id: str,
+                name: str,
+                unit: str = "",
+                device_id: int = device_id,
+            ) -> None:
+                nonlocal key
+                key += 1
+                common = {
+                    "object_id": object_id,
+                    "key": key,
+                    "name": name,
+                    "device_id": device_id,
+                    "disabled_by_default": True,
+                }
+                entities.append(
+                    info_type(**common, unit_of_measurement=unit)
+                    if info_type is not ApiButtonInfo
+                    else info_type(**common)
+                )
+
+            voltage_reference = f"{group_name} Ref V {group + 1}"
+            add(ApiNumberInfo, _esphome_object_id(voltage_reference), voltage_reference, "V")
+            for channel in range(start, start + 3):
+                name = f"CT{channel} Ref Current"
+                add(ApiNumberInfo, _esphome_object_id(name), name, "A")
+            for prefix, action in (("3", "Run"), ("z3", "Clear")):
+                name = f"{prefix}. {action} {group_name} Gain Cal"
+                add(ApiButtonInfo, _esphome_object_id(name), name)
+            for phase_index, phase in enumerate("ABC"):
+                if board == 0 and group == 0 and phase == "A":
+                    add(ApiSensorInfo, "ic1volts", "Voltage 1", "V")
+                else:
+                    object_id = (
+                        f"meter_main{group + 1}_voltage_{phase.lower()}_calibration"
+                        if board == 0
+                        else f"addon{board}_{group + 1}_voltage_{phase.lower()}_calibration"
+                    )
+                    add(
+                        ApiSensorInfo,
+                        object_id,
+                        f"{group_name} Voltage {phase} Calibration",
+                        "V",
+                    )
+                channel = start + phase_index
+                add(ApiSensorInfo, f"ct{channel}amps", f"CT{channel} Amps", "A")
+    return tuple(entities)
+
+
+async def _native_only_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    preflight: Any | None = None,
+    addon_count: int = 0,
+) -> tuple[EntryWorkflow, Any, SessionManager]:
+    from custom_components.circuitsetup_energy_meter_helper.topology import (
+        topology_from_native,
+    )
+
+    project_name = "circuitsetup.6c-energy-meter" + (
+        f"-{addon_count}-addon" if addon_count else ""
+    )
+    topology = topology_from_native(project_name)
+    entry = SimpleNamespace(
+        domain="esphome",
+        entry_id="meter",
+        title="Meter",
+        unique_id="aa:bb:cc:dd:ee:ff",
+        data={"device_name": "meter"},
+        runtime_data=SimpleNamespace(
+            device_info=SimpleNamespace(project_name=topology.project_name)
+        ),
+    )
+    hass = FakeHass((entry,))
+    provisioning = ProvisioningCoordinator(hass)
+    await provisioning.async_rescan()
+    async def ready_preflight(*_args: Any) -> PreflightResult:
+        return PreflightResult(())
+
+    monkeypatch.setattr(
+        "custom_components.circuitsetup_energy_meter_helper.workflow.async_preflight",
+        preflight or ready_preflight,
+    )
+
+    class Api:
+        entities = _native_entities(addon_count)
+        connection_generation = 1
+
+        async def async_connect(self) -> None:
+            return None
+
+    store = HelperStore(hass)
+
+    async def selections(_mac: str) -> tuple[StoredCTSelection, ...]:
+        return (
+            StoredCTSelection(1, None, None, 27_518, 2.0, "0" * 64),
+        )
+
+    store.async_get_ct_selections = selections  # type: ignore[method-assign]
+    sessions = SessionManager()
+    workflow = EntryWorkflow(
+        hass,
+        provisioning,
+        sessions,
+        store,
+        "meter",
+        Api(),  # type: ignore[arg-type]
+        None,
+    )
+    return workflow, None, sessions
 
 
 def test_stability_browser_evidence_has_samples_and_standard_deviation() -> None:
@@ -112,11 +249,16 @@ class FakeHass:
     def __init__(self, entries: tuple[object, ...] = ()) -> None:
         self.data: dict[str, Any] = {}
         self.config_entries = FakeConfigEntries(entries)
-        self.config = SimpleNamespace(config_dir=".")
+        self.loop = asyncio.get_event_loop()
+        self.config = SimpleNamespace(config_dir=".", path=lambda *parts: str(Path(".").joinpath(*parts)))
         self.tasks: list[asyncio.Task[None]] = []
 
     def verify_event_loop_thread(self, name: str) -> None:
         del name
+
+    async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
+        del target, args
+        return {}
 
     def async_create_task(self, coroutine: Any) -> asyncio.Task[Any]:
         return asyncio.create_task(coroutine)
@@ -385,7 +527,12 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
     elif suffix == "calibrate_voltage":
         base |= {"session_id": "session", "group_key": "main_1", "reference": 120.0}
     elif suffix == "calibrate_current":
-        base |= {"session_id": "session", "channel": 1, "reference": 5.0}
+        base |= {
+            "session_id": "session",
+            "channel": 1,
+            "reference": 5.0,
+            "reporting_multiplier": 1.0,
+        }
     elif suffix in {
         "get_session",
         "restart_and_verify",
@@ -915,6 +1062,229 @@ substitutions:
     asyncio.run(run())
 
 
+def test_native_only_session_starts_without_yaml_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+
+        status = await workflow.async_start_session("meter")
+
+        handle = workflow._sessions[status.session_id]
+        assert status.state == "safety_required"
+        assert handle.configuration is None
+        assert handle.substitutions == {}
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_native_only_addon_session_uses_complete_production_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(
+            monkeypatch, addon_count=1
+        )
+
+        status = await workflow.async_start_session("meter")
+        binding = workflow._sessions[status.session_id].binding
+
+        assert binding.native
+        assert len(binding.groups) == 4
+        assert len(binding.channels) == 12
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_native_only_current_requires_explicit_reporting_multiplier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+        class Calibration:
+            async def async_calibrate_current(
+                self, *args: Any, **kwargs: Any
+            ) -> Any:
+                calls.append((args, kwargs))
+                return SimpleNamespace(state="applied_pending_restart_verification")
+
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+
+        with pytest.raises(
+            WorkflowCapabilityUnavailable,
+            match="reporting multiplier confirmation is required",
+        ):
+            await workflow.async_calibrate_current(
+                status.session_id, 1, 5.0, False, None
+            )
+
+        await workflow.async_calibrate_current(
+            status.session_id, 1, 5.0, False, 2.0
+        )
+
+        assert calls[0][0][5] == 2.0
+        assert calls[0][1]["substitutions"] == {}
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_current_calibration_schema_rejects_unknown_or_invalid_multiplier() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        command = f"{DOMAIN}/calibrate_current"
+        _handler, schema = hass.data["websocket_api"][command]
+        missing = _message(command)
+        missing.pop("reporting_multiplier")
+        with pytest.raises(vol.Invalid):
+            schema(missing)
+        for invalid in (
+            None,
+            True,
+            "invalid",
+            float("nan"),
+            float("inf"),
+            0,
+            0.0009,
+            1000.001,
+        ):
+            message = _message(command)
+            message["reporting_multiplier"] = invalid
+            with pytest.raises(vol.Invalid):
+                schema(message)
+        assert schema(_message(command))["reporting_multiplier"] == 1.0
+
+    asyncio.run(run())
+
+
+def test_configuration_inventory_remains_authoritative_for_multiplier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+
+        class Builder:
+            async def async_close(self) -> None:
+                return None
+
+        workflow._builder = Builder()  # type: ignore[assignment]
+
+        async def inventory(_handle: Any) -> Any:
+            return SimpleNamespace(
+                channels=(SimpleNamespace(reporting_multiplier=2.0),)
+            )
+
+        workflow._inventory_for_handle = inventory  # type: ignore[method-assign]
+        handle = SimpleNamespace()
+        assert await workflow._reporting_multiplier(handle, 1, None) == 2.0
+        assert await workflow._reporting_multiplier(handle, 1, 2.0) == 2.0
+        with pytest.raises(WorkflowHandleError, match="confirmation is stale"):
+            await workflow._reporting_multiplier(handle, 1, 1.0)
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_native_only_voltage_calibration_needs_no_builder_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        calls: list[dict[str, Any]] = []
+
+        class Calibration:
+            async def async_calibrate_voltage(
+                self, *_args: Any, **kwargs: Any
+            ) -> Any:
+                calls.append(kwargs)
+                return SimpleNamespace(state="applied_pending_restart_verification")
+
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+
+        await workflow.async_calibrate_voltage(
+            status.session_id, "main_1", 120.0, False
+        )
+
+        assert calls == [{"iteration": 1, "confirm_iteration": False, "substitutions": {}}]
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_native_only_restart_verification_persists_without_source_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        binding = workflow._sessions[status.session_id].binding
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        record = SimpleNamespace(
+            config_filename=None,
+            config_sha256=None,
+            source_handoff_available=False,
+        )
+
+        class Calibration:
+            async def async_verify_after_restart(
+                self, *_args: Any, **kwargs: Any
+            ) -> Any:
+                assert kwargs["substitutions"] == {}
+                return SimpleNamespace(record=record, binding=binding)
+
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+
+        result = await workflow.async_restart_and_verify(status.session_id)
+
+        assert result is record
+        assert (await workflow.async_get_session(status.session_id)).state == "verified"
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_session_preflight_holds_shared_config_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_preflight(*_args: Any) -> PreflightResult:
+            entered.set()
+            await release.wait()
+            return PreflightResult(())
+
+        workflow, _binding, sessions = await _native_only_workflow(
+            monkeypatch, preflight=blocked_preflight
+        )
+        starting = asyncio.create_task(workflow.async_start_session("meter"))
+        await entered.wait()
+        config = asyncio.create_task(sessions.async_acquire_config("aabbccddeeff"))
+        await asyncio.sleep(0)
+
+        assert sessions.is_config_locked("aabbccddeeff")
+        assert not config.done()
+
+        release.set()
+        status = await starting
+        lease = await config
+        lease.release()
+        await workflow.async_cancel_session(status.session_id)
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("cancel_count", (1, 3))
 def test_cancel_revokes_session_before_waiting_calibration_can_mutate(
     monkeypatch: pytest.MonkeyPatch,
@@ -1022,7 +1392,9 @@ def test_cancel_revokes_session_before_waiting_calibration_can_mutate(
         workflow._inventory_for_handle = inventory  # type: ignore[method-assign]
         workflow._calibration = Calibration()  # type: ignore[assignment]
         task = asyncio.create_task(
-            workflow.async_calibrate_current(session.session_id, 1, 5.0, False)
+            workflow.async_calibrate_current(
+                session.session_id, 1, 5.0, False, 1.0
+            )
         )
         await entered.wait()
         handle = workflow._sessions[session.session_id]
@@ -1198,6 +1570,46 @@ def test_success_error_snapshot_and_event_are_recursively_redacted() -> None:
     asyncio.run(run())
 
 
+def test_cancelled_compile_reconciles_interruption_then_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+        created: list[str] = []
+        deleted: list[str] = []
+        monkeypatch.setattr(
+            repairs.issue_registry,
+            "async_create_issue",
+            lambda _h, _d, issue_id, **_kwargs: created.append(issue_id),
+        )
+        monkeypatch.setattr(
+            repairs.issue_registry,
+            "async_delete_issue",
+            lambda _h, _d, issue_id: deleted.append(issue_id),
+        )
+
+        async def cancelled(*_args: Any) -> Any:
+            raise asyncio.CancelledError
+
+        controller.async_call = cancelled  # type: ignore[method-assign]
+        connection = FakeConnection()
+
+        with pytest.raises(asyncio.CancelledError):
+            await _invoke(
+                hass,
+                connection,
+                _message(f"{DOMAIN}/compile_ct_config"),
+            )
+
+        assert created == ["compile_install_interrupted_helper"]
+        assert deleted == []
+        assert tuple(controller.diagnostics.errors)[-1] == "cancelled"
+
+    asyncio.run(run())
+
+
 def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> None:
     """The Task 19 command and HA diagnostics share one allowlisted provider."""
 
@@ -1212,13 +1624,14 @@ def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> N
             1,
             {
                 "integration_version": "0.1.0",
-                "home_assistant_version": "unknown",
+                "home_assistant_version": HA_VERSION,
                 "config_entry_version": 1,
                 "setup_state": "no_device",
                 "meter_count": 0,
                 "meters": [],
                 "topology": None,
                 "entity_role_counts": {},
+                "ct_models": [],
                 "ct_presets": [],
                 "last_transaction": None,
                 "last_session": None,

@@ -14,6 +14,7 @@ from custom_components.circuitsetup_energy_meter_helper.calibration_engine impor
     CalibrationEngine as ProductionCalibrationEngine,
 )
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
+    CalibrationState,
     RestartDisconnectTimeoutError,
     RestartVerificationError,
 )
@@ -885,7 +886,7 @@ def test_successful_task17_gain_updates_server_owned_pending_table() -> None:
     asyncio.run(run())
 
 
-def test_task17_requires_authoritative_reader_before_any_mutation() -> None:
+def test_runtime_only_calibration_records_native_origin_without_yaml() -> None:
     async def run() -> None:
         markers: list[object] = []
 
@@ -898,16 +899,44 @@ def test_task17_requires_authoritative_reader_before_any_mutation() -> None:
             reference_currents=(10.0, 0.0, 0.0),
             current_changes=(True, False, False),
         )
-        session = FakeCalibrationSession(evidence)
-        engine = CalibrationEngine(SessionManager(), persist_marker)
-        with pytest.raises(ValueError, match="authoritative.*reader.*required"):
-            await engine.async_calibrate_current(
-                "aabbccddeeff", session, native_meter(), 1, 10.0, 1.0, 1.0
-            )
-        assert markers == []
-        assert session.events == []
+        session = FakeCalibrationSession(
+            evidence, after=sample_window(10.0, 10.0, 10.0)
+        )
+        sessions = SessionManager()
+        engine = CalibrationEngine(sessions, persist_marker)
+
+        result = await engine.async_calibrate_current(
+            "aabbccddeeff", session, native_meter(), 1, 10.0, 1.0, 1.0
+        )
+
+        pending = sessions.pending_calibration("aabbccddeeff")
+        assert result.state is CalibrationState.APPLIED_PENDING_RESTART_VERIFICATION
+        assert pending is not None
+        assert pending.config_filename is None
+        assert pending.config_sha256 is None
+        assert markers
 
     asyncio.run(run())
+
+
+def test_runtime_only_verified_record_disables_configuration_handoff() -> None:
+    record = VerifiedCalibrationRecord(
+        mac="aabbccddeeff",
+        config_filename=None,
+        config_sha256=None,
+        topology_addon_count=0,
+        topology_project_name="circuitsetup.6c-energy-meter",
+        topology_connection_type="wifi",
+        topology_voltage_layout="standard",
+        connection_generation=2,
+        groups=(VerifiedGainGroup("meter_main1", ((7305, 27518),) * 3),),
+        verification_id="a" * 32,
+        source_handoff_available=False,
+    )
+
+    assert record.config_filename is None
+    assert record.config_sha256 is None
+    assert not record.source_handoff_available
 
 
 @pytest.mark.parametrize(

@@ -108,6 +108,7 @@ class MeterBinding:
     connection_generation: int
     groups: tuple[GroupBinding, ...]
     channels: tuple[ChannelBinding, ...]
+    native: bool = False
 
     def __post_init__(self) -> None:
         if len(self.groups) != self.topology.group_count:
@@ -138,6 +139,10 @@ class MeterBinding:
         self, catalog: EntityCatalog, substitutions: Mapping[str, str]
     ) -> MeterBinding:
         """Rebuild from generation-local EntityInfo keys after reconnect."""
+        if self.native:
+            if substitutions:
+                raise EntityBindingError("native binding cannot accept substitutions")
+            return bind_native_meter(catalog, self.topology)
         return bind_meter(
             catalog,
             self.topology,
@@ -161,6 +166,72 @@ def group_key(board_index: int, group_index: int) -> str:
         raise ValueError("board and group index are outside supported topology")
     board = "main" if board_index == 0 else f"addon{board_index}"
     return f"{board}_{group_index + 1}"
+
+
+def bind_native_meter(
+    catalog: EntityCatalog,
+    topology: MeterTopology,
+) -> MeterBinding:
+    """Bind the exact official runtime entity contract without configuration YAML."""
+    substitutions = {
+        f"ct{channel}_name": f"CT{channel}"
+        for channel in range(1, topology.ct_count + 1)
+    }
+    substitutions.update(
+        {"main_meter_name1": "Meter 1-3", "main_meter_name2": "Meter 4-6"}
+    )
+    for board in range(1, topology.board_count):
+        substitutions[f"addon{board}_name1"] = (
+            f"Addon{board} {board * 6 + 1}-{board * 6 + 3}"
+        )
+        substitutions[f"addon{board}_name2"] = (
+            f"Addon{board} {board * 6 + 4}-{board * 6 + 6}"
+        )
+    binding = bind_meter(catalog, topology, substitutions)
+    for board in range(topology.board_count):
+        board_groups = binding.groups[board * 2 : board * 2 + 2]
+        if len({entity.descriptor.device_id for group in board_groups for entity in group.entities}) != 1:
+            raise EntityBindingError("native board roles span multiple API devices")
+        for group_index, group in enumerate(board_groups):
+            group_name = substitutions[
+                f"main_meter_name{group_index + 1}"
+                if board == 0
+                else f"addon{board}_name{group_index + 1}"
+            ]
+            first_channel = board * 6 + group_index * 3 + 1
+            expected_names = (
+                f"{group_name} Ref V {group_index + 1}",
+                *(f"CT{channel} Ref Current" for channel in range(first_channel, first_channel + 3)),
+                f"3. Run {group_name} Gain Cal",
+                f"z3. Clear {group_name} Gain Cal",
+                *(
+                    "Voltage 1"
+                    if board == 0 and group_index == 0 and phase == "A"
+                    else f"{group_name} Voltage {phase} Calibration"
+                    for phase in "ABC"
+                ),
+                *(f"CT{channel} Amps" for channel in range(first_channel, first_channel + 3)),
+            )
+            if tuple(entity.descriptor.name for entity in group.entities) != expected_names or any(
+                entity.source is not ResolutionSource.OBJECT_ID
+                or len(
+                    catalog.by_name_unit(
+                        entity.descriptor.kind,
+                        entity.descriptor.name,
+                        entity.descriptor.unit,
+                    )
+                )
+                != 1
+                for entity in group.entities
+            ):
+                raise EntityBindingError("native entity metadata differs from firmware contract")
+    return MeterBinding(
+        binding.topology,
+        binding.connection_generation,
+        binding.groups,
+        binding.channels,
+        native=True,
+    )
 
 
 def bind_meter(

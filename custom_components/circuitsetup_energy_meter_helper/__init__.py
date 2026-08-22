@@ -79,6 +79,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "transactions": transactions,
             "device_builder": device_builder,
             "websocket_controller": controller,
+            "diagnostics": controller.diagnostics,
         }
         if api_session is not None:
             runtime["esphome_api"] = api_session

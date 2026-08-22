@@ -71,8 +71,8 @@ class VerifiedCalibrationRecord:
     """Compact final calibration record persisted only after restart verification."""
 
     mac: str
-    config_filename: str
-    config_sha256: str
+    config_filename: str | None
+    config_sha256: str | None
     topology_addon_count: int
     topology_project_name: str
     topology_connection_type: str
@@ -88,13 +88,17 @@ class VerifiedCalibrationRecord:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mac", canonical_mac(self.mac))
-        if (
+        if (self.config_filename is None) != (self.config_sha256 is None):
+            raise ValueError("configuration filename and hash must be present together")
+        if self.config_filename is not None and (
             not self.config_filename
             or "\n" in self.config_filename
             or "\r" in self.config_filename
         ):
             raise ValueError("configuration filename must be a non-empty single line")
-        if re.fullmatch(r"[0-9a-f]{64}", self.config_sha256) is None:
+        if self.config_sha256 is not None and re.fullmatch(
+            r"[0-9a-f]{64}", self.config_sha256
+        ) is None:
             raise ValueError("configuration hash must be SHA-256")
         if not 0 <= self.topology_addon_count <= 6:
             raise ValueError("topology add-on count is invalid")
@@ -112,6 +116,8 @@ class VerifiedCalibrationRecord:
             raise ValueError("verification ID must be a server-generated identifier")
         if type(self.source_handoff_available) is not bool:
             raise ValueError("source handoff state must be boolean")
+        if self.source_handoff_available and self.config_filename is None:
+            raise ValueError("source handoff requires configuration identity")
         if (
             self.source_handoff_transaction_id is not None
             and re.fullmatch(r"[0-9a-f]{32}", self.source_handoff_transaction_id)
@@ -364,6 +370,16 @@ class HelperStore:
                 _serialize_ct_selection(item) for item in selections
             ]
             await self._store.async_save(data)
+
+    async def async_get_ct_selections(self, mac: str) -> tuple[StoredCTSelection, ...]:
+        """Load only the safe persisted model selections for one meter."""
+        raw = (await self.async_load()).get("meters", {}).get(canonical_mac(mac), {}).get("ct_selections", [])
+        if not isinstance(raw, list):
+            raise TypeError("stored CT selections must be a list")
+        try:
+            return tuple(StoredCTSelection(**item) for item in raw if isinstance(item, dict))
+        except (TypeError, ValueError) as error:
+            raise ValueError("stored CT selections are invalid") from error
 
     async def async_save_interrupted_session(
         self, mac: str, marker: StoredInterruptedSession | None

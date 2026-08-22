@@ -1,6 +1,7 @@
 import { html, type TemplateResult } from "lit";
 import type { CalibrationResult, MeterTopology, StabilityResult } from "../types";
 import { calibrationEvidence, stabilityEvidence } from "./measurement-evidence";
+import { moveTab } from "./tab-keyboard";
 
 export function voltageStep(
   topology: MeterTopology | null,
@@ -19,8 +20,13 @@ export function voltageStep(
   return html`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       <div class="target-tabs" role="tablist" aria-label="Voltage groups">
-        ${Array.from({ length: count }, (_, index) => html`<button role="tab" aria-selected=${index === groupIndex} @click=${() => select(index)}>Group ${index + 1}</button>`)}
+        ${Array.from({ length: count }, (_, index) => html`<button role="tab"
+          id=${`voltage-group-tab-${index}`} aria-controls="voltage-group-panel"
+          aria-selected=${index === groupIndex} tabindex=${index === groupIndex ? "0" : "-1"}
+          @keydown=${(event: KeyboardEvent) => moveTab(event, index)}
+          @click=${() => select(index)}>Group ${index + 1}</button>`)}
       </div>
+      <div id="voltage-group-panel" role="tabpanel" aria-labelledby=${`voltage-group-tab-${groupIndex}`}>
       <h2>Calibrate voltage group ${groupIndex + 1}</h2>
       <label>Trusted instrument reference <input type="number" .value=${String(reference)} @input=${(event: Event) => setReference(Number((event.target as HTMLInputElement).value))} /></label>
       <button class="secondary" @click=${check}>Check stability</button>
@@ -30,6 +36,7 @@ export function voltageStep(
       <ol class="progress-steps"><li>Set reference</li><li>Verify acknowledgement</li><li>Run iteration</li><li>Verify gain</li><li>Zero reference</li></ol>
       <button class="primary" @click=${calibrate} ?disabled=${!stability?.stable || Boolean(result && !result.retry_allowed && result.iteration > 0)}> ${result?.retry_allowed ? "Retry voltage calibration" : "Calibrate voltage"}</button>
       ${result?.state === "indeterminate" ? html`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${reconnect}>Reconnect and inspect</button><button class="danger" @click=${cancel}>Cancel session</button></aside>` : ""}
+      </div>
     </section>
   `;
 }

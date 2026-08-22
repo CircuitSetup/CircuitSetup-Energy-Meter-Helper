@@ -225,10 +225,8 @@ export interface CalibrationResult {
   restore_evidence: Record<string, unknown> | null;
 }
 
-export interface RestartVerificationResult {
+interface RestartVerificationBase {
   mac: string;
-  config_filename: string;
-  config_sha256: string;
   topology_addon_count: number;
   topology_project_name: string;
   topology_connection_type: ConnectionType;
@@ -237,9 +235,13 @@ export interface RestartVerificationResult {
   groups: Array<{ instance_id: string; phase_gains: number[][] }>;
   verification_id: string;
   source_authority: "saved_flash";
-  source_handoff_available: boolean;
   source_handoff_transaction_id: string | null;
 }
+
+export type RestartVerificationResult = RestartVerificationBase & (
+  | { source_handoff_available: true; config_filename: string; config_sha256: string }
+  | { source_handoff_available: false; config_filename: null; config_sha256: null }
+);
 
 export type PanelStep =
   | "setup"

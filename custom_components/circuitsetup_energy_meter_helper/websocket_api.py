@@ -22,6 +22,7 @@ from .config_document import CT_GAIN_RE, CT_NAME_RE, VOLTAGE_GAIN_RE
 from .config_transaction import RollbackFailedError
 from .const import DOMAIN
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
+from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
 from .models import InstallerIntent
 from .provisioning import ProvisioningCoordinator
@@ -184,6 +185,7 @@ class WorkflowOwner(Protocol):
         channel: int,
         reference: float,
         confirm_iteration: bool,
+        reporting_multiplier: float,
     ) -> Any: ...
 
     async def async_restart_and_verify(self, session_id: str) -> Any: ...
@@ -218,6 +220,7 @@ class EntryWebsocketController:
         self.transactions: TransactionOwner | None = None
         self.workflow: WorkflowOwner | None = None
         self._diagnostics_provider = diagnostics_provider
+        self.diagnostics = DiagnosticsTracker()
         self._subscriptions: set[Unsubscribe] = set()
         self._closed = False
         self._closing = False
@@ -328,6 +331,7 @@ class EntryWebsocketController:
                 msg["channel"],
                 msg["reference"],
                 msg["confirm_iteration"],
+                msg["reporting_multiplier"],
             )
         if operation == "restart_and_verify" and workflow is not None:
             return await workflow.async_restart_and_verify(msg["session_id"])
@@ -530,7 +534,11 @@ class _Router:
             result = await controller.async_call(
                 msg["type"], msg, getattr(connection.user, "id", None)
             )
-            await async_reconcile_issues(self.hass, signals_from_result(result))
+            operation = msg["type"].removeprefix(_PREFIX)
+            controller.diagnostics.record_result(operation, result)
+            await async_reconcile_issues(
+                self.hass, msg["entry_id"], operation, signals_from_result(result)
+            )
             connection.send_result(
                 msg["id"],
                 sanitize_payload(
@@ -540,7 +548,23 @@ class _Router:
                     ),
                 ),
             )
+        except asyncio.CancelledError as error:
+            controller.diagnostics.record_error(error)
+            await async_reconcile_issues(
+                self.hass,
+                msg["entry_id"],
+                msg["type"].removeprefix(_PREFIX),
+                signals_from_result(error),
+                authoritative=False,
+            )
+            raise
         except Exception as error:  # noqa: BLE001 - stable websocket error boundary
+            controller.diagnostics.record_error(error)
+            await async_reconcile_issues(
+                self.hass, msg["entry_id"], msg["type"].removeprefix(_PREFIX),
+                signals_from_result(error),
+                authoritative=False,
+            )
             _send_safe_error(connection, msg["id"], error)
 
     async def subscribe(
@@ -576,6 +600,9 @@ class _Router:
                 nonlocal active, overflowed
                 if not active:
                     return
+                controller.diagnostics.record_result(
+                    msg["type"].removeprefix(_PREFIX), event
+                )
                 if not initial_sent:
                     if len(pending) >= _MAX_PENDING_EVENTS:
                         overflowed = True
@@ -774,6 +801,7 @@ def _schema(command: str) -> dict[Any, Any]:
             vol.Required("session_id"): _ID,
             vol.Required("channel"): vol.All(int, vol.Range(min=1, max=42)),
             vol.Required("reference"): vol.Coerce(float),
+            vol.Required("reporting_multiplier"): _reporting_multiplier,
             vol.Optional("confirm_iteration", default=False): bool,
         }
     elif operation in {
@@ -784,6 +812,18 @@ def _schema(command: str) -> dict[Any, Any]:
     }:
         schema[vol.Required("session_id")] = _ID
     return schema
+
+
+def _reporting_multiplier(value: Any) -> float:
+    if isinstance(value, bool):
+        raise vol.Invalid("reporting_multiplier must be numeric")
+    try:
+        multiplier = float(value)
+    except (TypeError, ValueError) as error:
+        raise vol.Invalid("reporting_multiplier must be numeric") from error
+    if not math.isfinite(multiplier) or not 0.001 <= multiplier <= 1000:
+        raise vol.Invalid("reporting_multiplier must be between 0.001 and 1000")
+    return multiplier
 
 
 def sanitize_payload(

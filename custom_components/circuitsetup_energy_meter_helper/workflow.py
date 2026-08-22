@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
+from math import isfinite
 from statistics import pstdev
 from threading import RLock
 from time import monotonic
@@ -37,7 +38,7 @@ from .device_builder import (
     ESPHomeConfigSnapshot,
     _wait_for_owned_cleanup,
 )
-from .entity_binding import MeterBinding, bind_meter
+from .entity_binding import MeterBinding, bind_meter, bind_native_meter
 from .entity_catalog import EntityCatalog
 from .esphome_api import ESPHomeApiSession
 from .models import MeterTopology, StoredCTSelection, canonical_mac
@@ -96,6 +97,7 @@ class SessionStatus:
     state: str
     safety_acknowledged: bool
     preflight: PreflightResult
+    entity_role_counts: dict[str, int]
 
 
 @dataclass(slots=True)
@@ -104,7 +106,7 @@ class _SessionHandle:
     device_id: str
     mac: str
     topology: MeterTopology
-    configuration: str
+    configuration: str | None
     substitutions: dict[str, str]
     binding: MeterBinding
     preflight: PreflightResult
@@ -122,6 +124,12 @@ class _SessionHandle:
             self.state,
             self.safety_acknowledged,
             self.preflight,
+            {
+                "references": sum(len(group.references) for group in self.binding.groups),
+                "buttons": sum(len(group.buttons) for group in self.binding.groups),
+                "voltage_sensors": sum(len(group.voltage_sensors) for group in self.binding.groups),
+                "current_sensors": sum(len(group.current_sensors) for group in self.binding.groups),
+            },
         )
 
     def scrub(self) -> None:
@@ -256,7 +264,9 @@ class EntryWorkflow:
             sessions,
             store.async_save_interrupted_session,
             persist_verified=store.async_save_verified_calibration,
-            calibration_snapshot_reader=self._async_calibration_snapshot,
+            calibration_snapshot_reader=(
+                self._async_calibration_snapshot if device_builder is not None else None
+            ),
         )
 
     async def async_get_topology(self, device_id: str) -> MeterTopology:
@@ -284,7 +294,8 @@ class EntryWorkflow:
             document, native_project_name=device.project_name
         )
         inventory = CTInventory.from_document(
-            document, topology, CTPresetCatalog.load(), snapshot.sha256
+            document, topology, CTPresetCatalog.load(), snapshot.sha256,
+            await self._store.async_get_ct_selections(mac),
         )
         plan_id = uuid4().hex
         self._discard_device_plans(mac)
@@ -444,29 +455,41 @@ class EntryWorkflow:
         device = self._device(device_id)
         api = self._require_api()
         await api.async_connect()
-        snapshot = await self._async_snapshot(device)
-        document = ESPHomeConfigDocument.parse(snapshot.content)
-        topology = topology_from_config(
-            document, native_project_name=device.project_name
-        )
-        substitutions = {
-            key: scalar.value for key, scalar in document.substitutions.items()
-        }
-        binding = bind_meter(
-            EntityCatalog(api.entities, api.connection_generation),
-            topology,
-            substitutions,
-        )
+        configuration: str | None = None
+        substitutions: dict[str, str] = {}
+        if self._builder is None:
+            topology = topology_from_native(device.project_name)
+            binding = bind_native_meter(
+                EntityCatalog(api.entities, api.connection_generation), topology
+            )
+        else:
+            snapshot = await self._async_snapshot(device)
+            document = ESPHomeConfigDocument.parse(snapshot.content)
+            topology = topology_from_config(
+                document, native_project_name=device.project_name
+            )
+            configuration = snapshot.configuration
+            substitutions = {
+                key: scalar.value for key, scalar in document.substitutions.items()
+            }
+            binding = bind_meter(
+                EntityCatalog(api.entities, api.connection_generation),
+                topology,
+                substitutions,
+            )
         mac = self._mac(device_id)
-        locks = self._sessions_owner._locks(mac)
-        preflight = await async_preflight(api, binding, locks.calibration)
+        lease = await self._sessions_owner.async_acquire_calibration(mac)
+        try:
+            preflight = await async_preflight(api, binding, asyncio.Lock())
+        finally:
+            lease.release()
         session_id = uuid4().hex
         handle = _SessionHandle(
             session_id,
             device_id,
             mac,
             topology,
-            snapshot.configuration,
+            configuration,
             substitutions,
             binding,
             preflight,
@@ -588,13 +611,15 @@ class EntryWorkflow:
         channel: int,
         reference: float,
         confirm_iteration: bool,
+        reporting_multiplier: float | None,
     ) -> Any:
         handle, revision = self._claim_ready_session(session_id)
         try:
-            inventory = await self._inventory_for_handle(handle)
             if not 1 <= channel <= handle.topology.ct_count:
                 raise WorkflowHandleError("unknown current channel")
-            multiplier = inventory.channels[channel - 1].reporting_multiplier
+            multiplier = await self._reporting_multiplier(
+                handle, channel, reporting_multiplier
+            )
             iteration = self._sessions_owner.next_calibration_iteration(
                 handle.mac, f"current:{channel}"
             )
@@ -789,9 +814,42 @@ class EntryWorkflow:
         )
         if handle is None:
             raise WorkflowHandleError("calibration session is stale")
+        if handle.configuration is None:
+            raise WorkflowCapabilityUnavailable(
+                "calibration source handoff is unavailable"
+            )
         return await self._require_builder().async_get_config(handle.configuration)
 
+    async def _reporting_multiplier(
+        self,
+        handle: _SessionHandle,
+        channel: int,
+        confirmed: float | None,
+    ) -> float:
+        if self._builder is not None:
+            authoritative = (await self._inventory_for_handle(handle)).channels[
+                channel - 1
+            ].reporting_multiplier
+            if confirmed is not None and confirmed != authoritative:
+                raise WorkflowHandleError(
+                    "reporting multiplier confirmation is stale"
+                )
+            return authoritative
+        if confirmed is None:
+            raise WorkflowCapabilityUnavailable(
+                "reporting multiplier confirmation is required"
+            )
+        if (
+            isinstance(confirmed, bool)
+            or not isfinite(confirmed)
+            or not 0.001 <= confirmed <= 1000
+        ):
+            raise WorkflowHandleError("reporting multiplier is outside supported range")
+        return confirmed
+
     async def _inventory_for_handle(self, handle: _SessionHandle) -> CTInventory:
+        if handle.configuration is None:
+            raise WorkflowCapabilityUnavailable("configuration inventory is unavailable")
         snapshot = await self._require_builder().async_get_config(handle.configuration)
         return CTInventory.from_document(
             ESPHomeConfigDocument.parse(snapshot.content),

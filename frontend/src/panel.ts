@@ -74,6 +74,7 @@ export class CircuitSetupPanel extends LitElement {
   private group = 0;
   private channel = 1;
   private reference = 0;
+  private reportingMultiplier: number | null = null;
   private safetyAcknowledged = false;
   private drafts = new Map<number, CtDraft>();
   private labelOnly = false;
@@ -190,6 +191,7 @@ export class CircuitSetupPanel extends LitElement {
     this.group = 0;
     this.channel = 1;
     this.reference = 0;
+    this.reportingMultiplier = null;
   }
 
   private selectDevice(deviceId: string | null): void {
@@ -510,11 +512,17 @@ export class CircuitSetupPanel extends LitElement {
     const generation = ++this.operationGeneration;
     const targetId = target === "voltage" ? this.groupKey(this.group) : String(this.channel);
     const groupKey = this.groupKey(this.group); const channel = this.channel; const reference = this.reference;
+    const reportingMultiplier = this.inventory?.channels[channel - 1]?.reporting_multiplier
+      ?? this.reportingMultiplier;
+    if (target === "current" && reportingMultiplier === null) {
+      this.fail(new Error(), "Confirm the reporting multiplier before calibration.");
+      return;
+    }
     await this.run(async () => {
       const result = target === "voltage"
         ? await api.calibrateVoltage(sessionId, groupKey, reference, true)
         : await api.calibrateCurrent(sessionId, channel, reference, true,
-          this.inventory?.channels[channel - 1]?.reporting_multiplier ?? 1);
+          reportingMultiplier!);
       if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
       this.calibrationByTarget = new Map(this.calibrationByTarget).set(`${target}:${targetId}`, result);
       this.announcement = `Calibration iteration ${result.iteration} finished with state ${result.state}.`;
@@ -622,7 +630,8 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step === "discover") return adoptionStep(this.setup?.devices ?? [], this.selectedDeviceId,
       (id) => { this.selectDevice(id); this.requestUpdate(); }, () => void this.adopt(), () => this.back(), () => void this.loadTopology());
     if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(),
-      () => this.back(), () => void this.loadInventory(), Boolean(this.error));
+      () => this.back(), () => void (this.setup?.configuration_authoritative === false
+        ? this.startSession() : this.loadInventory()), Boolean(this.error));
     if (this.step === "ct" && this.inventory) return html`<fieldset><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}> ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}> Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.ctGroup, this.drafts,
       (board) => { this.board = board; this.ctGroup = 0; this.requestUpdate(); },
       (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.reviewChanges(), this.labelOnly)}`;
@@ -635,9 +644,11 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.group = value; this.requestUpdate(); },
       (value) => { this.reference = value; this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.navigate("current")}>Continue</button></footer>`;
-    if (this.step === "current") return html`${currentStep(this.topology, this.inventory, this.channel, this.reference, this.stabilityFor("current"), this.resultFor("current"),
+    if (this.step === "current") return html`${currentStep(this.topology, this.inventory, this.channel, this.reference, this.reportingMultiplier, this.stabilityFor("current"), this.resultFor("current"),
       (value) => { this.channel = value; this.requestUpdate(); },
-      (value) => { this.reference = value; this.requestUpdate(); }, () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession())}
+      (value) => { this.reference = value; this.requestUpdate(); },
+      (value) => { this.reportingMultiplier = value; this.requestUpdate(); },
+      () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession())}
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.navigate("restart")}>Continue</button></footer>`;
     if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult,
       Boolean(this.transaction?.rollback_available), () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());

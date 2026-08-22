@@ -1,5 +1,6 @@
 import { html, nothing, type TemplateResult } from "lit";
 import type { CtChange, CtInventory, CtPreset } from "../types";
+import { moveTab } from "./tab-keyboard";
 
 export interface CtDraft {
   name: string;
@@ -15,17 +16,6 @@ const resultingGain = (preset: CtPreset | undefined, multiplier: number, customG
   (preset?.default_gain_ct ?? customGain) == null || !Number.isFinite(multiplier) || multiplier <= 0
     ? null
     : Math.round((preset?.default_gain_ct ?? customGain!) / multiplier);
-
-const moveBoardTab = (event: KeyboardEvent, index: number) => {
-  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-  event.preventDefault();
-  const tab = event.currentTarget as HTMLButtonElement;
-  const tabs = [...(tab.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])];
-  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
-    : (index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
-  tabs[next]?.click();
-  tabs[next]?.focus();
-};
 
 export function ctInventoryStep(
   inventory: CtInventory,
@@ -47,7 +37,7 @@ export function ctInventoryStep(
         ${Array.from({ length: boardCount }, (_, index) => html`
           <button role="tab" id=${`board-tab-${index}`} data-board-tab=${index} aria-selected=${index === board}
             aria-controls="board-panel" tabindex=${index === board ? "0" : "-1"}
-            @keydown=${(event: KeyboardEvent) => moveBoardTab(event, index)}
+            @keydown=${(event: KeyboardEvent) => moveTab(event, index)}
             @click=${() => setBoard(index)}>${index === 0 ? "Main Board" : `Add-on ${index}`}</button>
         `)}
       </div>
@@ -57,9 +47,9 @@ export function ctInventoryStep(
       </div>
       <p>Configure each CT on this board. Select its model, adjust the multiplier, and review the resulting gain.</p>
       <div id="board-panel" role="tabpanel" aria-labelledby=${`board-tab-${board}`}>
-      <div class="ct-table" role="table" aria-rowcount=${inventory.channels.length}>
-        <div class="ct-header" role="row">
-          <span>Name</span><span>Model</span><span>Current gain</span><span>Multiplier</span><span>Resulting gain</span><span>Burden</span><span>Status</span>
+      <div class="ct-table" role="table" aria-rowcount=${inventory.channels.length + 1}>
+        <div class="ct-header" role="row" aria-rowindex="1">
+          <span role="columnheader">Name</span><span role="columnheader">Model</span><span role="columnheader">Current gain</span><span role="columnheader">Multiplier</span><span role="columnheader">Resulting gain</span><span role="columnheader">Burden</span><span role="columnheader">Status</span>
         </div>
         <div class="ct-window" aria-label="Current transformers">
           ${rows.map((channel) => {
@@ -74,10 +64,10 @@ export function ctInventoryStep(
             const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : undefined);
             const dirty = isDirty(channel, draft);
             return html`
-              <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index - 1} role="row" aria-label=${`CT${channel.channel}`}>
-                <label><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
+              <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index - 1} role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
+                <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
                   @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
-                <label><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} ?disabled=${labelOnly}
+                <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} ?disabled=${labelOnly}
                   @change=${(event: Event) => {
                     const modelId = (event.target as HTMLSelectElement).value;
                     const selectedPreset = inventory.catalog.presets.find((item) => item.model_id === modelId);
@@ -93,12 +83,12 @@ export function ctInventoryStep(
                   ${inventory.catalog.presets.map((item) => html`<option value=${item.model_id} ?selected=${draft.modelId === item.model_id}>${item.label}</option>`)}
                   <option value="custom" ?selected=${draft.modelId === "custom"}>Custom</option>
                 </select></label>
-                <span><span class="mobile-label">Current gain</span>${channel.raw_gain_ct}</span>
-                <label><span class="mobile-label">Multiplier</span><input type="number" min="0.001" step="0.001" aria-label=${`CT${channel.channel} multiplier`} ?disabled=${labelOnly}
+                <span role="cell"><span class="mobile-label">Current gain</span>${channel.raw_gain_ct}</span>
+                <label role="cell"><span class="mobile-label">Multiplier</span><input type="number" min="0.001" step="0.001" aria-label=${`CT${channel.channel} multiplier`} ?disabled=${labelOnly}
                   .value=${String(draft.multiplier)} @input=${(event: Event) => update(channel.channel, { multiplier: Number((event.target as HTMLInputElement).value) })} /></label>
-                <span><span class="mobile-label">Resulting gain</span>${gain ?? "—"}</span>
-                <span><span class="mobile-label">Burden</span>${preset?.requires_burden_jumper_cut ? "Check jumper" : "—"}</span>
-                <button class="row-toggle" aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>
+                <span role="cell"><span class="mobile-label">Resulting gain</span>${gain ?? "—"}</span>
+                <span role="cell"><span class="mobile-label">Burden</span>${preset?.requires_burden_jumper_cut ? "Check jumper" : "—"}</span>
+                <button role="cell" class="row-toggle" aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>
                   ${draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}
                 </button>
               </div>

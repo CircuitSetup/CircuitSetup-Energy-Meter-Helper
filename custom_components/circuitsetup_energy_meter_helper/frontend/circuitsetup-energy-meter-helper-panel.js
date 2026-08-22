@@ -1,15 +1,15 @@
-const W = globalThis, oe = W.ShadowRoot && (W.ShadyCSS === void 0 || W.ShadyCSS.nativeShadow) && "adoptedStyleSheets" in Document.prototype && "replace" in CSSStyleSheet.prototype, re = /* @__PURE__ */ Symbol(), fe = /* @__PURE__ */ new WeakMap();
-let Ne = class {
+const J = globalThis, re = J.ShadowRoot && (J.ShadyCSS === void 0 || J.ShadyCSS.nativeShadow) && "adoptedStyleSheets" in Document.prototype && "replace" in CSSStyleSheet.prototype, ae = /* @__PURE__ */ Symbol(), _e = /* @__PURE__ */ new WeakMap();
+let Ue = class {
   constructor(e, t, i) {
-    if (this._$cssResult$ = !0, i !== re) throw Error("CSSResult is not constructable. Use `unsafeCSS` or `css` instead.");
+    if (this._$cssResult$ = !0, i !== ae) throw Error("CSSResult is not constructable. Use `unsafeCSS` or `css` instead.");
     this.cssText = e, this.t = t;
   }
   get styleSheet() {
     let e = this.o;
     const t = this.t;
-    if (oe && e === void 0) {
+    if (re && e === void 0) {
       const i = t !== void 0 && t.length === 1;
-      i && (e = fe.get(t)), e === void 0 && ((this.o = e = new CSSStyleSheet()).replaceSync(this.cssText), i && fe.set(t, e));
+      i && (e = _e.get(t)), e === void 0 && ((this.o = e = new CSSStyleSheet()).replaceSync(this.cssText), i && _e.set(t, e));
     }
     return e;
   }
@@ -17,28 +17,28 @@ let Ne = class {
     return this.cssText;
   }
 };
-const ze = (n) => new Ne(typeof n == "string" ? n : n + "", void 0, re), Ve = (n, ...e) => {
+const Ve = (n) => new Ue(typeof n == "string" ? n : n + "", void 0, ae), Le = (n, ...e) => {
   const t = n.length === 1 ? n[0] : e.reduce((i, s, o) => i + ((r) => {
     if (r._$cssResult$ === !0) return r.cssText;
     if (typeof r == "number") return r;
     throw Error("Value passed to 'css' function must be a 'css' function result: " + r + ". Use 'unsafeCSS' to pass non-literal values, but take care to ensure page security.");
   })(s) + n[o + 1], n[0]);
-  return new Ne(t, n, re);
-}, Le = (n, e) => {
-  if (oe) n.adoptedStyleSheets = e.map((t) => t instanceof CSSStyleSheet ? t : t.styleSheet);
+  return new Ue(t, n, ae);
+}, Fe = (n, e) => {
+  if (re) n.adoptedStyleSheets = e.map((t) => t instanceof CSSStyleSheet ? t : t.styleSheet);
   else for (const t of e) {
-    const i = document.createElement("style"), s = W.litNonce;
+    const i = document.createElement("style"), s = J.litNonce;
     s !== void 0 && i.setAttribute("nonce", s), i.textContent = t.cssText, n.appendChild(i);
   }
-}, _e = oe ? (n) => n : (n) => n instanceof CSSStyleSheet ? ((e) => {
+}, ve = re ? (n) => n : (n) => n instanceof CSSStyleSheet ? ((e) => {
   let t = "";
   for (const i of e.cssRules) t += i.cssText;
-  return ze(t);
+  return Ve(t);
 })(n) : n;
-const { is: Fe, defineProperty: We, getOwnPropertyDescriptor: Ke, getOwnPropertyNames: Je, getOwnPropertySymbols: Ze, getPrototypeOf: Ye } = Object, X = globalThis, ve = X.trustedTypes, Xe = ve ? ve.emptyScript : "", Qe = X.reactiveElementPolyfillSupport, H = (n, e) => n, se = { toAttribute(n, e) {
+const { is: We, defineProperty: Ke, getOwnPropertyDescriptor: Je, getOwnPropertyNames: Ze, getOwnPropertySymbols: Ye, getPrototypeOf: Xe } = Object, ee = globalThis, me = ee.trustedTypes, Qe = me ? me.emptyScript : "", et = ee.reactiveElementPolyfillSupport, G = (n, e) => n, ne = { toAttribute(n, e) {
   switch (e) {
     case Boolean:
-      n = n ? Xe : null;
+      n = n ? Qe : null;
       break;
     case Object:
     case Array:
@@ -63,23 +63,23 @@ const { is: Fe, defineProperty: We, getOwnPropertyDescriptor: Ke, getOwnProperty
       }
   }
   return t;
-} }, Me = (n, e) => !Fe(n, e), me = { attribute: !0, type: String, converter: se, reflect: !1, useDefault: !1, hasChanged: Me };
-Symbol.metadata ??= /* @__PURE__ */ Symbol("metadata"), X.litPropertyMetadata ??= /* @__PURE__ */ new WeakMap();
-let M = class extends HTMLElement {
+} }, Pe = (n, e) => !We(n, e), be = { attribute: !0, type: String, converter: ne, reflect: !1, useDefault: !1, hasChanged: Pe };
+Symbol.metadata ??= /* @__PURE__ */ Symbol("metadata"), ee.litPropertyMetadata ??= /* @__PURE__ */ new WeakMap();
+let D = class extends HTMLElement {
   static addInitializer(e) {
     this._$Ei(), (this.l ??= []).push(e);
   }
   static get observedAttributes() {
     return this.finalize(), this._$Eh && [...this._$Eh.keys()];
   }
-  static createProperty(e, t = me) {
+  static createProperty(e, t = be) {
     if (t.state && (t.attribute = !1), this._$Ei(), this.prototype.hasOwnProperty(e) && ((t = Object.create(t)).wrapped = !0), this.elementProperties.set(e, t), !t.noAccessor) {
       const i = /* @__PURE__ */ Symbol(), s = this.getPropertyDescriptor(e, i, t);
-      s !== void 0 && We(this.prototype, e, s);
+      s !== void 0 && Ke(this.prototype, e, s);
     }
   }
   static getPropertyDescriptor(e, t, i) {
-    const { get: s, set: o } = Ke(this.prototype, e) ?? { get() {
+    const { get: s, set: o } = Je(this.prototype, e) ?? { get() {
       return this[t];
     }, set(r) {
       this[t] = r;
@@ -90,17 +90,17 @@ let M = class extends HTMLElement {
     }, configurable: !0, enumerable: !0 };
   }
   static getPropertyOptions(e) {
-    return this.elementProperties.get(e) ?? me;
+    return this.elementProperties.get(e) ?? be;
   }
   static _$Ei() {
-    if (this.hasOwnProperty(H("elementProperties"))) return;
-    const e = Ye(this);
+    if (this.hasOwnProperty(G("elementProperties"))) return;
+    const e = Xe(this);
     e.finalize(), e.l !== void 0 && (this.l = [...e.l]), this.elementProperties = new Map(e.elementProperties);
   }
   static finalize() {
-    if (this.hasOwnProperty(H("finalized"))) return;
-    if (this.finalized = !0, this._$Ei(), this.hasOwnProperty(H("properties"))) {
-      const t = this.properties, i = [...Je(t), ...Ze(t)];
+    if (this.hasOwnProperty(G("finalized"))) return;
+    if (this.finalized = !0, this._$Ei(), this.hasOwnProperty(G("properties"))) {
+      const t = this.properties, i = [...Ze(t), ...Ye(t)];
       for (const s of i) this.createProperty(s, t[s]);
     }
     const e = this[Symbol.metadata];
@@ -119,8 +119,8 @@ let M = class extends HTMLElement {
     const t = [];
     if (Array.isArray(e)) {
       const i = new Set(e.flat(1 / 0).reverse());
-      for (const s of i) t.unshift(_e(s));
-    } else e !== void 0 && t.push(_e(e));
+      for (const s of i) t.unshift(ve(s));
+    } else e !== void 0 && t.push(ve(e));
     return t;
   }
   static _$Eu(e, t) {
@@ -146,7 +146,7 @@ let M = class extends HTMLElement {
   }
   createRenderRoot() {
     const e = this.shadowRoot ?? this.attachShadow(this.constructor.shadowRootOptions);
-    return Le(e, this.constructor.elementStyles), e;
+    return Fe(e, this.constructor.elementStyles), e;
   }
   connectedCallback() {
     this.renderRoot ??= this.createRenderRoot(), this.enableUpdating(!0), this._$EO?.forEach((e) => e.hostConnected?.());
@@ -162,14 +162,14 @@ let M = class extends HTMLElement {
   _$ET(e, t) {
     const i = this.constructor.elementProperties.get(e), s = this.constructor._$Eu(e, i);
     if (s !== void 0 && i.reflect === !0) {
-      const o = (i.converter?.toAttribute !== void 0 ? i.converter : se).toAttribute(t, i.type);
+      const o = (i.converter?.toAttribute !== void 0 ? i.converter : ne).toAttribute(t, i.type);
       this._$Em = e, o == null ? this.removeAttribute(s) : this.setAttribute(s, o), this._$Em = null;
     }
   }
   _$AK(e, t) {
     const i = this.constructor, s = i._$Eh.get(e);
     if (s !== void 0 && this._$Em !== s) {
-      const o = i.getPropertyOptions(s), r = typeof o.converter == "function" ? { fromAttribute: o.converter } : o.converter?.fromAttribute !== void 0 ? o.converter : se;
+      const o = i.getPropertyOptions(s), r = typeof o.converter == "function" ? { fromAttribute: o.converter } : o.converter?.fromAttribute !== void 0 ? o.converter : ne;
       this._$Em = s;
       const a = r.fromAttribute(t, o.type);
       this[s] = a ?? this._$Ej?.get(s) ?? a, this._$Em = null;
@@ -178,7 +178,7 @@ let M = class extends HTMLElement {
   requestUpdate(e, t, i, s = !1, o) {
     if (e !== void 0) {
       const r = this.constructor;
-      if (s === !1 && (o = this[e]), i ??= r.getPropertyOptions(e), !((i.hasChanged ?? Me)(o, t) || i.useDefault && i.reflect && o === this._$Ej?.get(e) && !this.hasAttribute(r._$Eu(e, i)))) return;
+      if (s === !1 && (o = this[e]), i ??= r.getPropertyOptions(e), !((i.hasChanged ?? Pe)(o, t) || i.useDefault && i.reflect && o === this._$Ej?.get(e) && !this.hasAttribute(r._$Eu(e, i)))) return;
       this.C(e, t, i);
     }
     this.isUpdatePending === !1 && (this._$ES = this._$EP());
@@ -246,70 +246,70 @@ let M = class extends HTMLElement {
   firstUpdated(e) {
   }
 };
-M.elementStyles = [], M.shadowRootOptions = { mode: "open" }, M[H("elementProperties")] = /* @__PURE__ */ new Map(), M[H("finalized")] = /* @__PURE__ */ new Map(), Qe?.({ ReactiveElement: M }), (X.reactiveElementVersions ??= []).push("2.1.2");
-const ae = globalThis, be = (n) => n, J = ae.trustedTypes, $e = J ? J.createPolicy("lit-html", { createHTML: (n) => n }) : void 0, Ue = "$lit$", I = `lit$${Math.random().toFixed(9).slice(2)}$`, Pe = "?" + I, et = `<${Pe}>`, O = document, q = () => O.createComment(""), z = (n) => n === null || typeof n != "object" && typeof n != "function", ce = Array.isArray, tt = (n) => ce(n) || typeof n?.[Symbol.iterator] == "function", te = `[\x20\t
-\f\r]`, j = /<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g, ye = /-->/g, we = />/g, T = RegExp(`>|${te}(?:([^\\s"'>=/]+)(${te}*=${te}*(?:[^\x20\t
-\f\r"'\`<>=]|("|')|))|$)`, "g"), Se = /'/g, xe = /"/g, De = /^(?:script|style|textarea|title)$/i, it = (n) => (e, ...t) => ({ _$litType$: n, strings: e, values: t }), d = it(1), U = /* @__PURE__ */ Symbol.for("lit-noChange"), y = /* @__PURE__ */ Symbol.for("lit-nothing"), Ce = /* @__PURE__ */ new WeakMap(), R = O.createTreeWalker(O, 129);
-function je(n, e) {
-  if (!ce(n) || !n.hasOwnProperty("raw")) throw Error("invalid template strings array");
-  return $e !== void 0 ? $e.createHTML(e) : e;
+D.elementStyles = [], D.shadowRootOptions = { mode: "open" }, D[G("elementProperties")] = /* @__PURE__ */ new Map(), D[G("finalized")] = /* @__PURE__ */ new Map(), et?.({ ReactiveElement: D }), (ee.reactiveElementVersions ??= []).push("2.1.2");
+const ce = globalThis, $e = (n) => n, Y = ce.trustedTypes, ye = Y ? Y.createPolicy("lit-html", { createHTML: (n) => n }) : void 0, Me = "$lit$", T = `lit$${Math.random().toFixed(9).slice(2)}$`, De = "?" + T, tt = `<${De}>`, U = document, V = () => U.createComment(""), L = (n) => n === null || typeof n != "object" && typeof n != "function", de = Array.isArray, it = (n) => de(n) || typeof n?.[Symbol.iterator] == "function", ie = `[\x20\t
+\f\r]`, q = /<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g, we = /-->/g, Se = />/g, O = RegExp(`>|${ie}(?:([^\\s"'>=/]+)(${ie}*=${ie}*(?:[^\x20\t
+\f\r"'\`<>=]|("|')|))|$)`, "g"), xe = /'/g, Ce = /"/g, je = /^(?:script|style|textarea|title)$/i, st = (n) => (e, ...t) => ({ _$litType$: n, strings: e, values: t }), d = st(1), j = /* @__PURE__ */ Symbol.for("lit-noChange"), y = /* @__PURE__ */ Symbol.for("lit-nothing"), Ae = /* @__PURE__ */ new WeakMap(), N = U.createTreeWalker(U, 129);
+function Be(n, e) {
+  if (!de(n) || !n.hasOwnProperty("raw")) throw Error("invalid template strings array");
+  return ye !== void 0 ? ye.createHTML(e) : e;
 }
-const st = (n, e) => {
+const nt = (n, e) => {
   const t = n.length - 1, i = [];
-  let s, o = e === 2 ? "<svg>" : e === 3 ? "<math>" : "", r = j;
+  let s, o = e === 2 ? "<svg>" : e === 3 ? "<math>" : "", r = q;
   for (let a = 0; a < t; a++) {
     const c = n[a];
-    let p, f, u = -1, l = 0;
-    for (; l < c.length && (r.lastIndex = l, f = r.exec(c), f !== null); ) l = r.lastIndex, r === j ? f[1] === "!--" ? r = ye : f[1] !== void 0 ? r = we : f[2] !== void 0 ? (De.test(f[2]) && (s = RegExp("</" + f[2], "g")), r = T) : f[3] !== void 0 && (r = T) : r === T ? f[0] === ">" ? (r = s ?? j, u = -1) : f[1] === void 0 ? u = -2 : (u = r.lastIndex - f[2].length, p = f[1], r = f[3] === void 0 ? T : f[3] === '"' ? xe : Se) : r === xe || r === Se ? r = T : r === ye || r === we ? r = j : (r = T, s = void 0);
-    const h = r === T && n[a + 1].startsWith("/>") ? " " : "";
-    o += r === j ? c + et : u >= 0 ? (i.push(p), c.slice(0, u) + Ue + c.slice(u) + I + h) : c + I + (u === -2 ? a : h);
+    let u, f, p = -1, l = 0;
+    for (; l < c.length && (r.lastIndex = l, f = r.exec(c), f !== null); ) l = r.lastIndex, r === q ? f[1] === "!--" ? r = we : f[1] !== void 0 ? r = Se : f[2] !== void 0 ? (je.test(f[2]) && (s = RegExp("</" + f[2], "g")), r = O) : f[3] !== void 0 && (r = O) : r === O ? f[0] === ">" ? (r = s ?? q, p = -1) : f[1] === void 0 ? p = -2 : (p = r.lastIndex - f[2].length, u = f[1], r = f[3] === void 0 ? O : f[3] === '"' ? Ce : xe) : r === Ce || r === xe ? r = O : r === we || r === Se ? r = q : (r = O, s = void 0);
+    const h = r === O && n[a + 1].startsWith("/>") ? " " : "";
+    o += r === q ? c + tt : p >= 0 ? (i.push(u), c.slice(0, p) + Me + c.slice(p) + T + h) : c + T + (p === -2 ? a : h);
   }
-  return [je(n, o + (n[t] || "<?>") + (e === 2 ? "</svg>" : e === 3 ? "</math>" : "")), i];
+  return [Be(n, o + (n[t] || "<?>") + (e === 2 ? "</svg>" : e === 3 ? "</math>" : "")), i];
 };
-class V {
+class F {
   constructor({ strings: e, _$litType$: t }, i) {
     let s;
     this.parts = [];
     let o = 0, r = 0;
-    const a = e.length - 1, c = this.parts, [p, f] = st(e, t);
-    if (this.el = V.createElement(p, i), R.currentNode = this.el.content, t === 2 || t === 3) {
-      const u = this.el.content.firstChild;
-      u.replaceWith(...u.childNodes);
+    const a = e.length - 1, c = this.parts, [u, f] = nt(e, t);
+    if (this.el = F.createElement(u, i), N.currentNode = this.el.content, t === 2 || t === 3) {
+      const p = this.el.content.firstChild;
+      p.replaceWith(...p.childNodes);
     }
-    for (; (s = R.nextNode()) !== null && c.length < a; ) {
+    for (; (s = N.nextNode()) !== null && c.length < a; ) {
       if (s.nodeType === 1) {
-        if (s.hasAttributes()) for (const u of s.getAttributeNames()) if (u.endsWith(Ue)) {
-          const l = f[r++], h = s.getAttribute(u).split(I), g = /([.?@])?(.*)/.exec(l);
-          c.push({ type: 1, index: o, name: g[2], strings: h, ctor: g[1] === "." ? ot : g[1] === "?" ? rt : g[1] === "@" ? at : Q }), s.removeAttribute(u);
-        } else u.startsWith(I) && (c.push({ type: 6, index: o }), s.removeAttribute(u));
-        if (De.test(s.tagName)) {
-          const u = s.textContent.split(I), l = u.length - 1;
+        if (s.hasAttributes()) for (const p of s.getAttributeNames()) if (p.endsWith(Me)) {
+          const l = f[r++], h = s.getAttribute(p).split(T), g = /([.?@])?(.*)/.exec(l);
+          c.push({ type: 1, index: o, name: g[2], strings: h, ctor: g[1] === "." ? rt : g[1] === "?" ? at : g[1] === "@" ? ct : te }), s.removeAttribute(p);
+        } else p.startsWith(T) && (c.push({ type: 6, index: o }), s.removeAttribute(p));
+        if (je.test(s.tagName)) {
+          const p = s.textContent.split(T), l = p.length - 1;
           if (l > 0) {
-            s.textContent = J ? J.emptyScript : "";
-            for (let h = 0; h < l; h++) s.append(u[h], q()), R.nextNode(), c.push({ type: 2, index: ++o });
-            s.append(u[l], q());
+            s.textContent = Y ? Y.emptyScript : "";
+            for (let h = 0; h < l; h++) s.append(p[h], V()), N.nextNode(), c.push({ type: 2, index: ++o });
+            s.append(p[l], V());
           }
         }
-      } else if (s.nodeType === 8) if (s.data === Pe) c.push({ type: 2, index: o });
+      } else if (s.nodeType === 8) if (s.data === De) c.push({ type: 2, index: o });
       else {
-        let u = -1;
-        for (; (u = s.data.indexOf(I, u + 1)) !== -1; ) c.push({ type: 7, index: o }), u += I.length - 1;
+        let p = -1;
+        for (; (p = s.data.indexOf(T, p + 1)) !== -1; ) c.push({ type: 7, index: o }), p += T.length - 1;
       }
       o++;
     }
   }
   static createElement(e, t) {
-    const i = O.createElement("template");
+    const i = U.createElement("template");
     return i.innerHTML = e, i;
   }
 }
-function P(n, e, t = n, i) {
-  if (e === U) return e;
+function B(n, e, t = n, i) {
+  if (e === j) return e;
   let s = i !== void 0 ? t._$Co?.[i] : t._$Cl;
-  const o = z(e) ? void 0 : e._$litDirective$;
-  return s?.constructor !== o && (s?._$AO?.(!1), o === void 0 ? s = void 0 : (s = new o(n), s._$AT(n, t, i)), i !== void 0 ? (t._$Co ??= [])[i] = s : t._$Cl = s), s !== void 0 && (e = P(n, s._$AS(n, e.values), s, i)), e;
+  const o = L(e) ? void 0 : e._$litDirective$;
+  return s?.constructor !== o && (s?._$AO?.(!1), o === void 0 ? s = void 0 : (s = new o(n), s._$AT(n, t, i)), i !== void 0 ? (t._$Co ??= [])[i] = s : t._$Cl = s), s !== void 0 && (e = B(n, s._$AS(n, e.values), s, i)), e;
 }
-class nt {
+class ot {
   constructor(e, t) {
     this._$AV = [], this._$AN = void 0, this._$AD = e, this._$AM = t;
   }
@@ -320,24 +320,24 @@ class nt {
     return this._$AM._$AU;
   }
   u(e) {
-    const { el: { content: t }, parts: i } = this._$AD, s = (e?.creationScope ?? O).importNode(t, !0);
-    R.currentNode = s;
-    let o = R.nextNode(), r = 0, a = 0, c = i[0];
+    const { el: { content: t }, parts: i } = this._$AD, s = (e?.creationScope ?? U).importNode(t, !0);
+    N.currentNode = s;
+    let o = N.nextNode(), r = 0, a = 0, c = i[0];
     for (; c !== void 0; ) {
       if (r === c.index) {
-        let p;
-        c.type === 2 ? p = new L(o, o.nextSibling, this, e) : c.type === 1 ? p = new c.ctor(o, c.name, c.strings, this, e) : c.type === 6 && (p = new ct(o, this, e)), this._$AV.push(p), c = i[++a];
+        let u;
+        c.type === 2 ? u = new W(o, o.nextSibling, this, e) : c.type === 1 ? u = new c.ctor(o, c.name, c.strings, this, e) : c.type === 6 && (u = new dt(o, this, e)), this._$AV.push(u), c = i[++a];
       }
-      r !== c?.index && (o = R.nextNode(), r++);
+      r !== c?.index && (o = N.nextNode(), r++);
     }
-    return R.currentNode = O, s;
+    return N.currentNode = U, s;
   }
   p(e) {
     let t = 0;
     for (const i of this._$AV) i !== void 0 && (i.strings !== void 0 ? (i._$AI(e, i, t), t += i.strings.length - 2) : i._$AI(e[t])), t++;
   }
 }
-class L {
+class W {
   get _$AU() {
     return this._$AM?._$AU ?? this._$Cv;
   }
@@ -356,7 +356,7 @@ class L {
     return this._$AB;
   }
   _$AI(e, t = this) {
-    e = P(this, e, t), z(e) ? e === y || e == null || e === "" ? (this._$AH !== y && this._$AR(), this._$AH = y) : e !== this._$AH && e !== U && this._(e) : e._$litType$ !== void 0 ? this.$(e) : e.nodeType !== void 0 ? this.T(e) : tt(e) ? this.k(e) : this._(e);
+    e = B(this, e, t), L(e) ? e === y || e == null || e === "" ? (this._$AH !== y && this._$AR(), this._$AH = y) : e !== this._$AH && e !== j && this._(e) : e._$litType$ !== void 0 ? this.$(e) : e.nodeType !== void 0 ? this.T(e) : it(e) ? this.k(e) : this._(e);
   }
   O(e) {
     return this._$AA.parentNode.insertBefore(e, this._$AB);
@@ -365,38 +365,38 @@ class L {
     this._$AH !== e && (this._$AR(), this._$AH = this.O(e));
   }
   _(e) {
-    this._$AH !== y && z(this._$AH) ? this._$AA.nextSibling.data = e : this.T(O.createTextNode(e)), this._$AH = e;
+    this._$AH !== y && L(this._$AH) ? this._$AA.nextSibling.data = e : this.T(U.createTextNode(e)), this._$AH = e;
   }
   $(e) {
-    const { values: t, _$litType$: i } = e, s = typeof i == "number" ? this._$AC(e) : (i.el === void 0 && (i.el = V.createElement(je(i.h, i.h[0]), this.options)), i);
+    const { values: t, _$litType$: i } = e, s = typeof i == "number" ? this._$AC(e) : (i.el === void 0 && (i.el = F.createElement(Be(i.h, i.h[0]), this.options)), i);
     if (this._$AH?._$AD === s) this._$AH.p(t);
     else {
-      const o = new nt(s, this), r = o.u(this.options);
+      const o = new ot(s, this), r = o.u(this.options);
       o.p(t), this.T(r), this._$AH = o;
     }
   }
   _$AC(e) {
-    let t = Ce.get(e.strings);
-    return t === void 0 && Ce.set(e.strings, t = new V(e)), t;
+    let t = Ae.get(e.strings);
+    return t === void 0 && Ae.set(e.strings, t = new F(e)), t;
   }
   k(e) {
-    ce(this._$AH) || (this._$AH = [], this._$AR());
+    de(this._$AH) || (this._$AH = [], this._$AR());
     const t = this._$AH;
     let i, s = 0;
-    for (const o of e) s === t.length ? t.push(i = new L(this.O(q()), this.O(q()), this, this.options)) : i = t[s], i._$AI(o), s++;
+    for (const o of e) s === t.length ? t.push(i = new W(this.O(V()), this.O(V()), this, this.options)) : i = t[s], i._$AI(o), s++;
     s < t.length && (this._$AR(i && i._$AB.nextSibling, s), t.length = s);
   }
   _$AR(e = this._$AA.nextSibling, t) {
     for (this._$AP?.(!1, !0, t); e !== this._$AB; ) {
-      const i = be(e).nextSibling;
-      be(e).remove(), e = i;
+      const i = $e(e).nextSibling;
+      $e(e).remove(), e = i;
     }
   }
   setConnected(e) {
     this._$AM === void 0 && (this._$Cv = e, this._$AP?.(e));
   }
 }
-class Q {
+class te {
   get tagName() {
     return this.element.tagName;
   }
@@ -409,11 +409,11 @@ class Q {
   _$AI(e, t = this, i, s) {
     const o = this.strings;
     let r = !1;
-    if (o === void 0) e = P(this, e, t, 0), r = !z(e) || e !== this._$AH && e !== U, r && (this._$AH = e);
+    if (o === void 0) e = B(this, e, t, 0), r = !L(e) || e !== this._$AH && e !== j, r && (this._$AH = e);
     else {
       const a = e;
-      let c, p;
-      for (e = o[0], c = 0; c < o.length - 1; c++) p = P(this, a[i + c], t, c), p === U && (p = this._$AH[c]), r ||= !z(p) || p !== this._$AH[c], p === y ? e = y : e !== y && (e += (p ?? "") + o[c + 1]), this._$AH[c] = p;
+      let c, u;
+      for (e = o[0], c = 0; c < o.length - 1; c++) u = B(this, a[i + c], t, c), u === j && (u = this._$AH[c]), r ||= !L(u) || u !== this._$AH[c], u === y ? e = y : e !== y && (e += (u ?? "") + o[c + 1]), this._$AH[c] = u;
     }
     r && !s && this.j(e);
   }
@@ -421,7 +421,7 @@ class Q {
     e === y ? this.element.removeAttribute(this.name) : this.element.setAttribute(this.name, e ?? "");
   }
 }
-class ot extends Q {
+class rt extends te {
   constructor() {
     super(...arguments), this.type = 3;
   }
@@ -429,7 +429,7 @@ class ot extends Q {
     this.element[this.name] = e === y ? void 0 : e;
   }
 }
-class rt extends Q {
+class at extends te {
   constructor() {
     super(...arguments), this.type = 4;
   }
@@ -437,12 +437,12 @@ class rt extends Q {
     this.element.toggleAttribute(this.name, !!e && e !== y);
   }
 }
-class at extends Q {
+class ct extends te {
   constructor(e, t, i, s, o) {
     super(e, t, i, s, o), this.type = 5;
   }
   _$AI(e, t = this) {
-    if ((e = P(this, e, t, 0) ?? y) === U) return;
+    if ((e = B(this, e, t, 0) ?? y) === j) return;
     const i = this._$AH, s = e === y && i !== y || e.capture !== i.capture || e.once !== i.once || e.passive !== i.passive, o = e !== y && (i === y || s);
     s && this.element.removeEventListener(this.name, this, i), o && this.element.addEventListener(this.name, this, e), this._$AH = e;
   }
@@ -450,7 +450,7 @@ class at extends Q {
     typeof this._$AH == "function" ? this._$AH.call(this.options?.host ?? this.element, e) : this._$AH.handleEvent(e);
   }
 }
-class ct {
+class dt {
   constructor(e, t, i) {
     this.element = e, this.type = 6, this._$AN = void 0, this._$AM = t, this.options = i;
   }
@@ -458,22 +458,22 @@ class ct {
     return this._$AM._$AU;
   }
   _$AI(e) {
-    P(this, e);
+    B(this, e);
   }
 }
-const dt = ae.litHtmlPolyfillSupport;
-dt?.(V, L), (ae.litHtmlVersions ??= []).push("3.3.3");
-const lt = (n, e, t) => {
+const lt = ce.litHtmlPolyfillSupport;
+lt?.(F, W), (ce.litHtmlVersions ??= []).push("3.3.3");
+const ht = (n, e, t) => {
   const i = t?.renderBefore ?? e;
   let s = i._$litPart$;
   if (s === void 0) {
     const o = t?.renderBefore ?? null;
-    i._$litPart$ = s = new L(e.insertBefore(q(), o), o, void 0, t ?? {});
+    i._$litPart$ = s = new W(e.insertBefore(V(), o), o, void 0, t ?? {});
   }
   return s._$AI(n), s;
 };
-const de = globalThis;
-class G extends M {
+const le = globalThis;
+class z extends D {
   constructor() {
     super(...arguments), this.renderOptions = { host: this }, this._$Do = void 0;
   }
@@ -483,7 +483,7 @@ class G extends M {
   }
   update(e) {
     const t = this.render();
-    this.hasUpdated || (this.renderOptions.isConnected = this.isConnected), super.update(e), this._$Do = lt(t, this.renderRoot, this.renderOptions);
+    this.hasUpdated || (this.renderOptions.isConnected = this.isConnected), super.update(e), this._$Do = ht(t, this.renderRoot, this.renderOptions);
   }
   connectedCallback() {
     super.connectedCallback(), this._$Do?.setConnected(!0);
@@ -492,15 +492,15 @@ class G extends M {
     super.disconnectedCallback(), this._$Do?.setConnected(!1);
   }
   render() {
-    return U;
+    return j;
   }
 }
-G._$litElement$ = !0, G.finalized = !0, de.litElementHydrateSupport?.({ LitElement: G });
-const ht = de.litElementPolyfillSupport;
-ht?.({ LitElement: G });
-(de.litElementVersions ??= []).push("4.2.2");
-const Ae = "circuitsetup_energy_meter_helper/", pt = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i, ut = /(?:api[_ -]?key|password|secret|ssid|token)\s*[:=]/i, gt = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/, ft = /[\u0000-\u001f\u007f-\u009f]/, _t = /* @__PURE__ */ new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]), vt = /* @__PURE__ */ new Set(["previewed", "write_confirmed", "written", "validated", "compiled", "install_confirmation_required", "installing", "reconnecting", "verified", "rolled_back", "failed"]), mt = /* @__PURE__ */ new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "indeterminate", "verified", "cancelled"]), le = /* @__PURE__ */ new Set(["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]), ke = /* @__PURE__ */ new Set(["config_project", "config_packages", "dashboard_import", "native_project", "native_entity_counts"]), Z = /* @__PURE__ */ new Set(["A", "B", "C"]), bt = /* @__PURE__ */ new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]), $t = /* @__PURE__ */ new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]), yt = /* @__PURE__ */ new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]), wt = /* @__PURE__ */ new Set(["invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]), St = /* @__PURE__ */ new Set(["config_project", "config_packages", "native_project"]), xt = /^(?:ct(?:[1-9]|[1-3][0-9]|4[0-2])_name|current_cal_ct(?:[1-9]|[1-3][0-9]|4[0-2])|voltage_cal[12])$/, Ct = /^[0-9a-f]{12}$/, At = /^[0-9a-f]{64}$/, Ee = /^[0-9a-f]{32}$/, kt = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/, Ie = /* @__PURE__ */ new Set(["preview_ct_config", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
-function b(n, e) {
+z._$litElement$ = !0, z.finalized = !0, le.litElementHydrateSupport?.({ LitElement: z });
+const pt = le.litElementPolyfillSupport;
+pt?.({ LitElement: z });
+(le.litElementVersions ??= []).push("4.2.2");
+const ke = "circuitsetup_energy_meter_helper/", ut = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i, gt = /(?:api[_ -]?key|password|secret|ssid|token)\s*[:=]/i, ft = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/, _t = /[\u0000-\u001f\u007f-\u009f]/, vt = /* @__PURE__ */ new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]), mt = /* @__PURE__ */ new Set(["previewed", "write_confirmed", "written", "validated", "compiled", "install_confirmation_required", "installing", "reconnecting", "verified", "rolled_back", "failed"]), bt = /* @__PURE__ */ new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "indeterminate", "verified", "cancelled"]), he = /* @__PURE__ */ new Set(["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]), Ee = /* @__PURE__ */ new Set(["config_project", "config_packages", "dashboard_import", "native_project", "native_entity_counts"]), X = /* @__PURE__ */ new Set(["A", "B", "C"]), $t = /* @__PURE__ */ new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]), yt = /* @__PURE__ */ new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]), wt = /* @__PURE__ */ new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]), St = /* @__PURE__ */ new Set(["invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]), xt = /* @__PURE__ */ new Set(["config_project", "config_packages", "native_project"]), Ct = /^(?:ct(?:[1-9]|[1-3][0-9]|4[0-2])_name|current_cal_ct(?:[1-9]|[1-3][0-9]|4[0-2])|voltage_cal[12])$/, At = /^[0-9a-f]{12}$/, kt = /^[0-9a-f]{64}$/, Ie = /^[0-9a-f]{32}$/, Et = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/, Te = /* @__PURE__ */ new Set(["preview_ct_config", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
+function $(n, e) {
   if (n === null || typeof n != "object" || Array.isArray(n)) throw new Error(`${e} response is invalid`);
   return n;
 }
@@ -513,16 +513,16 @@ function _(n, e, t = !1) {
   if (typeof n != "string" || n.length === 0) throw new Error(`${e} response is invalid`);
   return n;
 }
-function A(n, e) {
+function E(n, e) {
   if (typeof n != "number" || !Number.isFinite(n)) throw new Error(`${e} response is invalid`);
   return n;
 }
-function v(n, e) {
-  const t = A(n, e);
+function m(n, e) {
+  const t = E(n, e);
   if (!Number.isInteger(t)) throw new Error(`${e} response is invalid`);
   return t;
 }
-function k(n, e, t = !1) {
+function I(n, e, t = !1) {
   if (t && n === null) return null;
   if (typeof n != "boolean") throw new Error(`${e} response is invalid`);
   return n;
@@ -532,127 +532,127 @@ function x(n, e, t) {
   if (!e.has(i)) throw new Error(`${t} response is invalid`);
   return i;
 }
-function ne(n, e) {
+function oe(n, e) {
   n !== void 0 && _(n, e, !0);
 }
-function K(n, e) {
+function Z(n, e) {
   return Math.abs(n - e) <= 1e-9 * Math.max(1, Math.abs(n), Math.abs(e));
 }
-function Be(n, e) {
-  const t = b(n, e);
-  _(t.entry_id, e), _(t.title, e), _(t.project_name, e), _(t.project_version, e, !0), k(t.importable, e, !0), _(t.configuration, e, !0);
+function qe(n, e) {
+  const t = $(n, e);
+  _(t.entry_id, e), _(t.title, e), _(t.project_name, e), _(t.project_version, e, !0), I(t.importable, e, !0), _(t.configuration, e, !0);
 }
-function F(n, e) {
-  const t = b(n, e);
-  if (x(t.state, _t, e), w(t.devices, e).forEach((i) => Be(i, e)), t.configuration_authoritative !== void 0 && k(t.configuration_authoritative, e), t.installer_intent !== void 0) {
-    const i = b(t.installer_intent, e), s = v(i.addon_count, e);
+function K(n, e) {
+  const t = $(n, e);
+  if (x(t.state, vt, e), w(t.devices, e).forEach((i) => qe(i, e)), t.configuration_authoritative !== void 0 && I(t.configuration_authoritative, e), t.installer_intent !== void 0) {
+    const i = $(t.installer_intent, e), s = m(i.addon_count, e);
     if (s < 0 || s > 6) throw new Error(`${e} response is invalid`);
-    if (x(i.connection_type, le, e) === "unknown") throw new Error(`${e} response is invalid`);
+    if (x(i.connection_type, he, e) === "unknown") throw new Error(`${e} response is invalid`);
   }
   return n;
 }
-function Te(n, e) {
-  const t = b(n, e), i = v(t.addon_count, e), s = v(t.board_count, e), o = v(t.ct_count, e), r = v(t.group_count, e);
+function Re(n, e) {
+  const t = $(n, e), i = m(t.addon_count, e), s = m(t.board_count, e), o = m(t.ct_count, e), r = m(t.group_count, e);
   if (i < 0 || i > 6 || s < 1 || s > 7 || o < 6 || o > 42 || r < 2 || r > 14 || s !== i + 1 || o !== 6 * s || r !== 2 * s) throw new Error(`${e} response is invalid`);
-  x(t.connection_type, le, e), _(t.voltage_layout, e), _(t.project_name, e);
+  x(t.connection_type, he, e), _(t.voltage_layout, e), _(t.project_name, e);
   const a = w(t.evidence, e);
-  if (a.length < 1 || a.length > ke.size) throw new Error(`${e} response is invalid`);
-  const c = a.map((p) => {
-    const f = b(p, e), u = x(f.source, ke, e), l = v(f.addon_count, e);
+  if (a.length < 1 || a.length > Ee.size) throw new Error(`${e} response is invalid`);
+  const c = a.map((u) => {
+    const f = $(u, e), p = x(f.source, Ee, e), l = m(f.addon_count, e);
     if (l < 0 || l > 6) throw new Error(`${e} response is invalid`);
-    return _(f.detail, e), u;
+    return _(f.detail, e), p;
   });
-  if (new Set(c).size !== c.length || !c.some((p) => St.has(p))) throw new Error(`${e} response is invalid`);
+  if (new Set(c).size !== c.length || !c.some((u) => xt.has(u))) throw new Error(`${e} response is invalid`);
   return n;
 }
-function Et(n, e) {
-  const t = b(n, e);
-  return "topology" in t ? (Te(t.topology, e), t.configuration_authoritative !== void 0 && k(t.configuration_authoritative, e), n) : Te(n, e);
-}
 function It(n, e) {
-  const t = b(n, e);
+  const t = $(n, e);
+  return "topology" in t ? (Re(t.topology, e), t.configuration_authoritative !== void 0 && I(t.configuration_authoritative, e), n) : Re(n, e);
+}
+function Tt(n, e) {
+  const t = $(n, e);
   _(t.plan_id, e), _(t.source_sha256, e);
   const i = w(t.channels, e);
   if (i.length < 6 || i.length > 42 || i.length % 6 !== 0) throw new Error(`${e} response is invalid`);
   i.forEach((r, a) => {
-    const c = b(r, e), p = v(c.channel, e);
-    _(c.name, e), v(c.raw_gain_ct, e), A(c.reporting_multiplier, e), ne(c.selected_model_id, e), k(c.selection_verified_against_config, e), ne(c.display_label, e);
-    const f = b(c.address, e), u = v(f.channel, e), l = v(f.board_index, e), h = v(f.group_index, e), g = x(f.phase, Z, e), $ = a + 1;
-    if (p !== $ || u !== $ || l !== Math.floor(a / 6) || h !== Math.floor(a % 6 / 3) + 1 || g !== ["A", "B", "C"][a % 3]) throw new Error(`${e} response is invalid`);
+    const c = $(r, e), u = m(c.channel, e);
+    _(c.name, e), m(c.raw_gain_ct, e), E(c.reporting_multiplier, e), oe(c.selected_model_id, e), I(c.selection_verified_against_config, e), oe(c.display_label, e);
+    const f = $(c.address, e), p = m(f.channel, e), l = m(f.board_index, e), h = m(f.group_index, e), g = x(f.phase, X, e), b = a + 1;
+    if (u !== b || p !== b || l !== Math.floor(a / 6) || h !== Math.floor(a % 6 / 3) + 1 || g !== ["A", "B", "C"][a % 3]) throw new Error(`${e} response is invalid`);
   });
-  const s = b(t.catalog, e);
-  _(s.source_repository, e), _(s.source_ref, e), v(s.schema_version, e);
+  const s = $(t.catalog, e);
+  _(s.source_repository, e), _(s.source_ref, e), m(s.schema_version, e);
   const o = w(s.presets, e);
   if (o.length > 64) throw new Error(`${e} response is invalid`);
   return o.forEach((r) => {
-    const a = b(r, e);
-    _(a.model_id, e), _(a.label, e), A(a.rated_current_a, e), _(a.secondary, e), a.default_gain_ct !== null && v(a.default_gain_ct, e), k(a.requires_burden_jumper_cut, e), _(a.notes, e);
+    const a = $(r, e);
+    _(a.model_id, e), _(a.label, e), E(a.rated_current_a, e), _(a.secondary, e), a.default_gain_ct !== null && m(a.default_gain_ct, e), I(a.requires_burden_jumper_cut, e), _(a.notes, e);
   }), n;
 }
-function ie(n, e) {
-  const t = b(n, e);
-  if (_(t.transaction_id, e), x(t.state, vt, e), _(t.source_sha256, e), k(t.rollback_available, e), _(t.redacted_diff, e), w(t.changes, e).forEach((i) => {
-    const s = b(i, e), o = _(s.key, e);
-    if (!xt.test(o)) throw new Error(`${e} response is invalid`);
+function se(n, e) {
+  const t = $(n, e);
+  if (_(t.transaction_id, e), x(t.state, mt, e), _(t.source_sha256, e), I(t.rollback_available, e), _(t.redacted_diff, e), w(t.changes, e).forEach((i) => {
+    const s = $(i, e), o = _(s.key, e);
+    if (!Ct.test(o)) throw new Error(`${e} response is invalid`);
     s.old_value !== null && _(s.old_value, e), _(s.new_value, e);
-  }), w(t.evidence, e).forEach((i) => x(i, $t, e)), w(t.progress, e).forEach((i) => x(i, yt, e)), t.validation_detail != null) {
-    const i = b(t.validation_detail, e);
-    for (const s of ["reported_error_count", "reported_warning_count"]) i[s] !== null && v(i[s], e);
-    i.code !== null && v(i.code, e), v(i.error_record_count, e), v(i.warning_record_count, e);
+  }), w(t.evidence, e).forEach((i) => x(i, yt, e)), w(t.progress, e).forEach((i) => x(i, wt, e)), t.validation_detail != null) {
+    const i = $(t.validation_detail, e);
+    for (const s of ["reported_error_count", "reported_warning_count"]) i[s] !== null && m(i[s], e);
+    i.code !== null && m(i.code, e), m(i.error_record_count, e), m(i.warning_record_count, e);
   }
   return t.upload_progress !== void 0 && w(t.upload_progress, e).forEach((i) => {
-    const s = b(i, e);
-    if (x(s.stage, bt, e), s.progress !== null && s.percentage !== null && s.progress !== void 0 && s.percentage !== void 0) throw new Error(`${e} response is invalid`);
+    const s = $(i, e);
+    if (x(s.stage, $t, e), s.progress !== null && s.percentage !== null && s.progress !== void 0 && s.percentage !== void 0) throw new Error(`${e} response is invalid`);
     const o = s.progress ?? s.percentage;
     if (o != null) {
-      const r = v(o, e);
+      const r = m(o, e);
       if (r < 0 || r > 100) throw new Error(`${e} response is invalid`);
     }
   }), n;
 }
-function B(n, e) {
-  const t = b(n, e);
-  _(t.session_id, e), _(t.device_id, e), x(t.state, mt, e), k(t.safety_acknowledged, e);
-  const i = b(t.preflight, e);
+function H(n, e) {
+  const t = $(n, e);
+  _(t.session_id, e), _(t.device_id, e), x(t.state, bt, e), I(t.safety_acknowledged, e);
+  const i = $(t.preflight, e);
   return w(i.issues, e).forEach((s) => {
-    const o = b(s, e);
-    x(o.code, wt, e), _(o.role, e), _(o.detail, e);
+    const o = $(s, e);
+    x(o.code, St, e), _(o.role, e), _(o.detail, e);
   }), w(i.zeroed_roles, e).forEach((s) => _(s, e)), n;
 }
-function Tt(n, e, t, i) {
-  const s = b(n, e), o = x(s.target, /* @__PURE__ */ new Set(["voltage", "current"]), e);
+function Rt(n, e, t, i) {
+  const s = $(n, e), o = x(s.target, /* @__PURE__ */ new Set(["voltage", "current"]), e);
   _(s.target_id, e);
-  const r = k(s.stable, e);
+  const r = I(s.stable, e);
   if (o !== t || s.target_id !== i) throw new Error(`${e} response is invalid`);
   const a = w(s.windows, e, o === "voltage" ? 3 : 1);
   if (a.length !== (o === "voltage" ? 3 : 1)) throw new Error(`${e} response is invalid`);
-  const c = a.map((p) => {
-    const f = b(p, e), u = w(f.samples, e, 3).map((C) => A(C, e));
-    if (u.length !== 3) throw new Error(`${e} response is invalid`);
-    const l = A(f.mean, e), h = A(f.standard_deviation, e), g = A(f.range_percent, e), $ = u.reduce((C, E) => C + E, 0) / u.length, S = Math.sqrt(u.reduce((C, E) => C + (E - $) ** 2, 0) / u.length), m = 100 * (Math.max(...u) - Math.min(...u)) / Math.abs($);
-    if (!K(l, $) || !K(h, S) || !K(g, m)) throw new Error(`${e} response is invalid`);
+  const c = a.map((u) => {
+    const f = $(u, e), p = w(f.samples, e, 3).map((k) => E(k, e));
+    if (p.length !== 3) throw new Error(`${e} response is invalid`);
+    const l = E(f.mean, e), h = E(f.standard_deviation, e), g = E(f.range_percent, e), b = p.reduce((k, A) => k + A, 0) / p.length, C = Math.sqrt(p.reduce((k, A) => k + (A - b) ** 2, 0) / p.length), v = 100 * (Math.max(...p) - Math.min(...p)) / Math.abs(b);
+    if (!Z(l, b) || !Z(h, C) || !Z(g, v)) throw new Error(`${e} response is invalid`);
     return g;
   });
-  if (r !== c.every((p) => p <= 1)) throw new Error(`${e} response is invalid`);
+  if (r !== c.every((u) => u <= 1)) throw new Error(`${e} response is invalid`);
   return n;
 }
-function Re(n, e, t) {
-  const i = b(n, e), s = x(i.state, /* @__PURE__ */ new Set(["applied_pending_restart_verification", "result_outside_tolerance", "indeterminate"]), e);
-  _(i.group_key, e), i.phase !== null && x(i.phase, Z, e);
-  const o = v(i.iteration, e), r = w(i.changed_channels, e, 3).map((g) => v(g, e)), a = w(i.before_values, e, 3), c = w(i.after_values, e, 3), p = w(i.error_percent_values, e, 3);
-  for (const g of [a, c, p]) g.forEach(($) => A($, e));
-  const f = t.target === "voltage" ? t.groupKey : He(t.channel), u = t.target === "voltage" ? Ot(t.groupKey) : [t.channel], l = t.target === "current" ? ["A", "B", "C"][(t.channel - 1) % 3] : null, h = k(i.retry_allowed, e);
-  if (!Number.isFinite(t.reference) || t.reference <= 0 || t.target === "current" && (!Number.isFinite(t.rawReference) || t.rawReference <= 0) || ![1, 3].includes(r.length) || a.length !== r.length || new Set(r).size !== r.length || r.some((g) => g < 1 || g > 42) || o < 1 || o > 3 || i.group_key !== f || i.phase !== l || r.length !== u.length || r.some((g, $) => g !== u[$]) || (s === "indeterminate" ? c.length !== 0 || p.length !== 0 : c.length !== r.length || p.length !== r.length)) throw new Error(`${e} response is invalid`);
+function Oe(n, e, t) {
+  const i = $(n, e), s = x(i.state, /* @__PURE__ */ new Set(["applied_pending_restart_verification", "result_outside_tolerance", "indeterminate"]), e);
+  _(i.group_key, e), i.phase !== null && x(i.phase, X, e);
+  const o = m(i.iteration, e), r = w(i.changed_channels, e, 3).map((g) => m(g, e)), a = w(i.before_values, e, 3), c = w(i.after_values, e, 3), u = w(i.error_percent_values, e, 3);
+  for (const g of [a, c, u]) g.forEach((b) => E(b, e));
+  const f = t.target === "voltage" ? t.groupKey : He(t.channel), p = t.target === "voltage" ? Nt(t.groupKey) : [t.channel], l = t.target === "current" ? ["A", "B", "C"][(t.channel - 1) % 3] : null, h = I(i.retry_allowed, e);
+  if (!Number.isFinite(t.reference) || t.reference <= 0 || t.target === "current" && (!Number.isFinite(t.rawReference) || t.rawReference <= 0) || ![1, 3].includes(r.length) || a.length !== r.length || new Set(r).size !== r.length || r.some((g) => g < 1 || g > 42) || o < 1 || o > 3 || i.group_key !== f || i.phase !== l || r.length !== p.length || r.some((g, b) => g !== p[b]) || (s === "indeterminate" ? c.length !== 0 || u.length !== 0 : c.length !== r.length || u.length !== r.length)) throw new Error(`${e} response is invalid`);
   if (s === "indeterminate") {
     if (i.gain_evidence !== null || h) throw new Error(`${e} response is invalid`);
-    i.restore_evidence != null && b(i.restore_evidence, e);
+    i.restore_evidence != null && $(i.restore_evidence, e);
   } else {
     if (i.gain_evidence == null || i.restore_evidence !== null) throw new Error(`${e} response is invalid`);
-    Rt(i.gain_evidence, e, t);
-    const g = c.map((S) => 100 * Math.abs(A(S, e) - t.reference) / t.reference);
-    if (p.some((S, m) => A(S, e) < 0 || !K(A(S, e), g[m]))) throw new Error(`${e} response is invalid`);
-    const $ = Math.max(...g) > 1;
-    if (s === "result_outside_tolerance" !== $ || h !== ($ && o < 3)) throw new Error(`${e} response is invalid`);
+    Ot(i.gain_evidence, e, t);
+    const g = c.map((C) => 100 * Math.abs(E(C, e) - t.reference) / t.reference);
+    if (u.some((C, v) => E(C, e) < 0 || !Z(E(C, e), g[v]))) throw new Error(`${e} response is invalid`);
+    const b = Math.max(...g) > 1;
+    if (s === "result_outside_tolerance" !== b || h !== (b && o < 3)) throw new Error(`${e} response is invalid`);
   }
   return n;
 }
@@ -660,63 +660,68 @@ function He(n) {
   const e = Math.floor((n - 1) / 6), t = Math.floor((n - 1) % 6 / 3) + 1;
   return e === 0 ? `main_${t}` : `addon${e}_${t}`;
 }
-function Rt(n, e, t) {
-  const i = b(n, e), s = v(i.connection_generation, e), o = v(i.operation_sequence, e), r = t.target === "voltage" ? t.groupKey : He(t.channel), a = r.startsWith("main_") ? `meter_main${r.slice(-1)}` : r;
+function Ot(n, e, t) {
+  const i = $(n, e), s = m(i.connection_generation, e), o = m(i.operation_sequence, e), r = t.target === "voltage" ? t.groupKey : He(t.channel), a = r.startsWith("main_") ? `meter_main${r.slice(-1)}` : r;
   if (s < 1 || o < 1 || _(i.instance_id, e) !== a) throw new Error(`${e} response is invalid`);
-  const c = t.target === "current" ? ["A", "B", "C"][(t.channel - 1) % 3] : null, p = w(i.phases, e, 3);
-  if (p.length !== 3) throw new Error(`${e} response is invalid`);
-  p.forEach((l, h) => {
-    const g = b(l, e), $ = x(g.phase, Z, e);
-    if ($ !== ["A", "B", "C"][h]) throw new Error(`${e} response is invalid`);
-    A(g.measured_voltage, e), A(g.measured_current, e);
-    const S = A(g.reference_voltage, e), m = A(g.reference_current, e), C = v(g.old_voltage_gain, e), E = v(g.new_voltage_gain, e), D = v(g.old_current_gain, e), ee = v(g.new_current_gain, e);
-    if ([C, E, D, ee].some((ge) => ge < 1 || ge > 65535)) throw new Error(`${e} response is invalid`);
+  const c = t.target === "current" ? ["A", "B", "C"][(t.channel - 1) % 3] : null, u = w(i.phases, e, 3);
+  if (u.length !== 3) throw new Error(`${e} response is invalid`);
+  u.forEach((l, h) => {
+    const g = $(l, e), b = x(g.phase, X, e);
+    if (b !== ["A", "B", "C"][h]) throw new Error(`${e} response is invalid`);
+    E(g.measured_voltage, e), E(g.measured_current, e);
+    const C = E(g.reference_voltage, e), v = E(g.reference_current, e), k = m(g.old_voltage_gain, e), A = m(g.new_voltage_gain, e), S = m(g.old_current_gain, e), R = m(g.new_current_gain, e);
+    if ([k, A, S, R].some((P) => P < 1 || P > 65535)) throw new Error(`${e} response is invalid`);
     if (t.target === "voltage") {
-      if (Math.abs(S - t.reference) > Math.max(0.01, 1e-6 * Math.max(Math.abs(S), t.reference)) || Math.abs(m) > 1e-6 || D !== ee) throw new Error(`${e} response is invalid`);
-    } else if (Math.abs(S) > 1e-6 || ($ === c ? Math.abs(m - t.rawReference) > Math.max(1e-4, 1e-6 * Math.max(Math.abs(m), t.rawReference)) : Math.abs(m) > 1e-6) || C !== E || $ !== c && D !== ee) throw new Error(`${e} response is invalid`);
+      if (Math.abs(C - t.reference) > Math.max(0.01, 1e-6 * Math.max(Math.abs(C), t.reference)) || Math.abs(v) > 1e-6 || S !== R) throw new Error(`${e} response is invalid`);
+    } else if (Math.abs(C) > 1e-6 || (b === c ? Math.abs(v - t.rawReference) > Math.max(1e-4, 1e-6 * Math.max(Math.abs(v), t.rawReference)) : Math.abs(v) > 1e-6) || k !== A || b !== c && S !== R) throw new Error(`${e} response is invalid`);
   });
   const f = w(i.register_mismatch_phases, e, 3);
-  f.forEach((l) => x(l, Z, e));
-  const u = w(i.matching_lines, e, 100);
-  if (u.length === 0 || u.some((l) => typeof l != "string") || k(i.flash_saved, e) !== !0 || f.length !== 0 || k(i.calibration_disabled, e) !== !1) throw new Error(`${e} response is invalid`);
+  f.forEach((l) => x(l, X, e));
+  const p = w(i.matching_lines, e, 100);
+  if (p.length === 0 || p.some((l) => typeof l != "string") || I(i.flash_saved, e) !== !0 || f.length !== 0 || I(i.calibration_disabled, e) !== !1) throw new Error(`${e} response is invalid`);
 }
-function Ot(n) {
+function Nt(n) {
   const e = /^(?:main_([12])|addon([1-6])_([12]))$/.exec(n);
   if (!e) return [];
   const t = e[2] === void 0 ? 0 : Number(e[2]), i = Number(e[1] ?? e[3]), s = t * 6 + (i - 1) * 3 + 1;
   return [s, s + 1, s + 2];
 }
-function Nt(n, e, t) {
-  const i = b(n, e);
-  for (const p of ["mac", "config_filename", "config_sha256", "topology_project_name", "topology_voltage_layout", "verification_id"]) _(i[p], e);
-  const s = v(i.topology_addon_count, e);
-  x(i.topology_connection_type, le, e);
-  const o = v(i.connection_generation, e);
-  if (x(i.source_authority, /* @__PURE__ */ new Set(["saved_flash"]), e), k(i.source_handoff_available, e), ne(i.source_handoff_transaction_id, e), !Ct.test(i.mac) || !kt.test(i.config_filename) || !At.test(i.config_sha256) || !Ee.test(i.verification_id) || o < 1 || i.source_handoff_transaction_id !== null && !Ee.test(i.source_handoff_transaction_id) || s !== t.addon_count || i.topology_project_name !== t.project_name || i.topology_connection_type !== t.connection_type || i.topology_voltage_layout !== t.voltage_layout) throw new Error(`${e} response is invalid`);
-  const r = w(i.groups, e, 14), a = /* @__PURE__ */ new Set(["meter_main1", "meter_main2", ...Array.from({ length: s }, (p, f) => [`addon${f + 1}_1`, `addon${f + 1}_2`]).flat()]), c = /* @__PURE__ */ new Set();
-  if (r.length < 1) throw new Error(`${e} response is invalid`);
-  return r.forEach((p) => {
-    const f = b(p, e), u = _(f.instance_id, e);
-    if (!a.has(u) || c.has(u)) throw new Error(`${e} response is invalid`);
-    c.add(u);
-    const l = w(f.phase_gains, e, 3);
-    if (l.length !== 3) throw new Error(`${e} response is invalid`);
-    l.forEach((h) => {
-      const g = w(h, e, 2);
-      if (g.length !== 2) throw new Error(`${e} response is invalid`);
-      g.forEach(($) => {
-        const S = v($, e);
-        if (S < 1 || S > 65535) throw new Error(`${e} response is invalid`);
+function Ut(n, e, t) {
+  const i = $(n, e);
+  for (const f of ["mac", "topology_project_name", "topology_voltage_layout", "verification_id"]) _(i[f], e);
+  const s = m(i.topology_addon_count, e);
+  x(i.topology_connection_type, he, e);
+  const o = m(i.connection_generation, e);
+  x(i.source_authority, /* @__PURE__ */ new Set(["saved_flash"]), e);
+  const r = I(i.source_handoff_available, e);
+  if (oe(i.source_handoff_transaction_id, e), r) {
+    if (_(i.config_filename, e), _(i.config_sha256, e), !Et.test(i.config_filename) || !kt.test(i.config_sha256)) throw new Error(`${e} response is invalid`);
+  } else if (i.config_filename !== null || i.config_sha256 !== null) throw new Error(`${e} response is invalid`);
+  if (!At.test(i.mac) || !Ie.test(i.verification_id) || o < 1 || i.source_handoff_transaction_id !== null && !Ie.test(i.source_handoff_transaction_id) || s !== t.addon_count || i.topology_project_name !== t.project_name || i.topology_connection_type !== t.connection_type || i.topology_voltage_layout !== t.voltage_layout) throw new Error(`${e} response is invalid`);
+  const a = w(i.groups, e, 14), c = /* @__PURE__ */ new Set(["meter_main1", "meter_main2", ...Array.from({ length: s }, (f, p) => [`addon${p + 1}_1`, `addon${p + 1}_2`]).flat()]), u = /* @__PURE__ */ new Set();
+  if (a.length < 1) throw new Error(`${e} response is invalid`);
+  return a.forEach((f) => {
+    const p = $(f, e), l = _(p.instance_id, e);
+    if (!c.has(l) || u.has(l)) throw new Error(`${e} response is invalid`);
+    u.add(l);
+    const h = w(p.phase_gains, e, 3);
+    if (h.length !== 3) throw new Error(`${e} response is invalid`);
+    h.forEach((g) => {
+      const b = w(g, e, 2);
+      if (b.length !== 2) throw new Error(`${e} response is invalid`);
+      b.forEach((C) => {
+        const v = m(C, e);
+        if (v < 1 || v > 65535) throw new Error(`${e} response is invalid`);
       });
     });
   }), n;
 }
-class Y {
+class Q {
   constructor(e, t) {
-    this.hass = e, this.entryId = t, this.setupStatus = () => this.call("setup_status", (i) => F(i, "setup_status")), this.listMeters = () => this.call("list_meters", (i) => (w(i, "list_meters").forEach((s) => Be(s, "list_meters")), i)), this.getTopology = (i) => this.call("get_topology", (s) => Et(s, "get_topology"), { device_id: i }), this.getCtInventory = (i) => this.call("get_ct_inventory", (s) => It(s, "get_ct_inventory"), { device_id: i }), this.getSession = (i) => this.call("get_session", (s) => B(s, "get_session"), { session_id: i }), this.getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (i) => b(i, "get_diagnostics_summary")), this.setInstallerIntent = (i, s) => this.call("set_installer_intent", (o) => F(o, "set_installer_intent"), { addon_count: i, connection_type: s }), this.rescan = () => this.call("rescan", (i) => F(i, "rescan")), this.adoptDevice = (i) => this.call("adopt_device", (s) => {
-      const o = b(s, "adopt_device");
+    this.hass = e, this.entryId = t, this.setupStatus = () => this.call("setup_status", (i) => K(i, "setup_status")), this.listMeters = () => this.call("list_meters", (i) => (w(i, "list_meters").forEach((s) => qe(s, "list_meters")), i)), this.getTopology = (i) => this.call("get_topology", (s) => It(s, "get_topology"), { device_id: i }), this.getCtInventory = (i) => this.call("get_ct_inventory", (s) => Tt(s, "get_ct_inventory"), { device_id: i }), this.getSession = (i) => this.call("get_session", (s) => H(s, "get_session"), { session_id: i }), this.getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (i) => $(i, "get_diagnostics_summary")), this.setInstallerIntent = (i, s) => this.call("set_installer_intent", (o) => K(o, "set_installer_intent"), { addon_count: i, connection_type: s }), this.rescan = () => this.call("rescan", (i) => K(i, "rescan")), this.adoptDevice = (i) => this.call("adopt_device", (s) => {
+      const o = $(s, "adopt_device");
       return _(o.device_id, "adopt_device"), _(o.configuration, "adopt_device"), s;
-    }, { device_id: i }), this.previewCtConfig = (i, s, o, r) => this.call("preview_ct_config", (a) => ie(a, "preview_ct_config"), {
+    }, { device_id: i }), this.previewCtConfig = (i, s, o, r) => this.call("preview_ct_config", (a) => se(a, "preview_ct_config"), {
       device_id: i,
       plan_id: s,
       source_sha256: o,
@@ -726,25 +731,26 @@ class Y {
       plan_id: s,
       source_sha256: o,
       changes: r
-    }), this.transaction = (i, s, o, r) => this.call(i, (a) => ie(a, i), {
+    }), this.transaction = (i, s, o, r) => this.call(i, (a) => se(a, i), {
       device_id: s,
       transaction_id: o,
       source_sha256: r
-    }), this.applyCtConfig = (i, s, o) => this.transaction("apply_ct_config", i, s, o), this.compileCtConfig = (i, s, o) => this.transaction("compile_ct_config", i, s, o), this.installCtConfig = (i, s, o) => this.transaction("install_ct_config", i, s, o), this.rollbackCtConfig = (i, s, o) => this.transaction("rollback_ct_config", i, s, o), this.startSession = (i) => this.call("start_session", (s) => B(s, "start_session"), { device_id: i }), this.acknowledgeSafety = (i) => this.call("acknowledge_safety", (s) => B(s, "acknowledge_safety"), { session_id: i, acknowledged: !0 }), this.checkStability = (i, s, o) => this.call("check_stability", (r) => Tt(r, "check_stability", s, o), { session_id: i, target: s, target_id: o }), this.calibrateVoltage = (i, s, o, r) => this.call("calibrate_voltage", (a) => Re(a, "calibrate_voltage", { target: "voltage", groupKey: s, reference: o }), {
+    }), this.applyCtConfig = (i, s, o) => this.transaction("apply_ct_config", i, s, o), this.compileCtConfig = (i, s, o) => this.transaction("compile_ct_config", i, s, o), this.installCtConfig = (i, s, o) => this.transaction("install_ct_config", i, s, o), this.rollbackCtConfig = (i, s, o) => this.transaction("rollback_ct_config", i, s, o), this.startSession = (i) => this.call("start_session", (s) => H(s, "start_session"), { device_id: i }), this.acknowledgeSafety = (i) => this.call("acknowledge_safety", (s) => H(s, "acknowledge_safety"), { session_id: i, acknowledged: !0 }), this.checkStability = (i, s, o) => this.call("check_stability", (r) => Rt(r, "check_stability", s, o), { session_id: i, target: s, target_id: o }), this.calibrateVoltage = (i, s, o, r) => this.call("calibrate_voltage", (a) => Oe(a, "calibrate_voltage", { target: "voltage", groupKey: s, reference: o }), {
       session_id: i,
       group_key: s,
       reference: o,
       confirm_iteration: r
-    }), this.calibrateCurrent = (i, s, o, r, a = 1) => this.call("calibrate_current", (c) => Re(c, "calibrate_current", { target: "current", channel: s, reference: o, rawReference: o / a }), {
+    }), this.calibrateCurrent = (i, s, o, r, a) => !Number.isFinite(a) || a < 1e-3 || a > 1e3 ? Promise.reject(new Error("calibrate_current reporting multiplier is invalid")) : this.call("calibrate_current", (c) => Oe(c, "calibrate_current", { target: "current", channel: s, reference: o, rawReference: o / a }), {
       session_id: i,
       channel: s,
       reference: o,
+      reporting_multiplier: a,
       confirm_iteration: r
-    }), this.restartAndVerify = (i, s) => this.call("restart_and_verify", (o) => Nt(o, "restart_and_verify", s), { session_id: i }), this.cancelSession = (i) => this.call("cancel_session", (s) => B(s, "cancel_session"), { session_id: i }), this.subscribeSetup = (i) => this.subscribe("subscribe_setup", {}, (s) => F(s, "subscribe_setup"), i), this.subscribeConfigTransaction = (i, s, o, r) => this.subscribe("subscribe_config_transaction", {
+    }), this.restartAndVerify = (i, s) => this.call("restart_and_verify", (o) => Ut(o, "restart_and_verify", s), { session_id: i }), this.cancelSession = (i) => this.call("cancel_session", (s) => H(s, "cancel_session"), { session_id: i }), this.subscribeSetup = (i) => this.subscribe("subscribe_setup", {}, (s) => K(s, "subscribe_setup"), i), this.subscribeConfigTransaction = (i, s, o, r) => this.subscribe("subscribe_config_transaction", {
       device_id: i,
       transaction_id: s,
       source_sha256: o
-    }, (a) => ie(a, "subscribe_config_transaction"), r), this.subscribeSession = (i, s) => this.subscribe("subscribe_session", { session_id: i }, (o) => B(o, "subscribe_session"), s);
+    }, (a) => se(a, "subscribe_config_transaction"), r), this.subscribeSession = (i, s) => this.subscribe("subscribe_session", { session_id: i }, (o) => H(o, "subscribe_session"), s);
   }
   static assertPublicPayload(e, t = !1, i = 0, s = "", o = !1) {
     if (i > 8) throw new Error("payload nesting is too deep");
@@ -756,15 +762,15 @@ class Y {
     if (typeof e == "string") {
       const r = e.includes(`
 `) || e.includes("\r"), a = s === "redacted_diff" ? 32768 : 4096;
-      if (e.length > a || gt.test(e) || ut.test(e) || r && s !== "redacted_diff" || s === "redacted_diff" && e.includes("\r"))
+      if (e.length > a || ft.test(e) || gt.test(e) || r && s !== "redacted_diff" || s === "redacted_diff" && e.includes("\r"))
         throw new Error(`unsafe string ${s || "value"} refused`);
       return;
     }
     if (!(e === null || typeof e != "object"))
       for (const [r, a] of Object.entries(e)) {
-        if (r.length > 256 || ft.test(r)) throw new Error("unsafe property name refused");
+        if (r.length > 256 || _t.test(r)) throw new Error("unsafe property name refused");
         if (r.toLowerCase() === "key" && !o) throw new Error(`private field ${r} refused`);
-        if (r.toLowerCase() !== "raw_gain_ct" && pt.test(r))
+        if (r.toLowerCase() !== "raw_gain_ct" && ut.test(r))
           throw new Error(`private field ${r} refused`);
         if (t && i === 0 && r === "changes" && Array.isArray(a)) {
           if (a.length > 100) throw new Error("unsafe collection changes refused");
@@ -775,19 +781,19 @@ class Y {
   }
   async call(e, t, i = {}) {
     const s = await this.hass.callWS({
-      type: `${Ae}${e}`,
+      type: `${ke}${e}`,
       entry_id: this.entryId,
       ...i
     });
-    return Y.assertPublicPayload(s, Ie.has(e)), t(s);
+    return Q.assertPublicPayload(s, Te.has(e)), t(s);
   }
   subscribe(e, t, i, s) {
     return this.hass.connection.subscribeMessage((o) => {
-      Y.assertPublicPayload(o, Ie.has(e)), s(i(o));
-    }, { type: `${Ae}${e}`, entry_id: this.entryId, ...t });
+      Q.assertPublicPayload(o, Te.has(e)), s(i(o));
+    }, { type: `${ke}${e}`, entry_id: this.entryId, ...t });
   }
 }
-function Mt(n, e, t, i, s, o) {
+function Pt(n, e, t, i, s, o) {
   return d`
     <section class="step-content" aria-labelledby="step-heading">
       <p>Select the compatible meter discovered on your network.</p>
@@ -811,7 +817,7 @@ function Mt(n, e, t, i, s, o) {
     </section>
   `;
 }
-function Ut(n) {
+function Mt(n) {
   return d`
     <section class="review-region" aria-labelledby="review-heading">
       <h2 id="review-heading">Review changes</h2>
@@ -825,11 +831,11 @@ function Ut(n) {
     </section>
   `;
 }
-function Pt(n, e, t, i, s, o, r) {
+function Dt(n, e, t, i, s, o, r) {
   const a = n?.state ?? "previewed";
   return d`
     <section class="step-content" aria-labelledby="step-heading">
-      ${Ut(n)}
+      ${Mt(n)}
       ${a === "failed" ? d`
         <div class="recovery-panel" role="status">
           <strong>Build or install needs attention</strong>
@@ -857,21 +863,21 @@ function Pt(n, e, t, i, s, o, r) {
     </section>
   `;
 }
-const Dt = (n, e, t) => (n?.default_gain_ct ?? t) == null || !Number.isFinite(e) || e <= 0 ? null : Math.round((n?.default_gain_ct ?? t) / e), jt = (n, e) => {
-  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(n.key)) return;
+const pe = (n, e) => {
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(n.key)) return;
   n.preventDefault();
-  const i = [...n.currentTarget.parentElement?.querySelectorAll('[role="tab"]') ?? []], s = n.key === "Home" ? 0 : n.key === "End" ? i.length - 1 : (e + (n.key === "ArrowRight" ? 1 : i.length - 1)) % i.length;
-  i[s]?.click(), i[s]?.focus();
-};
-function Bt(n, e, t, i, s, o, r, a, c, p = !1) {
-  const f = Math.ceil(n.channels.length / 6), u = n.channels.filter((l) => l.address.board_index === e).slice(0, 8);
+  const i = [...n.currentTarget.parentElement?.querySelectorAll('[role="tab"]') ?? []], s = n.key === "ArrowRight" || n.key === "ArrowDown", o = n.key === "Home" ? 0 : n.key === "End" ? i.length - 1 : (e + (s ? 1 : i.length - 1)) % i.length;
+  i[o]?.click(), i[o]?.focus();
+}, jt = (n, e, t) => (n?.default_gain_ct ?? t) == null || !Number.isFinite(e) || e <= 0 ? null : Math.round((n?.default_gain_ct ?? t) / e);
+function Bt(n, e, t, i, s, o, r, a, c, u = !1) {
+  const f = Math.ceil(n.channels.length / 6), p = n.channels.filter((l) => l.address.board_index === e).slice(0, 8);
   return d`
     <section class="step-content ct-step" aria-labelledby="step-heading">
       <div class="board-tabs" role="tablist" aria-label="Meter boards" aria-orientation="horizontal">
         ${Array.from({ length: f }, (l, h) => d`
           <button role="tab" id=${`board-tab-${h}`} data-board-tab=${h} aria-selected=${h === e}
             aria-controls="board-panel" tabindex=${h === e ? "0" : "-1"}
-            @keydown=${(g) => jt(g, h)}
+            @keydown=${(g) => pe(g, h)}
             @click=${() => s(h)}>${h === 0 ? "Main Board" : `Add-on ${h}`}</button>
         `)}
       </div>
@@ -881,58 +887,58 @@ function Bt(n, e, t, i, s, o, r, a, c, p = !1) {
       </div>
       <p>Configure each CT on this board. Select its model, adjust the multiplier, and review the resulting gain.</p>
       <div id="board-panel" role="tabpanel" aria-labelledby=${`board-tab-${e}`}>
-      <div class="ct-table" role="table" aria-rowcount=${n.channels.length}>
-        <div class="ct-header" role="row">
-          <span>Name</span><span>Model</span><span>Current gain</span><span>Multiplier</span><span>Resulting gain</span><span>Burden</span><span>Status</span>
+      <div class="ct-table" role="table" aria-rowcount=${n.channels.length + 1}>
+        <div class="ct-header" role="row" aria-rowindex="1">
+          <span role="columnheader">Name</span><span role="columnheader">Model</span><span role="columnheader">Current gain</span><span role="columnheader">Multiplier</span><span role="columnheader">Resulting gain</span><span role="columnheader">Burden</span><span role="columnheader">Status</span>
         </div>
         <div class="ct-window" aria-label="Current transformers">
-          ${u.map((l) => {
+          ${p.map((l) => {
     const h = i.get(l.channel) ?? {
       name: l.name,
       modelId: l.selected_model_id ?? "",
       multiplier: l.reporting_multiplier,
       burdenAcknowledged: !1,
       expanded: !1
-    }, g = n.catalog.presets.find((m) => m.model_id === h.modelId), $ = Dt(g, h.multiplier, h.modelId === "custom" ? h.customGainCt : void 0), S = he(l, h);
+    }, g = n.catalog.presets.find((v) => v.model_id === h.modelId), b = jt(g, h.multiplier, h.modelId === "custom" ? h.customGainCt : void 0), C = ue(l, h);
     return d`
-              <div class="ct-row" data-ct-row data-ct-group=${l.address.group_index - 1} role="row" aria-label=${`CT${l.channel}`}>
-                <label><span class="mobile-label">Name</span><input aria-label=${`CT${l.channel} name`} .value=${h.name}
-                  @input=${(m) => r(l.channel, { name: m.target.value })} /></label>
-                <label><span class="mobile-label">Model</span><select aria-label=${`CT${l.channel} model`} ?disabled=${p}
-                  @change=${(m) => {
-      const C = m.target.value, E = n.catalog.presets.find((D) => D.model_id === C);
+              <div class="ct-row" data-ct-row data-ct-group=${l.address.group_index - 1} role="row" aria-rowindex=${l.channel + 1} aria-label=${`CT${l.channel}`}>
+                <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${l.channel} name`} .value=${h.name}
+                  @input=${(v) => r(l.channel, { name: v.target.value })} /></label>
+                <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${l.channel} model`} ?disabled=${u}
+                  @change=${(v) => {
+      const k = v.target.value, A = n.catalog.presets.find((S) => S.model_id === k);
       r(l.channel, {
-        modelId: C,
-        burdenAcknowledged: l.selection_verified_against_config && C === l.selected_model_id && (C === "custom" || E?.requires_burden_jumper_cut === !0),
+        modelId: k,
+        burdenAcknowledged: l.selection_verified_against_config && k === l.selected_model_id && (k === "custom" || A?.requires_burden_jumper_cut === !0),
         expanded: !0
       });
     }}>
                   <option value="" ?selected=${h.modelId === ""}>Choose model</option>
-                  ${n.catalog.presets.map((m) => d`<option value=${m.model_id} ?selected=${h.modelId === m.model_id}>${m.label}</option>`)}
+                  ${n.catalog.presets.map((v) => d`<option value=${v.model_id} ?selected=${h.modelId === v.model_id}>${v.label}</option>`)}
                   <option value="custom" ?selected=${h.modelId === "custom"}>Custom</option>
                 </select></label>
-                <span><span class="mobile-label">Current gain</span>${l.raw_gain_ct}</span>
-                <label><span class="mobile-label">Multiplier</span><input type="number" min="0.001" step="0.001" aria-label=${`CT${l.channel} multiplier`} ?disabled=${p}
-                  .value=${String(h.multiplier)} @input=${(m) => r(l.channel, { multiplier: Number(m.target.value) })} /></label>
-                <span><span class="mobile-label">Resulting gain</span>${$ ?? "—"}</span>
-                <span><span class="mobile-label">Burden</span>${g?.requires_burden_jumper_cut ? "Check jumper" : "—"}</span>
-                <button class="row-toggle" aria-expanded=${h.expanded} @click=${() => r(l.channel, { expanded: !h.expanded })}>
-                  ${h.modelId ? S ? "Changed" : "OK" : "Choose model"}
+                <span role="cell"><span class="mobile-label">Current gain</span>${l.raw_gain_ct}</span>
+                <label role="cell"><span class="mobile-label">Multiplier</span><input type="number" min="0.001" step="0.001" aria-label=${`CT${l.channel} multiplier`} ?disabled=${u}
+                  .value=${String(h.multiplier)} @input=${(v) => r(l.channel, { multiplier: Number(v.target.value) })} /></label>
+                <span role="cell"><span class="mobile-label">Resulting gain</span>${b ?? "—"}</span>
+                <span role="cell"><span class="mobile-label">Burden</span>${g?.requires_burden_jumper_cut ? "Check jumper" : "—"}</span>
+                <button role="cell" class="row-toggle" aria-expanded=${h.expanded} @click=${() => r(l.channel, { expanded: !h.expanded })}>
+                  ${h.modelId ? C ? "Changed" : "OK" : "Choose model"}
                 </button>
               </div>
               ${h.modelId === "custom" ? d`<div class="ct-detail custom-fields">
                 <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${l.channel} custom gain`}
-                  ?disabled=${p}
+                  ?disabled=${u}
                   .value=${h.customGainCt === void 0 ? "" : String(h.customGainCt)}
-                  @input=${(m) => r(l.channel, { customGainCt: Number(m.target.value) })} /></label>
-                <label>Custom label <input maxlength="64" aria-label=${`CT${l.channel} custom label`} ?disabled=${p} .value=${h.customLabel ?? ""}
-                  @input=${(m) => r(l.channel, { customLabel: m.target.value })} /></label>
+                  @input=${(v) => r(l.channel, { customGainCt: Number(v.target.value) })} /></label>
+                <label>Custom label <input maxlength="64" aria-label=${`CT${l.channel} custom label`} ?disabled=${u} .value=${h.customLabel ?? ""}
+                  @input=${(v) => r(l.channel, { customLabel: v.target.value })} /></label>
               </div>` : y}
               ${h.modelId === "custom" || g?.requires_burden_jumper_cut ? d`<div class="warning-band">
                 <label class="check-row"><input type="checkbox" aria-label=${`CT${l.channel} burden output acknowledgement`}
-                  ?disabled=${p}
+                  ?disabled=${u}
                   .checked=${h.burdenAcknowledged}
-                  @change=${(m) => r(l.channel, { burdenAcknowledged: m.target.checked })} />
+                  @change=${(v) => r(l.channel, { burdenAcknowledged: v.target.checked })} />
                   I checked the burden-output requirement for CT${l.channel}</label>
               </div>` : y}
               ${g && g.rated_current_a > 65.535 && h.multiplier === 1 ? d`<div class="warning-band" role="status">CT${l.channel}: rated current exceeds the unscaled 65.535 A register range.</div>` : y}
@@ -949,41 +955,41 @@ function Bt(n, e, t, i, s, o, r, a, c, p = !1) {
         </div>
       </div>
       </div>
-      <p class="row-count">Showing ${u.length} of ${n.channels.length} CTs</p>
+      <p class="row-count">Showing ${p.length} of ${n.channels.length} CTs</p>
       <footer class="action-footer">
         <button class="secondary" @click=${a}>Back</button>
-        <button class="primary" ?disabled=${p ? ![...i].some(([l, h]) => h.name !== n.channels.find((g) => g.channel === l)?.name) : !qt(n, i)} @click=${c}>${p ? "Save Home Assistant labels" : "Review changes"}</button>
+        <button class="primary" ?disabled=${u ? ![...i].some(([l, h]) => h.name !== n.channels.find((g) => g.channel === l)?.name) : !Gt(n, i)} @click=${c}>${u ? "Save Home Assistant labels" : "Review changes"}</button>
       </footer>
     </section>
   `;
 }
-function Ht(n, e) {
+function qt(n, e) {
   return n.channels.flatMap((t) => {
     const i = e.get(t.channel);
-    if (!i || !he(t, i)) return [];
+    if (!i || !ue(t, i)) return [];
     const s = n.catalog.presets.find((r) => r.model_id === i.modelId), o = { channel: t.channel, name: i.name.trim(), model_id: i.modelId, reporting_multiplier: i.multiplier };
     return i.modelId === "custom" ? (i.customGainCt !== void 0 && (o.custom_gain_ct = i.customGainCt), i.customLabel !== void 0 && (o.custom_label = i.customLabel.trim()), o.burden_output_acknowledged = i.burdenAcknowledged) : s?.requires_burden_jumper_cut && (o.burden_output_acknowledged = i.burdenAcknowledged), [o];
   });
 }
-function he(n, e) {
+function ue(n, e) {
   return e.name !== n.name || e.modelId !== (n.selected_model_id ?? "") || e.multiplier !== n.reporting_multiplier || e.modelId === "custom" && (e.customGainCt !== n.raw_gain_ct || (e.customLabel?.trim() ?? "") !== (n.display_label ?? ""));
 }
-function Gt(n, e) {
+function Ht(n, e) {
   if (!e.name.trim() || !e.modelId || !Number.isFinite(e.multiplier) || e.multiplier <= 0) return !1;
   if (e.modelId === "custom") return Number.isInteger(e.customGainCt) && e.customGainCt >= 1 && e.customGainCt <= 65535 && !!e.customLabel?.trim() && !/[\r\n]/.test(e.customLabel) && e.burdenAcknowledged;
   const t = n.catalog.presets.find((i) => i.model_id === e.modelId);
   return !!t && (!t?.requires_burden_jumper_cut || e.burdenAcknowledged);
 }
-function qt(n, e) {
+function Gt(n, e) {
   let t = !1;
   for (const i of n.channels) {
     const s = e.get(i.channel);
-    if (!s || he(i, s) && (t = !0, !Gt(n, s)))
+    if (!s || ue(i, s) && (t = !0, !Ht(n, s)))
       return !1;
   }
   return t;
 }
-function pe(n) {
+function ge(n) {
   return n ? d`<section class="measurement-evidence" aria-label=${`${n.target} ${n.target_id} stability evidence`}>
     <h3>Stability evidence · ${n.target_id}</h3>
     ${n.windows.map((e, t) => d`<dl>
@@ -994,7 +1000,7 @@ function pe(n) {
     </dl>`)}
   </section>` : y;
 }
-function ue(n) {
+function fe(n) {
   return n ? d`<section class="measurement-evidence" aria-label="Calibration evidence">
     <h3>Calibration iteration ${n.iteration}</h3>
     <dl>
@@ -1008,28 +1014,38 @@ function ue(n) {
     </dl>
   </section>` : y;
 }
-function zt(n, e, t, i, s, o, r, a, c, p, f, u) {
-  const l = n?.ct_count ?? e?.channels.length ?? 6, h = Math.floor((t - 1) / 6), g = h * 6 + 1;
+function zt(n, e, t, i, s, o, r, a, c, u, f, p, l, h) {
+  const g = n?.ct_count ?? e?.channels.length ?? 6, b = Math.floor((t - 1) / 6), C = b * 6 + 1, v = e === null, k = s !== null && Number.isFinite(s) && s >= 1e-3 && s <= 1e3;
   return d`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       <div class="board-tabs" role="tablist" aria-label="Calibration boards">
-        ${Array.from({ length: Math.ceil(l / 6) }, ($, S) => d`<button role="tab" aria-selected=${S === h} @click=${() => r(S * 6 + 1)}>${S === 0 ? "Main Board" : `Add-on ${S}`}</button>`)}
+        ${Array.from({ length: Math.ceil(g / 6) }, (A, S) => d`<button role="tab"
+          id=${`current-board-tab-${S}`} aria-controls="current-board-panel"
+          aria-selected=${S === b} tabindex=${S === b ? "0" : "-1"}
+          @keydown=${(R) => pe(R, S)}
+          @click=${() => a(S * 6 + 1)}>${S === 0 ? "Main Board" : `Add-on ${S}`}</button>`)}
       </div>
+      <div id="current-board-panel" role="tabpanel" aria-labelledby=${`current-board-tab-${b}`}>
       <div class="group-grid">
-        ${[0, 3].map(($) => d`<section><h2>Group ${h * 2 + $ / 3 + 1}</h2>${Array.from({ length: 3 }, (S, m) => {
-    const C = g + $ + m;
-    return d`<button class=${C === t ? "selected" : ""} @click=${() => r(C)}>CT${C}</button>`;
+        ${[0, 3].map((A) => d`<section><h2>Group ${b * 2 + A / 3 + 1}</h2>${Array.from({ length: 3 }, (S, R) => {
+    const P = C + A + R;
+    return d`<button class=${P === t ? "selected" : ""} @click=${() => a(P)}>CT${P}</button>`;
   })}</section>`)}
       </div>
       <h2>Calibrate CT${t}</h2>
-      <label>Trusted instrument reference <input type="number" .value=${String(i)} @input=${($) => a(Number($.target.value))} /></label>
-      <button class="secondary" @click=${c}>Check stability</button>
-      ${s ? d`<div class=${s.stable ? "success-band" : "warning-band"} role="status">${s.stable ? "Stable" : "Retake samples"}</div>` : ""}
-      ${pe(s)}
-      ${ue(o)}
-      <ol class="progress-steps"><li>Set reference</li><li>Verify acknowledgement</li><li>Run iteration ${o?.iteration ?? 1} of 3</li><li>Verify gain</li><li>Zero reference</li></ol>
-      <button class="primary" @click=${p} ?disabled=${!s?.stable || (o?.iteration ?? 0) >= 3 || !!(o && !o.retry_allowed && o.iteration > 0)}>${o?.retry_allowed ? "Retry calibration" : "Calibrate"} CT${t}</button>
-      ${o?.state.includes("indeterminate") ? d`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${f}>Reconnect and inspect</button><button class="danger" @click=${u}>Cancel session</button></aside>` : ""}
+      <label>Trusted instrument reference <input type="number" .value=${String(i)} @input=${(A) => c(Number(A.target.value))} /></label>
+      ${v ? d`<label>Reporting multiplier <input data-role="reporting-multiplier" type="number" min="0.001" max="1000" step="0.001" required .value=${s === null ? "" : String(s)} @input=${(A) => {
+    const S = Number(A.target.value);
+    u(Number.isFinite(S) && S >= 1e-3 && S <= 1e3 ? S : null);
+  }} /></label><p>Confirm the meter's reporting multiplier before runtime-only current calibration.</p>` : ""}
+      <button class="secondary" @click=${f}>Check stability</button>
+      ${o ? d`<div class=${o.stable ? "success-band" : "warning-band"} role="status">${o.stable ? "Stable" : "Retake samples"}</div>` : ""}
+      ${ge(o)}
+      ${fe(r)}
+      <ol class="progress-steps"><li>Set reference</li><li>Verify acknowledgement</li><li>Run iteration ${r?.iteration ?? 1} of 3</li><li>Verify gain</li><li>Zero reference</li></ol>
+      <button class="primary" @click=${p} ?disabled=${!o?.stable || v && !k || (r?.iteration ?? 0) >= 3 || !!(r && !r.retry_allowed && r.iteration > 0)}>${r?.retry_allowed ? "Retry calibration" : "Calibrate"} CT${t}</button>
+      ${r?.state.includes("indeterminate") ? d`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${l}>Reconnect and inspect</button><button class="danger" @click=${h}>Cancel session</button></aside>` : ""}
+      </div>
     </section>
   `;
 }
@@ -1039,7 +1055,7 @@ function Vt(n, e, t, i, s, o) {
     <section class="step-content" aria-labelledby="step-heading">
       <p>Restart verification checks the exact meter identity, topology, restored references, gains, and entity bindings.</p>
       <div class="status-band" role="status">${n || "Ready for restart verification"}</div>
-      ${e ? d`<dl class="status-list"><div><dt>Verification</dt><dd>${e.verification_id}</dd></div><div><dt>Authority</dt><dd>${e.source_authority.replaceAll("_", " ")}</dd></div><div><dt>Connection generation</dt><dd>${e.connection_generation}</dd></div></dl>` : ""}
+      ${e ? d`<dl class="status-list"><div><dt>Verification</dt><dd>${e.verification_id}</dd></div><div><dt>Authority</dt><dd>${e.source_authority.replaceAll("_", " ")}</dd></div><div><dt>Connection generation</dt><dd>${e.connection_generation}</dd></div><div><dt>Source handoff</dt><dd>${e.source_handoff_available ? e.config_filename : "Unavailable in runtime-only mode"}</dd></div></dl>` : ""}
       ${n === "cancelled" ? d`<div class="recovery-panel"><strong>Session cancelled</strong><p>Cleanup completed without claiming restart verification.</p></div>` : ""}
       ${r ? d`<div class="recovery-panel"><strong>Recovery required</strong><p>Reconnect to the meter and inspect live session evidence before retrying. Use rollback only when the current transaction makes it available.</p>${t ? d`<button class="danger" data-action="rollback" @click=${s}>Review rollback</button>` : ""}</div>` : ""}
       <footer class="action-footer"><button class="secondary" @click=${o}>Back</button><button class="primary" @click=${i} ?disabled=${n === "cancelled" || !!e}>${n.includes("failed") ? "Retry restart verification" : "Restart and verify"}</button></footer>
@@ -1074,7 +1090,7 @@ function Ft(n, e, t, i, s, o) {
     </section>
   `;
 }
-const Oe = [
+const Ne = [
   ["wifi", "Wi-Fi"],
   ["ethernet_lilygo", "LilyGO Ethernet"],
   ["ethernet_waveshare", "Waveshare Ethernet"]
@@ -1099,7 +1115,7 @@ function Kt(n, e, t, i, s, o) {
         <legend>Connection</legend>
         <p>Choose how your device will connect to your network.</p>
         <div class="connection-options">
-          ${Oe.map(([r, a]) => d`
+          ${Ne.map(([r, a]) => d`
             <label class=${r === t ? "selected" : ""}>
               <input name="connection-type" type="radio" .value=${r}
                 .checked=${r === t} @change=${() => s(r)} />
@@ -1113,7 +1129,7 @@ function Kt(n, e, t, i, s, o) {
         <dl class="summary-band">
           <div><dt>IO0</dt><dd><strong>OPEN</strong> (not connected)</dd></div>
           <div><dt>Add-on boards</dt><dd>${e}</dd></div>
-          <div><dt>Connection</dt><dd>${Oe.find(([r]) => r === t)?.[1]}</dd></div>
+          <div><dt>Connection</dt><dd>${Ne.find(([r]) => r === t)?.[1]}</dd></div>
           ${Wt.slice(0, e).map((r, a) => d`<div><dt>Add-on ${a + 1}</dt><dd>${r}</dd></div>`)}
         </dl>
       </section>
@@ -1151,8 +1167,8 @@ function Ge(n, e, t, i, s, o = null) {
       <div class="technical-grid">
         <section><h3>Configuration and project evidence</h3><ul>${n?.evidence.map((r) => d`<li>${r.source}: ${r.detail}</li>`) ?? "No evidence loaded."}</ul></section>
         <section><h3>Semantic API mapping</h3><p>${e?.preflight.zeroed_roles.length ?? 0} reference roles verified and zeroed.</p></section>
-        <section><h3>Sample windows by target</h3>${[...i.entries()].map(([r, a]) => d`<div data-target=${r}>${pe(a)}</div>`) || "No sample evidence."}</section>
-        <section><h3>Calibration results by target</h3>${[...s.entries()].map(([r, a]) => d`<div data-target=${r}>${ue(a)}</div>`) || "No calibration evidence."}</section>
+        <section><h3>Sample windows by target</h3>${[...i.entries()].map(([r, a]) => d`<div data-target=${r}>${ge(a)}</div>`) || "No sample evidence."}</section>
+        <section><h3>Calibration results by target</h3>${[...s.entries()].map(([r, a]) => d`<div data-target=${r}>${fe(a)}</div>`) || "No calibration evidence."}</section>
         <section><h3>Build evidence</h3><p>${t?.evidence.join(", ") || "No build evidence."}</p><p>${t?.progress.join(", ") || "No transaction progress."}</p>
           ${t?.validation_detail ? d`<p>Validation code ${t.validation_detail.code ?? "unavailable"}; ${t.validation_detail.error_record_count} error records; ${t.validation_detail.warning_record_count} warning records.</p>` : ""}
           ${t?.upload_progress?.length ? d`<ul>${t.upload_progress.map((r) => d`<li>${r.stage}: ${r.percentage ?? r.progress ?? "in progress"}${r.percentage != null || r.progress != null ? "%" : ""}</li>`)}</ul>` : ""}
@@ -1172,12 +1188,12 @@ function Jt(n, e, t, i, s, o, r, a) {
     </section>
   `;
 }
-function qe(n) {
+function ze(n) {
   const e = n.addon_count, t = n.evidence.map((i) => i.source);
   return e < 0 || e > 6 || n.board_count !== e + 1 || n.ct_count !== 6 * (e + 1) || n.group_count !== 2 * (e + 1) || n.evidence.length < 1 || n.evidence.length > 5 || new Set(t).size !== t.length || !t.some((i) => ["config_project", "config_packages", "native_project"].includes(i)) || n.evidence.some((i) => i.addon_count !== e);
 }
 function Zt(n, e, t, i, s = !1) {
-  const o = s || qe(n);
+  const o = s || ze(n);
   return d`
     <section class="step-content" aria-labelledby="step-heading">
       <div class="identity-strip">
@@ -1206,26 +1222,32 @@ function Zt(n, e, t, i, s = !1) {
     </section>
   `;
 }
-function Yt(n, e, t, i, s, o, r, a, c, p, f) {
-  const u = n?.group_count ?? 2;
+function Yt(n, e, t, i, s, o, r, a, c, u, f) {
+  const p = n?.group_count ?? 2;
   return d`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       <div class="target-tabs" role="tablist" aria-label="Voltage groups">
-        ${Array.from({ length: u }, (l, h) => d`<button role="tab" aria-selected=${h === e} @click=${() => o(h)}>Group ${h + 1}</button>`)}
+        ${Array.from({ length: p }, (l, h) => d`<button role="tab"
+          id=${`voltage-group-tab-${h}`} aria-controls="voltage-group-panel"
+          aria-selected=${h === e} tabindex=${h === e ? "0" : "-1"}
+          @keydown=${(g) => pe(g, h)}
+          @click=${() => o(h)}>Group ${h + 1}</button>`)}
       </div>
+      <div id="voltage-group-panel" role="tabpanel" aria-labelledby=${`voltage-group-tab-${e}`}>
       <h2>Calibrate voltage group ${e + 1}</h2>
       <label>Trusted instrument reference <input type="number" .value=${String(t)} @input=${(l) => r(Number(l.target.value))} /></label>
       <button class="secondary" @click=${a}>Check stability</button>
       ${i ? d`<div class=${i.stable ? "success-band" : "warning-band"} role="status">${i.stable ? "Stable sample window" : "Samples are not stable yet"}</div>` : ""}
-      ${pe(i)}
-      ${ue(s)}
+      ${ge(i)}
+      ${fe(s)}
       <ol class="progress-steps"><li>Set reference</li><li>Verify acknowledgement</li><li>Run iteration</li><li>Verify gain</li><li>Zero reference</li></ol>
       <button class="primary" @click=${c} ?disabled=${!i?.stable || !!(s && !s.retry_allowed && s.iteration > 0)}> ${s?.retry_allowed ? "Retry voltage calibration" : "Calibrate voltage"}</button>
-      ${s?.state === "indeterminate" ? d`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${p}>Reconnect and inspect</button><button class="danger" @click=${f}>Cancel session</button></aside>` : ""}
+      ${s?.state === "indeterminate" ? d`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${u}>Reconnect and inspect</button><button class="danger" @click=${f}>Cancel session</button></aside>` : ""}
+      </div>
     </section>
   `;
 }
-const Xt = Ve`
+const Xt = Le`
   :host {
     --navy: #09284f;
     --orange: #c94f00;
@@ -1363,7 +1385,7 @@ const Xt = Ve`
     .identity-strip, .confirmation-actions, .group-nav { align-items: stretch; flex-direction: column; }
     .evidence-table { display: block; overflow-x: auto; }
   }
-`, N = [
+`, M = [
   ["setup", "Setup Device"],
   ["discover", "Discover"],
   ["topology", "Topology"],
@@ -1375,9 +1397,9 @@ const Xt = Ve`
   ["restart", "Restart"],
   ["summary", "Summary"]
 ];
-class Qt extends G {
+class Qt extends z {
   constructor() {
-    super(...arguments), this.hass = null, this.panel = null, this.api = null, this.setup = null, this.step = "setup", this.selectedDeviceId = null, this.topology = null, this.inventory = null, this.transaction = null, this.session = null, this.stabilityByTarget = /* @__PURE__ */ new Map(), this.calibrationByTarget = /* @__PURE__ */ new Map(), this.restartResult = null, this.addonCount = 0, this.connection = "wifi", this.board = 0, this.ctGroup = 0, this.group = 0, this.channel = 1, this.reference = 0, this.safetyAcknowledged = !1, this.drafts = /* @__PURE__ */ new Map(), this.labelOnly = !1, this.error = "", this.announcement = "", this.unsubs = [], this.connectionGeneration = 0, this.operationGeneration = 0, this.transactionSubscriptionScope = 0, this.sessionSubscriptionScope = 0, this.transactionUnsub = null, this.sessionUnsub = null, this.mobileStepsOpen = !1, this.focusHeading = !1;
+    super(...arguments), this.hass = null, this.panel = null, this.api = null, this.setup = null, this.step = "setup", this.selectedDeviceId = null, this.topology = null, this.inventory = null, this.transaction = null, this.session = null, this.stabilityByTarget = /* @__PURE__ */ new Map(), this.calibrationByTarget = /* @__PURE__ */ new Map(), this.restartResult = null, this.addonCount = 0, this.connection = "wifi", this.board = 0, this.ctGroup = 0, this.group = 0, this.channel = 1, this.reference = 0, this.reportingMultiplier = null, this.safetyAcknowledged = !1, this.drafts = /* @__PURE__ */ new Map(), this.labelOnly = !1, this.error = "", this.announcement = "", this.unsubs = [], this.connectionGeneration = 0, this.operationGeneration = 0, this.transactionSubscriptionScope = 0, this.sessionSubscriptionScope = 0, this.transactionUnsub = null, this.sessionUnsub = null, this.mobileStepsOpen = !1, this.focusHeading = !1;
   }
   static {
     this.styles = Xt;
@@ -1407,7 +1429,7 @@ class Qt extends G {
   }
   async ensureApi(e) {
     if (this.api || !this.isConnected || !this.hass || !this.panel?.config.entry_id) return;
-    const t = new Y(this.hass, this.panel.config.entry_id);
+    const t = new Q(this.hass, this.panel.config.entry_id);
     this.api = t;
     try {
       const i = await t.setupStatus();
@@ -1452,13 +1474,13 @@ class Qt extends G {
     }
   }
   resetCalibrationRun() {
-    this.safetyAcknowledged = !1, this.stabilityByTarget = /* @__PURE__ */ new Map(), this.calibrationByTarget = /* @__PURE__ */ new Map(), this.restartResult = null, this.group = 0, this.channel = 1, this.reference = 0;
+    this.safetyAcknowledged = !1, this.stabilityByTarget = /* @__PURE__ */ new Map(), this.calibrationByTarget = /* @__PURE__ */ new Map(), this.restartResult = null, this.group = 0, this.channel = 1, this.reference = 0, this.reportingMultiplier = null;
   }
   selectDevice(e) {
     e !== this.selectedDeviceId && (++this.operationGeneration, this.clearSubscription("transaction"), this.clearSubscription("session"), this.selectedDeviceId = e, this.topology = null, this.inventory = null, this.transaction = null, this.session = null, this.drafts = /* @__PURE__ */ new Map(), this.board = 0, this.ctGroup = 0, this.resetCalibrationRun());
   }
   showTopology(e) {
-    this.topology = e, this.navigate("topology"), this.error = qe(e) || e.project_name !== this.selectedProjectName() ? "Topology mismatch" : "", this.requestUpdate();
+    this.topology = e, this.navigate("topology"), this.error = ze(e) || e.project_name !== this.selectedProjectName() ? "Topology mismatch" : "", this.requestUpdate();
   }
   showInventory(e) {
     this.inventory = e, this.drafts = new Map(e.channels.map((t) => {
@@ -1481,8 +1503,8 @@ class Qt extends G {
     this.step = e, this.error = "", this.mobileStepsOpen = !1, this.focusHeading = !0, this.requestUpdate();
   }
   back() {
-    const e = N.findIndex(([t]) => t === this.step);
-    e > 0 && this.navigate(N[e - 1][0]);
+    const e = M.findIndex(([t]) => t === this.step);
+    e > 0 && this.navigate(M[e - 1][0]);
   }
   selectedProjectVersion() {
     return this.setup?.devices.find((e) => e.entry_id === this.selectedDeviceId)?.project_version ?? null;
@@ -1548,13 +1570,13 @@ class Qt extends G {
   }
   async reviewChanges() {
     if (!this.api || !this.inventory || !this.selectedDeviceId) return;
-    const e = Ht(this.inventory, this.drafts);
+    const e = qt(this.inventory, this.drafts);
     if (!e.length) return this.fail(new Error(), "Select at least one CT change before review.");
     const t = this.api, i = this.selectedDeviceId, s = this.inventory, o = ++this.operationGeneration;
     if (this.clearSubscription("transaction"), this.transaction = null, this.labelOnly) {
       const r = e.filter((a) => a.name !== this.inventory.channels.find((c) => c.channel === a.channel)?.name).map(({ channel: a, name: c }) => ({ channel: a, name: c }));
       if (!r.length || e.some((a) => {
-        const c = this.inventory.channels.find((p) => p.channel === a.channel);
+        const c = this.inventory.channels.find((u) => u.channel === a.channel);
         return !c || a.model_id !== (c.selected_model_id ?? "") || (a.reporting_multiplier ?? 1) !== c.reporting_multiplier;
       }))
         return this.fail(new Error(), "Home Assistant label mode only permits display-name edits.");
@@ -1658,17 +1680,21 @@ class Qt extends G {
   }
   async calibrate(e) {
     if (!this.api || !this.session) return;
-    const t = this.api, i = this.selectedDeviceId, s = this.session.session_id, o = ++this.operationGeneration, r = e === "voltage" ? this.groupKey(this.group) : String(this.channel), a = this.groupKey(this.group), c = this.channel, p = this.reference;
+    const t = this.api, i = this.selectedDeviceId, s = this.session.session_id, o = ++this.operationGeneration, r = e === "voltage" ? this.groupKey(this.group) : String(this.channel), a = this.groupKey(this.group), c = this.channel, u = this.reference, f = this.inventory?.channels[c - 1]?.reporting_multiplier ?? this.reportingMultiplier;
+    if (e === "current" && f === null) {
+      this.fail(new Error(), "Confirm the reporting multiplier before calibration.");
+      return;
+    }
     await this.run(
       async () => {
-        const f = e === "voltage" ? await t.calibrateVoltage(s, a, p, !0) : await t.calibrateCurrent(
+        const p = e === "voltage" ? await t.calibrateVoltage(s, a, u, !0) : await t.calibrateCurrent(
           s,
           c,
-          p,
+          u,
           !0,
-          this.inventory?.channels[c - 1]?.reporting_multiplier ?? 1
+          f
         );
-        !this.ownsOperation(o, t, i) || this.session?.session_id !== s || (this.calibrationByTarget = new Map(this.calibrationByTarget).set(`${e}:${r}`, f), this.announcement = `Calibration iteration ${f.iteration} finished with state ${f.state}.`);
+        !this.ownsOperation(o, t, i) || this.session?.session_id !== s || (this.calibrationByTarget = new Map(this.calibrationByTarget).set(`${e}:${r}`, p), this.announcement = `Calibration iteration ${p.iteration} finished with state ${p.state}.`);
       },
       "Calibration did not complete. Reconnect and inspect before another attempt.",
       () => this.ownsOperation(o, t, i)
@@ -1751,7 +1777,7 @@ class Qt extends G {
       () => {
         this.rescan();
       }
-    ) : this.step === "discover" ? Mt(
+    ) : this.step === "discover" ? Pt(
       this.setup?.devices ?? [],
       this.selectedDeviceId,
       (e) => {
@@ -1769,7 +1795,7 @@ class Qt extends G {
       this.selectedProjectVersion(),
       () => this.back(),
       () => {
-        this.loadInventory();
+        this.setup?.configuration_authoritative === !1 ? this.startSession() : this.loadInventory();
       },
       !!this.error
     ) : this.step === "ct" && this.inventory ? d`<fieldset><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => {
@@ -1791,7 +1817,7 @@ class Qt extends G {
         this.reviewChanges();
       },
       this.labelOnly
-    )}` : this.step === "build" ? Pt(
+    )}` : this.step === "build" ? Dt(
       this.transaction,
       () => {
         this.transactionAction("apply");
@@ -1852,6 +1878,7 @@ class Qt extends G {
       this.inventory,
       this.channel,
       this.reference,
+      this.reportingMultiplier,
       this.stabilityFor("current"),
       this.resultFor("current"),
       (e) => {
@@ -1859,6 +1886,9 @@ class Qt extends G {
       },
       (e) => {
         this.reference = e, this.requestUpdate();
+      },
+      (e) => {
+        this.reportingMultiplier = e, this.requestUpdate();
       },
       () => {
         this.checkStability("current");
@@ -1887,12 +1917,12 @@ class Qt extends G {
     ) : Jt(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.selectedProjectVersion(), () => this.back());
   }
   render() {
-    const e = N.findIndex(([t]) => t === this.step);
+    const e = M.findIndex(([t]) => t === this.step);
     return d`
       <div class="app">
         <aside class=${this.mobileStepsOpen ? "workflow mobile-open" : "workflow"}>
           <div class="brand">CircuitSetup</div>
-          <nav aria-label="Setup progress"><ol>${N.map(([t, i], s) => d`
+          <nav aria-label="Setup progress"><ol>${M.map(([t, i], s) => d`
             <li class=${s === e ? "current" : ""}>
               <button class="step-button" aria-current=${s === e ? "step" : y} ?disabled=${s > e}
                 @click=${() => s <= e && this.navigate(t)}><span class="number">${s + 1}</span><span>${i}</span></button>
@@ -1901,10 +1931,10 @@ class Qt extends G {
         </aside>
         <main>
           <div class="product-title">CircuitSetup Energy Meter Helper</div>
-          <div class="mobile-progress"><span>${e + 1} of 10 — ${N[e]?.[1]}</span><button aria-label="Show setup steps" aria-expanded=${this.mobileStepsOpen} @click=${() => {
+          <div class="mobile-progress"><span>${e + 1} of 10 — ${M[e]?.[1]}</span><button aria-label="Show setup steps" aria-expanded=${this.mobileStepsOpen} @click=${() => {
       this.mobileStepsOpen = !this.mobileStepsOpen, this.requestUpdate();
     }}>Steps</button></div>
-          <h1 id="step-heading" tabindex="-1">${N[e]?.[1]}</h1>
+          <h1 id="step-heading" tabindex="-1">${M[e]?.[1]}</h1>
           ${this.error ? d`<div class="error-panel" role="alert" tabindex="-1"><strong>${this.error}</strong></div>` : y}
           ${this.stepBody()}
           ${e >= 4 && this.step !== "summary" ? Ge(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult) : y}
