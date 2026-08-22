@@ -344,13 +344,20 @@ class ConfigTransactionManager:
                         "verified calibration has already been used"
                     )
             return status
-        except BaseException:
+        except BaseException as error:
             if transaction is not None and not transaction.closed:
+                cleanup_error: BaseException | None = None
                 try:
                     await transaction.async_release_reservation()
-                finally:
-                    if not transaction.reservation_claimed:
-                        self._finish(transaction, ConfigTransactionState.FAILED)
+                except BaseException as release_error:  # noqa: BLE001 - preserve cause
+                    cleanup_error = release_error
+                if not transaction.reservation_claimed:
+                    self._finish(transaction, ConfigTransactionState.FAILED)
+                if cleanup_error is not None and cleanup_error is not error:
+                    error.add_note(
+                        "exact reservation release reconciliation also failed with "
+                        f"{type(cleanup_error).__name__}"
+                    )
             raise
         finally:
             lease.release()
@@ -464,6 +471,7 @@ class ConfigTransactionManager:
         """Own a claim through its atomic result and preserve caller cancellation."""
         if transaction.verification_id is None:
             raise RuntimeError("verified calibration ID is absent")
+        transaction.reservation_claimed = True
         claim = asyncio.create_task(
             self._persistence.async_claim_verified_calibration(
                 transaction.mac,
@@ -477,7 +485,16 @@ class ConfigTransactionManager:
                 await asyncio.shield(claim)
             except asyncio.CancelledError:
                 cancelled = True
-        claimed = claim.result()
+        try:
+            claimed = claim.result()
+        except BaseException as error:
+            if cancelled and not isinstance(error, asyncio.CancelledError):
+                cancellation = asyncio.CancelledError()
+                cancellation.add_note(
+                    f"claim completion also failed with {type(error).__name__}"
+                )
+                raise cancellation from error
+            raise
         transaction.reservation_claimed = claimed
         if cancelled:
             raise asyncio.CancelledError

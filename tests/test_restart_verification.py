@@ -530,7 +530,7 @@ def test_restart_reconnect_exhaustion_is_typed_and_preserves_no_record() -> None
             sessions,
             _ignore_marker,
             persist_verified=persist,
-            restart_restore_timeout=0.01,
+            restart_restore_timeout=0.05,
             restart_backoff_initial=0.001,
         )
         with pytest.raises(RestartVerificationError, match="reconnect"):
@@ -1256,6 +1256,92 @@ def test_cancelled_preview_releases_durable_exact_reservation_for_retry() -> Non
         assert persistence.claimed == {}
         assert manager.sessions._config_transactions == {}
 
+        retry = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+        assert retry.state is ConfigTransactionState.PREVIEWED
+
+    asyncio.run(run())
+
+
+def test_claim_response_error_reconciles_a_durable_reservation_before_removal() -> None:
+    async def run() -> None:
+        source = _snapshot()
+        record = _record(source, ((7301, 1),) * 3)
+
+        class LostClaimResponsePersistence(CalibrationPersistence):
+            fail_once = True
+
+            async def async_claim_verified_calibration(
+                self, mac: str, verification_id: str, transaction_id: str
+            ) -> bool:
+                claimed = await super().async_claim_verified_calibration(
+                    mac, verification_id, transaction_id
+                )
+                assert claimed
+                if self.fail_once:
+                    self.fail_once = False
+                    raise OSError("claim outcome response lost after durable save")
+                return claimed
+
+        persistence = LostClaimResponsePersistence((record,))
+        manager = ConfigTransactionManager(
+            Builder(remote_content=source.content),
+            Verifier(RuntimeError()),
+            persistence,
+            SessionManager(),
+        )
+
+        with pytest.raises(OSError, match="response lost after durable save"):
+            await manager.async_preview_calibrated_gains(
+                record.mac, topology(0), record.verification_id
+            )
+
+        assert persistence.claimed == {}
+        assert manager.sessions._config_transactions == {}
+        retry = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+        assert retry.state is ConfigTransactionState.PREVIEWED
+
+    asyncio.run(run())
+
+
+def test_claim_internal_cancellation_reconciles_unknown_durable_completion() -> None:
+    async def run() -> None:
+        source = _snapshot()
+        record = _record(source, ((7301, 1),) * 3)
+
+        class CancelledClaimResponsePersistence(CalibrationPersistence):
+            fail_once = True
+
+            async def async_claim_verified_calibration(
+                self, mac: str, verification_id: str, transaction_id: str
+            ) -> bool:
+                claimed = await super().async_claim_verified_calibration(
+                    mac, verification_id, transaction_id
+                )
+                assert claimed
+                if self.fail_once:
+                    self.fail_once = False
+                    raise asyncio.CancelledError
+                return claimed
+
+        persistence = CancelledClaimResponsePersistence((record,))
+        manager = ConfigTransactionManager(
+            Builder(remote_content=source.content),
+            Verifier(RuntimeError()),
+            persistence,
+            SessionManager(),
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await manager.async_preview_calibrated_gains(
+                record.mac, topology(0), record.verification_id
+            )
+
+        assert persistence.claimed == {}
+        assert manager.sessions._config_transactions == {}
         retry = await manager.async_preview_calibrated_gains(
             record.mac, topology(0), record.verification_id
         )
