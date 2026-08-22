@@ -29,3 +29,14 @@ def test_reconcile_creates_only_plan_issues_and_removes_resolved(monkeypatch) ->
 
     assert created == ["device_builder_unavailable", "compile_install_interrupted"]
     assert set(deleted) == set(repairs.ISSUES) - set(created)
+
+
+def test_reconcile_normalizes_live_lowercase_evidence(monkeypatch) -> None:
+    """Transaction evidence is lower-case while the release plan names are upper-case."""
+    created: list[str] = []
+    monkeypatch.setattr(repairs.issue_registry, "async_create_issue", lambda _h, _d, issue_id, **_k: created.append(issue_id))
+    monkeypatch.setattr(repairs.issue_registry, "async_delete_issue", lambda *_: None)
+
+    asyncio.run(repairs.async_reconcile_issues(object(), {"compile_failed", "upload_failed"}))
+
+    assert created == ["compile_install_interrupted"]

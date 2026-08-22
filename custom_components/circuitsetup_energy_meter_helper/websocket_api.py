@@ -25,6 +25,7 @@ from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .esphome_api import sanitize_control_text
 from .models import InstallerIntent
 from .provisioning import ProvisioningCoordinator
+from .repairs import async_reconcile_issues, signals_from_result
 from .session_manager import CalibrationBusyError, SessionManager
 from .store import HelperStore
 from .topology import topology_from_native
@@ -520,6 +521,7 @@ class _Router:
             result = await controller.async_call(
                 msg["type"], msg, getattr(connection.user, "id", None)
             )
+            await async_reconcile_issues(self.hass, signals_from_result(result))
             connection.send_result(
                 msg["id"],
                 sanitize_payload(

@@ -1,8 +1,7 @@
 """Diagnostics must expose support evidence without exposing configuration data."""
 
+import json
 from types import SimpleNamespace
-
-import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.diagnostics import (
     build_diagnostics_snapshot,
@@ -48,7 +47,7 @@ def test_snapshot_is_allowlisted_and_deeply_immutable() -> None:
         "config_entry_version": 1,
         "setup_state": "ready",
         "meter_count": 1,
-        "meters": (
+        "meters": [
             {
                 "entry_id": "meter",
                 "mac_suffix": "eeff",
@@ -56,9 +55,13 @@ def test_snapshot_is_allowlisted_and_deeply_immutable() -> None:
                 "project_version": "1.2.3",
                 "configuration": "meter.yaml",
             },
-        ),
+        ],
     }
-    with pytest.raises(TypeError):
-        snapshot["setup_state"] = "failed"  # type: ignore[index]
-    with pytest.raises(TypeError):
-        snapshot["meters"][0]["entry_id"] = "changed"  # type: ignore[index]
+
+
+def test_snapshot_is_json_serializable_for_home_assistant_diagnostics() -> None:
+    """The public diagnostics result cannot contain MappingProxyType internals."""
+    snapshot = build_diagnostics_snapshot(
+        entry=SimpleNamespace(version=1), runtime={}, integration_version="0.1.0"
+    )
+    assert json.loads(json.dumps(snapshot))["integration_version"] == "0.1.0"

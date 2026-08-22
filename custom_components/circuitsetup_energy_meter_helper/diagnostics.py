@@ -28,6 +28,14 @@ def _frozen(value: Any) -> Any:
     return value
 
 
+def _public(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _public(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_public(item) for item in value]
+    return value
+
+
 def build_diagnostics_snapshot(
     *, entry: object, runtime: Mapping[str, Any], integration_version: str
 ) -> Mapping[str, Any]:
@@ -46,7 +54,7 @@ def build_diagnostics_snapshot(
                 "configuration": _text(getattr(device, "configuration", None)),
             }
         )
-    return _frozen(
+    return _public(_frozen(
         {
             "integration_version": integration_version,
             "config_entry_version": int(getattr(entry, "version", 1)),
@@ -54,7 +62,7 @@ def build_diagnostics_snapshot(
             "meter_count": len(meters),
             "meters": tuple(meters),
         }
-    )
+    ))
 
 
 async def async_get_config_entry_diagnostics(

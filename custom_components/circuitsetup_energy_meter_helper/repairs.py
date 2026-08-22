@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from homeassistant.components.repairs import RepairsFlow
 from homeassistant.core import HomeAssistant
@@ -43,7 +43,7 @@ async def async_reconcile_issues(
     hass: HomeAssistant, signals: Iterable[str]
 ) -> None:
     """Create current plan issues and delete resolved ones; unknown signals stay private."""
-    active = set(signals)
+    active = {signal.upper() for signal in signals if isinstance(signal, str)}
     for issue_id, codes in ISSUES.items():
         if active.intersection(codes):
             issue_registry.async_create_issue(
@@ -56,3 +56,19 @@ async def async_reconcile_issues(
             )
         else:
             issue_registry.async_delete_issue(hass, DOMAIN, issue_id)
+
+
+def signals_from_result(result: object) -> set[str]:
+    """Extract only bounded public evidence fields from a live DTO."""
+    if not isinstance(result, Mapping):
+        return set()
+    values: set[str] = set()
+    for key in ("evidence", "issues"):
+        raw = result.get(key, ())
+        if isinstance(raw, tuple | list):
+            for item in raw:
+                if isinstance(item, str):
+                    values.add(item)
+                elif isinstance(item, Mapping) and isinstance(item.get("code"), str):
+                    values.add(item["code"])
+    return values
