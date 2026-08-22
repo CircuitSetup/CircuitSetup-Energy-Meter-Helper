@@ -27,20 +27,28 @@ class SessionManager:
     def __init__(self) -> None:
         self._config_locks: dict[str, asyncio.Lock] = {}
         self._config_transactions: dict[str, Any] = {}
+        self._closed = False
 
     async def async_acquire_config(self, mac: str) -> ConfigLease:
+        if self._closed:
+            raise RuntimeError("session manager is unloading")
         mac = canonical_mac(mac)
         lock = self._config_locks.setdefault(mac, asyncio.Lock())
         await lock.acquire()
+        if self._closed:
+            lock.release()
+            raise RuntimeError("session manager is unloading")
         return ConfigLease(mac, lock)
 
-    def register_transaction(self, transaction_id: str, transaction: Any) -> None:
+    def _register_transaction(self, transaction_id: str, transaction: Any) -> None:
+        if self._closed:
+            raise RuntimeError("session manager is unloading")
         self._config_transactions[transaction_id] = transaction
 
-    def get_transaction(self, transaction_id: str) -> Any | None:
+    def _get_transaction(self, transaction_id: str) -> Any | None:
         return self._config_transactions.get(transaction_id)
 
-    def remove_transaction(self, transaction_id: str) -> None:
+    def _remove_transaction(self, transaction_id: str) -> None:
         self._config_transactions.pop(transaction_id, None)
 
     def is_config_locked(self, mac: str) -> bool:
@@ -48,16 +56,17 @@ class SessionManager:
         return lock.locked() if lock else False
 
     async def async_unload(self) -> None:
+        self._closed = True
         transactions = tuple(self._config_transactions.values())
         for transaction in transactions:
-            task = getattr(transaction, "active_task", None)
-            if task and not task.done():
-                task.cancel()
+            for task in tuple(getattr(transaction, "active_tasks", ())):
+                if not task.done():
+                    task.cancel()
         await asyncio.gather(
             *(
-                task.active_task
-                for task in transactions
-                if getattr(task, "active_task", None)
+                task
+                for transaction in transactions
+                for task in tuple(getattr(transaction, "active_tasks", ()))
             ),
             return_exceptions=True,
         )
@@ -65,4 +74,8 @@ class SessionManager:
             lease = getattr(transaction, "lease", None)
             if lease:
                 lease.release()
+            scrub = getattr(transaction, "scrub", None)
+            if scrub:
+                scrub()
         self._config_transactions.clear()
+        self._config_locks.clear()
