@@ -3,8 +3,9 @@ import { css } from "lit";
 export const panelStyles = css`
   :host {
     --navy: #09284f;
-    --orange: #ff6a00;
-    --teal: #078c87;
+    --orange: #c94f00;
+    --orange-on-navy: #ff8a3d;
+    --teal: #077f7a;
     --muted: #5c687b;
     --band: #f5f7fa;
     --border: #d7dce3;
@@ -30,14 +31,14 @@ export const panelStyles = css`
   .danger { color: var(--danger); border-color: var(--danger); background: #fff; }
   .app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
   aside.workflow { background: var(--navy); color: #fff; padding: 28px 24px; }
-  .brand { color: var(--orange); font-size: 20px; font-weight: 750; margin-bottom: 36px; }
+  .brand { color: var(--orange-on-navy); font-size: 20px; font-weight: 750; margin-bottom: 36px; }
   nav ol { list-style: none; margin: 0; padding: 0; }
   nav li { position: relative; min-height: 60px; }
   nav li:not(:last-child)::after { content: ""; position: absolute; left: 17px; top: 38px; width: 1px; height: 28px; background: #8fa2b9; }
   .step-button { display: grid; grid-template-columns: 36px 1fr; gap: 10px; align-items: center; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; font-weight: 500; }
   .step-button .number { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid #d7e1ec; border-radius: 50%; }
-  li.current .step-button { color: var(--orange); font-weight: 750; }
-  li.current .number { color: var(--navy); background: var(--orange); border-color: var(--orange); }
+  li.current .step-button { color: var(--orange-on-navy); font-weight: 750; }
+  li.current .number { color: #fff; background: var(--orange); border-color: var(--orange); }
   main { min-width: 0; padding: 30px 34px 88px; }
   .mobile-progress { display: none; }
   .product-title { font-size: 32px; line-height: 1.15; font-weight: 760; margin: 0 0 22px; }

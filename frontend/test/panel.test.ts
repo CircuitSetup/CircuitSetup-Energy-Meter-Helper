@@ -4,6 +4,7 @@ import "../src/index";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
 import { changesFromDrafts, type CtDraft } from "../src/components/ct-inventory-step";
+import { panelStyles } from "../src/styles";
 import type { CtInventory } from "../src/types";
 
 const tick = async () => {
@@ -45,6 +46,16 @@ const mount = async (hass: HomeAssistant) => {
 };
 
 const text = (panel: CircuitSetupPanel) => panel.shadowRoot?.textContent ?? "";
+
+const contrastRatio = (first: string, second: string): number => {
+  const luminance = (color: string) => {
+    const channels = color.slice(1).match(/../g)!.map((value) => Number.parseInt(value, 16) / 255)
+      .map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!;
+  };
+  const values = [luminance(first), luminance(second)];
+  return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
+};
 
 afterEach(() => document.body.replaceChildren());
 
@@ -264,6 +275,29 @@ describe("CircuitSetup panel", () => {
     expect(style).toContain("min-height: 44px");
     expect(style).toContain("overflow-x: hidden");
     expect(style).toContain("@media (max-width: 720px)");
+  });
+
+  it("keeps every 15px core color pairing at WCAG AA contrast", () => {
+    const cssText = panelStyles.cssText;
+    const token = (name: string) => new RegExp(`${name}:\\s*(#[0-9a-f]{6})`, "i").exec(cssText)?.[1] ?? "";
+    expect(cssText).toContain(".primary { color: #fff; background: var(--orange)");
+    expect(cssText).toContain(".brand { color: var(--orange-on-navy)");
+    expect(cssText).toContain("li.current .step-button { color: var(--orange-on-navy)");
+    expect(cssText).toContain("li.current .number { color: #fff; background: var(--orange)");
+    expect(cssText).toContain(".summary-band strong, .success-band { color: var(--teal)");
+    expect(cssText).toContain(".rescan { color: #fff; background: var(--teal)");
+    const pairs: Array<[string, string]> = [
+      ["#ffffff", token("--orange")],
+      [token("--orange"), "#ffffff"],
+      [token("--orange-on-navy"), token("--navy")],
+      [token("--teal"), token("--band")],
+      [token("--teal"), "#ffffff"],
+      ["#ffffff", token("--teal")],
+      ["#1769d3", "#ffffff"],
+      ["#1769d3", token("--band")],
+    ];
+    for (const [foreground, background] of pairs)
+      expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5);
   });
 
   it("requires exact Custom CT fields and burden acknowledgement before review", async () => {
@@ -545,6 +579,43 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Restart");
     expect(state.restartResult).toBeNull();
     expect(text(panel)).not.toContain("invalid");
+  });
+
+  it("enters recovery after a rejected restart and only offers an available rollback", async () => {
+    let rollbackCalls = 0;
+    const failedTransaction = { transaction_id: "tx", state: "failed", source_sha256: "a".repeat(64),
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [] };
+    const rolledBack = { ...failedTransaction, state: "rolled_back", rollback_available: false };
+    const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] },
+      restart_and_verify: new Error("private backend detail"), rollback_ct_config: rolledBack });
+    const callWS = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      if (String(message.type).endsWith("/rollback_ct_config")) rollbackCalls += 1;
+      return callWS<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { restart(): Promise<void> };
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] } };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
+    panel.showState("restart");
+    await state.restart(); await panel.updateComplete;
+
+    expect((state.session as { state: string }).state).toBe("restart_failed");
+    expect(text(panel)).toContain("Reconnect to the meter");
+    expect(text(panel)).not.toContain("private backend detail");
+    expect(panel.shadowRoot?.querySelector("[data-action=rollback]")).toBeNull();
+
+    state.transaction = failedTransaction; panel.requestUpdate(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("[data-action=rollback]")).toBeNull();
+
+    state.transaction = { ...failedTransaction, rollback_available: true }; panel.requestUpdate(); await panel.updateComplete;
+    const rollback = panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rollback]");
+    expect(rollback?.disabled).toBe(false);
+    rollback?.click(); await tick(); await panel.updateComplete;
+    expect(rollbackCalls).toBe(1);
   });
 
   it("makes Back and mobile Steps navigation functional with deterministic heading focus", async () => {

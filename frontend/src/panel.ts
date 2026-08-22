@@ -520,7 +520,17 @@ export class CircuitSetupPanel extends LitElement {
     const topology = this.topology;
     const generation = ++this.operationGeneration;
     await this.run(async () => {
-      const result = await api.restartAndVerify(sessionId, topology);
+      let result: RestartVerificationResult;
+      try {
+        result = await api.restartAndVerify(sessionId, topology);
+      } catch (error) {
+        if (this.ownsOperation(generation, api, deviceId)
+          && this.session?.session_id === sessionId && this.topology === topology) {
+          this.restartResult = null;
+          this.session = { ...this.session, state: "restart_failed" };
+        }
+        throw error;
+      }
       if (!this.ownsOperation(generation, api, deviceId)
         || this.session?.session_id !== sessionId || this.topology !== topology) return;
       this.restartResult = result;
@@ -615,7 +625,8 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.channel = value; this.requestUpdate(); },
       (value) => { this.reference = value; this.requestUpdate(); }, () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession())}
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.navigate("restart")}>Continue</button></footer>`;
-    if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult, () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());
+    if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult,
+      Boolean(this.transaction?.rollback_available), () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());
     return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.selectedProjectVersion(), () => this.back());
   }
 
