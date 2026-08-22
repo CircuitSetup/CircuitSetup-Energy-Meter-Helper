@@ -51,3 +51,9 @@ def test_ci_and_release_run_firmware_tests_and_generated_compile_matrix() -> Non
         assert "firmware/Software/ESPHome/tests/compile_matrix.py" in workflow
         assert "esphome==2026.8.0" in workflow
         assert "esphome\", \"compile" in workflow
+
+
+def test_hacs_validation_uses_the_event_ref() -> None:
+    """HACS must validate the pushed branch or PR, not the default branch."""
+    for path in WORKFLOWS:
+        assert "INPUT_REPOSITORY" not in path.read_text()

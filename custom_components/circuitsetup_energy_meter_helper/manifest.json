@@ -3,8 +3,10 @@
   "name": "CircuitSetup Energy Meter Helper",
   "codeowners": [],
   "config_flow": true,
+  "documentation": "https://github.com/CircuitSetup/CircuitSetup-Energy-Meter-Helper",
   "integration_type": "hub",
   "iot_class": "local_push",
+  "issue_tracker": "https://github.com/CircuitSetup/CircuitSetup-Energy-Meter-Helper/issues",
   "requirements": [
     "aioesphomeapi==45.6.1",
     "aiohasupervisor==0.6.0"

@@ -24,7 +24,6 @@ jobs:
         uses: docker://ghcr.io/hacs/action@sha256:41f6310585d9fb72c7a0e183cce0594355715bc24112b62bc4279b83412edccb
         env:
           INPUT_CATEGORY: integration
-          INPUT_REPOSITORY: ${{ github.repository }}
           INPUT_COMMENT: "false"
           INPUT_GITHUB_TOKEN: ${{ github.token }}
 
