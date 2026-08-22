@@ -3,14 +3,20 @@ import type { MeterTopology } from "../types";
 
 export function topologyMismatch(topology: MeterTopology): boolean {
   const expected = topology.addon_count;
-  return topology.board_count !== expected + 1
+  const sources = topology.evidence.map((item) => item.source);
+  return expected < 0 || expected > 6
+    || topology.board_count !== expected + 1
     || topology.ct_count !== 6 * (expected + 1)
     || topology.group_count !== 2 * (expected + 1)
+    || topology.evidence.length < 1
+    || topology.evidence.length > 5
+    || new Set(sources).size !== sources.length
+    || !sources.some((source) => ["config_project", "config_packages", "native_project"].includes(source))
     || topology.evidence.some((item) => item.addon_count !== expected);
 }
 
-export function topologyStep(topology: MeterTopology, projectVersion: string | null, back: () => void, continueFlow: () => void): TemplateResult {
-  const mismatch = topologyMismatch(topology);
+export function topologyStep(topology: MeterTopology, projectVersion: string | null, back: () => void, continueFlow: () => void, forceMismatch = false): TemplateResult {
+  const mismatch = forceMismatch || topologyMismatch(topology);
   return html`
     <section class="step-content" aria-labelledby="step-heading">
       <div class="identity-strip">

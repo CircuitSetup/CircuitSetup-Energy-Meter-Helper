@@ -57,13 +57,23 @@ export function ctInventoryStep(
             };
             const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
             const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : undefined);
-            const dirty = draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier;
+            const dirty = isDirty(channel, draft);
             return html`
               <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index - 1} role="row" aria-label=${`CT${channel.channel}`}>
                 <label><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
                   @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
                 <label><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`}
-                  @change=${(event: Event) => update(channel.channel, { modelId: (event.target as HTMLSelectElement).value, expanded: true })}>
+                  @change=${(event: Event) => {
+                    const modelId = (event.target as HTMLSelectElement).value;
+                    const selectedPreset = inventory.catalog.presets.find((item) => item.model_id === modelId);
+                    update(channel.channel, {
+                      modelId,
+                      burdenAcknowledged: channel.selection_verified_against_config
+                        && modelId === channel.selected_model_id
+                        && (modelId === "custom" || selectedPreset?.requires_burden_jumper_cut === true),
+                      expanded: true,
+                    });
+                  }}>
                   <option value="" ?selected=${draft.modelId === ""}>Choose model</option>
                   ${inventory.catalog.presets.map((item) => html`<option value=${item.model_id} ?selected=${draft.modelId === item.model_id}>${item.label}</option>`)}
                   <option value="custom" ?selected=${draft.modelId === "custom"}>Custom</option>
@@ -131,7 +141,7 @@ export function changesFromDrafts(inventory: CtInventory, drafts: Map<number, Ct
 
 function isDirty(channel: CtInventory["channels"][number], draft: CtDraft): boolean {
   return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier
-    || draft.modelId === "custom" && (draft.customGainCt !== channel.raw_gain_ct || draft.customLabel?.trim() !== (channel.display_label ?? ""));
+    || draft.modelId === "custom" && (draft.customGainCt !== channel.raw_gain_ct || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));
 }
 
 function validDraft(inventory: CtInventory, draft: CtDraft): boolean {

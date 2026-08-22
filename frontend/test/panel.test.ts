@@ -112,6 +112,18 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.activeElement).toBe(alert);
   });
 
+  it("blocks Continue when topology evidence is empty or non-authoritative", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    for (const evidence of [[], [{ source: "dashboard_import", addon_count: 0, detail: "Import hint" }]]) {
+      panel.showTopology({ addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+        connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
+        evidence: evidence as never });
+      await panel.updateComplete;
+      expect(panel.shadowRoot?.querySelector("[data-action=continue]")).toBeNull();
+      expect(panel.shadowRoot?.querySelector("[role=alert]")).not.toBeNull();
+    }
+  });
+
   it("bounds the DOM for 42 CTs while preserving board and three-channel navigation", async () => {
     const panel = await mount(
       makeHass({ setup_status: { state: "device_discovered", devices: [device] } }),
@@ -290,6 +302,38 @@ describe("CircuitSetup panel", () => {
     if (gain) { gain.value = "32000"; gain.dispatchEvent(new Event("input")); }
     if (label) { label.value = "Clamp"; label.dispatchEvent(new Event("input")); }
     burden?.click(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
+  });
+
+  it("keeps a persisted verified Custom selection clean during an unrelated edit", async () => {
+    const inventory: CtInventory = {
+      plan_id: "plan-1", source_sha256: "a".repeat(64),
+      channels: Array.from({ length: 6 }, (_, index) => ({
+        channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: index === 0 ? 32000 : 5500,
+        reporting_multiplier: 1, selected_model_id: index === 0 ? "custom" : "model",
+        selection_verified_against_config: true, display_label: index === 0 ? "Existing clamp" : null,
+        address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3) + 1,
+          phase: (["A", "B", "C"] as const)[index % 3]! },
+      })),
+      catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
+        secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }],
+        source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
+    };
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    panel.showInventory(inventory);
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom gain"]')?.value).toBe("32000");
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom label"]')?.value).toBe("Existing clamp");
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 burden output acknowledgement"]')?.checked).toBe(true);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(true);
+
+    const name = panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT2 name"]');
+    if (name) { name.value = "Unrelated rename"; name.dispatchEvent(new Event("input")); }
+    await panel.updateComplete;
+    const state = panel as unknown as { drafts: Map<number, CtDraft> };
+    expect(changesFromDrafts(inventory, state.drafts)).toEqual([{
+      channel: 2, name: "Unrelated rename", model_id: "model", reporting_multiplier: 1,
+    }]);
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
   });
 
@@ -492,6 +536,9 @@ describe("CircuitSetup panel", () => {
     const state = panel as unknown as Record<string, unknown> & { restart(): Promise<void> };
     state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
       preflight: { issues: [], zeroed_roles: [] } };
+    state.topology = { addon_count: 6, board_count: 7, ct_count: 42, group_count: 14,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 6, detail: "Runtime identity" }] };
     panel.showState("restart");
     await state.restart();
     await panel.updateComplete;
@@ -545,7 +592,7 @@ describe("CircuitSetup panel", () => {
       topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
       topology_voltage_layout: "two_groups", connection_generation: 4,
       groups: ["meter_main1", "meter_main2"].map((instance_id) => ({ instance_id,
-        phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]] })), verification_id: "verified-4",
+        phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]] })), verification_id: "4".repeat(32),
       source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null };
     const cancelled = { session_id: "session", device_id: "meter-1", state: "cancelled", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled,
@@ -558,9 +605,12 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("exact restart verification are complete");
 
     state.session = { ...cancelled, state: "ready" };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
     await state.restart(); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
-    expect(text(panel)).toContain("verified-4");
+    expect(text(panel)).toContain("4".repeat(32));
     expect(text(panel)).toContain("saved flash");
   });
 

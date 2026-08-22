@@ -1,0 +1,39 @@
+{
+  "raw": {
+    "transaction_id": "tx-1",
+    "state": "previewed",
+    "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "changes": [
+      {
+        "key": "current_cal_ct42",
+        "old_value": "27518",
+        "new_value": "5500",
+        "entity_key": 7,
+        "raw_key": 8
+      }
+    ],
+    "redacted_diff": "- old+ new",
+    "rollback_available": false,
+    "evidence": [],
+    "progress": [],
+    "key": "generic-provider-key",
+    "entity_key": 9,
+    "raw_key": 10
+  },
+  "sanitized": {
+    "transaction_id": "tx-1",
+    "state": "previewed",
+    "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "changes": [
+      {
+        "key": "current_cal_ct42",
+        "old_value": "27518",
+        "new_value": "5500"
+      }
+    ],
+    "redacted_diff": "- old+ new",
+    "rollback_available": false,
+    "evidence": [],
+    "progress": []
+  }
+}

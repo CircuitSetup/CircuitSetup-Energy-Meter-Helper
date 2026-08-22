@@ -18,6 +18,7 @@ from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant
 
+from .config_document import CT_GAIN_RE, CT_NAME_RE, VOLTAGE_GAIN_RE
 from .config_transaction import RollbackFailedError
 from .const import DOMAIN
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
@@ -763,11 +764,21 @@ def sanitize_payload(value: Any, *, _depth: int = 0, _field: str = "") -> Any:
         for key, item in list(value.items())[:_MAX_ITEMS]:
             if isinstance(key, str):
                 key = sanitize_control_text(key)
+            approved_change_key = (
+                key == "key"
+                and _field == "changes"
+                and isinstance(item, str)
+                and any(
+                    pattern.fullmatch(item) is not None
+                    for pattern in (CT_NAME_RE, CT_GAIN_RE, VOLTAGE_GAIN_RE)
+                )
+            )
             if (
                 not isinstance(key, str)
                 or not key
                 or len(key) > 128
-                or key.casefold() in {"entity_key", "key", "raw_key"}
+                or key.casefold() in {"entity_key", "raw_key"}
+                or (key.casefold() == "key" and not approved_change_key)
                 or (key.casefold() != "raw_gain_ct" and _FORBIDDEN_KEY.search(key))
             ):
                 continue

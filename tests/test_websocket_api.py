@@ -7,6 +7,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -1900,3 +1901,17 @@ def test_recursive_sanitizer_preserves_required_raw_gain_only() -> None:
             "raw_logs": ["secret"],
         }
     ) == {"raw_gain_ct": 27518}
+
+
+def test_recursive_sanitizer_preserves_only_approved_change_keys_in_context() -> None:
+    """The exact transaction DTO keeps substitution identity without exposing keys."""
+
+    contract = json.loads(
+        (
+            Path(__file__).with_name("fixtures") / "task20_sanitized_change.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert sanitize_payload(contract["raw"]) == contract["sanitized"]
+    assert sanitize_payload({"changes": [{"key": "logger", "new_value": "x"}]}) == {
+        "changes": [{"new_value": "x"}]
+    }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { HelperApi, type HomeAssistant } from "../src/api";
+import type { MeterTopology } from "../src/types";
+import sanitizerContract from "../../tests/fixtures/task20_sanitized_change.json";
 
 class FakeHass implements HomeAssistant {
   public messages: Record<string, unknown>[] = [];
@@ -28,7 +30,7 @@ const device = {
   entry_id: "meter-1", title: "Meter", project_name: "circuitsetup.6c-energy-meter",
   project_version: "2026.8.0", importable: true, configuration: null,
 };
-const topology = {
+const topology: MeterTopology = {
   addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
   connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
   evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime project metadata" }],
@@ -49,15 +51,15 @@ const session = { session_id: "session-1", device_id: "meter-1", state: "ready",
   preflight: { issues: [], zeroed_roles: ["reference"] } };
 const stability = { target: "current", target_id: "1", stable: true,
   windows: [{ samples: [1, 1, 1], mean: 1, standard_deviation: 0, range_percent: 0 }] };
-const calibration = { state: "applied_pending_restart_verification", group_key: "meter_main1", phase: "A",
-  changed_channels: [1], iteration: 1, before_values: [5500], after_values: [5520], error_percent_values: [0.2],
-  gain_evidence: { outcome: "success" }, restore_evidence: { reference: "zeroed" }, retry_allowed: false };
+const calibration = { state: "applied_pending_restart_verification", group_key: "main_1", phase: "A",
+  changed_channels: [1], iteration: 1, before_values: [4.9], after_values: [5], error_percent_values: [0],
+  gain_evidence: { outcome: "success" }, restore_evidence: null, retry_allowed: false };
 const restart = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
   topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
   topology_voltage_layout: "two_groups", connection_generation: 2,
   groups: ["meter_main1", "meter_main2"].map((instance_id) => ({
     instance_id, phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]],
-  })), verification_id: "verify-1",
+  })), verification_id: "1".repeat(32),
   source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null };
 
 function validResponse(operation: string): unknown {
@@ -68,7 +70,10 @@ function validResponse(operation: string): unknown {
   if (["preview_ct_config", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config"].includes(operation)) return transaction;
   if (["start_session", "get_session", "acknowledge_safety", "cancel_session"].includes(operation)) return session;
   if (operation === "check_stability") return stability;
-  if (["calibrate_voltage", "calibrate_current"].includes(operation)) return calibration;
+  if (operation === "calibrate_voltage") return { ...calibration, group_key: "addon6_2", phase: null,
+    changed_channels: [40, 41, 42], before_values: [119, 119, 119], after_values: [120, 120, 120], error_percent_values: [0, 0, 0] };
+  if (operation === "calibrate_current") return { ...calibration, group_key: "addon6_2", phase: "C",
+    changed_channels: [42], before_values: [24.9], after_values: [25], error_percent_values: [0] };
   if (operation === "restart_and_verify") return restart;
   if (operation === "adopt_device") return { device_id: "meter-1", configuration: "meter.yaml" };
   if (operation === "get_diagnostics_summary") return { setup_state: "device_discovered", meter_count: 1 };
@@ -106,10 +111,11 @@ describe("HelperApi", () => {
     await api.startSession("meter-1");
     await api.getSession("session-1");
     await api.acknowledgeSafety("session-1");
+    hass.responses.check_stability = { ...stability, target_id: "42" };
     await api.checkStability("session-1", "current", "42");
     await api.calibrateVoltage("session-1", "addon6_2", 120, true);
     await api.calibrateCurrent("session-1", 42, 25, true);
-    await api.restartAndVerify("session-1");
+    await api.restartAndVerify("session-1", topology);
     await api.cancelSession("session-1");
     await api.getDiagnosticsSummary();
     await api.subscribeSetup(() => undefined);
@@ -234,7 +240,74 @@ describe("HelperApi", () => {
         phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]],
       })),
     };
-    await expect(api.restartAndVerify("session-1")).rejects.toThrow("restart_and_verify");
+    await expect(api.restartAndVerify("session-1", { ...topology, addon_count: 6, board_count: 7,
+      ct_count: 42, group_count: 14 })).rejects.toThrow("restart_and_verify");
+  });
+
+  it("accepts the exact sanitized substitution change DTO without allowing generic keys", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    hass.responses.preview_ct_config = sanitizerContract.sanitized;
+    await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({
+      changes: [{ key: "current_cal_ct42" }],
+    });
+    expect(() => HelperApi.assertPublicPayload({ key: "generic-provider-key" })).toThrow("private field");
+    expect(() => HelperApi.assertPublicPayload({ changes: [{ key: "logger", new_value: "x" }] })).not.toThrow();
+    hass.responses.preview_ct_config = { ...transaction, changes: [{ key: "logger", old_value: null, new_value: "x" }] };
+    await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
+  });
+
+  it("binds stability and calibration results to the exact request identity and outcome", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    for (const invalid of [
+      { ...stability, target: "voltage" },
+      { ...stability, target_id: "2" },
+    ]) {
+      hass.responses.check_stability = invalid;
+      await expect(api.checkStability("session-1", "current", "1")).rejects.toThrow("check_stability");
+    }
+    const calibrateCurrent = api.calibrateCurrent as unknown as (
+      sessionId: string, channel: number, reference: number, confirm: boolean,
+    ) => Promise<unknown>;
+    for (const invalid of [
+      { ...calibration, group_key: "main_2" },
+      { ...calibration, phase: "B" },
+      { ...calibration, changed_channels: [2] },
+      { ...calibration, retry_allowed: true },
+      { ...calibration, error_percent_values: [2] },
+      { ...calibration, state: "result_outside_tolerance", error_percent_values: [0] },
+      { ...calibration, state: "indeterminate", after_values: [], error_percent_values: [], gain_evidence: { outcome: "success" } },
+    ]) {
+      hass.responses.calibrate_current = invalid;
+      await expect(calibrateCurrent("session-1", 1, 5, true)).rejects.toThrow("calibrate_current");
+    }
+    hass.responses.calibrate_current = { ...calibration, state: "result_outside_tolerance",
+      after_values: [5.1], error_percent_values: [2], retry_allowed: true };
+    await expect(calibrateCurrent("session-1", 1, 5, true)).resolves.toMatchObject({ retry_allowed: true });
+  });
+
+  it("requires authoritative topology evidence and restart identity matching that topology", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    for (const evidence of [[], [{ source: "dashboard_import", addon_count: 0, detail: "Import hint" }]]) {
+      hass.responses.get_topology = { ...topology, evidence };
+      await expect(api.getTopology("meter-1")).rejects.toThrow("get_topology");
+    }
+    const restartAndVerify = api.restartAndVerify as unknown as (
+      sessionId: string, expected: typeof topology,
+    ) => Promise<unknown>;
+    for (const invalid of [
+      { ...restart, mac: "AA:BB:CC:DD:EE:FF" },
+      { ...restart, config_sha256: "z".repeat(64) },
+      { ...restart, verification_id: "verify-1" },
+      { ...restart, topology_project_name: "circuitsetup.6c-energy-meter-1-addon" },
+      { ...restart, topology_connection_type: "ethernet_lilygo" },
+      { ...restart, groups: [{ ...restart.groups[0], instance_id: "addon1_1" }] },
+    ]) {
+      hass.responses.restart_and_verify = invalid;
+      await expect(restartAndVerify("session-1", topology)).rejects.toThrow("restart_and_verify");
+    }
   });
 
   it("rejects impossible topology counts and bounded collections before rendering", async () => {
@@ -279,7 +352,7 @@ describe("HelperApi", () => {
     hass.responses.preview_ct_config = { ...transaction, changes: [{ old_value: "old", new_value: "new" }] };
     await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
     hass.responses.restart_and_verify = { ...restart, source_authority: "browser_claim" };
-    await expect(api.restartAndVerify("session-1")).rejects.toThrow("restart_and_verify");
+    await expect(api.restartAndVerify("session-1", topology)).rejects.toThrow("restart_and_verify");
   });
 
   it("validates subscription events before invoking browser state callbacks", async () => {

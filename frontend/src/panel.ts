@@ -10,7 +10,7 @@ import { safetyStep } from "./components/safety-step";
 import { setupDeviceStep } from "./components/setup-device-step";
 import { summaryStep } from "./components/summary-step";
 import { technicalDetails } from "./components/technical-details";
-import { topologyStep } from "./components/topology-step";
+import { topologyMismatch, topologyStep } from "./components/topology-step";
 import { voltageStep } from "./components/voltage-step";
 import { panelStyles } from "./styles";
 import type {
@@ -210,9 +210,8 @@ export class CircuitSetupPanel extends LitElement {
   public showTopology(topology: MeterTopology): void {
     this.topology = topology;
     this.navigate("topology");
-    this.error = topology.evidence.some((item) => item.addon_count !== topology.addon_count)
-      || topology.ct_count !== 6 * topology.board_count
-      || topology.group_count !== 2 * topology.board_count
+    this.error = topologyMismatch(topology)
+      || topology.project_name !== this.selectedProjectName()
       ? "Topology mismatch"
       : "";
     this.requestUpdate();
@@ -220,15 +219,20 @@ export class CircuitSetupPanel extends LitElement {
 
   public showInventory(inventory: CtInventory): void {
     this.inventory = inventory;
-    this.drafts = new Map(inventory.channels.map((channel) => [channel.channel, {
-      name: channel.name,
-      modelId: channel.selected_model_id ?? "",
-      multiplier: channel.reporting_multiplier,
-      customGainCt: channel.selected_model_id === null ? channel.raw_gain_ct : undefined,
-      customLabel: channel.display_label ?? undefined,
-      burdenAcknowledged: false,
-      expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518,
-    }]));
+    this.drafts = new Map(inventory.channels.map((channel) => {
+      const modelId = channel.selected_model_id ?? "";
+      const preset = inventory.catalog.presets.find((item) => item.model_id === modelId);
+      return [channel.channel, {
+        name: channel.name,
+        modelId,
+        multiplier: channel.reporting_multiplier,
+        customGainCt: modelId === "custom" || channel.selected_model_id === null ? channel.raw_gain_ct : undefined,
+        customLabel: channel.display_label ?? undefined,
+        burdenAcknowledged: channel.selection_verified_against_config
+          && (modelId === "custom" || preset?.requires_burden_jumper_cut === true),
+        expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518,
+      }];
+    }));
     this.navigate("ct");
     this.error = "";
     this.requestUpdate();
@@ -253,6 +257,10 @@ export class CircuitSetupPanel extends LitElement {
 
   private selectedProjectVersion(): string | null {
     return this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.project_version ?? null;
+  }
+
+  private selectedProjectName(): string | null {
+    return this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.project_name ?? null;
   }
 
   public showRecovery(state: "calibration_outcome_indeterminate" | "restart_failed"): void {
@@ -500,16 +508,18 @@ export class CircuitSetupPanel extends LitElement {
   private groupKey(index: number): string {
     const board = Math.floor(index / 2);
     const group = index % 2 + 1;
-    return board === 0 ? `meter_main${group}` : `addon${board}_${group}`;
+    return board === 0 ? `main_${group}` : `addon${board}_${group}`;
   }
 
   private async restart(): Promise<void> {
-    if (!this.api || !this.session) return;
+    if (!this.api || !this.session || !this.topology) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const topology = this.topology;
     const generation = ++this.operationGeneration;
     await this.run(async () => {
-      const result = await api.restartAndVerify(sessionId);
-      if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+      const result = await api.restartAndVerify(sessionId, topology);
+      if (!this.ownsOperation(generation, api, deviceId)
+        || this.session?.session_id !== sessionId || this.topology !== topology) return;
       this.restartResult = result;
       this.session = { ...this.session!, state: "verified" };
       this.navigate("summary");
@@ -584,7 +594,8 @@ export class CircuitSetupPanel extends LitElement {
       () => void this.rescan());
     if (this.step === "discover") return adoptionStep(this.setup?.devices ?? [], this.selectedDeviceId,
       (id) => { this.selectDevice(id); this.requestUpdate(); }, () => void this.adopt(), () => this.back(), () => void this.loadTopology());
-    if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(), () => this.back(), () => void this.loadInventory());
+    if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(),
+      () => this.back(), () => void this.loadInventory(), Boolean(this.error));
     if (this.step === "ct" && this.inventory) return ctInventoryStep(this.inventory, this.board, this.ctGroup, this.drafts,
       (board) => { this.board = board; this.ctGroup = 0; this.requestUpdate(); },
       (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.reviewChanges());
