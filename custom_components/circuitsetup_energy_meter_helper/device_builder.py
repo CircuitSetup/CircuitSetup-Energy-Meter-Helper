@@ -40,6 +40,8 @@ class JobResult:
     summary: str
     output_tail: tuple[str, ...]
     job_id: str | None = None
+    error_count: int | None = None
+    warning_count: int | None = None
 
 
 class JobProgressStage(StrEnum):
@@ -235,18 +237,26 @@ class DeviceBuilderClient:
         )
         return await self._async_follow_job(result, progress)
 
-    async def async_restore_content(self, configuration: str, content: str) -> None:
+    async def async_restore_content(
+        self,
+        configuration: str,
+        content: str,
+        expected_current_sha256: str | None = None,
+    ) -> None:
         """Restore exact content and raise a distinct error if validation fails."""
         try:
-            current = await self.async_get_config(configuration)
-            await self.async_command(
-                "devices/update_config",
-                {"configuration": current.configuration, "content": content},
+            if expected_current_sha256 is None:
+                expected_current_sha256 = (
+                    await self.async_get_config(configuration)
+                ).sha256
+            await self.async_update_config(
+                ESPHomeConfigSnapshot(configuration, "", expected_current_sha256),
+                content,
             )
             validation = await self.async_validate(configuration)
             if not validation.success:
                 raise RollbackError("Device Builder rollback validation failed")
-        except RollbackError:
+        except (ConfigChangedError, RollbackError):
             raise
         except Exception as err:
             raise RollbackError("Device Builder rollback failed") from err
@@ -288,6 +298,8 @@ class DeviceBuilderClient:
             result.get("code"),
             result.get("summary", result.get("error", "")),
             output,
+            error_count=_structured_count(result.get("error_count")),
+            warning_count=_structured_count(result.get("warning_count")),
         )
 
     async def _listen(self) -> None:
@@ -365,3 +377,14 @@ def _job_progress(line: str) -> JobProgress | None:
     if stage is JobProgressStage.COMPLETED and percentage is None:
         percentage = 100
     return JobProgress(stage, percentage)
+
+
+def _structured_count(value: object) -> int | None:
+    """Accept only small non-boolean integer protocol counts."""
+    return (
+        value
+        if isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= 999
+        else None
+    )

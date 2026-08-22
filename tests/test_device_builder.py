@@ -1,6 +1,7 @@
 """Tests for the pinned ESPHome Device Builder websocket client."""
 
 import asyncio
+from hashlib import sha256
 
 import pytest
 
@@ -197,10 +198,19 @@ def test_validation_uses_generic_terminal_fields() -> None:
         failed = asyncio.create_task(client.async_validate("meter.yaml"))
         await asyncio.sleep(0)
         await ws.send_event(
-            "2", "result", {"success": False, "code": 1, "summary": "bad"}
+            "2",
+            "result",
+            {
+                "success": False,
+                "code": 1,
+                "summary": "bad",
+                "error_count": 0,
+                "warning_count": 2,
+            },
         )
         result = await failed
         assert not result.success and result.code == 1 and result.summary == "bad"
+        assert result.error_count == 0 and result.warning_count == 2
         await client.async_disconnect()
 
     asyncio.run(run())
@@ -275,6 +285,28 @@ def test_rollback_failure_is_separate() -> None:
         await ws.send_event("3", "result", {"success": False, "summary": "bad"})
         with pytest.raises(RollbackError):
             await task
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
+def test_restore_expected_hash_refuses_a_foreign_race() -> None:
+    """Rollback's immediate precondition prevents overwriting a later edit."""
+
+    async def run() -> None:
+        client, ws = await connected_client()
+        expected = sha256(b"proposed").hexdigest()
+        task = asyncio.create_task(
+            client.async_restore_content(
+                "meter.yaml", "prior", expected_current_sha256=expected
+            )
+        )
+        await asyncio.sleep(0)
+        await ws.send_result("1", "foreign")
+
+        with pytest.raises(ConfigChangedError):
+            await task
+        assert all(message["command"] != "devices/update_config" for message in ws.sent)
         await client.async_disconnect()
 
     asyncio.run(run())

@@ -24,10 +24,11 @@ class ConfigLease:
 
 
 class SessionManager:
-    def __init__(self) -> None:
+    def __init__(self, *, unload_timeout: float = 30.0) -> None:
         self._config_locks: dict[str, asyncio.Lock] = {}
         self._config_transactions: dict[str, Any] = {}
         self._closed = False
+        self._unload_timeout = unload_timeout
 
     async def async_acquire_config(self, mac: str) -> ConfigLease:
         if self._closed:
@@ -58,18 +59,25 @@ class SessionManager:
     async def async_unload(self) -> None:
         self._closed = True
         transactions = tuple(self._config_transactions.values())
-        for transaction in transactions:
-            for task in tuple(getattr(transaction, "active_tasks", ())):
-                if not task.done():
-                    task.cancel()
-        await asyncio.gather(
-            *(
+        tasks = tuple(
+            {
                 task
                 for transaction in transactions
                 for task in tuple(getattr(transaction, "active_tasks", ()))
-            ),
-            return_exceptions=True,
+                if not task.done()
+            }
         )
+        for transaction in transactions:
+            if tasks and getattr(transaction, "active_tasks", ()):
+                mark_unresolved = getattr(transaction, "mark_unresolved", None)
+                if mark_unresolved:
+                    mark_unresolved()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=self._unload_timeout)
+            for task in pending:
+                task.cancel()
         for transaction in transactions:
             lease = getattr(transaction, "lease", None)
             if lease:

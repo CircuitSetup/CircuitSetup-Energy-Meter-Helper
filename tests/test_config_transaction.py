@@ -38,6 +38,8 @@ class Job:
     summary: str = ""
     output_tail: tuple[str, ...] = ()
     code: int | None = None
+    error_count: int | None = None
+    warning_count: int | None = None
 
 
 class Builder:
@@ -117,9 +119,23 @@ class Builder:
             raise self.upload
         return self.upload
 
-    async def async_restore_content(self, configuration: str, content: str) -> None:
+    async def async_restore_content(
+        self,
+        configuration: str,
+        content: str,
+        expected_current_sha256: str | None = None,
+    ) -> None:
         del configuration
         await self._enter("restore")
+        if (
+            expected_current_sha256 is not None
+            and sha256(self.remote_content.encode()).hexdigest()
+            != expected_current_sha256
+        ):
+            raise ConfigChangedError(
+                expected_current_sha256,
+                sha256(self.remote_content.encode()).hexdigest(),
+            )
         self.restored_content = content
         self.remote_content = content
         if self.restore_error is not None:
@@ -228,12 +244,14 @@ def _manager(
     *,
     evidence: ReconnectEvidence | BaseException | None = None,
     sessions: SessionManager | None = None,
+    reconciliation_timeout: float = 30,
 ) -> ConfigTransactionManager:
     return ConfigTransactionManager(
         builder,
         Verifier(evidence or _evidence()),
         persistence,
         sessions or SessionManager(),
+        reconciliation_timeout=reconciliation_timeout,
     )
 
 
@@ -375,6 +393,182 @@ def test_indeterminate_update_retains_typed_recovery_state_and_owned_lease() -> 
     asyncio.run(run())
 
 
+def test_foreign_change_between_reconcile_read_and_restore_is_not_overwritten() -> None:
+    class RacedBuilder(UncertainUpdateBuilder):
+        async def async_get_config(
+            self, configuration: str
+        ) -> ESPHomeConfigSnapshot:
+            snapshot = await super().async_get_config(configuration)
+            self.remote_content = "foreign after reconciliation read"
+            return snapshot
+
+    async def run() -> None:
+        builder = RacedBuilder("proposed")
+        manager = _manager(builder, Persistence())
+        preview = await _preview(manager)
+
+        status = await manager.async_confirm_write(preview.transaction_id, "admin")
+
+        assert status.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
+        assert builder.remote_content == "foreign after reconciliation read"
+        assert builder.restored_content is None
+        assert manager.sessions.is_config_locked("aa")
+        await manager.sessions.async_unload()
+
+    asyncio.run(run())
+
+
+def test_hung_reconciliation_read_times_out_to_retained_recovery() -> None:
+    class HungReadBuilder(UncertainUpdateBuilder):
+        def __init__(self) -> None:
+            super().__init__("proposed")
+            self.read_started = asyncio.Event()
+
+        async def async_get_config(
+            self, configuration: str
+        ) -> ESPHomeConfigSnapshot:
+            del configuration
+            self.calls.append("read")
+            self.read_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    async def run() -> None:
+        builder = HungReadBuilder()
+        manager = _manager(builder, Persistence(), reconciliation_timeout=0.01)
+        preview = await _preview(manager)
+
+        status = await asyncio.wait_for(
+            manager.async_confirm_write(preview.transaction_id, "admin"), 1
+        )
+
+        assert status.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
+        assert manager.sessions.is_config_locked("aa")
+        await manager.sessions.async_unload()
+
+    asyncio.run(run())
+
+
+def test_hung_reconciliation_restore_times_out_to_retained_recovery() -> None:
+    class HungRestoreBuilder(UncertainUpdateBuilder):
+        async def async_restore_content(
+            self,
+            configuration: str,
+            content: str,
+            expected_current_sha256: str | None = None,
+        ) -> None:
+            del configuration, content, expected_current_sha256
+            self.calls.append("restore")
+            await asyncio.Event().wait()
+
+    async def run() -> None:
+        builder = HungRestoreBuilder("proposed")
+        manager = _manager(builder, Persistence(), reconciliation_timeout=0.01)
+        preview = await _preview(manager)
+
+        status = await asyncio.wait_for(
+            manager.async_confirm_write(preview.transaction_id, "admin"), 1
+        )
+
+        assert status.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
+        assert manager.sessions.is_config_locked("aa")
+        await manager.sessions.async_unload()
+
+    asyncio.run(run())
+
+
+def test_unload_bounds_hung_reconciliation_then_marks_and_scrubs() -> None:
+    class HungReadBuilder(UncertainUpdateBuilder):
+        def __init__(self) -> None:
+            super().__init__("proposed")
+            self.read_started = asyncio.Event()
+
+        async def async_get_config(
+            self, configuration: str
+        ) -> ESPHomeConfigSnapshot:
+            del configuration
+            self.calls.append("read")
+            self.read_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    async def run() -> None:
+        sessions = SessionManager(unload_timeout=0.01)
+        builder = HungReadBuilder()
+        manager = _manager(
+            builder,
+            Persistence(),
+            sessions=sessions,
+            reconciliation_timeout=10,
+        )
+        preview = await _preview(manager)
+        internal = sessions._get_transaction(preview.transaction_id)
+        write = asyncio.create_task(
+            manager.async_confirm_write(preview.transaction_id, "admin")
+        )
+        await asyncio.wait_for(builder.read_started.wait(), 1)
+
+        await asyncio.wait_for(sessions.async_unload(), 1)
+
+        assert not sessions.is_config_locked("aa")
+        assert internal.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
+        assert internal.plan is None and internal.prior_content is None
+        assert write.done()
+
+    asyncio.run(run())
+
+
+def test_unload_timeout_does_not_wait_for_cancellation_suppression() -> None:
+    class CancellationSuppressingBuilder(UncertainUpdateBuilder):
+        def __init__(self) -> None:
+            super().__init__("proposed")
+            self.read_started = asyncio.Event()
+            self.cancel_seen = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def async_get_config(
+            self, configuration: str
+        ) -> ESPHomeConfigSnapshot:
+            del configuration
+            self.calls.append("read")
+            self.read_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancel_seen.set()
+                await self.release.wait()
+            return _source("proposed")
+
+    async def run() -> None:
+        sessions = SessionManager(unload_timeout=0.01)
+        builder = CancellationSuppressingBuilder()
+        manager = _manager(
+            builder,
+            Persistence(),
+            sessions=sessions,
+            reconciliation_timeout=10,
+        )
+        preview = await _preview(manager)
+        internal = sessions._get_transaction(preview.transaction_id)
+        write = asyncio.create_task(
+            manager.async_confirm_write(preview.transaction_id, "admin")
+        )
+        await asyncio.wait_for(builder.read_started.wait(), 1)
+
+        await asyncio.wait_for(sessions.async_unload(), 1)
+
+        assert builder.cancel_seen.is_set()
+        assert not write.done()
+        assert not sessions.is_config_locked("aa")
+        assert internal.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
+        assert internal.plan is None and internal.prior_content is None
+        builder.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(write, 1)
+
+    asyncio.run(run())
+
+
 def test_confirmations_and_verified_persistence_are_separate() -> None:
     async def run() -> None:
         builder, persistence = Builder(), Persistence()
@@ -427,8 +621,13 @@ def test_validation_failure_or_disconnect_restores_exact_source_once(
 
 def test_validation_detail_is_useful_bounded_and_never_contains_raw_text() -> None:
     async def run() -> None:
-        raw = "ERROR token=top-secret\nWARNING password=hunter2"
-        builder = Builder(validation=(Job(False, raw, (raw,), 17),))
+        summary = "0 errors; errorless; 2 warnings; token=top-secret"
+        output = (
+            "ERROR: one real diagnostic",
+            "WARNING: one real diagnostic",
+            "123 errors in arbitrary numeric text password=hunter2",
+        )
+        builder = Builder(validation=(Job(False, summary, output, 17),))
         manager = _manager(builder, Persistence())
         preview = await _preview(manager)
 
@@ -436,9 +635,30 @@ def test_validation_detail_is_useful_bounded_and_never_contains_raw_text() -> No
 
         assert status.validation_detail is not None
         assert status.validation_detail.code == 17
-        assert status.validation_detail.error_count >= 1
-        assert status.validation_detail.warning_count >= 1
+        assert status.validation_detail.reported_error_count is None
+        assert status.validation_detail.reported_warning_count is None
+        assert status.validation_detail.error_record_count == 1
+        assert status.validation_detail.warning_record_count == 1
         assert "top-secret" not in repr(status) and "hunter2" not in repr(status)
+
+    asyncio.run(run())
+
+
+def test_validation_detail_prefers_structured_protocol_counts() -> None:
+    async def run() -> None:
+        builder = Builder(
+            validation=(Job(False, "arbitrary errorless text", (), 17, 0, 2),)
+        )
+        manager = _manager(builder, Persistence())
+        preview = await _preview(manager)
+
+        status = await manager.async_confirm_write(preview.transaction_id, "admin")
+
+        assert status.validation_detail is not None
+        assert status.validation_detail.reported_error_count == 0
+        assert status.validation_detail.reported_warning_count == 2
+        assert status.validation_detail.error_record_count == 0
+        assert status.validation_detail.warning_record_count == 0
 
     asyncio.run(run())
 

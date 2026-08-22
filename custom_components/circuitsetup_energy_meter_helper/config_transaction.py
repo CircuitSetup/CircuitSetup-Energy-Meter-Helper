@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -104,7 +105,12 @@ class DeviceBuilder(Protocol):
         progress: Callable[[JobProgress], None] | None = None,
     ) -> JobResult: ...
 
-    async def async_restore_content(self, configuration: str, content: str) -> None: ...
+    async def async_restore_content(
+        self,
+        configuration: str,
+        content: str,
+        expected_current_sha256: str | None = None,
+    ) -> None: ...
 
 
 class VerifiedPersistence(Protocol):
@@ -132,8 +138,10 @@ class ValidationDetail:
     """Useful validation counts and code without arbitrary builder text."""
 
     code: int | None
-    error_count: int
-    warning_count: int
+    reported_error_count: int | None
+    reported_warning_count: int | None
+    error_record_count: int
+    warning_record_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,12 +182,21 @@ class _ConfigTransaction:
     lease: ConfigLease | None = field(default=None, repr=False)
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     active_tasks: set[asyncio.Task[object]] = field(default_factory=set, repr=False)
+    closed: bool = field(default=False, repr=False)
 
     def scrub(self) -> None:
         """Erase full YAML and selections when this transaction no longer owns work."""
         self.plan = None
         self.prior_content = None
         self.selections = ()
+        self.closed = True
+
+    def mark_unresolved(self) -> None:
+        """Record safe recovery evidence before bounded unload cleanup."""
+        self.state = ConfigTransactionState.FAILED
+        self.rollback_available = False
+        if TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED not in self.evidence:
+            self.evidence.append(TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED)
 
 
 class ConfigTransactionManager:
@@ -191,11 +208,14 @@ class ConfigTransactionManager:
         verifier: ReconnectVerifier,
         persistence: VerifiedPersistence,
         sessions: SessionManager,
+        *,
+        reconciliation_timeout: float = 30.0,
     ) -> None:
         self._device_builder = device_builder
         self._verifier = verifier
         self._persistence = persistence
         self.sessions = sessions
+        self._reconciliation_timeout = reconciliation_timeout
 
     async def async_preview(
         self,
@@ -282,7 +302,7 @@ class ConfigTransactionManager:
                 await self._rollback_after_cancellation(transaction)
                 raise
             except Exception:  # noqa: BLE001 - external validation boundary
-                transaction.validation_detail = ValidationDetail(None, 0, 0)
+                transaction.validation_detail = ValidationDetail(None, None, None, 0, 0)
                 return await self._rollback_locked(
                     transaction, TransactionEvidenceCode.VALIDATION_UNAVAILABLE
                 )
@@ -304,12 +324,16 @@ class ConfigTransactionManager:
         cleanup = asyncio.create_task(
             self._reconcile_uncertain_update(transaction, cause)
         )
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                continue
-        return cleanup.result()
+        transaction.active_tasks.add(cleanup)
+        try:
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+            return cleanup.result()
+        finally:
+            transaction.active_tasks.discard(cleanup)
 
     async def _reconcile_uncertain_update(
         self,
@@ -319,9 +343,16 @@ class ConfigTransactionManager:
         plan, _ = _sensitive(transaction)
         _evidence(transaction, cause)
         try:
-            current = await self._device_builder.async_get_config(plan.configuration)
+            async with asyncio.timeout(self._reconciliation_timeout):
+                current = await self._device_builder.async_get_config(
+                    plan.configuration
+                )
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001 - uncertainty must remain recoverable
             return self._retain_write_recovery(transaction)
+        if transaction.closed:
+            return _status(transaction)
         if current.sha256 == transaction.source_sha256:
             return self._finish(
                 transaction,
@@ -330,13 +361,17 @@ class ConfigTransactionManager:
             )
         proposed_sha256 = sha256(plan.proposed_content.encode()).hexdigest()
         if current.sha256 == proposed_sha256:
-            return await self._rollback_locked(transaction)
+            return await self._rollback_locked(
+                transaction, expected_current_sha256=proposed_sha256
+            )
         return self._retain_write_recovery(transaction)
 
     @staticmethod
     def _retain_write_recovery(
         transaction: _ConfigTransaction,
     ) -> TransactionStatus:
+        if transaction.closed:
+            return _status(transaction)
         transaction.state = ConfigTransactionState.FAILED
         transaction.rollback_available = False
         _evidence(transaction, TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED)
@@ -469,16 +504,24 @@ class ConfigTransactionManager:
         self,
         transaction: _ConfigTransaction,
         cause: TransactionEvidenceCode | None = None,
+        *,
+        expected_current_sha256: str | None = None,
     ) -> TransactionStatus:
         transaction.rollback_available = False
         if cause is not None:
             _evidence(transaction, cause)
         plan, prior_content = _sensitive(transaction)
+        expected_current_sha256 = expected_current_sha256 or sha256(
+            plan.proposed_content.encode()
+        ).hexdigest()
         try:
             # DeviceBuilder.async_restore_content owns restore plus exactly one validation.
-            await self._device_builder.async_restore_content(
-                plan.configuration, prior_content
-            )
+            async with asyncio.timeout(self._reconciliation_timeout):
+                await self._device_builder.async_restore_content(
+                    plan.configuration,
+                    prior_content,
+                    expected_current_sha256=expected_current_sha256,
+                )
         except asyncio.CancelledError:
             self._finish(
                 transaction,
@@ -486,6 +529,8 @@ class ConfigTransactionManager:
                 TransactionEvidenceCode.CANCELLED,
             )
             raise
+        except (TimeoutError, ConfigChangedError):
+            return self._retain_write_recovery(transaction)
         except Exception as error:
             self._finish(
                 transaction,
@@ -518,6 +563,8 @@ class ConfigTransactionManager:
         state: ConfigTransactionState,
         code: TransactionEvidenceCode | None = None,
     ) -> TransactionStatus:
+        if transaction.closed:
+            return _status(transaction)
         transaction.state = state
         transaction.rollback_available = False
         if code is not None:
@@ -610,14 +657,53 @@ def _upload_progress(transaction: _ConfigTransaction, progress: JobProgress) -> 
         del transaction.upload_progress[0]
 
 
+_DIAGNOSTIC_RECORD = re.compile(
+    r"^\s*(?:\[[^\]\r\n]{1,64}\]\s*)?(ERROR|WARNING)\b", re.IGNORECASE
+)
+
+
 def _validation_detail(result: JobResult) -> ValidationDetail:
-    """Count diagnostic categories without retaining validation text."""
-    lines = (result.summary, *result.output_tail)
+    """Count only anchored diagnostic records without retaining their text."""
+    error_records = 0
+    warning_records = 0
+    bytes_seen = 0
+    lines_seen = 0
+    for value in (result.summary, *result.output_tail):
+        for line in value.splitlines():
+            if lines_seen >= MAX_EVIDENCE_LINES or bytes_seen >= MAX_EVIDENCE_BYTES:
+                break
+            lines_seen += 1
+            remaining = MAX_EVIDENCE_BYTES - bytes_seen
+            encoded = line.encode()[:remaining]
+            bytes_seen += len(encoded)
+            match = _DIAGNOSTIC_RECORD.match(encoded.decode("utf-8", "ignore"))
+            if match is None:
+                continue
+            if match.group(1).lower() == "error":
+                error_records = min(999, error_records + 1)
+            else:
+                warning_records = min(999, warning_records + 1)
     code = result.code
     return ValidationDetail(
-        code if isinstance(code, int) and -32_768 <= code <= 32_767 else None,
-        min(999, sum(line.lower().count("error") for line in lines)),
-        min(999, sum(line.lower().count("warning") for line in lines)),
+        code
+        if isinstance(code, int)
+        and not isinstance(code, bool)
+        and -32_768 <= code <= 32_767
+        else None,
+        _safe_protocol_count(result.error_count),
+        _safe_protocol_count(result.warning_count),
+        error_records,
+        warning_records,
+    )
+
+
+def _safe_protocol_count(value: object) -> int | None:
+    return (
+        value
+        if isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= 999
+        else None
     )
 
 
