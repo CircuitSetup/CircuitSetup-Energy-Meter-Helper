@@ -179,6 +179,10 @@ def test_disconnect_reports_cancel_and_close_failure_then_retries(
         close_started = asyncio.Event()
         close_release = asyncio.Event()
         attempts = 0
+        unhandled: list[dict[str, object]] = []
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
 
         class RetryWebSocket(FakeWebSocket):
             async def close(self) -> None:
@@ -190,26 +194,39 @@ def test_disconnect_reports_cancel_and_close_failure_then_retries(
                     raise RuntimeError("transport close failed")
                 await super().close()
 
-        ws = RetryWebSocket({"server_version": "1.0", "requires_auth": False})
-        client = DeviceBuilderClient("http://builder", connect=lambda _: ws)
-        await client.async_connect()
-        closing = asyncio.create_task(client.async_disconnect())
-        await close_started.wait()
-        for _ in range(cancel_count):
-            closing.cancel()
+        try:
+            ws = RetryWebSocket({"server_version": "1.0", "requires_auth": False})
+            client = DeviceBuilderClient("http://builder", connect=lambda _: ws)
+            await client.async_connect()
+            closing = asyncio.create_task(client.async_disconnect())
+            await close_started.wait()
+            for _ in range(cancel_count):
+                closing.cancel()
+                await asyncio.sleep(0)
+            close_release.set()
+            with pytest.raises(BaseExceptionGroup) as caught:
+                await closing
+            assert (
+                sum(
+                    isinstance(error, asyncio.CancelledError)
+                    for error in caught.value.exceptions
+                )
+                == 1
+            )
+            assert (
+                sum(
+                    isinstance(error, RuntimeError) for error in caught.value.exceptions
+                )
+                == 1
+            )
+            assert client.connected
             await asyncio.sleep(0)
-        close_release.set()
-        with pytest.raises(BaseExceptionGroup) as caught:
-            await closing
-        assert any(
-            isinstance(error, asyncio.CancelledError)
-            for error in caught.value.exceptions
-        )
-        assert any(isinstance(error, RuntimeError) for error in caught.value.exceptions)
-        assert client.connected
-        await client.async_disconnect()
-        assert attempts == 2
-        assert not client.connected
+            assert unhandled == []
+            await client.async_disconnect()
+            assert attempts == 2
+            assert not client.connected
+        finally:
+            loop.set_exception_handler(previous_handler)
 
     asyncio.run(run())
 

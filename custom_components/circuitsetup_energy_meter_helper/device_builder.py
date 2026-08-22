@@ -17,7 +17,7 @@ async def _wait_for_owned_cleanup[T](task: asyncio.Task[T]) -> bool:
     caller_cancelled = False
     while not task.done():
         try:
-            await asyncio.shield(task)
+            await asyncio.wait((task,))
         except asyncio.CancelledError:
             if task.done():
                 break

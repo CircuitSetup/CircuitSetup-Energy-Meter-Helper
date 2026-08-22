@@ -602,6 +602,7 @@ def test_supervisor_operational_failure_retries_after_setup_owner_unwind(
         ({"slug": "unexpected"}, None, "issued-session"),
         ({"name": "Impostor Builder"}, None, "issued-session"),
         ({}, "slug", "issued-session"),
+        ({"ingress": None}, None, "issued-session"),
         (
             {"ingress_entry": "/api/hassio_ingress/../nested"},
             None,
@@ -621,6 +622,7 @@ def test_supervisor_operational_failure_retries_after_setup_owner_unwind(
         "wrong-slug",
         "wrong-name",
         "missing-slug",
+        "null-ingress-with-entry",
         "path-shaped-ingress",
         "control-ingress",
         "empty-session",
@@ -661,7 +663,19 @@ def test_malformed_successful_supervisor_metadata_is_retryable_setup_failure(
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("addon_overrides", ({"state": "stopped"}, {"ingress": False}))
+@pytest.mark.parametrize(
+    "addon_overrides",
+    (
+        {"state": "stopped"},
+        {
+            "ingress": False,
+            "ingress_entry": None,
+            "ingress_url": None,
+            "ingress_port": None,
+            "ingress_panel": None,
+        },
+    ),
+)
 def test_verified_official_addon_unavailable_state_is_optional_capability(
     addon_overrides: Mapping[str, Any],
 ) -> None:

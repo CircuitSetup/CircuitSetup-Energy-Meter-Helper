@@ -990,13 +990,29 @@ async def create_device_builder(hass: HomeAssistant) -> LazyDeviceBuilder | None
         raise SupervisorResponseError(
             "Supervisor returned inconsistent Device Builder identity"
         )
-    if addon.state is SupervisorAddonState.STOPPED or addon.ingress is False:
+    if addon.available is not True:
+        raise SupervisorResponseError(
+            "Supervisor returned inconsistent Device Builder availability"
+        )
+    if addon.ingress is False:
+        if addon.state not in (
+            SupervisorAddonState.STARTED,
+            SupervisorAddonState.STOPPED,
+        ) or any(
+            (
+                addon.ingress_entry,
+                addon.ingress_url,
+                addon.ingress_port,
+                addon.ingress_panel,
+            )
+        ):
+            raise SupervisorResponseError(
+                "Supervisor returned malformed Device Builder ingress metadata"
+            )
         return None
-    if (
-        addon.state is not SupervisorAddonState.STARTED
-        or addon.available is not True
-        or addon.ingress is not True
-    ):
+    if addon.state is SupervisorAddonState.STOPPED:
+        return None
+    if addon.state is not SupervisorAddonState.STARTED or addon.ingress is not True:
         raise SupervisorResponseError(
             "Supervisor returned inconsistent Device Builder availability"
         )
