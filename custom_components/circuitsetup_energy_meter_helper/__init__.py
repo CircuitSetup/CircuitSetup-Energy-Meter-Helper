@@ -14,6 +14,7 @@ from .config_transaction import ConfigTransactionManager
 from .const import CONF_ESPHOME_ENTRY_ID, DOMAIN
 from .device_builder import _wait_for_owned_cleanup
 from .esphome_api import ESPHomeApiSession
+from .panel import async_register_panel, async_unregister_panel
 from .provisioning import ProvisioningCoordinator
 from .session_manager import SessionManager
 from .store import HelperStore
@@ -37,6 +38,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     workflow: EntryWorkflow | None = None
     controller: EntryWebsocketController | None = None
     registered = False
+    panel_registered = False
     try:
         coordinator = ProvisioningCoordinator(hass)
         await coordinator.async_start()
@@ -78,6 +80,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             runtime["esphome_api"] = api_session
         async_register_entry(hass, entry.entry_id, controller)
         registered = True
+        if getattr(hass, "http", None) is not None:
+            await async_register_panel(hass, entry.entry_id)
+            panel_registered = True
         domain_data[entry.entry_id] = runtime
         return True
     except BaseException as error:
@@ -92,6 +97,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 workflow,
                 controller,
                 registered,
+                panel_registered,
             )
         )
         try:
@@ -119,8 +125,14 @@ async def _async_cleanup_partial_setup(
     workflow: EntryWorkflow | None,
     controller: EntryWebsocketController | None,
     registered: bool,
+    panel_registered: bool,
 ) -> None:
     errors: list[BaseException] = []
+    if panel_registered:
+        try:
+            async_unregister_panel(hass)
+        except BaseException as error:  # noqa: BLE001 - finish setup unwind
+            errors.append(error)
     if registered:
         try:
             async_unregister_entry(hass, entry_id)
@@ -192,6 +204,11 @@ async def _async_unload_owned(
     hass: HomeAssistant, entry_id: str, data: dict[str, Any]
 ) -> None:
     errors: list[BaseException] = []
+    if getattr(hass, "http", None) is not None:
+        try:
+            async_unregister_panel(hass)
+        except BaseException as error:  # noqa: BLE001 - finish teardown
+            errors.append(error)
     try:
         async_unregister_entry(hass, entry_id)
     except BaseException as error:  # noqa: BLE001 - finish teardown
