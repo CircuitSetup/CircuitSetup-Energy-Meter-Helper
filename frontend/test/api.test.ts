@@ -313,10 +313,14 @@ describe("HelperApi", () => {
       { ...calibration, gain_evidence: { ...calibration.gain_evidence, instance_id: "meter_main2" } },
       { ...calibration, gain_evidence: { ...calibration.gain_evidence, phases: calibration.gain_evidence.phases.slice(0, 2) } },
       { ...calibration, gain_evidence: { ...calibration.gain_evidence, phases: calibration.gain_evidence.phases.map((phase, index) => index === 1 ? { ...phase, new_current_gain: 28000 } : phase) } },
+      { ...calibration, gain_evidence: { ...calibration.gain_evidence, phases: calibration.gain_evidence.phases.map((phase, index) => index === 0 ? { ...phase, old_voltage_gain: 0 } : phase) } },
+      { ...calibration, gain_evidence: { ...calibration.gain_evidence, phases: calibration.gain_evidence.phases.map((phase, index) => index === 0 ? { ...phase, new_voltage_gain: 65536 } : phase) } },
+      { ...calibration, gain_evidence: { ...calibration.gain_evidence, phases: calibration.gain_evidence.phases.map((phase, index) => index === 0 ? { ...phase, new_current_gain: 70000 } : phase) } },
       { ...calibration, gain_evidence: { ...calibration.gain_evidence, flash_saved: false } },
       { ...calibration, gain_evidence: { ...calibration.gain_evidence, register_mismatch_phases: ["A"] } },
       { ...calibration, gain_evidence: { ...calibration.gain_evidence, calibration_disabled: true } },
       { ...calibration, gain_evidence: { ...calibration.gain_evidence, matching_lines: Array(101).fill("line") } },
+      { ...calibration, gain_evidence: { ...calibration.gain_evidence, matching_lines: [] } },
       { ...calibration, state: "indeterminate", after_values: [], error_percent_values: [], gain_evidence: calibration.gain_evidence },
     ]) {
       hass.responses.calibrate_current = invalid;

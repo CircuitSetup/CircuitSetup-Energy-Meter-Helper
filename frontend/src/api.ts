@@ -236,7 +236,7 @@ function gainEvidence(
     const referenceCurrent = number(phase.reference_current, label);
     const oldVoltage = integer(phase.old_voltage_gain, label); const newVoltage = integer(phase.new_voltage_gain, label);
     const oldCurrent = integer(phase.old_current_gain, label); const newCurrent = integer(phase.new_current_gain, label);
-    if ([oldVoltage, newVoltage, oldCurrent, newCurrent].some((gain) => gain < 0)) throw new Error(`${label} response is invalid`);
+    if ([oldVoltage, newVoltage, oldCurrent, newCurrent].some((gain) => gain < 1 || gain > 65_535)) throw new Error(`${label} response is invalid`);
     if (expected.target === "voltage") {
       if (Math.abs(referenceVoltage - expected.reference) > Math.max(0.01, 1e-6 * Math.max(Math.abs(referenceVoltage), expected.reference))
         || Math.abs(referenceCurrent) > 1e-6 || oldCurrent !== newCurrent) throw new Error(`${label} response is invalid`);
@@ -249,7 +249,7 @@ function gainEvidence(
   const mismatches = array(evidence.register_mismatch_phases, label, 3);
   mismatches.forEach((phase) => enumeration(phase, PHASES, label));
   const lines = array(evidence.matching_lines, label, 100);
-  if (lines.some((line) => typeof line !== "string") || boolean(evidence.flash_saved, label) !== true
+  if (lines.length === 0 || lines.some((line) => typeof line !== "string") || boolean(evidence.flash_saved, label) !== true
     || mismatches.length !== 0 || boolean(evidence.calibration_disabled, label) !== false) throw new Error(`${label} response is invalid`);
 }
 function groupChannels(groupKey: string): number[] {
