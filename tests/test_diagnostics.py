@@ -44,18 +44,24 @@ def test_snapshot_is_allowlisted_and_deeply_immutable() -> None:
 
     assert dict(snapshot) == {
         "integration_version": "0.1.0",
+        "home_assistant_version": "unknown",
         "config_entry_version": 1,
         "setup_state": "ready",
         "meter_count": 1,
         "meters": [
             {
-                "entry_id": "meter",
                 "mac_suffix": "eeff",
                 "project_name": "circuitsetup.6c-energy-meter",
                 "project_version": "1.2.3",
                 "configuration": "meter.yaml",
             },
         ],
+        "topology": None,
+        "entity_role_counts": {},
+        "ct_presets": [],
+        "last_transaction": None,
+        "last_session": None,
+        "error_codes": [],
     }
 
 

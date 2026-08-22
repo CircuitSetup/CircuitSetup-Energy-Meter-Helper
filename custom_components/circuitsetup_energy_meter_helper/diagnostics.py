@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from os.path import basename
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -37,7 +38,8 @@ def _public(value: Any) -> Any:
 
 
 def build_diagnostics_snapshot(
-    *, entry: object, runtime: Mapping[str, Any], integration_version: str
+    *, entry: object, runtime: Mapping[str, Any], integration_version: str,
+    home_assistant_version: str = "unknown",
 ) -> Mapping[str, Any]:
     """Build the single public support shape without traversing runtime handles."""
     provisioning = runtime.get("provisioning")
@@ -47,20 +49,26 @@ def build_diagnostics_snapshot(
         mac = _text(getattr(device, "mac", None), "") or ""
         meters.append(
             {
-                "entry_id": _text(getattr(device, "entry_id", None), "unknown"),
                 "mac_suffix": mac[-4:] if len(mac) >= 4 else "unknown",
                 "project_name": _text(getattr(device, "project_name", None), "unknown"),
                 "project_version": _text(getattr(device, "project_version", None)),
-                "configuration": _text(getattr(device, "configuration", None)),
+                "configuration": basename(_text(getattr(device, "configuration", None), "") or "") or None,
             }
         )
     return _public(_frozen(
         {
             "integration_version": integration_version,
+            "home_assistant_version": home_assistant_version,
             "config_entry_version": int(getattr(entry, "version", 1)),
             "setup_state": _text(getattr(status, "state", None), "unknown"),
             "meter_count": len(meters),
             "meters": tuple(meters),
+            "topology": None,
+            "entity_role_counts": {},
+            "ct_presets": [],
+            "last_transaction": None,
+            "last_session": None,
+            "error_codes": [],
         }
     ))
 
@@ -74,4 +82,5 @@ async def async_get_config_entry_diagnostics(
         entry=config_entry,
         runtime=runtime if isinstance(runtime, Mapping) else {},
         integration_version=_text(_MANIFEST.get("version"), "unknown") or "unknown",
+        home_assistant_version=_text(getattr(hass.config, "version", None), "unknown") or "unknown",
     )

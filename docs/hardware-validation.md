@@ -18,3 +18,11 @@ Release blockers:
 - Stable requires every Ethernet and special-voltage row above.
 - Web Installer publication is a separate external release gate; this repository
   cannot claim it complete.
+
+## Python compatibility adjudication
+
+This helper remains `>=3.14.2`. The pinned `homeassistant==2026.8.0` package
+contains Python 3.14-only multi-exception syntax in
+`homeassistant/config_entries.py`, so Python 3.13 cannot parse the installed
+dependency. CI therefore runs Python 3.14; claiming a 3.13 matrix would be
+false until Home Assistant publishes a compatible baseline.
