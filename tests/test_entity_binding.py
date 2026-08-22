@@ -55,11 +55,16 @@ def slug(value: str) -> str:
 
 
 def topology(addon_count: int) -> MeterTopology:
+    addon_suffix = (
+        ""
+        if addon_count == 0
+        else f"-{addon_count}-{'addon' if addon_count == 1 else 'addons'}"
+    )
     return MeterTopology.from_addon_count(
         addon_count,
         connection_type="wifi",
         voltage_layout="single",
-        project_name="circuitsetup.6c-energy-meter",
+        project_name=f"circuitsetup.6c-energy-meter{addon_suffix}",
         evidence=(),
     )
 

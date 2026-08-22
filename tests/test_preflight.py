@@ -72,11 +72,16 @@ class FakeSession:
 
 
 def binding(addon_count: int) -> MeterBinding:
+    addon_suffix = (
+        ""
+        if addon_count == 0
+        else f"-{addon_count}-{'addon' if addon_count == 1 else 'addons'}"
+    )
     topology = MeterTopology.from_addon_count(
         addon_count,
         connection_type="wifi",
         voltage_layout="standard",
-        project_name="circuitsetup.6c-energy-meter",
+        project_name=f"circuitsetup.6c-energy-meter{addon_suffix}",
         evidence=(),
     )
     key = 0

@@ -531,6 +531,26 @@ def test_unexpected_disconnect_fails_number_and_sensor_waiters_with_session_erro
     asyncio.run(run())
 
 
+def test_generation_guard_linearizes_verified_persistence_before_stop() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        assert client.on_stop is not None
+
+        async with session.hold_connection_generation(1):
+            stop = asyncio.create_task(client.on_stop(False))
+            await asyncio.sleep(0)
+            assert session.connected
+            assert not stop.done()
+
+        await stop
+        assert not session.connected
+        assert session.entities == ()
+
+    asyncio.run(run())
+
+
 def test_cancelled_shutdown_retains_cleanup_for_the_next_caller() -> None:
     async def run() -> None:
         client = GatedClient(gate_disconnect=True)

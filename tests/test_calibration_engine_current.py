@@ -11,7 +11,6 @@ from typing import Any
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
-    CalibrationEngine,
     CalibrationInvariantError,
     CalibrationIterationLimitError,
     CalibrationRebindError,
@@ -32,6 +31,7 @@ from custom_components.circuitsetup_energy_meter_helper.session_manager import (
     SessionManager,
 )
 from tests.test_calibration_engine_voltage import (
+    CalibrationEngine,
     FakeCalibrationSession,
     gain_evidence,
     marker_writer,

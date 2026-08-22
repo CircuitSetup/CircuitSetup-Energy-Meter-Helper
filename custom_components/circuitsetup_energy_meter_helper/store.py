@@ -407,3 +407,24 @@ class HelperStore:
                 and not record.source_handoff_available
                 and record.source_handoff_transaction_id == transaction_id
             )
+
+    async def async_release_verified_calibration(
+        self, mac: str, verification_id: str, transaction_id: str
+    ) -> bool:
+        """Release only the exact pre-write source-handoff reservation."""
+        async with self._update_lock:
+            data = await self.async_load()
+            raw = data.get("meters", {}).get(mac, {}).get("verified_calibration")
+            if raw is None:
+                return False
+            record = _deserialize_verified_calibration(mac, raw)
+            if (
+                record.verification_id != verification_id
+                or record.source_handoff_available
+                or record.source_handoff_transaction_id != transaction_id
+            ):
+                return False
+            raw["source_handoff_available"] = True
+            raw["source_handoff_transaction_id"] = None
+            await self._store.async_save(data)
+            return True

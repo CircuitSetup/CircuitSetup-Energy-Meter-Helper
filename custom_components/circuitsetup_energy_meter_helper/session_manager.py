@@ -339,6 +339,11 @@ class SessionManager:
             for task in pending:
                 task.cancel()
         for transaction in transactions:
+            release_reservation = getattr(
+                transaction, "async_release_reservation", None
+            )
+            if release_reservation is not None:
+                await release_reservation()
             lease = getattr(transaction, "lease", None)
             if lease:
                 lease.release()

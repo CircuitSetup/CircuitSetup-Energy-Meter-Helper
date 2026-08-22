@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -37,7 +38,11 @@ from .topology import topology_from_config
 
 type MarkerWriter = Callable[[str, StoredInterruptedSession | None], Awaitable[None]]
 type VerifiedWriter = Callable[[VerifiedCalibrationRecord], Awaitable[None]]
-type CalibrationSnapshotReader = Callable[[str], Awaitable[ESPHomeConfigSnapshot]]
+type CalibrationSnapshotReader = Callable[
+    [str, MeterTopology], Awaitable[ESPHomeConfigSnapshot]
+]
+
+_CONFIGURATION_ID = re.compile(r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml")
 
 
 class CalibrationState(StrEnum):
@@ -235,13 +240,15 @@ class CalibrationEngine:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     raise TimeoutError
+                generation = int(session.connection_generation)
                 evidence = await self._wait_restore(
                     session,
-                    generation=int(session.connection_generation),
+                    generation=generation,
                     expected_instance_ids=set(expected),
                     started_after=restore_started,
                     baseline=baseline,
                     timeout=remaining,
+                    require_connection=True,
                 )
             except TimeoutError as error:
                 raise RestartVerificationError(
@@ -252,8 +259,10 @@ class CalibrationEngine:
             _validate_restart_evidence(
                 evidence,
                 expected,
-                generation=int(session.connection_generation),
+                generation=generation,
             )
+            _require_connected_generation(session, generation)
+            rebound = self._rebind_after_reconnect(session, binding, substitutions)
             record = VerifiedCalibrationRecord(
                 mac=mac.casefold(),
                 config_filename=pending.config_filename,
@@ -262,16 +271,29 @@ class CalibrationEngine:
                 topology_project_name=pending.topology.project_name,
                 topology_connection_type=pending.topology.connection_type,
                 topology_voltage_layout=pending.topology.voltage_layout,
-                connection_generation=int(session.connection_generation),
+                connection_generation=generation,
                 groups=groups,
                 verification_id=uuid4().hex,
             )
-            await self._persist_verified(record)
-            self.sessions.consume_calibration_origin(
-                lease, pending.operation_id, pending.revision
-            )
-            consumed = True
-            return RestartVerificationResult(record, rebound)
+            connection_guard = getattr(session, "hold_connection_generation", None)
+            if connection_guard is None:
+                raise RestartVerificationError(
+                    "ESPHome session lifecycle guard is unavailable"
+                )
+            try:
+                async with connection_guard(generation):
+                    _require_connected_generation(session, generation)
+                    await self._persist_verified(record)
+                    _require_connected_generation(session, generation)
+                    self.sessions.consume_calibration_origin(
+                        lease, pending.operation_id, pending.revision
+                    )
+                    consumed = True
+                    return RestartVerificationResult(record, rebound)
+            except ESPHomeSessionDisconnectedError as error:
+                raise RestartVerificationError(
+                    "ESPHome session disconnected during verified persistence"
+                ) from error
         finally:
             if claimed is not None and not consumed:
                 self.sessions.release_calibration_origin_claim(
@@ -312,19 +334,17 @@ class CalibrationEngine:
     ) -> PendingCalibrationOrigin | None:
         """Load an authoritative source once, before any calibration mutation."""
         pending = self.sessions.calibration_origin_for_update(lease, session, binding)
-        if pending is not None or self._calibration_snapshot_reader is None:
+        if pending is not None:
             return pending
-        snapshot = await self._calibration_snapshot_reader(lease.mac)
+        if self._calibration_snapshot_reader is None:
+            raise ValueError("authoritative configuration snapshot reader is required")
+        snapshot = await self._calibration_snapshot_reader(lease.mac, binding.topology)
         if (
             not isinstance(snapshot, ESPHomeConfigSnapshot)
             or sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256
         ):
             raise ValueError("authoritative configuration hash is invalid")
-        if (
-            not snapshot.configuration
-            or "\n" in snapshot.configuration
-            or "\r" in snapshot.configuration
-        ):
+        if _CONFIGURATION_ID.fullmatch(snapshot.configuration) is None:
             raise ValueError("authoritative configuration filename is invalid")
         try:
             source_topology = topology_from_config(
@@ -703,12 +723,16 @@ class CalibrationEngine:
         started_after: float,
         baseline: tuple[str, ...],
         timeout: float | None = None,
+        require_connection: bool = False,
     ) -> dict[str, RestoreEvidence] | dict[str, object]:
         evidence_timeout = self._evidence_timeout if timeout is None else timeout
+        evidence: dict[str, RestoreEvidence] | dict[str, object]
+        if require_connection:
+            _require_connected_generation(session, generation)
         wait = getattr(session, "async_wait_for_restore", None)
         if wait is not None:
             async with asyncio.timeout(evidence_timeout):
-                return cast(
+                evidence = cast(
                     dict[str, object],
                     await wait(
                         connection_generation=generation,
@@ -717,20 +741,30 @@ class CalibrationEngine:
                         timeout=evidence_timeout,
                     ),
                 )
+            if require_connection:
+                _require_connected_generation(session, generation)
+            return evidence
         deadline = monotonic() + evidence_timeout
         while monotonic() < deadline:
+            if require_connection:
+                _require_connected_generation(session, generation)
             await asyncio.sleep(min(0.05, max(0.0, deadline - monotonic())))
+            if require_connection:
+                _require_connected_generation(session, generation)
         new_lines = _new_log_lines(baseline, tuple(session.log_lines))
         correlated = tuple(
             CalibrationLogLine(generation, 0, started_after + (index + 1) * 1e-6, line)
             for index, line in enumerate(new_lines)
         )
-        return parse_restore(
+        evidence = parse_restore(
             correlated,
             connection_generation=generation,
             expected_instance_ids=expected_instance_ids,
             started_after=started_after,
         )
+        if require_connection:
+            _require_connected_generation(session, generation)
+        return evidence
 
     async def _windows(
         self, session: Any, entities: Sequence[BoundEntity]
@@ -968,6 +1002,16 @@ async def _cancel_waiter(waiter: asyncio.Future[Any]) -> None:
         waiter.cancel()
     with suppress(BaseException):
         await waiter
+
+
+def _require_connected_generation(session: Any, generation: int) -> None:
+    if (
+        not bool(getattr(session, "connected", False))
+        or int(getattr(session, "connection_generation", -1)) != generation
+    ):
+        raise RestartVerificationError(
+            "ESPHome session disconnected during restore verification"
+        )
 
 
 def _validate_restart_evidence(

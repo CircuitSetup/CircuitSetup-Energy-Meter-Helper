@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -132,6 +132,10 @@ class VerifiedPersistence(Protocol):
         self, mac: str, verification_id: str, transaction_id: str
     ) -> bool: ...
 
+    async def async_release_verified_calibration(
+        self, mac: str, verification_id: str, transaction_id: str
+    ) -> bool: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ReconnectEvidence:
@@ -197,7 +201,34 @@ class _ConfigTransaction:
     lease: ConfigLease | None = field(default=None, repr=False)
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     active_tasks: set[asyncio.Task[object]] = field(default_factory=set, repr=False)
+    reservation_release: Callable[[], Awaitable[bool]] | None = field(
+        default=None, repr=False
+    )
+    reservation_claimed: bool = field(default=False, repr=False)
+    write_started: bool = field(default=False, repr=False)
     closed: bool = field(default=False, repr=False)
+
+    async def async_release_reservation(self) -> None:
+        """Drain an exact pre-write release even if this caller is cancelled."""
+        if (
+            not self.reservation_claimed
+            or self.write_started
+            or self.reservation_release is None
+        ):
+            return
+        cleanup: asyncio.Future[bool] = asyncio.ensure_future(
+            self.reservation_release()
+        )
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        self.reservation_claimed = False
+        if cancelled:
+            raise asyncio.CancelledError
 
     def scrub(self) -> None:
         """Erase full YAML and selections when this transaction no longer owns work."""
@@ -301,15 +332,25 @@ class ConfigTransactionManager:
             status = await self.async_preview(mac, topology, plan, snapshot)
             transaction = self._transaction(status.transaction_id)
             transaction.verification_id = verification_id
-            if not await self._persistence.async_claim_verified_calibration(
-                mac, verification_id, transaction.transaction_id
-            ):
-                self._finish(transaction, ConfigTransactionState.FAILED)
-                raise ConfigMutationError("verified calibration has already been used")
+            transaction.reservation_release = lambda: (
+                self._persistence.async_release_verified_calibration(
+                    mac, verification_id, transaction.transaction_id
+                )
+            )
+            async with _operation(transaction):
+                if not await self._claim_verified_calibration(transaction):
+                    self._finish(transaction, ConfigTransactionState.FAILED)
+                    raise ConfigMutationError(
+                        "verified calibration has already been used"
+                    )
             return status
         except BaseException:
             if transaction is not None and not transaction.closed:
-                self._finish(transaction, ConfigTransactionState.FAILED)
+                try:
+                    await transaction.async_release_reservation()
+                finally:
+                    if not transaction.reservation_claimed:
+                        self._finish(transaction, ConfigTransactionState.FAILED)
             raise
         finally:
             lease.release()
@@ -342,28 +383,37 @@ class ConfigTransactionManager:
                     )
                 )
             except BaseException as error:
-                self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    (
-                        TransactionEvidenceCode.CANCELLED
-                        if isinstance(error, asyncio.CancelledError)
-                        else TransactionEvidenceCode.SOURCE_CHANGED
-                    ),
-                )
+                try:
+                    await transaction.async_release_reservation()
+                finally:
+                    if not transaction.reservation_claimed:
+                        self._finish(
+                            transaction,
+                            ConfigTransactionState.FAILED,
+                            (
+                                TransactionEvidenceCode.CANCELLED
+                                if isinstance(error, asyncio.CancelledError)
+                                else TransactionEvidenceCode.SOURCE_CHANGED
+                            ),
+                        )
                 raise
             if not verification_current:
-                self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.SOURCE_CHANGED,
-                )
+                try:
+                    await transaction.async_release_reservation()
+                finally:
+                    if not transaction.reservation_claimed:
+                        self._finish(
+                            transaction,
+                            ConfigTransactionState.FAILED,
+                            TransactionEvidenceCode.SOURCE_CHANGED,
+                        )
                 raise ConfigMutationError("verified calibration preview was superseded")
             transaction.state = ConfigTransactionState.WRITE_CONFIRMED
             plan, prior_content = _sensitive(transaction)
             snapshot = ESPHomeConfigSnapshot(
                 plan.configuration, prior_content, transaction.source_sha256
             )
+            transaction.write_started = True
             try:
                 await self._device_builder.async_update_config(
                     snapshot, plan.proposed_content
@@ -407,6 +457,31 @@ class ConfigTransactionManager:
             transaction.state = ConfigTransactionState.VALIDATED
             _progress(transaction, TransactionProgress.CONFIG_VALIDATED)
             return await self._compile_locked(transaction)
+
+    async def _claim_verified_calibration(
+        self, transaction: _ConfigTransaction
+    ) -> bool:
+        """Own a claim through its atomic result and preserve caller cancellation."""
+        if transaction.verification_id is None:
+            raise RuntimeError("verified calibration ID is absent")
+        claim = asyncio.create_task(
+            self._persistence.async_claim_verified_calibration(
+                transaction.mac,
+                transaction.verification_id,
+                transaction.transaction_id,
+            )
+        )
+        cancelled = False
+        while not claim.done():
+            try:
+                await asyncio.shield(claim)
+            except asyncio.CancelledError:
+                cancelled = True
+        claimed = claim.result()
+        transaction.reservation_claimed = claimed
+        if cancelled:
+            raise asyncio.CancelledError
+        return claimed
 
     async def _drain_uncertain_update(
         self,

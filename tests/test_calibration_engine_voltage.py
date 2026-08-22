@@ -5,23 +5,30 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable
 from dataclasses import dataclass
+from hashlib import sha256
 from statistics import fmean
 from typing import Any
 
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
-    CalibrationEngine,
+    CalibrationEngine as ProductionCalibrationEngine,
+)
+from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
     CalibrationInvariantError,
     CalibrationStabilityError,
     CalibrationState,
     IterationConfirmationRequired,
+)
+from custom_components.circuitsetup_energy_meter_helper.device_builder import (
+    ESPHomeConfigSnapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.log_parser import (
     GainRunEvidence,
     PhaseGainEvidence,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import (
+    MeterTopology,
     StoredInterruptedSession,
 )
 from custom_components.circuitsetup_energy_meter_helper.session_manager import (
@@ -31,6 +38,24 @@ from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
     SensorSampleWindow,
 )
 from tests.test_preflight import binding
+
+
+async def _authoritative_snapshot(
+    mac: str, topology: MeterTopology
+) -> ESPHomeConfigSnapshot:
+    del mac
+    content = f"esphome:\n  project:\n    name: {topology.project_name}\n"
+    return ESPHomeConfigSnapshot(
+        "meter.yaml", content, sha256(content.encode()).hexdigest()
+    )
+
+
+class CalibrationEngine(ProductionCalibrationEngine):
+    """Task 17 test engine with the required authoritative config boundary."""
+
+    def __init__(self, sessions: SessionManager, persist: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("calibration_snapshot_reader", _authoritative_snapshot)
+        super().__init__(sessions, persist, **kwargs)
 
 
 def sample_window(*values: float) -> SensorSampleWindow:

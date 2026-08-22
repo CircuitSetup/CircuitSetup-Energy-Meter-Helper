@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import defaultdict, deque
-from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
 from time import monotonic
 from typing import Any
 
@@ -108,6 +108,7 @@ class ESPHomeApiSession:
         self._disconnect_error: ESPHomeSessionDisconnectedError | None = None
         self._disconnect_waiters: set[asyncio.Future[None]] = set()
         self._lifecycle_lock = asyncio.Lock()
+        self._connection_state_lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task[None] | None = None
 
     @property
@@ -205,9 +206,21 @@ class ESPHomeApiSession:
             await self._disconnect_failed_client(client)
             raise
 
-        self.entities = tuple(entities)
-        self.connection_generation += 1
-        self.connected = True
+        async with self._connection_state_lock:
+            ensure_attempt_is_live()
+            self.entities = tuple(entities)
+            self.connection_generation += 1
+            self.connected = True
+
+    @asynccontextmanager
+    async def hold_connection_generation(self, generation: int) -> AsyncIterator[None]:
+        """Serialize a verified result with stop/reconnect state transitions."""
+        async with self._connection_state_lock:
+            if not self.connected or self.connection_generation != generation:
+                raise ESPHomeSessionDisconnectedError(
+                    "The ESPHome API connection generation changed"
+                )
+            yield
 
     async def _async_create_client(self) -> tuple[Any, str]:
         entry = self._hass.config_entries.async_get_entry(self.esphome_entry_id)
@@ -401,25 +414,29 @@ class ESPHomeApiSession:
                 self._log_bytes -= len(self._log_lines.popleft().encode("utf-8"))
 
     async def _async_on_stop(self, client: Any, expected_disconnect: bool) -> None:
-        if client is not self._client:
-            return
-        self.connected = False
-        self._resolve_disconnect_waiters()
-        self._clear_connection_state()
-        if not expected_disconnect:
-            self._disconnect_error = ESPHomeSessionDisconnectedError(
-                "The ESPHome API connection was lost"
-            )
-            self._fail_waiters(self._disconnect_error)
-        self._wake_state_waiters()
+        async with self._connection_state_lock:
+            if client is not self._client:
+                return
+            self.connected = False
+            self._resolve_disconnect_waiters()
+            self._clear_connection_state()
+            if not expected_disconnect:
+                self._disconnect_error = ESPHomeSessionDisconnectedError(
+                    "The ESPHome API connection was lost"
+                )
+                self._fail_waiters(self._disconnect_error)
+            self._wake_state_waiters()
 
     async def _async_disconnect(self, *, shutdown: bool) -> None:
         client = self._client
         if client is None:
+            async with self._connection_state_lock:
+                self.connected = False
+                self._clear_connection_state()
+            return
+        async with self._connection_state_lock:
             self.connected = False
             self._clear_connection_state()
-            return
-        self.connected = False
         self._clear_log_subscription()
         with suppress(Exception):
             client.subscribe_logs(lambda _: None, self._log_level("LOG_LEVEL_NONE"))
@@ -435,12 +452,14 @@ class ESPHomeApiSession:
             disconnect_task = asyncio.create_task(client.disconnect())
             caller_cancelled = await self._wait_for_owned_cleanup(disconnect_task)
         except BaseException:
-            self._clear_connection_state()
+            async with self._connection_state_lock:
+                self._clear_connection_state()
             raise
         else:
-            if self._client is client:
-                self._client = None
-            self._clear_connection_state()
+            async with self._connection_state_lock:
+                if self._client is client:
+                    self._client = None
+                self._clear_connection_state()
         if caller_cancelled:
             raise asyncio.CancelledError
 
@@ -456,9 +475,10 @@ class ESPHomeApiSession:
         try:
             caller_cancelled = await self._wait_for_owned_cleanup(cleanup)
         finally:
-            if self._client is client:
-                self._client = None
-            self.connected = False
+            async with self._connection_state_lock:
+                if self._client is client:
+                    self._client = None
+                self.connected = False
         if caller_cancelled:
             raise asyncio.CancelledError
 
