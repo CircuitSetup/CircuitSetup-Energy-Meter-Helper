@@ -407,6 +407,94 @@ def test_streaming_gain_waits_for_delayed_register_mismatch(
     asyncio.run(run())
 
 
+def test_final_gain_snapshot_observes_boundary_mismatch() -> None:
+    async def run() -> None:
+        base_lines = tuple(
+            (Path(__file__).parent / "fixtures" / "logs" / "gain_success.log")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        mismatch = (
+            "[E][atm90e32:1211] [CALIBRATION][meter_main1] "
+            "Mismatch detected for Phase A!"
+        )
+
+        class BoundarySession:
+            def __init__(self) -> None:
+                self.connected = True
+                self.failure_at = monotonic() + 0.18
+
+            @property
+            def log_lines(self) -> tuple[str, ...]:
+                return (
+                    (*base_lines, mismatch)
+                    if monotonic() >= self.failure_at
+                    else base_lines
+                )
+
+        session = BoundarySession()
+        engine = CalibrationEngine(
+            SessionManager(),
+            lambda _mac, _marker: asyncio.sleep(0),
+            evidence_timeout=0.2,
+        )
+        dispatched = monotonic()
+
+        evidence = await engine._poll_gain(
+            session,
+            (),
+            1,
+            1,
+            "meter_main1",
+            "3. Run Main Meter 1 Gain Cal",
+            dispatched,
+        )
+
+        assert evidence.register_mismatch_phases == ("A",)
+        assert not evidence.immediate_apply_acceptable
+
+    asyncio.run(run())
+
+
+def test_final_gain_snapshot_observes_boundary_disconnect() -> None:
+    async def run() -> None:
+        lines = tuple(
+            (Path(__file__).parent / "fixtures" / "logs" / "gain_success.log")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+
+        class BoundarySession:
+            def __init__(self) -> None:
+                self.disconnect_at = monotonic() + 0.18
+                self.log_lines = lines
+
+            @property
+            def connected(self) -> bool:
+                return monotonic() < self.disconnect_at
+
+        session = BoundarySession()
+        engine = CalibrationEngine(
+            SessionManager(),
+            lambda _mac, _marker: asyncio.sleep(0),
+            evidence_timeout=0.2,
+        )
+        dispatched = monotonic()
+
+        with pytest.raises(ESPHomeSessionDisconnectedError):
+            await engine._poll_gain(
+                session,
+                (),
+                1,
+                1,
+                "meter_main1",
+                "3. Run Main Meter 1 Gain Cal",
+                dispatched,
+            )
+
+    asyncio.run(run())
+
+
 def test_streaming_gain_success_waits_for_complete_collection_window() -> None:
     async def run() -> None:
         meter = native_meter()

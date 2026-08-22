@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -408,11 +409,10 @@ class CalibrationEngine:
         dispatched_after: float,
     ) -> GainRunEvidence:
         deadline = monotonic() + self._evidence_timeout
-        last_error: LogEvidenceError | None = None
-        candidate: GainRunEvidence | None = None
         # Current firmware logs only failures after save/verify, not success.
         # Reparse until the full bounded window ends; silence is not a terminal.
-        while monotonic() < deadline:
+
+        def parse_current_snapshot() -> GainRunEvidence:
             if getattr(session, "connected", True) is False:
                 raise ESPHomeSessionDisconnectedError(
                     "connection ended before complete gain evidence"
@@ -427,26 +427,23 @@ class CalibrationEngine:
                 )
                 for index, line in enumerate(new_lines)
             )
-            try:
-                parsed = parse_gain_run(
-                    correlated,
-                    connection_generation=generation,
-                    operation_sequence=sequence,
-                    target_instance_id=instance_id,
-                    button_name=button_name,
-                    dispatched_after=dispatched_after,
-                )
-            except LogEvidenceError as error:
-                last_error = error
-                candidate = None
-            else:
-                candidate = parsed
-            await asyncio.sleep(0.05)
-        if candidate is not None:
-            return candidate
-        if last_error is not None:
-            raise last_error
-        raise LogEvidenceError("gain evidence collection timed out")
+            return parse_gain_run(
+                correlated,
+                connection_generation=generation,
+                operation_sequence=sequence,
+                target_instance_id=instance_id,
+                button_name=button_name,
+                dispatched_after=dispatched_after,
+            )
+
+        while True:
+            with suppress(LogEvidenceError):
+                parse_current_snapshot()
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.05, remaining))
+        return parse_current_snapshot()
 
     async def _wait_restore(
         self,
