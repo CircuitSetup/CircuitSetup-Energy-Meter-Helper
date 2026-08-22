@@ -12,9 +12,13 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
-_ANSI = re.compile(r"\x1b(?:[@-_][0-?]*[ -/]*[@-~])")
+_ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ANSI_OSC = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)", re.DOTALL)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-_SECRET = re.compile(r"(?i)\b(password|noise(?:_psk)?|api[_ -]?key)\s*[:=]\s*\S+")
+_SECRET = re.compile(
+    r"(?i)\b(password|noise(?:_psk)?|api[_ -]?key)\s*[:=]\s*"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\r\n]*)"
+)
 _CALIBRATION_TERMS = (
     "calibrat",
     "gain",
@@ -48,8 +52,15 @@ class ESPHomeSecurityError(RuntimeError):
     """The selected entry's API security does not match the endpoint."""
 
 
+class ESPHomeSessionDisconnectedError(ConnectionError):
+    """The transport disconnected while a session operation was pending."""
+
+
 def _canonical_mac(value: str) -> str:
-    return "".join(character for character in value.casefold() if character.isalnum())
+    compact = value.casefold().replace(":", "").replace("-", "")
+    if re.fullmatch(r"[0-9a-f]{12}", compact) is None:
+        raise ValueError("not a MAC address")
+    return compact
 
 
 class ESPHomeApiSession:
@@ -90,6 +101,9 @@ class ESPHomeApiSession:
         self.connection_generation = 0
         self.connected = False
         self._closed = False
+        self._disconnect_error: ESPHomeSessionDisconnectedError | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._cleanup_task: asyncio.Task[None] | None = None
 
     @property
     def state_cache(self) -> dict[StateKey, Any]:
@@ -103,6 +117,10 @@ class ESPHomeApiSession:
 
     async def async_connect(self) -> None:
         """Connect, verify identity, and subscribe before becoming ready."""
+        async with self._lifecycle_lock:
+            await self._async_connect_locked()
+
+    async def _async_connect_locked(self) -> None:
         if self._closed:
             raise ESPHomeApiRepairRequired("The ESPHome API session is closed")
         if self.connected:
@@ -110,15 +128,19 @@ class ESPHomeApiSession:
         client, expected_mac = await self._async_create_client()
         self._client = client
         self._clear_connection_state()
+        self._disconnect_error = None
 
         async def on_stop(expected_disconnect: bool) -> None:
             await self._async_on_stop(client, expected_disconnect)
 
         try:
             await client.connect(on_stop, login=True)
-        except Exception as error:
+        except BaseException as error:
             await self._disconnect_failed_client(client)
-            if type(error).__name__ in _SECURITY_ERRORS:
+            if (
+                isinstance(error, Exception)
+                and type(error).__name__ in _SECURITY_ERRORS
+            ):
                 raise ESPHomeSecurityError(
                     "ESPHome API encryption does not match the selected entry; "
                     "repair that ESPHome entry and retry"
@@ -127,7 +149,11 @@ class ESPHomeApiSession:
 
         try:
             device_info, entities, _ = await client.device_info_and_list_entities()
-            if _canonical_mac(device_info.mac_address) != expected_mac:
+            try:
+                actual_mac = _canonical_mac(device_info.mac_address)
+            except AttributeError, ValueError:
+                actual_mac = ""
+            if actual_mac != expected_mac:
                 raise ESPHomeIdentityError(
                     "The endpoint is a different ESPHome device; repair its host "
                     "in the existing ESPHome entry"
@@ -137,7 +163,7 @@ class ESPHomeApiSession:
                 lambda message: self._on_log(client, message),
                 self._log_level("LOG_LEVEL_DEBUG"),
             )
-        except Exception:
+        except BaseException:
             await self._disconnect_failed_client(client)
             raise
 
@@ -152,7 +178,13 @@ class ESPHomeApiSession:
                 "Please select a loaded ESPHome config entry and retry"
             )
         unique_id = getattr(entry, "unique_id", None)
-        if not isinstance(unique_id, str) or not _canonical_mac(unique_id):
+        try:
+            expected_mac = (
+                _canonical_mac(unique_id) if isinstance(unique_id, str) else ""
+            )
+        except ValueError:
+            expected_mac = ""
+        if not expected_mac:
             raise ESPHomeApiRepairRequired(
                 "The selected ESPHome entry has no usable device identity"
             )
@@ -183,7 +215,7 @@ class ESPHomeApiSession:
             zeroconf_instance,
             noise_psk=entry.data.get(noise_key),
         )
-        return client, _canonical_mac(unique_id)
+        return client, expected_mac
 
     async def async_set_number(
         self,
@@ -241,24 +273,37 @@ class ESPHomeApiSession:
                 if len(samples) >= sample_count:
                     return samples[-sample_count:]
                 await event.wait()
-                if self._closed or not self.connected:
+                if self._disconnect_error is not None:
+                    raise ESPHomeSessionDisconnectedError(str(self._disconnect_error))
+                if self._closed:
                     raise asyncio.CancelledError
 
     async def async_reconnect(self) -> None:
         """Disconnect and create a fresh client from the current ESPHome entry."""
-        if self._closed:
-            raise ESPHomeApiRepairRequired("The ESPHome API session is closed")
-        await self._async_disconnect()
-        await self.async_connect()
+        async with self._lifecycle_lock:
+            if self._closed:
+                raise ESPHomeApiRepairRequired("The ESPHome API session is closed")
+            await self._async_disconnect(shutdown=False)
+            await self._async_connect_locked()
 
     async def async_shutdown(self) -> None:
         """Cancel pending work and release the secondary connection once."""
-        if self._closed:
-            return
-        self._closed = True
-        self._cancel_waiters()
-        self._wake_state_waiters()
-        await self._async_disconnect()
+        async with self._lifecycle_lock:
+            self._closed = True
+            self._cancel_waiters()
+            self._wake_state_waiters()
+            if self._cleanup_task is None or (
+                self._cleanup_task.done()
+                and (
+                    self._cleanup_task.cancelled()
+                    or self._cleanup_task.exception() is not None
+                )
+            ):
+                self._cleanup_task = asyncio.create_task(
+                    self._async_disconnect(shutdown=True)
+                )
+            cleanup_task = self._cleanup_task
+        await asyncio.shield(cleanup_task)
 
     def _ready_client(self) -> Any:
         if not self.connected or self._client is None:
@@ -285,8 +330,9 @@ class ESPHomeApiSession:
             return
         raw = message.message
         text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        text = _ANSI_CSI.sub("", _ANSI_OSC.sub("", text))
         for raw_line in text.splitlines():
-            line = _CONTROL.sub("", _ANSI.sub("", raw_line)).strip()
+            line = _CONTROL.sub("", raw_line).strip()
             if not line or not any(
                 term in line.casefold() for term in _CALIBRATION_TERMS
             ):
@@ -304,15 +350,18 @@ class ESPHomeApiSession:
                 self._log_bytes -= len(self._log_lines.popleft().encode("utf-8"))
 
     async def _async_on_stop(self, client: Any, expected_disconnect: bool) -> None:
-        del expected_disconnect
         if client is not self._client:
             return
         self.connected = False
         self._clear_connection_state()
-        self._cancel_waiters()
+        if not expected_disconnect:
+            self._disconnect_error = ESPHomeSessionDisconnectedError(
+                "The ESPHome API connection was lost"
+            )
+            self._fail_waiters(self._disconnect_error)
         self._wake_state_waiters()
 
-    async def _async_disconnect(self) -> None:
+    async def _async_disconnect(self, *, shutdown: bool) -> None:
         client = self._client
         if client is None:
             self.connected = False
@@ -320,25 +369,44 @@ class ESPHomeApiSession:
             return
         self.connected = False
         if self._unsubscribe_logs is not None:
-            self._unsubscribe_logs()
+            with suppress(Exception):
+                self._unsubscribe_logs()
             self._unsubscribe_logs = None
         with suppress(Exception):
             client.subscribe_logs(lambda _: None, self._log_level("LOG_LEVEL_NONE"))
-        self._cancel_waiters()
+        if shutdown:
+            self._cancel_waiters()
+        else:
+            self._disconnect_error = ESPHomeSessionDisconnectedError(
+                "The ESPHome API connection is reconnecting"
+            )
+            self._fail_waiters(self._disconnect_error)
         self._wake_state_waiters()
         try:
-            await asyncio.shield(client.disconnect())
-        finally:
+            await client.disconnect()
+        except BaseException:
+            self._clear_connection_state()
+            raise
+        else:
             if self._client is client:
                 self._client = None
             self._clear_connection_state()
 
     async def _disconnect_failed_client(self, client: Any) -> None:
-        with suppress(Exception):
-            await asyncio.shield(client.disconnect(force=True))
-        if self._client is client:
-            self._client = None
-        self.connected = False
+        async def disconnect() -> None:
+            with suppress(Exception):
+                await client.disconnect(force=True)
+
+        cleanup = asyncio.create_task(disconnect())
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await cleanup
+            raise
+        finally:
+            if self._client is client:
+                self._client = None
+            self.connected = False
 
     def _clear_connection_state(self) -> None:
         self._state_cache.clear()
@@ -350,6 +418,13 @@ class ESPHomeApiSession:
         for waiters in self._number_waiters.values():
             for _, _, future in waiters:
                 future.cancel()
+        self._number_waiters.clear()
+
+    def _fail_waiters(self, error: ESPHomeSessionDisconnectedError) -> None:
+        for waiters in self._number_waiters.values():
+            for _, _, future in waiters:
+                if not future.done():
+                    future.set_exception(ESPHomeSessionDisconnectedError(str(error)))
         self._number_waiters.clear()
 
     def _wake_state_waiters(self) -> None:

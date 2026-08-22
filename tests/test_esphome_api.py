@@ -40,6 +40,7 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeApiSession,
     ESPHomeIdentityError,
     ESPHomeSecurityError,
+    ESPHomeSessionDisconnectedError,
 )
 
 
@@ -112,10 +113,12 @@ class FakeClient:
         *,
         connect_error: Exception | None = None,
         acknowledge_numbers: bool = True,
+        unsubscribe_error: Exception | None = None,
     ) -> None:
         self.mac = mac
         self.connect_error = connect_error
         self.acknowledge_numbers = acknowledge_numbers
+        self.unsubscribe_error = unsubscribe_error
         self.events: list[str] = []
         self.on_stop: Callable[[bool], Coroutine[Any, Any, None]] | None = None
         self.on_state: Callable[[object], None] | None = None
@@ -154,6 +157,8 @@ class FakeClient:
 
         def unsubscribe() -> None:
             self.log_unsubscribed += 1
+            if self.unsubscribe_error is not None:
+                raise self.unsubscribe_error
 
         return unsubscribe
 
@@ -169,6 +174,38 @@ class FakeClient:
     async def disconnect(self, force: bool = False) -> None:
         self.events.append(f"disconnect:{force}")
         self.disconnects += 1
+
+
+class GatedClient(FakeClient):
+    def __init__(
+        self, *, gate_connect: bool = False, gate_disconnect: bool = False
+    ) -> None:
+        super().__init__()
+        self.gate_connect = gate_connect
+        self.gate_disconnect = gate_disconnect
+        self.connect_started = asyncio.Event()
+        self.connect_release = asyncio.Event()
+        self.disconnect_started = asyncio.Event()
+        self.disconnect_release = asyncio.Event()
+        self.disconnect_finished = False
+
+    async def connect(
+        self,
+        on_stop: Callable[[bool], Coroutine[Any, Any, None]],
+        *,
+        login: bool,
+    ) -> None:
+        await super().connect(on_stop, login=login)
+        self.connect_started.set()
+        if self.gate_connect:
+            await self.connect_release.wait()
+
+    async def disconnect(self, force: bool = False) -> None:
+        self.disconnect_started.set()
+        if self.gate_disconnect:
+            await self.disconnect_release.wait()
+        await super().disconnect(force)
+        self.disconnect_finished = True
 
 
 def make_session(
@@ -399,5 +436,250 @@ def test_helper_entry_owns_session_lifecycle(monkeypatch: pytest.MonkeyPatch) ->
         assert runtime["esphome_api"].__class__ is FakeSession
         assert await async_unload_entry(fake_hass, helper_entry)
         assert stopped == 1
+
+    asyncio.run(run())
+
+
+def test_concurrent_connects_share_one_client_and_generation() -> None:
+    async def run() -> None:
+        first = GatedClient(gate_connect=True)
+        unused = FakeClient()
+        session = make_session([first, unused])
+
+        one = asyncio.create_task(session.async_connect())
+        await first.connect_started.wait()
+        two = asyncio.create_task(session.async_connect())
+        await asyncio.sleep(0)
+        first.connect_release.set()
+        await asyncio.gather(one, two)
+        await session.async_shutdown()
+
+        assert session.connection_generation == 1
+        assert first.disconnects == 1
+        assert unused.events == []
+
+    asyncio.run(run())
+
+
+def test_unexpected_disconnect_fails_number_and_sensor_waiters_with_session_error() -> (
+    None
+):
+    async def run() -> None:
+        client = FakeClient(acknowledge_numbers=False)
+        session = make_session([client])
+        await session.async_connect()
+        number = asyncio.create_task(session.async_set_number(1, 2.0, timeout=30))
+        sensor = asyncio.create_task(
+            session.async_wait_for_sensor_window(2, sample_count=1, timeout=30)
+        )
+        await asyncio.sleep(0)
+        assert client.on_stop is not None
+
+        await client.on_stop(False)
+        outcomes = await asyncio.gather(number, sensor, return_exceptions=True)
+
+        assert all(
+            isinstance(outcome, ESPHomeSessionDisconnectedError) for outcome in outcomes
+        )
+
+    asyncio.run(run())
+
+
+def test_cancelled_shutdown_retains_cleanup_for_the_next_caller() -> None:
+    async def run() -> None:
+        client = GatedClient(gate_disconnect=True)
+        session = make_session([client])
+        await session.async_connect()
+
+        first = asyncio.create_task(session.async_shutdown())
+        await client.disconnect_started.wait()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        second = asyncio.create_task(session.async_shutdown())
+        await asyncio.sleep(0)
+        assert not second.done()
+        assert not client.disconnect_finished
+        client.disconnect_release.set()
+        await second
+
+        assert client.disconnect_finished
+        assert client.disconnects == 1
+
+    asyncio.run(run())
+
+
+def test_shutdown_waits_for_reconnect_and_leaves_no_live_client() -> None:
+    async def run() -> None:
+        first = FakeClient()
+        second = GatedClient(gate_connect=True)
+        session = make_session([first, second])
+        await session.async_connect()
+
+        reconnect = asyncio.create_task(session.async_reconnect())
+        await second.connect_started.wait()
+        shutdown = asyncio.create_task(session.async_shutdown())
+        await asyncio.sleep(0)
+        assert not shutdown.done()
+        second.connect_release.set()
+        await asyncio.gather(reconnect, shutdown)
+
+        assert not session.connected
+        assert first.disconnects == 1
+        assert second.disconnects == 1
+        assert session.connection_generation == 2
+
+    asyncio.run(run())
+
+
+def test_cancelled_connect_still_disconnects_created_client() -> None:
+    async def run() -> None:
+        client = GatedClient(gate_connect=True)
+        session = make_session([client])
+        connecting = asyncio.create_task(session.async_connect())
+        await client.connect_started.wait()
+
+        connecting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await connecting
+
+        assert client.disconnects == 1
+        assert not session.connected
+
+    asyncio.run(run())
+
+
+def test_unsubscribe_failure_does_not_skip_disconnect() -> None:
+    async def run() -> None:
+        client = FakeClient(unsubscribe_error=RuntimeError("unsubscribe failed"))
+        session = make_session([client])
+        await session.async_connect()
+
+        await session.async_shutdown()
+
+        assert client.log_unsubscribed == 1
+        assert client.disconnects == 1
+
+    asyncio.run(run())
+
+
+def test_unload_stops_provisioning_and_retains_runtime_when_api_cleanup_fails() -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper import (
+            async_unload_entry,
+        )
+
+        stopped = 0
+
+        class FailingSession:
+            async def async_shutdown(self) -> None:
+                raise RuntimeError("cleanup failed")
+
+        class Provisioning:
+            async def async_stop(self) -> None:
+                nonlocal stopped
+                stopped += 1
+
+        hass = FakeHass()
+        entry = SimpleNamespace(entry_id="helper")
+        runtime = {
+            "esphome_api": FailingSession(),
+            "provisioning": Provisioning(),
+        }
+        hass.data["circuitsetup_energy_meter_helper"] = {"helper": runtime}
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            await async_unload_entry(hass, entry)
+
+        assert stopped == 1
+        assert hass.data["circuitsetup_energy_meter_helper"]["helper"] is runtime
+
+    asyncio.run(run())
+
+
+def test_log_sanitizer_removes_quoted_unquoted_secrets_and_complete_osc() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        assert client.on_log is not None
+
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    b'Voltage calibration password="secret phrase" retained\n'
+                    b"Current gain api_key=unquoted secret phrase\n"
+                    b"Voltage \x1b]0;OSC private payload\x07calibration complete\n"
+                )
+            )
+        )
+        logs = "\n".join(session.log_lines)
+
+        assert "secret" not in logs
+        assert "phrase" not in logs
+        assert "OSC private payload" not in logs
+        assert "calibration complete" in logs
+
+    asyncio.run(run())
+
+
+def test_legacy_non_mac_identity_requires_repair_before_client_creation() -> None:
+    async def run() -> None:
+        unused = FakeClient()
+        session = make_session([unused], entry=FakeEntry(unique_id="meter-name"))
+
+        with pytest.raises(ESPHomeApiRepairRequired, match="device identity"):
+            await session.async_connect()
+
+        assert unused.events == []
+
+    asyncio.run(run())
+
+
+def test_real_home_assistant_factory_import_path_and_noise_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        from homeassistant import components
+
+        entry = FakeEntry()
+        hass = FakeHass(entry)
+        client = FakeClient()
+        calls: list[tuple[object, object, object, str | None]] = []
+
+        async def async_get_instance(received_hass: object) -> object:
+            assert received_hass is hass
+            return "real-path-zeroconf"
+
+        def async_create_api_client(
+            received_hass: object,
+            received_entry: object,
+            zeroconf_instance: object,
+            *,
+            noise_psk: str | None,
+        ) -> FakeClient:
+            calls.append((received_hass, received_entry, zeroconf_instance, noise_psk))
+            return client
+
+        zeroconf_module = ModuleType("homeassistant.components.zeroconf")
+        zeroconf_module.async_get_instance = async_get_instance  # type: ignore[attr-defined]
+        const_module = ModuleType("homeassistant.components.esphome.const")
+        const_module.CONF_NOISE_PSK = "noise_psk"  # type: ignore[attr-defined]
+        manager_module = ModuleType("homeassistant.components.esphome.manager")
+        manager_module.async_create_api_client = async_create_api_client  # type: ignore[attr-defined]
+        esphome_module = ModuleType("homeassistant.components.esphome")
+        esphome_module.__path__ = []  # type: ignore[attr-defined]
+        monkeypatch.setattr(components, "zeroconf", zeroconf_module, raising=False)
+        monkeypatch.setattr(components, "esphome", esphome_module, raising=False)
+        monkeypatch.setitem(sys.modules, zeroconf_module.__name__, zeroconf_module)
+        monkeypatch.setitem(sys.modules, esphome_module.__name__, esphome_module)
+        monkeypatch.setitem(sys.modules, const_module.__name__, const_module)
+        monkeypatch.setitem(sys.modules, manager_module.__name__, manager_module)
+
+        session = ESPHomeApiSession(hass, "meter")
+        await session.async_connect()
+
+        assert calls == [(hass, entry, "real-path-zeroconf", "also-do-not-retain")]
+        await session.async_shutdown()
 
     asyncio.run(run())

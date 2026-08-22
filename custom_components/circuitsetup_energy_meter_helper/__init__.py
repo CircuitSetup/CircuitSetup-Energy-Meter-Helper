@@ -23,9 +23,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload the helper config entry."""
-    data = hass.data[DOMAIN].pop(entry.entry_id, None)
+    domain_data = hass.data[DOMAIN]
+    data = domain_data.get(entry.entry_id)
     if data is not None:
-        if api_session := data.get("esphome_api"):
-            await api_session.async_shutdown()
-        await data["provisioning"].async_stop()
+        try:
+            if api_session := data.get("esphome_api"):
+                await api_session.async_shutdown()
+        finally:
+            await data["provisioning"].async_stop()
+        if domain_data.get(entry.entry_id) is data:
+            domain_data.pop(entry.entry_id)
     return True
