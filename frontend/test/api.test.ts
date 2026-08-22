@@ -108,14 +108,17 @@ describe("HelperApi", () => {
   });
 
   it("refuses recursively nested browser payload fields that may contain secrets", () => {
+    expect(() => HelperApi.assertPublicPayload({ raw_gain_ct: 27518 })).not.toThrow();
     expect(() =>
       HelperApi.assertPublicPayload({
         safe: [{ nested: { api_key: "must never render" } }],
       }),
     ).toThrow("private field");
-    expect(() => HelperApi.assertPublicPayload({ raw_logs: ["line"] })).toThrow(
-      "private field",
-    );
+    for (const key of ["raw", "raw_log", "raw_logs"]) {
+      expect(() => HelperApi.assertPublicPayload({ [key]: ["line"] })).toThrow(
+        "private field",
+      );
+    }
     expect(() => HelperApi.assertPublicPayload({ nested: { wifi_password: "no" } })).toThrow(
       "private field",
     );

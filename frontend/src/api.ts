@@ -22,7 +22,7 @@ export interface HomeAssistant {
 }
 
 const PREFIX = "circuitsetup_energy_meter_helper/";
-const PRIVATE_FIELD = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
+const PRIVATE_FIELD = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?!_gain_ct(?:$|_))(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
 
 export class HelperApi {
   public constructor(

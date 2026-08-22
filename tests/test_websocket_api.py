@@ -1866,3 +1866,16 @@ def test_recursive_sanitizer_removes_ansi_c0_c1_from_keys_and_values() -> None:
         "osc": "visible",
         "document": "<redacted>",
     }
+
+
+def test_recursive_sanitizer_preserves_required_raw_gain_only() -> None:
+    """CT inventory gain survives while raw diagnostic fields remain private."""
+
+    assert sanitize_payload(
+        {
+            "raw_gain_ct": 27518,
+            "raw": "secret",
+            "raw_log": "secret",
+            "raw_logs": ["secret"],
+        }
+    ) == {"raw_gain_ct": 27518}

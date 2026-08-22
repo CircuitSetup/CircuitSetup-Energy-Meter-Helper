@@ -70,7 +70,8 @@ _MAX_PAYLOAD_BYTES = 64 * 1024
 _MAX_PENDING_EVENTS = 32
 _FORBIDDEN_KEY = re.compile(
     r"(?:^|_)(?:api_?key|content|credential|encryption(?:_key)?|logs?|noise_?psk|"
-    r"output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|"
+    r"output_tail|password|prior(?:_content)?|proposed_content|"
+    r"raw(?!_gain_ct(?:$|_))(?:_logs?)?|"
     r"secret|ssid|summary|token|yaml)(?:$|_)",
     re.IGNORECASE,
 )
