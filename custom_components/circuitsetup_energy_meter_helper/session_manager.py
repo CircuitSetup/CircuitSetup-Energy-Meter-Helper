@@ -57,6 +57,7 @@ class SessionManager:
     def __init__(self, *, unload_timeout: float = 30.0) -> None:
         self._device_locks: dict[str, DeviceLocks] = {}
         self._calibration_leases: dict[str, CalibrationLease] = {}
+        self._calibration_iterations: dict[tuple[str, str], int] = {}
         self._config_transactions: dict[str, Any] = {}
         self._closed = False
         self._unload_timeout = unload_timeout
@@ -115,6 +116,25 @@ class SessionManager:
         locks = self._device_locks.get(canonical_mac(mac))
         return locks.calibration.locked() if locks else False
 
+    def next_calibration_iteration(self, mac: str, operation: str) -> int:
+        return self._calibration_iterations.get((canonical_mac(mac), operation), 0) + 1
+
+    def record_calibration_iteration(
+        self, mac: str, operation: str, iteration: int
+    ) -> None:
+        key = (canonical_mac(mac), operation)
+        if iteration != self._calibration_iterations.get(key, 0) + 1:
+            raise RuntimeError("calibration iteration progression changed")
+        self._calibration_iterations[key] = iteration
+
+    def reset_calibration_iterations(self, mac: str) -> None:
+        mac = canonical_mac(mac)
+        self._calibration_iterations = {
+            key: value
+            for key, value in self._calibration_iterations.items()
+            if key[0] != mac
+        }
+
     async def async_unload(self) -> None:
         self._closed = True
         pending: set[asyncio.Task[Any]] = set()
@@ -171,6 +191,7 @@ class SessionManager:
             else:
                 lease.release()
         self._config_transactions.clear()
+        self._calibration_iterations.clear()
         self._calibration_leases = pending_leases
         self._device_locks = {mac: lease.locks for mac, lease in pending_leases.items()}
 

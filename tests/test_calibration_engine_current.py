@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,7 +12,14 @@ import pytest
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
     CalibrationEngine,
     CalibrationInvariantError,
+    CalibrationIterationLimitError,
+    CalibrationRebindError,
     CalibrationState,
+    IterationConfirmationRequired,
+)
+from custom_components.circuitsetup_energy_meter_helper.entity_binding import bind_meter
+from custom_components.circuitsetup_energy_meter_helper.entity_catalog import (
+    EntityCatalog,
 )
 from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeSessionDisconnectedError,
@@ -28,7 +36,55 @@ from tests.test_calibration_engine_voltage import (
     marker_writer,
     sample_window,
 )
+from tests.test_entity_binding import (
+    substitutions as native_substitutions,
+)
+from tests.test_entity_binding import (
+    synthetic_entities,
+)
+from tests.test_entity_binding import (
+    topology as native_topology,
+)
 from tests.test_preflight import binding
+
+
+def native_meter(*, generation: int = 1, key_offset: int = 0) -> Any:
+    return bind_meter(
+        EntityCatalog(native_entities(key_offset=key_offset), generation),
+        native_topology(0),
+        native_substitutions(0),
+    )
+
+
+@dataclass(slots=True)
+class NativeNumberInfo:
+    object_id: str
+    key: int
+    name: str
+    unit_of_measurement: str
+    device_id: int = 0
+    disabled_by_default: bool = True
+    step: float = 0.1
+
+
+NativeNumberInfo.__name__ = "NumberInfo"
+
+
+def native_entities(*, key_offset: int = 0) -> list[object]:
+    entities = synthetic_entities(0, key_offset=key_offset)
+    return [
+        NativeNumberInfo(
+            entity.object_id,
+            entity.key,
+            entity.name,
+            entity.unit_of_measurement,
+            entity.device_id,
+            entity.disabled_by_default,
+        )
+        if type(entity).__name__ == "NumberInfo"
+        else entity
+        for entity in entities
+    ]
 
 
 @pytest.mark.parametrize(
@@ -114,7 +170,10 @@ def test_outside_tolerance_never_auto_repeats_and_caps_retry() -> None:
             after=sample_window(8.0, 8.0, 8.0),
         )
         _, persist = marker_writer(session.events)
-        engine = CalibrationEngine(SessionManager(), persist)
+        sessions = SessionManager()
+        sessions.record_calibration_iteration("meter", "current:1", 1)
+        sessions.record_calibration_iteration("meter", "current:1", 2)
+        engine = CalibrationEngine(sessions, persist)
 
         result = await engine.async_calibrate_current(
             "meter",
@@ -137,7 +196,7 @@ def test_outside_tolerance_never_auto_repeats_and_caps_retry() -> None:
 
 def test_post_dispatch_disconnect_is_indeterminate_and_never_resends() -> None:
     async def run() -> None:
-        meter = binding(0)
+        meter = native_meter()
         sessions = SessionManager()
 
         class LockCheckingSession(FakeCalibrationSession):
@@ -145,6 +204,8 @@ def test_post_dispatch_disconnect_is_indeterminate_and_never_resends() -> None:
                 assert sessions.is_config_locked("meter")
                 assert sessions.is_calibration_locked("meter")
                 await super().async_reconnect()
+                self.connection_generation = 2
+                self.entities = tuple(native_entities(key_offset=1000))
 
         session = LockCheckingSession(
             ESPHomeSessionDisconnectedError("lost after press")
@@ -153,7 +214,14 @@ def test_post_dispatch_disconnect_is_indeterminate_and_never_resends() -> None:
         engine = CalibrationEngine(sessions, persist)
 
         result = await engine.async_calibrate_current(
-            "meter", session, meter, 1, 10.0, 1.0, 1.0
+            "meter",
+            session,
+            meter,
+            1,
+            10.0,
+            1.0,
+            1.0,
+            substitutions=native_substitutions(0),
         )
 
         assert result.state is CalibrationState.INDETERMINATE
@@ -162,19 +230,38 @@ def test_post_dispatch_disconnect_is_indeterminate_and_never_resends() -> None:
         assert names.count("reconnect") == 1
         assert names.count("restore") == 1
         assert names.index("button") < names.index("reconnect") < names.index("restore")
+        reconnect_index = names.index("reconnect")
+        assert all(
+            event[1] > 1000
+            for event in session.events[reconnect_index + 1 :]
+            if event[0] == "number"
+        )
 
     asyncio.run(run())
 
 
 def test_restart_recovery_marks_interrupted_then_reconnects_and_zeros() -> None:
     async def run() -> None:
-        meter = binding(0)
-        session = FakeCalibrationSession(gain_evidence("meter_main1"))
+        meter = native_meter()
+
+        class RebindingSession(FakeCalibrationSession):
+            async def async_reconnect(self) -> None:
+                await super().async_reconnect()
+                self.connection_generation = 2
+                self.entities = tuple(native_entities(key_offset=1000))
+
+        session = RebindingSession(gain_evidence("meter_main1"))
         markers, persist = marker_writer(session.events)
         engine = CalibrationEngine(SessionManager(), persist)
         marker = StoredInterruptedSession("active", "2026-08-21T12:00:00Z", (1,))
 
-        await engine.async_recover_interrupted("meter", session, meter, marker)
+        await engine.async_recover_interrupted(
+            "meter",
+            session,
+            meter,
+            marker,
+            substitutions=native_substitutions(0),
+        )
 
         assert markers[0] == replace(marker, state="interrupted")
         assert markers[-1] is None
@@ -182,6 +269,137 @@ def test_restart_recovery_marks_interrupted_then_reconnects_and_zeros() -> None:
         assert names[0] == "marker"
         assert names.index("reconnect") < names.index("number")
         assert "button" not in names
+        assert all(event[1] > 1000 for event in session.events if event[0] == "number")
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("fresh_entities", "rebind_substitutions"),
+    (
+        (False, native_substitutions(0)),
+        (True, None),
+        (True, {"unrelated": "value"}),
+    ),
+)
+def test_disconnect_refuses_absent_metadata_or_missing_rebind_substitutions(
+    fresh_entities: bool,
+    rebind_substitutions: dict[str, str] | None,
+) -> None:
+    async def run() -> None:
+        meter = native_meter()
+
+        class UnsafeReconnectSession(FakeCalibrationSession):
+            async def async_reconnect(self) -> None:
+                await super().async_reconnect()
+                self.connection_generation = 2
+                self.entities = (
+                    tuple(native_entities(key_offset=1000)) if fresh_entities else ()
+                )
+
+        session = UnsafeReconnectSession(
+            ESPHomeSessionDisconnectedError("lost after press")
+        )
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        with pytest.raises(CalibrationRebindError):
+            await engine.async_calibrate_current(
+                "meter",
+                session,
+                meter,
+                1,
+                10.0,
+                1.0,
+                1.0,
+                substitutions=rebind_substitutions,
+            )
+
+        names = [event[0] for event in session.events]
+        reconnect_index = names.index("reconnect")
+        assert not any(
+            event[0] == "number" for event in session.events[reconnect_index + 1 :]
+        )
+
+    asyncio.run(run())
+
+
+def test_interrupted_recovery_refuses_to_zero_without_fresh_metadata() -> None:
+    async def run() -> None:
+        meter = native_meter()
+
+        class MissingMetadataSession(FakeCalibrationSession):
+            async def async_reconnect(self) -> None:
+                await super().async_reconnect()
+                self.connection_generation = 2
+                self.entities = ()
+
+        session = MissingMetadataSession(gain_evidence("meter_main1"))
+        markers, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+        marker = StoredInterruptedSession("active", "2026-08-21T12:00:00Z", (1,))
+
+        with pytest.raises(CalibrationRebindError):
+            await engine.async_recover_interrupted(
+                "meter",
+                session,
+                meter,
+                marker,
+                substitutions=native_substitutions(0),
+            )
+
+        assert markers == [replace(marker, state="interrupted")]
+        assert not any(event[0] == "number" for event in session.events)
+
+    asyncio.run(run())
+
+
+def test_streaming_gain_waits_for_delayed_register_mismatch() -> None:
+    async def run() -> None:
+        meter = native_meter()
+        lines = (
+            (Path(__file__).parent / "fixtures" / "logs" / "gain_success.log")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+
+        class StreamingSession(FakeCalibrationSession):
+            expect_gain_run = None
+
+            def __init__(self) -> None:
+                super().__init__(gain_evidence("meter_main1"))
+                self.connected = True
+                self.log_lines: list[str] = []
+
+            async def async_press_button(self, key: int, *, device_id: int = 0) -> None:
+                await super().async_press_button(key, device_id=device_id)
+
+                async def stream() -> None:
+                    await asyncio.sleep(0.01)
+                    self.log_lines.extend(lines)
+                    await asyncio.sleep(0.08)
+                    self.log_lines.append(
+                        "[E][atm90e32:1211] [CALIBRATION][meter_main1] "
+                        "Mismatch detected for Phase A!"
+                    )
+
+                asyncio.create_task(stream())
+
+        session = StreamingSession()
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(
+            SessionManager(),
+            persist,
+            evidence_timeout=1.0,
+            evidence_quiescence=0.15,
+        )
+
+        with pytest.raises(CalibrationInvariantError, match="verification"):
+            await engine.async_calibrate_current(
+                "meter", session, meter, 2, 12.43, 1.0, 1.0
+            )
+
+        assert [event[0] for event in session.events].count("button") == 1
 
     asyncio.run(run())
 
@@ -285,5 +503,125 @@ def test_marker_persistence_failure_prevents_every_mutation() -> None:
         assert not any(event[0] in {"number", "button"} for event in session.events)
         assert not sessions.is_config_locked("meter")
         assert not sessions.is_calibration_locked("meter")
+
+    asyncio.run(run())
+
+
+def test_iteration_cannot_be_reset_replayed_or_jump_directly() -> None:
+    class SequencedSession(FakeCalibrationSession):
+        def expect_gain_run(self, **kwargs: Any) -> asyncio.Future[Any]:
+            self.events.append(("expect_gain", kwargs))
+            future = asyncio.get_running_loop().create_future()
+            future.set_result(
+                replace(
+                    self.evidence,
+                    connection_generation=kwargs["connection_generation"],
+                    operation_sequence=kwargs["operation_sequence"],
+                )
+            )
+            return future
+
+    async def run() -> None:
+        meter = binding(0)
+
+        reset_session = SequencedSession(
+            gain_evidence("meter_main1", reference_currents=(10.0, 0.0, 0.0))
+        )
+        reset_markers, reset_persist = marker_writer(reset_session.events)
+        reset_engine = CalibrationEngine(SessionManager(), reset_persist)
+        await reset_engine.async_calibrate_current(
+            "meter", reset_session, meter, 1, 10.0, 1.0, 1.0
+        )
+        reset_engine = CalibrationEngine(reset_engine.sessions, reset_persist)
+        for _ in range(3):
+            with pytest.raises(IterationConfirmationRequired):
+                await reset_engine.async_calibrate_current(
+                    "meter", reset_session, meter, 1, 10.0, 1.0, 1.0
+                )
+        assert len(reset_markers) == 1
+        assert [event[0] for event in reset_session.events].count("button") == 1
+
+        direct_session = SequencedSession(
+            gain_evidence("meter_main1", reference_currents=(10.0, 0.0, 0.0))
+        )
+        direct_markers, direct_persist = marker_writer(direct_session.events)
+        direct_engine = CalibrationEngine(SessionManager(), direct_persist)
+        with pytest.raises(IterationConfirmationRequired):
+            await direct_engine.async_calibrate_current(
+                "meter",
+                direct_session,
+                meter,
+                1,
+                10.0,
+                1.0,
+                1.0,
+                iteration=3,
+                confirm_iteration=True,
+            )
+        assert not direct_markers
+
+        replay_session = SequencedSession(
+            gain_evidence("meter_main1", reference_currents=(10.0, 0.0, 0.0))
+        )
+        replay_markers, replay_persist = marker_writer(replay_session.events)
+        replay_engine = CalibrationEngine(SessionManager(), replay_persist)
+        await replay_engine.async_calibrate_current(
+            "meter", replay_session, meter, 1, 10.0, 1.0, 1.0
+        )
+        before_missing_confirmation = len(replay_session.events)
+        with pytest.raises(IterationConfirmationRequired):
+            await replay_engine.async_calibrate_current(
+                "meter",
+                replay_session,
+                meter,
+                1,
+                10.0,
+                1.0,
+                1.0,
+                iteration=2,
+            )
+        assert len(replay_session.events) == before_missing_confirmation
+        await replay_engine.async_calibrate_current(
+            "meter",
+            replay_session,
+            meter,
+            1,
+            10.0,
+            1.0,
+            1.0,
+            iteration=2,
+            confirm_iteration=True,
+        )
+        with pytest.raises(IterationConfirmationRequired):
+            await replay_engine.async_calibrate_current(
+                "meter",
+                replay_session,
+                meter,
+                1,
+                10.0,
+                1.0,
+                1.0,
+                iteration=2,
+                confirm_iteration=True,
+            )
+        await replay_engine.async_calibrate_current(
+            "meter",
+            replay_session,
+            meter,
+            1,
+            10.0,
+            1.0,
+            1.0,
+            iteration=3,
+            confirm_iteration=True,
+        )
+        before_refusal = len(replay_session.events)
+        with pytest.raises(CalibrationIterationLimitError):
+            await replay_engine.async_calibrate_current(
+                "meter", replay_session, meter, 1, 10.0, 1.0, 1.0
+            )
+        assert len(replay_markers) == 3
+        assert [event[0] for event in replay_session.events].count("button") == 3
+        assert len(replay_session.events) == before_refusal
 
     asyncio.run(run())

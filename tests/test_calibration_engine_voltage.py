@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
+from dataclasses import dataclass
 from statistics import fmean
 from typing import Any
 
@@ -276,6 +277,99 @@ def test_voltage_rejects_unstable_samples_or_changed_current_gain() -> None:
                 "meter", changed, meter, "main_1", 120.0, 1.0
             )
         assert [event[0] for event in changed.events].count("button") == 1
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "unavailable",
+    (
+        {"missing_state": True},
+        {"available": False},
+        {"unavailable": True},
+    ),
+)
+def test_voltage_rejects_unavailable_raw_pre_samples(
+    unavailable: dict[str, bool],
+) -> None:
+    @dataclass(slots=True)
+    class RawState:
+        state: float = 120.0
+        missing_state: bool = False
+        available: bool = True
+        unavailable: bool = False
+
+    class RawSession(FakeCalibrationSession):
+        async def async_wait_for_sensor_window(
+            self,
+            key: int,
+            *,
+            device_id: int = 0,
+            sample_count: int,
+            after: float,
+            timeout: float = 10.0,
+        ) -> tuple[RawState, ...]:
+            self.events.append(("window", key, device_id, sample_count))
+            return tuple(RawState(**unavailable) for _ in range(sample_count))
+
+    async def run() -> None:
+        meter = binding(0)
+        session = RawSession(
+            gain_evidence("meter_main1", reference_voltages=(120.0, 120.0, 120.0))
+        )
+        markers, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        with pytest.raises(CalibrationStabilityError, match="unavailable"):
+            await engine.async_calibrate_voltage(
+                "meter", session, meter, "main_1", 120.0, 1.0
+            )
+
+        assert not markers
+        assert not any(event[0] in {"number", "button"} for event in session.events)
+
+    asyncio.run(run())
+
+
+def test_voltage_rejects_unavailable_raw_post_samples() -> None:
+    @dataclass(slots=True)
+    class RawState:
+        state: float = 120.0
+        missing_state: bool = False
+
+    class RawSession(FakeCalibrationSession):
+        async def async_wait_for_sensor_window(
+            self,
+            key: int,
+            *,
+            device_id: int = 0,
+            sample_count: int,
+            after: float,
+            timeout: float = 10.0,
+        ) -> tuple[RawState, ...]:
+            self.events.append(("window", key, device_id, sample_count))
+            calls = self.window_calls_by_key.get(key, 0) + 1
+            self.window_calls_by_key[key] = calls
+            return tuple(RawState(missing_state=calls > 1) for _ in range(sample_count))
+
+    async def run() -> None:
+        meter = binding(0)
+        session = RawSession(
+            gain_evidence(
+                "meter_main1",
+                voltage_changes=(True, True, True),
+                reference_voltages=(120.0, 120.0, 120.0),
+            )
+        )
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        with pytest.raises(CalibrationStabilityError, match="unavailable"):
+            await engine.async_calibrate_voltage(
+                "meter", session, meter, "main_1", 120.0, 1.0
+            )
+
+        assert [event[0] for event in session.events].count("button") == 1
 
     asyncio.run(run())
 

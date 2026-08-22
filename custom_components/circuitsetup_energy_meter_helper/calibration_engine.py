@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -12,8 +12,8 @@ from statistics import fmean
 from time import monotonic
 from typing import Any, cast
 
-from .entity_binding import BoundEntity, GroupBinding, MeterBinding
-from .entity_catalog import EntityCatalog
+from .entity_binding import BoundEntity, EntityBindingError, GroupBinding, MeterBinding
+from .entity_catalog import EntityCatalog, EntityCatalogError
 from .esphome_api import ESPHomeSessionDisconnectedError
 from .log_parser import (
     CalibrationLogLine,
@@ -53,6 +53,14 @@ class IterationConfirmationRequired(CalibrationError):
     """A subsequent calibration iteration needs explicit user approval."""
 
 
+class CalibrationIterationLimitError(CalibrationError):
+    """The current calibration operation already used all three attempts."""
+
+
+class CalibrationRebindError(CalibrationError):
+    """Fresh native entity metadata cannot produce a generation-local binding."""
+
+
 @dataclass(frozen=True, slots=True)
 class CalibrationResult:
     state: CalibrationState
@@ -71,9 +79,14 @@ class CalibrationResult:
 @dataclass(slots=True)
 class _BoundZeroer:
     engine: CalibrationEngine
-    binding: MeterBinding
+    binding: MeterBinding | None
+    substitutions: dict[str, str]
 
     async def async_zero_all_references(self, session: Any) -> None:
+        if self.binding is None:
+            raise CalibrationRebindError(
+                "reference cleanup has no binding for the current generation"
+            )
         await self.engine.async_zero_all_references(session, self.binding)
 
 
@@ -89,17 +102,21 @@ class CalibrationEngine:
         stability_limit_percent: float = 1.0,
         zero_concurrency: int = 2,
         evidence_timeout: float = 10.0,
+        evidence_quiescence: float = 0.15,
     ) -> None:
         if sample_count < 1 or zero_concurrency < 1:
             raise ValueError("sample count and zero concurrency must be positive")
         if not _positive_finite(stability_limit_percent, evidence_timeout):
             raise ValueError("calibration limits must be finite and positive")
+        if not math.isfinite(evidence_quiescence) or evidence_quiescence < 0:
+            raise ValueError("evidence quiescence must be finite and non-negative")
         self.sessions = sessions
         self._persist_interrupted = persist_interrupted
         self._sample_count = sample_count
         self._stability_limit_percent = stability_limit_percent
         self._zero_concurrency = zero_concurrency
         self._evidence_timeout = evidence_timeout
+        self._evidence_quiescence = evidence_quiescence
         self._operation_sequences: dict[str, int] = {}
 
     async def async_zero_all_references(
@@ -132,9 +149,16 @@ class CalibrationEngine:
         *,
         iteration: int = 1,
         confirm_iteration: bool = False,
+        substitutions: Mapping[str, str] | None = None,
     ) -> CalibrationResult:
-        self._validate_request(
-            iteration, confirm_iteration, trusted_voltage, tolerance_percent
+        operation = f"voltage:{group_key}"
+        attempt = self._prepare_iteration(
+            mac,
+            operation,
+            iteration,
+            confirm_iteration,
+            trusted_voltage,
+            tolerance_percent,
         )
         self._validate_binding_generation(session, binding)
         group = self._group(binding, group_key)
@@ -144,7 +168,8 @@ class CalibrationEngine:
             before = await self._windows(session, group.voltage_sensors)
             marker = self._marker(channels)
             await self._persist_interrupted(mac, marker)
-            zeroer = _BoundZeroer(self, binding)
+            self.sessions.record_calibration_iteration(mac, operation, attempt)
+            zeroer = _BoundZeroer(self, binding, dict(substitutions or {}))
             async with zero_reference_guard(zeroer, session):
                 await self._set_number(
                     session, group.voltage_reference, trusted_voltage
@@ -156,7 +181,7 @@ class CalibrationEngine:
                 )
                 if evidence is None:
                     return self._indeterminate_result(
-                        group, channels, iteration, before, restore
+                        group, channels, attempt, before, restore
                     )
                 self._validate_voltage_evidence(evidence, trusted_voltage)
                 after = await self._windows(session, group.voltage_sensors)
@@ -168,13 +193,13 @@ class CalibrationEngine:
                     group.key,
                     None,
                     channels,
-                    iteration,
+                    attempt,
                     tuple(window.mean for window in before),
                     tuple(window.mean for window in after),
                     errors,
                     evidence,
                     None,
-                    max(errors) > tolerance_percent and iteration < 3,
+                    max(errors) > tolerance_percent and attempt < 3,
                 )
         finally:
             lease.release()
@@ -191,8 +216,12 @@ class CalibrationEngine:
         *,
         iteration: int = 1,
         confirm_iteration: bool = False,
+        substitutions: Mapping[str, str] | None = None,
     ) -> CalibrationResult:
-        self._validate_request(
+        operation = f"current:{channel}"
+        attempt = self._prepare_iteration(
+            mac,
+            operation,
             iteration,
             confirm_iteration,
             trusted_current,
@@ -208,7 +237,8 @@ class CalibrationEngine:
             before = (await self._window(session, sensor),)
             marker = self._marker((channel,))
             await self._persist_interrupted(mac, marker)
-            zeroer = _BoundZeroer(self, binding)
+            self.sessions.record_calibration_iteration(mac, operation, attempt)
+            zeroer = _BoundZeroer(self, binding, dict(substitutions or {}))
             async with zero_reference_guard(zeroer, session):
                 await self._set_number(
                     session, reference, trusted_current / reporting_multiplier
@@ -219,7 +249,7 @@ class CalibrationEngine:
                 phase = "ABC"[phase_index]
                 if evidence is None:
                     return self._indeterminate_result(
-                        group, (channel,), iteration, before, restore, phase
+                        group, (channel,), attempt, before, restore, phase
                     )
                 self._validate_current_evidence(
                     evidence,
@@ -233,13 +263,13 @@ class CalibrationEngine:
                     group.key,
                     phase,
                     (channel,),
-                    iteration,
+                    attempt,
                     (before[0].mean,),
                     (after[0].mean,),
                     errors,
                     evidence,
                     None,
-                    errors[0] > tolerance_percent and iteration < 3,
+                    errors[0] > tolerance_percent and attempt < 3,
                 )
         finally:
             lease.release()
@@ -250,6 +280,8 @@ class CalibrationEngine:
         session: Any,
         binding: MeterBinding,
         marker: StoredInterruptedSession,
+        *,
+        substitutions: Mapping[str, str] | None = None,
     ) -> None:
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
@@ -263,9 +295,12 @@ class CalibrationEngine:
                 ),
             )
             await session.async_reconnect()
-            rebound = self._rebind_after_reconnect(session, binding)
+            rebound = self._rebind_after_reconnect(
+                session, binding, dict(substitutions or {})
+            )
             await self.async_zero_all_references(session, rebound)
             await self._persist_interrupted(mac, None)
+            self.sessions.reset_calibration_iterations(mac)
         finally:
             lease.release()
 
@@ -304,8 +339,14 @@ class CalibrationEngine:
         except ESPHomeSessionDisconnectedError:
             restore_started = monotonic()
             baseline = tuple(getattr(session, "log_lines", ()))
+            previous_binding = zeroer.binding
+            zeroer.binding = None
+            if previous_binding is None:
+                raise CalibrationRebindError("the previous entity binding is absent")
             await session.async_reconnect()
-            zeroer.binding = self._rebind_after_reconnect(session, zeroer.binding)
+            zeroer.binding = self._rebind_after_reconnect(
+                session, previous_binding, zeroer.substitutions
+            )
             restore = await self._wait_restore(
                 session,
                 generation=int(session.connection_generation),
@@ -372,12 +413,23 @@ class CalibrationEngine:
     ) -> GainRunEvidence:
         deadline = monotonic() + self._evidence_timeout
         last_error: LogEvidenceError | None = None
+        candidate: GainRunEvidence | None = None
+        candidate_lines: tuple[str, ...] = ()
+        quiet_since: float | None = None
         while monotonic() < deadline:
             if getattr(session, "connected", True) is False:
                 raise ESPHomeSessionDisconnectedError(
                     "connection ended before complete gain evidence"
                 )
             new_lines = _new_log_lines(baseline, tuple(session.log_lines))
+            now = monotonic()
+            if (
+                candidate is not None
+                and new_lines == candidate_lines
+                and quiet_since is not None
+                and now - quiet_since >= self._evidence_quiescence
+            ):
+                return candidate
             correlated = tuple(
                 CalibrationLogLine(
                     generation,
@@ -388,7 +440,7 @@ class CalibrationEngine:
                 for index, line in enumerate(new_lines)
             )
             try:
-                return parse_gain_run(
+                parsed = parse_gain_run(
                     correlated,
                     connection_generation=generation,
                     operation_sequence=sequence,
@@ -398,10 +450,17 @@ class CalibrationEngine:
                 )
             except LogEvidenceError as error:
                 last_error = error
+                candidate = None
+                quiet_since = None
+            else:
+                if new_lines != candidate_lines:
+                    quiet_since = now
+                candidate = parsed
+                candidate_lines = new_lines
             await asyncio.sleep(0.05)
         if last_error is not None:
             raise last_error
-        raise LogEvidenceError("gain evidence timed out")
+        raise LogEvidenceError("gain evidence did not reach verified quiescence")
 
     async def _wait_restore(
         self,
@@ -546,18 +605,28 @@ class CalibrationEngine:
                     "current calibration changed a non-target current gain"
                 )
 
-    @staticmethod
-    def _validate_request(
-        iteration: int, confirm_iteration: bool, *positive_values: float
-    ) -> None:
+    def _prepare_iteration(
+        self,
+        mac: str,
+        operation: str,
+        iteration: int,
+        confirm_iteration: bool,
+        *positive_values: float,
+    ) -> int:
         if iteration < 1 or iteration > 3:
             raise ValueError("calibration permits at most three iterations")
-        if iteration > 1 and not confirm_iteration:
+        expected = self.sessions.next_calibration_iteration(mac, operation)
+        if expected > 3:
+            raise CalibrationIterationLimitError(
+                "calibration permits at most three attempts for this operation"
+            )
+        if iteration != expected or (expected > 1 and not confirm_iteration):
             raise IterationConfirmationRequired(
-                "another calibration iteration requires explicit confirmation"
+                f"explicit confirmation is required for iteration {expected}"
             )
         if not _positive_finite(*positive_values):
             raise ValueError("calibration values must be finite and positive")
+        return expected
 
     @staticmethod
     def _validate_binding_generation(session: Any, binding: MeterBinding) -> None:
@@ -565,12 +634,31 @@ class CalibrationEngine:
             raise CalibrationError("entity binding is stale after reconnect")
 
     @staticmethod
-    def _rebind_after_reconnect(session: Any, binding: MeterBinding) -> MeterBinding:
+    def _rebind_after_reconnect(
+        session: Any, binding: MeterBinding, substitutions: Mapping[str, str]
+    ) -> MeterBinding:
+        generation = int(session.connection_generation)
+        if generation <= binding.connection_generation:
+            raise CalibrationRebindError(
+                "reconnect did not produce a fresh connection generation"
+            )
         entities = tuple(getattr(session, "entities", ()))
         if not entities:
-            return binding
-        catalog = EntityCatalog(entities, int(session.connection_generation))
-        return binding.rebind(catalog, {})
+            raise CalibrationRebindError("reconnect returned no fresh entity metadata")
+        if not substitutions:
+            raise CalibrationRebindError(
+                "authoritative substitutions are required to rebind entities"
+            )
+        try:
+            catalog = EntityCatalog(entities, generation)
+            rebound = binding.rebind(catalog, substitutions)
+        except (EntityBindingError, EntityCatalogError) as error:
+            raise CalibrationRebindError(
+                "fresh entity metadata cannot be rebound safely"
+            ) from error
+        if rebound.connection_generation != generation:
+            raise CalibrationRebindError("rebound entities use a stale generation")
+        return rebound
 
     @staticmethod
     def _group(binding: MeterBinding, key: str) -> GroupBinding:
@@ -641,7 +729,16 @@ def _sample_window(raw: Any) -> SensorSampleWindow:
         return raw
     try:
         states = tuple(raw)
+        if any(
+            bool(getattr(state, "missing_state", False))
+            or bool(getattr(state, "unavailable", False))
+            or getattr(state, "available", True) is False
+            for state in states
+        ):
+            raise CalibrationStabilityError("sensor sample is unavailable")
         values = tuple(float(state.state) for state in states)
+    except CalibrationStabilityError:
+        raise
     except (AttributeError, TypeError, ValueError) as error:
         raise CalibrationStabilityError("sensor samples are invalid") from error
     if not values or not all(math.isfinite(value) for value in values):
