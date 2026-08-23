@@ -39,14 +39,37 @@ RED:
 
 GREEN:
 
-- Focused API suite: `15 passed`.
-- Full frontend suite: `56 passed` across API, accessibility, and panel tests.
+- Focused API suite: `19 passed`.
+- Full frontend suite: `61 passed` across API, accessibility, and panel tests.
+- Browser-rendered Playwright suite: `6 passed`.
 - TypeScript typecheck: passed.
-- Production Vite build: passed (`26 modules transformed`, 136.60 kB / 34.04
+- Production Vite build: passed (`26 modules transformed`, 138.39 kB / 34.60
   kB gzip). The generated integration bundle was restored to `HEAD` afterward
   and is not part of this task's changes.
 - No source lint script is configured in `frontend/package.json`.
 - `git diff --check`: clean.
+
+## Fix round 1
+
+- Restored the public offset result identity to the engine's actual group-key
+  contract: `main_1`/`main_2` for the main board and `addonN_1`/`addonN_2` for
+  add-ons. API and panel fixtures now mirror the engine DTO rather than restart
+  record instance IDs.
+- Bound readiness evidence to the requested board's exact six voltage roles and
+  six CT current roles. The decoder recomputes the backend Stage 1/Stage 2
+  threshold decisions, exact entity reasons, aggregate reasons, and ready state,
+  including the backend's collection-generation failure suffix.
+- Required no-change completion to return the requested session in terminal
+  `verified` state with no pending calibration. Added an in-flight guard and
+  disabled progress state so repeated activation sends one command.
+- Updated the native WebSocket Playwright mock to the strict session and offset
+  command contracts. Every prior flow now visibly traverses Safety, the Offset
+  warning and measurement gate, explicit skip, Voltage, and the unchanged gain
+  path.
+- RED evidence covered the real main-board DTO, foreign readiness roles, Stage 1
+  voltage at 120 V, malformed no-change responses, duplicate completion clicks,
+  and the backend collection-generation suffix. All focused failures passed
+  after the smallest decoder/panel/mock changes.
 
 ## Files
 
@@ -59,10 +82,11 @@ GREEN:
 - `frontend/src/styles.ts`
 - `frontend/src/types.ts`
 - `frontend/test/api.test.ts`
+- `frontend/test/e2e/panel.spec.ts`
 - `frontend/test/panel.test.ts`
 
 ## Concerns
 
-- Browser-rendered QA and live Home Assistant/hardware validation remain with
-  the controller as assigned. Task 9 verification used the DOM-focused Vitest
-  coverage, typecheck, and production compilation only.
+- Live Home Assistant/hardware validation remains with the controller as
+  assigned. Task 9 now also includes browser-rendered mocked-WebSocket coverage;
+  it does not claim physical readiness or calibration accuracy.

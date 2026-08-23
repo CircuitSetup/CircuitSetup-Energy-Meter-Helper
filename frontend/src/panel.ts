@@ -101,6 +101,7 @@ export class CircuitSetupPanel extends LitElement {
   private sessionStarting = false;
   private voltageBusy = false;
   private offsetBusy = false;
+  private finishBusy = false;
   private mobileStepsOpen = false;
   private focusHeading = false;
 
@@ -213,6 +214,7 @@ export class CircuitSetupPanel extends LitElement {
     this.offsetStage = 1;
     this.offsetAcknowledged = [false, false];
     this.offsetRetryConfirmed = false;
+    this.finishBusy = false;
   }
 
   private selectDevice(deviceId: string | null): void {
@@ -629,7 +631,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async finishCurrent(): Promise<void> {
-    if (!this.session) return;
+    if (!this.session || this.finishBusy) return;
     if (this.session.has_pending_calibration) {
       this.navigate("restart");
       return;
@@ -637,14 +639,22 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
-    await this.run(async () => {
-      const session = await api.completeCalibrationWithoutChanges(sessionId);
-      if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
-      this.session = session;
-      this.completedWithoutChanges = true;
-      this.navigate("summary");
-      this.announcement = "Completed without calibration changes; no restart was required.";
-    }, "Calibration completion could not be confirmed.", () => this.ownsOperation(generation, api, deviceId));
+    this.finishBusy = true; this.requestUpdate();
+    try {
+      await this.run(async () => {
+        const session = await api.completeCalibrationWithoutChanges(sessionId);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        if (session.session_id !== sessionId || session.state !== "verified" || session.has_pending_calibration !== false) {
+          throw new Error("No-change completion response is not authoritative");
+        }
+        this.session = session;
+        this.completedWithoutChanges = true;
+        this.navigate("summary");
+        this.announcement = "Completed without calibration changes; no restart was required.";
+      }, "Calibration completion could not be confirmed.", () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      this.finishBusy = false; this.requestUpdate();
+    }
   }
 
   private async checkStability(target: "voltage" | "current"): Promise<void> {
@@ -876,7 +886,7 @@ export class CircuitSetupPanel extends LitElement {
       (channel, value) => { const references = new Map(this.currentReferences); if (value === null || !Number.isFinite(value) || value <= 0) references.delete(channel); else references.set(channel, value); this.currentReferences = references; this.requestUpdate(); },
       (value) => { this.reportingMultiplier = value; this.requestUpdate(); },
       () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession())}
-      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => void this.finishCurrent()}>${this.session?.has_pending_calibration ? "Continue to Restart" : "Finish without calibration"}</button></footer>`;
+      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.finishBusy} @click=${() => void this.finishCurrent()}>${this.finishBusy ? "Finishing…" : this.session?.has_pending_calibration ? "Continue to Restart" : "Finish without calibration"}</button></footer>`;
     if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult,
       Boolean(this.transaction?.rollback_available), () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());
     return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.completedWithoutChanges, this.selectedProjectVersion(), () => this.back());

@@ -4,7 +4,7 @@ import type { MeterTopology, OffsetCalibrationResult, OffsetReadinessResult, Ses
 import { moveTab } from "./tab-keyboard";
 
 const boardLabel = (index: number) => index === 0 ? "Main Board" : `Add-on ${index}`;
-const groupKeys = (board: number) => board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
+const groupKeys = (board: number) => board === 0 ? ["main_1", "main_2"] : [`addon${board}_1`, `addon${board}_2`];
 
 export function offsetStep(
   topology: MeterTopology | null,
@@ -69,9 +69,9 @@ export function offsetStep(
           <h2>Stage ${stage} · ${boardLabel(board)}</h2>
           <div class="warning-band"><strong>Warning:</strong> An open-circuit current-output CT on a live conductor can be hazardous. De-energize conductors before unplugging any CT.</div>
           ${stage === 1 ? html`
-            <p>First, de-energize all conductors. Then unplug the voltage transformer/AC voltage input and CT inputs, power the meter from USB only, and confirm every V/I phase is near zero.</p>
+            <p>First, de-energize all conductors. Then unplug the voltage transformer/AC voltage input and CT inputs, power the meter from USB only, then check that every voltage/current phase reads near zero.</p>
           ` : html`
-            <p>Power down before rewiring, keep CT inputs unplugged and CTs off current-carrying conductors, connect/enclose/energize only the voltage reference, then confirm voltage is present on both chips and every current phase is near zero.</p>
+            <p>Power down before rewiring, keep CT inputs unplugged and CTs off current-carrying conductors, connect/enclose/energize only the voltage reference, then check that voltage is present on both chips and every current phase reads near zero.</p>
           `}
           <p>Measurements cannot prove that a transformer or CT is physically unplugged. Physical acknowledgement never substitutes for measured readiness.</p>
           <label class="check-row"><input type="checkbox" .checked=${acknowledged} @change=${(event: Event) => setAcknowledged((event.target as HTMLInputElement).checked)}>

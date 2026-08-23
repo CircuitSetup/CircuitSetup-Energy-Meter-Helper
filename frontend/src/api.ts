@@ -101,6 +101,9 @@ function exactKeys(item: PublicRecord, keys: readonly string[], label: string): 
   const actual = Object.keys(item);
   if (actual.length !== keys.length || actual.some((key) => !keys.includes(key))) throw new Error(`${label} response is invalid`);
 }
+function exactStrings(actual: string[], expected: string[]): boolean {
+  return actual.length === expected.length && actual.every((value, index) => value === expected[index]);
+}
 
 function device(value: unknown, label: string): void {
   const item = record(value, label);
@@ -209,23 +212,34 @@ function offsetReadiness(value: unknown, label: string, expectedBoard: number, e
   const thresholds = record(item.thresholds, label);
   exactKeys(thresholds, ["sample_count", "zero_voltage_peak_volts", "zero_voltage_spread_volts", "zero_current_peak_amps", "zero_current_spread_amps", "voltage_present_minimum_volts", "voltage_present_spread_volts"], label);
   const sampleCount = integer(thresholds.sample_count, label);
-  const thresholdValues = [thresholds.zero_voltage_peak_volts, thresholds.zero_voltage_spread_volts,
-    thresholds.zero_current_peak_amps, thresholds.zero_current_spread_amps,
-    thresholds.voltage_present_minimum_volts, thresholds.voltage_present_spread_volts].map((entry) => number(entry, label));
+  const zeroVoltagePeak = number(thresholds.zero_voltage_peak_volts, label);
+  const zeroVoltageSpread = number(thresholds.zero_voltage_spread_volts, label);
+  const zeroCurrentPeak = number(thresholds.zero_current_peak_amps, label);
+  const zeroCurrentSpread = number(thresholds.zero_current_spread_amps, label);
+  const voltagePresentMinimum = number(thresholds.voltage_present_minimum_volts, label);
+  const voltagePresentSpread = number(thresholds.voltage_present_spread_volts, label);
+  const thresholdValues = [zeroVoltagePeak, zeroVoltageSpread, zeroCurrentPeak, zeroCurrentSpread,
+    voltagePresentMinimum, voltagePresentSpread];
   if (sampleCount < 3 || sampleCount > 100 || thresholdValues.some((entry) => entry < 0)
     || thresholdValues[4] === 0) throw new Error(`${label} response is invalid`);
   const entities = array(item.entities, label, 12);
   if (entities.length !== 12) throw new Error(`${label} response is invalid`);
-  const roles = new Set<string>(); let voltages = 0; let currents = 0;
-  const entityStates = entities.map((entry) => {
+  const expectedRoles = new Map<string, "voltage" | "current">();
+  for (const groupOffset of [0, 1]) {
+    const group = expectedBoard === 0 ? `main_${groupOffset + 1}` : `addon${expectedBoard}_${groupOffset + 1}`;
+    for (const phase of ["a", "b", "c"]) expectedRoles.set(`${group}.voltage_${phase}`, "voltage");
+    for (let offset = 1; offset <= 3; ++offset) expectedRoles.set(`ct${expectedBoard * 6 + groupOffset * 3 + offset}.current_sensor`, "current");
+  }
+  const roles = new Set<string>(); const topLevelReasons: string[] = [];
+  entities.forEach((entry) => {
     const entity = record(entry, label); exactKeys(entity, ["role", "quantity", "ready", "reasons", "window"], label);
     const role = string(entity.role, label)!; const quantity = enumeration(entity.quantity, new Set(["voltage", "current"]), label);
-    if (roles.has(role)) throw new Error(`${label} response is invalid`); roles.add(role);
-    if (quantity === "voltage") ++voltages; else ++currents;
-    const entityReady = boolean(entity.ready, label); const reasons = array(entity.reasons, label, 12);
-    reasons.forEach((reason) => string(reason, label));
+    if (roles.has(role) || expectedRoles.get(role) !== quantity) throw new Error(`${label} response is invalid`); roles.add(role);
+    const entityReady = boolean(entity.ready, label); const reasons = array(entity.reasons, label, 12).map((reason) => string(reason, label)!);
+    let expectedReasons: string[];
     if (entity.window === null) {
       if (entityReady || reasons.length === 0) throw new Error(`${label} response is invalid`);
+      expectedReasons = reasons;
     } else {
       const window = record(entity.window, label);
       exactKeys(window, ["values", "received_at", "connection_generation", "mean", "minimum", "maximum", "absolute_peak", "absolute_spread"], label);
@@ -234,17 +248,32 @@ function offsetReadiness(value: unknown, label: string, expectedBoard: number, e
       const mean = number(window.mean, label); const minimum = number(window.minimum, label); const maximum = number(window.maximum, label);
       const peak = number(window.absolute_peak, label); const spread = number(window.absolute_spread, label);
       const calculatedMean = values.reduce((sum, entry) => sum + entry, 0) / values.length;
-      if (values.length !== sampleCount || receivedAt.length !== sampleCount || integer(window.connection_generation, label) !== generation
+      const windowGeneration = integer(window.connection_generation, label);
+      if (values.length !== sampleCount || receivedAt.length !== sampleCount
         || receivedAt.some((entry, index) => index > 0 && entry <= receivedAt[index - 1]!)
         || !close(mean, calculatedMean) || !close(minimum, Math.min(...values)) || !close(maximum, Math.max(...values))
         || !close(peak, Math.max(...values.map(Math.abs))) || !close(spread, maximum - minimum)) throw new Error(`${label} response is invalid`);
+      expectedReasons = [];
+      if (windowGeneration !== generation) expectedReasons.push("window is from another connection generation");
+      else if (quantity === "current") {
+        if (peak > zeroCurrentPeak) expectedReasons.push("absolute peak exceeds zero_current_peak_amps");
+        if (spread > zeroCurrentSpread) expectedReasons.push("absolute spread exceeds zero_current_spread_amps");
+      } else if (expectedStage === 1) {
+        if (peak > zeroVoltagePeak) expectedReasons.push("absolute peak exceeds zero_voltage_peak_volts");
+        if (spread > zeroVoltageSpread) expectedReasons.push("absolute spread exceeds zero_voltage_spread_volts");
+      } else {
+        if (minimum < voltagePresentMinimum) expectedReasons.push("minimum is below voltage_present_minimum_volts");
+        if (spread > voltagePresentSpread) expectedReasons.push("absolute spread exceeds voltage_present_spread_volts");
+      }
     }
-    if (entityReady !== (reasons.length === 0)) throw new Error(`${label} response is invalid`);
-    return entityReady;
+    if (!exactStrings(reasons, expectedReasons) || entityReady !== (expectedReasons.length === 0)) throw new Error(`${label} response is invalid`);
+    topLevelReasons.push(...expectedReasons.map((reason) => `${role}: ${reason}`));
   });
-  const reasons = array(item.reasons, label, 100); reasons.forEach((reason) => string(reason, label));
-  const allEntitiesReady = entityStates.every(Boolean);
-  if (voltages !== 6 || currents !== 6 || ready !== allEntitiesReady || ready !== (reasons.length === 0)) throw new Error(`${label} response is invalid`);
+  const reasons = array(item.reasons, label, 100).map((reason) => string(reason, label)!);
+  const connectionChangedReasons = [...topLevelReasons, "connection generation changed while collecting readiness"];
+  const reasonsMatch = exactStrings(reasons, topLevelReasons) || exactStrings(reasons, connectionChangedReasons);
+  if (roles.size !== expectedRoles.size || !reasonsMatch
+    || ready !== (reasons.length === 0)) throw new Error(`${label} response is invalid`);
   return value as OffsetReadinessResult;
 }
 
@@ -262,7 +291,7 @@ function offsetCalibration(value: unknown, label: string, expectedBoard: number,
   const item = record(value, label); exactKeys(item, ["state", "board_index", "stage", "expected_tables", "unfinished_group_keys", "retry_allowed", "error"], label);
   const state = enumeration(item.state, OFFSET_RESULT_STATES, label);
   if (integer(item.board_index, label) !== expectedBoard || integer(item.stage, label) !== expectedStage) throw new Error(`${label} response is invalid`);
-  const groupKeys = expectedBoard === 0 ? ["meter_main1", "meter_main2"] : [`addon${expectedBoard}_1`, `addon${expectedBoard}_2`];
+  const groupKeys = expectedBoard === 0 ? ["main_1", "main_2"] : [`addon${expectedBoard}_1`, `addon${expectedBoard}_2`];
   const completed = array(item.expected_tables, label, 2).map((entry) => {
     const table = array(entry, label, 2);
     if (table.length !== 2) throw new Error(`${label} response is invalid`);
@@ -577,7 +606,13 @@ export class HelperApi {
   public restartAndVerify = (sessionId: string, expectedTopology: MeterTopology) =>
     this.call("restart_and_verify", (value) => restart(value, "restart_and_verify", expectedTopology), { session_id: sessionId });
   public completeCalibrationWithoutChanges = (sessionId: string) =>
-    this.call("complete_calibration_without_changes", (value) => session(value, "complete_calibration_without_changes"), { session_id: sessionId });
+    this.call("complete_calibration_without_changes", (value) => {
+      const result = session(value, "complete_calibration_without_changes");
+      if (result.session_id !== sessionId || result.state !== "verified" || result.has_pending_calibration !== false) {
+        throw new Error("complete_calibration_without_changes response is invalid");
+      }
+      return result;
+    }, { session_id: sessionId });
   public cancelSession = (sessionId: string) =>
     this.call("cancel_session", (value) => session(value, "cancel_session"), { session_id: sessionId });
   public subscribeSetup = (callback: (message: SetupSnapshot) => void) =>

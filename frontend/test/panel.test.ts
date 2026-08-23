@@ -21,6 +21,15 @@ const device = {
   configuration: null,
 };
 
+const offsetReadinessEntities = (voltage = 0) => [0, 1].flatMap((groupOffset) => [
+  ...["a", "b", "c"].map((phase) => ({ role: `main_${groupOffset + 1}.voltage_${phase}`, quantity: "voltage", ready: true, reasons: [],
+    window: { values: [voltage, voltage, voltage], received_at: [1, 2, 3], connection_generation: 4,
+      mean: voltage, minimum: voltage, maximum: voltage, absolute_peak: Math.abs(voltage), absolute_spread: 0 } })),
+  ...[1, 2, 3].map((offset) => ({ role: `ct${groupOffset * 3 + offset}.current_sensor`, quantity: "current", ready: true, reasons: [],
+    window: { values: [0, 0, 0], received_at: [1, 2, 3], connection_generation: 4,
+      mean: 0, minimum: 0, maximum: 0, absolute_peak: 0, absolute_spread: 0 } })),
+]);
+
 const makeHass = (responses: Record<string, unknown>): HomeAssistant => ({
   callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
     const operation = String(message.type).split("/").at(-1) ?? "";
@@ -120,6 +129,7 @@ describe("CircuitSetup panel", () => {
     expect(copy.indexOf("open-circuit current-output CT")).toBeLessThan(copy.indexOf("unplug the voltage transformer"));
     expect(copy).toContain("de-energize all conductors");
     expect(copy).toContain("power the meter from USB only");
+    expect(copy).toContain("check that every voltage/current phase reads near zero");
     expect(copy).toContain("Measurements cannot prove");
     expect(panel.shadowRoot?.querySelectorAll("[data-offset-board]")).toHaveLength(7);
     expect(panel.shadowRoot?.querySelector("[data-offset-stage='1']")?.getAttribute("aria-current")).toBe("step");
@@ -151,11 +161,7 @@ describe("CircuitSetup panel", () => {
     const messages: Record<string, unknown>[] = [];
     let runs = 0;
     const readiness = { stage: 1, ready: true, connection_generation: 4,
-      entities: ["voltage", "current"].flatMap((quantity) => Array.from({ length: 6 }, (_, index) => ({
-        role: `${quantity}_${index + 1}`, quantity, ready: true, reasons: [],
-        window: { values: [0, 0, 0], received_at: [1, 2, 3], connection_generation: 4,
-          mean: 0, minimum: 0, maximum: 0, absolute_peak: 0, absolute_spread: 0 },
-      }))), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
+      entities: offsetReadinessEntities(), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
         zero_voltage_spread_volts: 0.5, zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
         voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2 } };
     const panel = await mount({
@@ -167,10 +173,10 @@ describe("CircuitSetup panel", () => {
         if (operation === "calibrate_offset") {
           runs += 1;
           return (runs === 1 ? { state: "partial", board_index: 0, stage: 1,
-            expected_tables: [["meter_main1", [[1, -1], [2, -2], [3, -3]]]],
-            unfinished_group_keys: ["meter_main2"], retry_allowed: true, error: "second chip failed" }
+            expected_tables: [["main_1", [[1, -1], [2, -2], [3, -3]]]],
+            unfinished_group_keys: ["main_2"], retry_allowed: true, error: "second chip failed" }
             : { state: "applied_pending_restart_verification", board_index: 0, stage: 1,
-              expected_tables: [["meter_main1", [[1, -1], [2, -2], [3, -3]]], ["meter_main2", [[4, -4], [5, -5], [6, -6]]]],
+              expected_tables: [["main_1", [[1, -1], [2, -2], [3, -3]]], ["main_2", [[4, -4], [5, -5], [6, -6]]]],
               unfinished_group_keys: [], retry_allowed: false, error: null }) as T;
         }
         return {} as T;
@@ -212,7 +218,7 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(text(panel)).toContain("Power down before rewiring, keep CT inputs unplugged and CTs off current-carrying conductors");
     expect(text(panel)).toContain("connect/enclose/energize only the voltage reference");
-    expect(text(panel)).toContain("voltage is present on both chips and every current phase is near zero");
+    expect(text(panel)).toContain("check that voltage is present on both chips and every current phase reads near zero");
   });
 
   it("restores a server-skipped Offset step with only Back and Continue enabled", async () => {
@@ -255,6 +261,8 @@ describe("CircuitSetup panel", () => {
 
   it("finishes unchanged calibration without restart and routes to Summary", async () => {
     const calls: string[] = [];
+    let releaseCompletion!: (value: unknown) => void;
+    const completion = new Promise<unknown>((resolve) => { releaseCompletion = resolve; });
     const completed = { session_id: "session", device_id: "meter-1", state: "verified", safety_acknowledged: true,
       preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
       offset_capability: { status: "unavailable", repair_reason: null }, offset_disposition: "skipped",
@@ -265,7 +273,7 @@ describe("CircuitSetup panel", () => {
         const operation = String(message.type).split("/").at(-1) ?? "";
         calls.push(operation);
         if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
-        if (operation === "complete_calibration_without_changes") return completed as T;
+        if (operation === "complete_calibration_without_changes") return await completion as T;
         return {} as T;
       },
       connection: { subscribeMessage: async () => () => undefined },
@@ -275,7 +283,14 @@ describe("CircuitSetup panel", () => {
     panel.showState("current");
     await panel.updateComplete;
 
-    panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.click();
+    const finish = panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary");
+    finish?.click();
+    finish?.click();
+    await panel.updateComplete;
+
+    expect(calls.filter((operation) => operation === "complete_calibration_without_changes")).toHaveLength(1);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(true);
+    releaseCompletion(completed);
     await tick();
     await panel.updateComplete;
 
@@ -283,6 +298,26 @@ describe("CircuitSetup panel", () => {
     expect(calls).not.toContain("restart_and_verify");
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
     expect(text(panel)).toContain("Completed without calibration changes");
+  });
+
+  it("refuses a malformed no-change response without leaving Current", async () => {
+    const completed = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
+      offset_capability: { status: "unavailable", repair_reason: null }, offset_disposition: "skipped",
+      offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "skipped" }, { stage: 2, state: "skipped" }] }],
+      has_pending_calibration: false };
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] },
+      complete_calibration_without_changes: completed }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.session = completed;
+    panel.showState("current");
+    await panel.updateComplete;
+
+    panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.click();
+    await tick(); await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Current");
+    expect(panel.shadowRoot?.querySelector("[role=alert]")?.textContent).toContain("could not be confirmed");
   });
 
   it("routes pending calibration to Restart without calling no-change completion", async () => {
