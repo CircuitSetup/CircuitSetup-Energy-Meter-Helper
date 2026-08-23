@@ -18,19 +18,39 @@ from uuid import uuid4
 
 from .config_document import ESPHomeConfigDocument
 from .device_builder import ESPHomeConfigSnapshot
-from .entity_binding import BoundEntity, EntityBindingError, GroupBinding, MeterBinding
+from .entity_binding import (
+    BoundEntity,
+    EntityBindingError,
+    GroupBinding,
+    MeterBinding,
+    OffsetControlBinding,
+)
 from .entity_catalog import EntityCatalog, EntityCatalogError
 from .esphome_api import ESPHomeSessionDisconnectedError
 from .log_parser import (
     CalibrationLogLine,
     GainRunEvidence,
     LogEvidenceError,
+    OffsetRunEvidence,
+    PowerOffsetRunEvidence,
     RestoreEvidence,
     parse_gain_run,
+    parse_offset_run,
+    parse_power_offset_run,
     parse_restore,
 )
-from .models import MeterTopology, StoredInterruptedSession
-from .preflight import ReferenceZeroError, zero_reference_guard
+from .models import (
+    MeterTopology,
+    PhaseOffsetTable,
+    PhasePowerOffsetTable,
+    StoredInterruptedSession,
+)
+from .offset_readiness import OffsetReadinessStage, async_check_offset_readiness
+from .preflight import (
+    ReferenceZeroError,
+    validate_offset_controls,
+    zero_reference_guard,
+)
 from .session_manager import CalibrationLease, PendingCalibrationOrigin, SessionManager
 from .state_tracker import SensorSampleWindow
 from .store import PhaseGainTable, VerifiedCalibrationRecord, VerifiedGainGroup
@@ -50,6 +70,12 @@ _CONFIGURATION_ID = re.compile(r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml")
 class CalibrationState(StrEnum):
     APPLIED_PENDING_RESTART_VERIFICATION = "applied_pending_restart_verification"
     RESULT_OUTSIDE_TOLERANCE = "result_outside_tolerance"
+    INDETERMINATE = "indeterminate"
+
+
+class OffsetCalibrationState(StrEnum):
+    APPLIED_PENDING_RESTART_VERIFICATION = "applied_pending_restart_verification"
+    PARTIAL = "partial"
     INDETERMINATE = "indeterminate"
 
 
@@ -98,6 +124,17 @@ class CalibrationResult:
     gain_evidence: GainRunEvidence | None
     restore_evidence: dict[str, RestoreEvidence] | dict[str, object] | None
     retry_allowed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OffsetCalibrationResult:
+    state: OffsetCalibrationState
+    board_index: int
+    stage: OffsetReadinessStage
+    expected_tables: tuple[tuple[str, PhaseOffsetTable | PhasePowerOffsetTable], ...]
+    unfinished_group_keys: tuple[str, ...]
+    retry_allowed: bool
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,6 +442,127 @@ class CalibrationEngine:
         await asyncio.gather(*(zero_group(group) for group in binding.groups))
         if failures:
             raise ReferenceZeroError(tuple(failures))
+
+    async def async_calibrate_offset_board(
+        self,
+        mac: str,
+        session: Any,
+        binding: MeterBinding,
+        board_index: int,
+        stage: OffsetReadinessStage,
+        *,
+        confirm_retry: bool = False,
+    ) -> OffsetCalibrationResult:
+        """Run one offset stage for both chips on a selected board."""
+        if stage not in (1, 2):
+            raise ValueError("offset calibration stage must be 1 or 2")
+        if board_index < 0:
+            raise ValueError("board_index must be non-negative")
+        issues = validate_offset_controls(binding)
+        if issues:
+            raise CalibrationError(
+                "offset controls are not ready: "
+                + "; ".join(issue.detail for issue in issues)
+            )
+        self._validate_binding_generation(session, binding)
+        start = board_index * 2
+        groups = binding.groups[start : start + 2]
+        controls = binding.offset_capability.controls[start : start + 2]
+        if len(groups) != 2 or len(controls) != 2:
+            raise ValueError("selected board must contain two meter groups")
+        selected = tuple(
+            (group, control, _instance_id(group.key))
+            for group, control in zip(groups, controls, strict=True)
+        )
+        operation = f"offset:{board_index}:{stage}"
+        lease = await self.sessions.async_acquire_calibration(mac)
+        try:
+            mac = lease.mac
+            origin = self.sessions.calibration_origin_for_update(
+                lease, session, binding
+            )
+            if origin is not None:
+                origin = await self._calibration_origin(lease, session, binding)
+            expected = _pending_offset_tables(origin, stage)
+            if all(instance_id in expected for _, _, instance_id in selected):
+                return _offset_result(
+                    OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION,
+                    board_index,
+                    stage,
+                    selected,
+                    expected,
+                )
+            attempt = self.sessions.next_calibration_iteration(mac, operation)
+            if attempt > 1 and not confirm_retry:
+                raise CalibrationError("explicit confirmation is required for retry")
+            readiness = await async_check_offset_readiness(
+                session, binding, board_index, stage
+            )
+            if (
+                not readiness.ready
+                or readiness.connection_generation != binding.connection_generation
+                or readiness.stage != stage
+            ):
+                detail = "; ".join(readiness.reasons) or "evidence correlation changed"
+                raise CalibrationError(f"offset readiness failed: {detail}")
+            if origin is None:
+                origin = await self._calibration_origin(lease, session, binding)
+            if origin is None:
+                raise CalibrationInvariantError("calibration origin is absent")
+            channels = tuple(
+                _channel_number(reference)
+                for group, _, _ in selected
+                for reference in group.current_references
+            )
+            await self._persist_interrupted(mac, self._marker(channels))
+            self.sessions.record_calibration_iteration(mac, operation, attempt)
+            zeroer = _BoundZeroer(self, binding, {})
+            async with zero_reference_guard(zeroer, session):
+                for group, control, instance_id in selected:
+                    if instance_id in expected:
+                        continue
+                    button = (
+                        control.run_offset if stage == 1 else control.run_power_offset
+                    )
+                    try:
+                        evidence = await self._run_offset(
+                            mac, session, button, instance_id, stage
+                        )
+                    except Exception as error:  # noqa: BLE001 - typed partial result
+                        state = (
+                            OffsetCalibrationState.PARTIAL
+                            if expected
+                            else OffsetCalibrationState.INDETERMINATE
+                        )
+                        return _offset_result(
+                            state,
+                            board_index,
+                            stage,
+                            selected,
+                            expected,
+                            error=str(error) or type(error).__name__,
+                        )
+                    table = _offset_table(evidence)
+                    origin = self.sessions.record_offset_calibration_group(
+                        lease,
+                        origin.operation_id,
+                        origin.revision,
+                        session,
+                        binding,
+                        instance_id,
+                        stage,
+                        table,
+                    )
+                    expected[instance_id] = table
+            return _offset_result(
+                OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION,
+                board_index,
+                stage,
+                selected,
+                expected,
+            )
+        finally:
+            lease.release()
 
     async def async_calibrate_voltage(
         self,
@@ -729,6 +887,137 @@ class CalibrationEngine:
         if not evidence.immediate_apply_acceptable:
             raise CalibrationInvariantError("gain save or register verification failed")
         return evidence, None
+
+    async def _run_offset(
+        self,
+        mac: str,
+        session: Any,
+        button: BoundEntity,
+        instance_id: str,
+        stage: OffsetReadinessStage,
+    ) -> OffsetRunEvidence | PowerOffsetRunEvidence:
+        generation = int(session.connection_generation)
+        sequence = self._next_sequence(mac)
+        dispatched_after = monotonic()
+        waiter = self._offset_waiter(
+            session,
+            generation=generation,
+            sequence=sequence,
+            instance_id=instance_id,
+            button_name=button.descriptor.name,
+            dispatched_after=dispatched_after,
+            stage=stage,
+        )
+        try:
+            await session.async_press_button(
+                button.descriptor.key, device_id=button.descriptor.device_id
+            )
+        except BaseException:
+            await _discard_waiter(waiter)
+            raise
+        try:
+            evidence = await waiter
+        except asyncio.CancelledError:
+            await _discard_waiter(waiter)
+            raise
+        expected_type = OffsetRunEvidence if stage == 1 else PowerOffsetRunEvidence
+        if not isinstance(evidence, expected_type):
+            raise CalibrationInvariantError("offset evidence has the wrong stage")
+        if evidence.instance_id != instance_id:
+            raise CalibrationInvariantError("offset evidence is for another instance")
+        if (
+            evidence.connection_generation != generation
+            or evidence.operation_sequence != sequence
+        ):
+            raise CalibrationInvariantError(
+                "offset evidence correlation does not match"
+            )
+        if not evidence.flash_saved or not evidence.register_verified:
+            raise CalibrationInvariantError(
+                "offset save or register verification failed"
+            )
+        return evidence
+
+    def _offset_waiter(
+        self,
+        session: Any,
+        *,
+        generation: int,
+        sequence: int,
+        instance_id: str,
+        button_name: str,
+        dispatched_after: float,
+        stage: OffsetReadinessStage,
+    ) -> Awaitable[OffsetRunEvidence | PowerOffsetRunEvidence]:
+        factory_name = "expect_offset_run" if stage == 1 else "expect_power_offset_run"
+        expect = getattr(session, factory_name, None)
+        if expect is not None:
+            return cast(
+                Awaitable[OffsetRunEvidence | PowerOffsetRunEvidence],
+                expect(
+                    connection_generation=generation,
+                    operation_sequence=sequence,
+                    target_instance_id=instance_id,
+                    button_name=button_name,
+                    dispatched_after=dispatched_after,
+                ),
+            )
+        baseline = tuple(getattr(session, "log_lines", ()))
+        return asyncio.create_task(
+            self._poll_offset(
+                session,
+                baseline,
+                generation,
+                sequence,
+                instance_id,
+                button_name,
+                dispatched_after,
+                stage,
+            )
+        )
+
+    async def _poll_offset(
+        self,
+        session: Any,
+        baseline: tuple[str, ...],
+        generation: int,
+        sequence: int,
+        instance_id: str,
+        button_name: str,
+        dispatched_after: float,
+        stage: OffsetReadinessStage,
+    ) -> OffsetRunEvidence | PowerOffsetRunEvidence:
+        deadline = monotonic() + self._evidence_timeout
+        parser = parse_offset_run if stage == 1 else parse_power_offset_run
+        while True:
+            if getattr(session, "connected", True) is False:
+                raise ESPHomeSessionDisconnectedError(
+                    "connection ended before complete offset evidence"
+                )
+            new_lines = _new_log_lines(baseline, tuple(session.log_lines))
+            correlated = tuple(
+                CalibrationLogLine(
+                    generation,
+                    sequence,
+                    dispatched_after + (index + 1) * 1e-6,
+                    line,
+                )
+                for index, line in enumerate(new_lines)
+            )
+            try:
+                return parser(
+                    correlated,
+                    connection_generation=generation,
+                    operation_sequence=sequence,
+                    target_instance_id=instance_id,
+                    button_name=button_name,
+                    dispatched_after=dispatched_after,
+                )
+            except LogEvidenceError:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise
+                await asyncio.sleep(min(0.05, remaining))
 
     def _gain_waiter(
         self,
@@ -1066,7 +1355,72 @@ class CalibrationEngine:
         )
 
 
-async def _discard_waiter(waiter: Awaitable[GainRunEvidence]) -> None:
+def _pending_offset_tables(
+    origin: PendingCalibrationOrigin | None, stage: OffsetReadinessStage
+) -> dict[str, PhaseOffsetTable | PhasePowerOffsetTable]:
+    if origin is None:
+        return {}
+    return (
+        dict(origin.expected_phase_offsets)
+        if stage == 1
+        else dict(origin.expected_phase_power_offsets)
+    )
+
+
+def _offset_table(
+    evidence: OffsetRunEvidence | PowerOffsetRunEvidence,
+) -> PhaseOffsetTable | PhasePowerOffsetTable:
+    if isinstance(evidence, OffsetRunEvidence):
+        return (
+            (evidence.phases[0].voltage_offset, evidence.phases[0].current_offset),
+            (evidence.phases[1].voltage_offset, evidence.phases[1].current_offset),
+            (evidence.phases[2].voltage_offset, evidence.phases[2].current_offset),
+        )
+    return (
+        (
+            evidence.phases[0].active_power_offset,
+            evidence.phases[0].reactive_power_offset,
+        ),
+        (
+            evidence.phases[1].active_power_offset,
+            evidence.phases[1].reactive_power_offset,
+        ),
+        (
+            evidence.phases[2].active_power_offset,
+            evidence.phases[2].reactive_power_offset,
+        ),
+    )
+
+
+def _offset_result(
+    state: OffsetCalibrationState,
+    board_index: int,
+    stage: OffsetReadinessStage,
+    selected: Sequence[tuple[GroupBinding, OffsetControlBinding, str]],
+    expected: Mapping[str, PhaseOffsetTable | PhasePowerOffsetTable],
+    *,
+    error: str | None = None,
+) -> OffsetCalibrationResult:
+    return OffsetCalibrationResult(
+        state,
+        board_index,
+        stage,
+        tuple(
+            (group.key, expected[instance_id])
+            for group, _, instance_id in selected
+            if instance_id in expected
+        ),
+        tuple(
+            group.key
+            for group, _, instance_id in selected
+            if instance_id not in expected
+        ),
+        state is not OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION,
+        error,
+    )
+
+
+async def _discard_waiter(waiter: Awaitable[Any]) -> None:
     if isinstance(waiter, asyncio.Future) and not waiter.done():
         waiter.cancel()
     try:
