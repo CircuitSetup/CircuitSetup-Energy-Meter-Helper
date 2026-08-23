@@ -12,16 +12,13 @@
     }
   },
   "issues": {
-    "device_builder_unavailable": {"title": "Device Builder is unavailable", "description": "Reconnect Device Builder before saving CT changes."},
-    "topology_project_package_mismatch": {"title": "Meter topology sources disagree", "description": "Review the project name and configured package list before writing configuration."},
-    "runtime_entity_count_mismatch": {"title": "Runtime meter entity count is unexpected", "description": "Reconnect the configured meter and confirm its discovered entity count."},
-    "calibration_package_missing": {"title": "Calibration package is missing", "description": "Install the matching calibration package for every configured add-on."},
-    "reference_zero_not_supported": {"title": "Calibration reference cannot be zeroed", "description": "Update the meter firmware to an API-ready calibration package."},
-    "ct_preset_metadata_diverged": {"title": "CT preset metadata differs from the meter config", "description": "Review the configured CT gain before applying a preset."},
-    "compile_install_interrupted": {"title": "Compile or install was interrupted", "description": "Review the saved transaction and restart the required build or install step."},
-    "restore_verification_failed": {"title": "Calibration restore verification failed", "description": "Reconnect the meter and verify saved calibration gains before continuing."}
-  },
-  "repair_flow": {
-    "abort": {"see_panel": "Open CircuitSetup Energy Meter Helper to review this repair."}
+    "device_builder_unavailable": {"title": "Device Builder is unavailable", "description": "Reconnect Device Builder before saving CT changes.", "fix_flow": {"abort": {"see_panel": "Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
+    "topology_project_package_mismatch": {"title": "Meter topology sources disagree", "description": "Review the project name and configured package list before writing configuration.", "fix_flow": {"abort": {"see_panel": "Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
+    "runtime_entity_count_mismatch": {"title": "Runtime meter entity count is unexpected", "description": "Reconnect the configured meter and confirm its discovered entity count.", "fix_flow": {"abort": {"see_panel": "Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
+    "calibration_package_missing": {"title": "Calibration package is missing", "description": "Install the matching calibration package for every configured add-on.", "fix_flow": {"abort": {"see_panel": "Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
+    "reference_zero_not_supported": {"title": "Calibration reference cannot be zeroed", "description": "Update the meter firmware to an API-ready calibration package.", "fix_flow": {"abort": {"see_panel": "Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
+    "ct_preset_metadata_diverged": {"title": "CT preset metadata differs from the meter config", "description": "Review the configured CT gain before applying a preset.", "fix_flow": {"abort": {"see_panel": "Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
+    "compile_install_interrupted": {"title": "Compile or install was interrupted", "description": "Review the saved transaction and restart the required build or install step.", "fix_flow": {"abort": {"see_panel": "Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
+    "restore_verification_failed": {"title": "Calibration restore verification failed", "description": "Reconnect the meter and verify saved calibration gains before continuing.", "fix_flow": {"abort": {"see_panel": "Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}}
   }
 }

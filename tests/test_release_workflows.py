@@ -46,7 +46,7 @@ def test_release_validation_is_read_only_until_publish() -> None:
 
 
 def test_ci_runs_firmware_tests_without_compiling_every_meter() -> None:
-    workflow = WORKFLOWS[0].read_text()
+    workflow = (WORKFLOW_DIR / "ci.yml").read_text()
 
     assert "firmware/Software/ESPHome/tests" in workflow
     assert "firmware/Software/ESPHome/tests/compile_matrix.py" not in workflow
@@ -54,7 +54,7 @@ def test_ci_runs_firmware_tests_without_compiling_every_meter() -> None:
 
 
 def test_release_runs_firmware_tests_and_generated_compile_matrix() -> None:
-    workflow = WORKFLOWS[1].read_text()
+    workflow = (WORKFLOW_DIR / "release.yml").read_text()
 
     assert "firmware/Software/ESPHome/tests" in workflow
     assert "firmware/Software/ESPHome/tests/compile_matrix.py" in workflow
