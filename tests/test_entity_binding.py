@@ -442,6 +442,29 @@ def test_offset_control_with_malformed_same_role_duplicate_is_invalid(
     assert meter.offset_capability.repair_reason
 
 
+def test_offset_control_with_home_assistant_suffixed_duplicate_is_invalid() -> None:
+    entities = synthetic_entities(0, offset_controls=True)
+    control = next(
+        entity
+        for entity in entities
+        if entity.name == "1. Run Main Meter 1 Offset Cal"
+    )
+    entities.append(
+        ButtonInfo(
+            f"{control.object_id}_2",
+            99_999,
+            control.name,
+            device_id=control.device_id,
+        )
+    )
+
+    meter = bind_meter(EntityCatalog(entities, 1), topology(0), substitutions(0))
+
+    assert meter.offset_capability.status is OffsetControlStatus.INVALID
+    assert meter.offset_capability.controls == ()
+    assert meter.offset_capability.repair_reason
+
+
 def test_group_key_is_exact_and_bounded() -> None:
     assert group_key(0, 0) == "main_1"
     assert group_key(6, 1) == "addon6_2"

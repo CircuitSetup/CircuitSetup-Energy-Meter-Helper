@@ -399,6 +399,8 @@ def bind_meter(
         )
         if malformed:
             return None, f"offset control {spec.role} has the wrong kind or unit"
+        if len(catalog.by_name_unit(spec.kind, spec.name, spec.unit)) > 1:
+            return None, f"offset control {spec.role} is ambiguous"
         tiers: tuple[tuple[ResolutionSource, tuple[EntityDescriptor, ...]], ...] = (
             (
                 ResolutionSource.STORED,

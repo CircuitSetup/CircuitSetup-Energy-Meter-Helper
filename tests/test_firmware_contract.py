@@ -209,11 +209,15 @@ def test_rejects_calibration_reference_that_cannot_be_zeroed(tmp_path: Path) -> 
     ("old", "new", "message"),
     (
         (
-            "    run_power_offset_calibration:\n"
-            "      name: \"2. Run ${addon6_name1} Power Offset Cal\"\n"
-            "      disabled_by_default: true\n",
-            "    run_power_offset_calibration:\n"
-            "      name: \"2. Run ${addon6_name1} Power Offset Cal\"\n",
+            (
+                "    run_power_offset_calibration:\n"
+                "      name: \"2. Run ${addon6_name1} Power Offset Cal\"\n"
+                "      disabled_by_default: true\n"
+            ),
+            (
+                "    run_power_offset_calibration:\n"
+                "      name: \"2. Run ${addon6_name1} Power Offset Cal\"\n"
+            ),
             "calibration buttons",
         ),
         (
@@ -223,9 +227,11 @@ def test_rejects_calibration_reference_that_cannot_be_zeroed(tmp_path: Path) -> 
         ),
         (
             "    clear_gain_calibration:\n",
-            "    spare_calibration:\n"
-            "      name: \"Spare\"\n"
-            "    clear_gain_calibration:\n",
+            (
+                "    spare_calibration:\n"
+                "      name: \"Spare\"\n"
+                "    clear_gain_calibration:\n"
+            ),
             "calibration buttons",
         ),
         ("id: ${addon6_id1}", "id: ${wrong_id}", "calibration group IDs"),
