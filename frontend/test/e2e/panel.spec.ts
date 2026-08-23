@@ -6,6 +6,22 @@ type Outcome = "success" | "collision" | "validation" | "compile";
 type Calibration = "main-success" | "addon-indeterminate" | undefined;
 
 const hash = "a".repeat(64);
+const FIRMWARE_INDEX_URL = "https://circuitsetup.github.io/ESPWebInstaller/manifests/firmware_index.json";
+const FIRMWARE_INDEX = [
+  { productId: "6chan_energy_meter_main_board", name: "Main board", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
+  { productId: "6chan_energy_meter_1-addon", name: "One add-on", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
+  { productId: "6chan_energy_meter_6-addons_ethernet", name: "Six add-ons LilyGO", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
+  { productId: "6chan_energy_meter_6-addons_ethernet_waveshare", name: "Six add-ons Waveshare", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
+];
+
+async function mockFirmwareIndex(page: Page, index: typeof FIRMWARE_INDEX | null = FIRMWARE_INDEX, requests?: string[]) {
+  await page.route(FIRMWARE_INDEX_URL, async (route) => {
+    requests?.push(route.request().url());
+    await route.fulfill(index === null
+      ? { status: 503, contentType: "application/json", body: "[]" }
+      : { contentType: "application/json", body: JSON.stringify(index) });
+  });
+}
 
 function project(addons: number): string {
   return addons ? `circuitsetup.6c-energy-meter-${addons}-addons` : "circuitsetup.6c-energy-meter";
@@ -94,13 +110,16 @@ function restart(addons: number) {
 
 async function mockHomeAssistant(page: Page, options: { addons?: number; outcome?: Outcome;
   calibration?: Calibration; rescan?: Array<"none" | "device">; importable?: boolean;
-  setupEvent?: "none" | "device" } = {}) {
+  setupEvent?: "none" | "device"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
+  firmwareRequests?: string[] } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
   let rescans = 0;
   let currentTransaction = transaction("previewed", addons ? 42 : 1);
   let currentSession = session("safety_required", false);
+
+  await mockFirmwareIndex(page, options.firmwareIndex, options.firmwareRequests);
 
   await page.routeWebSocket("**/api/websocket", (socket) => {
     socket.send(JSON.stringify({ type: "auth_required", ha_version: "2026.8.0" }));
@@ -266,6 +285,58 @@ test("a setup subscription hands a newly discovered meter to Discover once", asy
   await expect(page.getByRole("heading", { name: "Discover", exact: true })).toBeVisible();
   await expect(page.getByText("CircuitSetup energy meter discovered.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Discover", exact: true })).toHaveCount(1);
+});
+
+test("inline provisioning resolves selected manifests without popup, navigation, credentials, or URL payloads", async ({ page }) => {
+  const firmwareRequests: string[] = [];
+  const frames = await mockHomeAssistant(page, { firmwareRequests });
+  const popups: Page[] = [];
+  const navigations: string[] = [];
+  page.on("popup", (popup) => popups.push(popup));
+  page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) navigations.push(frame.url()); });
+  await page.goto("/test/harness.html");
+
+  const manifest = () => page.locator("esp-web-install-button").evaluate((element) =>
+    (element as HTMLElement & { manifest: string }).manifest,
+  );
+  const manifestUrl = (productId: string, version: string) =>
+    `https://circuitsetup.github.io/ESPWebInstaller/manifests/manifest_${productId}-${version}.json`;
+  await expect.poll(manifest).toBe(manifestUrl("6chan_energy_meter_main_board", "2026.8.0"));
+  expect(firmwareRequests).toEqual([FIRMWARE_INDEX_URL]);
+  await expect(page.locator('esp-web-install-button [slot="unsupported"]')).toContainText("supported Chromium browser");
+  await expect(page.locator('esp-web-install-button [slot="not-allowed"]')).toContainText("HTTPS or localhost");
+
+  await page.locator('[name="addon-count"][value="1"]').locator("..").click();
+  await expect.poll(manifest).toBe(manifestUrl("6chan_energy_meter_1-addon", "2026.8.0"));
+  await page.locator('[name="addon-count"][value="6"]').locator("..").click();
+  await page.locator('[name="connection-type"][value="ethernet_lilygo"]').locator("..").click();
+  await expect.poll(manifest).toBe(manifestUrl("6chan_energy_meter_6-addons_ethernet", "2026.8.0"));
+  await page.locator('[name="connection-type"][value="ethernet_waveshare"]').locator("..").click();
+  await expect.poll(manifest).toBe(manifestUrl("6chan_energy_meter_6-addons_ethernet_waveshare", "2026.8.0"));
+  await page.locator('[data-action="firmware-version"]').selectOption("2026.7.0");
+  await expect.poll(manifest).toBe(manifestUrl("6chan_energy_meter_6-addons_ethernet_waveshare", "2026.7.0"));
+
+  const credentialInputs = await page.locator("input").evaluateAll((inputs) => inputs.filter((input) =>
+    ["name", "aria-label", "autocomplete", "data-testid", "placeholder"].some((attribute) =>
+      /ssid|password|passphrase|credentials/i.test(input.getAttribute(attribute) ?? "")),
+  ).map((input) => input.outerHTML));
+  const frameKeys = (value: unknown): string[] => Array.isArray(value) ? value.flatMap(frameKeys)
+    : value && typeof value === "object" ? Object.entries(value).flatMap(([key, entry]) => [key, ...frameKeys(entry)]) : [];
+  const payloadKeys = frames.flatMap(frameKeys);
+  expect(credentialInputs).toEqual([]);
+  expect(payloadKeys.filter((key) => /ssid|password|passphrase|credentials/i.test(key))).toEqual([]);
+  expect(JSON.stringify(frames)).not.toMatch(/manifest|binary(?:_url)?|firmware_url/i);
+  expect(popups).toEqual([]);
+  expect(navigations).toEqual([page.url()]);
+});
+
+test("a firmware catalog failure leaves Retry and Rescan available", async ({ page }) => {
+  await mockHomeAssistant(page, { firmwareIndex: null });
+  await page.goto("/test/harness.html");
+
+  await expect(page.getByText("Firmware catalog could not be loaded.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Rescan for device", exact: true })).toBeVisible();
 });
 
 test("six-channel inventory exposes ambiguous gain while label-only stays out of preview and collisions refuse", async ({ page }) => {
