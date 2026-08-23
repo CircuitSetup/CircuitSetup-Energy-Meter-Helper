@@ -439,6 +439,21 @@ describe("HelperApi", () => {
     await expect(api.restartAndVerify("session-1", topology)).rejects.toThrow("restart_and_verify");
   });
 
+  it("accepts every backend preflight issue code", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    hass.responses.start_session = {
+      ...session,
+      state: "preflight_failed",
+      preflight: {
+        issues: ["count_mismatch", "invalid_kind"].map((code) => ({ code, role: "meter", detail: "blocked" })),
+        zeroed_roles: [],
+      },
+    };
+
+    await expect(api.startSession("meter-1")).resolves.toMatchObject({ state: "preflight_failed" });
+  });
+
   it("validates subscription events before invoking browser state callbacks", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
