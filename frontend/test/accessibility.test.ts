@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
 import { currentStep } from "../src/components/current-step";
 import { espWebInstaller } from "../src/components/esp-web-installer";
+import { setupDeviceStep } from "../src/components/setup-device-step";
 import { panelStyles } from "../src/styles";
 import { voltageStep } from "../src/components/voltage-step";
 import type { CtInventory, MeterTopology } from "../src/types";
@@ -41,6 +42,20 @@ it("gives the firmware activation control the panel target size and focus treatm
   expect(panelStyles.cssText).toContain(".esp-web-installer [slot=\"activate\"]");
   expect(panelStyles.cssText).toContain("min-height: 44px");
   expect(panelStyles.cssText).toContain(".esp-web-installer [slot=\"activate\"]:focus-visible");
+});
+
+it("keeps Setup Device free of legacy installer and IO0 controls", () => {
+  container = document.createElement("div");
+  document.body.append(container);
+  render(setupDeviceStep(null, 0, "wifi", noop, noop, noop, noop, noop), container);
+
+  expect(container.querySelector('[data-action="rescan"]')?.textContent).toContain("Rescan for device");
+  expect(container.querySelector("button.installer")).toBeNull();
+  expect([...container.querySelectorAll("dt")].some((term) => term.textContent === "IO0")).toBe(false);
+  expect(container.querySelector(".io-guidance")).toBeNull();
+  expect([...container.querySelectorAll("input")].some((input) =>
+    [input.getAttribute("name"), input.getAttribute("aria-label"), input.getAttribute("autocomplete"), input.getAttribute("data-testid")]
+      .some((value) => /ssid|network password|wifi password|passphrase/i.test(value ?? "")))).toBe(false);
 });
 
 describe("calibration tab semantics", () => {

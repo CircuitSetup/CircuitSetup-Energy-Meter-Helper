@@ -235,11 +235,6 @@ test("native mocked HA websocket covers no-device, installer intent, wiring, res
   const frames = await mockHomeAssistant(page, { addons: 6, rescan: ["none", "device"], importable: true });
   await page.goto("/test/harness.html");
   await expect(page.getByText("No compatible device found")).toBeVisible();
-  const popupPromise = page.waitForEvent("popup");
-  await page.getByRole("button", { name: "Open CircuitSetup Web Installer" }).click();
-  const popup = await popupPromise;
-  await expect(popup).toHaveURL("https://circuitsetup.github.io/ESPWebInstaller/");
-  await popup.close();
 
   await page.locator('[data-action="rescan"]').click();
   await expect(page.getByText("No compatible device found")).toBeVisible();

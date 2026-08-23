@@ -1031,18 +1031,20 @@ export class CircuitSetupPanel extends LitElement {
   private firmwareCatalog(): TemplateResult {
     const loading = this.firmwareCatalogState === "loading";
     return html`<section class="step-content" aria-labelledby="firmware-heading">
-      <h2 id="firmware-heading">Firmware version</h2>
+      <h2 id="firmware-heading">Install firmware</h2>
+      <label>ESPHome firmware version
+        <select data-action="firmware-version" ?disabled=${loading || this.firmwareCatalogState !== "ready" || !this.resolvedFirmwareOptions.length}
+          @change=${(event: Event) => this.selectFirmwareVersion((event.target as HTMLSelectElement).value)}>
+          ${this.resolvedFirmwareOptions.map((option, index) => html`<option value=${option.version} ?selected=${option.version === this.selectedEspHomeVersion}>${option.version}${index === 0 ? " (newest)" : ""}</option>`)}
+        </select>
+      </label>
       ${this.firmwareCatalogState === "error" ? html`<div class="error-panel" role="status">
         <strong>${this.firmwareCatalogError}</strong>
         <button class="secondary" data-action="firmware-retry" @click=${() => this.retryFirmwareIndex()}>Retry</button>
-      </div>` : html`<label>ESPHome version
-        <select data-action="firmware-version" ?disabled=${loading || this.firmwareCatalogState !== "ready"}
-          @change=${(event: Event) => this.selectFirmwareVersion((event.target as HTMLSelectElement).value)}>
-          ${this.resolvedFirmwareOptions.map((option) => html`<option value=${option.version} ?selected=${option.version === this.selectedEspHomeVersion}>${option.version}</option>`)}
-        </select>
-      </label>
+      </div>` : nothing}
       ${loading ? html`<p role="status">Loading firmware versions…</p>` : nothing}
-      ${this.firmwareCatalogState === "ready" ? espWebInstaller(this.selectedFirmware()) : nothing}`}
+      ${this.firmwareCatalogState === "ready" && !this.resolvedFirmwareOptions.length ? html`<p role="status">No firmware version is available for this hardware.</p>` : nothing}
+      ${this.firmwareCatalogState === "ready" ? espWebInstaller(this.selectedFirmware()) : nothing}
     </section>`;
   }
 

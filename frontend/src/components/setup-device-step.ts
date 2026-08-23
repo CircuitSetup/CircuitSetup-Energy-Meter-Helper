@@ -39,7 +39,7 @@ export function setupDeviceStep(
           <strong>No compatible device found</strong>
           <span>Check power and connection, then try again.</span>
         </div>`}
-        <button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan"}</button>
+        <button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>
       </section>
       <hr />
       <h2>Set up a new device</h2>
@@ -72,27 +72,15 @@ export function setupDeviceStep(
       <section aria-labelledby="jumper-heading">
         <h2 id="jumper-heading">Jumper summary</h2>
         <dl class="summary-band">
-          <div><dt>IO0</dt><dd><strong>OPEN</strong> (not connected)</dd></div>
           <div><dt>Add-on boards</dt><dd>${addonCount}</dd></div>
           <div><dt>Connection</dt><dd>${CONNECTIONS.find(([value]) => value === connection)?.[1]}</dd></div>
           ${ADDON_PINS.slice(0, addonCount).map((pins, index) => html`<div><dt>Add-on ${index + 1}</dt><dd>${pins}</dd></div>`)}
         </dl>
       </section>
-      <p class="info-band">Use Web Serial in a supported Chromium browser and a USB data cable to flash the firmware.</p>
-      <section class="io-guidance" aria-labelledby="io-heading">
-        <h2 id="io-heading">IO0 guidance</h2>
-        <p>Keep IO0 OPEN (not connected) while flashing. Do not connect IO0 to GND.</p>
-      </section>
-      <p class="info-band">${connection === "wifi" ? "The external installer collects Wi-Fi provisioning details; this helper does not." : "Connect Ethernet after flashing, then wait for the meter to appear on your network."}</p>
-      <section aria-labelledby="installer-heading">
-        <h2 id="installer-heading">Flash in external installer</h2>
-        <p>Flashing happens in the external installer. This helper continues only after your device is on the network and discovered.</p>
-        <button class="primary installer" @click=${() => window.open(
-          "https://circuitsetup.github.io/ESPWebInstaller/",
-          "_blank",
-          "noopener,noreferrer",
-        )}>Open CircuitSetup Web Installer</button>
-      </section>
+      <p class="info-band">Use Web Serial in a supported Chromium browser and a USB data cable to install firmware.</p>
+      <p class="info-band">${connection === "wifi"
+        ? "ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter over USB. This helper does not store or send those credentials to Home Assistant. Complete Add to Home Assistant when offered."
+        : "Install firmware over USB, connect Ethernet and power, wait for an address, complete Add to Home Assistant, then return here. This helper continues when discovery reports your meter."}</p>
     </section>
   `;
 }

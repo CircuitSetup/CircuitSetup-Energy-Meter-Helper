@@ -160,6 +160,20 @@ describe("CircuitSetup panel", () => {
 
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.disabled).toBe(true);
     expect(panel.shadowRoot?.querySelector("esp-web-install-button")).toBeNull();
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.disabled).toBe(false);
+  });
+
+  it("keeps the firmware selector labelled and disabled when no firmware is available", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(firmwareResponse([]))));
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+    await panel.updateComplete;
+
+    const selector = panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]");
+    expect(selector?.labels?.[0]?.textContent).toContain("ESPHome firmware version");
+    expect(selector?.disabled).toBe(true);
+    expect(text(panel)).toContain("No firmware version is available for this hardware.");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.disabled).toBe(false);
   });
 
   it("shows a catalog retry without disabling discovery rescan", async () => {
@@ -170,6 +184,7 @@ describe("CircuitSetup panel", () => {
 
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=firmware-retry]")?.disabled).toBe(false);
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.disabled).toBe(false);
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.disabled).toBe(true);
   });
 
   it("retries a failed catalog request and renders its versions", async () => {
@@ -193,7 +208,10 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     await tick();
 
-    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.8.0");
+    const selector = panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]");
+    expect(selector?.value).toBe("2026.8.0");
+    expect(selector?.labels?.[0]?.textContent).toContain("ESPHome firmware version");
+    expect(selector?.options[0]?.textContent).toBe("2026.8.0 (newest)");
   });
 
   it("recomputes firmware versions when add-on hardware changes", async () => {
@@ -272,14 +290,31 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("Discover");
     expect(panel.shadowRoot?.querySelectorAll('[name="addon-count"]')).toHaveLength(7);
     expect(panel.shadowRoot?.querySelectorAll('[name="connection-type"]')).toHaveLength(3);
-    expect(text(panel)).toContain("Open CircuitSetup Web Installer");
-    expect(text(panel)).toContain("helper continues only after");
+    expect(text(panel)).toContain("Install firmware");
+    expect(text(panel)).toContain("ESP Web Tools asks for your Wi-Fi network and password");
+    expect(text(panel)).toContain("Rescan for device");
     expect(text(panel)).toContain("USB data cable");
+    expect(panel.shadowRoot?.querySelector("esp-web-install-button")).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector("button.installer")).toBeNull();
+    expect([...panel.shadowRoot?.querySelectorAll("dt") ?? []].some((term) => term.textContent === "IO0")).toBe(false);
+    expect([...panel.shadowRoot?.querySelectorAll("input") ?? []].some((input) =>
+      [input.getAttribute("name"), input.getAttribute("aria-label"), input.getAttribute("autocomplete"), input.getAttribute("data-testid")]
+        .some((value) => /ssid|network password|wifi password|passphrase/i.test(value ?? "")))).toBe(false);
     expect(panel.shadowRoot?.querySelector("details")).toBeNull();
     panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="6"]')?.click();
     await panel.updateComplete;
     expect(text(panel)).toContain("Add-on 6");
     expect(text(panel)).toContain("(15, 26)");
+  });
+
+  it("uses Ethernet-only next steps for Ethernet hardware", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="connection-type"][value="ethernet_lilygo"]')?.click();
+    await panel.updateComplete;
+
+    expect(text(panel)).toContain("connect Ethernet and power, wait for an address");
+    expect(text(panel)).toContain("complete Add to Home Assistant, then return here");
+    expect(text(panel)).not.toContain("ESP Web Tools asks for your Wi-Fi network and password");
   });
 
   it("rescans live setup state and shows the discovered device without a separate page", async () => {
