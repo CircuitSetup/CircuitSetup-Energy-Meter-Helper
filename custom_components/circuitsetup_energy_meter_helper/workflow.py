@@ -1059,16 +1059,21 @@ class EntryWorkflow:
     async def async_clear_calibration_flash(
         self, session_id: str, verification_id: str, transaction_id: str
     ) -> Any:
-        """Clear only installed, verified gain groups and prove YAML is authoritative."""
+        """Clear only installed, gain-only groups and prove YAML is authoritative."""
         handle, revision = self._claim_ready_session(session_id, allow_verified=True)
         try:
             if handle.state != "verified":
                 raise WorkflowHandleError("calibration source handoff is unavailable")
             record = await self._store.async_get_verified_calibration(handle.mac)
+            if record is None or record.verification_id != verification_id:
+                raise WorkflowHandleError("calibrated firmware installation is unverified")
+            if record.has_offset_calibration:
+                raise WorkflowHandleError(
+                    "YAML handoff is unavailable; offset calibration remains saved "
+                    "in flash"
+                )
             if (
-                record is None
-                or record.verification_id != verification_id
-                or record.source_handoff_transaction_id != transaction_id
+                record.source_handoff_transaction_id != transaction_id
                 or not record.source_handoff_firmware_installed
                 or record.source_handoff_available
             ):

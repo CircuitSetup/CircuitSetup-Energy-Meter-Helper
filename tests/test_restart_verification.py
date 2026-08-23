@@ -49,6 +49,7 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
     HelperStore,
     VerifiedCalibrationRecord,
     VerifiedGainGroup,
+    VerifiedOffsetGroup,
 )
 from tests.test_calibration_engine_current import native_meter
 from tests.test_calibration_engine_voltage import (
@@ -420,6 +421,8 @@ def test_mixed_restart_requires_each_exact_requested_category() -> None:
             result.record.power_offset_groups[0].phase_power_offsets
             == power_offsets["addon1_2"]
         )
+        assert not result.record.source_handoff_available
+        assert result.record.source_authority is CalibrationSourceAuthority.SAVED_FLASH
 
     asyncio.run(run())
 
@@ -1457,6 +1460,91 @@ class CalibrationPersistence(Persistence):
             return False
         self.installed.append((mac, verification_id, transaction_id))
         return True
+
+
+def _with_offsets(
+    record: VerifiedCalibrationRecord,
+    *,
+    source_handoff_available: bool = True,
+    source_handoff_transaction_id: str | None = None,
+) -> VerifiedCalibrationRecord:
+    return replace(
+        record,
+        offset_groups=(
+            VerifiedOffsetGroup(
+                "meter_main1", ((-12, 31), (-13, 32), (-14, 33))
+            ),
+        ),
+        source_handoff_available=source_handoff_available,
+        source_handoff_transaction_id=source_handoff_transaction_id,
+    )
+
+
+def test_gain_preview_rejects_verified_offset_calibration() -> None:
+    """Dropping offset tables from the YAML preview would lose calibration."""
+
+    async def run() -> None:
+        source = _snapshot()
+        record = _with_offsets(_record(source, ((7301, 1),) * 3))
+        persistence = CalibrationPersistence((record,))
+        builder = Builder(remote_content=source.content)
+        manager = ConfigTransactionManager(
+            builder,
+            Verifier(RuntimeError()),
+            persistence,
+            SessionManager(),
+        )
+
+        with pytest.raises(ConfigMutationError, match="offset calibration remains saved in flash"):
+            await manager.async_preview_calibrated_gains(
+                record.mac, topology(0), record.verification_id
+            )
+
+        assert builder.calls == []
+        assert persistence.claimed == {}
+
+    asyncio.run(run())
+
+
+def test_gain_handoff_install_rejects_newly_mixed_verified_record() -> None:
+    """A stale gain-only preview must not install YAML after offsets are recorded."""
+
+    async def run() -> None:
+        source = _snapshot()
+        record = _record(source, ((7301, 1),) * 3)
+        persistence = CalibrationPersistence((record,))
+        builder = Builder(remote_content=source.content)
+        manager = ConfigTransactionManager(
+            builder,
+            Verifier(
+                ReconnectEvidence(
+                    record.mac,
+                    topology(0),
+                    {channel: f"CT {channel}" for channel in range(1, 7)},
+                    6,
+                )
+            ),
+            persistence,
+            SessionManager(),
+        )
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        persistence.records[record.mac] = _with_offsets(
+            record,
+            source_handoff_available=False,
+            source_handoff_transaction_id=preview.transaction_id,
+        )
+
+        with pytest.raises(RuntimeError, match="offset calibration remains saved in flash"):
+            await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert "upload" not in builder.calls
+        assert persistence.installed == []
+
+    asyncio.run(run())
 
 
 def test_transaction_rereads_and_refuses_cross_device_stale_or_changed_origin() -> None:

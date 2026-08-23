@@ -6,11 +6,14 @@ export function summaryStep(topology: MeterTopology | null, session: SessionStat
   stability: Map<string, StabilityResult>, calibration: Map<string, CalibrationResult>, restart: RestartVerificationResult | null,
   completedWithoutChanges: boolean, projectVersion: string | null, saveCalibration: () => void,
   back: () => void): TemplateResult {
+  const hasOffsets = Boolean(restart?.offset_groups?.length || restart?.power_offset_groups?.length);
   const handoffAction = restart?.source_authority === "saved_flash" && restart.config_filename
-    && (restart.source_handoff_available || restart.source_handoff_firmware_installed);
+    && !hasOffsets && (restart.source_handoff_available || restart.source_handoff_firmware_installed);
   return html`
     <section class="step-content" aria-labelledby="step-heading">
-      ${restart?.source_authority === "configuration"
+      ${restart && hasOffsets
+        ? html`<div class="success-band" role="status">Setup and exact restart verification are complete. Offset calibration remains saved in flash; YAML handoff and flash clearing are unavailable.</div>`
+        : restart?.source_authority === "configuration"
         ? html`<div class="success-band" role="status">Calibration saved to YAML; flash values cleared.</div>`
         : restart ? html`<div class="success-band" role="status">Setup and exact restart verification are complete.</div>`
         : completedWithoutChanges ? html`<div class="success-band" role="status">Completed without calibration changes. No restart or restart-verified calibration record was required.</div>`

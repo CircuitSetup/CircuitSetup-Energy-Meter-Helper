@@ -66,6 +66,7 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
     HelperStore,
     VerifiedCalibrationRecord,
     VerifiedGainGroup,
+    VerifiedOffsetGroup,
 )
 from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
     ALL_COMMANDS,
@@ -1628,6 +1629,76 @@ def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
         assert result.source_authority is CalibrationSourceAuthority.CONFIGURATION
         assert handle.calibration_sources["meter_main1"] == "configuration"
         assert handle.calibration_sources["meter_main2"] == "configuration"
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_flash_handoff_rejects_verified_offset_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Offset tables remain flash-backed because YAML handoff carries gains only."""
+
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        handle = workflow._sessions[status.session_id]
+        handle.state = "verified"
+        transaction_id = "2" * 32
+        record = VerifiedCalibrationRecord(
+            mac=handle.mac,
+            config_filename="meter.yaml",
+            config_sha256="a" * 64,
+            topology_addon_count=handle.topology.addon_count,
+            topology_project_name=handle.topology.project_name,
+            topology_connection_type=handle.topology.connection_type,
+            topology_voltage_layout=handle.topology.voltage_layout,
+            connection_generation=handle.binding.connection_generation,
+            groups=(
+                VerifiedGainGroup(
+                    "meter_main1",
+                    ((7301, 28001), (7301, 28002), (7301, 28003)),
+                ),
+            ),
+            verification_id="1" * 32,
+            offset_groups=(
+                VerifiedOffsetGroup(
+                    "meter_main1", ((-12, 31), (-13, 32), (-14, 33))
+                ),
+            ),
+            source_handoff_available=False,
+            source_handoff_transaction_id=transaction_id,
+            source_handoff_firmware_installed=True,
+        )
+        completed = False
+
+        class Store:
+            async def async_get_verified_calibration(
+                self, mac: str
+            ) -> VerifiedCalibrationRecord | None:
+                return record if mac == record.mac else None
+
+            async def async_complete_verified_calibration_handoff(
+                self, *_args: str
+            ) -> bool:
+                nonlocal completed
+                completed = True
+                return True
+
+        async def unexpected_sources(_instances: set[str]) -> dict[str, str]:
+            raise AssertionError("offset handoff must stop before reading gain sources")
+
+        workflow._store = Store()  # type: ignore[assignment]
+        workflow._api.async_calibration_sources = unexpected_sources  # type: ignore[method-assign,union-attr]
+
+        with pytest.raises(WorkflowHandleError, match="offset calibration remains saved in flash"):
+            await workflow.async_clear_calibration_flash(
+                status.session_id, record.verification_id, transaction_id
+            )
+
+        assert not completed
+        assert record.source_authority is CalibrationSourceAuthority.SAVED_FLASH
         await workflow.async_close()
 
     asyncio.run(run())

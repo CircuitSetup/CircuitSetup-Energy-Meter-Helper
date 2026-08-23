@@ -1463,6 +1463,30 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("Unavailable in runtime-only mode");
   });
 
+  it("keeps mixed gain and offset calibration flash-backed in Summary", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.restartResult = {
+      mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
+      topology_addon_count: 0, topology_project_name: device.project_name,
+      topology_connection_type: "wifi", topology_voltage_layout: "two_groups",
+      connection_generation: 2,
+      groups: [{ instance_id: "meter_main1", phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]] }],
+      offset_groups: [{ instance_id: "meter_main1", phase_offsets: [[-12, 31], [-13, 32], [-14, 33]] }],
+      power_offset_groups: [], verification_id: "2".repeat(32),
+      source_authority: "saved_flash", source_handoff_available: false,
+      source_handoff_transaction_id: null, source_handoff_firmware_installed: false,
+    };
+    state.session = { session_id: "session", device_id: "meter-1", state: "verified",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+
+    panel.showState("summary"); await panel.updateComplete;
+
+    expect(text(panel)).toContain("Offset calibration remains saved in flash");
+    expect(text(panel)).not.toContain("flash values cleared");
+    expect(panel.shadowRoot?.querySelector("[data-action=save-calibration]")).toBeNull();
+  });
+
   it("saves verified calibration through review and clears flash only after install", async () => {
     const operations: string[] = [];
     const topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,

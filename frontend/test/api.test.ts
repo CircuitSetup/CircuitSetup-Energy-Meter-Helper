@@ -395,13 +395,28 @@ describe("HelperApi", () => {
   it("accepts offset-only restart evidence and rejects malformed signed tables", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
-    const offsetOnly = { ...restart, groups: [], offset_groups: [
+    const offsetOnly = { ...restart, groups: [], source_handoff_available: false, offset_groups: [
       { instance_id: "meter_main1", phase_offsets: [[1, -1], [2, -2], [3, -3]] },
     ] };
     hass.responses.restart_and_verify = offsetOnly;
     await expect(api.restartAndVerify("session-1", topology)).resolves.toMatchObject({ groups: [], offset_groups: offsetOnly.offset_groups });
     hass.responses.restart_and_verify = { ...offsetOnly,
       offset_groups: [{ instance_id: "meter_main1", phase_offsets: [[1, -1], [2, -2], [3, 32768]] }] };
+    await expect(api.restartAndVerify("session-1", topology)).rejects.toThrow("restart_and_verify");
+  });
+
+  it("accepts flash-backed mixed calibration and rejects YAML handoff capability", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    const mixed = { ...restart, source_handoff_available: false, offset_groups: [
+      { instance_id: "meter_main1", phase_offsets: [[1, -1], [2, -2], [3, -3]] },
+    ] };
+    hass.responses.restart_and_verify = mixed;
+    await expect(api.restartAndVerify("session-1", topology)).resolves.toMatchObject({
+      source_authority: "saved_flash", source_handoff_available: false,
+    });
+
+    hass.responses.restart_and_verify = { ...mixed, source_handoff_available: true };
     await expect(api.restartAndVerify("session-1", topology)).rejects.toThrow("restart_and_verify");
   });
 

@@ -200,6 +200,11 @@ class VerifiedCalibrationRecord:
             "cleared."
         )
 
+    @property
+    def has_offset_calibration(self) -> bool:
+        """Return whether YAML gain handoff would omit verified calibration."""
+        return bool(self.offset_groups or self.power_offset_groups)
+
 
 def migrate_storage(
     version: int, minor_version: int, data: dict[str, Any]
@@ -605,6 +610,7 @@ class HelperStore:
             if (
                 record.verification_id != verification_id
                 or not record.source_handoff_available
+                or record.has_offset_calibration
             ):
                 return False
             raw["source_handoff_available"] = False
@@ -627,6 +633,7 @@ class HelperStore:
             return (
                 record.verification_id == verification_id
                 and not record.source_handoff_available
+                and not record.has_offset_calibration
                 and record.source_handoff_transaction_id == transaction_id
             )
 
@@ -647,7 +654,7 @@ class HelperStore:
                 or record.source_handoff_transaction_id != transaction_id
             ):
                 return False
-            raw["source_handoff_available"] = True
+            raw["source_handoff_available"] = not record.has_offset_calibration
             raw["source_handoff_transaction_id"] = None
             raw["source_handoff_firmware_installed"] = False
             await self._store.async_save(data)
@@ -667,6 +674,7 @@ class HelperStore:
             if (
                 record.verification_id != verification_id
                 or record.source_handoff_available
+                or record.has_offset_calibration
                 or record.source_handoff_transaction_id != transaction_id
             ):
                 return False
@@ -688,6 +696,7 @@ class HelperStore:
             if (
                 record.verification_id != verification_id
                 or record.source_handoff_available
+                or record.has_offset_calibration
                 or not record.source_handoff_firmware_installed
                 or record.source_handoff_transaction_id != transaction_id
             ):

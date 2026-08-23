@@ -434,11 +434,7 @@ function restart(value: unknown, label: string, expected: MeterTopology): Restar
     string(item.config_filename, label); string(item.config_sha256, label);
     if (!CONFIGURATION.test(item.config_filename as string) || !SHA256.test(item.config_sha256 as string)) throw new Error(`${label} response is invalid`);
   }
-  if ((item.config_filename === null) !== (item.config_sha256 === null)
-    || sourceHandoff && (!hasConfig || installed || item.source_handoff_transaction_id !== null || authority !== "saved_flash")
-    || !sourceHandoff && hasConfig && item.source_handoff_transaction_id === null
-    || installed && (!hasConfig || item.source_handoff_transaction_id === null)
-    || authority === "configuration" && (!installed || sourceHandoff)) throw new Error(`${label} response is invalid`);
+  if ((item.config_filename === null) !== (item.config_sha256 === null)) throw new Error(`${label} response is invalid`);
   if (!MAC.test(item.mac as string)
     || !SERVER_ID.test(item.verification_id as string) || generation < 1
     || item.source_handoff_transaction_id !== null && !SERVER_ID.test(item.source_handoff_transaction_id as string)
@@ -464,10 +460,14 @@ function restart(value: unknown, label: string, expected: MeterTopology): Restar
     });
     return groups.length;
   };
-  const resultCount = validateGroups("groups", "phase_gains", false)
-    + validateGroups("offset_groups", "phase_offsets", true)
+  const gainCount = validateGroups("groups", "phase_gains", false);
+  const offsetCount = validateGroups("offset_groups", "phase_offsets", true)
     + validateGroups("power_offset_groups", "phase_power_offsets", true);
-  if (resultCount < 1) throw new Error(`${label} response is invalid`);
+  if (gainCount + offsetCount < 1
+    || sourceHandoff && (!hasConfig || installed || item.source_handoff_transaction_id !== null || authority !== "saved_flash" || offsetCount > 0)
+    || !sourceHandoff && hasConfig && item.source_handoff_transaction_id === null && offsetCount === 0
+    || installed && (!hasConfig || item.source_handoff_transaction_id === null || offsetCount > 0)
+    || authority === "configuration" && (!installed || sourceHandoff || offsetCount > 0)) throw new Error(`${label} response is invalid`);
   return value as RestartVerificationResult;
 }
 

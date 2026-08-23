@@ -354,7 +354,10 @@ class CalibrationEngine:
                 offset_groups=offset_groups,
                 power_offset_groups=power_offset_groups,
                 source_handoff_available=(
-                    pending.config_filename is not None and bool(groups)
+                    pending.config_filename is not None
+                    and bool(groups)
+                    and not offset_groups
+                    and not power_offset_groups
                 ),
             )
             connection_guard = getattr(session, "hold_connection_generation", None)
