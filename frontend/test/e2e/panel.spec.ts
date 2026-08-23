@@ -64,7 +64,7 @@ function session(state: string, acknowledged: boolean) {
 function stability(frame: Frame) {
   const target = String(frame.target);
   const targetId = String(frame.target_id);
-  const sample = { samples: [5, 5, 5], mean: 5, standard_deviation: 0, range_percent: 0 };
+  const sample = { samples: [5], mean: 5, standard_deviation: 0, range_percent: 0 };
   return { target, target_id: targetId, stable: true, windows: target === "voltage" ? [sample, sample, sample] : [sample] };
 }
 
@@ -150,7 +150,8 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       else if (operation === "acknowledge_safety") result = currentSession = session("ready", true);
       else if (operation === "check_stability") result = stability(frame);
       else if (operation === "calibrate_current") {
-        const channel = Number(frame.channel); const reference = Number(frame.reference);
+        const references = frame.references as Array<{ channel: number; reference: number }>;
+        const channel = Number(references[0]?.channel); const reference = Number(references[0]?.reference);
         const addon = channel === 42; const group = addon ? "addon6_2" : "main_1"; const phase = addon ? "C" : "A";
         result = options.calibration === "addon-indeterminate"
           ? { state: "indeterminate", group_key: group, phase, changed_channels: [channel], iteration: 1,
@@ -299,11 +300,11 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await expect(page.locator('[data-board-tab]')).toHaveCount(7);
   await reachCurrent(page, 42);
   await page.getByRole("tab", { name: "Main Board" }).click();
-  await page.getByLabel("Trusted instrument reference").fill("5");
+  await page.getByLabel("CT1 reference").fill("5");
   await page.getByRole("button", { name: "Check stability" }).click();
   await expect(page.getByText("Standard deviation").first()).toBeVisible();
-  await page.getByRole("button", { name: "Calibrate CT1" }).click();
-  await expect(page.getByLabel("Calibration evidence").first()).toContainText("parsed gain and flash acknowledgement");
+  await page.getByRole("button", { name: "Calibrate current" }).click();
+  await expect(page.getByLabel("Calibration evidence").first()).toContainText("Saved in flash: Yes");
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Restart and verify" }).click();
   await expect(page.getByText("Setup and exact restart verification are complete.")).toBeVisible();
@@ -316,8 +317,8 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
     changes: [{ channel: 42, name: "Load 42" }],
   });
   expect(frames.find((frame) => frame.type.endsWith("/acknowledge_safety"))).toMatchObject({ acknowledged: true });
-  expect(frames.find((frame) => frame.type.endsWith("/calibrate_current"))).toMatchObject({ channel: 1,
-    reference: 5, confirm_iteration: true });
+  expect(frames.find((frame) => frame.type.endsWith("/calibrate_current"))).toMatchObject({ references: [{ channel: 1,
+    reference: 5 }], confirm_iteration: true });
   expect(ordered).toContain("restart_and_verify");
 });
 
@@ -326,16 +327,16 @@ test("add-on CT42 indeterminate disconnect never auto-represses calibration", as
   await openInventory(page);
   await reachCurrent(page, 42);
   await page.getByRole("tab", { name: "Add-on 6" }).click();
-  await page.getByRole("button", { name: "CT42", exact: true }).click();
-  await page.getByLabel("Trusted instrument reference").fill("25");
+  await page.getByRole("button", { name: "Group 14" }).click();
+  await page.getByLabel("CT42 reference").fill("25");
   await page.getByRole("button", { name: "Check stability" }).click();
-  await page.getByRole("button", { name: "Calibrate CT42" }).click();
+  await page.getByRole("button", { name: "Calibrate current" }).click();
   await expect(page.getByText("Calibration outcome indeterminate")).toBeVisible();
   await expect(page.getByText("No automatic retry will be made.")).toBeVisible();
   await page.waitForTimeout(150);
   expect(operations(frames).filter((value) => value === "calibrate_current")).toHaveLength(1);
-  expect(frames.find((frame) => frame.type.endsWith("/calibrate_current"))).toMatchObject({ channel: 42,
-    reference: 25, confirm_iteration: true });
+  expect(frames.find((frame) => frame.type.endsWith("/calibrate_current"))).toMatchObject({ references: [{ channel: 42,
+    reference: 25 }], confirm_iteration: true });
   expect(operations(frames)).not.toContain("restart_and_verify");
   await page.getByRole("button", { name: "Reconnect and inspect" }).click();
   await expect.poll(() => operations(frames).filter((value) => value === "get_session").length).toBe(1);

@@ -476,6 +476,35 @@ def test_log_buffer_filters_redacts_and_enforces_both_caps() -> None:
     asyncio.run(run())
 
 
+def test_requests_dump_config_and_reports_current_calibration_sources() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+
+        pending = asyncio.create_task(
+            session.async_calibration_sources({"meter_main1", "meter_main2"})
+        )
+        await asyncio.sleep(0)
+        assert client.dump_configs[-1] is True
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    b"[CALIBRATION][meter_main1] Gain calibration loaded and verified successfully.\n"
+                    b"[CALIBRATION][meter_main2] No stored gain calibrations found. Using config file values.\n"
+                )
+            )
+        )
+
+        assert await pending == {
+            "meter_main1": "flash",
+            "meter_main2": "configuration",
+        }
+
+    asyncio.run(run())
+
+
 def test_shutdown_cancels_waiters_unsubscribes_logs_and_is_idempotent() -> None:
     async def run() -> None:
         client = FakeClient(acknowledge_numbers=False)

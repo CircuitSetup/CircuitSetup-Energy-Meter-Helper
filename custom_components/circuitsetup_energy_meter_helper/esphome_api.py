@@ -8,10 +8,11 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from time import monotonic
-from typing import Any
+from typing import Any, Literal
 
 from homeassistant.core import HomeAssistant
 
+from .log_parser import parse_calibration_sources
 from .models import canonical_mac
 from .state_tracker import SensorSampleWindow, StateDisconnectedError, StateTracker
 
@@ -50,6 +51,15 @@ def sanitize_control_text(value: str) -> str:
 
 def _strip_terminal_sequences(value: str) -> str:
     return _ANSI_CSI.sub("", _ANSI_OSC.sub("", value))
+
+
+def _new_log_lines(
+    baseline: tuple[str, ...], current: tuple[str, ...]
+) -> tuple[str, ...]:
+    overlap = min(len(baseline), len(current))
+    while overlap and baseline[-overlap:] != current[:overlap]:
+        overlap -= 1
+    return current[overlap:]
 
 
 class ESPHomeApiRepairRequired(RuntimeError):
@@ -364,6 +374,31 @@ class ESPHomeApiSession:
             return
         except StateDisconnectedError as error:
             raise ESPHomeSessionDisconnectedError(str(error)) from error
+
+    async def async_calibration_sources(
+        self, expected_instance_ids: set[str], *, timeout: float = 5.0
+    ) -> dict[str, Literal["flash", "configuration", "unknown"]]:
+        """Request current ATM90E32 dump-config source evidence."""
+        async with self._lifecycle_lock:
+            client = self._ready_client()
+            baseline = self.log_lines
+            self._clear_log_subscription()
+            self._unsubscribe_logs = client.subscribe_logs(
+                lambda message: self._on_log(client, message),
+                self._log_level("LOG_LEVEL_DEBUG"),
+                dump_config=True,
+            )
+            deadline = monotonic() + timeout
+            while monotonic() < deadline:
+                sources = parse_calibration_sources(
+                    _new_log_lines(baseline, self.log_lines), expected_instance_ids
+                )
+                if all(source != "unknown" for source in sources.values()):
+                    return sources
+                await asyncio.sleep(min(0.05, max(0.0, deadline - monotonic())))
+            return parse_calibration_sources(
+                _new_log_lines(baseline, self.log_lines), expected_instance_ids
+            )
 
     async def async_reconnect(self, *, dump_config: bool = False) -> None:
         """Disconnect and create a fresh client from the current ESPHome entry."""

@@ -84,7 +84,7 @@ export const panelStyles = css`
   th, td { padding: 12px; border-bottom: 1px solid var(--border); text-align: left; }
   .board-tabs, .target-tabs { display: flex; gap: 18px; overflow-x: auto; border-bottom: 1px solid var(--border); }
   .board-tabs button, .target-tabs button { flex: 0 0 auto; border: 0; border-radius: 0; }
-  .board-tabs button[aria-selected="true"], .target-tabs button[aria-selected="true"] { color: #1769d3; border-bottom: 2px solid #1769d3; }
+  .board-tabs button[aria-selected="true"], .target-tabs button[aria-pressed="true"] { color: #1769d3; border-bottom: 2px solid #1769d3; }
   .group-nav { display: flex; gap: 8px; margin: 14px 0; }
   .ct-table { border: 1px solid var(--border); }
   .ct-header, .ct-row { display: grid; grid-template-columns: 1.45fr 1.4fr .8fr .8fr .9fr .7fr .9fr; align-items: center; gap: 14px; padding: 11px 16px; }
@@ -99,7 +99,10 @@ export const panelStyles = css`
   .status-list, .summary-list { display: grid; gap: 8px; }
   .confirmation-actions { display: flex; gap: 12px; margin-top: 20px; }
   .check-row { display: flex; align-items: center; gap: 10px; }
-  .calibration-step > label { display: grid; max-width: 360px; gap: 6px; font-weight: 700; }
+  .reference-block { display: grid; max-width: 420px; gap: 12px; }
+  .reference-block label { display: grid; gap: 6px; font-weight: 700; }
+  .reference-block .primary { justify-self: start; }
+  .stability-line { display: block; margin: 18px 0 10px; }
   .calibration-step input { padding: 10px; border: 1px solid #b8c1cc; }
   .group-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
   .group-grid section { border: 1px solid var(--border); }
@@ -107,6 +110,9 @@ export const panelStyles = css`
   .group-grid button { width: 33.333%; border-width: 0 1px 0 0; border-radius: 0; }
   .group-grid button.selected { color: var(--orange); border-color: var(--orange); }
   .progress-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 20px 0; padding: 18px 18px 18px 42px; border: 1px solid var(--border); }
+  .progress-steps .complete { color: #65758b; background: #f3f5f7; }
+  .progress-steps .active { color: #7a3500; background: #fff0df; font-weight: 700; }
+  .progress-steps .pending { color: var(--navy); }
   .measurement-evidence { margin: 14px 0; padding: 12px 16px; border: 1px solid var(--border); background: var(--band); }
   .measurement-evidence h3 { margin-top: 0; }
   .measurement-evidence dl, .evidence-list, .upload-progress { display: grid; gap: 6px; }

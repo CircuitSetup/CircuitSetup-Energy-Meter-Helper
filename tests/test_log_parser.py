@@ -9,11 +9,28 @@ import pytest
 from custom_components.circuitsetup_energy_meter_helper.log_parser import (
     CalibrationLogLine,
     LogEvidenceError,
+    parse_calibration_sources,
     parse_gain_run,
     parse_restore,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "logs"
+
+
+def test_detects_current_flash_and_configuration_calibration_sources() -> None:
+    sources = parse_calibration_sources(
+        (
+            "[CALIBRATION][meter_main1] Gain calibration loaded and verified successfully.",
+            "[CALIBRATION][meter_main2] No stored gain calibrations found. Using config file values.",
+        ),
+        {"meter_main1", "meter_main2", "addon1_1"},
+    )
+
+    assert sources == {
+        "addon1_1": "unknown",
+        "meter_main1": "flash",
+        "meter_main2": "configuration",
+    }
 
 
 def log_lines(

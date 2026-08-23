@@ -178,6 +178,7 @@ export interface SessionStatus {
   state: string;
   safety_acknowledged: boolean;
   preflight: { issues: PreflightIssue[]; zeroed_roles: string[] };
+  calibration_sources?: Record<string, "flash" | "configuration" | "unknown">;
 }
 
 export interface StabilityResult {
