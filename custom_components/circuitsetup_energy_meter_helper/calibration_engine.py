@@ -13,7 +13,7 @@ from enum import StrEnum
 from hashlib import sha256
 from statistics import fmean
 from time import monotonic
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from .config_document import ESPHomeConfigDocument
@@ -53,7 +53,13 @@ from .preflight import (
 )
 from .session_manager import CalibrationLease, PendingCalibrationOrigin, SessionManager
 from .state_tracker import SensorSampleWindow
-from .store import PhaseGainTable, VerifiedCalibrationRecord, VerifiedGainGroup
+from .store import (
+    PhaseGainTable,
+    VerifiedCalibrationRecord,
+    VerifiedGainGroup,
+    VerifiedOffsetGroup,
+    VerifiedPowerOffsetGroup,
+)
 from .topology import topology_from_config
 
 DEFAULT_EVIDENCE_TIMEOUT = 35.0
@@ -227,22 +233,46 @@ class CalibrationEngine:
                 raise RestartVerificationError(
                     "server-owned calibration origin is missing"
                 ) from error
-            expected = pending.expected_phase_gains
+            expected_gains = pending.expected_phase_gains
+            expected_offsets = pending.expected_phase_offsets
+            expected_power_offsets = pending.expected_phase_power_offsets
+            expected_instance_ids = (
+                set(expected_gains)
+                | set(expected_offsets)
+                | set(expected_power_offsets)
+            )
+            expected_categories: dict[
+                str, set[Literal["gain", "offset", "power_offset"]]
+            ] = {instance_id: set() for instance_id in expected_instance_ids}
+            for instance_id in expected_gains:
+                expected_categories[instance_id].add("gain")
+            for instance_id in expected_offsets:
+                expected_categories[instance_id].add("offset")
+            for instance_id in expected_power_offsets:
+                expected_categories[instance_id].add("power_offset")
             try:
                 groups = tuple(
                     VerifiedGainGroup(instance_id, gains)
-                    for instance_id, gains in expected.items()
+                    for instance_id, gains in expected_gains.items()
+                )
+                offset_groups = tuple(
+                    VerifiedOffsetGroup(instance_id, offsets)
+                    for instance_id, offsets in expected_offsets.items()
+                )
+                power_offset_groups = tuple(
+                    VerifiedPowerOffsetGroup(instance_id, offsets)
+                    for instance_id, offsets in expected_power_offsets.items()
                 )
             except ValueError as error:
                 raise RestartVerificationError(
-                    "server-owned expected gain table is invalid"
+                    "server-owned expected calibration table is invalid"
                 ) from error
             self._validate_binding_generation(session, binding)
-            if unknown := set(expected).difference(
+            if unknown := expected_instance_ids.difference(
                 _instance_id(group.key) for group in binding.groups
             ):
                 raise RestartVerificationError(
-                    "changed gain group is outside the bound topology: "
+                    "changed calibration group is outside the bound topology: "
                     + ", ".join(sorted(unknown))
                 )
             catalog = EntityCatalog(session.entities, binding.connection_generation)
@@ -274,6 +304,7 @@ class CalibrationEngine:
                 ) from error
 
             restore_started = monotonic()
+            operation_sequence = self._next_sequence(lease.mac)
             baseline = tuple(getattr(session, "log_lines", ()))
             deadline = monotonic() + self._restart_restore_timeout
             try:
@@ -286,7 +317,9 @@ class CalibrationEngine:
                 evidence = await self._wait_restore(
                     session,
                     generation=generation,
-                    expected_instance_ids=set(expected),
+                    expected_instance_ids=expected_instance_ids,
+                    expected_categories=expected_categories,
+                    operation_sequence=operation_sequence,
                     started_after=restore_started,
                     baseline=baseline,
                     timeout=remaining,
@@ -300,7 +333,9 @@ class CalibrationEngine:
                 raise RestartVerificationError(str(error)) from error
             _validate_restart_evidence(
                 evidence,
-                expected,
+                expected_gains,
+                expected_offsets,
+                expected_power_offsets,
                 generation=generation,
             )
             _require_connected_generation(session, generation)
@@ -316,7 +351,11 @@ class CalibrationEngine:
                 connection_generation=generation,
                 groups=groups,
                 verification_id=uuid4().hex,
-                source_handoff_available=pending.config_filename is not None,
+                offset_groups=offset_groups,
+                power_offset_groups=power_offset_groups,
+                source_handoff_available=(
+                    pending.config_filename is not None and bool(groups)
+                ),
             )
             connection_guard = getattr(session, "hold_connection_generation", None)
             if connection_guard is None:
@@ -885,6 +924,8 @@ class CalibrationEngine:
                 session,
                 generation=int(session.connection_generation),
                 expected_instance_ids={instance_id},
+                expected_categories={instance_id: {"gain"}},
+                operation_sequence=sequence,
                 started_after=restore_started,
                 baseline=baseline,
             )
@@ -1126,6 +1167,8 @@ class CalibrationEngine:
         *,
         generation: int,
         expected_instance_ids: set[str],
+        expected_categories: dict[str, set[Literal["gain", "offset", "power_offset"]]],
+        operation_sequence: int,
         started_after: float,
         baseline: tuple[str, ...],
         timeout: float | None = None,
@@ -1143,6 +1186,8 @@ class CalibrationEngine:
                     await wait(
                         connection_generation=generation,
                         expected_instance_ids=expected_instance_ids,
+                        expected_categories=expected_categories,
+                        operation_sequence=operation_sequence,
                         started_after=started_after,
                         timeout=evidence_timeout,
                     ),
@@ -1159,7 +1204,12 @@ class CalibrationEngine:
                 _require_connected_generation(session, generation)
         new_lines = _new_log_lines(baseline, tuple(session.log_lines))
         correlated = tuple(
-            CalibrationLogLine(generation, 0, started_after + (index + 1) * 1e-6, line)
+            CalibrationLogLine(
+                generation,
+                operation_sequence,
+                started_after + (index + 1) * 1e-6,
+                line,
+            )
             for index, line in enumerate(new_lines)
         )
         evidence = parse_restore(
@@ -1167,6 +1217,8 @@ class CalibrationEngine:
             connection_generation=generation,
             expected_instance_ids=expected_instance_ids,
             started_after=started_after,
+            operation_sequence=operation_sequence,
+            expected_categories=expected_categories,
         )
         if require_connection:
             _require_connected_generation(session, generation)
@@ -1480,21 +1532,26 @@ def _require_connected_generation(session: Any, generation: int) -> None:
 
 def _validate_restart_evidence(
     evidence: Mapping[str, object],
-    expected: Mapping[str, PhaseGainTable],
+    expected_gains: Mapping[str, PhaseGainTable],
+    expected_offsets: Mapping[str, PhaseOffsetTable],
+    expected_power_offsets: Mapping[str, PhasePowerOffsetTable],
     *,
     generation: int,
 ) -> None:
-    missing = set(expected).difference(evidence)
+    expected_instance_ids = (
+        set(expected_gains) | set(expected_offsets) | set(expected_power_offsets)
+    )
+    missing = expected_instance_ids.difference(evidence)
     if missing:
         raise RestartVerificationError(
             "missing restore evidence for " + ", ".join(sorted(missing))
         )
-    unexpected = set(evidence).difference(expected)
+    unexpected = set(evidence).difference(expected_instance_ids)
     if unexpected:
         raise RestartVerificationError(
             "unexpected restore evidence for " + ", ".join(sorted(unexpected))
         )
-    for instance_id, expected_gains in expected.items():
+    for instance_id in expected_instance_ids:
         restored = evidence[instance_id]
         if not isinstance(restored, RestoreEvidence):
             raise RestartVerificationError(
@@ -1507,7 +1564,7 @@ def _validate_restart_evidence(
             raise RestartVerificationError(
                 f"{instance_id}: restore evidence correlation does not match"
             )
-        if restored.source != "flash" or not restored.register_verified:
+        if restored.source != "flash":
             raise RestartVerificationError(
                 f"{instance_id}: saved flash was not verified as authoritative"
             )
@@ -1519,9 +1576,45 @@ def _validate_restart_evidence(
             raise RestartVerificationError(
                 f"{instance_id}: SPI restore verification failed"
             )
-        if restored.phase_gains != expected_gains:
+        gain_expected = expected_gains.get(instance_id)
+        if gain_expected is None and restored.phase_gains is not None:
+            raise RestartVerificationError(
+                f"{instance_id}: unexpected gain restore evidence"
+            )
+        if gain_expected is not None and (
+            not restored.register_verified or restored.phase_gains != gain_expected
+        ):
             raise RestartVerificationError(
                 f"{instance_id}: restored gains do not exactly match expected gains"
+            )
+        offset_expected = expected_offsets.get(instance_id)
+        if offset_expected is None and (
+            restored.phase_offsets is not None or restored.offset_register_verified
+        ):
+            raise RestartVerificationError(
+                f"{instance_id}: unexpected offset restore evidence"
+            )
+        if offset_expected is not None and (
+            not restored.offset_register_verified
+            or restored.phase_offsets != offset_expected
+        ):
+            raise RestartVerificationError(
+                f"{instance_id}: restored offsets were not verified exactly"
+            )
+        power_expected = expected_power_offsets.get(instance_id)
+        if power_expected is None and (
+            restored.phase_power_offsets is not None
+            or restored.power_offset_register_verified
+        ):
+            raise RestartVerificationError(
+                f"{instance_id}: unexpected power offset restore evidence"
+            )
+        if power_expected is not None and (
+            not restored.power_offset_register_verified
+            or restored.phase_power_offsets != power_expected
+        ):
+            raise RestartVerificationError(
+                f"{instance_id}: restored power offsets were not verified exactly"
             )
 
 

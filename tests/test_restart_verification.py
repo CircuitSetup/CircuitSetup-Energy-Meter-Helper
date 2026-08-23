@@ -263,6 +263,8 @@ async def _prime_origin(
     binding: object,
     expected: dict[str, GainTable],
     *,
+    offsets: dict[str, GainTable] | None = None,
+    power_offsets: dict[str, GainTable] | None = None,
     snapshot: ESPHomeConfigSnapshot | None = None,
 ) -> ESPHomeConfigSnapshot:
     if snapshot is None:
@@ -284,9 +286,191 @@ async def _prime_origin(
                 instance_id,
                 gains,
             )
+        for stage, tables in ((1, offsets or {}), (2, power_offsets or {})):
+            for instance_id, table in tables.items():
+                pending = sessions.record_offset_calibration_group(
+                    lease,
+                    pending.operation_id,
+                    pending.revision,
+                    session,
+                    binding,
+                    instance_id,
+                    stage,
+                    table,
+                )
     finally:
         lease.release()
     return snapshot
+
+
+def _category_restore(
+    instance_id: str,
+    *,
+    gains: GainTable | None = None,
+    offsets: GainTable | None = None,
+    power_offsets: GainTable | None = None,
+) -> RestoreEvidence:
+    return RestoreEvidence(
+        2,
+        instance_id,
+        gains,
+        "flash",
+        gains is not None,
+        "positive_loaded_line" if gains is not None else "offset_tables",
+        False,
+        (f"[CALIBRATION][{instance_id}] verified",),
+        offsets,
+        power_offsets,
+        offsets is not None,
+        power_offsets is not None,
+    )
+
+
+def test_offset_only_restart_verifies_selected_board_once() -> None:
+    async def run() -> None:
+        offsets = {
+            "addon1_1": ((-12, 31), (-13, 32), (-14, 33)),
+            "addon1_2": ((-21, 41), (-22, 42), (-23, 43)),
+        }
+        session = RestartSession(
+            {
+                instance_id: _category_restore(instance_id, offsets=table)
+                for instance_id, table in offsets.items()
+            },
+            addons=1,
+        )
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(1), substitutions(1)
+        )
+        sessions = SessionManager()
+        await _prime_origin(sessions, session, binding, {}, offsets=offsets)
+        saved: list[VerifiedCalibrationRecord] = []
+
+        async def persist(record: VerifiedCalibrationRecord) -> None:
+            saved.append(record)
+
+        result = await CalibrationEngine(
+            sessions, _ignore_marker, persist_verified=persist
+        ).async_verify_after_restart(
+            "aabbccddeeff", session, binding, substitutions=substitutions(1)
+        )
+
+        assert [event[0] for event in session.events].count("restart") == 1
+        restore_request = session.events[-1][1]
+        assert restore_request["expected_categories"] == {
+            instance_id: {"offset"} for instance_id in offsets
+        }
+        assert restore_request["operation_sequence"] > 0
+        assert result.record.groups == ()
+        assert {
+            group.instance_id: group.phase_offsets
+            for group in result.record.offset_groups
+        } == offsets
+        assert saved == [result.record]
+
+    asyncio.run(run())
+
+
+def test_mixed_restart_requires_each_exact_requested_category() -> None:
+    async def run() -> None:
+        gains = {"meter_main1": ((7301, 28001), (7301, 28002), (7301, 28003))}
+        offsets = {"meter_main1": ((-12, 31), (-13, 32), (-14, 33))}
+        power_offsets = {"addon1_2": ((101, -201), (102, -202), (103, -203))}
+        session = RestartSession(
+            {
+                "meter_main1": _category_restore(
+                    "meter_main1",
+                    gains=gains["meter_main1"],
+                    offsets=offsets["meter_main1"],
+                ),
+                "addon1_2": _category_restore(
+                    "addon1_2", power_offsets=power_offsets["addon1_2"]
+                ),
+            }
+        )
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(1), substitutions(1)
+        )
+        sessions = SessionManager()
+        await _prime_origin(
+            sessions,
+            session,
+            binding,
+            gains,
+            offsets=offsets,
+            power_offsets=power_offsets,
+        )
+
+        result = await CalibrationEngine(
+            sessions, _ignore_marker, persist_verified=_ignore_verified
+        ).async_verify_after_restart(
+            "aabbccddeeff", session, binding, substitutions=substitutions(1)
+        )
+
+        assert session.events[-1][1]["expected_categories"] == {
+            "meter_main1": {"gain", "offset"},
+            "addon1_2": {"power_offset"},
+        }
+        assert result.record.groups[0].phase_gains == gains["meter_main1"]
+        assert result.record.offset_groups[0].phase_offsets == offsets["meter_main1"]
+        assert (
+            result.record.power_offset_groups[0].phase_power_offsets
+            == power_offsets["addon1_2"]
+        )
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("evidence", "match"),
+    (
+        ({}, "missing"),
+        (
+            {
+                "meter_main1": _category_restore(
+                    "meter_main1", offsets=((-12, 31), (-13, 32), (-14, 34))
+                )
+            },
+            "exact",
+        ),
+        (
+            {
+                "meter_main1": _category_restore(
+                    "meter_main1",
+                    offsets=((-12, 31), (-13, 32), (-14, 33)),
+                    power_offsets=((1, 2), (3, 4), (5, 6)),
+                )
+            },
+            "unexpected",
+        ),
+        ({"meter_main1": _category_restore("meter_main1")}, "verified"),
+    ),
+)
+def test_offset_restart_rejects_missing_mismatch_extra_or_fallback(
+    evidence: dict[str, RestoreEvidence], match: str
+) -> None:
+    async def run() -> None:
+        offsets = {"meter_main1": ((-12, 31), (-13, 32), (-14, 33))}
+        session = RestartSession(evidence, addons=0)
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(0), substitutions(0)
+        )
+        sessions = SessionManager()
+        await _prime_origin(sessions, session, binding, {}, offsets=offsets)
+        saved: list[VerifiedCalibrationRecord] = []
+
+        async def persist(record: VerifiedCalibrationRecord) -> None:
+            saved.append(record)
+
+        with pytest.raises(RestartVerificationError, match=match):
+            await CalibrationEngine(
+                sessions, _ignore_marker, persist_verified=persist
+            ).async_verify_after_restart(
+                "aabbccddeeff", session, binding, substitutions=substitutions(0)
+            )
+        assert saved == []
+
+    asyncio.run(run())
 
 
 def test_restart_arms_disconnect_rebinds_and_persists_exact_changed_set() -> None:

@@ -337,7 +337,9 @@ class SessionManager:
     ) -> PendingCalibrationOrigin:
         """Atomically freeze the exact aggregate used for restart verification."""
         pending = self.calibration_origin_for_update(lease, session, binding)
-        if pending is None or not pending.gain_groups:
+        if pending is None or not (
+            pending.gain_groups or pending.offset_groups or pending.power_offset_groups
+        ):
             raise RuntimeError("server-owned calibration origin is missing")
         claimed = replace(pending, claimed_revision=pending.revision)
         self._pending_calibrations[lease.mac] = claimed
