@@ -603,6 +603,8 @@ class EntryWorkflow:
         handle = self._session(session_id)
         with self._guard(handle.mac):
             handle = self._session_locked(session_id)
+            if handle.state == "verified":
+                raise WorkflowHandleError("calibration session is already finalized")
             if not handle.preflight.ok or not acknowledged:
                 raise WorkflowHandleError(
                     "session is not ready for safety confirmation"

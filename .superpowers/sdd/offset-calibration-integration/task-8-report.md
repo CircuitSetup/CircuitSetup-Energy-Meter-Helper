@@ -42,6 +42,23 @@ GREEN:
 - Targeted mypy for `workflow.py` and `websocket_api.py`: clean.
 - `git diff --check`: clean.
 
+## Fix round 1: terminal acknowledgement escape
+
+- Audited every public session mutation. `async_acknowledge_safety` was the only
+  mutation that bypassed `_claim_ready_session` and could reopen `verified`;
+  `async_cancel_session` intentionally remains available, and idempotent
+  no-change completion intentionally remains readable.
+- Added the sibling terminal guard to `async_acknowledge_safety`, so a verified
+  session cannot return to `ready` or emit another terminal publication.
+- RED: the direct workflow regression showed acknowledgement did not raise, and
+  the registered WebSocket regression showed acknowledgement and skip both
+  succeeded after terminal completion.
+- GREEN: both regressions pass. The expanded focused suite passed `29` tests,
+  the adjacent suite passed `178`, and the full Python suite passed `545`.
+- Targeted Ruff lint, `test_workflow.py` format, mypy, and `git diff --check`
+  remain clean; `test_websocket_api.py` retains its documented pre-existing
+  whole-file format debt, while the new hunk matches Ruff's proposed layout.
+
 ## Files
 
 - `custom_components/circuitsetup_energy_meter_helper/workflow.py`

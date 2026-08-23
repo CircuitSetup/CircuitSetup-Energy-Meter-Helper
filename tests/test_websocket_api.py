@@ -1912,6 +1912,57 @@ def test_complete_without_changes_is_an_admin_session_only_mutation() -> None:
     asyncio.run(run())
 
 
+def test_verified_session_cannot_be_reopened_through_public_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, sessions = await _native_only_workflow(monkeypatch)
+        session = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(session.session_id, True)
+        terminal = await workflow.async_complete_calibration_without_changes(
+            session.session_id
+        )
+        events: list[Any] = []
+        workflow.subscribe_session(session.session_id, events.append)
+
+        hass = FakeHass()
+        entry = FakeEntry(data={})
+        await async_setup_entry(hass, entry)
+        controller = hass.data[DOMAIN][entry.entry_id]["websocket_controller"]
+        setup_workflow = controller.workflow
+        controller.workflow = workflow
+        connection = FakeConnection()
+
+        acknowledge = _message(f"{DOMAIN}/acknowledge_safety")
+        acknowledge["session_id"] = session.session_id
+        await _invoke(hass, connection, acknowledge)
+
+        skip = _message(f"{DOMAIN}/skip_offset_calibration", 2)
+        skip["session_id"] = session.session_id
+        await _invoke(hass, connection, skip)
+
+        complete = _message(f"{DOMAIN}/complete_calibration_without_changes", 3)
+        complete["session_id"] = session.session_id
+        await _invoke(hass, connection, complete)
+
+        assert connection.errors == [
+            (1, "stale_confirmation", "The confirmation is stale or invalid"),
+            (2, "stale_confirmation", "The confirmation is stale or invalid"),
+        ]
+        assert connection.results[-1] == (3, sanitize_payload(terminal))
+        assert events == []
+        assert (
+            await workflow.async_get_session(session.session_id)
+        ).state == "verified"
+
+        controller.workflow = setup_workflow
+        await async_unload_entry(hass, entry)
+        await workflow.async_close()
+        await sessions.async_unload()
+
+    asyncio.run(run())
+
+
 def test_offset_websocket_schemas_bound_board_stage_and_retry_confirmation() -> None:
     async def run() -> None:
         hass = FakeHass()
