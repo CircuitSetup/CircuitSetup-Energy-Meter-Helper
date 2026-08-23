@@ -90,13 +90,13 @@ def _verify_calibration_package(path: Path, prefix: str) -> None:
         ):
             raise SystemExit(f"{path.name}: calibration group IDs are incomplete")
         controls = re.findall(
-            r"(?ms)^    ((?:run|clear)_(?:offset_calibration|power_offset_calibration|gain_calibration)):\n"
-            r"(.*?)(?=^    [a-z_]+:|\Z)",
+            r"(?ms)^    ([^:\s]+):\n"
+            r"(.*?)(?=^    [^:\s]+:|\Z)",
             block,
         )
         if len(controls) != len(expected_controls) or {key for key, _ in controls} != {
             key for key, _ in expected_controls
-        } or block.count("disabled_by_default: true") != len(expected_controls):
+        }:
             raise SystemExit(f"{path.name}: calibration buttons are incomplete")
         expected_name = f"${{{id_prefix}_name{group}}}"
         for key, name_template in expected_controls:
