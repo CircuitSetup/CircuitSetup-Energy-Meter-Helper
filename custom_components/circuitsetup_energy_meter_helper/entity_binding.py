@@ -392,6 +392,13 @@ def bind_meter(
         raise EntityBindingMissing(spec.role, options, reason)
 
     def resolve_optional(spec: _RoleSpec) -> tuple[BoundEntity | None, str | None]:
+        malformed = tuple(
+            candidate
+            for candidate in catalog.by_name(spec.name)
+            if candidate.kind != spec.kind or candidate.unit != spec.unit
+        )
+        if malformed:
+            return None, f"offset control {spec.role} has the wrong kind or unit"
         tiers: tuple[tuple[ResolutionSource, tuple[EntityDescriptor, ...]], ...] = (
             (
                 ResolutionSource.STORED,
@@ -430,13 +437,6 @@ def bind_meter(
                 return None, f"offset control {spec.role} is duplicated"
             used.add(candidate.raw_key)
             return BoundEntity(spec.role, candidate, source), None
-        malformed = tuple(
-            candidate
-            for candidate in catalog.by_name(spec.name)
-            if candidate.kind != spec.kind or candidate.unit != spec.unit
-        )
-        if malformed:
-            return None, f"offset control {spec.role} has the wrong kind or unit"
         return None, None
 
     for board_index in range(topology.board_count):
