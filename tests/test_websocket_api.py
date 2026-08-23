@@ -524,6 +524,10 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         base |= {"session_id": "session", "acknowledged": True}
     elif suffix == "check_stability":
         base |= {"session_id": "session", "target": "voltage", "target_id": "main_1"}
+    elif suffix in {"check_offset_readiness", "calibrate_offset"}:
+        base |= {"session_id": "session", "board_index": 0, "stage": 1}
+    elif suffix == "skip_offset_calibration":
+        base["session_id"] = "session"
     elif suffix == "calibrate_voltage":
         base |= {"session_id": "session", "group_key": "main_1", "reference": 120.0}
     elif suffix == "calibrate_current":
@@ -1843,6 +1847,9 @@ def test_every_topology_and_calibration_route_delegates_and_session_events_unsub
         "start_session",
         "acknowledge_safety",
         "check_stability",
+        "check_offset_readiness",
+        "calibrate_offset",
+        "skip_offset_calibration",
         "calibrate_voltage",
         "calibrate_current",
         "restart_and_verify",
@@ -1879,6 +1886,37 @@ def test_every_topology_and_calibration_route_delegates_and_session_events_unsub
         assert connection.events[-1][1] == {"state": "live"}
         connection.subscriptions[len(commands) + 1]()
         assert workflow.callback is None
+
+    asyncio.run(run())
+
+
+def test_offset_websocket_schemas_bound_board_stage_and_retry_confirmation() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+
+        readiness = hass.data["websocket_api"][f"{DOMAIN}/check_offset_readiness"][1]
+        calibrate = hass.data["websocket_api"][f"{DOMAIN}/calibrate_offset"][1]
+        assert readiness is not None and calibrate is not None
+        assert (
+            calibrate(_message(f"{DOMAIN}/calibrate_offset"))["confirm_retry"] is False
+        )
+
+        for key, value in (
+            ("board_index", -1),
+            ("board_index", 7),
+            ("stage", 0),
+            ("stage", 3),
+        ):
+            message = _message(f"{DOMAIN}/check_offset_readiness")
+            message[key] = value
+            with pytest.raises(vol.Invalid):
+                readiness(message)
+
+        message = _message(f"{DOMAIN}/calibrate_offset")
+        message["confirm_retry"] = "yes"
+        with pytest.raises(vol.Invalid):
+            calibrate(message)
 
     asyncio.run(run())
 

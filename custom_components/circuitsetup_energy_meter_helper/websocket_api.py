@@ -25,6 +25,7 @@ from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
 from .models import InstallerIntent
+from .offset_readiness import OffsetReadinessStage
 from .provisioning import ProvisioningCoordinator
 from .repairs import async_reconcile_issues, signals_from_result
 from .session_manager import CalibrationBusyError, SessionManager
@@ -54,6 +55,9 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}start_session",
     f"{_PREFIX}acknowledge_safety",
     f"{_PREFIX}check_stability",
+    f"{_PREFIX}check_offset_readiness",
+    f"{_PREFIX}calibrate_offset",
+    f"{_PREFIX}skip_offset_calibration",
     f"{_PREFIX}calibrate_voltage",
     f"{_PREFIX}calibrate_current",
     f"{_PREFIX}restart_and_verify",
@@ -170,6 +174,20 @@ class WorkflowOwner(Protocol):
     async def async_check_stability(
         self, session_id: str, target: str, target_id: str
     ) -> Any: ...
+
+    async def async_check_offset_readiness(
+        self, session_id: str, board_index: int, stage: OffsetReadinessStage
+    ) -> Any: ...
+
+    async def async_calibrate_offset(
+        self,
+        session_id: str,
+        board_index: int,
+        stage: OffsetReadinessStage,
+        confirm_retry: bool = False,
+    ) -> Any: ...
+
+    async def async_skip_offset_calibration(self, session_id: str) -> Any: ...
 
     async def async_calibrate_voltage(
         self,
@@ -316,6 +334,19 @@ class EntryWebsocketController:
             return await workflow.async_check_stability(
                 msg["session_id"], msg["target"], msg["target_id"]
             )
+        if operation == "check_offset_readiness" and workflow is not None:
+            return await workflow.async_check_offset_readiness(
+                msg["session_id"], msg["board_index"], msg["stage"]
+            )
+        if operation == "calibrate_offset" and workflow is not None:
+            return await workflow.async_calibrate_offset(
+                msg["session_id"],
+                msg["board_index"],
+                msg["stage"],
+                msg["confirm_retry"],
+            )
+        if operation == "skip_offset_calibration" and workflow is not None:
+            return await workflow.async_skip_offset_calibration(msg["session_id"])
         if operation == "calibrate_voltage" and workflow is not None:
             return await workflow.async_calibrate_voltage(
                 msg["session_id"],
@@ -785,6 +816,14 @@ def _schema(command: str) -> dict[Any, Any]:
             vol.Required("target"): vol.In(("voltage", "current")),
             vol.Required("target_id"): _ID,
         }
+    elif operation in {"check_offset_readiness", "calibrate_offset"}:
+        schema |= {
+            vol.Required("session_id"): _ID,
+            vol.Required("board_index"): vol.All(int, vol.Range(min=0, max=6)),
+            vol.Required("stage"): vol.In((1, 2)),
+        }
+        if operation == "calibrate_offset":
+            schema[vol.Optional("confirm_retry", default=False)] = bool
     elif operation == "calibrate_voltage":
         schema |= {
             vol.Required("session_id"): _ID,
@@ -814,6 +853,7 @@ def _schema(command: str) -> dict[Any, Any]:
         }
     elif operation in {
         "get_session",
+        "skip_offset_calibration",
         "restart_and_verify",
         "cancel_session",
         "subscribe_session",
