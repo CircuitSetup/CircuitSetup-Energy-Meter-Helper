@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from threading import get_ident
 from types import SimpleNamespace
 from typing import Any
 
@@ -32,6 +33,9 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     ConfigTransactionState,
 )
 from custom_components.circuitsetup_energy_meter_helper.const import DOMAIN
+from custom_components.circuitsetup_energy_meter_helper.ct_catalog import (
+    CTPresetCatalog,
+)
 from custom_components.circuitsetup_energy_meter_helper.ct_inventory import (
     _esphome_object_id,
 )
@@ -616,6 +620,30 @@ def test_setup_registers_exact_commands_and_live_owners_then_unloads() -> None:
         assert await async_unload_entry(hass, entry)
         assert entry.entry_id not in hass.data[DOMAIN]
         assert not controller.has_subscribers
+
+    asyncio.run(run())
+
+
+def test_setup_primes_ct_catalog_outside_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        event_loop_thread = get_ident()
+        load_threads: list[int] = []
+        load = CTPresetCatalog.load
+
+        def tracked_load() -> CTPresetCatalog:
+            load_threads.append(get_ident())
+            return load()
+
+        hass = FakeHass()
+        monkeypatch.setattr(CTPresetCatalog, "load", tracked_load)
+        entry = FakeEntry(data={})
+
+        assert await async_setup_entry(hass, entry)
+        assert len(load_threads) == 1
+        assert load_threads[0] != event_loop_thread
+        assert await async_unload_entry(hass, entry)
 
     asyncio.run(run())
 

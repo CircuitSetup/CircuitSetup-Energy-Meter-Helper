@@ -6,6 +6,7 @@ import json
 import math
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from functools import cache
 from importlib import resources
 from typing import Any
 
@@ -76,6 +77,7 @@ class CTPresetCatalog:
     schema_version: int = CATALOG_SCHEMA_VERSION
 
     @classmethod
+    @cache
     def load(cls) -> CTPresetCatalog:
         """Load packaged data, independent of Home Assistant's working directory."""
         raw = (

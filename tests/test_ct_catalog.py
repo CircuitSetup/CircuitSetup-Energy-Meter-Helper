@@ -66,6 +66,10 @@ def test_bundled_catalog_matches_the_official_schema_v1_rows() -> None:
         )
 
 
+def test_catalog_is_reused_after_first_package_read() -> None:
+    assert CTPresetCatalog.load() is CTPresetCatalog.load()
+
+
 def test_gain_math_is_half_up_and_only_unique_physical_gains_infer() -> None:
     """The raw YAML gain respects its multiplier and ambiguous gains stay unknown."""
     catalog = CTPresetCatalog.load()
