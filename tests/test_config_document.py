@@ -52,6 +52,20 @@ def test_extracts_list_package_form() -> None:
     assert doc.substitutions["ct24_name"].value == "Workshop #4"
 
 
+def test_extracts_indented_dashboard_import_url() -> None:
+    content = """dashboard_import:
+  package_import_url:
+    github://owner/repo/device.yaml@master
+  import_full_config: true
+"""
+
+    doc = ESPHomeConfigDocument.parse(content)
+
+    assert doc.dashboard_import == "github://owner/repo/device.yaml@master"
+    assert doc.dashboard_import_span is not None
+    assert doc.dashboard_import_span.line == 3
+
+
 def test_normalizes_remote_paths_and_ignores_out_of_range_ct_keys() -> None:
     doc = ESPHomeConfigDocument.parse(fixture("custom_packages.yaml"))
 

@@ -147,6 +147,7 @@ class ESPHomeApiSession:
         self._client = client
         self._clear_connection_state()
         attempt_stopped = False
+        initial_states: list[tuple[Any, float]] = []
 
         async def on_stop(expected_disconnect: bool) -> None:
             nonlocal attempt_stopped
@@ -179,14 +180,20 @@ class ESPHomeApiSession:
             ensure_attempt_is_live()
             try:
                 actual_mac = canonical_mac(device_info.mac_address)
-            except (AttributeError, ValueError):
+            except AttributeError, ValueError:
                 actual_mac = ""
             if actual_mac != expected_mac:
                 raise ESPHomeIdentityError(
                     "The endpoint is a different ESPHome device; repair its host "
                     "in the existing ESPHome entry"
                 )
-            client.subscribe_states(lambda state: self._on_state(client, state))
+            client.subscribe_states(
+                lambda state: (
+                    self._on_state(client, state)
+                    if self.connected
+                    else initial_states.append((state, monotonic()))
+                )
+            )
             ensure_attempt_is_live()
 
             def callback(message: Any) -> None:
@@ -212,6 +219,8 @@ class ESPHomeApiSession:
             ensure_attempt_is_live()
             self.entities = tuple(entities)
             self._state_tracker.connect(self.connection_generation + 1)
+            for state, received_at in initial_states:
+                self._state_tracker.record(state, received_at=received_at)
 
     @asynccontextmanager
     async def hold_connection_generation(self, generation: int) -> AsyncIterator[None]:
@@ -250,7 +259,7 @@ class ESPHomeApiSession:
                 from homeassistant.components.esphome.manager import (
                     async_create_api_client,
                 )
-            except (AttributeError, ImportError):
+            except AttributeError, ImportError:
                 raise ESPHomeApiRepairRequired(
                     "Home Assistant's compatible ESPHome API helper is unavailable"
                 ) from None
@@ -337,6 +346,23 @@ class ESPHomeApiSession:
         except StateDisconnectedError as error:
             if self._closed:
                 raise asyncio.CancelledError from None
+            raise ESPHomeSessionDisconnectedError(str(error)) from error
+
+    async def async_wait_for_sensor_states(
+        self,
+        keys: frozenset[EntityKey],
+        *,
+        timeout: float = 10.0,
+    ) -> None:
+        """Give ESPHome's initial sensor-state burst time to populate the cache."""
+        self._ready_client()
+        try:
+            await self._state_tracker.wait_current_states(
+                "SensorState", keys, timeout=timeout
+            )
+        except TimeoutError:
+            return
+        except StateDisconnectedError as error:
             raise ESPHomeSessionDisconnectedError(str(error)) from error
 
     async def async_reconnect(self, *, dump_config: bool = False) -> None:

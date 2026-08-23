@@ -310,6 +310,41 @@ def test_connect_uses_loaded_entry_and_subscribes_before_ready() -> None:
     asyncio.run(run())
 
 
+def test_connect_keeps_initial_states_emitted_during_subscription() -> None:
+    class ImmediateStateClient(FakeClient):
+        def subscribe_states(self, callback: Callable[[object], None]) -> None:
+            super().subscribe_states(callback)
+            callback(SensorState(7, 12.5))
+
+    async def run() -> None:
+        session = make_session([ImmediateStateClient()])
+
+        await session.async_connect()
+
+        assert next(iter(session.state_cache.values())).state.state == 12.5
+
+    asyncio.run(run())
+
+
+def test_wait_for_sensor_states_accepts_zero_state_after_connect() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+
+        waiting = asyncio.create_task(
+            session.async_wait_for_sensor_states(frozenset({(0, 7)}), timeout=1)
+        )
+        await asyncio.sleep(0)
+        assert not waiting.done()
+        assert client.on_state is not None
+        client.on_state(SensorState(7, 0.0))
+
+        await waiting
+
+    asyncio.run(run())
+
+
 def test_wrong_mac_disconnects_without_becoming_ready() -> None:
     async def run() -> None:
         client = FakeClient("11:22:33:44:55:66")
