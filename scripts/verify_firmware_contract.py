@@ -67,15 +67,45 @@ def _verify_calibration_package(path: Path, prefix: str) -> None:
     if not path.is_file():
         raise SystemExit(f"missing calibration package: {path.name}")
     source = path.read_text(encoding="utf-8")
-    if source.count("run_gain_calibration:") != 2 or source.count(
-        "clear_gain_calibration:"
-    ) != 2:
-        raise SystemExit(f"{path.name}: calibration buttons are incomplete")
     id_prefix = "main_meter" if prefix == "main" else prefix
+    button_section = re.search(r"(?ms)^button:\n(.*?)(?=^number:|\Z)", source)
+    button_blocks = (
+        re.findall(r"(?ms)^  - platform: atm90e32\n(.*?)(?=^  - platform:|\Z)", button_section.group(1))
+        if button_section
+        else []
+    )
+    if len(button_blocks) != 2:
+        raise SystemExit(f"{path.name}: calibration buttons are incomplete")
+    expected_controls = (
+        ("run_offset_calibration", "1. Run {name} Offset Cal"),
+        ("clear_offset_calibration", "z1. Clear {name} Offset Cal"),
+        ("run_power_offset_calibration", "2. Run {name} Power Offset Cal"),
+        ("clear_power_offset_calibration", "z2. Clear {name} Power Offset Cal"),
+        ("run_gain_calibration", "3. Run {name} Gain Cal"),
+        ("clear_gain_calibration", "z3. Clear {name} Gain Cal"),
+    )
+    for group, block in enumerate(button_blocks, start=1):
+        if not re.search(
+            rf"^    id: \$\{{{re.escape(id_prefix)}_id{group}\}}$", block, re.MULTILINE
+        ):
+            raise SystemExit(f"{path.name}: calibration group IDs are incomplete")
+        controls = re.findall(
+            r"(?ms)^    ((?:run|clear)_(?:offset_calibration|power_offset_calibration|gain_calibration)):\n"
+            r"(.*?)(?=^    [a-z_]+:|\Z)",
+            block,
+        )
+        if len(controls) != len(expected_controls) or {key for key, _ in controls} != {
+            key for key, _ in expected_controls
+        } or block.count("disabled_by_default: true") != len(expected_controls):
+            raise SystemExit(f"{path.name}: calibration buttons are incomplete")
+        expected_name = f"${{{id_prefix}_name{group}}}"
+        for key, name_template in expected_controls:
+            body = dict(controls)[key]
+            expected_name_line = f'      name: "{name_template.format(name=expected_name)}"'
+            if expected_name_line not in body or body.count("disabled_by_default: true") != 1:
+                raise SystemExit(f"{path.name}: calibration buttons are incomplete")
     ids = re.findall(
-        rf"^    id: \$\{{{re.escape(id_prefix)}_id([12])\}}$",
-        source,
-        re.MULTILINE,
+        rf"^    id: \$\{{{re.escape(id_prefix)}_id([12])\}}$", source, re.MULTILINE
     )
     if sorted(ids) != ["1", "1", "2", "2"]:
         raise SystemExit(f"{path.name}: calibration group IDs are incomplete")
