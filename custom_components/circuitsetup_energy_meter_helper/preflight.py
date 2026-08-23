@@ -64,6 +64,15 @@ async def async_preflight(
     await device_lock.acquire()
     try:
         issues = _validate_binding(binding)
+        wait_for_sensors = getattr(session, "async_wait_for_sensor_states", None)
+        if wait_for_sensors is not None:
+            await wait_for_sensors(
+                frozenset(
+                    (entity.descriptor.device_id, entity.descriptor.key)
+                    for entity in binding.entities
+                    if entity.descriptor.kind == "sensor"
+                )
+            )
         issues.extend(_validate_state_availability(session, binding))
         if issues:
             return PreflightResult(tuple(issues))
@@ -185,7 +194,7 @@ def _validate_binding(binding: MeterBinding) -> list[PreflightIssue]:
 def _finite_attr(info: Any, name: str) -> float | None:
     try:
         value = float(getattr(info, name))
-    except (AttributeError, TypeError, ValueError):
+    except AttributeError, TypeError, ValueError:
         return None
     return value if math.isfinite(value) else None
 
@@ -205,7 +214,7 @@ def _validate_state_availability(
     issues: list[PreflightIssue] = []
     for entity in binding.entities:
         descriptor = entity.descriptor
-        if descriptor.kind not in {"sensor", "number"}:
+        if descriptor.kind != "sensor":
             continue
         state_name = f"{descriptor.kind.title()}State"
         record = next(

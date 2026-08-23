@@ -242,6 +242,40 @@ def test_preflight_rejects_missing_native_sensor_state() -> None:
     asyncio.run(run())
 
 
+def test_preflight_uses_zero_ack_when_reference_has_no_initial_state() -> None:
+    async def run() -> None:
+        meter = binding(0)
+        session = session_for(meter)
+        reference = meter.role("main_1.reference_voltage").descriptor
+        session.state_cache.pop((NumberState, reference.device_id, reference.key))
+
+        result = await async_preflight(session, meter, asyncio.Lock())
+
+        assert result.ok
+        assert "main_1.reference_voltage" in result.zeroed_roles
+
+    asyncio.run(run())
+
+
+def test_preflight_waits_for_initial_sensor_states() -> None:
+    class DelayedSession(FakeSession):
+        async def async_wait_for_sensor_states(
+            self, keys: frozenset[tuple[int, int]], **_: Any
+        ) -> None:
+            assert keys
+            self.state_cache.update(session_for(meter).state_cache)
+
+    async def run() -> None:
+        session = DelayedSession()
+
+        result = await async_preflight(session, meter, asyncio.Lock())
+
+        assert result.ok
+
+    meter = binding(0)
+    asyncio.run(run())
+
+
 def test_preflight_accumulates_zero_ack_failures_and_continues() -> None:
     async def run() -> None:
         meter = binding(0)

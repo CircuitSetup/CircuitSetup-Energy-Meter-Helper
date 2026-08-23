@@ -134,7 +134,7 @@ class StateTracker:
                 continue
             try:
                 value = float(state.state)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 waiter.future.set_exception(
                     StateUnavailableError("state is non-finite")
                 )
@@ -192,7 +192,7 @@ class StateTracker:
             raise FreshWindowError("sensor sample is unavailable")
         try:
             values = tuple(float(record.state.state) for record in records)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             raise FreshWindowError("sensor sample is non-finite") from None
         if not all(math.isfinite(value) for value in values):
             raise FreshWindowError("sensor sample is non-finite")
@@ -246,6 +246,28 @@ class StateTracker:
                         )
                     except FreshWindowError:
                         pass
+                await event.wait()
+
+    async def wait_current_states(
+        self,
+        state_type_name: str,
+        keys: frozenset[tuple[int, int]],
+        *,
+        timeout: float = 10.0,
+    ) -> None:
+        """Wait until every requested current state exists on this generation."""
+        async with asyncio.timeout(timeout):
+            while True:
+                if not self.connected:
+                    raise StateDisconnectedError("native state connection was lost")
+                event = self._state_event
+                present = {
+                    (device_id, key)
+                    for state_type, device_id, key in self._cache
+                    if state_type.__name__ == state_type_name
+                }
+                if keys <= present:
+                    return
                 await event.wait()
 
     def expect_number_state(
