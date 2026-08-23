@@ -417,3 +417,101 @@ def test_has_pending_calibration_includes_gain_only_pending_state() -> None:
         await workflow.async_close()
 
     asyncio.run(run())
+
+
+def test_complete_without_changes_finishes_once_without_restart_or_persistence() -> (
+    None
+):
+    async def run() -> None:
+        workflow, handle, sessions, api = _workflow()
+        events: list[Any] = []
+
+        async def forbidden(*_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("no-change completion must not restart or persist")
+
+        api.async_restart = forbidden
+        workflow._calibration.async_verify_after_restart = forbidden  # type: ignore[method-assign]
+        workflow._calibration._persist_verified = forbidden
+        workflow.subscribe_session(handle.session_id, events.append)
+
+        status = await workflow.async_complete_calibration_without_changes(
+            handle.session_id
+        )
+        repeated = await workflow.async_complete_calibration_without_changes(
+            handle.session_id
+        )
+
+        assert status.state == "verified"
+        assert not status.has_pending_calibration
+        assert repeated == status
+        assert events == [status]
+        assert sessions.pending_calibration(MAC) is None
+        sessions._pending_calibrations[MAC] = _pending(
+            handle, gains=(("meter_main1", (100, 200, 300)),)
+        )
+        with pytest.raises(WorkflowHandleError, match="restart verification"):
+            await workflow.async_complete_calibration_without_changes(handle.session_id)
+        sessions._pending_calibrations.clear()
+        with pytest.raises(WorkflowHandleError, match="already finalized"):
+            await workflow.async_restart_and_verify(handle.session_id)
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("gains", "offsets", "power_offsets"),
+    [
+        (("meter_main1", (100, 200, 300)), (), ()),
+        ((), ("meter_main1", OFFSET_TABLE), ()),
+        ((), (), ("meter_main1", POWER_OFFSET_TABLE)),
+        (
+            ("meter_main1", (100, 200, 300)),
+            ("meter_main2", OFFSET_TABLE),
+            ("meter_main1", POWER_OFFSET_TABLE),
+        ),
+    ],
+    ids=("gain-only", "offset-only-partial", "power-offset-only", "mixed"),
+)
+def test_complete_without_changes_refuses_and_preserves_every_pending_category(
+    gains: tuple[Any, ...],
+    offsets: tuple[Any, ...],
+    power_offsets: tuple[Any, ...],
+) -> None:
+    async def run() -> None:
+        workflow, handle, sessions, _api = _workflow()
+        pending = _pending(
+            handle,
+            gains=(gains,) if gains else (),
+            offsets=(offsets,) if offsets else (),
+            power_offsets=(power_offsets,) if power_offsets else (),
+        )
+        sessions._pending_calibrations[MAC] = pending
+        events: list[Any] = []
+        workflow.subscribe_session(handle.session_id, events.append)
+
+        with pytest.raises(WorkflowHandleError, match="restart verification"):
+            await workflow.async_complete_calibration_without_changes(handle.session_id)
+
+        assert sessions.pending_calibration(MAC) == pending
+        assert handle.state == "ready"
+        assert events == []
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_complete_without_changes_uses_active_operation_and_ttl_guards() -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        handle.active_task = asyncio.current_task()
+        with pytest.raises(WorkflowHandleError, match="active operation"):
+            await workflow.async_complete_calibration_without_changes(handle.session_id)
+
+        handle.active_task = None
+        handle.expires_at = 0
+        with pytest.raises(WorkflowHandleError, match="stale"):
+            await workflow.async_complete_calibration_without_changes(handle.session_id)
+        await workflow.async_close()
+
+    asyncio.run(run())

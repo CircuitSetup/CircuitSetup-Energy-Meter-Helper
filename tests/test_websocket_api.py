@@ -526,7 +526,10 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         base |= {"session_id": "session", "target": "voltage", "target_id": "main_1"}
     elif suffix in {"check_offset_readiness", "calibrate_offset"}:
         base |= {"session_id": "session", "board_index": 0, "stage": 1}
-    elif suffix == "skip_offset_calibration":
+    elif suffix in {
+        "skip_offset_calibration",
+        "complete_calibration_without_changes",
+    }:
         base["session_id"] = "session"
     elif suffix == "calibrate_voltage":
         base |= {"session_id": "session", "group_key": "main_1", "reference": 120.0}
@@ -1850,6 +1853,7 @@ def test_every_topology_and_calibration_route_delegates_and_session_events_unsub
         "check_offset_readiness",
         "calibrate_offset",
         "skip_offset_calibration",
+        "complete_calibration_without_changes",
         "calibrate_voltage",
         "calibrate_current",
         "restart_and_verify",
@@ -1886,6 +1890,24 @@ def test_every_topology_and_calibration_route_delegates_and_session_events_unsub
         assert connection.events[-1][1] == {"state": "live"}
         connection.subscriptions[len(commands) + 1]()
         assert workflow.callback is None
+
+    asyncio.run(run())
+
+
+def test_complete_without_changes_is_an_admin_session_only_mutation() -> None:
+    async def run() -> None:
+        command = f"{DOMAIN}/complete_calibration_without_changes"
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+
+        assert command in MUTATION_COMMANDS
+        handler, schema = hass.data["websocket_api"][command]
+        assert schema is not None
+        assert schema(_message(command))["session_id"] == "session"
+        with pytest.raises(vol.Invalid):
+            schema(_message(command) | {"unexpected": True})
+        with pytest.raises(Unauthorized):
+            handler(hass, FakeConnection(admin=False), schema(_message(command)))
 
     asyncio.run(run())
 

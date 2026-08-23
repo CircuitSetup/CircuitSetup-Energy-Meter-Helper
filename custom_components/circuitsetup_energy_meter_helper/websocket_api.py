@@ -61,6 +61,7 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}calibrate_voltage",
     f"{_PREFIX}calibrate_current",
     f"{_PREFIX}restart_and_verify",
+    f"{_PREFIX}complete_calibration_without_changes",
     f"{_PREFIX}cancel_session",
 )
 SUBSCRIPTION_COMMANDS = (
@@ -205,6 +206,10 @@ class WorkflowOwner(Protocol):
     ) -> Any: ...
 
     async def async_restart_and_verify(self, session_id: str) -> Any: ...
+
+    async def async_complete_calibration_without_changes(
+        self, session_id: str
+    ) -> Any: ...
 
     async def async_cancel_session(self, session_id: str) -> Any: ...
 
@@ -362,6 +367,10 @@ class EntryWebsocketController:
             )
         if operation == "restart_and_verify" and workflow is not None:
             return await workflow.async_restart_and_verify(msg["session_id"])
+        if operation == "complete_calibration_without_changes" and workflow is not None:
+            return await workflow.async_complete_calibration_without_changes(
+                msg["session_id"]
+            )
         if operation == "cancel_session" and workflow is not None:
             return await workflow.async_cancel_session(msg["session_id"])
         raise CapabilityUnavailable
@@ -857,6 +866,7 @@ def _schema(command: str) -> dict[Any, Any]:
         "get_session",
         "skip_offset_calibration",
         "restart_and_verify",
+        "complete_calibration_without_changes",
         "cancel_session",
         "subscribe_session",
     }:

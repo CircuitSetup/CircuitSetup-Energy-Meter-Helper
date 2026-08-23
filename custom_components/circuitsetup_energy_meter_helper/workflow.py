@@ -860,6 +860,25 @@ class EntryWorkflow:
         finally:
             self._release_claim(handle, revision)
 
+    async def async_complete_calibration_without_changes(
+        self, session_id: str
+    ) -> SessionStatus:
+        handle = self._session(session_id)
+        if self._has_pending_calibration(handle.mac):
+            raise WorkflowHandleError(
+                "calibration changes require restart verification"
+            )
+        if handle.state == "verified":
+            return self._status(handle)
+        handle, revision = self._claim_ready_session(session_id)
+        try:
+            self._assert_claim(handle, revision)
+            handle.state = "verified"
+            self._refresh(handle)
+            return self._publish(handle)
+        finally:
+            self._release_claim(handle, revision)
+
     async def async_cancel_session(self, session_id: str) -> SessionStatus:
         handle = self._session(session_id)
         with self._guard(handle.mac):
@@ -1156,6 +1175,8 @@ class EntryWorkflow:
             handle = self._session_locked(session_id)
             if not handle.safety_acknowledged or not handle.preflight.ok:
                 raise WorkflowHandleError("session safety confirmation is absent")
+            if handle.state == "verified":
+                raise WorkflowHandleError("calibration session is already finalized")
             if handle.active_task is not None:
                 raise WorkflowHandleError("session already has an active operation")
             handle.revision += 1
