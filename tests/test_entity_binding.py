@@ -28,6 +28,7 @@ from custom_components.circuitsetup_energy_meter_helper.entity_binding import (
     EntityBindingAmbiguity,
     EntityBindingError,
     EntityBindingMissing,
+    OffsetControlStatus,
     ResolutionSource,
     bind_meter,
     bind_native_meter,
@@ -130,6 +131,7 @@ def synthetic_entities(
     prefix: str = "CT",
     key_offset: int = 0,
     native: bool = False,
+    offset_controls: bool = False,
 ) -> list[object]:
     values = substitutions(addon_count, prefix, native=native)
     object_id_for = _esphome_object_id if native else slug
@@ -174,6 +176,14 @@ def synthetic_entities(
             add(
                 ButtonInfo(object_id_for(clear_name), 0, clear_name, device_id=device_id)
             )
+            if offset_controls:
+                for name in (
+                    f"1. Run {group_name} Offset Cal",
+                    f"z1. Clear {group_name} Offset Cal",
+                    f"2. Run {group_name} Power Offset Cal",
+                    f"z2. Clear {group_name} Power Offset Cal",
+                ):
+                    add(ButtonInfo(object_id_for(name), 0, name, device_id=device_id))
 
             for phase_index, phase in enumerate(phases):
                 if board_index == 0 and group_index == 0 and phase == "a":
@@ -261,6 +271,16 @@ def test_native_binding_rebinds_after_restart_without_yaml_substitutions() -> No
     assert rebound.groups[0].run_gain.descriptor.key >= 1_000
 
 
+def test_native_binding_preserves_available_offset_controls() -> None:
+    meter = bind_native_meter(
+        EntityCatalog(synthetic_entities(0, native=True, offset_controls=True), 1),
+        topology(0),
+    )
+
+    assert meter.offset_capability.status is OffsetControlStatus.AVAILABLE
+    assert len(meter.offset_capability.controls) == 2
+
+
 @pytest.mark.parametrize("addon_count", (0, 1, 6))
 def test_binds_complete_unique_topology_for_every_supported_scale(
     addon_count: int,
@@ -285,6 +305,74 @@ def test_binds_complete_unique_topology_for_every_supported_scale(
     assert len(raw_keys) == len(set(raw_keys)) == 12 * expected_topology.group_count
     assert any(entity.descriptor.disabled_by_default for entity in binding.entities)
     assert binding.connection_generation == addon_count + 1
+    assert binding.offset_capability.status is OffsetControlStatus.UNAVAILABLE
+    assert binding.offset_capability.controls == ()
+
+
+def test_binds_offset_controls_for_every_calibration_group() -> None:
+    meter = bind_meter(
+        EntityCatalog(synthetic_entities(1, offset_controls=True), 1),
+        topology(1),
+        substitutions(1),
+    )
+
+    assert meter.offset_capability.status is OffsetControlStatus.AVAILABLE
+    assert [controls.run_offset.role for controls in meter.offset_capability.controls] == [
+        "main_1.run_offset",
+        "main_2.run_offset",
+        "addon1_1.run_offset",
+        "addon1_2.run_offset",
+    ]
+    assert [
+        controls.restore_power_offset.role
+        for controls in meter.offset_capability.controls
+    ] == [
+        "main_1.restore_power_offset",
+        "main_2.restore_power_offset",
+        "addon1_1.restore_power_offset",
+        "addon1_2.restore_power_offset",
+    ]
+    assert all(
+        control.descriptor.device_id == group.run_gain.descriptor.device_id
+        for group, controls in zip(meter.groups, meter.offset_capability.controls, strict=True)
+        for control in controls.entities
+    )
+    assert all(len(group.buttons) == 2 for group in meter.groups)
+
+
+@pytest.mark.parametrize("failure", ("partial", "ambiguous", "duplicate", "cross_device"))
+def test_offset_controls_are_invalid_when_catalog_is_not_a_complete_grouped_set(
+    failure: str,
+) -> None:
+    entities = synthetic_entities(0, offset_controls=True)
+    run = next(
+        item
+        for item in entities
+        if item.name == "1. Run Main Meter 1 Offset Cal"
+    )
+    stored_mapping: dict[str, str] | None = None
+    if failure == "partial":
+        entities.remove(run)
+    elif failure == "ambiguous":
+        entities.append(replace(run, key=99_999))
+    elif failure == "duplicate":
+        stored_mapping = {
+            "main_1.run_offset": run.object_id,
+            "main_1.restore_offset": run.object_id,
+        }
+    else:
+        run.device_id = 99
+
+    meter = bind_meter(
+        EntityCatalog(entities, 1),
+        topology(0),
+        substitutions(0),
+        stored_mapping=stored_mapping,
+    )
+
+    assert meter.offset_capability.status is OffsetControlStatus.INVALID
+    assert meter.offset_capability.controls == ()
+    assert meter.offset_capability.repair_reason
 
 
 def test_group_key_is_exact_and_bounded() -> None:

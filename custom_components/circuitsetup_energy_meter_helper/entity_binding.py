@@ -20,6 +20,12 @@ class ResolutionSource(StrEnum):
     PATTERN = "pattern"
 
 
+class OffsetControlStatus(StrEnum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    INVALID = "invalid"
+
+
 @dataclass(frozen=True, slots=True)
 class ManualMappingOption:
     role: str
@@ -68,6 +74,30 @@ class BoundEntity:
 
 
 @dataclass(frozen=True, slots=True)
+class OffsetControlBinding:
+    run_offset: BoundEntity
+    restore_offset: BoundEntity
+    run_power_offset: BoundEntity
+    restore_power_offset: BoundEntity
+
+    @property
+    def entities(self) -> tuple[BoundEntity, BoundEntity, BoundEntity, BoundEntity]:
+        return (
+            self.run_offset,
+            self.restore_offset,
+            self.run_power_offset,
+            self.restore_power_offset,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class OffsetControlCapability:
+    status: OffsetControlStatus
+    controls: tuple[OffsetControlBinding, ...] = ()
+    repair_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ChannelBinding:
     channel: int
     reference_current: BoundEntity
@@ -109,6 +139,9 @@ class MeterBinding:
     groups: tuple[GroupBinding, ...]
     channels: tuple[ChannelBinding, ...]
     native: bool = False
+    offset_capability: OffsetControlCapability = OffsetControlCapability(
+        OffsetControlStatus.UNAVAILABLE
+    )
 
     def __post_init__(self) -> None:
         if len(self.groups) != self.topology.group_count:
@@ -120,6 +153,19 @@ class MeterBinding:
         raw_keys = tuple(entity.descriptor.raw_key for entity in self.entities)
         if len(raw_keys) != len(set(raw_keys)):
             raise EntityBindingError("one native entity serves multiple semantic roles")
+        capability = self.offset_capability
+        if capability.status is OffsetControlStatus.AVAILABLE:
+            if len(capability.controls) != len(self.groups):
+                raise EntityBindingError("offset controls do not cover every group")
+            if capability.repair_reason is not None:
+                raise EntityBindingError("available offset controls cannot need repair")
+        elif capability.controls:
+            raise EntityBindingError("unavailable offset controls cannot be bound")
+        elif (
+            capability.status is OffsetControlStatus.INVALID
+            and not capability.repair_reason
+        ):
+            raise EntityBindingError("invalid offset controls need a repair reason")
 
     @property
     def entities(self) -> tuple[BoundEntity, ...]:
@@ -212,7 +258,28 @@ def bind_native_meter(
                 ),
                 *(f"CT{channel} Amps" for channel in range(first_channel, first_channel + 3)),
             )
-            if tuple(entity.descriptor.name for entity in group.entities) != expected_names or any(
+            offset_controls = (
+                binding.offset_capability.controls[board * 2 + group_index].entities
+                if binding.offset_capability.status is OffsetControlStatus.AVAILABLE
+                else ()
+            )
+            offset_names = (
+                (
+                    f"1. Run {group_name} Offset Cal",
+                    f"z1. Clear {group_name} Offset Cal",
+                    f"2. Run {group_name} Power Offset Cal",
+                    f"z2. Clear {group_name} Power Offset Cal",
+                )
+                if offset_controls
+                else ()
+            )
+            expected_names = (
+                *expected_names[:6],
+                *offset_names,
+                *expected_names[6:],
+            )
+            entities = (*group.entities[:6], *offset_controls, *group.entities[6:])
+            if tuple(entity.descriptor.name for entity in entities) != expected_names or any(
                 entity.source is not ResolutionSource.OBJECT_ID
                 or len(
                     catalog.by_name_unit(
@@ -222,7 +289,7 @@ def bind_native_meter(
                     )
                 )
                 != 1
-                for entity in group.entities
+                for entity in entities
             ):
                 raise EntityBindingError("native entity metadata differs from firmware contract")
     return MeterBinding(
@@ -231,6 +298,7 @@ def bind_native_meter(
         binding.groups,
         binding.channels,
         native=True,
+        offset_capability=binding.offset_capability,
     )
 
 
@@ -322,6 +390,47 @@ def bind_meter(
             else "missing required entity"
         )
         raise EntityBindingMissing(spec.role, options, reason)
+
+    def resolve_optional(spec: _RoleSpec) -> tuple[BoundEntity | None, str | None]:
+        tiers: tuple[tuple[ResolutionSource, tuple[EntityDescriptor, ...]], ...] = (
+            (
+                ResolutionSource.STORED,
+                _valid_unit(
+                    catalog.by_object_id(spec.kind, stored.get(spec.role, "")),
+                    spec.unit,
+                )
+                if spec.role in stored
+                else (),
+            ),
+            (
+                ResolutionSource.OBJECT_ID,
+                _valid_unit(catalog.by_object_id(spec.kind, spec.object_id), spec.unit),
+            ),
+            (
+                ResolutionSource.NAME_UNIT,
+                catalog.by_name_unit(spec.kind, spec.name, spec.unit),
+            ),
+            (
+                ResolutionSource.PATTERN,
+                tuple(
+                    candidate
+                    for candidate in catalog.by_kind(spec.kind)
+                    if candidate.unit == spec.unit
+                    and _matches_pattern(candidate, spec.pattern_terms)
+                ),
+            ),
+        )
+        for source, candidates in tiers:
+            if not candidates:
+                continue
+            if len(candidates) != 1:
+                return None, f"offset control {spec.role} is ambiguous"
+            candidate = candidates[0]
+            if candidate.raw_key in used:
+                return None, f"offset control {spec.role} is duplicated"
+            used.add(candidate.raw_key)
+            return BoundEntity(spec.role, candidate, source), None
+        return None, None
 
     for board_index in range(topology.board_count):
         for group_index in range(2):
@@ -443,11 +552,65 @@ def bind_meter(
                 )
             )
 
+    offset_controls: list[OffsetControlBinding] = []
+    offset_errors: list[str] = []
+    found_offset_control = False
+    for group in groups:
+        controls: list[BoundEntity | None] = []
+        offset_group_name = _group_name_for(group.key, substitutions)
+        for role, name, terms in (
+            ("run_offset", f"1. Run {offset_group_name} Offset Cal", (group.key, "run", "offset")),
+            ("restore_offset", f"z1. Clear {offset_group_name} Offset Cal", (group.key, "clear", "offset")),
+            ("run_power_offset", f"2. Run {offset_group_name} Power Offset Cal", (group.key, "run", "power", "offset")),
+            ("restore_power_offset", f"z2. Clear {offset_group_name} Power Offset Cal", (group.key, "clear", "power", "offset")),
+        ):
+            control, error = resolve_optional(_spec(f"{group.key}.{role}", "button", name, "", terms))
+            controls.append(control)
+            found_offset_control = found_offset_control or control is not None or error is not None
+            if error is not None:
+                offset_errors.append(error)
+        if any(control is None for control in controls):
+            if any(control is not None for control in controls):
+                offset_errors.append(f"offset controls are partial for {group.key}")
+            continue
+        run_offset, restore_offset, run_power_offset, restore_power_offset = controls
+        assert (
+            run_offset is not None
+            and restore_offset is not None
+            and run_power_offset is not None
+            and restore_power_offset is not None
+        )
+        bound_controls = OffsetControlBinding(
+            run_offset, restore_offset, run_power_offset, restore_power_offset
+        )
+        if any(
+            control.descriptor.device_id != group.run_gain.descriptor.device_id
+            for control in bound_controls.entities
+        ):
+            offset_errors.append(f"offset controls are cross-device for {group.key}")
+            continue
+        offset_controls.append(bound_controls)
+
+    if not found_offset_control:
+        offset_capability = OffsetControlCapability(OffsetControlStatus.UNAVAILABLE)
+    elif offset_errors or len(offset_controls) != len(groups):
+        offset_capability = OffsetControlCapability(
+            OffsetControlStatus.INVALID,
+            repair_reason=offset_errors[0]
+            if offset_errors
+            else "offset controls are incomplete",
+        )
+    else:
+        offset_capability = OffsetControlCapability(
+            OffsetControlStatus.AVAILABLE, tuple(offset_controls)
+        )
+
     return MeterBinding(
         topology,
         catalog.connection_generation,
         tuple(groups),
         tuple(channels),
+        offset_capability=offset_capability,
     )
 
 
@@ -519,3 +682,11 @@ def _required_substitution(substitutions: Mapping[str, str], key: str) -> str:
     if not value:
         raise EntityBindingError(f"missing required substitution {key}")
     return value
+
+
+def _group_name_for(key: str, substitutions: Mapping[str, str]) -> str:
+    board, group = key.rsplit("_", 1)
+    return _required_substitution(
+        substitutions,
+        f"main_meter_name{group}" if board == "main" else f"{board}_name{group}",
+    )
