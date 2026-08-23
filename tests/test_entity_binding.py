@@ -375,6 +375,35 @@ def test_offset_controls_are_invalid_when_catalog_is_not_a_complete_grouped_set(
     assert meter.offset_capability.repair_reason
 
 
+@pytest.mark.parametrize("malformation", ("wrong_kind", "wrong_unit"))
+def test_malformed_offset_controls_are_invalid_not_unavailable(
+    malformation: str,
+) -> None:
+    entities = synthetic_entities(0, offset_controls=True)
+    offset_indexes = [
+        index for index, entity in enumerate(entities) if "Offset Cal" in entity.name
+    ]
+    if malformation == "wrong_kind":
+        for index in offset_indexes:
+            entity = entities[index]
+            entities[index] = SensorInfo(
+                entity.object_id,
+                entity.key,
+                entity.name,
+                "",
+                entity.device_id,
+            )
+    else:
+        for index in offset_indexes:
+            entities[index].unit_of_measurement = "V"
+
+    meter = bind_meter(EntityCatalog(entities, 1), topology(0), substitutions(0))
+
+    assert meter.offset_capability.status is OffsetControlStatus.INVALID
+    assert meter.offset_capability.controls == ()
+    assert meter.offset_capability.repair_reason
+
+
 def test_group_key_is_exact_and_bounded() -> None:
     assert group_key(0, 0) == "main_1"
     assert group_key(6, 1) == "addon6_2"
