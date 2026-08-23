@@ -30,6 +30,7 @@ import type {
 
 const STEPS: Array<[PanelStep, string]> = [
   ["setup", "Setup Device"],
+  ["discover", "Discover"],
   ["topology", "Topology"],
   ["ct", "CT Settings"],
   ["safety", "Safety"],
@@ -88,6 +89,7 @@ export class CircuitSetupPanel extends LitElement {
   private selectedEspHomeVersion: string | null = null;
   private resolvedFirmwareOptions: FirmwareOption[] = [];
   private firmwareFetchController: AbortController | null = null;
+  private setupDeviceIds = new Set<string>();
   private unsubs: Array<() => void> = [];
   private connectionGeneration = 0;
   private operationGeneration = 0;
@@ -125,6 +127,7 @@ export class CircuitSetupPanel extends LitElement {
     this.firmwareCatalogState = "idle";
     this.firmwareCatalogError = "";
     this.resolvedFirmwareOptions = [];
+    this.setupDeviceIds = new Set();
     super.disconnectedCallback();
   }
 
@@ -145,17 +148,26 @@ export class CircuitSetupPanel extends LitElement {
       const setup = await api.setupStatus();
       if (!this.owns(generation, api)) return;
       this.setup = setup;
+      this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
       const intent = this.setup.installer_intent;
       if (intent) {
         this.addonCount = intent.addon_count;
         this.connection = intent.connection_type;
         this.refreshFirmwareOptions();
       }
-      if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.setup.devices[0]?.entry_id ?? null);
+      if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.firstDeviceId(this.setup.devices));
       await this.ownSubscription(api.subscribeSetup((snapshot) => {
         if (!this.owns(generation, api)) return;
+        const discovered = snapshot.devices
+          .filter((device) => !this.setupDeviceIds.has(device.entry_id))
+          .sort((first, second) => first.entry_id.localeCompare(second.entry_id));
         this.setup = snapshot;
-        if (!this.selectedDeviceId && snapshot.devices.length) this.selectDevice(snapshot.devices[0]?.entry_id ?? null);
+        this.setupDeviceIds = new Set(snapshot.devices.map((device) => device.entry_id));
+        if (this.step === "setup" && discovered.length) {
+          this.selectDevice(discovered[0]!.entry_id);
+          this.navigate("discover");
+          this.announcement = "CircuitSetup energy meter discovered.";
+        }
         this.requestUpdate();
       }), generation, api);
       if (this.transaction) await this.subscribeTransaction(generation);
@@ -288,6 +300,10 @@ export class CircuitSetupPanel extends LitElement {
     this.resetCalibrationRun();
   }
 
+  private firstDeviceId(devices: SetupSnapshot["devices"]): string | null {
+    return devices.map((device) => device.entry_id).sort((first, second) => first.localeCompare(second))[0] ?? null;
+  }
+
   public showTopology(topology: MeterTopology): void {
     this.topology = topology;
     this.navigate("topology");
@@ -406,9 +422,18 @@ export class CircuitSetupPanel extends LitElement {
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      const unchangedDiscovery = this.step === "discover" && this.selectedDeviceId !== null
+        && setup.devices.length === this.setupDeviceIds.size
+        && setup.devices.some((device) => device.entry_id === this.selectedDeviceId)
+        && setup.devices.every((device) => this.setupDeviceIds.has(device.entry_id));
       this.setup = setup;
-      if (setup.devices.length) this.announcement = "Compatible meter discovered. Select it above to configure it.";
-      else {
+      this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
+      if (setup.devices.length && !unchangedDiscovery) {
+        this.selectDevice(this.firstDeviceId(setup.devices));
+        this.navigate("discover");
+        this.announcement = "CircuitSetup energy meter discovered.";
+      }
+      else if (!setup.devices.length) {
         this.announcement = "No compatible meter found. Check the network and rescan.";
       }
     }, "Rescan failed.", () => this.ownsOperation(generation, api, deviceId));
@@ -996,6 +1021,9 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.connection = value; this.refreshFirmwareOptions(); },
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction)}
       ${this.firmwareCatalog()}`;
+    if (this.step === "discover") return setupDeviceStep(this.setup, this.addonCount, this.connection,
+      () => undefined, () => undefined,
+      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, true);
     if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(),
       () => this.back(), () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
         ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session");

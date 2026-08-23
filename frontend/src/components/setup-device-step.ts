@@ -18,6 +18,7 @@ export function setupDeviceStep(
   configure: (deviceId: string) => void,
   adopt: (deviceId: string) => void,
   busyAction = "",
+  discoverOnly = false,
 ): TemplateResult {
   return html`
     <section class="step-content setup-step" aria-labelledby="step-heading">
@@ -41,7 +42,7 @@ export function setupDeviceStep(
         </div>`}
         <button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>
       </section>
-      <hr />
+      ${discoverOnly ? "" : html`<hr />
       <h2>Set up a new device</h2>
       <fieldset class="choice-field">
         <legend>Add-on boards</legend>
@@ -79,8 +80,9 @@ export function setupDeviceStep(
       </section>
       <p class="info-band">Use Web Serial in a supported Chromium browser and a USB data cable to install firmware.</p>
       <p class="info-band">${connection === "wifi"
-        ? "ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter over USB. This helper does not store or send those credentials to Home Assistant. Complete Add to Home Assistant when offered."
+        ? "ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter over USB. This helper does not store or send those credentials to Home Assistant. Complete the ESP Web Tools network setup and Add to Home Assistant when offered."
         : "Install firmware over USB, connect Ethernet and power, wait for an address, complete Add to Home Assistant, then return here. This helper continues when discovery reports your meter."}</p>
+      `}
     </section>
   `;
 }

@@ -93,7 +93,8 @@ function restart(addons: number) {
 }
 
 async function mockHomeAssistant(page: Page, options: { addons?: number; outcome?: Outcome;
-  calibration?: Calibration; rescan?: Array<"none" | "device">; importable?: boolean } = {}) {
+  calibration?: Calibration; rescan?: Array<"none" | "device">; importable?: boolean;
+  setupEvent?: "none" | "device" } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
@@ -184,7 +185,10 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       else return fail("unknown_command", operation);
       ok(result);
       if (operation.startsWith("subscribe_")) {
-        setTimeout(() => socket.send(JSON.stringify({ id, type: "event", event: result })), 0);
+        const event = operation === "subscribe_setup" && options.setupEvent === "device"
+          ? { state: "device_discovered", devices: [device(addons, options.importable)] }
+          : result;
+        setTimeout(() => socket.send(JSON.stringify({ id, type: "event", event })), 0);
       }
     });
   });
@@ -238,6 +242,8 @@ test("native mocked HA websocket covers no-device, installer intent, wiring, res
 
   await page.locator('[data-action="rescan"]').click();
   await expect(page.getByText("No compatible device found")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
+  await expect(page.getByText(/(?:USB flash|installation|provisioning) complete/i)).toHaveCount(0);
   await page.locator('[name="addon-count"][value="6"]').locator("..").click();
   await page.locator('[name="connection-type"][value="ethernet_waveshare"]').locator("..").click();
   await expect(page.getByText("(15, 26)")).toBeVisible();
@@ -251,6 +257,15 @@ test("native mocked HA websocket covers no-device, installer intent, wiring, res
   expect(intents).toMatchObject([{ addon_count: 0, connection_type: "wifi" },
     { addon_count: 6, connection_type: "ethernet_waveshare" }]);
   expect(operations(frames)).toEqual(expect.arrayContaining(["subscribe_setup", "rescan", "adopt_device"]));
+});
+
+test("a setup subscription hands a newly discovered meter to Discover once", async ({ page }) => {
+  await mockHomeAssistant(page, { setupEvent: "device" });
+  await page.goto("/test/harness.html");
+
+  await expect(page.getByRole("heading", { name: "Discover", exact: true })).toBeVisible();
+  await expect(page.getByText("CircuitSetup energy meter discovered.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Discover", exact: true })).toHaveCount(1);
 });
 
 test("six-channel inventory exposes ambiguous gain while label-only stays out of preview and collisions refuse", async ({ page }) => {

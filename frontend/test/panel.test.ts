@@ -281,17 +281,16 @@ describe("CircuitSetup panel", () => {
     );
 
     expect(text(panel)).toContain("CircuitSetup Energy Meter Helper");
-    expect(panel.shadowRoot?.querySelectorAll("nav ol li")).toHaveLength(9);
+    expect(panel.shadowRoot?.querySelectorAll("nav ol li")).toHaveLength(10);
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
     expect(text(panel)).toContain("Configure an existing device");
     expect(text(panel)).toContain("Basement meter");
     expect(text(panel)).toContain("Device Builder: Yes — import available");
     expect(text(panel)).toContain("Set up a new device");
-    expect(text(panel)).not.toContain("Discover");
     expect(panel.shadowRoot?.querySelectorAll('[name="addon-count"]')).toHaveLength(7);
     expect(panel.shadowRoot?.querySelectorAll('[name="connection-type"]')).toHaveLength(3);
     expect(text(panel)).toContain("Install firmware");
-    expect(text(panel)).toContain("ESP Web Tools asks for your Wi-Fi network and password");
+    expect(text(panel)).toContain("Complete the ESP Web Tools network setup and Add to Home Assistant when offered.");
     expect(text(panel)).toContain("Rescan for device");
     expect(text(panel)).toContain("USB data cable");
     expect(panel.shadowRoot?.querySelector("esp-web-install-button")).not.toBeNull();
@@ -315,9 +314,89 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("connect Ethernet and power, wait for an address");
     expect(text(panel)).toContain("complete Add to Home Assistant, then return here");
     expect(text(panel)).not.toContain("ESP Web Tools asks for your Wi-Fi network and password");
+    const handoff = panel.shadowRoot?.querySelectorAll(".info-band")[1]?.textContent ?? "";
+    expect(handoff).not.toMatch(/wi-fi|password|credential/i);
   });
 
-  it("rescans live setup state and shows the discovered device without a separate page", async () => {
+  it("advances setup discovery only when a subscription adds a compatible device", async () => {
+    let setupCallback: ((message: unknown) => void) | undefined;
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async (callback) => {
+        setupCallback = callback as (message: unknown) => void;
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    const meter2 = { ...device, entry_id: "meter-2", title: "Garage meter" };
+    setupCallback?.({ state: "device_discovered", devices: [meter2, device] });
+    await panel.updateComplete;
+
+    const state = panel as unknown as { selectedDeviceId: string | null };
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+    expect(panel.shadowRoot?.querySelector(".sr-status")?.textContent).toContain("CircuitSetup energy meter discovered.");
+    expect(panel.shadowRoot?.querySelector('[name="addon-count"]')).toBeNull();
+    expect(panel.shadowRoot?.querySelector("esp-web-install-button")).toBeNull();
+  });
+
+  it("does not reset selection or re-enter Discover for a repeated setup snapshot", async () => {
+    let setupCallback: ((message: unknown) => void) | undefined;
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        if (String(message.type).endsWith("/setup_status")) return { state: "no_device", devices: [] } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async (callback) => {
+        setupCallback = callback as (message: unknown) => void;
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    const meter2 = { ...device, entry_id: "meter-2", title: "Garage meter" };
+    const snapshot = { state: "device_discovered", devices: [device, meter2] };
+    setupCallback?.(snapshot);
+    await panel.updateComplete;
+    const state = panel as unknown as { selectedDeviceId: string | null; showState(step: "setup"): void };
+    state.selectedDeviceId = "meter-2";
+    state.showState("setup");
+    setupCallback?.(snapshot);
+    await panel.updateComplete;
+
+    expect(state.selectedDeviceId).toBe("meter-2");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+  });
+
+  it("records discovery updates outside Setup Device as the baseline without auto-advancing on return", async () => {
+    let setupCallback: ((message: unknown) => void) | undefined;
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        if (String(message.type).endsWith("/setup_status")) return { state: "no_device", devices: [] } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async (callback) => {
+        setupCallback = callback as (message: unknown) => void;
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as { showState(step: "topology" | "setup"): void };
+    state.showState("topology");
+    setupCallback?.({ state: "device_discovered", devices: [device] });
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Topology");
+    state.showState("setup");
+    setupCallback?.({ state: "device_discovered", devices: [device] });
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+  });
+
+  it("rescans live setup state and advances to Discover when a device is found", async () => {
     const hass = makeHass({
       setup_status: { state: "no_device", devices: [] },
       set_installer_intent: { state: "installer_guide", devices: [] },
@@ -329,10 +408,83 @@ describe("CircuitSetup panel", () => {
     await tick();
     await panel.updateComplete;
 
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+    expect((panel as unknown as { selectedDeviceId: string | null }).selectedDeviceId).toBe("meter-1");
     expect(text(panel)).toContain("Basement meter");
     expect(text(panel)).toContain("2026.8.0");
-    expect(text(panel)).not.toContain("USB flash complete");
+    expect(text(panel)).not.toMatch(/(?:USB flash|installation|provisioning) complete/i);
+  });
+
+  it("keeps Rescan on Setup Device and reports no compatible meter without claiming completion", async () => {
+    const panel = await mount(makeHass({
+      setup_status: { state: "no_device", devices: [] },
+      set_installer_intent: { state: "installer_guide", devices: [] },
+      rescan: { state: "no_device", devices: [] },
+    }));
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+    expect(panel.shadowRoot?.querySelector(".sr-status")?.textContent).toContain("No compatible meter found");
+    expect(text(panel)).not.toMatch(/(?:USB flash|installation|provisioning) complete/i);
+  });
+
+  it("keeps the subscription discovery selection when the same Rescan result arrives later", async () => {
+    let setupCallback: ((message: unknown) => void) | undefined;
+    let resolveRescan: ((value: unknown) => void) | undefined;
+    const snapshot = { state: "device_discovered", devices: [device] };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "set_installer_intent") return { state: "installer_guide", devices: [] } as T;
+        if (operation === "rescan") return await new Promise<T>((resolve) => { resolveRescan = resolve as (value: unknown) => void; });
+        return {} as T;
+      },
+      connection: { subscribeMessage: async (callback) => {
+        setupCallback = callback as (message: unknown) => void;
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+    setupCallback?.(snapshot);
+    await panel.updateComplete;
+    const state = panel as unknown as { selectedDeviceId: string | null; topology: unknown; announcement: string };
+    const preservedTopology = { source: "subscription" };
+    state.topology = preservedTopology;
+
+    resolveRescan?.(snapshot);
+    await tick();
+    await panel.updateComplete;
+
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(state.topology).toBe(preservedTopology);
+    expect(state.announcement).toBe("CircuitSetup energy meter discovered.");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+  });
+
+  it("keeps the current Discover selection when Rescan returns the same compatible device", async () => {
+    const snapshot = { state: "device_discovered", devices: [device] };
+    const panel = await mount(makeHass({
+      setup_status: snapshot,
+      set_installer_intent: { state: "installer_guide", devices: [] },
+      rescan: snapshot,
+    }));
+    const state = panel as unknown as { showState(step: "discover"): void; topology: unknown; announcement: string };
+    state.showState("discover");
+    const preservedTopology = { source: "discover" };
+    state.topology = preservedTopology;
+    state.announcement = "CircuitSetup energy meter discovered.";
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+    await panel.updateComplete;
+
+    expect(state.topology).toBe(preservedTopology);
+    expect(state.announcement).toBe("CircuitSetup energy meter discovered.");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
   });
 
   it("records the firmware selected at Rescan click time", async () => {
@@ -1067,6 +1219,30 @@ describe("CircuitSetup panel", () => {
     expect(unsubscribed).toBe(1);
     panel.remove();
     expect(unsubscribed).toBe(2);
+  });
+
+  it("ignores a stale setup event after reconnect while the current subscription can advance discovery", async () => {
+    const callbacks: Array<(message: unknown) => void> = [];
+    const hass: HomeAssistant = {
+      callWS: async <T>() => ({ state: "no_device", devices: [] } as T),
+      connection: { subscribeMessage: async (callback) => {
+        callbacks.push(callback as (message: unknown) => void);
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    panel.remove();
+    document.body.append(panel);
+    await tick();
+    await panel.updateComplete;
+
+    callbacks[0]?.({ state: "device_discovered", devices: [device] });
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+
+    callbacks[1]?.({ state: "device_discovered", devices: [device] });
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
   });
 
   it("reattaches setup, transaction, and session subscriptions for retained live handles", async () => {
