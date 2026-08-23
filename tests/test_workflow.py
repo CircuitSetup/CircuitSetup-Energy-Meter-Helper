@@ -250,6 +250,49 @@ def test_one_offset_call_maps_one_board_stage_and_status_retains_result() -> Non
     asyncio.run(run())
 
 
+def test_noncanonical_offset_targets_cannot_bypass_partial_retry_confirmation() -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        calls: list[tuple[int, int, bool]] = []
+
+        class Calibration:
+            async def async_calibrate_offset_board(
+                self,
+                _mac: str,
+                _session: Any,
+                _binding: Any,
+                board_index: int,
+                stage: int,
+                *,
+                confirm_retry: bool,
+            ) -> OffsetCalibrationResult:
+                calls.append((board_index, stage, confirm_retry))
+                return OffsetCalibrationResult(
+                    OffsetCalibrationState.PARTIAL,
+                    board_index,
+                    stage,
+                    (("meter_main1", OFFSET_TABLE),),
+                    ("main_2",),
+                    True,
+                )
+
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+        await workflow.async_calibrate_offset(handle.session_id, 0, 1)
+
+        for board_index, stage in ((False, 1), (0.0, 1), (0, True), (0, 1.0)):
+            with pytest.raises(WorkflowHandleError, match="target is invalid"):
+                await workflow.async_calibrate_offset(
+                    handle.session_id,
+                    board_index,  # type: ignore[arg-type]
+                    stage,  # type: ignore[arg-type]
+                )
+
+        assert calls == [(0, 1, False)]
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
 def test_offset_disposition_completes_only_after_both_board_stages() -> None:
     async def run() -> None:
         workflow, handle, _sessions, _api = _workflow()

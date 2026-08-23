@@ -1902,16 +1902,24 @@ def test_offset_websocket_schemas_bound_board_stage_and_retry_confirmation() -> 
             calibrate(_message(f"{DOMAIN}/calibrate_offset"))["confirm_retry"] is False
         )
 
-        for key, value in (
-            ("board_index", -1),
-            ("board_index", 7),
-            ("stage", 0),
-            ("stage", 3),
+        for validator, command in (
+            (readiness, "check_offset_readiness"),
+            (calibrate, "calibrate_offset"),
         ):
-            message = _message(f"{DOMAIN}/check_offset_readiness")
-            message[key] = value
-            with pytest.raises(vol.Invalid):
-                readiness(message)
+            for key, value in (
+                ("board_index", -1),
+                ("board_index", 7),
+                ("board_index", False),
+                ("board_index", 0.0),
+                ("stage", 0),
+                ("stage", 3),
+                ("stage", True),
+                ("stage", 1.0),
+            ):
+                message = _message(f"{DOMAIN}/{command}")
+                message[key] = value
+                with pytest.raises(vol.Invalid):
+                    validator(message)
 
         message = _message(f"{DOMAIN}/calibrate_offset")
         message["confirm_retry"] = "yes"

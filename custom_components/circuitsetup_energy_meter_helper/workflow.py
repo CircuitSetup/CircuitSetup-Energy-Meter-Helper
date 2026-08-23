@@ -1292,7 +1292,12 @@ class EntryWorkflow:
             or capability.status is not OffsetControlStatus.AVAILABLE
         ):
             raise WorkflowCapabilityUnavailable("offset calibration is unavailable")
-        if not 0 <= board_index < handle.topology.board_count or stage not in (1, 2):
+        if (
+            type(board_index) is not int
+            or type(stage) is not int
+            or not 0 <= board_index < handle.topology.board_count
+            or stage not in (1, 2)
+        ):
             raise WorkflowHandleError("offset calibration target is invalid")
 
     def _require_builder(self) -> LazyDeviceBuilder:

@@ -48,6 +48,24 @@ GREEN:
 - Targeted mypy for `workflow.py` and `websocket_api.py`: clean.
 - `git diff --check`: clean.
 
+## Fix round 1: canonical offset targets
+
+- Found that Python numeric equality and Voluptuous coercion allowed boolean or
+  float aliases for canonical integer targets. After a partial result for board
+  `0`, stage `1`, values such as `False`/`True` or `0`/`1.0` could produce a
+  different engine operation key and bypass retry confirmation.
+- RED: WebSocket schema regressions accepted boolean/float board and stage
+  values; a direct workflow regression reached the engine a second time with a
+  noncanonical alias after the canonical target returned `partial`.
+- GREEN: both WebSocket operations now require exact, non-boolean integers, and
+  the workflow repeats that exact-type check before engine keying for direct
+  callers. No operation or disposition behavior was otherwise expanded.
+- Focused workflow/WebSocket suite: `87 passed`.
+- Adjacent workflow/WebSocket/readiness/offset-engine/session/restart suite:
+  `169 passed`.
+- Full Python suite: `536 passed` (five third-party deprecation warnings only).
+- Targeted Ruff, Ruff format, mypy, and `git diff --check`: clean.
+
 ## Files
 
 - `custom_components/circuitsetup_energy_meter_helper/workflow.py`

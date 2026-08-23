@@ -819,8 +819,10 @@ def _schema(command: str) -> dict[Any, Any]:
     elif operation in {"check_offset_readiness", "calibrate_offset"}:
         schema |= {
             vol.Required("session_id"): _ID,
-            vol.Required("board_index"): vol.All(int, vol.Range(min=0, max=6)),
-            vol.Required("stage"): vol.In((1, 2)),
+            vol.Required("board_index"): vol.All(
+                _strict_integer, vol.Range(min=0, max=6)
+            ),
+            vol.Required("stage"): vol.All(_strict_integer, vol.In((1, 2))),
         }
         if operation == "calibrate_offset":
             schema[vol.Optional("confirm_retry", default=False)] = bool
@@ -872,6 +874,12 @@ def _reporting_multiplier(value: Any) -> float:
     if not math.isfinite(multiplier) or not 0.001 <= multiplier <= 1000:
         raise vol.Invalid("reporting_multiplier must be between 0.001 and 1000")
     return multiplier
+
+
+def _strict_integer(value: Any) -> int:
+    if type(value) is not int:
+        raise vol.Invalid("value must be an integer")
+    return value
 
 
 def sanitize_payload(
