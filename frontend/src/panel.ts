@@ -899,8 +899,8 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.connection = value; this.requestUpdate(); },
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction);
     if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(),
-      () => this.back(), () => void (this.setup?.configuration_authoritative === false
-        ? this.startSession() : this.loadInventory()), Boolean(this.error), this.pendingAction === "inventory" || this.pendingAction === "session");
+      () => this.back(), () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
+        ? this.loadInventory() : this.startSession()), Boolean(this.error), this.pendingAction === "inventory" || this.pendingAction === "session");
     if (this.step === "ct" && this.inventory) return html`<fieldset><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}> ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}> Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.ctGroup, this.drafts,
       (board) => { this.board = board; this.ctGroup = 0; this.requestUpdate(); },
       (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session")}`;
@@ -922,9 +922,12 @@ export class CircuitSetupPanel extends LitElement {
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.pendingAction === "finish"} @click=${() => this.calibrationByTarget.size ? this.navigate("restart") : void this.finishWithoutCalibration()}>${this.pendingAction === "finish" ? "Finishing…" : this.resultFor("current") ? "Continue" : "Skip current calibration"}</button></footer>`;
     if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult,
       Boolean(this.transaction?.rollback_available), () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());
-    return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.selectedProjectVersion(),
+    if (this.step === "summary") return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.selectedProjectVersion(),
       () => void (this.restartResult?.source_handoff_firmware_installed
         ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back());
+    return html`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct"
+      ? "CT settings are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
+      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;
   }
 
   public override render(): TemplateResult {

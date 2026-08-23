@@ -7,7 +7,7 @@ import math
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
@@ -452,6 +452,10 @@ class CalibrationEngine:
                     return self._indeterminate_result(
                         group, channels, attempt, (), restore
                     )
+                if evidence.flash_saved:
+                    await self._persist_interrupted(
+                        mac, replace(marker, state="flash_saved")
+                    )
                 self._validate_voltage_evidence(evidence, trusted_voltage)
                 before = tuple(phase.measured_voltage for phase in evidence.phases)
                 after = tuple(
@@ -586,6 +590,10 @@ class CalibrationEngine:
                 if evidence is None:
                     return self._indeterminate_result(
                         group, channels, attempt, (), restore, phase
+                    )
+                if evidence.flash_saved:
+                    await self._persist_interrupted(
+                        mac, replace(marker, state="flash_saved")
                     )
                 self._validate_current_evidence(evidence, raw_references)
                 before = tuple(

@@ -505,8 +505,8 @@ def test_requests_dump_config_and_reports_current_calibration_sources() -> None:
     asyncio.run(run())
 
 
-def test_missing_saved_gain_evidence_reports_configuration_source() -> None:
-    """A completed dump-config cycle makes absent saved gains a definitive No."""
+def test_missing_saved_gain_evidence_remains_unknown_for_workflow_reconciliation() -> None:
+    """Dump-config does not repeat boot-only ATM90E32 flash-source evidence."""
 
     async def run() -> None:
         client = FakeClient()
@@ -528,7 +528,7 @@ def test_missing_saved_gain_evidence_reports_configuration_source() -> None:
 
         assert await pending == {
             "meter_main1": "flash",
-            "meter_main2": "configuration",
+            "meter_main2": "unknown",
         }
 
     asyncio.run(run())

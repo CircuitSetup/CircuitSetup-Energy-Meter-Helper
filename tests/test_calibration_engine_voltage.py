@@ -213,6 +213,10 @@ def test_voltage_calibration_persists_before_mutation_and_preserves_currents() -
         assert names.index("marker") < names.index("button")
         assert markers[0] is not None
         assert markers[0].changed_channels == (10, 11, 12)
+        assert [marker.state for marker in markers if marker is not None] == [
+            "active",
+            "flash_saved",
+        ]
         assert [event[0] for event in session.events].count("button") == 1
         assert all(event[4] >= 30 for event in session.events if event[0] == "window")
         assert [event[0] for event in session.events].index("expect_gain") < [
@@ -389,7 +393,10 @@ def test_each_new_calibration_lease_revalidates_retained_yaml_before_mutation() 
             )
 
         assert calls == 2
-        assert len(markers) == 1
+        assert [marker.state for marker in markers if marker is not None] == [
+            "active",
+            "flash_saved",
+        ]
         assert len(session.events) == event_count
 
     asyncio.run(run())

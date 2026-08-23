@@ -16,8 +16,9 @@ export function calibrationProgress(
       class="progress-number">${index + 1}</span><span>${label}</span></li>`)}</ol>`;
 }
 
-export function calibrationSourceEvidence(session: SessionStatus | null): TemplateResult {
-  const sources = Object.entries(session?.calibration_sources ?? {});
+export function calibrationSourceEvidence(session: SessionStatus | null, instanceIds?: string[]): TemplateResult {
+  const sources = Object.entries(session?.calibration_sources ?? {})
+    .filter(([instance]) => instanceIds === undefined || instanceIds.includes(instance));
   return html`<section class="measurement-evidence calibration-source" aria-label="Current calibration source">
     <h3>Current calibration source</h3>
     ${sources.length ? html`<table><thead><tr><th>Chip</th><th>Source</th><th>Saved in flash</th></tr></thead><tbody>
@@ -26,15 +27,14 @@ export function calibrationSourceEvidence(session: SessionStatus | null): Templa
   </section>`;
 }
 
-export function stabilityEvidence(result: StabilityResult | null): TemplateResult | typeof nothing {
+export function stabilityEvidence(result: StabilityResult | null, labels?: string[]): TemplateResult | typeof nothing {
   if (!result) return nothing;
+  const unit = result.target === "voltage" ? "V" : "A";
   return html`<section class="measurement-evidence" aria-label=${`${result.target} ${result.target_id} stability evidence`}>
     <h3>Stability evidence · ${result.target_id}</h3>
     ${result.windows.map((window, index) => html`<dl>
-      <div><dt>Live values</dt><dd>${window.samples.map(formatNumber).join(", ")}</dd></div>
-      <div><dt>Mean</dt><dd>${formatNumber(window.mean)}</dd></div>
-      <div><dt>Standard deviation</dt><dd>${formatNumber(window.standard_deviation)}</dd></div>
-      <div><dt>Range</dt><dd>${formatNumber(window.range_percent)}%</dd></div>
+      <div><dt>${labels?.[index] ?? (result.target === "voltage" ? `V${index % 3 + 1}` : `A${index + 1}`)}</dt>
+        <dd>${window.samples.map((value) => `${formatNumber(value)} ${unit}`).join(", ")}</dd></div>
     </dl>`)}
   </section>`;
 }

@@ -72,6 +72,12 @@ def _public_sample_window(window: SensorSampleWindow) -> dict[str, Any]:
     }
 
 
+def _instance_id_for_channel(channel: int) -> str:
+    board = (channel - 1) // 6
+    group = ((channel - 1) % 6) // 3 + 1
+    return f"meter_main{group}" if board == 0 else f"addon{board}_{group}"
+
+
 class WorkflowCapabilityUnavailable(RuntimeError):
     """A required external runtime owner is genuinely absent."""
 
@@ -496,11 +502,33 @@ class EntryWorkflow:
             group.key.replace("main_", "meter_main") for group in binding.groups
         }
         source_reader = getattr(api, "async_calibration_sources", None)
-        calibration_sources = (
+        observed_sources = (
             await source_reader(instance_ids)
             if source_reader is not None
             else {instance_id: "unknown" for instance_id in instance_ids}
         )
+        marker = await self._store.async_get_interrupted_session(mac)
+        verified = await self._store.async_get_verified_calibration(mac)
+        saved_flash_ids = (
+            {_instance_id_for_channel(channel) for channel in marker.changed_channels}
+            if marker is not None and marker.state == "flash_saved"
+            else set()
+        )
+        if (
+            verified is not None
+            and verified.source_authority is CalibrationSourceAuthority.SAVED_FLASH
+        ):
+            saved_flash_ids.update(group.instance_id for group in verified.groups)
+        calibration_sources = {
+            instance_id: (
+                source
+                if source != "unknown"
+                else "flash"
+                if instance_id in saved_flash_ids
+                else "configuration"
+            )
+            for instance_id, source in observed_sources.items()
+        }
         session_id = uuid4().hex
         handle = _SessionHandle(
             session_id,

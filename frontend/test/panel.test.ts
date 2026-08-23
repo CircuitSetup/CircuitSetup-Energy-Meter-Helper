@@ -166,6 +166,51 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
   });
 
+  it("loads CT verification for a configured device even when setup is runtime-only", async () => {
+    const operations: string[] = [];
+    const configured = { ...device, importable: false, configuration: "meter.yaml" };
+    const inventory: CtInventory = {
+      plan_id: "plan-1", source_sha256: "a".repeat(64),
+      channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1,
+        name: index === 0 ? "Main A" : `CT${index + 1}`, raw_gain_ct: 5500, reporting_multiplier: 1,
+        selected_model_id: "model", selection_verified_against_config: true, display_label: null,
+        address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3) + 1,
+          phase: (["A", "B", "C"] as const)[index % 3]! } })),
+      catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
+        secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }],
+        source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
+    };
+    const hass = makeHass({
+      setup_status: { state: "device_discovered", devices: [configured], configuration_authoritative: false },
+      get_ct_inventory: inventory,
+    });
+    const callWS = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      operations.push(String(message.type).split("/").at(-1) ?? "");
+      return callWS<T>(message);
+    };
+    const panel = await mount(hass);
+    panel.showTopology({ addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: configured.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime project metadata" }] });
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]")?.click();
+    await tick(); await tick(); await panel.updateComplete;
+
+    expect(operations).toContain("get_ct_inventory");
+    expect(operations).not.toContain("start_session");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Verification");
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 name"]')?.value).toBe("Main A");
+  });
+
+  it("never substitutes restart verification for missing CT inventory", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    panel.showState("ct"); await panel.updateComplete;
+
+    expect(text(panel)).toContain("CT settings are not loaded");
+    expect(text(panel)).not.toContain("Restart verification is not complete");
+  });
+
   it("starts only one calibration session when Continue is clicked repeatedly", async () => {
     let starts = 0;
     let resolveStart!: (value: unknown) => void;
@@ -397,7 +442,8 @@ describe("CircuitSetup panel", () => {
     };
     state.session = { session_id: "session", device_id: "meter-1", state: "ready",
       safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] },
-      calibration_sources: { meter_main1: "flash", meter_main2: "configuration" } };
+      calibration_sources: { meter_main1: "flash", meter_main2: "configuration",
+        addon1_1: "flash", addon1_2: "configuration" } };
     state.voltageReferences = [120, 121];
     state.topology = { addon_count: 1, board_count: 2, ct_count: 12, group_count: 4,
       connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
@@ -1008,8 +1054,9 @@ describe("CircuitSetup panel", () => {
       topology_voltage_layout: "two_groups", connection_generation: 3, groups: [], verification_id: "verify-1",
       source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null };
     panel.showState("summary"); await panel.updateComplete;
-    for (const expected of ["saved flash", "9.9", "Standard deviation", "5500", "5600", "0.4", "65%", "warning"])
+    for (const expected of ["saved flash", "9.9", "5500", "5600", "0.4", "65%", "warning"])
       expect(text(panel).toLowerCase()).toContain(expected.toLowerCase());
+    expect(text(panel)).not.toMatch(/Mean|Standard deviation|Range/);
   });
 
   it("keeps cancellation distinct and preserves the authoritative restart result", async () => {

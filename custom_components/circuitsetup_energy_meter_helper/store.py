@@ -418,6 +418,30 @@ class HelperStore:
             )
             await self._store.async_save(data)
 
+    async def async_get_interrupted_session(
+        self, mac: str
+    ) -> StoredInterruptedSession | None:
+        """Load the calibration recovery marker for one meter."""
+        raw = (
+            (await self.async_load())
+            .get("meters", {})
+            .get(canonical_mac(mac), {})
+            .get("interrupted_session")
+        )
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise ValueError("stored interrupted session is invalid")
+        try:
+            return StoredInterruptedSession(
+                raw["state"],
+                raw["started_at"],
+                tuple(raw["changed_channels"]),
+                raw.get("config_transaction_id"),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("stored interrupted session is invalid") from error
+
     async def async_save_verified_calibration(
         self, record: VerifiedCalibrationRecord
     ) -> None:

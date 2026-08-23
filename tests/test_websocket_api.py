@@ -42,6 +42,7 @@ from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
     MeterTopology,
     StoredCTSelection,
+    StoredInterruptedSession,
     SubstitutionChange,
     TopologyEvidence,
     TopologyEvidenceSource,
@@ -1326,6 +1327,42 @@ def test_native_only_restart_verification_persists_without_source_handoff(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("marker_state", "addon_source"),
+    [("active", "configuration"), ("flash_saved", "flash")],
+)
+def test_session_requires_post_save_evidence_for_boot_only_flash_source(
+    monkeypatch: pytest.MonkeyPatch, marker_state: str, addon_source: str
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(
+            monkeypatch, addon_count=1
+        )
+
+        async def sources(instance_ids: set[str]) -> dict[str, str]:
+            return dict.fromkeys(instance_ids, "unknown")
+
+        async def interrupted(_mac: str) -> StoredInterruptedSession:
+            return StoredInterruptedSession(
+                marker_state, "2026-08-23T14:10:50Z", (7, 8, 9)
+            )
+
+        workflow._api.async_calibration_sources = sources  # type: ignore[method-assign,union-attr]
+        workflow._store.async_get_interrupted_session = interrupted  # type: ignore[method-assign]
+
+        status = await workflow.async_start_session("meter")
+
+        assert status.calibration_sources == {
+            "addon1_1": addon_source,
+            "addon1_2": "configuration",
+            "meter_main1": "configuration",
+            "meter_main2": "configuration",
+        }
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
 def test_controller_routes_calibration_handoff_identity_without_browser_yaml() -> None:
     """Missing routes would strand the verified backend gain transaction."""
 
@@ -1511,7 +1548,7 @@ def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
         assert completed == [(record.mac, record.verification_id, transaction_id)]
         assert result.source_authority is CalibrationSourceAuthority.CONFIGURATION
         assert handle.calibration_sources["meter_main1"] == "configuration"
-        assert handle.calibration_sources["meter_main2"] == "unknown"
+        assert handle.calibration_sources["meter_main2"] == "configuration"
         await workflow.async_close()
 
     asyncio.run(run())

@@ -125,7 +125,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       else if (operation === "rescan") {
         const state = options.rescan?.[rescans++] ?? "device";
         result = state === "none" ? { state: "no_device", devices: [] }
-          : { state: "device_discovered", devices: [device(addons, options.importable)] };
+          : { state: "device_discovered", devices: [device(addons, options.importable)], configuration_authoritative: false };
       } else if (operation === "adopt_device") result = { device_id: "meter-1", configuration: "meter.yaml" };
       else if (operation === "get_topology") result = topology(addons);
       else if (operation === "get_ct_inventory") result = inventory(addons);
@@ -318,7 +318,9 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await page.getByRole("tab", { name: "Main Board" }).click();
   await page.getByLabel("CT1 reference").fill("5");
   await page.getByRole("button", { name: "Check stability" }).click();
-  await expect(page.getByText("Standard deviation").first()).toBeVisible();
+  await expect(page.getByLabel("current Current group 1 stability evidence")).toContainText("CT1");
+  await expect(page.getByLabel("current Current group 1 stability evidence")).toContainText("5.00 A");
+  await expect(page.getByText("Standard deviation")).toHaveCount(0);
   await page.getByRole("button", { name: "Calibrate current" }).click();
   await expect(page.getByLabel("Calibration evidence").first()).toContainText("Saved in flash: Yes");
   await page.getByRole("button", { name: "Continue" }).click();

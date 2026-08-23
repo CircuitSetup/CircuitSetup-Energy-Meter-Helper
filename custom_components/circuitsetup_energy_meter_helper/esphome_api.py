@@ -399,10 +399,7 @@ class ESPHomeApiSession:
             sources = parse_calibration_sources(
                 _new_log_lines(baseline, self.log_lines), expected_instance_ids
             )
-            return {
-                instance_id: "configuration" if source == "unknown" else source
-                for instance_id, source in sources.items()
-            }
+            return sources
 
     async def async_reconnect(self, *, dump_config: bool = False) -> None:
         """Disconnect and create a fresh client from the current ESPHome entry."""
