@@ -258,13 +258,14 @@ class FakeHass:
         self.loop = asyncio.get_event_loop()
         self.config = SimpleNamespace(config_dir=".", path=lambda *parts: str(Path(".").joinpath(*parts)))
         self.tasks: list[asyncio.Task[None]] = []
+        self.executor_jobs: list[tuple[Any, tuple[Any, ...]]] = []
 
     def verify_event_loop_thread(self, name: str) -> None:
         del name
 
     async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
-        del target, args
-        return {}
+        self.executor_jobs.append((target, args))
+        return target(*args)
 
     def async_create_task(self, coroutine: Any) -> asyncio.Task[Any]:
         return asyncio.create_task(coroutine)
@@ -1033,6 +1034,7 @@ substitutions:
             clock=lambda: now,
         )
         inventory = await workflow.async_get_ct_inventory("meter")
+        assert any(target.__name__ == "load" for target, _args in hass.executor_jobs)
         session = await workflow.async_start_session("meter")
         with pytest.raises(WorkflowHandleError, match="already active"):
             await workflow.async_start_session("meter")

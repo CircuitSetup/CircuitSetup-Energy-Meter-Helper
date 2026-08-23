@@ -211,6 +211,24 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("Restart verification is not complete");
   });
 
+  it("does not fabricate a topology mismatch when CT inventory loading fails", async () => {
+    const configured = { ...device, importable: false, configuration: "meter.yaml" };
+    const panel = await mount(makeHass({
+      setup_status: { state: "device_discovered", devices: [configured] },
+      get_ct_inventory: new Error("blocking catalog load"),
+    }));
+    panel.showTopology({ addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: configured.project_name,
+      evidence: [{ source: "config_project", addon_count: 0, detail: "Configured meter" }] });
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]")?.click();
+    await tick(); await panel.updateComplete;
+
+    expect(text(panel)).toContain("CT inventory could not be loaded");
+    expect(text(panel)).not.toContain("Configuration and runtime evidence disagree");
+    expect(panel.shadowRoot?.querySelector("[data-action=continue]")).not.toBeNull();
+  });
+
   it("starts only one calibration session when Continue is clicked repeatedly", async () => {
     let starts = 0;
     let resolveStart!: (value: unknown) => void;

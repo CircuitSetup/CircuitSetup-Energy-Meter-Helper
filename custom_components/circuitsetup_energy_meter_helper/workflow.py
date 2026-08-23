@@ -327,8 +327,9 @@ class EntryWorkflow:
         topology = topology_from_config(
             document, native_project_name=device.project_name
         )
+        catalog = await self._hass.async_add_executor_job(CTPresetCatalog.load)
         inventory = CTInventory.from_document(
-            document, topology, CTPresetCatalog.load(), snapshot.sha256,
+            document, topology, catalog, snapshot.sha256,
             await self._store.async_get_ct_selections(mac),
         )
         plan_id = uuid4().hex

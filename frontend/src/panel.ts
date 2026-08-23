@@ -900,7 +900,7 @@ export class CircuitSetupPanel extends LitElement {
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction);
     if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(),
       () => this.back(), () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
-        ? this.loadInventory() : this.startSession()), Boolean(this.error), this.pendingAction === "inventory" || this.pendingAction === "session");
+        ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session");
     if (this.step === "ct" && this.inventory) return html`<fieldset><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}> ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}> Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.ctGroup, this.drafts,
       (board) => { this.board = board; this.ctGroup = 0; this.requestUpdate(); },
       (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session")}`;
