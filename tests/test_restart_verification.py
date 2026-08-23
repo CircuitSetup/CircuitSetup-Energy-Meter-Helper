@@ -857,6 +857,7 @@ def test_successful_task17_gain_updates_server_owned_pending_table() -> None:
 
         evidence = gain_evidence(
             "meter_main1",
+            measured_currents=(10.0 * 27518 / 28000, 10.0, 10.0),
             reference_currents=(10.0, 0.0, 0.0),
             current_changes=(True, False, False),
         )
@@ -896,6 +897,7 @@ def test_runtime_only_calibration_records_native_origin_without_yaml() -> None:
 
         evidence = gain_evidence(
             "meter_main1",
+            measured_currents=(10.0 * 27518 / 28000, 10.0, 10.0),
             reference_currents=(10.0, 0.0, 0.0),
             current_changes=(True, False, False),
         )

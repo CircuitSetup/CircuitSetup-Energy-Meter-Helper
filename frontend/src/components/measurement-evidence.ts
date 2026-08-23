@@ -1,15 +1,39 @@
 import { html, nothing, type TemplateResult } from "lit";
-import type { CalibrationResult, StabilityResult } from "../types";
+import type { CalibrationResult, SessionStatus, StabilityResult } from "../types";
+
+export const formatNumber = (value: number): string => value.toFixed(2);
+
+export function calibrationProgress(
+  referenceReady: boolean,
+  stability: StabilityResult | null,
+  result: CalibrationResult | null,
+): TemplateResult {
+  const complete = [referenceReady, Boolean(stability?.stable), Boolean(result), Boolean(result?.gain_evidence), Boolean(result)];
+  const active = complete.findIndex((value) => !value);
+  const labels = ["Set reference", "Check stability", "Run calibration", "Verify gain", "Zero reference"];
+  return html`<ol class="progress-steps">${labels.map((label, index) => html`<li
+    class=${complete[index] ? "complete" : index === active ? "active" : "pending"}>${label}</li>`)}</ol>`;
+}
+
+export function calibrationSourceEvidence(session: SessionStatus | null): TemplateResult {
+  const sources = Object.entries(session?.calibration_sources ?? {});
+  return html`<section class="measurement-evidence calibration-source" aria-label="Current calibration source">
+    <h3>Current calibration source</h3>
+    ${sources.length ? html`<table><thead><tr><th>Chip</th><th>Source</th><th>Saved in flash</th></tr></thead><tbody>
+      ${sources.map(([instance, source]) => html`<tr><td>${instance}</td><td>${source === "configuration" ? "Configuration" : source === "flash" ? "Saved flash" : "Unknown"}</td><td>${source === "flash" ? "Yes" : source === "configuration" ? "No" : "Unknown"}</td></tr>`)}
+    </tbody></table>` : html`<p>Calibration source is not available.</p>`}
+  </section>`;
+}
 
 export function stabilityEvidence(result: StabilityResult | null): TemplateResult | typeof nothing {
   if (!result) return nothing;
   return html`<section class="measurement-evidence" aria-label=${`${result.target} ${result.target_id} stability evidence`}>
     <h3>Stability evidence · ${result.target_id}</h3>
     ${result.windows.map((window, index) => html`<dl>
-      <div><dt>Window ${index + 1} samples</dt><dd>${window.samples.join(", ")}</dd></div>
-      <div><dt>Mean</dt><dd>${window.mean}</dd></div>
-      <div><dt>Standard deviation</dt><dd>${window.standard_deviation}</dd></div>
-      <div><dt>Range</dt><dd>${window.range_percent}%</dd></div>
+      <div><dt>Live values</dt><dd>${window.samples.map(formatNumber).join(", ")}</dd></div>
+      <div><dt>Mean</dt><dd>${formatNumber(window.mean)}</dd></div>
+      <div><dt>Standard deviation</dt><dd>${formatNumber(window.standard_deviation)}</dd></div>
+      <div><dt>Range</dt><dd>${formatNumber(window.range_percent)}%</dd></div>
     </dl>`)}
   </section>`;
 }
@@ -21,11 +45,14 @@ export function calibrationEvidence(result: CalibrationResult | null): TemplateR
     <dl>
       <div><dt>State</dt><dd>${result.state}</dd></div>
       <div><dt>Changed channels</dt><dd>${result.changed_channels.join(", ") || "None"}</dd></div>
-      <div><dt>Before</dt><dd>${result.before_values.join(", ") || "Unavailable"}</dd></div>
-      <div><dt>After</dt><dd>${result.after_values.join(", ") || "Unavailable"}</dd></div>
-      <div><dt>Error</dt><dd>${result.error_percent_values.map((value) => `${value}%`).join(", ") || "Unavailable"}</dd></div>
-      <div><dt>Gain evidence</dt><dd>${result.gain_evidence ? JSON.stringify(result.gain_evidence) : "Unavailable"}</dd></div>
-      <div><dt>Restore evidence</dt><dd>${result.restore_evidence ? JSON.stringify(result.restore_evidence) : "Unavailable"}</dd></div>
+      <div><dt>Before</dt><dd>${result.before_values.map(formatNumber).join(", ") || "Unavailable"}</dd></div>
+      <div><dt>After</dt><dd>${result.after_values.map(formatNumber).join(", ") || "Unavailable"}</dd></div>
+      <div><dt>Error</dt><dd>${result.error_percent_values.map((value) => `${formatNumber(value)}%`).join(", ") || "Unavailable"}</dd></div>
+      <div><dt>Restore evidence</dt><dd>${result.restore_evidence ? "Available" : "Unavailable"}</dd></div>
     </dl>
+    ${result.gain_evidence ? html`<h4>Gain evidence · ${result.gain_evidence.instance_id ?? "Unknown chip"}</h4>
+      <table class="gain-evidence"><thead><tr><th>Phase</th><th>Measured V</th><th>Measured A</th><th>Reference V</th><th>Reference A</th><th>Voltage gain</th><th>Current gain</th></tr></thead><tbody>
+        ${result.gain_evidence.phases?.map((phase) => html`<tr><td>${phase.phase}</td><td>${formatNumber(phase.measured_voltage)}</td><td>${formatNumber(phase.measured_current)}</td><td>${formatNumber(phase.reference_voltage)}</td><td>${formatNumber(phase.reference_current)}</td><td>${phase.old_voltage_gain} → ${phase.new_voltage_gain}</td><td>${phase.old_current_gain} → ${phase.new_current_gain}</td></tr>`) ?? nothing}
+      </tbody></table><p>Saved in flash: ${result.gain_evidence.flash_saved ? "Yes" : "No"}</p>` : html`<p>Gain evidence unavailable.</p>`}
   </section>`;
 }

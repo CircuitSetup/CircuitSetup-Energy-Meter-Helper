@@ -73,7 +73,8 @@ export class CircuitSetupPanel extends LitElement {
   private ctGroup = 0;
   private group = 0;
   private channel = 1;
-  private reference = 0;
+  private voltageReferences = [0, 0];
+  private currentReferences = new Map<number, number>();
   private reportingMultiplier: number | null = null;
   private safetyAcknowledged = false;
   private drafts = new Map<number, CtDraft>();
@@ -192,7 +193,8 @@ export class CircuitSetupPanel extends LitElement {
     this.restartResult = null;
     this.group = 0;
     this.channel = 1;
-    this.reference = 0;
+    this.voltageReferences = [0, 0];
+    this.currentReferences = new Map();
     this.reportingMultiplier = null;
   }
 
@@ -535,7 +537,9 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.session || (target === "voltage" && this.voltageBusy)) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
-    const targetIds = target === "voltage" ? this.voltageGroupKeys() : [String(this.channel)];
+    const targetIds = target === "voltage" ? this.voltageGroupKeys()
+      : this.currentReferenceEntries().map((item) => String(item.channel));
+    if (!targetIds.length) return;
     if (target === "voltage") { this.voltageBusy = true; this.requestUpdate(); }
     try {
       await this.run(async () => {
@@ -558,11 +562,10 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.session || (target === "voltage" && this.voltageBusy)) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
-    const targetIds = target === "voltage" ? this.voltageGroupKeys() : [String(this.channel)];
-    const channel = this.channel; const reference = this.reference;
-    const reportingMultiplier = this.inventory?.channels[channel - 1]?.reporting_multiplier
-      ?? this.reportingMultiplier;
-    if (target === "current" && reportingMultiplier === null) {
+    const targetIds = target === "voltage" ? this.voltageGroupKeys()
+      : this.currentReferenceEntries().map((item) => String(item.channel));
+    const currentReferences = this.currentReferenceEntries();
+    if (target === "current" && !currentReferences.length) {
       this.fail(new Error(), "Confirm the reporting multiplier before calibration.");
       return;
     }
@@ -571,15 +574,19 @@ export class CircuitSetupPanel extends LitElement {
       await this.run(async () => {
         for (const [index, targetId] of targetIds.entries()) {
           const result = target === "voltage"
-            ? await api.calibrateVoltage(sessionId, targetId, reference, true)
-            : await api.calibrateCurrent(sessionId, channel, reference, true,
-              reportingMultiplier!);
+            ? await api.calibrateVoltage(sessionId, targetId,
+              this.voltageReferences[this.topology?.voltage_layout === "two_voltages" ? index : 0]!, true)
+            : await api.calibrateCurrent(sessionId, currentReferences, true);
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
-          this.calibrationByTarget = new Map(this.calibrationByTarget).set(`${target}:${targetId}`, result);
+          const updated = new Map(this.calibrationByTarget);
+          if (target === "current") currentReferences.forEach((item) => updated.set(`current:${item.channel}`, result));
+          else updated.set(`${target}:${targetId}`, result);
+          this.calibrationByTarget = updated;
           this.announcement = target === "voltage"
             ? `Calibrated voltage chip ${index + 1} of ${targetIds.length}.`
             : `Calibration iteration ${result.iteration} finished with state ${result.state}.`;
           this.requestUpdate();
+          if (target === "current") break;
         }
       }, "Calibration did not complete. Reconnect and inspect before another attempt.",
       () => this.ownsOperation(generation, api, deviceId));
@@ -596,11 +603,18 @@ export class CircuitSetupPanel extends LitElement {
 
   private voltageGroupKeys(): string[] {
     if (!this.topology) return [this.groupKey(this.group)];
-    if (this.topology.voltage_layout !== "two_voltages") {
-      return Array.from({ length: this.topology.group_count }, (_, index) => this.groupKey(index));
-    }
-    return Array.from({ length: this.topology.board_count }, (_, board) =>
-      this.groupKey(board * 2 + this.group));
+    return [this.groupKey(this.board * 2), this.groupKey(this.board * 2 + 1)];
+  }
+
+  private currentReferenceEntries(): Array<{ channel: number; reference: number; reporting_multiplier: number }> {
+    const first = Math.floor((this.channel - 1) / 3) * 3 + 1;
+    return Array.from({ length: 3 }, (_, index) => first + index).flatMap((channel) => {
+      const reference = this.currentReferences.get(channel);
+      const multiplier = this.inventory?.channels[channel - 1]?.reporting_multiplier ?? this.reportingMultiplier;
+      return reference && reference > 0 && multiplier !== null
+        ? [{ channel, reference, reporting_multiplier: multiplier }]
+        : [];
+    });
   }
 
   private async restart(): Promise<void> {
@@ -658,7 +672,10 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private resultFor(target: "voltage" | "current"): CalibrationResult | null {
-    const targetIds = target === "voltage" ? this.voltageGroupKeys() : [String(this.channel)];
+    const currentIds = this.currentReferenceEntries().map((item) => String(item.channel));
+    const first = Math.floor((this.channel - 1) / 3) * 3 + 1;
+    const targetIds = target === "voltage" ? this.voltageGroupKeys()
+      : currentIds.length ? currentIds : Array.from({ length: 3 }, (_, index) => String(first + index));
     for (const targetId of [...targetIds].reverse()) {
       const result = this.calibrationByTarget.get(`${target}:${targetId}`);
       if (result) return result;
@@ -667,16 +684,16 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private stabilityFor(target: "voltage" | "current"): StabilityResult | null {
-    if (target === "current") return this.stabilityByTarget.get(`current:${this.channel}`) ?? null;
-    const targetIds = this.voltageGroupKeys();
+    const targetIds = target === "voltage" ? this.voltageGroupKeys()
+      : this.currentReferenceEntries().map((item) => String(item.channel));
     const results = targetIds.flatMap((targetId) => {
-      const result = this.stabilityByTarget.get(`voltage:${targetId}`);
+      const result = this.stabilityByTarget.get(`${target}:${targetId}`);
       return result ? [result] : [];
     });
     if (!results.length) return null;
     return {
-      target: "voltage",
-      target_id: this.topology?.voltage_layout === "two_voltages" ? `Voltage ${this.group + 1}` : "Shared voltage",
+      target,
+      target_id: target === "voltage" ? `Board ${this.board + 1}` : `Current group ${Math.floor((this.channel - 1) / 3) + 1}`,
       stable: results.length === targetIds.length && results.every((result) => result.stable),
       windows: results.flatMap((result) => result.windows),
     };
@@ -722,13 +739,13 @@ export class CircuitSetupPanel extends LitElement {
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(), () => void this.startSession());
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back());
-    if (this.step === "voltage") return html`${voltageStep(this.topology, this.group, this.reference, this.stabilityFor("voltage"), this.resultFor("voltage"), this.voltageBusy,
-      (value) => { this.group = value; this.requestUpdate(); },
-      (value) => { this.reference = value; this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
+    if (this.step === "voltage") return html`${voltageStep(this.topology, this.session, this.board, this.voltageReferences, this.stabilityFor("voltage"), this.resultFor("voltage"), this.voltageBusy,
+      (value) => { this.board = value; this.requestUpdate(); },
+      (index, value) => { this.voltageReferences = this.voltageReferences.map((current, offset) => offset === index ? value : current); this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.voltageBusy} @click=${() => this.navigate("current")}>Continue</button></footer>`;
-    if (this.step === "current") return html`${currentStep(this.topology, this.inventory, this.channel, this.reference, this.reportingMultiplier, this.stabilityFor("current"), this.resultFor("current"),
+    if (this.step === "current") return html`${currentStep(this.topology, this.inventory, this.session, this.channel, this.currentReferences, this.reportingMultiplier, this.stabilityFor("current"), this.resultFor("current"),
       (value) => { this.channel = value; this.requestUpdate(); },
-      (value) => { this.reference = value; this.requestUpdate(); },
+      (channel, value) => { const references = new Map(this.currentReferences); if (value === null || !Number.isFinite(value) || value <= 0) references.delete(channel); else references.set(channel, value); this.currentReferences = references; this.requestUpdate(); },
       (value) => { this.reportingMultiplier = value; this.requestUpdate(); },
       () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession())}
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.navigate("restart")}>Continue</button></footer>`;

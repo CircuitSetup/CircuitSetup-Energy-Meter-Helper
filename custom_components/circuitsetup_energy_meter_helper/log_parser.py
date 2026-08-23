@@ -88,6 +88,33 @@ class RestoreEvidence:
     matching_lines: tuple[str, ...]
 
 
+def parse_calibration_sources(
+    lines: tuple[str, ...], expected_instance_ids: set[str]
+) -> dict[str, Literal["flash", "configuration", "unknown"]]:
+    """Detect the currently active gain source from ATM90E32 status logs."""
+    sources: dict[str, Literal["flash", "configuration", "unknown"]] = {
+        instance_id: "unknown" for instance_id in expected_instance_ids
+    }
+    for line in lines:
+        instance_id = _instance(line)
+        if instance_id not in sources:
+            continue
+        if any(
+            term in line
+            for term in (
+                "Gain calibration loaded and verified successfully.",
+                "Gain mismatch: using flash values",
+                "Restoring saved gain calibrations to registers",
+            )
+        ):
+            sources[instance_id] = "flash"
+        elif "No stored gain calibrations found" in line or (
+            "Gain calibration is disabled" in line
+        ):
+            sources[instance_id] = "configuration"
+    return dict(sorted(sources.items()))
+
+
 def parse_gain_run(
     lines: list[CalibrationLogLine] | tuple[CalibrationLogLine, ...],
     *,

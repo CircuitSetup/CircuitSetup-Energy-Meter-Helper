@@ -182,10 +182,8 @@ class WorkflowOwner(Protocol):
     async def async_calibrate_current(
         self,
         session_id: str,
-        channel: int,
-        reference: float,
+        references: tuple[Mapping[str, Any], ...],
         confirm_iteration: bool,
-        reporting_multiplier: float,
     ) -> Any: ...
 
     async def async_restart_and_verify(self, session_id: str) -> Any: ...
@@ -328,10 +326,8 @@ class EntryWebsocketController:
         if operation == "calibrate_current" and workflow is not None:
             return await workflow.async_calibrate_current(
                 msg["session_id"],
-                msg["channel"],
-                msg["reference"],
+                tuple(msg["references"]),
                 msg["confirm_iteration"],
-                msg["reporting_multiplier"],
             )
         if operation == "restart_and_verify" and workflow is not None:
             return await workflow.async_restart_and_verify(msg["session_id"])
@@ -799,9 +795,21 @@ def _schema(command: str) -> dict[Any, Any]:
     elif operation == "calibrate_current":
         schema |= {
             vol.Required("session_id"): _ID,
-            vol.Required("channel"): vol.All(int, vol.Range(min=1, max=42)),
-            vol.Required("reference"): vol.Coerce(float),
-            vol.Required("reporting_multiplier"): _reporting_multiplier,
+            vol.Required("references"): vol.All(
+                [
+                    vol.Schema(
+                        {
+                            vol.Required("channel"): vol.All(
+                                int, vol.Range(min=1, max=42)
+                            ),
+                            vol.Required("reference"): vol.Coerce(float),
+                            vol.Required("reporting_multiplier"): _reporting_multiplier,
+                        },
+                        extra=vol.PREVENT_EXTRA,
+                    )
+                ],
+                vol.Length(min=1, max=3),
+            ),
             vol.Optional("confirm_iteration", default=False): bool,
         }
     elif operation in {

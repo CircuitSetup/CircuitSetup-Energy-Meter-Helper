@@ -137,6 +137,38 @@ def test_current_channel_mapping_multiplier_and_invariants(
     asyncio.run(run())
 
 
+def test_current_calibrates_multiple_references_on_one_chip_in_one_gain_run() -> None:
+    async def run() -> None:
+        meter = binding(0)
+        session = FakeCalibrationSession(
+            gain_evidence(
+                "meter_main1",
+                current_changes=(True, True, False),
+                reference_currents=(5.0, 4.0, 0.0),
+            )
+        )
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        result = await engine.async_calibrate_currents(
+            "aabbccddeeff",
+            session,
+            meter,
+            ((1, 10.0, 2.0), (2, 12.0, 3.0)),
+            tolerance_percent=1.0,
+        )
+
+        assert result.changed_channels == (1, 2)
+        assert [event[0] for event in session.events].count("button") == 1
+        assert session.window_calls == 0
+        ct1 = meter.role("ct1.reference_current").descriptor
+        ct2 = meter.role("ct2.reference_current").descriptor
+        assert ("number", ct1.key, 5.0, ct1.device_id) in session.events
+        assert ("number", ct2.key, 4.0, ct2.device_id) in session.events
+
+    asyncio.run(run())
+
+
 def test_current_rejects_non_target_or_voltage_gain_change() -> None:
     async def run() -> None:
         meter = binding(0)

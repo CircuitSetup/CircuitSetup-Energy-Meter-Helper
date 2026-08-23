@@ -50,7 +50,7 @@ type PublicRecord = Record<string, unknown>;
 type Validator<T> = (value: unknown) => T;
 type CalibrationExpectation =
   | { target: "voltage"; groupKey: string; reference: number }
-  | { target: "current"; channel: number; reference: number; rawReference: number };
+  | { target: "current"; references: Array<{ channel: number; reference: number; rawReference: number }> };
 
 function record(value: unknown, label: string): PublicRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} response is invalid`);
@@ -155,6 +155,7 @@ function transaction(value: unknown, label: string): TransactionStatus {
 function session(value: unknown, label: string): SessionStatus {
   const item = record(value, label); string(item.session_id, label); string(item.device_id, label); enumeration(item.state, SESSION_STATES, label); boolean(item.safety_acknowledged, label);
   const preflight = record(item.preflight, label); array(preflight.issues, label).forEach((entry) => { const issue = record(entry, label); enumeration(issue.code, PREFLIGHT_CODES, label); string(issue.role, label); string(issue.detail, label); }); array(preflight.zeroed_roles, label).forEach((entry) => string(entry, label));
+  if (item.calibration_sources !== undefined) Object.values(record(item.calibration_sources, label)).forEach((source) => enumeration(source, new Set(["flash", "configuration", "unknown"]), label));
   return value as SessionStatus;
 }
 function stability(value: unknown, label: string, expectedTarget: "voltage" | "current", expectedTargetId: string): StabilityResult {
@@ -163,8 +164,8 @@ function stability(value: unknown, label: string, expectedTarget: "voltage" | "c
   const windows = array(item.windows, label, target === "voltage" ? 3 : 1);
   if (windows.length !== (target === "voltage" ? 3 : 1)) throw new Error(`${label} response is invalid`);
   const ranges = windows.map((entry) => {
-    const window = record(entry, label); const samples = array(window.samples, label, 3).map((sample) => number(sample, label));
-    if (samples.length !== 3) throw new Error(`${label} response is invalid`);
+    const window = record(entry, label); const samples = array(window.samples, label, 1).map((sample) => number(sample, label));
+    if (samples.length !== 1) throw new Error(`${label} response is invalid`);
     const mean = number(window.mean, label);
     const standardDeviation = number(window.standard_deviation, label);
     const rangePercent = number(window.range_percent, label);
@@ -186,13 +187,13 @@ function calibration(
   const changed = array(item.changed_channels, label, 3).map((entry) => integer(entry, label));
   const before = array(item.before_values, label, 3); const after = array(item.after_values, label, 3); const errors = array(item.error_percent_values, label, 3);
   for (const values of [before, after, errors]) values.forEach((entry) => number(entry, label));
-  const expectedGroup = expected.target === "voltage" ? expected.groupKey : channelGroup(expected.channel);
-  const expectedChannels = expected.target === "voltage" ? groupChannels(expected.groupKey) : [expected.channel];
-  const expectedPhase = expected.target === "current" ? (["A", "B", "C"] as const)[(expected.channel - 1) % 3] : null;
+  const expectedGroup = expected.target === "voltage" ? expected.groupKey : channelGroup(expected.references[0]!.channel);
+  const expectedChannels = expected.target === "voltage" ? groupChannels(expected.groupKey) : expected.references.map((item) => item.channel);
+  const expectedPhase = expected.target === "current" && expected.references.length === 1 ? (["A", "B", "C"] as const)[(expected.references[0]!.channel - 1) % 3] : null;
   const retryAllowed = boolean(item.retry_allowed, label);
-  if (!Number.isFinite(expected.reference) || expected.reference <= 0
-    || expected.target === "current" && (!Number.isFinite(expected.rawReference) || expected.rawReference <= 0)
-    || ![1, 3].includes(changed.length) || before.length !== changed.length || new Set(changed).size !== changed.length
+  if (expected.target === "voltage" && (!Number.isFinite(expected.reference) || expected.reference <= 0)
+    || expected.target === "current" && expected.references.some((reference) => !Number.isFinite(reference.reference) || reference.reference <= 0 || !Number.isFinite(reference.rawReference) || reference.rawReference <= 0)
+    || ![1, 2, 3].includes(changed.length) || (state !== "indeterminate" && before.length !== changed.length) || new Set(changed).size !== changed.length
     || changed.some((channel) => channel < 1 || channel > 42) || iteration < 1 || iteration > 3
     || item.group_key !== expectedGroup || item.phase !== expectedPhase
     || changed.length !== expectedChannels.length || changed.some((channel, index) => channel !== expectedChannels[index])
@@ -203,7 +204,8 @@ function calibration(
   } else {
     if (item.gain_evidence == null || item.restore_evidence !== null) throw new Error(`${label} response is invalid`);
     gainEvidence(item.gain_evidence, label, expected);
-    const expectedErrors = after.map((result) => 100 * Math.abs(number(result, label) - expected.reference) / expected.reference);
+    const references = expected.target === "voltage" ? after.map(() => expected.reference) : expected.references.map((item) => item.reference);
+    const expectedErrors = after.map((result, index) => 100 * Math.abs(number(result, label) - references[index]!) / references[index]!);
     if (errors.some((error, index) => number(error, label) < 0 || !close(number(error, label), expectedErrors[index]!))) throw new Error(`${label} response is invalid`);
     const outside = Math.max(...expectedErrors) > 1;
     if ((state === "result_outside_tolerance") !== outside || retryAllowed !== (outside && iteration < 3)) throw new Error(`${label} response is invalid`);
@@ -222,10 +224,11 @@ function gainEvidence(
   const evidence = record(value, label);
   const generation = integer(evidence.connection_generation, label);
   const sequence = integer(evidence.operation_sequence, label);
-  const groupKey = expected.target === "voltage" ? expected.groupKey : channelGroup(expected.channel);
+  const groupKey = expected.target === "voltage" ? expected.groupKey : channelGroup(expected.references[0]!.channel);
   const instanceId = groupKey.startsWith("main_") ? `meter_main${groupKey.slice(-1)}` : groupKey;
   if (generation < 1 || sequence < 1 || string(evidence.instance_id, label) !== instanceId) throw new Error(`${label} response is invalid`);
-  const targetPhase = expected.target === "current" ? (["A", "B", "C"] as const)[(expected.channel - 1) % 3] : null;
+  const currentByPhase: Map<string, number> = expected.target === "current" ? new Map(expected.references.map((reference) =>
+    [(["A", "B", "C"] as const)[(reference.channel - 1) % 3], reference.rawReference])) : new Map();
   const phases = array(evidence.phases, label, 3);
   if (phases.length !== 3) throw new Error(`${label} response is invalid`);
   phases.forEach((entry, index) => {
@@ -241,11 +244,14 @@ function gainEvidence(
     if (expected.target === "voltage") {
       if (Math.abs(referenceVoltage - expected.reference) > Math.max(0.01, 1e-6 * Math.max(Math.abs(referenceVoltage), expected.reference))
         || Math.abs(referenceCurrent) > 1e-6 || oldCurrent !== newCurrent) throw new Error(`${label} response is invalid`);
-    } else if (Math.abs(referenceVoltage) > 1e-6
-      || (phaseName === targetPhase
-        ? Math.abs(referenceCurrent - expected.rawReference) > Math.max(1e-4, 1e-6 * Math.max(Math.abs(referenceCurrent), expected.rawReference))
-        : Math.abs(referenceCurrent) > 1e-6)
-      || oldVoltage !== newVoltage || (phaseName !== targetPhase && oldCurrent !== newCurrent)) throw new Error(`${label} response is invalid`);
+    } else {
+      const expectedCurrent = currentByPhase.get(phaseName);
+      if (Math.abs(referenceVoltage) > 1e-6
+        || (expectedCurrent === undefined
+          ? Math.abs(referenceCurrent) > 1e-6
+          : Math.abs(referenceCurrent - expectedCurrent) > Math.max(1e-4, 1e-6 * Math.max(Math.abs(referenceCurrent), expectedCurrent)))
+        || oldVoltage !== newVoltage || (expectedCurrent === undefined && oldCurrent !== newCurrent)) throw new Error(`${label} response is invalid`);
+    }
   });
   const mismatches = array(evidence.register_mismatch_phases, label, 3);
   mismatches.forEach((phase) => enumeration(phase, PHASES, label));
@@ -401,13 +407,19 @@ export class HelperApi {
       reference,
       confirm_iteration: confirmIteration,
     });
-  public calibrateCurrent = (sessionId: string, channel: number, reference: number, confirmIteration: boolean, reportingMultiplier: number) => {
-    if (!Number.isFinite(reportingMultiplier) || reportingMultiplier < 0.001 || reportingMultiplier > 1000) return Promise.reject(new Error("calibrate_current reporting multiplier is invalid"));
-    return this.call("calibrate_current", (value) => calibration(value, "calibrate_current", { target: "current", channel, reference, rawReference: reference / reportingMultiplier }), {
+  public calibrateCurrent = (sessionId: string, references: Array<{ channel: number; reference: number; reporting_multiplier: number }>, confirmIteration: boolean) => {
+    if (references.length < 1 || references.length > 3
+      || new Set(references.map((item) => item.channel)).size !== references.length
+      || new Set(references.map((item) => channelGroup(item.channel))).size !== 1
+      || references.some((item) => !Number.isInteger(item.channel) || item.channel < 1 || item.channel > 42
+        || !Number.isFinite(item.reference) || item.reference <= 0
+        || !Number.isFinite(item.reporting_multiplier) || item.reporting_multiplier < 0.001 || item.reporting_multiplier > 1000)) {
+      return Promise.reject(new Error("calibrate_current references are invalid"));
+    }
+    return this.call("calibrate_current", (value) => calibration(value, "calibrate_current", { target: "current",
+      references: references.map((item) => ({ channel: item.channel, reference: item.reference, rawReference: item.reference / item.reporting_multiplier })) }), {
       session_id: sessionId,
-      channel,
-      reference,
-      reporting_multiplier: reportingMultiplier,
+      references,
       confirm_iteration: confirmIteration,
     });
   };

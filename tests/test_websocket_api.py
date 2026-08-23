@@ -529,9 +529,9 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
     elif suffix == "calibrate_current":
         base |= {
             "session_id": "session",
-            "channel": 1,
-            "reference": 5.0,
-            "reporting_multiplier": 1.0,
+            "references": [
+                {"channel": 1, "reference": 5.0, "reporting_multiplier": 1.0}
+            ],
         }
     elif suffix in {
         "get_session",
@@ -1026,6 +1026,11 @@ substitutions:
         with pytest.raises(WorkflowHandleError, match="current target"):
             await workflow.async_check_stability(session.session_id, "current", "0")
 
+        now = 14.0
+        claimed, revision = workflow._claim_ready_session(session.session_id)
+        assert claimed.expires_at == 19.0
+        workflow._release_claim(claimed, revision)
+
         old_plan_id = inventory["plan_id"]
         for _ in range(12):
             latest_inventory = await workflow.async_get_ct_inventory("meter")
@@ -1033,7 +1038,7 @@ substitutions:
         with pytest.raises(WorkflowHandleError, match="plan is stale"):
             await workflow.async_preview_ct_config("meter", old_plan_id, digest, ())
         assert latest_inventory["plan_id"] in workflow._plans
-        now = 16.0
+        now = 20.0
 
         with pytest.raises(WorkflowHandleError):
             await workflow.async_preview_ct_config(
@@ -1104,6 +1109,7 @@ def test_stability_collects_all_phase_windows_concurrently(
     async def run() -> None:
         workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
         started: list[tuple[int, float | None, float]] = []
+        sample_counts: list[int] = []
         all_started = asyncio.Event()
 
         async def window(
@@ -1116,11 +1122,12 @@ def test_stability_collects_all_phase_windows_concurrently(
         ) -> SensorSampleWindow:
             del device_id
             started.append((key, after, timeout))
+            sample_counts.append(sample_count)
             if len(started) == 3:
                 all_started.set()
             await all_started.wait()
             return SensorSampleWindow(
-                (119.9, 120.0, 120.1), (1.0, 2.0, 3.0), 120.0, 119.9, 120.1, 0.2
+                (120.0,), (1.0,), 120.0, 120.0, 120.0, 0.0
             )
 
         workflow._api.async_wait_for_sensor_window = window  # type: ignore[method-assign,union-attr]
@@ -1136,6 +1143,7 @@ def test_stability_collects_all_phase_windows_concurrently(
         assert len(started) == 3
         assert len({after for _, after, _ in started}) == 1
         assert all(after is not None for _, after, _ in started)
+        assert sample_counts == [1, 1, 1]
         assert all(timeout >= 30 for _, _, timeout in started)
         await workflow.async_close()
 
@@ -1152,11 +1160,13 @@ def test_native_only_current_requires_explicit_reporting_multiplier(
         calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
         class Calibration:
-            async def async_calibrate_current(
+            async def async_calibrate_currents(
                 self, *args: Any, **kwargs: Any
             ) -> Any:
                 calls.append((args, kwargs))
-                return SimpleNamespace(state="applied_pending_restart_verification")
+                return SimpleNamespace(
+                    state="applied_pending_restart_verification", gain_evidence=None
+                )
 
         workflow._calibration = Calibration()  # type: ignore[assignment]
 
@@ -1165,14 +1175,18 @@ def test_native_only_current_requires_explicit_reporting_multiplier(
             match="reporting multiplier confirmation is required",
         ):
             await workflow.async_calibrate_current(
-                status.session_id, 1, 5.0, False, None
+                status.session_id,
+                ({"channel": 1, "reference": 5.0},),
+                False,
             )
 
         await workflow.async_calibrate_current(
-            status.session_id, 1, 5.0, False, 2.0
+            status.session_id,
+            ({"channel": 1, "reference": 5.0, "reporting_multiplier": 2.0},),
+            False,
         )
 
-        assert calls[0][0][5] == 2.0
+        assert calls[0][0][3] == ((1, 5.0, 2.0),)
         assert calls[0][1]["substitutions"] == {}
         await workflow.async_close()
 
@@ -1186,7 +1200,7 @@ def test_current_calibration_schema_rejects_unknown_or_invalid_multiplier() -> N
         command = f"{DOMAIN}/calibrate_current"
         _handler, schema = hass.data["websocket_api"][command]
         missing = _message(command)
-        missing.pop("reporting_multiplier")
+        missing["references"][0].pop("reporting_multiplier")
         with pytest.raises(vol.Invalid):
             schema(missing)
         for invalid in (
@@ -1200,10 +1214,10 @@ def test_current_calibration_schema_rejects_unknown_or_invalid_multiplier() -> N
             1000.001,
         ):
             message = _message(command)
-            message["reporting_multiplier"] = invalid
+            message["references"][0]["reporting_multiplier"] = invalid
             with pytest.raises(vol.Invalid):
                 schema(message)
-        assert schema(_message(command))["reporting_multiplier"] == 1.0
+        assert schema(_message(command))["references"][0]["reporting_multiplier"] == 1.0
 
     asyncio.run(run())
 
@@ -1250,7 +1264,9 @@ def test_native_only_voltage_calibration_needs_no_builder_snapshot(
                 self, *_args: Any, **kwargs: Any
             ) -> Any:
                 calls.append(kwargs)
-                return SimpleNamespace(state="applied_pending_restart_verification")
+                return SimpleNamespace(
+                    state="applied_pending_restart_verification", gain_evidence=None
+                )
 
         workflow._calibration = Calibration()  # type: ignore[assignment]
 
@@ -1428,16 +1444,18 @@ def test_cancel_revokes_session_before_waiting_calibration_can_mutate(
         mutated: list[dict[str, str]] = []
 
         class Calibration:
-            async def async_calibrate_current(self, *args: Any, **kwargs: Any) -> Any:
+            async def async_calibrate_currents(self, *args: Any, **kwargs: Any) -> Any:
                 del args
                 mutated.append(dict(kwargs["substitutions"]))
-                return SimpleNamespace(state="done")
+                return SimpleNamespace(state="done", gain_evidence=None)
 
         workflow._inventory_for_handle = inventory  # type: ignore[method-assign]
         workflow._calibration = Calibration()  # type: ignore[assignment]
         task = asyncio.create_task(
             workflow.async_calibrate_current(
-                session.session_id, 1, 5.0, False, 1.0
+                session.session_id,
+                ({"channel": 1, "reference": 5.0, "reporting_multiplier": 1.0},),
+                False,
             )
         )
         await entered.wait()

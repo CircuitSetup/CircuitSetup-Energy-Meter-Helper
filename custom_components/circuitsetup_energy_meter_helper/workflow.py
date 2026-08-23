@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from math import isfinite
 from statistics import pstdev
@@ -98,6 +98,7 @@ class SessionStatus:
     safety_acknowledged: bool
     preflight: PreflightResult
     entity_role_counts: dict[str, int]
+    calibration_sources: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -110,6 +111,7 @@ class _SessionHandle:
     substitutions: dict[str, str]
     binding: MeterBinding
     preflight: PreflightResult
+    calibration_sources: dict[str, str]
     expires_at: float
     safety_acknowledged: bool = False
     state: str = "safety_required"
@@ -130,6 +132,7 @@ class _SessionHandle:
                 "voltage_sensors": sum(len(group.voltage_sensors) for group in self.binding.groups),
                 "current_sensors": sum(len(group.current_sensors) for group in self.binding.groups),
             },
+            dict(self.calibration_sources),
         )
 
     def scrub(self) -> None:
@@ -483,6 +486,15 @@ class EntryWorkflow:
             preflight = await async_preflight(api, binding, asyncio.Lock())
         finally:
             lease.release()
+        instance_ids = {
+            group.key.replace("main_", "meter_main") for group in binding.groups
+        }
+        source_reader = getattr(api, "async_calibration_sources", None)
+        calibration_sources = (
+            await source_reader(instance_ids)
+            if source_reader is not None
+            else {instance_id: "unknown" for instance_id in instance_ids}
+        )
         session_id = uuid4().hex
         handle = _SessionHandle(
             session_id,
@@ -493,6 +505,7 @@ class EntryWorkflow:
             substitutions,
             binding,
             preflight,
+            calibration_sources,
             self._deadline(),
             state="safety_required" if preflight.ok else "preflight_failed",
         )
@@ -556,7 +569,7 @@ class EntryWorkflow:
                         api.async_wait_for_sensor_window(
                             entity.descriptor.key,
                             device_id=entity.descriptor.device_id,
-                            sample_count=3,
+                            sample_count=1,
                             after=boundary,
                             timeout=DEFAULT_EVIDENCE_TIMEOUT,
                         )
@@ -603,6 +616,8 @@ class EntryWorkflow:
                 substitutions=handle.substitutions,
             )
             self._assert_claim(handle, revision)
+            if result.gain_evidence is not None and result.gain_evidence.flash_saved:
+                handle.calibration_sources[result.gain_evidence.instance_id] = "flash"
             handle.state = str(result.state)
             self._refresh(handle)
             self._publish(handle)
@@ -613,35 +628,49 @@ class EntryWorkflow:
     async def async_calibrate_current(
         self,
         session_id: str,
-        channel: int,
-        reference: float,
+        references: tuple[Mapping[str, Any], ...],
         confirm_iteration: bool,
-        reporting_multiplier: float | None,
     ) -> Any:
         handle, revision = self._claim_ready_session(session_id)
         try:
-            if not 1 <= channel <= handle.topology.ct_count:
-                raise WorkflowHandleError("unknown current channel")
-            multiplier = await self._reporting_multiplier(
-                handle, channel, reporting_multiplier
-            )
+            calibrated: list[tuple[int, float, float]] = []
+            for item in references:
+                channel = int(item["channel"])
+                if not 1 <= channel <= handle.topology.ct_count:
+                    raise WorkflowHandleError("unknown current channel")
+                calibrated.append(
+                    (
+                        channel,
+                        float(item["reference"]),
+                        await self._reporting_multiplier(
+                            handle,
+                            channel,
+                            (
+                                float(item["reporting_multiplier"])
+                                if item.get("reporting_multiplier") is not None
+                                else None
+                            ),
+                        ),
+                    )
+                )
+            operation = "current:" + ",".join(str(item[0]) for item in calibrated)
             iteration = self._sessions_owner.next_calibration_iteration(
-                handle.mac, f"current:{channel}"
+                handle.mac, operation
             )
             self._assert_claim(handle, revision)
-            result = await self._calibration.async_calibrate_current(
+            result = await self._calibration.async_calibrate_currents(
                 handle.mac,
                 self._require_api(),
                 handle.binding,
-                channel,
-                reference,
-                multiplier,
+                tuple(calibrated),
                 1.0,
                 iteration=iteration,
                 confirm_iteration=confirm_iteration,
                 substitutions=handle.substitutions,
             )
             self._assert_claim(handle, revision)
+            if result.gain_evidence is not None and result.gain_evidence.flash_saved:
+                handle.calibration_sources[result.gain_evidence.instance_id] = "flash"
             handle.state = str(result.state)
             self._refresh(handle)
             self._publish(handle)
@@ -968,6 +997,7 @@ class EntryWorkflow:
                 raise WorkflowHandleError("session already has an active operation")
             handle.revision += 1
             handle.active_task = task
+            handle.expires_at = self._deadline()
             return handle, handle.revision
 
     def _assert_claim(self, handle: _SessionHandle, revision: int) -> None:

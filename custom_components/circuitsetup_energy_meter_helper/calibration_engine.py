@@ -435,7 +435,6 @@ class CalibrationEngine:
         try:
             mac = lease.mac
             origin = await self._calibration_origin(lease, session, binding)
-            before = await self._windows(session, group.voltage_sensors)
             marker = self._marker(channels)
             await self._persist_interrupted(mac, marker)
             self.sessions.record_calibration_iteration(mac, operation, attempt)
@@ -451,12 +450,20 @@ class CalibrationEngine:
                 )
                 if evidence is None:
                     return self._indeterminate_result(
-                        group, channels, attempt, before, restore
+                        group, channels, attempt, (), restore
                     )
                 self._validate_voltage_evidence(evidence, trusted_voltage)
-                after = await self._windows(session, group.voltage_sensors)
+                before = tuple(phase.measured_voltage for phase in evidence.phases)
+                after = tuple(
+                    _projected_value(
+                        phase.measured_voltage,
+                        phase.old_voltage_gain,
+                        phase.new_voltage_gain,
+                    )
+                    for phase in evidence.phases
+                )
                 errors = tuple(
-                    _error_percent(window.mean, trusted_voltage) for window in after
+                    _error_percent(value, trusted_voltage) for value in after
                 )
                 state = _result_state(errors, tolerance_percent)
                 if (
@@ -478,8 +485,8 @@ class CalibrationEngine:
                     None,
                     channels,
                     attempt,
-                    tuple(window.mean for window in before),
-                    tuple(window.mean for window in after),
+                    before,
+                    after,
                     errors,
                     evidence,
                     None,
@@ -502,48 +509,102 @@ class CalibrationEngine:
         confirm_iteration: bool = False,
         substitutions: Mapping[str, str] | None = None,
     ) -> CalibrationResult:
-        operation = f"current:{channel}"
+        return await self.async_calibrate_currents(
+            mac,
+            session,
+            binding,
+            ((channel, trusted_current, reporting_multiplier),),
+            tolerance_percent,
+            iteration=iteration,
+            confirm_iteration=confirm_iteration,
+            substitutions=substitutions,
+        )
+
+    async def async_calibrate_currents(
+        self,
+        mac: str,
+        session: Any,
+        binding: MeterBinding,
+        references: tuple[tuple[int, float, float], ...],
+        tolerance_percent: float,
+        *,
+        iteration: int = 1,
+        confirm_iteration: bool = False,
+        substitutions: Mapping[str, str] | None = None,
+    ) -> CalibrationResult:
+        if not 1 <= len(references) <= 3:
+            raise ValueError("current calibration requires one to three references")
+        channels = tuple(item[0] for item in references)
+        if len(set(channels)) != len(channels):
+            raise ValueError("current calibration channels must be unique")
+        bound_channels = tuple(
+            self._channel_group(binding, channel) for channel in channels
+        )
+        group = bound_channels[0][0]
+        if any(bound_group.key != group.key for bound_group, _ in bound_channels):
+            raise ValueError(
+                "current calibration channels must share one ATM90E32 chip"
+            )
+        phase_indices = tuple(index for _, index in bound_channels)
+        operation = "current:" + ",".join(str(channel) for channel in channels)
         attempt = self._prepare_iteration(
             mac,
             operation,
             iteration,
             confirm_iteration,
-            trusted_current,
-            reporting_multiplier,
+            *(value for item in references for value in item[1:]),
             tolerance_percent,
         )
         self._validate_binding_generation(session, binding)
-        group, phase_index = self._channel_group(binding, channel)
-        sensor = group.current_sensors[phase_index]
-        reference = group.current_references[phase_index]
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
             mac = lease.mac
             origin = await self._calibration_origin(lease, session, binding)
-            before = (await self._window(session, sensor),)
-            marker = self._marker((channel,))
+            marker = self._marker(channels)
             await self._persist_interrupted(mac, marker)
             self.sessions.record_calibration_iteration(mac, operation, attempt)
             zeroer = _BoundZeroer(self, binding, dict(substitutions or {}))
             async with zero_reference_guard(zeroer, session):
-                await self._set_number(
-                    session, reference, trusted_current / reporting_multiplier
-                )
+                raw_references: dict[int, float] = {}
+                multipliers: dict[int, float] = {}
+                trusted: dict[int, float] = {}
+                for (channel, trusted_current, multiplier), phase_index in zip(
+                    references, phase_indices, strict=True
+                ):
+                    raw_references[phase_index] = trusted_current / multiplier
+                    multipliers[phase_index] = multiplier
+                    trusted[phase_index] = trusted_current
+                    await self._set_number(
+                        session,
+                        group.current_references[phase_index],
+                        raw_references[phase_index],
+                    )
                 evidence, restore = await self._run_gain(
                     mac, session, group, _instance_id(group.key), zeroer
                 )
-                phase = "ABC"[phase_index]
+                phase = "ABC"[phase_indices[0]] if len(phase_indices) == 1 else None
                 if evidence is None:
                     return self._indeterminate_result(
-                        group, (channel,), attempt, before, restore, phase
+                        group, channels, attempt, (), restore, phase
                     )
-                self._validate_current_evidence(
-                    evidence,
-                    phase_index,
-                    trusted_current / reporting_multiplier,
+                self._validate_current_evidence(evidence, raw_references)
+                before = tuple(
+                    evidence.phases[index].measured_current * multipliers[index]
+                    for index in phase_indices
                 )
-                after = (await self._window(session, sensor),)
-                errors = (_error_percent(after[0].mean, trusted_current),)
+                after = tuple(
+                    _projected_value(
+                        evidence.phases[index].measured_current,
+                        evidence.phases[index].old_current_gain,
+                        evidence.phases[index].new_current_gain,
+                        multipliers[index],
+                    )
+                    for index in phase_indices
+                )
+                errors = tuple(
+                    _error_percent(value, trusted[index])
+                    for value, index in zip(after, phase_indices, strict=True)
+                )
                 state = _result_state(errors, tolerance_percent)
                 if (
                     origin is not None
@@ -562,14 +623,14 @@ class CalibrationEngine:
                     state,
                     group.key,
                     phase,
-                    (channel,),
+                    channels,
                     attempt,
-                    (before[0].mean,),
-                    (after[0].mean,),
+                    before,
+                    after,
                     errors,
                     evidence,
                     None,
-                    errors[0] > tolerance_percent and attempt < 3,
+                    max(errors) > tolerance_percent and attempt < 3,
                 )
         finally:
             lease.release()
@@ -872,13 +933,10 @@ class CalibrationEngine:
     @staticmethod
     def _validate_current_evidence(
         evidence: GainRunEvidence,
-        target_phase_index: int,
-        raw_reference_current: float,
+        raw_references: Mapping[int, float],
     ) -> None:
         for index, phase in enumerate(evidence.phases):
-            expected_current = (
-                raw_reference_current if index == target_phase_index else 0.0
-            )
+            expected_current = raw_references.get(index, 0.0)
             if not math.isclose(phase.reference_voltage, 0.0, abs_tol=1e-6) or not (
                 math.isclose(
                     phase.reference_current,
@@ -895,7 +953,7 @@ class CalibrationEngine:
                     "current calibration changed a voltage gain"
                 )
             if (
-                index != target_phase_index
+                index not in raw_references
                 and phase.old_current_gain != phase.new_current_gain
             ):
                 raise CalibrationInvariantError(
@@ -989,7 +1047,7 @@ class CalibrationEngine:
         group: GroupBinding,
         channels: tuple[int, ...],
         iteration: int,
-        before: tuple[SensorSampleWindow, ...],
+        before: tuple[float, ...],
         restore: dict[str, RestoreEvidence] | dict[str, object] | None,
         phase: str | None = None,
     ) -> CalibrationResult:
@@ -999,7 +1057,7 @@ class CalibrationEngine:
             phase,
             channels,
             iteration,
-            tuple(window.mean for window in before),
+            before,
             (),
             (),
             None,
@@ -1179,6 +1237,12 @@ def _result_state(
 
 def _error_percent(actual: float, expected: float) -> float:
     return 100.0 * abs(actual - expected) / expected
+
+
+def _projected_value(
+    measured: float, old_gain: int, new_gain: int, multiplier: float = 1.0
+) -> float:
+    return measured * new_gain / old_gain * multiplier
 
 
 def _positive_finite(*values: float) -> bool:

@@ -32,7 +32,7 @@ describe("calibration tab semantics", () => {
   it("supports roving keyboard focus and a linked current-board tabpanel", () => {
     const select = vi.fn();
     const root = mount(
-      currentStep(topology, null, 1, 0, null, null, null, select, noop, noop, noop, noop, noop, noop),
+      currentStep(topology, null, null, 1, new Map(), null, null, null, select, noop, noop, noop, noop, noop, noop),
     );
     const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
 
@@ -48,14 +48,14 @@ describe("calibration tab semantics", () => {
 
   it("supports arrow keys and a linked voltage-group tabpanel", () => {
     const select = vi.fn();
-    const root = mount(voltageStep({ ...topology, voltage_layout: "two_voltages" }, 0, 0, null, null,
+    const root = mount(voltageStep({ ...topology, voltage_layout: "two_voltages" }, null, 0, [0, 0], null, null,
       false, select, noop, noop, noop, noop, noop));
     const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
 
     expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1]);
-    expect(tabs[0]?.getAttribute("aria-controls")).toBe("voltage-group-panel");
+    expect(tabs[0]?.getAttribute("aria-controls")).toBe("voltage-board-panel");
     expect(root.querySelector('[role="tabpanel"]')?.getAttribute("aria-labelledby")).toBe(
-      "voltage-group-tab-0",
+      "voltage-board-tab-0",
     );
     tabs[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(select).toHaveBeenCalledWith(1);

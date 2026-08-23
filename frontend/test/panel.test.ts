@@ -200,18 +200,21 @@ describe("CircuitSetup panel", () => {
       connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
       evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
     state.inventory = null;
+    state.currentReferences = new Map([[1, 5]]);
     state.stabilityByTarget = new Map([["current:1", { target: "current", target_id: "1", stable: true,
       windows: [{ samples: [5, 5, 5], mean: 5, standard_deviation: 0, range_percent: 0 }] }]]);
     panel.showState("current"); await panel.updateComplete;
     const input = panel.shadowRoot?.querySelector<HTMLInputElement>("[data-role=reporting-multiplier]");
     const calibrate = Array.from(panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("button.primary") ?? [])
-      .find((button) => button.textContent?.includes("Calibrate CT"));
+      .find((button) => button.textContent?.includes("Calibrate current"));
     expect(input).not.toBeNull();
     expect(calibrate?.disabled).toBe(true);
     input!.value = "2";
     input!.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
     await panel.updateComplete;
-    expect(calibrate?.disabled).toBe(false);
+    const enabled = Array.from(panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("button.primary") ?? [])
+      .find((button) => button.textContent?.includes("Calibrate current"));
+    expect(enabled?.disabled).toBe(false);
   });
 
   it("bounds the DOM for 42 CTs while preserving board and three-channel navigation", async () => {
@@ -356,7 +359,7 @@ describe("CircuitSetup panel", () => {
       .toBe("cs-ct-200a");
   });
 
-  it("groups voltage calibration into one shared reference or two chip-indexed references", async () => {
+  it("calibrates both chips on only the selected voltage board", async () => {
     const targets: string[] = [];
     const calibrated: string[] = [];
     const hass: HomeAssistant = {
@@ -367,7 +370,7 @@ describe("CircuitSetup panel", () => {
           const targetId = String(message.target_id);
           targets.push(targetId);
           return { target: "voltage", target_id: targetId, stable: true,
-            windows: Array.from({ length: 3 }, () => ({ samples: [120, 120, 120], mean: 120,
+            windows: Array.from({ length: 3 }, () => ({ samples: [120], mean: 120,
               standard_deviation: 0, range_percent: 0 })) } as T;
         }
         if (operation === "calibrate_voltage") {
@@ -388,32 +391,72 @@ describe("CircuitSetup panel", () => {
       voltageGroupKeys(): string[];
     };
     state.session = { session_id: "session", device_id: "meter-1", state: "ready",
-      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
-    state.reference = 120;
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] },
+      calibration_sources: { meter_main1: "flash", meter_main2: "configuration" } };
+    state.voltageReferences = [120, 121];
     state.topology = { addon_count: 1, board_count: 2, ct_count: 12, group_count: 4,
       connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
       evidence: [{ source: "native_project", addon_count: 1, detail: "Runtime identity" }] };
     panel.showState("voltage");
     await panel.updateComplete;
 
-    expect(state.voltageGroupKeys()).toEqual(["main_1", "main_2", "addon1_1", "addon1_2"]);
-    expect(panel.shadowRoot?.querySelectorAll('[role="tab"]')).toHaveLength(1);
+    expect(state.voltageGroupKeys()).toEqual(["main_1", "main_2"]);
+    expect(panel.shadowRoot?.querySelectorAll('[data-voltage-board]')).toHaveLength(2);
+    const progress = panel.shadowRoot?.querySelector(".progress-steps");
+    const reference = panel.shadowRoot?.querySelector(".reference-block input");
+    expect(Boolean(progress && reference
+      && (progress.compareDocumentPosition(reference) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+    expect(reference?.closest(".reference-block")?.querySelector("button.primary")).not.toBeNull();
     const check = panel.shadowRoot?.querySelector<HTMLButtonElement>(".calibration-step button.secondary");
+    expect(check?.parentElement?.classList.contains("stability-line")).toBe(true);
     check?.click();
     check?.click();
     await tick(); await panel.updateComplete;
-    expect(targets).toEqual(["main_1", "main_2", "addon1_1", "addon1_2"]);
-    expect(text(panel)).toContain("Stable sample window");
+    expect(targets).toEqual(["main_1", "main_2"]);
+    expect(text(panel)).toContain("Live data loaded");
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".calibration-step button.primary")?.click();
-    await expect.poll(() => calibrated).toEqual(["main_1", "main_2", "addon1_1", "addon1_2"]);
+    await expect.poll(() => calibrated).toEqual(["main_1", "main_2"]);
     await panel.updateComplete;
 
+    state.board = 1;
     state.topology = { ...(state.topology as object), voltage_layout: "two_voltages" };
-    state.group = 1;
     panel.requestUpdate();
     await panel.updateComplete;
-    expect(state.voltageGroupKeys()).toEqual(["main_2", "addon1_2"]);
-    expect(panel.shadowRoot?.querySelectorAll('[role="tab"]')).toHaveLength(2);
+    expect(state.voltageGroupKeys()).toEqual(["addon1_1", "addon1_2"]);
+    expect(panel.shadowRoot?.querySelectorAll(".reference-block input")).toHaveLength(2);
+    expect(text(panel)).toContain("Saved in flash");
+    expect(text(panel)).toContain("Configuration");
+  });
+
+  it("shows one three-CT group and skips blank current references", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const panel = await mount({
+      callWS: async <T>(message: Record<string, unknown>) => { sent.push(message); return {} as T; },
+      connection: { subscribeMessage: async () => () => undefined },
+    });
+    const state = panel as unknown as Record<string, unknown>;
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] }, calibration_sources: {} };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [] };
+    state.inventory = { channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1,
+      reporting_multiplier: 1 })) };
+    state.currentReferences = new Map([[1, 5], [3, 7]]);
+    const live = (targetId: string) => ({ target: "current", target_id: targetId, stable: true,
+      windows: [{ samples: [5], mean: 5, standard_deviation: 0, range_percent: 0 }] });
+    state.stabilityByTarget = new Map([["current:1", live("1")], ["current:3", live("3")]]);
+    panel.showState("current");
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelectorAll('[data-current-reference]')).toHaveLength(3);
+    expect(text(panel)).toContain("CT1");
+    expect(text(panel)).toContain("CT3");
+    expect(text(panel)).not.toContain("CT4 reference");
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("button.primary")?.click();
+    await tick();
+    expect(sent.find((message) => String(message.type).endsWith("calibrate_current"))?.references)
+      .toEqual([{ channel: 1, reference: 5, reporting_multiplier: 1 },
+        { channel: 3, reference: 7, reporting_multiplier: 1 }]);
   });
 
   it("renders review, safety, voltage, current, restart, summary, recovery, and technical states", async () => {
@@ -424,7 +467,7 @@ describe("CircuitSetup panel", () => {
       ["build", ["Build & Install", "Apply", "Install", "rename/entity-key"]],
       ["safety", ["Safety", "acknowledge", "Cancel session"]],
       ["voltage", ["Voltage", "reference", "check stability"]],
-      ["current", ["Current", "iteration"]],
+      ["current", ["Current", "calibration"]],
       ["restart", ["Restart", "restart verification"]],
       ["summary", ["Summary", "authority source", "Technical details"]],
     ] as const) {
@@ -676,7 +719,8 @@ describe("CircuitSetup panel", () => {
       selectDevice(deviceId: string): void;
     };
     state.safetyAcknowledged = true;
-    state.reference = 25;
+    state.voltageReferences = [25, 0];
+    state.currentReferences = new Map([[1, 5]]);
     state.stabilityByTarget = new Map([["current:1", { target: "current", target_id: "1", stable: true,
       windows: [{ samples: [1, 1, 1], mean: 1, standard_deviation: 0, range_percent: 0 }] }]]);
     state.calibrationByTarget = new Map([["current:1", { state: "applied_pending_restart_verification",
@@ -685,20 +729,23 @@ describe("CircuitSetup panel", () => {
     state.restartResult = { verification_id: "stale" };
     await state.startSession();
     expect(state.safetyAcknowledged).toBe(false);
-    expect(state.reference).toBe(0);
+    expect(state.voltageReferences).toEqual([0, 0]);
+    expect((state.currentReferences as Map<number, number>).size).toBe(0);
     expect((state.stabilityByTarget as Map<string, unknown>).size).toBe(0);
     expect((state.calibrationByTarget as Map<string, unknown>).size).toBe(0);
     expect(state.restartResult).toBeNull();
 
     state.safetyAcknowledged = true;
-    state.reference = 120;
+    state.voltageReferences = [120, 0];
+    state.currentReferences = new Map([[1, 5]]);
     state.restartResult = { verification_id: "also-stale" };
     state.selectDevice("meter-2");
     expect(state.selectedDeviceId).toBe("meter-2");
     expect(state.session).toBeNull();
     expect(state.transaction).toBeNull();
     expect(state.safetyAcknowledged).toBe(false);
-    expect(state.reference).toBe(0);
+    expect(state.voltageReferences).toEqual([0, 0]);
+    expect((state.currentReferences as Map<number, number>).size).toBe(0);
     expect(state.restartResult).toBeNull();
   });
 

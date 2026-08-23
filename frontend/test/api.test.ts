@@ -50,7 +50,7 @@ const transaction = { transaction_id: "tx-1", state: "previewed", source_sha256:
 const session = { session_id: "session-1", device_id: "meter-1", state: "ready", safety_acknowledged: true,
   preflight: { issues: [], zeroed_roles: ["reference"] } };
 const stability = { target: "current", target_id: "1", stable: true,
-  windows: [{ samples: [1, 1, 1], mean: 1, standard_deviation: 0, range_percent: 0 }] };
+  windows: [{ samples: [1], mean: 1, standard_deviation: 0, range_percent: 0 }] };
 const gainEvidence = (instanceId: string, target: "voltage" | "current", reference: number, phase = "A") => ({
   connection_generation: 1,
   operation_sequence: 1,
@@ -136,7 +136,7 @@ describe("HelperApi", () => {
     hass.responses.check_stability = { ...stability, target_id: "42" };
     await api.checkStability("session-1", "current", "42");
     await api.calibrateVoltage("session-1", "addon6_2", 120, true);
-    await api.calibrateCurrent("session-1", 42, 25, true, 1);
+    await api.calibrateCurrent("session-1", [{ channel: 42, reference: 25, reporting_multiplier: 1 }], true);
     await api.restartAndVerify("session-1", topology);
     await api.cancelSession("session-1");
     await api.getDiagnosticsSummary();
@@ -189,7 +189,7 @@ describe("HelperApi", () => {
       ],
     });
     expect(hass.messages.find((message) => String(message.type).endsWith("/calibrate_current"))).toMatchObject({
-      reporting_multiplier: 1,
+      references: [{ channel: 42, reference: 25, reporting_multiplier: 1 }],
     });
   });
 
@@ -255,7 +255,7 @@ describe("HelperApi", () => {
       { ...calibration, iteration: 4 },
     ]) {
       hass.responses.calibrate_current = invalid;
-      await expect(api.calibrateCurrent("session-1", 1, 5, true, 1)).rejects.toThrow("calibrate_current");
+      await expect(api.calibrateCurrent("session-1", [{ channel: 1, reference: 5, reporting_multiplier: 1 }], true)).rejects.toThrow("calibrate_current");
     }
     hass.responses.restart_and_verify = {
       ...restart,
@@ -297,8 +297,8 @@ describe("HelperApi", () => {
   it("rejects unknown or out-of-range current reporting multipliers", async () => {
     const api = new HelperApi(new FakeHass(), "entry-1");
     for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, 0, 0.0009, 1000.001]) {
-      await expect(api.calibrateCurrent("session-1", 1, 5, true, invalid)).rejects.toThrow(
-        "reporting multiplier",
+      await expect(api.calibrateCurrent("session-1", [{ channel: 1, reference: 5, reporting_multiplier: invalid }], true)).rejects.toThrow(
+        "references",
       );
     }
   });
@@ -337,8 +337,7 @@ describe("HelperApi", () => {
       await expect(api.checkStability("session-1", "current", "1")).rejects.toThrow("check_stability");
     }
     const calibrateCurrent = api.calibrateCurrent as unknown as (
-      sessionId: string, channel: number, reference: number, confirm: boolean,
-      reportingMultiplier: number,
+      sessionId: string, references: Array<{ channel: number; reference: number; reporting_multiplier: number }>, confirm: boolean,
     ) => Promise<unknown>;
     for (const invalid of [
       { ...calibration, group_key: "main_2" },
@@ -362,13 +361,13 @@ describe("HelperApi", () => {
       { ...calibration, state: "indeterminate", after_values: [], error_percent_values: [], gain_evidence: calibration.gain_evidence },
     ]) {
       hass.responses.calibrate_current = invalid;
-      await expect(calibrateCurrent("session-1", 1, 5, true, 1)).rejects.toThrow();
+      await expect(calibrateCurrent("session-1", [{ channel: 1, reference: 5, reporting_multiplier: 1 }], true)).rejects.toThrow();
     }
     hass.responses.calibrate_current = { ...calibration, state: "result_outside_tolerance",
       after_values: [5.1], error_percent_values: [2], retry_allowed: true };
-    await expect(calibrateCurrent("session-1", 1, 5, true, 1)).resolves.toMatchObject({ retry_allowed: true });
+    await expect(calibrateCurrent("session-1", [{ channel: 1, reference: 5, reporting_multiplier: 1 }], true)).resolves.toMatchObject({ retry_allowed: true });
     hass.responses.calibrate_current = { ...calibration, gain_evidence: gainEvidence("meter_main1", "current", 2.5) };
-    await expect(api.calibrateCurrent("session-1", 1, 5, true, 2)).resolves.toMatchObject({ state: "applied_pending_restart_verification" });
+    await expect(api.calibrateCurrent("session-1", [{ channel: 1, reference: 5, reporting_multiplier: 2 }], true)).resolves.toMatchObject({ state: "applied_pending_restart_verification" });
   });
 
   it("requires authoritative topology evidence and restart identity matching that topology", async () => {
