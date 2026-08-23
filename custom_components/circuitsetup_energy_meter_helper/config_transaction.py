@@ -15,8 +15,8 @@ from uuid import uuid4
 
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import (
-    CTChangeRequest,
     ConfigMutationError,
+    CTChangeRequest,
     build_calibrated_gain_mutation,
 )
 from .ct_catalog import CTPresetCatalog
