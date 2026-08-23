@@ -578,7 +578,7 @@ function jt(n, e) {
     const c = $(r, e), d = y(c.channel, e);
     m(c.name, e), y(c.raw_gain_ct, e), I(c.reporting_multiplier, e), he(c.selected_model_id, e), R(c.selection_verified_against_config, e), he(c.display_label, e);
     const p = $(c.address, e), f = y(p.channel, e), v = y(p.board_index, e), u = y(p.group_index, e), h = k(p.phase, ne, e), _ = a + 1;
-    if (d !== _ || f !== _ || v !== Math.floor(a / 6) || u !== Math.floor(a % 6 / 3) + 1 || h !== ["A", "B", "C"][a % 3]) throw new Error(`${e} response is invalid`);
+    if (d !== _ || f !== _ || v !== Math.floor(a / 6) || u !== Math.floor(a % 6 / 3) || h !== ["A", "B", "C"][a % 3]) throw new Error(`${e} response is invalid`);
   });
   const s = $(i.catalog, e);
   m(s.source_repository, e), m(s.source_ref, e), y(s.schema_version, e);
@@ -890,7 +890,7 @@ function Wt(n, e, i, t, s, o, r, a, c, d = !1, p = !1) {
       expanded: !1
     }, _ = n.catalog.presets.find((g) => g.model_id === h.modelId), S = Vt(_, h.multiplier, h.modelId === "custom" ? h.customGainCt : void 0), b = ye(u, h);
     return l`
-              <div class="ct-row" data-ct-row data-ct-group=${u.address.group_index - 1} role="row" aria-rowindex=${u.channel + 1} aria-label=${`CT${u.channel}`}>
+              <div class="ct-row" data-ct-row data-ct-group=${u.address.group_index} role="row" aria-rowindex=${u.channel + 1} aria-label=${`CT${u.channel}`}>
                 <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${u.channel} name`} .value=${h.name}
                   @input=${(g) => r(u.channel, { name: g.target.value })} /></label>
                 <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${u.channel} model`} ?disabled=${d}

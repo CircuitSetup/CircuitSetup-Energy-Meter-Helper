@@ -174,7 +174,7 @@ describe("CircuitSetup panel", () => {
       channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1,
         name: index === 0 ? "Main A" : `CT${index + 1}`, raw_gain_ct: 5500, reporting_multiplier: 1,
         selected_model_id: "model", selection_verified_against_config: true, display_label: null,
-        address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3) + 1,
+        address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3),
           phase: (["A", "B", "C"] as const)[index % 3]! } })),
       catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
         secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }],
@@ -302,7 +302,7 @@ describe("CircuitSetup panel", () => {
         address: {
           channel: index + 1,
           board_index: Math.floor(index / 6),
-          group_index: Math.floor((index % 6) / 3) + 1,
+          group_index: Math.floor((index % 6) / 3),
           phase: (["A", "B", "C"] as const)[index % 3]!,
         },
       })),
@@ -363,7 +363,7 @@ describe("CircuitSetup panel", () => {
         reporting_multiplier: 1,
         selected_model_id: null,
         selection_verified_against_config: false,
-        address: { channel: index + 1, board_index: 0, group_index: index < 3 ? 1 : 2,
+        address: { channel: index + 1, board_index: 0, group_index: index < 3 ? 0 : 1,
           phase: (["A", "B", "C"] as const)[index % 3] },
       })),
       catalog: {
@@ -392,7 +392,7 @@ describe("CircuitSetup panel", () => {
         reporting_multiplier: 1,
         selected_model_id: null,
         selection_verified_against_config: false,
-        address: { channel: 1, board_index: 0, group_index: 1, phase: "A" },
+        address: { channel: 1, board_index: 0, group_index: 0, phase: "A" },
       }],
       catalog: {
         presets: [{
@@ -674,7 +674,7 @@ describe("CircuitSetup panel", () => {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: [{ channel: 1, name: "CT1", raw_gain_ct: 5500, reporting_multiplier: 1,
         selected_model_id: "preset-burden", selection_verified_against_config: true,
-        address: { channel: 1, board_index: 0, group_index: 1, phase: "A" } }],
+        address: { channel: 1, board_index: 0, group_index: 0, phase: "A" } }],
       catalog: { presets: [{ model_id: "preset-burden", label: "Burden model", rated_current_a: 100,
         secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: true, notes: "Cut jumper" }],
         source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
@@ -715,7 +715,7 @@ describe("CircuitSetup panel", () => {
         channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: index === 0 ? 32000 : 5500,
         reporting_multiplier: 1, selected_model_id: index === 0 ? "custom" : "model",
         selection_verified_against_config: true, display_label: index === 0 ? "Existing clamp" : null,
-        address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3) + 1,
+        address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3),
           phase: (["A", "B", "C"] as const)[index % 3]! },
       })),
       catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
@@ -755,7 +755,7 @@ describe("CircuitSetup panel", () => {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: [{ channel: 1, name: "CT1", raw_gain_ct: 32000, reporting_multiplier: 2,
         selected_model_id: "custom", selection_verified_against_config: true, display_label: "Existing clamp",
-        address: { channel: 1, board_index: 0, group_index: 1, phase: "A" } }],
+        address: { channel: 1, board_index: 0, group_index: 0, phase: "A" } }],
       catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
     };
     const panel = await mount(hass);
@@ -929,7 +929,7 @@ describe("CircuitSetup panel", () => {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`,
         raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model", selection_verified_against_config: true,
-        address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3) + 1,
+        address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3),
           phase: (["A", "B", "C"] as const)[index % 3]! } })),
       catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100, secondary: "50 mA",
         default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }],

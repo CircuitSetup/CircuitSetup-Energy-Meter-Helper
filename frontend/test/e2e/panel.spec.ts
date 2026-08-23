@@ -33,7 +33,7 @@ function inventory(addons: number) {
       reporting_multiplier: 1, selected_model_id: index === 3 ? null : "cs-ct-200a",
       selection_verified_against_config: index !== 3,
       address: { channel: index + 1, board_index: Math.floor(index / 6),
-        group_index: Math.floor((index % 6) / 3) + 1,
+        group_index: Math.floor((index % 6) / 3),
         phase: (["A", "B", "C"] as const)[index % 3] },
     })),
     catalog: { presets: [{ model_id: "cs-ct-200a", label: "CS-CT-200A-333mV", rated_current_a: 200,

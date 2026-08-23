@@ -65,7 +65,7 @@ export function ctInventoryStep(
             const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : undefined);
             const dirty = isDirty(channel, draft);
             return html`
-              <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index - 1} role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
+              <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index} role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
                 <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
                   @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
                 <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} ?disabled=${labelOnly}

@@ -23,6 +23,9 @@ def test_panel_registers_admin_product_with_content_hash(
     bundle = tmp_path / "circuitsetup-energy-meter-helper-panel.js"
     bundle.write_bytes(b"export const panel = true;")
     hass = Mock()
+    hass.async_add_executor_job = AsyncMock(
+        side_effect=lambda target, *args: target(*args)
+    )
     hass.http.async_register_static_paths = AsyncMock()
     register = AsyncMock()
     monkeypatch.setattr(
@@ -32,6 +35,7 @@ def test_panel_registers_admin_product_with_content_hash(
 
     asyncio.run(async_register_panel(hass, "entry-1", bundle_path=bundle))
 
+    assert hass.async_add_executor_job.await_count == 1
     expected_hash = sha256(bundle.read_bytes()).hexdigest()[:16]
     config = register.call_args.kwargs
     assert config["frontend_url_path"] == PANEL_URL_PATH

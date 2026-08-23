@@ -115,7 +115,7 @@ it("gives the CT inventory table explicit header and data-cell semantics", () =>
       address: {
         channel: index + 1,
         board_index: 0,
-        group_index: Math.floor(index / 3) + 1,
+        group_index: Math.floor(index / 3),
         phase: (["A", "B", "C"] as const)[index % 3]!,
       },
     })),

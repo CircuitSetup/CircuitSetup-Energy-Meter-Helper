@@ -40,7 +40,7 @@ const inventory = {
   channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`,
     raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model",
     selection_verified_against_config: true, address: { channel: index + 1, board_index: 0,
-      group_index: Math.floor(index / 3) + 1, phase: (["A", "B", "C"] as const)[index % 3] } })),
+      group_index: Math.floor(index / 3), phase: (["A", "B", "C"] as const)[index % 3] } })),
   catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
     secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }],
     source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
