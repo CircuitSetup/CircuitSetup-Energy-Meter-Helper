@@ -280,11 +280,35 @@ describe("CircuitSetup panel", () => {
     expect((panel.shadowRoot?.activeElement as HTMLInputElement | null)?.ariaLabel).toBe("CT40 name");
   });
 
-  it("refuses a stale CT preview and moves focus to the live error", async () => {
+  it("reloads a stale CT preview while preserving the reviewed draft", async () => {
     const stale = Object.assign(new Error("expired"), { code: "stale_confirmation" });
+    const fresh = {
+      plan_id: "fresh-plan",
+      source_sha256: "b".repeat(64),
+      channels: Array.from({ length: 6 }, (_, index) => ({
+        channel: index + 1,
+        name: `CT${index + 1}`,
+        raw_gain_ct: 27518,
+        reporting_multiplier: 1,
+        selected_model_id: null,
+        selection_verified_against_config: false,
+        address: { channel: index + 1, board_index: 0, group_index: index < 3 ? 1 : 2,
+          phase: (["A", "B", "C"] as const)[index % 3] },
+      })),
+      catalog: {
+        presets: [{
+          model_id: "cs-ct-200a", label: "CS-CT-200A-333mV", rated_current_a: 200,
+          secondary: "333 mV @ 200 A", default_gain_ct: 5500,
+          requires_burden_jumper_cut: false, notes: "Use burden at least 1 VA.",
+        }],
+        source_repository: "CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter",
+        source_ref: "approved", schema_version: 1,
+      },
+    };
     const hass = makeHass({
       setup_status: { state: "device_discovered", devices: [device] },
       preview_ct_config: stale,
+      get_ct_inventory: fresh,
     });
     const panel = await mount(hass);
     panel.showInventory({
@@ -325,9 +349,71 @@ describe("CircuitSetup panel", () => {
     await tick();
     await panel.updateComplete;
 
-    const alert = panel.shadowRoot?.querySelector<HTMLElement>("[role=alert]");
-    expect(alert?.textContent).toContain("confirmation expired");
-    expect(panel.shadowRoot?.activeElement).toBe(alert);
+    expect(panel.shadowRoot?.querySelector("[role=alert]")).toBeNull();
+    expect(text(panel)).toContain("CT Configuration");
+    expect(text(panel)).toContain("Live CT data reloaded");
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('select[aria-label="CT1 model"]')?.value)
+      .toBe("cs-ct-200a");
+  });
+
+  it("groups voltage calibration into one shared reference or two chip-indexed references", async () => {
+    const targets: string[] = [];
+    const calibrated: string[] = [];
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "check_stability") {
+          const targetId = String(message.target_id);
+          targets.push(targetId);
+          return { target: "voltage", target_id: targetId, stable: true,
+            windows: Array.from({ length: 3 }, () => ({ samples: [120, 120, 120], mean: 120,
+              standard_deviation: 0, range_percent: 0 })) } as T;
+        }
+        if (operation === "calibrate_voltage") {
+          const groupKey = String(message.group_key);
+          calibrated.push(groupKey);
+          const firstChannel = (calibrated.length - 1) * 3 + 1;
+          return { state: "indeterminate", group_key: groupKey, phase: null,
+            changed_channels: [firstChannel, firstChannel + 1, firstChannel + 2], iteration: 1,
+            before_values: [120, 120, 120], after_values: [], error_percent_values: [], gain_evidence: null,
+            restore_evidence: null, retry_allowed: false } as T;
+        }
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & {
+      voltageGroupKeys(): string[];
+    };
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+    state.reference = 120;
+    state.topology = { addon_count: 1, board_count: 2, ct_count: 12, group_count: 4,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 1, detail: "Runtime identity" }] };
+    panel.showState("voltage");
+    await panel.updateComplete;
+
+    expect(state.voltageGroupKeys()).toEqual(["main_1", "main_2", "addon1_1", "addon1_2"]);
+    expect(panel.shadowRoot?.querySelectorAll('[role="tab"]')).toHaveLength(1);
+    const check = panel.shadowRoot?.querySelector<HTMLButtonElement>(".calibration-step button.secondary");
+    check?.click();
+    check?.click();
+    await tick(); await panel.updateComplete;
+    expect(targets).toEqual(["main_1", "main_2", "addon1_1", "addon1_2"]);
+    expect(text(panel)).toContain("Stable sample window");
+    panel.shadowRoot?.querySelector<HTMLButtonElement>(".calibration-step button.primary")?.click();
+    await expect.poll(() => calibrated).toEqual(["main_1", "main_2", "addon1_1", "addon1_2"]);
+    await panel.updateComplete;
+
+    state.topology = { ...(state.topology as object), voltage_layout: "two_voltages" };
+    state.group = 1;
+    panel.requestUpdate();
+    await panel.updateComplete;
+    expect(state.voltageGroupKeys()).toEqual(["main_2", "addon1_2"]);
+    expect(panel.shadowRoot?.querySelectorAll('[role="tab"]')).toHaveLength(2);
   });
 
   it("renders review, safety, voltage, current, restart, summary, recovery, and technical states", async () => {

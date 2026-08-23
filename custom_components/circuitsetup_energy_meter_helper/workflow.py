@@ -27,7 +27,7 @@ from homeassistant.components.hassio.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
-from .calibration_engine import CalibrationEngine
+from .calibration_engine import DEFAULT_EVIDENCE_TIMEOUT, CalibrationEngine
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import CTChangeRequest, build_ct_mutation
 from .config_transaction import ConfigTransactionManager, ReconnectEvidence
@@ -549,15 +549,20 @@ class EntryWorkflow:
                     entities = (handle.binding.channels[channel - 1].current_sensor,)
                 except IndexError:
                     raise WorkflowHandleError("unknown current target") from None
+            boundary = monotonic()
             windows = tuple(
-                [
-                    await api.async_wait_for_sensor_window(
-                        entity.descriptor.key,
-                        device_id=entity.descriptor.device_id,
-                        sample_count=3,
+                await asyncio.gather(
+                    *(
+                        api.async_wait_for_sensor_window(
+                            entity.descriptor.key,
+                            device_id=entity.descriptor.device_id,
+                            sample_count=3,
+                            after=boundary,
+                            timeout=DEFAULT_EVIDENCE_TIMEOUT,
+                        )
+                        for entity in entities
                     )
-                    for entity in entities
-                ]
+                )
             )
             stable = all(window.range_percent <= 1.0 for window in windows)
             self._assert_claim(handle, revision)

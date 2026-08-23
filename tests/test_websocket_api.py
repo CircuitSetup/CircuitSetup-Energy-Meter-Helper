@@ -1098,6 +1098,50 @@ def test_native_only_addon_session_uses_complete_production_binding(
     asyncio.run(run())
 
 
+def test_stability_collects_all_phase_windows_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        started: list[tuple[int, float | None, float]] = []
+        all_started = asyncio.Event()
+
+        async def window(
+            key: int,
+            *,
+            device_id: int = 0,
+            sample_count: int,
+            after: float | None = None,
+            timeout: float = 10.0,
+        ) -> SensorSampleWindow:
+            del device_id
+            started.append((key, after, timeout))
+            if len(started) == 3:
+                all_started.set()
+            await all_started.wait()
+            return SensorSampleWindow(
+                (119.9, 120.0, 120.1), (1.0, 2.0, 3.0), 120.0, 119.9, 120.1, 0.2
+            )
+
+        workflow._api.async_wait_for_sensor_window = window  # type: ignore[method-assign,union-attr]
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+
+        result = await asyncio.wait_for(
+            workflow.async_check_stability(status.session_id, "voltage", "main_1"),
+            0.2,
+        )
+
+        assert result["stable"]
+        assert len(started) == 3
+        assert len({after for _, after, _ in started}) == 1
+        assert all(after is not None for _, after, _ in started)
+        assert all(timeout >= 30 for _, _, timeout in started)
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
 def test_native_only_current_requires_explicit_reporting_multiplier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

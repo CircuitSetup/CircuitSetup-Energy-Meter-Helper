@@ -88,6 +88,7 @@ export class CircuitSetupPanel extends LitElement {
   private transactionUnsub: (() => void) | null = null;
   private sessionUnsub: (() => void) | null = null;
   private sessionStarting = false;
+  private voltageBusy = false;
   private mobileStepsOpen = false;
   private focusHeading = false;
 
@@ -342,6 +343,22 @@ export class CircuitSetupPanel extends LitElement {
     }, "CT inventory could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
   }
 
+  private async recoverCtInventory(
+    api: HelperApi,
+    deviceId: string,
+    generation: number,
+    drafts: Map<number, CtDraft>,
+  ): Promise<void> {
+    const inventory = await api.getCtInventory(deviceId);
+    if (!this.ownsOperation(generation, api, deviceId)) return;
+    this.clearSubscription("transaction");
+    this.transaction = null;
+    this.showInventory(inventory);
+    this.drafts = new Map(Array.from(this.drafts, ([channel, fresh]) =>
+      [channel, drafts.get(channel) ?? fresh]));
+    this.announcement = "Live CT data reloaded. Review the preserved changes again.";
+  }
+
   private updateDraft(channel: number, patch: Partial<CtDraft>): void {
     const current = this.drafts.get(channel);
     if (!current) return;
@@ -381,12 +398,19 @@ export class CircuitSetupPanel extends LitElement {
       return;
     }
     await this.run(async () => {
-      const transaction = await api.previewCtConfig(
-        deviceId,
-        inventory.plan_id,
-        inventory.source_sha256,
-        changes,
-      );
+      let transaction: TransactionStatus;
+      try {
+        transaction = await api.previewCtConfig(
+          deviceId,
+          inventory.plan_id,
+          inventory.source_sha256,
+          changes,
+        );
+      } catch (error) {
+        if ((error as WsError).code !== "stale_confirmation") throw error;
+        await this.recoverCtInventory(api, deviceId, generation, this.drafts);
+        return;
+      }
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.transaction = transaction;
       this.navigate("build");
@@ -432,10 +456,17 @@ export class CircuitSetupPanel extends LitElement {
     const generation = ++this.operationGeneration;
     await this.run(async () => {
       const args = [deviceId, current.transaction_id, current.source_sha256] as const;
-      const transaction = action === "apply" ? await api.applyCtConfig(...args)
-        : action === "compile" ? await api.compileCtConfig(...args)
-        : action === "install" ? await api.installCtConfig(...args)
-        : await api.rollbackCtConfig(...args);
+      let transaction: TransactionStatus;
+      try {
+        transaction = action === "apply" ? await api.applyCtConfig(...args)
+          : action === "compile" ? await api.compileCtConfig(...args)
+          : action === "install" ? await api.installCtConfig(...args)
+          : await api.rollbackCtConfig(...args);
+      } catch (error) {
+        if ((error as WsError).code !== "stale_confirmation") throw error;
+        await this.recoverCtInventory(api, deviceId, generation, this.drafts);
+        return;
+      }
       if (!this.ownsOperation(generation, api, deviceId)
         || this.transaction?.transaction_id !== current.transaction_id
         || this.transaction.source_sha256 !== current.source_sha256) return;
@@ -501,45 +532,75 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async checkStability(target: "voltage" | "current"): Promise<void> {
-    if (!this.api || !this.session) return;
+    if (!this.api || !this.session || (target === "voltage" && this.voltageBusy)) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
-    const targetId = target === "voltage" ? this.groupKey(this.group) : String(this.channel);
-    await this.run(async () => {
-      const result = await api.checkStability(sessionId, target, targetId);
-      if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
-      this.stabilityByTarget = new Map(this.stabilityByTarget).set(`${target}:${targetId}`, result);
-    }, "Stable samples could not be collected.", () => this.ownsOperation(generation, api, deviceId));
+    const targetIds = target === "voltage" ? this.voltageGroupKeys() : [String(this.channel)];
+    if (target === "voltage") { this.voltageBusy = true; this.requestUpdate(); }
+    try {
+      await this.run(async () => {
+        for (const [index, targetId] of targetIds.entries()) {
+          const result = await api.checkStability(sessionId, target, targetId);
+          if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+          this.stabilityByTarget = new Map(this.stabilityByTarget).set(`${target}:${targetId}`, result);
+          if (target === "voltage") {
+            this.announcement = `Loaded voltage data from chip ${index + 1} of ${targetIds.length}.`;
+            this.requestUpdate();
+          }
+        }
+      }, "Stable samples could not be collected.", () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      if (target === "voltage") { this.voltageBusy = false; this.requestUpdate(); }
+    }
   }
 
   private async calibrate(target: "voltage" | "current"): Promise<void> {
-    if (!this.api || !this.session) return;
+    if (!this.api || !this.session || (target === "voltage" && this.voltageBusy)) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
-    const targetId = target === "voltage" ? this.groupKey(this.group) : String(this.channel);
-    const groupKey = this.groupKey(this.group); const channel = this.channel; const reference = this.reference;
+    const targetIds = target === "voltage" ? this.voltageGroupKeys() : [String(this.channel)];
+    const channel = this.channel; const reference = this.reference;
     const reportingMultiplier = this.inventory?.channels[channel - 1]?.reporting_multiplier
       ?? this.reportingMultiplier;
     if (target === "current" && reportingMultiplier === null) {
       this.fail(new Error(), "Confirm the reporting multiplier before calibration.");
       return;
     }
-    await this.run(async () => {
-      const result = target === "voltage"
-        ? await api.calibrateVoltage(sessionId, groupKey, reference, true)
-        : await api.calibrateCurrent(sessionId, channel, reference, true,
-          reportingMultiplier!);
-      if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
-      this.calibrationByTarget = new Map(this.calibrationByTarget).set(`${target}:${targetId}`, result);
-      this.announcement = `Calibration iteration ${result.iteration} finished with state ${result.state}.`;
-    }, "Calibration did not complete. Reconnect and inspect before another attempt.",
-    () => this.ownsOperation(generation, api, deviceId));
+    if (target === "voltage") { this.voltageBusy = true; this.requestUpdate(); }
+    try {
+      await this.run(async () => {
+        for (const [index, targetId] of targetIds.entries()) {
+          const result = target === "voltage"
+            ? await api.calibrateVoltage(sessionId, targetId, reference, true)
+            : await api.calibrateCurrent(sessionId, channel, reference, true,
+              reportingMultiplier!);
+          if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+          this.calibrationByTarget = new Map(this.calibrationByTarget).set(`${target}:${targetId}`, result);
+          this.announcement = target === "voltage"
+            ? `Calibrated voltage chip ${index + 1} of ${targetIds.length}.`
+            : `Calibration iteration ${result.iteration} finished with state ${result.state}.`;
+          this.requestUpdate();
+        }
+      }, "Calibration did not complete. Reconnect and inspect before another attempt.",
+      () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      if (target === "voltage") { this.voltageBusy = false; this.requestUpdate(); }
+    }
   }
 
   private groupKey(index: number): string {
     const board = Math.floor(index / 2);
     const group = index % 2 + 1;
     return board === 0 ? `main_${group}` : `addon${board}_${group}`;
+  }
+
+  private voltageGroupKeys(): string[] {
+    if (!this.topology) return [this.groupKey(this.group)];
+    if (this.topology.voltage_layout !== "two_voltages") {
+      return Array.from({ length: this.topology.group_count }, (_, index) => this.groupKey(index));
+    }
+    return Array.from({ length: this.topology.board_count }, (_, board) =>
+      this.groupKey(board * 2 + this.group));
   }
 
   private async restart(): Promise<void> {
@@ -597,13 +658,28 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private resultFor(target: "voltage" | "current"): CalibrationResult | null {
-    const targetId = target === "voltage" ? this.groupKey(this.group) : String(this.channel);
-    return this.calibrationByTarget.get(`${target}:${targetId}`) ?? null;
+    const targetIds = target === "voltage" ? this.voltageGroupKeys() : [String(this.channel)];
+    for (const targetId of [...targetIds].reverse()) {
+      const result = this.calibrationByTarget.get(`${target}:${targetId}`);
+      if (result) return result;
+    }
+    return null;
   }
 
   private stabilityFor(target: "voltage" | "current"): StabilityResult | null {
-    const targetId = target === "voltage" ? this.groupKey(this.group) : String(this.channel);
-    return this.stabilityByTarget.get(`${target}:${targetId}`) ?? null;
+    if (target === "current") return this.stabilityByTarget.get(`current:${this.channel}`) ?? null;
+    const targetIds = this.voltageGroupKeys();
+    const results = targetIds.flatMap((targetId) => {
+      const result = this.stabilityByTarget.get(`voltage:${targetId}`);
+      return result ? [result] : [];
+    });
+    if (!results.length) return null;
+    return {
+      target: "voltage",
+      target_id: this.topology?.voltage_layout === "two_voltages" ? `Voltage ${this.group + 1}` : "Shared voltage",
+      stable: results.length === targetIds.length && results.every((result) => result.stable),
+      windows: results.flatMap((result) => result.windows),
+    };
   }
 
   private async run(
@@ -646,10 +722,10 @@ export class CircuitSetupPanel extends LitElement {
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(), () => void this.startSession());
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back());
-    if (this.step === "voltage") return html`${voltageStep(this.topology, this.group, this.reference, this.stabilityFor("voltage"), this.resultFor("voltage"),
+    if (this.step === "voltage") return html`${voltageStep(this.topology, this.group, this.reference, this.stabilityFor("voltage"), this.resultFor("voltage"), this.voltageBusy,
       (value) => { this.group = value; this.requestUpdate(); },
       (value) => { this.reference = value; this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
-      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.navigate("current")}>Continue</button></footer>`;
+      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.voltageBusy} @click=${() => this.navigate("current")}>Continue</button></footer>`;
     if (this.step === "current") return html`${currentStep(this.topology, this.inventory, this.channel, this.reference, this.reportingMultiplier, this.stabilityFor("current"), this.resultFor("current"),
       (value) => { this.channel = value; this.requestUpdate(); },
       (value) => { this.reference = value; this.requestUpdate(); },

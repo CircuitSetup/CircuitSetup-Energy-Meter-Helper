@@ -48,10 +48,11 @@ describe("calibration tab semantics", () => {
 
   it("supports arrow keys and a linked voltage-group tabpanel", () => {
     const select = vi.fn();
-    const root = mount(voltageStep(topology, 0, 0, null, null, select, noop, noop, noop, noop, noop));
+    const root = mount(voltageStep({ ...topology, voltage_layout: "two_voltages" }, 0, 0, null, null,
+      false, select, noop, noop, noop, noop, noop));
     const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
 
-    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1, -1, -1]);
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1]);
     expect(tabs[0]?.getAttribute("aria-controls")).toBe("voltage-group-panel");
     expect(root.querySelector('[role="tabpanel"]')?.getAttribute("aria-labelledby")).toBe(
       "voltage-group-tab-0",

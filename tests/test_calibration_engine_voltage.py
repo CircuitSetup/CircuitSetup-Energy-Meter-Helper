@@ -141,7 +141,7 @@ class FakeCalibrationSession:
         after: float,
         timeout: float = 10.0,
     ) -> SensorSampleWindow:
-        self.events.append(("window", key, device_id, sample_count))
+        self.events.append(("window", key, device_id, sample_count, timeout))
         self.window_calls += 1
         self.window_calls_by_key[key] = self.window_calls_by_key.get(key, 0) + 1
         return self.before if self.window_calls_by_key[key] == 1 else self.after
@@ -214,6 +214,7 @@ def test_voltage_calibration_persists_before_mutation_and_preserves_currents() -
         assert markers[0] is not None
         assert markers[0].changed_channels == (10, 11, 12)
         assert [event[0] for event in session.events].count("button") == 1
+        assert all(event[4] >= 30 for event in session.events if event[0] == "window")
         assert [event[0] for event in session.events].index("expect_gain") < [
             event[0] for event in session.events
         ].index("button")

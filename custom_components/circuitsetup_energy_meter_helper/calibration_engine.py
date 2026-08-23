@@ -36,6 +36,8 @@ from .state_tracker import SensorSampleWindow
 from .store import PhaseGainTable, VerifiedCalibrationRecord, VerifiedGainGroup
 from .topology import topology_from_config
 
+DEFAULT_EVIDENCE_TIMEOUT = 35.0
+
 type MarkerWriter = Callable[[str, StoredInterruptedSession | None], Awaitable[None]]
 type VerifiedWriter = Callable[[VerifiedCalibrationRecord], Awaitable[None]]
 type CalibrationSnapshotReader = Callable[
@@ -131,7 +133,7 @@ class CalibrationEngine:
         sample_count: int = 3,
         stability_limit_percent: float = 1.0,
         zero_concurrency: int = 2,
-        evidence_timeout: float = 10.0,
+        evidence_timeout: float = DEFAULT_EVIDENCE_TIMEOUT,
         persist_verified: VerifiedWriter | None = None,
         restart_disconnect_timeout: float = 20.0,
         restart_restore_timeout: float = 120.0,
