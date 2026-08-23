@@ -1060,11 +1060,17 @@ substitutions:
             "custom_components.circuitsetup_energy_meter_helper.workflow.async_preflight",
             preflight,
         )
+        store = HelperStore(hass)
+
+        async def selections(_mac: str) -> tuple[StoredCTSelection, ...]:
+            return (StoredCTSelection(1, "custom", "Mains", 27_518, 2.0, digest),)
+
+        store.async_get_ct_selections = selections  # type: ignore[method-assign]
         workflow = EntryWorkflow(
             hass,
             provisioning,
             SessionManager(),
-            HelperStore(hass),
+            store,
             "meter",
             Api(),  # type: ignore[arg-type]
             Builder(),  # type: ignore[arg-type]
@@ -1072,6 +1078,8 @@ substitutions:
             clock=lambda: now,
         )
         inventory = await workflow.async_get_ct_inventory("meter")
+        assert inventory["channels"][0].reporting_multiplier == 2.0
+        assert inventory["channels"][0].selected_model_id == "custom"
         assert any(target.__name__ == "load" for target, _args in hass.executor_jobs)
         session = await workflow.async_start_session("meter")
         active = await workflow.async_get_active_work("meter")
@@ -1080,6 +1088,10 @@ substitutions:
             "transaction": None,
             "verified_calibration": None,
         }
+        reloaded = await workflow._inventory_for_handle(
+            workflow._sessions[session.session_id]
+        )
+        assert reloaded.channels[0].reporting_multiplier == 2.0
         with pytest.raises(WorkflowHandleError, match="already active"):
             await workflow.async_start_session("meter")
         await workflow.async_acknowledge_safety(session.session_id, True)
@@ -1519,9 +1531,7 @@ def test_verified_session_requires_pending_multiplier_in_final_ct_changes(
         workflow.transactions = Transactions()  # type: ignore[assignment]
 
         with pytest.raises(WorkflowHandleError, match="missing from final CT changes"):
-            await workflow.async_preview_calibrated_gains(
-                status.session_id, "1" * 32
-            )
+            await workflow.async_preview_calibrated_gains(status.session_id, "1" * 32)
 
         assert await workflow.async_preview_calibrated_gains(
             status.session_id,
@@ -2067,8 +2077,15 @@ def test_real_transaction_owner_binds_confirmation_to_mac_and_source_hash() -> N
             "custom_components.circuitsetup_energy_meter_helper.session_manager",
             fromlist=["SessionManager"],
         ).SessionManager()
+
+        async def no_selections(_mac: str) -> tuple[StoredCTSelection, ...]:
+            return ()
+
         manager = ConfigTransactionManager(
-            SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), sessions
+            SimpleNamespace(),
+            SimpleNamespace(),
+            SimpleNamespace(async_get_ct_selections=no_selections),
+            sessions,
         )
         content = "substitutions:\n  ct1_name: Main\n"
         digest = sha256(content.encode()).hexdigest()

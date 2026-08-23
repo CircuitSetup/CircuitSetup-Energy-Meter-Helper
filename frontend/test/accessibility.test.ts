@@ -137,10 +137,10 @@ it("gives the CT inventory table explicit header and data-cell semantics", () =>
   const drafts = new Map<number, CtDraft>();
   container = document.createElement("div");
   document.body.append(container);
-  render(ctInventoryStep(inventory, 0, 0, drafts, noop, noop, noop, noop, noop), container);
+  render(ctInventoryStep(inventory, 0, drafts, noop, noop, noop, noop), container);
 
-  expect(container.querySelectorAll('[role="columnheader"]')).toHaveLength(7);
-  expect(container.querySelector('[data-ct-row]')?.querySelectorAll(':scope > [role="cell"]')).toHaveLength(7);
+  expect(container.querySelectorAll('[role="columnheader"]')).toHaveLength(8);
+  expect(container.querySelector('[data-ct-row]')?.querySelectorAll(':scope > [role="cell"]')).toHaveLength(8);
   const table = container.querySelector('[role="table"]');
   expect(table?.getAttribute("aria-rowcount")).toBe("7");
   expect(table?.querySelector('.ct-header')?.getAttribute("aria-rowindex")).toBe("1");

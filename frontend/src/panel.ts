@@ -28,7 +28,7 @@ import type {
 const STEPS: Array<[PanelStep, string]> = [
   ["setup", "Setup Device"],
   ["topology", "Topology"],
-  ["ct", "CT Verification"],
+  ["ct", "CT Settings"],
   ["safety", "Safety"],
   ["voltage", "Voltage"],
   ["current", "Current"],
@@ -69,7 +69,6 @@ export class CircuitSetupPanel extends LitElement {
   private addonCount = 0;
   private connection: Exclude<ConnectionType, "unknown"> = "wifi";
   private board = 0;
-  private ctGroup = 0;
   private group = 0;
   private channel = 1;
   private voltageReferences = [0, 0];
@@ -210,7 +209,6 @@ export class CircuitSetupPanel extends LitElement {
     this.session = null;
     this.drafts = new Map();
     this.board = 0;
-    this.ctGroup = 0;
     this.resetCalibrationRun();
   }
 
@@ -233,7 +231,8 @@ export class CircuitSetupPanel extends LitElement {
         name: channel.name,
         modelId,
         multiplier: channel.reporting_multiplier,
-        customGainCt: modelId === "custom" || channel.selected_model_id === null ? channel.raw_gain_ct : undefined,
+        customGainCt: modelId === "custom" || channel.selected_model_id === null
+          ? channel.raw_gain_ct * channel.reporting_multiplier : undefined,
         customLabel: channel.display_label ?? undefined,
         burdenAcknowledged: channel.selection_verified_against_config
           && (modelId === "custom" || preset?.requires_burden_jumper_cut === true),
@@ -400,16 +399,6 @@ export class CircuitSetupPanel extends LitElement {
     if (!current) return;
     this.drafts = new Map(this.drafts).set(channel, { ...current, ...patch });
     this.requestUpdate();
-  }
-
-  private selectCtGroup(group: number): void {
-    this.ctGroup = group;
-    this.requestUpdate();
-    void this.updateComplete.then(() => {
-      this.shadowRoot
-        ?.querySelector<HTMLInputElement>(`[data-ct-group="${group}"] input`)
-        ?.focus();
-    });
   }
 
   private async reviewChanges(): Promise<void> {
@@ -933,9 +922,9 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(),
       () => this.back(), () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
         ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session");
-    if (this.step === "ct" && this.inventory) return html`<fieldset><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}> ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}> Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.ctGroup, this.drafts,
-      (board) => { this.board = board; this.ctGroup = 0; this.requestUpdate(); },
-      (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session")}`;
+    if (this.step === "ct" && this.inventory) return html`<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
+      (board) => { this.board = board; this.requestUpdate(); },
+      (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session")}`;
     if (this.step === "build") return buildInstallStep(this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(),

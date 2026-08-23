@@ -200,8 +200,10 @@ describe("CircuitSetup panel", () => {
 
     expect(operations).toContain("get_ct_inventory");
     expect(operations).not.toContain("start_session");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Verification");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Settings");
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 name"]')?.value).toBe("Main A");
+    expect(text(panel)).toContain("If you expect to measure more than 65.535 A");
+    expect(text(panel)).toContain("divides the gain and multiplies current and power output");
   });
 
   it("never substitutes restart verification for missing CT inventory", async () => {
@@ -287,7 +289,7 @@ describe("CircuitSetup panel", () => {
     expect(enabled?.disabled).toBe(false);
   });
 
-  it("bounds the DOM for 42 CTs while preserving board and three-channel navigation", async () => {
+  it("shows six visibly numbered CT rows and the exact board range", async () => {
     const panel = await mount(
       makeHass({ setup_status: { state: "device_discovered", devices: [device] } }),
     );
@@ -333,8 +335,11 @@ describe("CircuitSetup panel", () => {
     expect(tabs?.[0]?.getAttribute("tabindex")).toBe("0");
     expect(tabs?.[1]?.getAttribute("tabindex")).toBe("-1");
     expect(panel.shadowRoot?.querySelector('[role="tabpanel"]')?.getAttribute("aria-labelledby")).toBe("board-tab-0");
-    expect(panel.shadowRoot?.querySelectorAll("[data-ct-row]").length).toBeLessThanOrEqual(8);
-    expect(panel.shadowRoot?.querySelectorAll("[data-group-nav]")).toHaveLength(2);
+    expect(panel.shadowRoot?.querySelectorAll("[data-ct-row]")).toHaveLength(6);
+    expect(panel.shadowRoot?.querySelectorAll("[data-group-nav]")).toHaveLength(0);
+    expect(Array.from(panel.shadowRoot?.querySelectorAll(".ct-index") ?? [], (item) => item.textContent))
+      .toEqual(["CT1", "CT2", "CT3", "CT4", "CT5", "CT6"]);
+    expect(panel.shadowRoot?.querySelector(".row-count")?.textContent).toBe("Showing 1–6 of 42 CTs");
     expect(text(panel)).toContain("Choose model");
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('select[aria-label="CT2 model"]')?.value).toBe("cs-ct-200a");
 
@@ -345,12 +350,10 @@ describe("CircuitSetup panel", () => {
 
     panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-board-tab="6"]')?.click();
     await panel.updateComplete;
-    panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("[data-group-nav]")[1]?.click();
-    await panel.updateComplete;
-    await tick();
     expect(panel.shadowRoot?.querySelectorAll("[data-ct-row]")).toHaveLength(6);
-    expect(panel.shadowRoot?.querySelector('[data-group-nav][aria-current="true"]')?.textContent).toContain("CT40");
-    expect((panel.shadowRoot?.activeElement as HTMLInputElement | null)?.ariaLabel).toBe("CT40 name");
+    expect(Array.from(panel.shadowRoot?.querySelectorAll(".ct-index") ?? [], (item) => item.textContent))
+      .toEqual(["CT37", "CT38", "CT39", "CT40", "CT41", "CT42"]);
+    expect(panel.shadowRoot?.querySelector(".row-count")?.textContent).toBe("Showing 37–42 of 42 CTs");
   });
 
   it("reloads a stale CT preview while preserving the reviewed draft", async () => {
@@ -423,7 +426,7 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
 
     expect(panel.shadowRoot?.querySelector("[role=alert]")).toBeNull();
-    expect(text(panel)).toContain("CT Verification");
+    expect(text(panel)).toContain("CT Settings");
     expect(text(panel)).toContain("Live CT data reloaded");
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('select[aria-label="CT1 model"]')?.value)
       .toBe("cs-ct-200a");
@@ -713,8 +716,8 @@ describe("CircuitSetup panel", () => {
     const inventory: CtInventory = {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: Array.from({ length: 6 }, (_, index) => ({
-        channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: index === 0 ? 32000 : 5500,
-        reporting_multiplier: 1, selected_model_id: index === 0 ? "custom" : "model",
+        channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: index === 0 ? 16000 : 5500,
+        reporting_multiplier: index === 0 ? 2 : 1, selected_model_id: index === 0 ? "custom" : "model",
         selection_verified_against_config: true, display_label: index === 0 ? "Existing clamp" : null,
         address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3),
           phase: (["A", "B", "C"] as const)[index % 3]! },
@@ -1075,7 +1078,7 @@ describe("CircuitSetup panel", () => {
     expect(rollbackCalls).toBe(1);
   });
 
-  it("returns from Safety to CT Verification and cleans up the active session", async () => {
+  it("returns from Safety to CT Settings and cleans up the active session", async () => {
     const cancelled = { session_id: "session", device_id: "meter-1", state: "cancelled",
       safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } };
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled }));
@@ -1086,7 +1089,7 @@ describe("CircuitSetup panel", () => {
     panel.showState("safety"); await panel.updateComplete;
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .secondary")?.click();
     await tick(); await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Verification");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Settings");
     expect(panel.shadowRoot?.activeElement).toBe(panel.shadowRoot?.querySelector("h1"));
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".mobile-progress button")?.click();
     await panel.updateComplete;

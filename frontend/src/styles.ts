@@ -52,6 +52,9 @@ export const panelStyles = css`
   .step-content { max-width: 1320px; }
   fieldset { border: 0; margin: 0 0 26px; padding: 0; }
   legend { font-size: 21px; font-weight: 750; }
+  .name-mode { display: grid; gap: 8px; }
+  .name-mode label { display: flex; align-items: center; gap: 8px; }
+  .name-mode input { margin: 0; }
   .choice-field > p { margin: 3px 0 12px; }
   .addon-options { display: grid; grid-template-columns: repeat(7, minmax(52px, 1fr)); gap: 12px; max-width: 760px; }
   .addon-options label, .connection-options label { display: flex; align-items: center; border: 1px solid #b8c1cc; border-radius: 5px; cursor: pointer; }
@@ -85,11 +88,11 @@ export const panelStyles = css`
   .board-tabs, .target-tabs { display: flex; gap: 18px; overflow-x: auto; border-bottom: 1px solid var(--border); }
   .board-tabs button, .target-tabs button { flex: 0 0 auto; border: 0; border-radius: 0; }
   .board-tabs button[aria-selected="true"], .target-tabs button[aria-pressed="true"] { color: #1769d3; border-bottom: 2px solid #1769d3; }
-  .group-nav { display: flex; gap: 8px; margin: 14px 0; }
   .ct-table { border: 1px solid var(--border); }
-  .ct-header, .ct-row { display: grid; grid-template-columns: 1.45fr 1.4fr .8fr .8fr .9fr .7fr .9fr; align-items: center; gap: 14px; padding: 11px 16px; }
+  .ct-header, .ct-row { display: grid; grid-template-columns: .45fr 1.45fr 1.4fr .8fr .8fr .9fr .7fr .9fr; align-items: center; gap: 14px; padding: 11px 16px; }
   .ct-header { font-weight: 700; background: var(--band); }
   .ct-row { min-height: 66px; border-top: 1px solid var(--border); }
+  .ct-index { font-weight: 750; }
   .ct-row input, .ct-row select { width: 100%; min-width: 0; padding: 8px; border: 1px solid #b8c1cc; border-radius: 4px; }
   .row-toggle { color: var(--teal); border: 0; padding: 4px; }
   .mobile-label { display: none; }
@@ -142,7 +145,7 @@ export const panelStyles = css`
     .ct-detail, .technical-grid, .group-grid { grid-template-columns: 1fr; }
     .progress-steps { grid-template-columns: 1fr; gap: 8px; }
     .action-footer { left: 0; padding: 12px 18px; }
-    .identity-strip, .confirmation-actions, .group-nav { align-items: stretch; flex-direction: column; }
+    .identity-strip, .confirmation-actions { align-items: stretch; flex-direction: column; }
     .evidence-table { display: block; overflow-x: auto; }
   }
 `;
