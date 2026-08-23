@@ -43,7 +43,11 @@ from .entity_catalog import EntityCatalog
 from .esphome_api import ESPHomeApiSession
 from .models import MeterTopology, StoredCTSelection, canonical_mac
 from .preflight import PreflightResult, async_preflight
-from .provisioning import DiscoveredDevice, ProvisioningCoordinator
+from .provisioning import (
+    DiscoveredDevice,
+    ProvisioningCoordinator,
+    device_builder_status,
+)
 from .session_manager import CalibrationBusyError, SessionManager
 from .state_tracker import SensorSampleWindow
 from .store import CalibrationSourceAuthority, HelperStore
@@ -962,21 +966,12 @@ class EntryWorkflow:
         configuration = device.configuration
         if configuration is None:
             listing = await builder.async_list_devices()
-            configured = listing.get("configured", ())
             entry = self._entry(device.entry_id)
-            device_name = getattr(entry, "data", {}).get("device_name")
-            matches = [
-                item
-                for item in configured
-                if isinstance(item, Mapping)
-                and (device_name is None or item.get("name") == device_name)
-                and isinstance(item.get("configuration"), str)
-            ]
-            if len(matches) != 1:
+            configuration = device_builder_status(entry, listing).configuration
+            if configuration is None:
                 raise WorkflowCapabilityUnavailable(
                     "the Device Builder configuration is unavailable"
                 )
-            configuration = str(matches[0]["configuration"])
         return await builder.async_get_config(configuration)
 
     def _device(self, device_id: str) -> DiscoveredDevice:

@@ -41,7 +41,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     registered = False
     panel_registered = False
     try:
-        coordinator = ProvisioningCoordinator(hass)
+        async def current_device_builder_listing() -> dict[str, Any] | None:
+            return (
+                await device_builder.async_list_devices()
+                if device_builder is not None
+                else None
+            )
+
+        coordinator = ProvisioningCoordinator(
+            hass, listing_reader=current_device_builder_listing
+        )
+        device_builder = await create_device_builder(hass)
         await coordinator.async_start()
         sessions = SessionManager()
         store = HelperStore(hass)
@@ -49,7 +59,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         api_session = (
             ESPHomeApiSession(hass, esphome_entry_id) if esphome_entry_id else None
         )
-        device_builder = await create_device_builder(hass)
         workflow = EntryWorkflow(
             hass,
             coordinator,

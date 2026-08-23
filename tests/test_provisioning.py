@@ -1,13 +1,14 @@
 """Tests for installer guidance and ESPHome discovery."""
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import pytest
 from homeassistant.config_entries import SIGNAL_CONFIG_ENTRY_CHANGED, ConfigEntryChange
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
+import custom_components.circuitsetup_energy_meter_helper as integration
 from custom_components.circuitsetup_energy_meter_helper import async_setup_entry
 from custom_components.circuitsetup_energy_meter_helper.models import (
     InstallerIntent,
@@ -42,6 +43,7 @@ class FakeEntry:
     title: str
     runtime_data: FakeRuntimeData
     domain: str = "esphome"
+    data: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -150,6 +152,43 @@ def test_production_setup_reports_unavailable_device_builder_state_as_unknown() 
 
         assert coordinator.snapshot.devices[0].importable is None
         assert coordinator.snapshot.devices[0].configuration is None
+        await coordinator.async_stop()
+
+    asyncio.run(run())
+
+
+def test_production_setup_reports_configured_device_builder_state(monkeypatch) -> None:
+    """A live Device Builder listing is reflected in the discovery snapshot."""
+
+    class FakeBuilder:
+        async def async_list_devices(self):
+            return {
+                "configured": [{"name": "meter", "configuration": "meter.yaml"}],
+                "importable": [],
+            }
+
+    async def create_builder(_hass):
+        return FakeBuilder()
+
+    async def run() -> None:
+        hass = FakeHass()
+        hass.config_entries.entries.append(
+            FakeEntry(
+                "meter",
+                "CircuitSetup meter",
+                FakeRuntimeData(FakeDeviceInfo("circuitsetup.6c-energy-meter")),
+                data={"device_name": "meter"},
+            )
+        )
+        monkeypatch.setattr(integration, "create_device_builder", create_builder)
+
+        assert await async_setup_entry(hass, FakeHelperEntry())
+        coordinator = hass.data["circuitsetup_energy_meter_helper"]["helper"][
+            "provisioning"
+        ]
+
+        assert coordinator.snapshot.devices[0].configuration == "meter.yaml"
+        assert coordinator.snapshot.devices[0].importable is False
         await coordinator.async_stop()
 
     asyncio.run(run())

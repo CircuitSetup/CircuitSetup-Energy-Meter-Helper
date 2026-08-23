@@ -505,6 +505,35 @@ def test_requests_dump_config_and_reports_current_calibration_sources() -> None:
     asyncio.run(run())
 
 
+def test_missing_saved_gain_evidence_reports_configuration_source() -> None:
+    """A completed dump-config cycle makes absent saved gains a definitive No."""
+
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+
+        pending = asyncio.create_task(
+            session.async_calibration_sources(
+                {"meter_main1", "meter_main2"}, timeout=0.01
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=b"[CALIBRATION][meter_main1] Gain calibration loaded and verified successfully.\n"
+            )
+        )
+
+        assert await pending == {
+            "meter_main1": "flash",
+            "meter_main2": "configuration",
+        }
+
+    asyncio.run(run())
+
+
 def test_shutdown_cancels_waiters_unsubscribes_logs_and_is_idempotent() -> None:
     async def run() -> None:
         client = FakeClient(acknowledge_numbers=False)

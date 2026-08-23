@@ -223,7 +223,7 @@ async function reachCurrent(page: Page, channel: number): Promise<void> {
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Voltage", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Skip voltage calibration" }).click();
   await expect(page.getByRole("heading", { name: "Current", exact: true })).toBeVisible();
 }
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -69,6 +69,34 @@ def _project_version(entry: Any) -> str | None:
     return version if isinstance(version, str) else None
 
 
+def device_builder_status(
+    entry: Any, listing: Mapping[str, Any] | None
+) -> DeviceBuilderStatus:
+    """Match one ESPHome entry to the current Device Builder listing."""
+    if listing is None:
+        return DeviceBuilderStatus(None, None)
+    device_name = getattr(entry, "data", {}).get("device_name")
+
+    def matches(items: Any) -> list[Mapping[str, Any]]:
+        return [
+            item
+            for item in items
+            if isinstance(item, Mapping)
+            and (device_name is None or item.get("name") == device_name)
+        ]
+
+    configured = [
+        item
+        for item in matches(listing.get("configured", ()))
+        if isinstance(item.get("configuration"), str)
+    ]
+    if len(configured) == 1:
+        return DeviceBuilderStatus(False, str(configured[0]["configuration"]))
+    if len(configured) > 1:
+        return DeviceBuilderStatus(None, None)
+    return DeviceBuilderStatus(bool(matches(listing.get("importable", ()))), None)
+
+
 class ProvisioningCoordinator:
     """Guide installation, then discover compatible ESPHome config entries."""
 
@@ -76,9 +104,14 @@ class ProvisioningCoordinator:
         self,
         hass: HomeAssistant,
         status_resolver: Callable[[Any], DeviceBuilderStatus] | None = None,
+        *,
+        listing_reader: Callable[
+            [], Awaitable[Mapping[str, Any] | None]
+        ] | None = None,
     ) -> None:
         self._hass = hass
         self._status_resolver = status_resolver
+        self._listing_reader = listing_reader
         self._subscribers: set[Callable[[ProvisioningSnapshot], None]] = set()
         self._refresh_task: asyncio.Task[None] | None = None
         self._unsub_config_entries: Callable[[], None] | None = None
@@ -126,8 +159,9 @@ class ProvisioningCoordinator:
 
     async def async_rescan(self) -> ProvisioningSnapshot:
         """Report compatible ESPHome devices; this never polls USB."""
+        listing = await self._listing_reader() if self._listing_reader else None
         devices = tuple(
-            self._device(entry, project_name)
+            self._device(entry, project_name, listing)
             for entry in self._hass.config_entries.async_entries("esphome")
             if (project_name := _project_name(entry))
             and project_name.startswith(BASE_PROJECT)
@@ -145,12 +179,14 @@ class ProvisioningCoordinator:
         self._publish()
         return self.snapshot
 
-    def _device(self, entry: Any, project_name: str) -> DiscoveredDevice:
+    def _device(
+        self, entry: Any, project_name: str, listing: Mapping[str, Any] | None
+    ) -> DiscoveredDevice:
         """Combine a compatible runtime identity with cached backend state."""
         status = (
             self._status_resolver(entry)
             if self._status_resolver is not None
-            else DeviceBuilderStatus(None, None)
+            else device_builder_status(entry, listing)
         )
         return DiscoveredDevice(
             entry.entry_id,

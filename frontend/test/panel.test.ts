@@ -400,9 +400,18 @@ describe("CircuitSetup panel", () => {
     panel.showState("voltage");
     await panel.updateComplete;
 
+    expect(text(panel)).toContain("Calibrate Voltage");
+    expect(text(panel)).not.toContain("Calibrate shared voltage");
     expect(state.voltageGroupKeys()).toEqual(["main_1", "main_2"]);
     expect(panel.shadowRoot?.querySelectorAll('[data-voltage-board]')).toHaveLength(2);
     const progress = panel.shadowRoot?.querySelector(".progress-steps");
+    const progressItems = [...panel.shadowRoot?.querySelectorAll(".progress-steps li") ?? []];
+    expect(progressItems.map((item) => item.textContent?.trim())).toEqual([
+      "1Set reference", "2Check stability", "3Run calibration", "4Verify gain", "5Zero reference",
+    ]);
+    expect(progressItems.filter((item) => item.classList.contains("active"))
+      .map((item) => item.textContent?.trim())).toEqual(["2Check stability"]);
+    expect(progressItems[2]?.classList.contains("pending")).toBe(true);
     const reference = panel.shadowRoot?.querySelector(".reference-block input");
     expect(Boolean(progress && reference
       && (progress.compareDocumentPosition(reference) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
@@ -426,6 +435,49 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelectorAll(".reference-block input")).toHaveLength(2);
     expect(text(panel)).toContain("Saved in flash");
     expect(text(panel)).toContain("Configuration");
+  });
+
+  it("skips both calibration stages, closes the unchanged session, and returns to CT naming", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        sent.push(message);
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "cancel_session") return { session_id: "session", device_id: "meter-1", state: "cancelled",
+          safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] }, calibration_sources: {} } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown>;
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] }, calibration_sources: {} };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [] };
+    state.inventory = { plan_id: "plan", source_sha256: "a".repeat(64), channels: [],
+      catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 } };
+
+    panel.showState("voltage");
+    await panel.updateComplete;
+    const voltageSkip = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []]
+      .find((button) => button.textContent?.includes("Skip voltage calibration"));
+    expect(voltageSkip).toBeDefined();
+    voltageSkip?.click();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Current");
+    const currentSkip = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []]
+      .find((button) => button.textContent?.includes("Skip current calibration"));
+    expect(currentSkip).toBeDefined();
+    currentSkip?.click();
+    await tick();
+    await panel.updateComplete;
+
+    expect(sent.filter((message) => String(message.type).endsWith("cancel_session"))).toHaveLength(1);
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Configuration");
+    expect(text(panel)).toContain("Calibration skipped; no gains were changed");
   });
 
   it("shows one three-CT group and skips blank current references", async () => {

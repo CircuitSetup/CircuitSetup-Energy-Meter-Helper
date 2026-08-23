@@ -1004,7 +1004,8 @@ const T = (n) => n.toFixed(2);
 function We(n, e, i) {
   const t = [n, !!e?.stable, !!i, !!i?.gain_evidence, !!i], s = t.findIndex((r) => !r);
   return d`<ol class="progress-steps">${["Set reference", "Check stability", "Run calibration", "Verify gain", "Zero reference"].map((r, a) => d`<li
-    class=${t[a] ? "complete" : a === s ? "active" : "pending"}>${r}</li>`)}</ol>`;
+    class=${t[a] ? "complete" : a === s ? "active" : "pending"}><span
+      class="progress-number">${a + 1}</span><span>${r}</span></li>`)}</ol>`;
 }
 function Ye(n) {
   const e = Object.entries(n?.calibration_sources ?? {});
@@ -1277,7 +1278,7 @@ function ni(n, e, i, t, s, o, r, a, c, u, g, f, l) {
           @click=${() => a(b)}>${b === 0 ? "Main Board" : `Add-on ${b}`}</button>`)}
       </div>
       <div id="voltage-board-panel" role="tabpanel" aria-labelledby=${`voltage-board-tab-${i}`}>
-      <h2>${p === 1 ? "Calibrate shared voltage" : "Calibrate both board voltages"}</h2>
+      <h2>Calibrate Voltage</h2>
       ${Ye(e)}
       <div class="reference-block">
         ${Array.from({ length: p }, (m, b) => d`<label>${p === 1 ? "Trusted instrument reference" : `Voltage ${b + 1} trusted reference`}
@@ -1403,7 +1404,8 @@ const oi = Qe`
   .group-grid h2 { margin: 0; padding: 10px; border-bottom: 1px solid var(--border); }
   .group-grid button { width: 33.333%; border-width: 0 1px 0 0; border-radius: 0; }
   .group-grid button.selected { color: var(--orange); border-color: var(--orange); }
-  .progress-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 20px 0; padding: 18px 18px 18px 42px; border: 1px solid var(--border); }
+  .progress-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 20px 0; padding: 18px; border: 1px solid var(--border); list-style: none; }
+  .progress-steps li { display: flex; gap: 6px; padding: 8px; }
   .progress-steps .complete { color: #65758b; background: #f3f5f7; }
   .progress-steps .active { color: #7a3500; background: #fff0df; font-weight: 700; }
   .progress-steps .pending { color: var(--navy); }
@@ -1872,13 +1874,13 @@ class ri extends F {
       () => this.ownsOperation(o, e, i)
     );
   }
-  async cancelSession() {
+  async cancelSession(e = "safety") {
     if (!this.api || !this.session) return;
-    const e = this.api, i = this.selectedDeviceId, t = this.session.session_id, s = ++this.operationGeneration;
+    const i = this.api, t = this.selectedDeviceId, s = this.session.session_id, o = ++this.operationGeneration;
     await this.run(async () => {
-      const o = await e.cancelSession(t);
-      !this.ownsOperation(s, e, i) || this.session?.session_id !== t || (this.clearSubscription("session"), this.session = o, this.restartResult = null, this.navigate("safety"), this.announcement = "Calibration session cancelled; cleanup completed without restart verification.");
-    }, "The session cleanup could not be confirmed.", () => this.ownsOperation(s, e, i));
+      const r = await i.cancelSession(s);
+      !this.ownsOperation(o, i, t) || this.session?.session_id !== s || (this.clearSubscription("session"), this.session = r, this.restartResult = null, this.navigate(e), this.announcement = e === "ct" ? "Calibration skipped; no gains were changed. Continue with CT naming." : "Calibration session cancelled; cleanup completed without restart verification.");
+    }, "The session cleanup could not be confirmed.", () => this.ownsOperation(o, i, t));
   }
   async reconnectSession() {
     if (!this.api || !this.session) return;
@@ -2038,7 +2040,7 @@ class ri extends F {
         this.cancelSession();
       }
     )}
-      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.voltageBusy} @click=${() => this.navigate("current")}>Continue</button></footer>` : this.step === "current" ? d`${Jt(
+      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.voltageBusy} @click=${() => this.navigate("current")}>${this.resultFor("voltage") ? "Continue" : "Skip voltage calibration"}</button></footer>` : this.step === "current" ? d`${Jt(
       this.topology,
       this.inventory,
       this.session,
@@ -2070,7 +2072,7 @@ class ri extends F {
         this.cancelSession();
       }
     )}
-      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.navigate("restart")}>Continue</button></footer>` : this.step === "restart" ? Zt(
+      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.calibrationByTarget.size ? this.navigate("restart") : void this.cancelSession("ct")}>${this.resultFor("current") ? "Continue" : "Skip current calibration"}</button></footer>` : this.step === "restart" ? Zt(
       this.session?.state ?? this.error,
       this.restartResult,
       !!this.transaction?.rollback_available,

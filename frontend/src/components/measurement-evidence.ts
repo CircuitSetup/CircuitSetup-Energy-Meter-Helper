@@ -12,7 +12,8 @@ export function calibrationProgress(
   const active = complete.findIndex((value) => !value);
   const labels = ["Set reference", "Check stability", "Run calibration", "Verify gain", "Zero reference"];
   return html`<ol class="progress-steps">${labels.map((label, index) => html`<li
-    class=${complete[index] ? "complete" : index === active ? "active" : "pending"}>${label}</li>`)}</ol>`;
+    class=${complete[index] ? "complete" : index === active ? "active" : "pending"}><span
+      class="progress-number">${index + 1}</span><span>${label}</span></li>`)}</ol>`;
 }
 
 export function calibrationSourceEvidence(session: SessionStatus | null): TemplateResult {

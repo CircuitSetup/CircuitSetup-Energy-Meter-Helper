@@ -31,7 +31,7 @@ export function voltageStep(
           @click=${() => selectBoard(index)}>${index === 0 ? "Main Board" : `Add-on ${index}`}</button>`)}
       </div>
       <div id="voltage-board-panel" role="tabpanel" aria-labelledby=${`voltage-board-tab-${board}`}>
-      <h2>${count === 1 ? "Calibrate shared voltage" : "Calibrate both board voltages"}</h2>
+      <h2>Calibrate Voltage</h2>
       ${calibrationSourceEvidence(session)}
       <div class="reference-block">
         ${Array.from({ length: count }, (_, index) => html`<label>${count === 1 ? "Trusted instrument reference" : `Voltage ${index + 1} trusted reference`}

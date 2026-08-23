@@ -704,7 +704,7 @@ export class CircuitSetupPanel extends LitElement {
     () => this.ownsOperation(generation, api, deviceId));
   }
 
-  private async cancelSession(): Promise<void> {
+  private async cancelSession(destination: PanelStep = "safety"): Promise<void> {
     if (!this.api || !this.session) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
@@ -714,8 +714,10 @@ export class CircuitSetupPanel extends LitElement {
       this.clearSubscription("session");
       this.session = cancelled;
       this.restartResult = null;
-      this.navigate("safety");
-      this.announcement = "Calibration session cancelled; cleanup completed without restart verification.";
+      this.navigate(destination);
+      this.announcement = destination === "ct"
+        ? "Calibration skipped; no gains were changed. Continue with CT naming."
+        : "Calibration session cancelled; cleanup completed without restart verification.";
     }, "The session cleanup could not be confirmed.", () => this.ownsOperation(generation, api, deviceId));
   }
 
@@ -804,13 +806,13 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step === "voltage") return html`${voltageStep(this.topology, this.session, this.board, this.voltageReferences, this.stabilityFor("voltage"), this.resultFor("voltage"), this.voltageBusy,
       (value) => { this.board = value; this.requestUpdate(); },
       (index, value) => { this.voltageReferences = this.voltageReferences.map((current, offset) => offset === index ? value : current); this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
-      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.voltageBusy} @click=${() => this.navigate("current")}>Continue</button></footer>`;
+      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.voltageBusy} @click=${() => this.navigate("current")}>${this.resultFor("voltage") ? "Continue" : "Skip voltage calibration"}</button></footer>`;
     if (this.step === "current") return html`${currentStep(this.topology, this.inventory, this.session, this.channel, this.currentReferences, this.reportingMultiplier, this.stabilityFor("current"), this.resultFor("current"),
       (value) => { this.channel = value; this.requestUpdate(); },
       (channel, value) => { const references = new Map(this.currentReferences); if (value === null || !Number.isFinite(value) || value <= 0) references.delete(channel); else references.set(channel, value); this.currentReferences = references; this.requestUpdate(); },
       (value) => { this.reportingMultiplier = value; this.requestUpdate(); },
       () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession())}
-      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.navigate("restart")}>Continue</button></footer>`;
+      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.calibrationByTarget.size ? this.navigate("restart") : void this.cancelSession("ct")}>${this.resultFor("current") ? "Continue" : "Skip current calibration"}</button></footer>`;
     if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult,
       Boolean(this.transaction?.rollback_available), () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());
     return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.selectedProjectVersion(),
