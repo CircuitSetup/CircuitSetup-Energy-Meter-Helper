@@ -1,7 +1,6 @@
 import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from "lit";
 
 import { HelperApi, type HomeAssistant } from "./api";
-import { adoptionStep } from "./components/adoption-step";
 import { buildInstallStep } from "./components/build-install-step";
 import { changesFromDrafts, ctInventoryStep, type CtDraft } from "./components/ct-inventory-step";
 import { currentStep } from "./components/current-step";
@@ -28,14 +27,13 @@ import type {
 
 const STEPS: Array<[PanelStep, string]> = [
   ["setup", "Setup Device"],
-  ["discover", "Discover"],
   ["topology", "Topology"],
-  ["ct", "CT Configuration"],
-  ["build", "Build & Install"],
+  ["ct", "CT Verification"],
   ["safety", "Safety"],
   ["voltage", "Voltage"],
   ["current", "Current"],
   ["restart", "Restart"],
+  ["build", "Flash & Verify"],
   ["summary", "Summary"],
 ];
 
@@ -90,6 +88,7 @@ export class CircuitSetupPanel extends LitElement {
   private transactionUnsub: (() => void) | null = null;
   private sessionUnsub: (() => void) | null = null;
   private sessionStarting = false;
+  private pendingAction = "";
   private voltageBusy = false;
   private mobileStepsOpen = false;
   private focusHeading = false;
@@ -201,7 +200,6 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private selectDevice(deviceId: string | null): void {
-    if (deviceId === this.selectedDeviceId) return;
     ++this.operationGeneration;
     this.clearSubscription("transaction");
     this.clearSubscription("session");
@@ -260,8 +258,33 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private back(): void {
-    const index = STEPS.findIndex(([step]) => step === this.step);
-    if (index > 0) this.navigate(STEPS[index - 1]![0]);
+    if (this.step === "topology") {
+      this.selectDevice(null);
+      this.navigate("setup");
+    } else if (this.step === "ct") this.navigate("topology");
+    else if (this.step === "safety") void this.cancelSession("ct");
+    else if (this.step === "voltage") this.navigate("safety");
+    else if (this.step === "current") this.navigate("voltage");
+    else if (this.step === "restart") this.navigate("current");
+    else if (this.step === "build") this.navigate(this.calibrationHandoff ? "restart" : "ct");
+    else if (this.step === "summary") this.navigate("build");
+  }
+
+  private returnToSetup(): void {
+    if (this.session && this.session.state !== "cancelled") void this.cancelSession("setup");
+    else {
+      this.selectDevice(null);
+      this.navigate("setup");
+    }
+  }
+
+  private async configureDevice(deviceId: string): Promise<void> {
+    if (this.pendingAction) return;
+    this.selectDevice(deviceId);
+    this.pendingAction = `topology:${deviceId}`;
+    this.requestUpdate();
+    try { await this.loadTopology(); }
+    finally { this.pendingAction = ""; this.requestUpdate(); }
   }
 
   private selectedProjectVersion(): string | null {
@@ -297,7 +320,9 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async rescan(): Promise<void> {
-    if (!this.api) return;
+    if (!this.api || this.pendingAction) return;
+    this.pendingAction = "rescan";
+    this.requestUpdate();
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const generation = ++this.operationGeneration;
@@ -307,19 +332,19 @@ export class CircuitSetupPanel extends LitElement {
       const setup = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.setup = setup;
-      if (setup.devices.length) {
-        this.selectDevice(setup.devices[0]?.entry_id ?? null);
-        this.navigate("discover");
-        this.announcement = "Compatible meter discovered.";
-      } else {
+      if (setup.devices.length) this.announcement = "Compatible meter discovered. Select it above to configure it.";
+      else {
         this.announcement = "No compatible meter found. Check the network and rescan.";
       }
     }, "Rescan failed.", () => this.ownsOperation(generation, api, deviceId));
+    this.pendingAction = "";
+    this.requestUpdate();
   }
 
-  private async adopt(): Promise<void> {
-    if (!this.api || !this.selectedDeviceId) return;
-    const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
+  private async adopt(deviceId = this.selectedDeviceId): Promise<void> {
+    if (!this.api || !deviceId) return;
+    if (deviceId !== this.selectedDeviceId) this.selectDevice(deviceId);
+    const api = this.api; const generation = ++this.operationGeneration;
     await this.run(async () => {
       await api.adoptDevice(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -338,13 +363,20 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async loadInventory(): Promise<void> {
-    if (!this.api || !this.selectedDeviceId) return;
+    if (!this.api || !this.selectedDeviceId || this.pendingAction) return;
+    this.pendingAction = "inventory";
+    this.requestUpdate();
     const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
-    await this.run(async () => {
-      const result = await api.getCtInventory(deviceId);
-      if (!this.ownsOperation(generation, api, deviceId)) return;
-      this.showInventory(result);
-    }, "CT inventory could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
+    try {
+      await this.run(async () => {
+        const result = await api.getCtInventory(deviceId);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.showInventory(result);
+      }, "CT inventory could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      this.pendingAction = "";
+      this.requestUpdate();
+    }
   }
 
   private async recoverCtInventory(
@@ -404,10 +436,12 @@ export class CircuitSetupPanel extends LitElement {
     await this.run(async () => {
       let transaction: TransactionStatus;
       try {
+        const liveInventory = await api.getCtInventory(deviceId);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
         transaction = await api.previewCtConfig(
           deviceId,
-          inventory.plan_id,
-          inventory.source_sha256,
+          liveInventory.plan_id,
+          liveInventory.source_sha256,
           changes,
         );
       } catch (error) {
@@ -454,6 +488,30 @@ export class CircuitSetupPanel extends LitElement {
     (unsubscribe) => { this.transactionUnsub = unsubscribe; });
   }
 
+  private async continueFromCt(): Promise<void> {
+    if (!this.api || !this.inventory || !this.selectedDeviceId || this.pendingAction) return;
+    const changes = changesFromDrafts(this.inventory, this.drafts);
+    if (this.labelOnly && changes.length) {
+      const labels = changes.map(({ channel, name }) => ({ channel, name }));
+      const api = this.api; const deviceId = this.selectedDeviceId; const inventory = this.inventory;
+      const generation = ++this.operationGeneration;
+      this.pendingAction = "session";
+      this.requestUpdate();
+      await this.run(async () => {
+        await api.setHaLabels(deviceId, inventory.plan_id, inventory.source_sha256, labels);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.inventory = { ...inventory, channels: inventory.channels.map((channel) => {
+          const changed = labels.find((item) => item.channel === channel.channel);
+          return changed ? { ...channel, name: changed.name } : channel;
+        }) };
+        this.announcement = "Home Assistant labels saved.";
+      }, "Home Assistant labels could not be saved.", () => this.ownsOperation(generation, api, deviceId));
+      this.pendingAction = "";
+      if (this.error) return;
+    }
+    await this.startSession();
+  }
+
   private async reviewCalibrationHandoff(): Promise<void> {
     if (!this.api || !this.session || !this.restartResult?.source_handoff_available) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
@@ -461,7 +519,10 @@ export class CircuitSetupPanel extends LitElement {
     this.clearSubscription("transaction");
     this.transaction = null;
     await this.run(async () => {
-      const transaction = await api.previewCalibratedGains(sessionId, verificationId);
+      const changes = this.inventory && !this.labelOnly
+        ? changesFromDrafts(this.inventory, this.drafts)
+        : [];
+      const transaction = await api.previewCalibratedGains(sessionId, verificationId, changes);
       if (!this.ownsOperation(generation, api, deviceId)
         || this.session?.session_id !== sessionId
         || this.restartResult?.verification_id !== verificationId) return;
@@ -486,8 +547,8 @@ export class CircuitSetupPanel extends LitElement {
       if (!this.ownsOperation(generation, api, deviceId)
         || this.session?.session_id !== sessionId) return;
       this.restartResult = result;
-      this.navigate("summary");
       this.announcement = "Calibration saved to YAML; flash values cleared.";
+      this.finishFlow("Calibration was saved to YAML, installed, verified, and cleared from flash.");
     }, "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values.",
     () => this.ownsOperation(generation, api, deviceId));
   }
@@ -531,7 +592,9 @@ export class CircuitSetupPanel extends LitElement {
         );
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.restartResult = result;
-        this.announcement = "Calibration saved to YAML; flash values cleared.";
+        this.finishFlow("Calibration was saved to YAML, installed, verified, and cleared from flash.");
+      } else if (action === "install" && transaction.state === "verified") {
+        this.finishFlow("Configuration changes were installed and verified.");
       }
     }, action === "install" && this.calibrationHandoff
       ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values."
@@ -540,8 +603,10 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async startSession(): Promise<void> {
-    if (!this.api || !this.selectedDeviceId || this.sessionStarting) return;
+    if (!this.api || !this.selectedDeviceId || this.sessionStarting || this.pendingAction) return;
     this.sessionStarting = true;
+    this.pendingAction = "session";
+    this.requestUpdate();
     try {
       const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
       this.clearSubscription("session");
@@ -556,7 +621,15 @@ export class CircuitSetupPanel extends LitElement {
       }, "Calibration session could not be started.", () => this.ownsOperation(generation, api, deviceId));
     } finally {
       this.sessionStarting = false;
+      this.pendingAction = "";
+      this.requestUpdate();
     }
+  }
+
+  private finishFlow(message: string): void {
+    this.selectDevice(null);
+    this.navigate("setup");
+    this.announcement = message;
   }
 
   private async subscribeSession(generation: number): Promise<void> {
@@ -583,7 +656,9 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async acknowledgeSafety(): Promise<void> {
-    if (!this.api || !this.session) return;
+    if (!this.api || !this.session || this.pendingAction) return;
+    this.pendingAction = "safety";
+    this.requestUpdate();
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
     await this.run(async () => {
@@ -592,6 +667,8 @@ export class CircuitSetupPanel extends LitElement {
       this.session = session;
       this.navigate("voltage");
     }, "Safety acknowledgement could not be accepted.", () => this.ownsOperation(generation, api, deviceId));
+    this.pendingAction = "";
+    this.requestUpdate();
   }
 
   private async checkStability(target: "voltage" | "current"): Promise<void> {
@@ -637,7 +714,13 @@ export class CircuitSetupPanel extends LitElement {
           const result = target === "voltage"
             ? await api.calibrateVoltage(sessionId, targetId,
               this.voltageReferences[this.topology?.voltage_layout === "two_voltages" ? index : 0]!, true)
-            : await api.calibrateCurrent(sessionId, currentReferences, true);
+            : await api.calibrateCurrent(sessionId, currentReferences, true,
+              this.inventory && !this.labelOnly
+                ? changesFromDrafts(this.inventory, this.drafts).map((change) => ({
+                  channel: change.channel,
+                  reporting_multiplier: change.reporting_multiplier ?? 1,
+                }))
+                : []);
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
           const updated = new Map(this.calibrationByTarget);
           if (target === "current") currentReferences.forEach((item) => updated.set(`current:${item.channel}`, result));
@@ -671,7 +754,9 @@ export class CircuitSetupPanel extends LitElement {
     const first = Math.floor((this.channel - 1) / 3) * 3 + 1;
     return Array.from({ length: 3 }, (_, index) => first + index).flatMap((channel) => {
       const reference = this.currentReferences.get(channel);
-      const multiplier = this.inventory?.channels[channel - 1]?.reporting_multiplier ?? this.reportingMultiplier;
+      const multiplier = this.drafts.get(channel)?.multiplier
+        ?? this.inventory?.channels[channel - 1]?.reporting_multiplier
+        ?? this.reportingMultiplier;
       return reference && reference > 0 && multiplier !== null
         ? [{ channel, reference, reporting_multiplier: multiplier }]
         : [];
@@ -683,6 +768,7 @@ export class CircuitSetupPanel extends LitElement {
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const topology = this.topology;
     const generation = ++this.operationGeneration;
+    this.restartResult = null;
     await this.run(async () => {
       let result: RestartVerificationResult;
       try {
@@ -699,12 +785,15 @@ export class CircuitSetupPanel extends LitElement {
         || this.session?.session_id !== sessionId || this.topology !== topology) return;
       this.restartResult = result;
       this.session = { ...this.session!, state: "verified" };
-      this.navigate("summary");
     }, "Restart verification failed; review recovery evidence before rollback.",
     () => this.ownsOperation(generation, api, deviceId));
+    const restartResult = this.restartResult as RestartVerificationResult | null;
+    if (restartResult?.source_handoff_available) {
+      await this.reviewCalibrationHandoff();
+    }
   }
 
-  private async cancelSession(destination: PanelStep = "safety"): Promise<void> {
+  private async cancelSession(destination: PanelStep | null = "safety"): Promise<void> {
     if (!this.api || !this.session) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
@@ -714,11 +803,31 @@ export class CircuitSetupPanel extends LitElement {
       this.clearSubscription("session");
       this.session = cancelled;
       this.restartResult = null;
-      this.navigate(destination);
-      this.announcement = destination === "ct"
-        ? "Calibration skipped; no gains were changed. Continue with CT naming."
+      if (destination) this.navigate(destination);
+      this.announcement = destination === "setup"
+        ? "No changes were made. Select another device to configure."
+        : destination === "ct"
+        ? "Calibration session closed. Review CT names and types before continuing."
         : "Calibration session cancelled; cleanup completed without restart verification.";
     }, "The session cleanup could not be confirmed.", () => this.ownsOperation(generation, api, deviceId));
+  }
+
+  private async finishWithoutCalibration(): Promise<void> {
+    if (this.pendingAction) return;
+    this.pendingAction = "finish";
+    this.requestUpdate();
+    const changes = this.inventory && !this.labelOnly
+      ? changesFromDrafts(this.inventory, this.drafts)
+      : [];
+    try {
+      await this.cancelSession(null);
+      if (this.error) return;
+      if (changes.length) await this.reviewChanges();
+      else this.finishFlow("No changes were made. Select another device to configure.");
+    } finally {
+      this.pendingAction = "";
+      this.requestUpdate();
+    }
   }
 
   private async reconnectSession(): Promise<void> {
@@ -788,21 +897,19 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step === "setup") return setupDeviceStep(this.setup, this.addonCount, this.connection,
       (value) => { this.addonCount = value; this.requestUpdate(); },
       (value) => { this.connection = value; this.requestUpdate(); },
-      () => void this.rescan());
-    if (this.step === "discover") return adoptionStep(this.setup?.devices ?? [], this.selectedDeviceId,
-      (id) => { this.selectDevice(id); this.requestUpdate(); }, () => void this.adopt(), () => this.back(), () => void this.loadTopology());
+      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction);
     if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(),
       () => this.back(), () => void (this.setup?.configuration_authoritative === false
-        ? this.startSession() : this.loadInventory()), Boolean(this.error));
+        ? this.startSession() : this.loadInventory()), Boolean(this.error), this.pendingAction === "inventory" || this.pendingAction === "session");
     if (this.step === "ct" && this.inventory) return html`<fieldset><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}> ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}> Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.ctGroup, this.drafts,
       (board) => { this.board = board; this.ctGroup = 0; this.requestUpdate(); },
-      (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.reviewChanges(), this.labelOnly)}`;
+      (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session")}`;
     if (this.step === "build") return buildInstallStep(this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(),
-      () => void (this.calibrationHandoff ? this.navigate("summary") : this.startSession()));
+      () => this.finishFlow("Configuration changes were installed and verified."));
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
-      (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back());
+      (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back(), this.pendingAction === "safety");
     if (this.step === "voltage") return html`${voltageStep(this.topology, this.session, this.board, this.voltageReferences, this.stabilityFor("voltage"), this.resultFor("voltage"), this.voltageBusy,
       (value) => { this.board = value; this.requestUpdate(); },
       (index, value) => { this.voltageReferences = this.voltageReferences.map((current, offset) => offset === index ? value : current); this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
@@ -812,7 +919,7 @@ export class CircuitSetupPanel extends LitElement {
       (channel, value) => { const references = new Map(this.currentReferences); if (value === null || !Number.isFinite(value) || value <= 0) references.delete(channel); else references.set(channel, value); this.currentReferences = references; this.requestUpdate(); },
       (value) => { this.reportingMultiplier = value; this.requestUpdate(); },
       () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession())}
-      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.calibrationByTarget.size ? this.navigate("restart") : void this.cancelSession("ct")}>${this.resultFor("current") ? "Continue" : "Skip current calibration"}</button></footer>`;
+      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.pendingAction === "finish"} @click=${() => this.calibrationByTarget.size ? this.navigate("restart") : void this.finishWithoutCalibration()}>${this.pendingAction === "finish" ? "Finishing…" : this.resultFor("current") ? "Continue" : "Skip current calibration"}</button></footer>`;
     if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult,
       Boolean(this.transaction?.rollback_available), () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());
     return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.selectedProjectVersion(),
@@ -828,14 +935,15 @@ export class CircuitSetupPanel extends LitElement {
           <div class="brand">CircuitSetup</div>
           <nav aria-label="Setup progress"><ol>${STEPS.map(([step, label], index) => html`
             <li class=${index === currentIndex ? "current" : ""}>
-              <button class="step-button" aria-current=${index === currentIndex ? "step" : nothing} ?disabled=${index > currentIndex}
-                @click=${() => index <= currentIndex && this.navigate(step)}><span class="number">${index + 1}</span><span>${label}</span></button>
+              <button class="step-button" aria-current=${index === currentIndex ? "step" : nothing}
+                ?disabled=${index > currentIndex || index < currentIndex && step !== "setup"}
+                @click=${() => step === "setup" && index < currentIndex ? this.returnToSetup() : undefined}><span class="number">${index + 1}</span><span>${label}</span></button>
             </li>
           `)}</ol></nav>
         </aside>
         <main>
           <div class="product-title">CircuitSetup Energy Meter Helper</div>
-          <div class="mobile-progress"><span>${currentIndex + 1} of 10 — ${STEPS[currentIndex]?.[1]}</span><button aria-label="Show setup steps" aria-expanded=${this.mobileStepsOpen} @click=${() => { this.mobileStepsOpen = !this.mobileStepsOpen; this.requestUpdate(); }}>Steps</button></div>
+          <div class="mobile-progress"><span>${currentIndex + 1} of ${STEPS.length} — ${STEPS[currentIndex]?.[1]}</span><button aria-label="Show setup steps" aria-expanded=${this.mobileStepsOpen} @click=${() => { this.mobileStepsOpen = !this.mobileStepsOpen; this.requestUpdate(); }}>Steps</button></div>
           <h1 id="step-heading" tabindex="-1">${STEPS[currentIndex]?.[1]}</h1>
           ${this.error ? html`<div class="error-panel" role="alert" tabindex="-1"><strong>${this.error}</strong></div>` : nothing}
           ${this.stepBody()}

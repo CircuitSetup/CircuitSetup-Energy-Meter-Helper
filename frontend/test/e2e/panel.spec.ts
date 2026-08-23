@@ -172,6 +172,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
             restore_evidence: null, retry_allowed: false };
       } else if (operation === "get_session") result = currentSession = session("ready", true);
       else if (operation === "restart_and_verify") result = restart(addons);
+      else if (operation === "cancel_session") result = currentSession = session("cancelled", false);
       else if (operation === "subscribe_setup") result = { state: "no_device", devices: [] };
       else if (operation === "subscribe_config_transaction") result = currentTransaction;
       else if (operation === "subscribe_session") result = currentSession;
@@ -191,11 +192,10 @@ async function openInventory(page: Page): Promise<void> {
   await page.goto("/test/harness.html");
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
   await page.locator('[data-action="rescan"]').click();
-  await expect(page.getByRole("heading", { name: "Discover" })).toBeVisible();
-  await page.locator('[data-action="continue"]').click();
+  await page.locator('[data-action="configure-device"]').click();
   await expect(page.getByRole("heading", { name: "Topology", exact: true })).toBeVisible();
   await page.locator('[data-action="continue"]').click();
-  await expect(page.getByRole("heading", { name: "CT Configuration" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "CT Verification" })).toBeVisible();
 }
 
 async function reviewChannel(page: Page, channel: number): Promise<void> {
@@ -204,21 +204,22 @@ async function reviewChannel(page: Page, channel: number): Promise<void> {
     await page.getByRole("button", { name: /Group 2 · CT40/ }).click();
   }
   await page.getByLabel(`CT${channel} name`).fill(`Load ${channel}`);
-  await page.getByRole("button", { name: "Review changes" }).click();
-}
-
-async function install(page: Page, channel: number): Promise<void> {
-  await reviewChannel(page, channel);
-  await expect(page.getByLabel("Redacted substitution diff")).toContainText("<redacted>");
-  await page.getByRole("button", { name: "Apply" }).click();
-  await page.getByRole("button", { name: "Compile" }).click();
-  await page.getByRole("button", { name: "Install", exact: true }).click();
-  await expect(page.getByText("verified", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Skip voltage calibration" }).click();
+  await page.getByRole("button", { name: "Skip current calibration" }).click();
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
 }
 
 async function reachCurrent(page: Page, channel: number): Promise<void> {
-  await install(page, channel);
-  await page.locator('[data-action="continue"]').click();
+  if (channel === 42) {
+    await page.getByRole("tab", { name: "Add-on 6" }).click();
+    await page.getByRole("button", { name: /Group 2 · CT40/ }).click();
+  }
+  await page.getByLabel(`CT${channel} name`).fill(`Load ${channel}`);
+  await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
@@ -243,8 +244,8 @@ test("native mocked HA websocket covers no-device, installer intent, wiring, res
   await page.locator('[name="connection-type"][value="ethernet_waveshare"]').locator("..").click();
   await expect(page.getByText("(15, 26)")).toBeVisible();
   await page.locator('[data-action="rescan"]').click();
-  await expect(page.getByText("Device Builder: Importable")).toBeVisible();
-  await page.getByRole("button", { name: "Adopt" }).click();
+  await expect(page.getByText("Device Builder: Yes — import available")).toBeVisible();
+  await page.getByRole("button", { name: "Import" }).click();
   await expect(page.getByText("Meter adopted in Device Builder.")).toBeVisible();
 
   expect(frames[0]).toEqual({ type: "auth", access_token: "playwright-token" });
@@ -263,14 +264,20 @@ test("six-channel inventory exposes ambiguous gain while label-only stays out of
   await expect(page.getByLabel("CT1 model")).toBeDisabled();
   await expect(page.getByLabel("CT1 multiplier")).toBeDisabled();
   await page.getByLabel("CT1 name").fill("Kitchen mains");
-  await page.getByRole("button", { name: "Save Home Assistant labels" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByText("Home Assistant labels saved.")).toBeVisible();
   expect(operations(frames).filter((value) => value === "set_ha_labels")).toHaveLength(1);
   expect(operations(frames)).not.toContain("preview_ct_config");
 
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByRole("heading", { name: "CT Verification" })).toBeVisible();
   await page.getByLabel("ESPHome / firmware names").check();
   await page.getByLabel("CT2 name").fill("Kitchen mains");
-  await page.getByRole("button", { name: "Review changes" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Skip voltage calibration" }).click();
+  await page.getByRole("button", { name: "Skip current calibration" }).click();
   await expect(page.getByRole("alert")).toContainText("preview is stale");
   expect(operations(frames).filter((value) => value === "preview_ct_config")).toHaveLength(1);
   expect(operations(frames)).not.toContain("apply_ct_config");
@@ -316,24 +323,23 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await expect(page.getByLabel("Calibration evidence").first()).toContainText("Saved in flash: Yes");
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Restart and verify" }).click();
-  await expect(page.getByText("Setup and exact restart verification are complete.")).toBeVisible();
-  await expect(page.getByText("b".repeat(32), { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Save calibration to YAML" }).click();
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
   await expect(page.getByLabel("Redacted substitution diff")).toBeVisible();
   await page.getByRole("button", { name: "Apply" }).click();
   await page.getByRole("button", { name: "Compile" }).click();
   await page.getByRole("button", { name: "Install", exact: true }).click();
-  await expect(page.locator(".success-band")).toContainText("Calibration saved to YAML; flash values cleared.");
+  await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
+  await expect(page.getByText(/Calibration was saved to YAML/)).toBeVisible();
 
   const ordered = operations(frames);
   expect(ordered.indexOf("apply_ct_config")).toBeLessThan(ordered.indexOf("compile_ct_config"));
   expect(ordered.indexOf("compile_ct_config")).toBeLessThan(ordered.indexOf("install_ct_config"));
-  expect(frames.find((frame) => frame.type.endsWith("/preview_ct_config"))).toMatchObject({
+  expect(frames.find((frame) => frame.type.endsWith("/preview_calibrated_gains"))).toMatchObject({
     changes: [{ channel: 42, name: "Load 42" }],
   });
   expect(frames.find((frame) => frame.type.endsWith("/acknowledge_safety"))).toMatchObject({ acknowledged: true });
   expect(frames.find((frame) => frame.type.endsWith("/calibrate_current"))).toMatchObject({ references: [{ channel: 1,
-    reference: 5 }], confirm_iteration: true });
+    reference: 5 }], pending_multipliers: [{ channel: 42, reporting_multiplier: 1 }], confirm_iteration: true });
   expect(ordered).toContain("restart_and_verify");
   expect(ordered.indexOf("restart_and_verify")).toBeLessThan(ordered.indexOf("preview_calibrated_gains"));
   expect(ordered.indexOf("install_ct_config", ordered.indexOf("preview_calibrated_gains")))

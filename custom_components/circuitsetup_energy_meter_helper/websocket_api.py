@@ -188,12 +188,16 @@ class WorkflowOwner(Protocol):
         session_id: str,
         references: tuple[Mapping[str, Any], ...],
         confirm_iteration: bool,
+        pending_multipliers: tuple[Mapping[str, Any], ...] = (),
     ) -> Any: ...
 
     async def async_restart_and_verify(self, session_id: str) -> Any: ...
 
     async def async_preview_calibrated_gains(
-        self, session_id: str, verification_id: str
+        self,
+        session_id: str,
+        verification_id: str,
+        changes: tuple[Mapping[str, Any], ...] = (),
     ) -> Any: ...
 
     async def async_clear_calibration_flash(
@@ -336,6 +340,14 @@ class EntryWebsocketController:
                 msg["confirm_iteration"],
             )
         if operation == "calibrate_current" and workflow is not None:
+            pending_multipliers = tuple(msg.get("pending_multipliers", ()))
+            if pending_multipliers:
+                return await workflow.async_calibrate_current(
+                    msg["session_id"],
+                    tuple(msg["references"]),
+                    msg["confirm_iteration"],
+                    pending_multipliers,
+                )
             return await workflow.async_calibrate_current(
                 msg["session_id"],
                 tuple(msg["references"]),
@@ -344,6 +356,11 @@ class EntryWebsocketController:
         if operation == "restart_and_verify" and workflow is not None:
             return await workflow.async_restart_and_verify(msg["session_id"])
         if operation == "preview_calibrated_gains" and workflow is not None:
+            changes = tuple(msg.get("changes", ()))
+            if changes:
+                return await workflow.async_preview_calibrated_gains(
+                    msg["session_id"], msg["verification_id"], changes
+                )
             return await workflow.async_preview_calibrated_gains(
                 msg["session_id"], msg["verification_id"]
             )
@@ -798,6 +815,22 @@ def _schema(command: str) -> dict[Any, Any]:
         schema |= {
             vol.Required("session_id"): _SERVER_ID,
             vol.Required("verification_id"): _SERVER_ID,
+            vol.Optional("changes", default=[]): vol.All(
+                [
+                    {
+                        vol.Required("channel"): vol.All(int, vol.Range(min=1, max=42)),
+                        vol.Required("name"): vol.All(str, vol.Length(min=1, max=64)),
+                        vol.Required("model_id"): _ID,
+                        vol.Optional("reporting_multiplier", default=1.0): vol.All(
+                            vol.Coerce(float), vol.Range(min=0, min_included=False)
+                        ),
+                        vol.Optional("custom_gain_ct"): vol.All(int, vol.Range(min=1, max=65535)),
+                        vol.Optional("custom_label"): vol.All(str, vol.Length(min=1, max=64)),
+                        vol.Optional("burden_output_acknowledged", default=False): bool,
+                    }
+                ],
+                vol.Length(max=42),
+            ),
         }
     elif operation == "clear_calibration_flash":
         schema |= {
@@ -842,6 +875,20 @@ def _schema(command: str) -> dict[Any, Any]:
                 vol.Length(min=1, max=3),
             ),
             vol.Optional("confirm_iteration", default=False): bool,
+            vol.Optional("pending_multipliers", default=[]): vol.All(
+                [
+                    vol.Schema(
+                        {
+                            vol.Required("channel"): vol.All(
+                                int, vol.Range(min=1, max=42)
+                            ),
+                            vol.Required("reporting_multiplier"): _reporting_multiplier,
+                        },
+                        extra=vol.PREVENT_EXTRA,
+                    )
+                ],
+                vol.Length(max=42),
+            ),
         }
     elif operation in {
         "get_session",

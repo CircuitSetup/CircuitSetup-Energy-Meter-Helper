@@ -1256,6 +1256,7 @@ def test_configuration_inventory_remains_authoritative_for_multiplier(
         handle = SimpleNamespace()
         assert await workflow._reporting_multiplier(handle, 1, None) == 2.0
         assert await workflow._reporting_multiplier(handle, 1, 2.0) == 2.0
+        assert await workflow._reporting_multiplier(handle, 1, 1.0, {1: 1.0}) == 1.0
         with pytest.raises(WorkflowHandleError, match="confirmation is stale"):
             await workflow._reporting_multiplier(handle, 1, 1.0)
         await workflow.async_close()
@@ -1399,6 +1400,42 @@ def test_verified_session_previews_exact_calibration_handoff(
 
         assert result == "preview"
         assert calls == [(handle.mac, handle.topology, "1" * 32)]
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_verified_session_requires_pending_multiplier_in_final_ct_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        handle = workflow._sessions[status.session_id]
+        handle.state = "verified"
+        handle.pending_reporting_multipliers[1] = 2.0
+
+        class Transactions:
+            async def async_preview_calibrated_gains(self, *_args: Any) -> str:
+                return "preview"
+
+        workflow.transactions = Transactions()  # type: ignore[assignment]
+
+        with pytest.raises(WorkflowHandleError, match="missing from final CT changes"):
+            await workflow.async_preview_calibrated_gains(
+                status.session_id, "1" * 32
+            )
+
+        assert await workflow.async_preview_calibrated_gains(
+            status.session_id,
+            "1" * 32,
+            ({
+                "channel": 1,
+                "name": "Mains",
+                "model_id": "sct_013_030_30a_1v",
+                "reporting_multiplier": 2.0,
+            },),
+        ) == "preview"
         await workflow.async_close()
 
     asyncio.run(run())

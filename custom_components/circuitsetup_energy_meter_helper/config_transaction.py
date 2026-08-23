@@ -13,7 +13,14 @@ from time import monotonic
 from typing import Protocol
 from uuid import uuid4
 
-from .config_mutator import ConfigMutationError, build_calibrated_gain_mutation
+from .config_document import ESPHomeConfigDocument
+from .config_mutator import (
+    CTChangeRequest,
+    ConfigMutationError,
+    build_calibrated_gain_mutation,
+)
+from .ct_catalog import CTPresetCatalog
+from .ct_inventory import CTInventory
 from .device_builder import (
     ConfigChangedError,
     ESPHomeConfigSnapshot,
@@ -361,6 +368,8 @@ class ConfigTransactionManager:
         mac: str,
         topology: MeterTopology,
         verification_id: str,
+        requested_channels: tuple[CTChangeRequest, ...] = (),
+        calibrated_current_channels: frozenset[int] = frozenset(),
     ) -> TransactionStatus:
         """Re-read YAML and open the normal reviewed transaction for final gains."""
         mac = canonical_mac(mac)
@@ -394,8 +403,41 @@ class ConfigTransactionManager:
             snapshot = await self._device_builder.async_get_config(
                 verified.config_filename
             )
-            plan = build_calibrated_gain_mutation(snapshot, topology, verified)
-            status = await self.async_preview(mac, topology, plan, snapshot)
+            plan = build_calibrated_gain_mutation(
+                snapshot,
+                topology,
+                verified,
+                requested_channels,
+                calibrated_current_channels,
+            )
+            selections: tuple[StoredCTSelection, ...] = ()
+            if requested_channels:
+                catalog = CTPresetCatalog.load()
+                inventory = CTInventory.from_document(
+                    ESPHomeConfigDocument.parse(plan.proposed_content),
+                    topology,
+                    catalog,
+                    snapshot.sha256,
+                    reporting_multipliers={
+                        request.channel: request.reporting_multiplier
+                        for request in requested_channels
+                    },
+                )
+                by_channel = {item.channel: item for item in inventory.channels}
+                selections = tuple(
+                    StoredCTSelection(
+                        request.channel,
+                        request.model_id,
+                        request.custom_label,
+                        by_channel[request.channel].raw_gain_ct,
+                        request.reporting_multiplier,
+                        snapshot.sha256,
+                    )
+                    for request in requested_channels
+                )
+            status = await self.async_preview(
+                mac, topology, plan, snapshot, selections
+            )
             transaction = self._transaction(status.transaction_id)
             transaction.verification_id = verification_id
             transaction.reservation_release = lambda: (

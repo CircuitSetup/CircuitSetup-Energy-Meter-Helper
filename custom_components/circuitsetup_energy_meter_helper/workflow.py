@@ -122,6 +122,8 @@ class _SessionHandle:
     revision: int = 0
     active_task: asyncio.Task[Any] | None = None
     revoked: bool = False
+    calibrated_current_channels: set[int] = field(default_factory=set)
+    pending_reporting_multipliers: dict[int, float] = field(default_factory=dict)
 
     def status(self) -> SessionStatus:
         return SessionStatus(
@@ -141,6 +143,25 @@ class _SessionHandle:
 
     def scrub(self) -> None:
         self.substitutions.clear()
+        self.calibrated_current_channels.clear()
+        self.pending_reporting_multipliers.clear()
+
+
+def _ct_change_requests(
+    changes: tuple[Mapping[str, Any], ...],
+) -> tuple[CTChangeRequest, ...]:
+    return tuple(
+        CTChangeRequest(
+            channel=int(change["channel"]),
+            name=str(change["name"]),
+            model_id=str(change["model_id"]),
+            reporting_multiplier=float(change.get("reporting_multiplier", 1.0)),
+            custom_gain_ct=(int(change["custom_gain_ct"]) if "custom_gain_ct" in change else None),
+            custom_label=(str(change["custom_label"]) if "custom_label" in change else None),
+            burden_output_acknowledged=bool(change.get("burden_output_acknowledged", False)),
+        )
+        for change in changes
+    )
 
 
 class LazyDeviceBuilder:
@@ -359,26 +380,7 @@ class EntryWorkflow:
         manager = self.transactions
         if manager is None:
             raise WorkflowCapabilityUnavailable("configuration writes are unavailable")
-        requests = tuple(
-            CTChangeRequest(
-                channel=int(change["channel"]),
-                name=str(change["name"]),
-                model_id=str(change["model_id"]),
-                reporting_multiplier=float(change.get("reporting_multiplier", 1.0)),
-                custom_gain_ct=(
-                    int(change["custom_gain_ct"])
-                    if "custom_gain_ct" in change
-                    else None
-                ),
-                custom_label=(
-                    str(change["custom_label"]) if "custom_label" in change else None
-                ),
-                burden_output_acknowledged=bool(
-                    change.get("burden_output_acknowledged", False)
-                ),
-            )
-            for change in changes
-        )
+        requests = _ct_change_requests(changes)
         mutation = build_ct_mutation(plan.snapshot, plan.topology, requests)
         updated_inventory = CTInventory.from_document(
             ESPHomeConfigDocument.parse(mutation.proposed_content),
@@ -634,9 +636,22 @@ class EntryWorkflow:
         session_id: str,
         references: tuple[Mapping[str, Any], ...],
         confirm_iteration: bool,
+        pending_multipliers: tuple[Mapping[str, Any], ...] = (),
     ) -> Any:
         handle, revision = self._claim_ready_session(session_id)
         try:
+            pending: dict[int, float] = {}
+            for item in pending_multipliers:
+                channel = int(item["channel"])
+                multiplier = float(item["reporting_multiplier"])
+                if (
+                    channel in pending
+                    or not 1 <= channel <= handle.topology.ct_count
+                    or not isfinite(multiplier)
+                    or not 0.001 <= multiplier <= 1000
+                ):
+                    raise WorkflowHandleError("pending reporting multipliers are invalid")
+                pending[channel] = multiplier
             calibrated: list[tuple[int, float, float]] = []
             for item in references:
                 channel = int(item["channel"])
@@ -654,6 +669,7 @@ class EntryWorkflow:
                                 if item.get("reporting_multiplier") is not None
                                 else None
                             ),
+                            pending,
                         ),
                     )
                 )
@@ -675,6 +691,10 @@ class EntryWorkflow:
             self._assert_claim(handle, revision)
             if result.gain_evidence is not None and result.gain_evidence.flash_saved:
                 handle.calibration_sources[result.gain_evidence.instance_id] = "flash"
+                handle.calibrated_current_channels.update(result.changed_channels)
+                for channel in result.changed_channels:
+                    if channel in pending:
+                        handle.pending_reporting_multipliers[channel] = pending[channel]
             handle.state = str(result.state)
             self._refresh(handle)
             self._publish(handle)
@@ -702,12 +722,34 @@ class EntryWorkflow:
             self._release_claim(handle, revision)
 
     async def async_preview_calibrated_gains(
-        self, session_id: str, verification_id: str
+        self,
+        session_id: str,
+        verification_id: str,
+        changes: tuple[Mapping[str, Any], ...] = (),
     ) -> Any:
         """Open the existing reviewed YAML transaction for a verified session."""
         handle = self._session(session_id)
         if handle.state != "verified" or self.transactions is None:
             raise WorkflowHandleError("calibration source handoff is unavailable")
+        requests = _ct_change_requests(changes)
+        requested_by_channel = {request.channel: request for request in requests}
+        if any(
+            requested_by_channel.get(channel) is None
+            or requested_by_channel[channel].reporting_multiplier != multiplier
+            for channel, multiplier in handle.pending_reporting_multipliers.items()
+        ):
+            raise WorkflowHandleError(
+                "calibrated reporting multiplier is missing from final CT changes"
+            )
+        calibrated_channels = frozenset(handle.calibrated_current_channels)
+        if requests or calibrated_channels:
+            return await self.transactions.async_preview_calibrated_gains(
+                handle.mac,
+                handle.topology,
+                verification_id,
+                requests,
+                calibrated_channels,
+            )
         return await self.transactions.async_preview_calibrated_gains(
             handle.mac, handle.topology, verification_id
         )
@@ -928,12 +970,15 @@ class EntryWorkflow:
         handle: _SessionHandle,
         channel: int,
         confirmed: float | None,
+        pending: Mapping[int, float] | None = None,
     ) -> float:
         if self._builder is not None:
             authoritative = (await self._inventory_for_handle(handle)).channels[
                 channel - 1
             ].reporting_multiplier
             if confirmed is not None and confirmed != authoritative:
+                if pending is not None and pending.get(channel) == confirmed:
+                    return confirmed
                 raise WorkflowHandleError(
                     "reporting multiplier confirmation is stale"
                 )

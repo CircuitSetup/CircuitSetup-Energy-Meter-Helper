@@ -28,6 +28,7 @@ export function ctInventoryStep(
   back: () => void,
   review: () => void,
   labelOnly = false,
+  busy = false,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -124,7 +125,7 @@ export function ctInventoryStep(
       <p class="row-count">Showing ${rows.length} of ${inventory.channels.length} CTs</p>
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        <button class="primary" ?disabled=${labelOnly ? ![...drafts].some(([channel, draft]) => draft.name !== inventory.channels.find((item) => item.channel === channel)?.name) : !hasValidChanges(inventory, drafts)} @click=${review}>${labelOnly ? "Save Home Assistant labels" : "Review changes"}</button>
+        <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
       </footer>
     </section>
   `;
@@ -160,15 +161,19 @@ function validDraft(inventory: CtInventory, draft: CtDraft): boolean {
   return Boolean(preset) && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged);
 }
 
-function hasValidChanges(inventory: CtInventory, drafts: Map<number, CtDraft>): boolean {
-  let dirty = false;
+export function draftsAreValid(inventory: CtInventory, drafts: Map<number, CtDraft>, labelOnly = false): boolean {
+  if (labelOnly) return [...drafts].every(([channel, draft]) => {
+    const current = inventory.channels.find((item) => item.channel === channel);
+    return Boolean(current) && Boolean(draft.name.trim())
+      && draft.modelId === (current!.selected_model_id ?? "")
+      && draft.multiplier === current!.reporting_multiplier;
+  });
   for (const channel of inventory.channels) {
     const draft = drafts.get(channel.channel);
     if (!draft) return false;
     if (isDirty(channel, draft)) {
-      dirty = true;
       if (!validDraft(inventory, draft)) return false;
     }
   }
-  return dirty;
+  return true;
 }

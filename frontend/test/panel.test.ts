@@ -60,14 +60,19 @@ const contrastRatio = (first: string, second: string): number => {
 afterEach(() => document.body.replaceChildren());
 
 describe("CircuitSetup panel", () => {
-  it("renders exact product identity, semantic ten-step navigation, and setup controls", async () => {
+  it("shows existing meters immediately alongside the new-device setup", async () => {
     const panel = await mount(
-      makeHass({ setup_status: { state: "no_device", devices: [] } }),
+      makeHass({ setup_status: { state: "device_discovered", devices: [device] } }),
     );
 
     expect(text(panel)).toContain("CircuitSetup Energy Meter Helper");
-    expect(panel.shadowRoot?.querySelectorAll("nav ol li")).toHaveLength(10);
+    expect(panel.shadowRoot?.querySelectorAll("nav ol li")).toHaveLength(9);
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+    expect(text(panel)).toContain("Configure an existing device");
+    expect(text(panel)).toContain("Basement meter");
+    expect(text(panel)).toContain("Device Builder: Yes — import available");
+    expect(text(panel)).toContain("Set up a new device");
+    expect(text(panel)).not.toContain("Discover");
     expect(panel.shadowRoot?.querySelectorAll('[name="addon-count"]')).toHaveLength(7);
     expect(panel.shadowRoot?.querySelectorAll('[name="connection-type"]')).toHaveLength(3);
     expect(text(panel)).toContain("Open CircuitSetup Web Installer");
@@ -80,7 +85,7 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("(15, 26)");
   });
 
-  it("rescans live setup state and advances to discovery without claiming USB completion", async () => {
+  it("rescans live setup state and shows the discovered device without a separate page", async () => {
     const hass = makeHass({
       setup_status: { state: "no_device", devices: [] },
       set_installer_intent: { state: "installer_guide", devices: [] },
@@ -92,7 +97,7 @@ describe("CircuitSetup panel", () => {
     await tick();
     await panel.updateComplete;
 
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
     expect(text(panel)).toContain("Basement meter");
     expect(text(panel)).toContain("2026.8.0");
     expect(text(panel)).not.toContain("USB flash complete");
@@ -348,12 +353,12 @@ describe("CircuitSetup panel", () => {
       model.dispatchEvent(new Event("change"));
     }
     await panel.updateComplete;
-    panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.click();
-    await tick();
+    const state = panel as unknown as { reviewChanges(): Promise<void> };
+    await state.reviewChanges();
     await panel.updateComplete;
 
     expect(panel.shadowRoot?.querySelector("[role=alert]")).toBeNull();
-    expect(text(panel)).toContain("CT Configuration");
+    expect(text(panel)).toContain("CT Verification");
     expect(text(panel)).toContain("Live CT data reloaded");
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('select[aria-label="CT1 model"]')?.value)
       .toBe("cs-ct-200a");
@@ -437,7 +442,34 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("Configuration");
   });
 
-  it("skips both calibration stages, closes the unchanged session, and returns to CT naming", async () => {
+  it("confirms an existing-device selection while topology loads", async () => {
+    let resolveTopology!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => { resolveTopology = resolve; });
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "get_topology") return await pending as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const configure = panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=configure-device]");
+    configure?.click();
+    await tick(); await panel.updateComplete;
+
+    expect(configure?.disabled).toBe(true);
+    expect(configure?.textContent).toContain("Loading topology");
+
+    resolveTopology({ addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] });
+    await tick(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Topology");
+  });
+
+  it("skips both calibration stages, closes the unchanged session, and returns to device setup", async () => {
     const sent: Array<Record<string, unknown>> = [];
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
@@ -476,8 +508,8 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
 
     expect(sent.filter((message) => String(message.type).endsWith("cancel_session"))).toHaveLength(1);
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Configuration");
-    expect(text(panel)).toContain("Calibration skipped; no gains were changed");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+    expect(text(panel)).toContain("No changes were made");
   });
 
   it("shows one three-CT group and skips blank current references", async () => {
@@ -516,7 +548,7 @@ describe("CircuitSetup panel", () => {
       makeHass({ setup_status: { state: "device_discovered", devices: [device] } }),
     );
     for (const [step, required] of [
-      ["build", ["Build & Install", "Apply", "Install", "rename/entity-key"]],
+      ["build", ["Flash & Verify", "Apply", "Install", "rename/entity-key"]],
       ["safety", ["Safety", "acknowledge", "Cancel session"]],
       ["voltage", ["Voltage", "reference", "check stability"]],
       ["current", ["Current", "calibration"]],
@@ -632,7 +664,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom gain"]')?.value).toBe("32000");
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom label"]')?.value).toBe("Existing clamp");
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 burden output acknowledgement"]')?.checked).toBe(true);
-    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(true);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
 
     const name = panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT2 name"]');
     if (name) { name.value = "Unrelated rename"; name.dispatchEvent(new Event("input")); }
@@ -647,7 +679,9 @@ describe("CircuitSetup panel", () => {
   it("keeps label-only edits out of every firmware control and preview route", async () => {
     const messages: Record<string, unknown>[] = [];
     const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] },
-      set_ha_labels: { mode: "home_assistant_labels", results: [{ channel: 1, state: "updated" }] } });
+      set_ha_labels: { mode: "home_assistant_labels", results: [{ channel: 1, state: "updated" }] },
+      start_session: { session_id: "session", device_id: "meter-1", state: "safety_required",
+        safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } } });
     const callWS = hass.callWS;
     hass.callWS = async <T>(message: Record<string, unknown>) => {
       messages.push(message);
@@ -679,7 +713,7 @@ describe("CircuitSetup panel", () => {
 
     expect(messages.map((message) => String(message.type).split("/").at(-1))).toContain("set_ha_labels");
     expect(messages.map((message) => String(message.type).split("/").at(-1))).not.toContain("preview_ct_config");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Configuration");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
   });
 
   it("owns late subscriptions by connection generation and resubscribes live handles", async () => {
@@ -857,8 +891,7 @@ describe("CircuitSetup panel", () => {
       burdenAcknowledged: false, expanded: false }]]);
     const previewCall = state.reviewChanges();
     state.selectDevice("meter-2");
-    pending.get("preview_ct_config")?.({ transaction_id: "tx-a", state: "previewed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [] });
+    pending.get("get_ct_inventory")?.(inventory);
     await previewCall;
     expect(state.transaction).toBeNull();
     expect(subscribed).not.toContain("subscribe_config_transaction");
@@ -933,12 +966,18 @@ describe("CircuitSetup panel", () => {
     expect(rollbackCalls).toBe(1);
   });
 
-  it("makes Back and mobile Steps navigation functional with deterministic heading focus", async () => {
-    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+  it("returns from Safety to CT Verification and cleans up the active session", async () => {
+    const cancelled = { session_id: "session", device_id: "meter-1", state: "cancelled",
+      safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } };
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.session = { ...cancelled, state: "safety_required" };
+    state.inventory = { plan_id: "plan", source_sha256: "a".repeat(64), channels: [],
+      catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 } };
     panel.showState("safety"); await panel.updateComplete;
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .secondary")?.click();
-    await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Build & Install");
+    await tick(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Verification");
     expect(panel.shadowRoot?.activeElement).toBe(panel.shadowRoot?.querySelector("h1"));
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".mobile-progress button")?.click();
     await panel.updateComplete;
@@ -983,7 +1022,9 @@ describe("CircuitSetup panel", () => {
       source_handoff_firmware_installed: false };
     const cancelled = { session_id: "session", device_id: "meter-1", state: "cancelled", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled,
-      restart_and_verify: restartResult }));
+      restart_and_verify: restartResult, preview_calibrated_gains: { transaction_id: "5".repeat(32), state: "previewed",
+        source_sha256: "a".repeat(64), changes: [], redacted_diff: "- old\n+ new", rollback_available: false,
+        evidence: [], progress: [] } }));
     const state = panel as unknown as Record<string, unknown> & { cancelSession(): Promise<void>; restart(): Promise<void> };
     state.session = { ...cancelled, state: "ready" };
     await state.cancelSession(); await panel.updateComplete;
@@ -995,8 +1036,10 @@ describe("CircuitSetup panel", () => {
     state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
       connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
       evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
+    panel.showState("restart");
     await state.restart(); await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
+    expect(panel.shadowRoot?.querySelector("[role=alert]")?.textContent).toBeUndefined();
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Flash & Verify");
     expect(text(panel)).toContain("4".repeat(32));
     expect(text(panel)).toContain("saved flash");
   });
@@ -1064,7 +1107,7 @@ describe("CircuitSetup panel", () => {
     const save = panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=save-calibration]");
     expect(save?.textContent).toContain("Save calibration to YAML");
     save?.click(); await tick(); await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Build & Install");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Flash & Verify");
 
     state.transaction = { ...preview, state: "install_confirmation_required" };
     await state.transactionAction("install"); await panel.updateComplete;
@@ -1076,8 +1119,8 @@ describe("CircuitSetup panel", () => {
     retry?.click(); await tick(); await panel.updateComplete;
     expect(operations.filter((operation) => operation === "install_ct_config")).toHaveLength(1);
     expect(operations.filter((operation) => operation === "clear_calibration_flash")).toHaveLength(2);
-    expect(text(panel)).toContain("Calibration saved to YAML; flash values cleared");
-    expect((state.restartResult as { source_authority: string }).source_authority).toBe("configuration");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+    expect(text(panel)).toContain("Calibration was saved to YAML");
   });
 
   it("reconnect assigns the returned live session instead of discarding it", async () => {

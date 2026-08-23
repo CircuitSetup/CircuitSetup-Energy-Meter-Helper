@@ -20,6 +20,7 @@ from custom_components.circuitsetup_energy_meter_helper.calibration_engine impor
     RestartVerificationError,
 )
 from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
+    CTChangeRequest,
     ConfigMutationError,
     build_calibrated_gain_mutation,
 )
@@ -1048,6 +1049,30 @@ def test_uniform_gains_build_surgical_hash_bound_source_mutation() -> None:
     assert "voltage_cal1: '7301'" in plan.proposed_content
     assert "logger:\n  level: DEBUG\n" in plan.proposed_content
     assert record.source_authority is CalibrationSourceAuthority.SAVED_FLASH
+
+
+def test_final_gain_preview_combines_ct_edits_without_overwriting_calibrated_current() -> None:
+    content = _snapshot().content.replace(
+        "substitutions:\n",
+        "substitutions:\n  ct1_name: 'CT 1'\n  ct2_name: 'CT 2'\n",
+    )
+    snapshot = _snapshot(content)
+    record = _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003)))
+    plan = build_calibrated_gain_mutation(
+        snapshot,
+        topology(0),
+        record,
+        (
+            CTChangeRequest(1, "Mains", "sct_013_030_30a_1v", 2),
+            CTChangeRequest(2, "Solar", "sct_013_030_30a_1v", 2),
+        ),
+        frozenset({1}),
+    )
+
+    assert "ct1_name: 'Mains'" in plan.proposed_content
+    assert "ct2_name: 'Solar'" in plan.proposed_content
+    assert "current_cal_ct1: '28001'" in plan.proposed_content
+    assert "current_cal_ct2: '4325'" in plan.proposed_content
 
 
 def test_divergent_voltage_gains_return_exact_extend_snippet_and_never_auto_write() -> (

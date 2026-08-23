@@ -413,7 +413,12 @@ export class HelperApi {
       reference,
       confirm_iteration: confirmIteration,
     });
-  public calibrateCurrent = (sessionId: string, references: Array<{ channel: number; reference: number; reporting_multiplier: number }>, confirmIteration: boolean) => {
+  public calibrateCurrent = (
+    sessionId: string,
+    references: Array<{ channel: number; reference: number; reporting_multiplier: number }>,
+    confirmIteration: boolean,
+    pendingMultipliers: Array<{ channel: number; reporting_multiplier: number }> = [],
+  ) => {
     if (references.length < 1 || references.length > 3
       || new Set(references.map((item) => item.channel)).size !== references.length
       || new Set(references.map((item) => channelGroup(item.channel))).size !== 1
@@ -427,14 +432,16 @@ export class HelperApi {
       session_id: sessionId,
       references,
       confirm_iteration: confirmIteration,
+      pending_multipliers: pendingMultipliers,
     });
   };
   public restartAndVerify = (sessionId: string, expectedTopology: MeterTopology) =>
     this.call("restart_and_verify", (value) => restart(value, "restart_and_verify", expectedTopology), { session_id: sessionId });
-  public previewCalibratedGains = (sessionId: string, verificationId: string) =>
+  public previewCalibratedGains = (sessionId: string, verificationId: string, changes: CtChange[] = []) =>
     this.call("preview_calibrated_gains", (value) => transaction(value, "preview_calibrated_gains"), {
       session_id: sessionId,
       verification_id: verificationId,
+      changes,
     });
   public clearCalibrationFlash = (
     sessionId: string,

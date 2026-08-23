@@ -137,9 +137,12 @@ describe("HelperApi", () => {
     hass.responses.check_stability = { ...stability, target_id: "42" };
     await api.checkStability("session-1", "current", "42");
     await api.calibrateVoltage("session-1", "addon6_2", 120, true);
-    await api.calibrateCurrent("session-1", [{ channel: 42, reference: 25, reporting_multiplier: 1 }], true);
+    await api.calibrateCurrent("session-1", [{ channel: 42, reference: 25, reporting_multiplier: 1 }], true,
+      [{ channel: 42, reporting_multiplier: 1 }]);
     await api.restartAndVerify("session-1", topology);
-    await api.previewCalibratedGains("session-1", "1".repeat(32));
+    await api.previewCalibratedGains("session-1", "1".repeat(32), [{
+      channel: 1, name: "Mains", model_id: "cs-ct-200a", reporting_multiplier: 2,
+    }]);
     hass.responses.clear_calibration_flash = {
       ...restart,
       source_authority: "configuration",
@@ -184,6 +187,10 @@ describe("HelperApi", () => {
       "circuitsetup_energy_meter_helper/subscribe_config_transaction",
       "circuitsetup_energy_meter_helper/subscribe_session",
     ]);
+    expect(hass.messages.find((message) => String(message.type).endsWith("preview_calibrated_gains")))
+      .toMatchObject({ changes: [{ channel: 1, name: "Mains", model_id: "cs-ct-200a", reporting_multiplier: 2 }] });
+    expect(hass.messages.find((message) => String(message.type).endsWith("calibrate_current")))
+      .toMatchObject({ pending_multipliers: [{ channel: 42, reporting_multiplier: 1 }] });
     expect(hass.messages[7]).toEqual({
       type: "circuitsetup_energy_meter_helper/preview_ct_config",
       entry_id: "entry-1",

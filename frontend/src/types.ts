@@ -247,7 +247,6 @@ export type RestartVerificationResult = RestartVerificationBase;
 
 export type PanelStep =
   | "setup"
-  | "discover"
   | "topology"
   | "ct"
   | "build"
