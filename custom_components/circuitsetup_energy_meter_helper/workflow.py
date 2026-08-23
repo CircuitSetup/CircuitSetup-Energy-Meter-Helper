@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.cookies import SimpleCookie
 from math import isfinite
 from statistics import pstdev
@@ -43,10 +43,14 @@ from .entity_catalog import EntityCatalog
 from .esphome_api import ESPHomeApiSession
 from .models import MeterTopology, StoredCTSelection, canonical_mac
 from .preflight import PreflightResult, async_preflight
-from .provisioning import DiscoveredDevice, ProvisioningCoordinator
+from .provisioning import (
+    DiscoveredDevice,
+    ProvisioningCoordinator,
+    device_builder_status,
+)
 from .session_manager import CalibrationBusyError, SessionManager
 from .state_tracker import SensorSampleWindow
-from .store import HelperStore
+from .store import CalibrationSourceAuthority, HelperStore
 from .topology import topology_from_config, topology_from_native
 
 DEFAULT_HANDLE_TTL = 15 * 60.0
@@ -66,6 +70,12 @@ def _public_sample_window(window: SensorSampleWindow) -> dict[str, Any]:
         "standard_deviation": pstdev(window.values),
         "range_percent": window.range_percent,
     }
+
+
+def _instance_id_for_channel(channel: int) -> str:
+    board = (channel - 1) // 6
+    group = ((channel - 1) % 6) // 3 + 1
+    return f"meter_main{group}" if board == 0 else f"addon{board}_{group}"
 
 
 class WorkflowCapabilityUnavailable(RuntimeError):
@@ -118,6 +128,8 @@ class _SessionHandle:
     revision: int = 0
     active_task: asyncio.Task[Any] | None = None
     revoked: bool = False
+    calibrated_current_channels: set[int] = field(default_factory=set)
+    pending_reporting_multipliers: dict[int, float] = field(default_factory=dict)
 
     def status(self) -> SessionStatus:
         return SessionStatus(
@@ -137,6 +149,25 @@ class _SessionHandle:
 
     def scrub(self) -> None:
         self.substitutions.clear()
+        self.calibrated_current_channels.clear()
+        self.pending_reporting_multipliers.clear()
+
+
+def _ct_change_requests(
+    changes: tuple[Mapping[str, Any], ...],
+) -> tuple[CTChangeRequest, ...]:
+    return tuple(
+        CTChangeRequest(
+            channel=int(change["channel"]),
+            name=str(change["name"]),
+            model_id=str(change["model_id"]),
+            reporting_multiplier=float(change.get("reporting_multiplier", 1.0)),
+            custom_gain_ct=(int(change["custom_gain_ct"]) if "custom_gain_ct" in change else None),
+            custom_label=(str(change["custom_label"]) if "custom_label" in change else None),
+            burden_output_acknowledged=bool(change.get("burden_output_acknowledged", False)),
+        )
+        for change in changes
+    )
 
 
 class LazyDeviceBuilder:
@@ -296,8 +327,9 @@ class EntryWorkflow:
         topology = topology_from_config(
             document, native_project_name=device.project_name
         )
+        catalog = await self._hass.async_add_executor_job(CTPresetCatalog.load)
         inventory = CTInventory.from_document(
-            document, topology, CTPresetCatalog.load(), snapshot.sha256,
+            document, topology, catalog, snapshot.sha256,
             await self._store.async_get_ct_selections(mac),
         )
         plan_id = uuid4().hex
@@ -325,6 +357,26 @@ class EntryWorkflow:
 
     async def async_get_session(self, session_id: str) -> SessionStatus:
         return self._session(session_id).status()
+
+    async def async_get_active_work(self, device_id: str) -> dict[str, Any]:
+        """Return safe resumable work for one selected device."""
+        self._device(device_id)
+        mac = self._mac(device_id)
+        with self._guard(mac):
+            self._prune_device_sessions_locked(mac)
+            session = next(
+                (item.status() for item in self._sessions.values() if item.mac == mac),
+                None,
+            )
+        return {
+            "session": session,
+            "transaction": (
+                self.transactions.active_status(mac)
+                if self.transactions is not None
+                else None
+            ),
+            "verified_calibration": await self._store.async_get_verified_calibration(mac),
+        }
 
     async def async_adopt_device(self, device_id: str) -> dict[str, str]:
         device = self._device(device_id)
@@ -355,26 +407,7 @@ class EntryWorkflow:
         manager = self.transactions
         if manager is None:
             raise WorkflowCapabilityUnavailable("configuration writes are unavailable")
-        requests = tuple(
-            CTChangeRequest(
-                channel=int(change["channel"]),
-                name=str(change["name"]),
-                model_id=str(change["model_id"]),
-                reporting_multiplier=float(change.get("reporting_multiplier", 1.0)),
-                custom_gain_ct=(
-                    int(change["custom_gain_ct"])
-                    if "custom_gain_ct" in change
-                    else None
-                ),
-                custom_label=(
-                    str(change["custom_label"]) if "custom_label" in change else None
-                ),
-                burden_output_acknowledged=bool(
-                    change.get("burden_output_acknowledged", False)
-                ),
-            )
-            for change in changes
-        )
+        requests = _ct_change_requests(changes)
         mutation = build_ct_mutation(plan.snapshot, plan.topology, requests)
         updated_inventory = CTInventory.from_document(
             ESPHomeConfigDocument.parse(mutation.proposed_content),
@@ -490,11 +523,33 @@ class EntryWorkflow:
             group.key.replace("main_", "meter_main") for group in binding.groups
         }
         source_reader = getattr(api, "async_calibration_sources", None)
-        calibration_sources = (
+        observed_sources = (
             await source_reader(instance_ids)
             if source_reader is not None
             else {instance_id: "unknown" for instance_id in instance_ids}
         )
+        marker = await self._store.async_get_interrupted_session(mac)
+        verified = await self._store.async_get_verified_calibration(mac)
+        saved_flash_ids = (
+            {_instance_id_for_channel(channel) for channel in marker.changed_channels}
+            if marker is not None and marker.state == "flash_saved"
+            else set()
+        )
+        if (
+            verified is not None
+            and verified.source_authority is CalibrationSourceAuthority.SAVED_FLASH
+        ):
+            saved_flash_ids.update(group.instance_id for group in verified.groups)
+        calibration_sources = {
+            instance_id: (
+                source
+                if source != "unknown"
+                else "flash"
+                if instance_id in saved_flash_ids
+                else "configuration"
+            )
+            for instance_id, source in observed_sources.items()
+        }
         session_id = uuid4().hex
         handle = _SessionHandle(
             session_id,
@@ -537,21 +592,39 @@ class EntryWorkflow:
             return self._publish(handle)
 
     async def async_check_stability(
-        self, session_id: str, target: str, target_id: str
-    ) -> dict[str, Any]:
+        self, session_id: str, target: str, target_id: str | tuple[str, ...]
+    ) -> dict[str, Any] | tuple[dict[str, Any], ...]:
         handle, revision = self._claim_ready_session(session_id)
         api = self._require_api()
         try:
             entities: tuple[Any, ...]
             if target == "voltage":
-                group = next(
-                    (item for item in handle.binding.groups if item.key == target_id),
-                    None,
+                if not isinstance(target_id, tuple) or len(target_id) != 2:
+                    raise WorkflowHandleError("voltage stability requires one board")
+                groups = tuple(
+                    next(
+                        (item for item in handle.binding.groups if item.key == group_key),
+                        None,
+                    )
+                    for group_key in target_id
                 )
-                if group is None:
+                if any(group is None for group in groups) or len(
+                    {
+                        group.voltage_reference.descriptor.device_id
+                        for group in groups
+                        if group is not None
+                    }
+                ) != 1:
                     raise WorkflowHandleError("unknown voltage target")
-                entities = group.voltage_sensors
+                entities = tuple(
+                    entity
+                    for group in groups
+                    if group is not None
+                    for entity in group.voltage_sensors
+                )
             else:
+                if not isinstance(target_id, str):
+                    raise WorkflowHandleError("unknown current target")
                 try:
                     channel = int(target_id)
                 except ValueError:
@@ -582,6 +655,22 @@ class EntryWorkflow:
             handle.state = "stable" if stable else "unstable"
             self._refresh(handle)
             self._publish(handle)
+            if target == "voltage":
+                return tuple(
+                    {
+                        "target": target,
+                        "target_id": group_key,
+                        "stable": all(
+                            window.range_percent <= 1.0
+                            for window in windows[index * 3 : index * 3 + 3]
+                        ),
+                        "windows": tuple(
+                            _public_sample_window(window)
+                            for window in windows[index * 3 : index * 3 + 3]
+                        ),
+                    }
+                    for index, group_key in enumerate(target_id)
+                )
             return {
                 "target": target,
                 "target_id": target_id,
@@ -594,34 +683,48 @@ class EntryWorkflow:
     async def async_calibrate_voltage(
         self,
         session_id: str,
-        group_key: str,
-        reference: float,
+        references: tuple[Mapping[str, Any], ...],
         confirm_iteration: bool,
     ) -> Any:
         handle, revision = self._claim_ready_session(session_id)
         try:
-            iteration = self._sessions_owner.next_calibration_iteration(
-                handle.mac, f"voltage:{group_key}"
+            if len(references) != 2:
+                raise WorkflowHandleError("voltage calibration requires one board")
+            calibrated = tuple(
+                (
+                    str(item["group_key"]),
+                    float(item["reference"]),
+                    self._sessions_owner.next_calibration_iteration(
+                        handle.mac, f"voltage:{item['group_key']}"
+                    ),
+                )
+                for item in references
             )
             self._assert_claim(handle, revision)
-            result = await self._calibration.async_calibrate_voltage(
+            results = await self._calibration.async_calibrate_voltages(
                 handle.mac,
                 self._require_api(),
                 handle.binding,
-                group_key,
-                reference,
+                calibrated,
                 1.0,
-                iteration=iteration,
                 confirm_iteration=confirm_iteration,
                 substitutions=handle.substitutions,
             )
             self._assert_claim(handle, revision)
-            if result.gain_evidence is not None and result.gain_evidence.flash_saved:
-                handle.calibration_sources[result.gain_evidence.instance_id] = "flash"
-            handle.state = str(result.state)
+            for result in results:
+                if result.gain_evidence is not None and result.gain_evidence.flash_saved:
+                    handle.calibration_sources[result.gain_evidence.instance_id] = "flash"
+            handle.state = next(
+                (
+                    str(result.state)
+                    for result in results
+                    if str(result.state) != "applied_pending_restart_verification"
+                ),
+                "applied_pending_restart_verification",
+            )
             self._refresh(handle)
             self._publish(handle)
-            return result
+            return results
         finally:
             self._release_claim(handle, revision)
 
@@ -630,9 +733,22 @@ class EntryWorkflow:
         session_id: str,
         references: tuple[Mapping[str, Any], ...],
         confirm_iteration: bool,
+        pending_multipliers: tuple[Mapping[str, Any], ...] = (),
     ) -> Any:
         handle, revision = self._claim_ready_session(session_id)
         try:
+            pending: dict[int, float] = {}
+            for item in pending_multipliers:
+                channel = int(item["channel"])
+                multiplier = float(item["reporting_multiplier"])
+                if (
+                    channel in pending
+                    or not 1 <= channel <= handle.topology.ct_count
+                    or not isfinite(multiplier)
+                    or not 0.001 <= multiplier <= 1000
+                ):
+                    raise WorkflowHandleError("pending reporting multipliers are invalid")
+                pending[channel] = multiplier
             calibrated: list[tuple[int, float, float]] = []
             for item in references:
                 channel = int(item["channel"])
@@ -650,6 +766,7 @@ class EntryWorkflow:
                                 if item.get("reporting_multiplier") is not None
                                 else None
                             ),
+                            pending,
                         ),
                     )
                 )
@@ -671,6 +788,10 @@ class EntryWorkflow:
             self._assert_claim(handle, revision)
             if result.gain_evidence is not None and result.gain_evidence.flash_saved:
                 handle.calibration_sources[result.gain_evidence.instance_id] = "flash"
+                handle.calibrated_current_channels.update(result.changed_channels)
+                for channel in result.changed_channels:
+                    if channel in pending:
+                        handle.pending_reporting_multipliers[channel] = pending[channel]
             handle.state = str(result.state)
             self._refresh(handle)
             self._publish(handle)
@@ -694,6 +815,92 @@ class EntryWorkflow:
             self._refresh(handle)
             self._publish(handle)
             return result.record
+        finally:
+            self._release_claim(handle, revision)
+
+    async def async_preview_calibrated_gains(
+        self,
+        session_id: str,
+        verification_id: str,
+        changes: tuple[Mapping[str, Any], ...] = (),
+    ) -> Any:
+        """Open the existing reviewed YAML transaction for a verified session."""
+        handle = self._session(session_id)
+        if handle.state != "verified" or self.transactions is None:
+            raise WorkflowHandleError("calibration source handoff is unavailable")
+        requests = _ct_change_requests(changes)
+        requested_by_channel = {request.channel: request for request in requests}
+        if any(
+            requested_by_channel.get(channel) is None
+            or requested_by_channel[channel].reporting_multiplier != multiplier
+            for channel, multiplier in handle.pending_reporting_multipliers.items()
+        ):
+            raise WorkflowHandleError(
+                "calibrated reporting multiplier is missing from final CT changes"
+            )
+        calibrated_channels = frozenset(handle.calibrated_current_channels)
+        if requests or calibrated_channels:
+            return await self.transactions.async_preview_calibrated_gains(
+                handle.mac,
+                handle.topology,
+                verification_id,
+                requests,
+                calibrated_channels,
+            )
+        return await self.transactions.async_preview_calibrated_gains(
+            handle.mac, handle.topology, verification_id
+        )
+
+    async def async_clear_calibration_flash(
+        self, session_id: str, verification_id: str, transaction_id: str
+    ) -> Any:
+        """Clear only installed, verified gain groups and prove YAML is authoritative."""
+        handle, revision = self._claim_ready_session(session_id)
+        try:
+            if handle.state != "verified":
+                raise WorkflowHandleError("calibration source handoff is unavailable")
+            record = await self._store.async_get_verified_calibration(handle.mac)
+            if (
+                record is None
+                or record.verification_id != verification_id
+                or record.source_handoff_transaction_id != transaction_id
+                or not record.source_handoff_firmware_installed
+                or record.source_handoff_available
+            ):
+                raise WorkflowHandleError("calibrated firmware installation is unverified")
+            api = self._require_api()
+            if handle.binding.connection_generation != api.connection_generation:
+                handle.binding = handle.binding.rebind(
+                    EntityCatalog(api.entities, api.connection_generation),
+                    handle.substitutions,
+                )
+            groups = {
+                group.key.replace("main_", "meter_main"): group
+                for group in handle.binding.groups
+            }
+            instance_ids = {group.instance_id for group in record.groups}
+            if not instance_ids.issubset(groups):
+                raise WorkflowHandleError("verified calibration groups are unavailable")
+            sources = await api.async_calibration_sources(instance_ids)
+            for instance_id in sorted(instance_ids):
+                if sources.get(instance_id) == "configuration":
+                    continue
+                restore = groups[instance_id].restore_gain.descriptor
+                await api.async_press_button(restore.key, device_id=restore.device_id)
+            sources = await api.async_calibration_sources(instance_ids)
+            if any(sources.get(instance_id) != "configuration" for instance_id in instance_ids):
+                raise WorkflowHandleError("flash calibration clear could not be verified")
+            if not await self._store.async_complete_verified_calibration_handoff(
+                handle.mac, verification_id, transaction_id
+            ):
+                raise WorkflowHandleError("calibration source handoff is stale")
+            self._assert_claim(handle, revision)
+            handle.calibration_sources.update(sources)
+            self._refresh(handle)
+            self._publish(handle)
+            return replace(
+                record, source_authority=CalibrationSourceAuthority.CONFIGURATION
+            )
         finally:
             self._release_claim(handle, revision)
 
@@ -765,6 +972,7 @@ class EntryWorkflow:
                 EntityCatalog(api.entities, api.connection_generation),
                 handle.substitutions,
             )
+            handle.binding = binding
         return ReconnectEvidence(
             canonical_mac(mac),
             topology,
@@ -859,12 +1067,15 @@ class EntryWorkflow:
         handle: _SessionHandle,
         channel: int,
         confirmed: float | None,
+        pending: Mapping[int, float] | None = None,
     ) -> float:
         if self._builder is not None:
             authoritative = (await self._inventory_for_handle(handle)).channels[
                 channel - 1
             ].reporting_multiplier
             if confirmed is not None and confirmed != authoritative:
+                if pending is not None and pending.get(channel) == confirmed:
+                    return confirmed
                 raise WorkflowHandleError(
                     "reporting multiplier confirmation is stale"
                 )
@@ -897,21 +1108,12 @@ class EntryWorkflow:
         configuration = device.configuration
         if configuration is None:
             listing = await builder.async_list_devices()
-            configured = listing.get("configured", ())
             entry = self._entry(device.entry_id)
-            device_name = getattr(entry, "data", {}).get("device_name")
-            matches = [
-                item
-                for item in configured
-                if isinstance(item, Mapping)
-                and (device_name is None or item.get("name") == device_name)
-                and isinstance(item.get("configuration"), str)
-            ]
-            if len(matches) != 1:
+            configuration = device_builder_status(entry, listing).configuration
+            if configuration is None:
                 raise WorkflowCapabilityUnavailable(
                     "the Device Builder configuration is unavailable"
                 )
-            configuration = str(matches[0]["configuration"])
         return await builder.async_get_config(configuration)
 
     def _device(self, device_id: str) -> DiscoveredDevice:

@@ -109,7 +109,8 @@ export const panelStyles = css`
   .group-grid h2 { margin: 0; padding: 10px; border-bottom: 1px solid var(--border); }
   .group-grid button { width: 33.333%; border-width: 0 1px 0 0; border-radius: 0; }
   .group-grid button.selected { color: var(--orange); border-color: var(--orange); }
-  .progress-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 20px 0; padding: 18px 18px 18px 42px; border: 1px solid var(--border); }
+  .progress-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 20px 0; padding: 18px; border: 1px solid var(--border); list-style: none; }
+  .progress-steps li { display: flex; gap: 6px; padding: 8px; }
   .progress-steps .complete { color: #65758b; background: #f3f5f7; }
   .progress-steps .active { color: #7a3500; background: #fff0df; font-weight: 700; }
   .progress-steps .pending { color: var(--navy); }

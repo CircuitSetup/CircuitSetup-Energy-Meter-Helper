@@ -26,6 +26,7 @@ export function currentStep(
   const first = group * 3 + 1;
   const channels = Array.from({ length: 3 }, (_, index) => first + index).filter((value) => value <= ctCount);
   const selected = channels.filter((value) => (references.get(value) ?? 0) > 0);
+  const sourceIds = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
   const multiplierRequired = inventory === null;
   const multiplierValid = reportingMultiplier !== null
     && Number.isFinite(reportingMultiplier)
@@ -48,7 +49,7 @@ export function currentStep(
           aria-pressed=${value === first} @click=${() => select(value)}>Group ${board * 2 + offset + 1}</button>`; })}
       </div>
       <h2>Calibrate CT${first}–CT${first + 2}</h2>
-      ${calibrationSourceEvidence(session)}
+      ${calibrationSourceEvidence(session, sourceIds)}
       <div class="reference-block">
         ${channels.map((value) => html`<label>CT${value} reference
           <input data-current-reference=${value} aria-label=${`CT${value} reference`} type="number" min="0.01" step="0.01"
@@ -59,7 +60,7 @@ export function currentStep(
       </div>
       <div class="stability-line"><button class="secondary" @click=${check} ?disabled=${!referenceReady}>Check stability</button></div>
       ${stability ? html`<div class=${stability.stable ? "success-band" : "warning-band"} role="status">${stability.stable ? "Live data loaded" : "Live data is unavailable"}</div>` : ""}
-      ${stabilityEvidence(stability)}
+      ${stabilityEvidence(stability, selected.map((value) => `CT${value}`))}
       ${calibrationEvidence(result)}
       ${result?.state.includes("indeterminate") ? html`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${reconnect}>Reconnect and inspect</button><button class="danger" @click=${cancel}>Cancel session</button></aside>` : ""}
       </div>

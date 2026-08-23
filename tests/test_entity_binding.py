@@ -609,10 +609,13 @@ def _label_workflow(monkeypatch: pytest.MonkeyPatch) -> tuple[EntryWorkflow, _La
                 platform="esphome", unique_id=build_device_unique_id("aabbccddeeff", item),
                 config_entry_id="meter", name=None)
     registry = _LabelRegistry(registry_entries)
+    async def executor_job(target: Any, *args: Any) -> Any:
+        return target(*args)
     hass = SimpleNamespace(
         data={},
         config=SimpleNamespace(config_dir="."),
         config_entries=SimpleNamespace(async_get_entry=lambda entry_id: entry if entry_id == "meter" else None),
+        async_add_executor_job=executor_job,
     )
     monkeypatch.setattr("custom_components.circuitsetup_energy_meter_helper.workflow.er.async_get", lambda _hass: registry)
     provisioning = SimpleNamespace(snapshot=SimpleNamespace(devices=(

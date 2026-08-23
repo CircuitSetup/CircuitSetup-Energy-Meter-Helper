@@ -20,6 +20,7 @@ export function voltageStep(
 ): TemplateResult {
   const count = topology?.voltage_layout === "two_voltages" ? 2 : 1;
   const referenceReady = references.slice(0, count).every((value) => Number.isFinite(value) && value > 0);
+  const sourceIds = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
   return html`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       ${calibrationProgress(referenceReady, stability, result)}
@@ -31,8 +32,8 @@ export function voltageStep(
           @click=${() => selectBoard(index)}>${index === 0 ? "Main Board" : `Add-on ${index}`}</button>`)}
       </div>
       <div id="voltage-board-panel" role="tabpanel" aria-labelledby=${`voltage-board-tab-${board}`}>
-      <h2>${count === 1 ? "Calibrate shared voltage" : "Calibrate both board voltages"}</h2>
-      ${calibrationSourceEvidence(session)}
+      <h2>Calibrate Voltage</h2>
+      ${calibrationSourceEvidence(session, sourceIds)}
       <div class="reference-block">
         ${Array.from({ length: count }, (_, index) => html`<label>${count === 1 ? "Trusted instrument reference" : `Voltage ${index + 1} trusted reference`}
           <input type="number" min="0.01" step="0.01" .value=${references[index] ? String(references[index]) : ""}

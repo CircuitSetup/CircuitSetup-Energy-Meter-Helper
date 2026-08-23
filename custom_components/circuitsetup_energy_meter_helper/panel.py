@@ -21,7 +21,7 @@ async def async_register_panel(
     hass: HomeAssistant, entry_id: str, *, bundle_path: Path = _BUNDLE_PATH
 ) -> None:
     """Serve and register the one stable local bundle with content cache busting."""
-    bundle = bundle_path.read_bytes()
+    bundle = await hass.async_add_executor_job(bundle_path.read_bytes)
     version = sha256(bundle).hexdigest()[:16]
     await hass.http.async_register_static_paths(
         [StaticPathConfig(_STATIC_URL, str(bundle_path.parent), True)]

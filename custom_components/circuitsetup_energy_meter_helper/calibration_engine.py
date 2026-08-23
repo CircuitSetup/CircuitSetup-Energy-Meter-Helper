@@ -7,7 +7,7 @@ import math
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
@@ -419,79 +419,143 @@ class CalibrationEngine:
         confirm_iteration: bool = False,
         substitutions: Mapping[str, str] | None = None,
     ) -> CalibrationResult:
-        operation = f"voltage:{group_key}"
-        attempt = self._prepare_iteration(
-            mac,
-            operation,
-            iteration,
-            confirm_iteration,
-            trusted_voltage,
-            tolerance_percent,
+        return (
+            await self.async_calibrate_voltages(
+                mac,
+                session,
+                binding,
+                ((group_key, trusted_voltage, iteration),),
+                tolerance_percent,
+                confirm_iteration=confirm_iteration,
+                substitutions=substitutions,
+            )
+        )[0]
+
+    async def async_calibrate_voltages(
+        self,
+        mac: str,
+        session: Any,
+        binding: MeterBinding,
+        references: tuple[tuple[str, float, int], ...],
+        tolerance_percent: float,
+        *,
+        confirm_iteration: bool = False,
+        substitutions: Mapping[str, str] | None = None,
+    ) -> tuple[CalibrationResult, ...]:
+        if not 1 <= len(references) <= 2:
+            raise ValueError("voltage calibration requires one board")
+        groups = tuple(self._group(binding, item[0]) for item in references)
+        if len({group.key for group in groups}) != len(groups) or len(
+            {group.voltage_reference.descriptor.device_id for group in groups}
+        ) != 1:
+            raise ValueError("voltage calibration groups must share one meter board")
+        attempts = tuple(
+            self._prepare_iteration(
+                mac,
+                f"voltage:{group_key}",
+                iteration,
+                confirm_iteration,
+                trusted_voltage,
+                tolerance_percent,
+            )
+            for group_key, trusted_voltage, iteration in references
         )
         self._validate_binding_generation(session, binding)
-        group = self._group(binding, group_key)
-        channels = tuple(_channel_number(entity) for entity in group.current_references)
+        channels_by_group = tuple(
+            tuple(_channel_number(entity) for entity in group.current_references)
+            for group in groups
+        )
+        changed_channels = tuple(channel for channels in channels_by_group for channel in channels)
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
             mac = lease.mac
             origin = await self._calibration_origin(lease, session, binding)
-            marker = self._marker(channels)
+            marker = self._marker(changed_channels)
             await self._persist_interrupted(mac, marker)
-            self.sessions.record_calibration_iteration(mac, operation, attempt)
+            for (group_key, _reference, _iteration), attempt in zip(
+                references, attempts, strict=True
+            ):
+                self.sessions.record_calibration_iteration(
+                    mac, f"voltage:{group_key}", attempt
+                )
             zeroer = _BoundZeroer(self, binding, dict(substitutions or {}))
             async with zero_reference_guard(zeroer, session):
-                await self._set_number(
-                    session, group.voltage_reference, trusted_voltage
-                )
-                for current_reference in group.current_references:
-                    await self._set_number(session, current_reference, 0.0)
-                evidence, restore = await self._run_gain(
-                    mac, session, group, _instance_id(group.key), zeroer
-                )
-                if evidence is None:
-                    return self._indeterminate_result(
-                        group, channels, attempt, (), restore
+                await asyncio.gather(
+                    *(
+                        self._set_number(session, group.voltage_reference, reference)
+                        for group, (_key, reference, _iteration) in zip(
+                            groups, references, strict=True
+                        )
                     )
-                self._validate_voltage_evidence(evidence, trusted_voltage)
-                before = tuple(phase.measured_voltage for phase in evidence.phases)
-                after = tuple(
-                    _projected_value(
-                        phase.measured_voltage,
-                        phase.old_voltage_gain,
-                        phase.new_voltage_gain,
-                    )
-                    for phase in evidence.phases
                 )
-                errors = tuple(
-                    _error_percent(value, trusted_voltage) for value in after
+                gain_runs = await self._run_gains(
+                    mac, session, groups, zeroer
                 )
-                state = _result_state(errors, tolerance_percent)
-                if (
-                    origin is not None
-                    and state is CalibrationState.APPLIED_PENDING_RESTART_VERIFICATION
-                ):
-                    self.sessions.record_calibration_group(
-                        lease,
-                        origin.operation_id,
-                        origin.revision,
-                        session,
-                        binding,
-                        evidence.instance_id,
-                        _phase_gain_table(evidence),
+                if any(evidence is not None and evidence.flash_saved for evidence, _ in gain_runs):
+                    await self._persist_interrupted(
+                        mac, replace(marker, state="flash_saved")
                     )
-                return CalibrationResult(
-                    state,
-                    group.key,
-                    None,
-                    channels,
-                    attempt,
-                    before,
-                    after,
-                    errors,
+                results: list[CalibrationResult] = []
+                for group, (_key, trusted_voltage, _iteration), attempt, channels, (
                     evidence,
-                    None,
-                    max(errors) > tolerance_percent and attempt < 3,
-                )
+                    restore,
+                ) in zip(
+                    groups,
+                    references,
+                    attempts,
+                    channels_by_group,
+                    gain_runs,
+                    strict=True,
+                ):
+                    if evidence is None:
+                        results.append(
+                            self._indeterminate_result(
+                                group, channels, attempt, (), restore
+                            )
+                        )
+                        continue
+                    self._validate_voltage_evidence(evidence, trusted_voltage)
+                    before = tuple(
+                        phase.measured_voltage for phase in evidence.phases
+                    )
+                    after = tuple(
+                        _projected_value(
+                            phase.measured_voltage,
+                            phase.old_voltage_gain,
+                            phase.new_voltage_gain,
+                        )
+                        for phase in evidence.phases
+                    )
+                    errors = tuple(
+                        _error_percent(value, trusted_voltage) for value in after
+                    )
+                    state = _result_state(errors, tolerance_percent)
+                    if origin is not None and state is CalibrationState.APPLIED_PENDING_RESTART_VERIFICATION:
+                        origin = self.sessions.record_calibration_group(
+                            lease,
+                            origin.operation_id,
+                            origin.revision,
+                            session,
+                            binding,
+                            evidence.instance_id,
+                            _phase_gain_table(evidence),
+                        )
+                    results.append(
+                        CalibrationResult(
+                            state,
+                            group.key,
+                            None,
+                            channels,
+                            attempt,
+                            before,
+                            after,
+                            errors,
+                            evidence,
+                            None,
+                            max(errors) > tolerance_percent and attempt < 3,
+                        )
+                    )
+                return tuple(results)
         finally:
             lease.release()
 
@@ -587,6 +651,10 @@ class CalibrationEngine:
                     return self._indeterminate_result(
                         group, channels, attempt, (), restore, phase
                     )
+                if evidence.flash_saved:
+                    await self._persist_interrupted(
+                        mac, replace(marker, state="flash_saved")
+                    )
                 self._validate_current_evidence(evidence, raw_references)
                 before = tuple(
                     evidence.phases[index].measured_current * multipliers[index]
@@ -679,28 +747,59 @@ class CalibrationEngine:
         GainRunEvidence | None,
         dict[str, RestoreEvidence] | dict[str, object] | None,
     ]:
+        return (await self._run_gains(mac, session, (group,), zeroer))[0]
+
+    async def _run_gains(
+        self,
+        mac: str,
+        session: Any,
+        groups: tuple[GroupBinding, ...],
+        zeroer: _BoundZeroer,
+    ) -> tuple[
+        tuple[
+            GainRunEvidence | None,
+            dict[str, RestoreEvidence] | dict[str, object] | None,
+        ],
+        ...,
+    ]:
         generation = int(session.connection_generation)
-        sequence = self._next_sequence(mac)
-        dispatched_after = monotonic()
-        waiter = self._gain_waiter(
-            session,
-            generation=generation,
-            sequence=sequence,
-            instance_id=instance_id,
-            button_name=group.run_gain.descriptor.name,
-            dispatched_after=dispatched_after,
+        runs = tuple(
+            (
+                group,
+                _instance_id(group.key),
+                self._next_sequence(mac),
+                monotonic(),
+            )
+            for group in groups
+        )
+        waiters = tuple(
+            self._gain_waiter(
+                session,
+                generation=generation,
+                sequence=sequence,
+                instance_id=instance_id,
+                button_name=group.run_gain.descriptor.name,
+                dispatched_after=dispatched_after,
+            )
+            for group, instance_id, sequence, dispatched_after in runs
         )
         try:
-            await session.async_press_button(
-                group.run_gain.descriptor.key,
-                device_id=group.run_gain.descriptor.device_id,
+            await asyncio.gather(
+                *(
+                    session.async_press_button(
+                        group.run_gain.descriptor.key,
+                        device_id=group.run_gain.descriptor.device_id,
+                    )
+                    for group in groups
+                )
             )
         except BaseException:
-            await _discard_waiter(waiter)
+            await asyncio.gather(*(_discard_waiter(waiter) for waiter in waiters))
             raise
         try:
-            evidence = await waiter
+            evidence_items = tuple(await asyncio.gather(*waiters))
         except ESPHomeSessionDisconnectedError:
+            await asyncio.gather(*(_discard_waiter(waiter) for waiter in waiters))
             restore_started = monotonic()
             baseline = tuple(getattr(session, "log_lines", ()))
             previous_binding = zeroer.binding
@@ -714,21 +813,26 @@ class CalibrationEngine:
             restore = await self._wait_restore(
                 session,
                 generation=int(session.connection_generation),
-                expected_instance_ids={instance_id},
+                expected_instance_ids={instance_id for _group, instance_id, _sequence, _after in runs},
                 started_after=restore_started,
                 baseline=baseline,
             )
-            return None, restore
-        if evidence.instance_id != instance_id:
-            raise CalibrationInvariantError("gain evidence is for another instance")
-        if (
-            evidence.connection_generation != generation
-            or evidence.operation_sequence != sequence
+            return tuple((None, restore) for _group in groups)
+        except BaseException:
+            await asyncio.gather(*(_discard_waiter(waiter) for waiter in waiters))
+            raise
+        results = []
+        for evidence, (_group, instance_id, sequence, _after) in zip(
+            evidence_items, runs, strict=True
         ):
-            raise CalibrationInvariantError("gain evidence correlation does not match")
-        if not evidence.immediate_apply_acceptable:
-            raise CalibrationInvariantError("gain save or register verification failed")
-        return evidence, None
+            if evidence.instance_id != instance_id:
+                raise CalibrationInvariantError("gain evidence is for another instance")
+            if evidence.connection_generation != generation or evidence.operation_sequence != sequence:
+                raise CalibrationInvariantError("gain evidence correlation does not match")
+            if not evidence.immediate_apply_acceptable:
+                raise CalibrationInvariantError("gain save or register verification failed")
+            results.append((evidence, None))
+        return tuple(results)
 
     def _gain_waiter(
         self,

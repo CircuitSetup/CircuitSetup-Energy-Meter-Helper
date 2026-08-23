@@ -15,9 +15,34 @@ export function setupDeviceStep(
   setAddon: (value: number) => void,
   setConnection: (value: Exclude<ConnectionType, "unknown">) => void,
   rescan: () => void,
+  configure: (deviceId: string) => void,
+  adopt: (deviceId: string) => void,
+  busyAction = "",
 ): TemplateResult {
   return html`
     <section class="step-content setup-step" aria-labelledby="step-heading">
+      <section aria-labelledby="existing-device-heading">
+        <h2 id="existing-device-heading">Configure an existing device</h2>
+        <p>Select a compatible meter already connected to Home Assistant.</p>
+        ${snapshot?.devices.length ? html`<div class="meter-list">
+          ${snapshot.devices.map((device) => html`
+            <div class="meter-row">
+              <span><strong>${device.title}</strong><small>${device.project_name} · ${device.project_version ?? "version unavailable"}</small></span>
+              <span>Device Builder: ${device.configuration ? "Yes" : device.importable ? "Yes — import available" : "No"}</span>
+              ${device.importable && !device.configuration ? html`<button class="secondary" ?disabled=${Boolean(busyAction)}
+                @click=${() => adopt(device.entry_id)}>Import</button>` : ""}
+              <button class="primary" data-action="configure-device" ?disabled=${Boolean(busyAction)}
+                @click=${() => configure(device.entry_id)}>${busyAction === `topology:${device.entry_id}` ? "Loading topology…" : "Configure"}</button>
+            </div>
+          `)}
+        </div>` : html`<div class="error-panel passive" role="status">
+          <strong>No compatible device found</strong>
+          <span>Check power and connection, then try again.</span>
+        </div>`}
+        <button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan"}</button>
+      </section>
+      <hr />
+      <h2>Set up a new device</h2>
       <fieldset class="choice-field">
         <legend>Add-on boards</legend>
         <p>Select how many add-on boards are attached to your energy meter.</p>
@@ -68,15 +93,6 @@ export function setupDeviceStep(
           "noopener,noreferrer",
         )}>Open CircuitSetup Web Installer</button>
       </section>
-      ${snapshot?.devices.length ? "" : html`
-        <div class="error-panel passive" role="status">
-          <strong>No compatible device found</strong>
-          <span>Check power and connection, then try again.</span>
-        </div>
-      `}
-      <footer class="action-footer single">
-        <button class="rescan" data-action="rescan" @click=${rescan}>Rescan</button>
-      </footer>
     </section>
   `;
 }

@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from threading import get_ident
 from types import SimpleNamespace
 from typing import Any
 
@@ -32,6 +33,9 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     ConfigTransactionState,
 )
 from custom_components.circuitsetup_energy_meter_helper.const import DOMAIN
+from custom_components.circuitsetup_energy_meter_helper.ct_catalog import (
+    CTPresetCatalog,
+)
 from custom_components.circuitsetup_energy_meter_helper.ct_inventory import (
     _esphome_object_id,
 )
@@ -42,6 +46,7 @@ from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
     MeterTopology,
     StoredCTSelection,
+    StoredInterruptedSession,
     SubstitutionChange,
     TopologyEvidence,
     TopologyEvidenceSource,
@@ -56,7 +61,12 @@ from custom_components.circuitsetup_energy_meter_helper.session_manager import (
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
     SensorSampleWindow,
 )
-from custom_components.circuitsetup_energy_meter_helper.store import HelperStore
+from custom_components.circuitsetup_energy_meter_helper.store import (
+    CalibrationSourceAuthority,
+    HelperStore,
+    VerifiedCalibrationRecord,
+    VerifiedGainGroup,
+)
 from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
     ALL_COMMANDS,
     MUTATION_COMMANDS,
@@ -252,13 +262,14 @@ class FakeHass:
         self.loop = asyncio.get_event_loop()
         self.config = SimpleNamespace(config_dir=".", path=lambda *parts: str(Path(".").joinpath(*parts)))
         self.tasks: list[asyncio.Task[None]] = []
+        self.executor_jobs: list[tuple[Any, tuple[Any, ...]]] = []
 
     def verify_event_loop_thread(self, name: str) -> None:
         del name
 
     async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
-        del target, args
-        return {}
+        self.executor_jobs.append((target, args))
+        return target(*args)
 
     def async_create_task(self, coroutine: Any) -> asyncio.Task[Any]:
         return asyncio.create_task(coroutine)
@@ -518,14 +529,32 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
             "transaction_id": "transaction",
             "source_sha256": "a" * 64,
         }
-    elif suffix == "start_session":
+    elif suffix in {"get_active_work", "start_session"}:
         base["device_id"] = "meter"
+    elif suffix == "preview_calibrated_gains":
+        base |= {"session_id": "3" * 32, "verification_id": "1" * 32}
+    elif suffix == "clear_calibration_flash":
+        base |= {
+            "session_id": "3" * 32,
+            "verification_id": "1" * 32,
+            "transaction_id": "2" * 32,
+        }
     elif suffix == "acknowledge_safety":
         base |= {"session_id": "session", "acknowledged": True}
     elif suffix == "check_stability":
-        base |= {"session_id": "session", "target": "voltage", "target_id": "main_1"}
+        base |= {
+            "session_id": "session",
+            "target": "voltage",
+            "target_ids": ["main_1", "main_2"],
+        }
     elif suffix == "calibrate_voltage":
-        base |= {"session_id": "session", "group_key": "main_1", "reference": 120.0}
+        base |= {
+            "session_id": "session",
+            "references": [
+                {"group_key": "main_1", "reference": 120.0},
+                {"group_key": "main_2", "reference": 120.0},
+            ],
+        }
     elif suffix == "calibrate_current":
         base |= {
             "session_id": "session",
@@ -601,6 +630,30 @@ def test_setup_registers_exact_commands_and_live_owners_then_unloads() -> None:
         assert await async_unload_entry(hass, entry)
         assert entry.entry_id not in hass.data[DOMAIN]
         assert not controller.has_subscribers
+
+    asyncio.run(run())
+
+
+def test_setup_primes_ct_catalog_outside_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        event_loop_thread = get_ident()
+        load_threads: list[int] = []
+        load = CTPresetCatalog.load
+
+        def tracked_load() -> CTPresetCatalog:
+            load_threads.append(get_ident())
+            return load()
+
+        hass = FakeHass()
+        monkeypatch.setattr(CTPresetCatalog, "load", tracked_load)
+        entry = FakeEntry(data={})
+
+        assert await async_setup_entry(hass, entry)
+        assert len(load_threads) == 1
+        assert load_threads[0] != event_loop_thread
+        assert await async_unload_entry(hass, entry)
 
     asyncio.run(run())
 
@@ -1019,7 +1072,14 @@ substitutions:
             clock=lambda: now,
         )
         inventory = await workflow.async_get_ct_inventory("meter")
+        assert any(target.__name__ == "load" for target, _args in hass.executor_jobs)
         session = await workflow.async_start_session("meter")
+        active = await workflow.async_get_active_work("meter")
+        assert active == {
+            "session": session,
+            "transaction": None,
+            "verified_calibration": None,
+        }
         with pytest.raises(WorkflowHandleError, match="already active"):
             await workflow.async_start_session("meter")
         await workflow.async_acknowledge_safety(session.session_id, True)
@@ -1123,7 +1183,7 @@ def test_stability_collects_all_phase_windows_concurrently(
             del device_id
             started.append((key, after, timeout))
             sample_counts.append(sample_count)
-            if len(started) == 3:
+            if len(started) == 6:
                 all_started.set()
             await all_started.wait()
             return SensorSampleWindow(
@@ -1135,15 +1195,17 @@ def test_stability_collects_all_phase_windows_concurrently(
         await workflow.async_acknowledge_safety(status.session_id, True)
 
         result = await asyncio.wait_for(
-            workflow.async_check_stability(status.session_id, "voltage", "main_1"),
+            workflow.async_check_stability(
+                status.session_id, "voltage", ("main_1", "main_2")
+            ),
             0.2,
         )
 
-        assert result["stable"]
-        assert len(started) == 3
+        assert all(item["stable"] for item in result)
+        assert len(started) == 6
         assert len({after for _, after, _ in started}) == 1
         assert all(after is not None for _, after, _ in started)
-        assert sample_counts == [1, 1, 1]
+        assert sample_counts == [1] * 6
         assert all(timeout >= 30 for _, _, timeout in started)
         await workflow.async_close()
 
@@ -1243,6 +1305,7 @@ def test_configuration_inventory_remains_authoritative_for_multiplier(
         handle = SimpleNamespace()
         assert await workflow._reporting_multiplier(handle, 1, None) == 2.0
         assert await workflow._reporting_multiplier(handle, 1, 2.0) == 2.0
+        assert await workflow._reporting_multiplier(handle, 1, 1.0, {1: 1.0}) == 1.0
         with pytest.raises(WorkflowHandleError, match="confirmation is stale"):
             await workflow._reporting_multiplier(handle, 1, 1.0)
         await workflow.async_close()
@@ -1250,7 +1313,7 @@ def test_configuration_inventory_remains_authoritative_for_multiplier(
     asyncio.run(run())
 
 
-def test_native_only_voltage_calibration_needs_no_builder_snapshot(
+def test_native_only_board_voltage_calibration_needs_no_builder_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def run() -> None:
@@ -1260,21 +1323,33 @@ def test_native_only_voltage_calibration_needs_no_builder_snapshot(
         calls: list[dict[str, Any]] = []
 
         class Calibration:
-            async def async_calibrate_voltage(
+            async def async_calibrate_voltages(
                 self, *_args: Any, **kwargs: Any
             ) -> Any:
                 calls.append(kwargs)
-                return SimpleNamespace(
-                    state="applied_pending_restart_verification", gain_evidence=None
+                return (
+                    SimpleNamespace(
+                        state="applied_pending_restart_verification",
+                        gain_evidence=None,
+                    ),
+                    SimpleNamespace(
+                        state="applied_pending_restart_verification",
+                        gain_evidence=None,
+                    ),
                 )
 
         workflow._calibration = Calibration()  # type: ignore[assignment]
 
         await workflow.async_calibrate_voltage(
-            status.session_id, "main_1", 120.0, False
+            status.session_id,
+            (
+                {"group_key": "main_1", "reference": 120.0},
+                {"group_key": "main_2", "reference": 120.0},
+            ),
+            False,
         )
 
-        assert calls == [{"iteration": 1, "confirm_iteration": False, "substitutions": {}}]
+        assert calls == [{"confirm_iteration": False, "substitutions": {}}]
         await workflow.async_close()
 
     asyncio.run(run())
@@ -1307,6 +1382,233 @@ def test_native_only_restart_verification_persists_without_source_handoff(
 
         assert result is record
         assert (await workflow.async_get_session(status.session_id)).state == "verified"
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("marker_state", "addon_source"),
+    [("active", "configuration"), ("flash_saved", "flash")],
+)
+def test_session_requires_post_save_evidence_for_boot_only_flash_source(
+    monkeypatch: pytest.MonkeyPatch, marker_state: str, addon_source: str
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(
+            monkeypatch, addon_count=1
+        )
+
+        async def sources(instance_ids: set[str]) -> dict[str, str]:
+            return dict.fromkeys(instance_ids, "unknown")
+
+        async def interrupted(_mac: str) -> StoredInterruptedSession:
+            return StoredInterruptedSession(
+                marker_state, "2026-08-23T14:10:50Z", (7, 8, 9)
+            )
+
+        workflow._api.async_calibration_sources = sources  # type: ignore[method-assign,union-attr]
+        workflow._store.async_get_interrupted_session = interrupted  # type: ignore[method-assign]
+
+        status = await workflow.async_start_session("meter")
+
+        assert status.calibration_sources == {
+            "addon1_1": addon_source,
+            "addon1_2": "configuration",
+            "meter_main1": "configuration",
+            "meter_main2": "configuration",
+        }
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_controller_routes_calibration_handoff_identity_without_browser_yaml() -> None:
+    """Missing routes would strand the verified backend gain transaction."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        controller = EntryWebsocketController(
+            ProvisioningCoordinator(hass), SessionManager(), HelperStore(hass)
+        )
+        calls: list[tuple[object, ...]] = []
+
+        class Workflow:
+            async def async_preview_calibrated_gains(
+                self, session_id: str, verification_id: str
+            ) -> str:
+                calls.append(("preview", session_id, verification_id))
+                return "previewed"
+
+            async def async_clear_calibration_flash(
+                self, session_id: str, verification_id: str, transaction_id: str
+            ) -> str:
+                calls.append(("clear", session_id, verification_id, transaction_id))
+                return "configuration"
+
+        controller.workflow = Workflow()  # type: ignore[assignment]
+        assert await controller.async_call(
+            f"{DOMAIN}/preview_calibrated_gains",
+            {"session_id": "session", "verification_id": "1" * 32},
+            "admin",
+        ) == "previewed"
+        assert await controller.async_call(
+            f"{DOMAIN}/clear_calibration_flash",
+            {
+                "session_id": "session",
+                "verification_id": "1" * 32,
+                "transaction_id": "2" * 32,
+            },
+            "admin",
+        ) == "configuration"
+        assert calls == [
+            ("preview", "session", "1" * 32),
+            ("clear", "session", "1" * 32, "2" * 32),
+        ]
+
+    asyncio.run(run())
+
+
+def test_verified_session_previews_exact_calibration_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing workflow bridge would leave the existing gain mutation unreachable."""
+
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        handle = workflow._sessions[status.session_id]
+        handle.state = "verified"
+        calls: list[tuple[str, MeterTopology, str]] = []
+
+        class Transactions:
+            async def async_preview_calibrated_gains(
+                self, mac: str, topology: MeterTopology, verification_id: str
+            ) -> str:
+                calls.append((mac, topology, verification_id))
+                return "preview"
+
+        workflow.transactions = Transactions()  # type: ignore[assignment]
+
+        result = await workflow.async_preview_calibrated_gains(
+            status.session_id, "1" * 32
+        )
+
+        assert result == "preview"
+        assert calls == [(handle.mac, handle.topology, "1" * 32)]
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_verified_session_requires_pending_multiplier_in_final_ct_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        handle = workflow._sessions[status.session_id]
+        handle.state = "verified"
+        handle.pending_reporting_multipliers[1] = 2.0
+
+        class Transactions:
+            async def async_preview_calibrated_gains(self, *_args: Any) -> str:
+                return "preview"
+
+        workflow.transactions = Transactions()  # type: ignore[assignment]
+
+        with pytest.raises(WorkflowHandleError, match="missing from final CT changes"):
+            await workflow.async_preview_calibrated_gains(
+                status.session_id, "1" * 32
+            )
+
+        assert await workflow.async_preview_calibrated_gains(
+            status.session_id,
+            "1" * 32,
+            ({
+                "channel": 1,
+                "name": "Mains",
+                "model_id": "sct_013_030_30a_1v",
+                "reporting_multiplier": 2.0,
+            },),
+        ) == "preview"
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wrong ordering or group selection could erase unrelated flash calibration."""
+
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        handle = workflow._sessions[status.session_id]
+        handle.state = "verified"
+        transaction_id = "2" * 32
+        record = VerifiedCalibrationRecord(
+            mac=handle.mac,
+            config_filename="meter.yaml",
+            config_sha256="a" * 64,
+            topology_addon_count=handle.topology.addon_count,
+            topology_project_name=handle.topology.project_name,
+            topology_connection_type=handle.topology.connection_type,
+            topology_voltage_layout=handle.topology.voltage_layout,
+            connection_generation=handle.binding.connection_generation,
+            groups=(
+                VerifiedGainGroup(
+                    "meter_main1",
+                    ((7301, 28001), (7301, 28002), (7301, 28003)),
+                ),
+            ),
+            verification_id="1" * 32,
+            source_handoff_available=False,
+            source_handoff_transaction_id=transaction_id,
+            source_handoff_firmware_installed=True,
+        )
+        completed: list[tuple[str, str, str]] = []
+
+        class Store:
+            async def async_get_verified_calibration(
+                self, mac: str
+            ) -> VerifiedCalibrationRecord | None:
+                return record if mac == record.mac else None
+
+            async def async_complete_verified_calibration_handoff(
+                self, mac: str, verification_id: str, target_transaction_id: str
+            ) -> bool:
+                completed.append((mac, verification_id, target_transaction_id))
+                return True
+
+        source_reads = 0
+        pressed: list[tuple[int, int]] = []
+
+        async def sources(_instances: set[str]) -> dict[str, str]:
+            nonlocal source_reads
+            source_reads += 1
+            return {"meter_main1": "flash" if source_reads == 1 else "configuration"}
+
+        async def press(key: int, *, device_id: int = 0) -> None:
+            pressed.append((key, device_id))
+
+        workflow._store = Store()  # type: ignore[assignment]
+        workflow._api.async_calibration_sources = sources  # type: ignore[method-assign,union-attr]
+        workflow._api.async_press_button = press  # type: ignore[method-assign,union-attr]
+        restore = handle.binding.groups[0].restore_gain.descriptor
+
+        result = await workflow.async_clear_calibration_flash(
+            status.session_id, record.verification_id, transaction_id
+        )
+
+        assert pressed == [(restore.key, restore.device_id)]
+        assert completed == [(record.mac, record.verification_id, transaction_id)]
+        assert result.source_authority is CalibrationSourceAuthority.CONFIGURATION
+        assert handle.calibration_sources["meter_main1"] == "configuration"
+        assert handle.calibration_sources["meter_main2"] == "configuration"
         await workflow.async_close()
 
     asyncio.run(run())
@@ -1837,6 +2139,7 @@ def test_every_topology_and_calibration_route_delegates_and_session_events_unsub
     commands = (
         "get_topology",
         "get_ct_inventory",
+        "get_active_work",
         "get_session",
         "adopt_device",
         "preview_ct_config",

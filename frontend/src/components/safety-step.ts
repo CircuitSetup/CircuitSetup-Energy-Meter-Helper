@@ -9,6 +9,7 @@ export function safetyStep(
   confirm: () => void,
   cancel: () => void,
   back: () => void,
+  busy = false,
 ): TemplateResult {
   return html`
     <section class="step-content" aria-labelledby="step-heading">
@@ -29,7 +30,7 @@ export function safetyStep(
       <button class="danger" @click=${cancel}>Cancel session</button>
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        <button class="primary" @click=${confirm} ?disabled=${session?.state === "cancelled" || !acknowledged || Boolean(session?.preflight.issues.length)}>Continue</button>
+        <button class="primary" @click=${confirm} ?disabled=${busy || session?.state === "cancelled" || !acknowledged || Boolean(session?.preflight.issues.length)}>${busy ? "Loading calibration…" : "Continue"}</button>
       </footer>
     </section>
   `;

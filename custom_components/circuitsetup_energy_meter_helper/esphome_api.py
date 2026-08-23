@@ -396,9 +396,10 @@ class ESPHomeApiSession:
                 if all(source != "unknown" for source in sources.values()):
                     return sources
                 await asyncio.sleep(min(0.05, max(0.0, deadline - monotonic())))
-            return parse_calibration_sources(
+            sources = parse_calibration_sources(
                 _new_log_lines(baseline, self.log_lines), expected_instance_ids
             )
+            return sources
 
     async def async_reconnect(self, *, dump_config: bool = False) -> None:
         """Disconnect and create a fresh client from the current ESPHome entry."""

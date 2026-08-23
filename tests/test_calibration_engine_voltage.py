@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
+from dataclasses import replace
 from hashlib import sha256
 from statistics import fmean
 from typing import Any
@@ -213,6 +214,10 @@ def test_voltage_calibration_persists_before_mutation_and_preserves_currents() -
         assert names.index("marker") < names.index("button")
         assert markers[0] is not None
         assert markers[0].changed_channels == (10, 11, 12)
+        assert [marker.state for marker in markers if marker is not None] == [
+            "active",
+            "flash_saved",
+        ]
         assert [event[0] for event in session.events].count("button") == 1
         assert all(event[4] >= 30 for event in session.events if event[0] == "window")
         assert [event[0] for event in session.events].index("expect_gain") < [
@@ -243,6 +248,49 @@ def test_voltage_uses_native_gain_average_without_periodic_sensor_windows() -> N
         assert session.window_calls == 0
         assert result.before_values == (120.0, 120.0, 120.0)
         assert result.after_values == pytest.approx((120.0 * 7310 / 7305,) * 3)
+
+    asyncio.run(run())
+
+
+def test_board_voltage_arms_both_chips_before_dispatching_either_gain_run() -> None:
+    class BoardSession(FakeCalibrationSession):
+        def expect_gain_run(self, **kwargs: Any) -> Awaitable[GainRunEvidence]:
+            self.events.append(("expect_gain", kwargs))
+            future: asyncio.Future[GainRunEvidence] = (
+                asyncio.get_running_loop().create_future()
+            )
+            future.set_result(
+                replace(
+                    gain_evidence(
+                        kwargs["target_instance_id"],
+                        voltage_changes=(True, True, True),
+                        reference_voltages=(120.0, 120.0, 120.0),
+                    ),
+                    operation_sequence=kwargs["operation_sequence"],
+                )
+            )
+            return future
+
+    async def run() -> None:
+        meter = binding(0)
+        session = BoardSession(gain_evidence("meter_main1"))
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        results = await engine.async_calibrate_voltages(
+            "aabbccddeeff",
+            session,
+            meter,
+            (("main_1", 120.0, 1), ("main_2", 120.0, 1)),
+            1.0,
+        )
+
+        names = [event[0] for event in session.events]
+        assert len(results) == 2
+        assert names.count("button") == 2
+        assert max(index for index, name in enumerate(names) if name == "expect_gain") < min(
+            index for index, name in enumerate(names) if name == "button"
+        )
 
     asyncio.run(run())
 
@@ -389,7 +437,10 @@ def test_each_new_calibration_lease_revalidates_retained_yaml_before_mutation() 
             )
 
         assert calls == 2
-        assert len(markers) == 1
+        assert [marker.state for marker in markers if marker is not None] == [
+            "active",
+            "flash_saved",
+        ]
         assert len(session.events) == event_count
 
     asyncio.run(run())

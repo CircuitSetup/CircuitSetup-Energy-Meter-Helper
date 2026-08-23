@@ -28,6 +28,7 @@ class CalibrationSourceAuthority(StrEnum):
     """The source currently used by the running ATM90E32 component."""
 
     SAVED_FLASH = "saved_flash"
+    CONFIGURATION = "configuration"
 
 
 type PhaseGainTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
@@ -85,6 +86,7 @@ class VerifiedCalibrationRecord:
     )
     source_handoff_available: bool = True
     source_handoff_transaction_id: str | None = None
+    source_handoff_firmware_installed: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mac", canonical_mac(self.mac))
@@ -116,8 +118,22 @@ class VerifiedCalibrationRecord:
             raise ValueError("verification ID must be a server-generated identifier")
         if type(self.source_handoff_available) is not bool:
             raise ValueError("source handoff state must be boolean")
+        if type(self.source_handoff_firmware_installed) is not bool:
+            raise ValueError("source handoff firmware state must be boolean")
         if self.source_handoff_available and self.config_filename is None:
             raise ValueError("source handoff requires configuration identity")
+        if self.source_handoff_available and self.source_handoff_firmware_installed:
+            raise ValueError("available source handoff cannot already be installed")
+        if (
+            self.source_handoff_firmware_installed
+            and self.source_handoff_transaction_id is None
+        ):
+            raise ValueError("installed handoff requires a transaction")
+        if (
+            self.source_authority is CalibrationSourceAuthority.CONFIGURATION
+            and not self.source_handoff_firmware_installed
+        ):
+            raise ValueError("configuration authority requires install verification")
         if (
             self.source_handoff_transaction_id is not None
             and re.fullmatch(r"[0-9a-f]{32}", self.source_handoff_transaction_id)
@@ -131,6 +147,8 @@ class VerifiedCalibrationRecord:
     @property
     def source_status(self) -> str:
         """Explain why changing YAML alone does not change the active gains."""
+        if self.source_authority is CalibrationSourceAuthority.CONFIGURATION:
+            return "Configuration calibration is authoritative."
         return (
             "Saved flash calibration remains authoritative until it is explicitly "
             "cleared."
@@ -238,6 +256,9 @@ def _serialize_verified_calibration(
         "source_authority": record.source_authority.value,
         "source_handoff_available": record.source_handoff_available,
         "source_handoff_transaction_id": record.source_handoff_transaction_id,
+        "source_handoff_firmware_installed": (
+            record.source_handoff_firmware_installed
+        ),
     }
 
 
@@ -292,6 +313,9 @@ def _deserialize_verified_calibration(
             source_authority=authority,
             source_handoff_available=raw["source_handoff_available"],
             source_handoff_transaction_id=raw.get("source_handoff_transaction_id"),
+            source_handoff_firmware_installed=raw.get(
+                "source_handoff_firmware_installed", False
+            ),
         )
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError("stored verified calibration is invalid") from error
@@ -394,6 +418,30 @@ class HelperStore:
             )
             await self._store.async_save(data)
 
+    async def async_get_interrupted_session(
+        self, mac: str
+    ) -> StoredInterruptedSession | None:
+        """Load the calibration recovery marker for one meter."""
+        raw = (
+            (await self.async_load())
+            .get("meters", {})
+            .get(canonical_mac(mac), {})
+            .get("interrupted_session")
+        )
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise TypeError("stored interrupted session is invalid")
+        try:
+            return StoredInterruptedSession(
+                raw["state"],
+                raw["started_at"],
+                tuple(raw["changed_channels"]),
+                raw.get("config_transaction_id"),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("stored interrupted session is invalid") from error
+
     async def async_save_verified_calibration(
         self, record: VerifiedCalibrationRecord
     ) -> None:
@@ -434,6 +482,7 @@ class HelperStore:
                 return False
             raw["source_handoff_available"] = False
             raw["source_handoff_transaction_id"] = transaction_id
+            raw["source_handoff_firmware_installed"] = False
             await self._store.async_save(data)
             return True
 
@@ -473,5 +522,49 @@ class HelperStore:
                 return False
             raw["source_handoff_available"] = True
             raw["source_handoff_transaction_id"] = None
+            raw["source_handoff_firmware_installed"] = False
+            await self._store.async_save(data)
+            return True
+
+    async def async_mark_verified_calibration_installed(
+        self, mac: str, verification_id: str, transaction_id: str
+    ) -> bool:
+        """Record that the exact reviewed gains are running before flash is cleared."""
+        mac = canonical_mac(mac)
+        async with self._update_lock:
+            data = await self.async_load()
+            raw = data.get("meters", {}).get(mac, {}).get("verified_calibration")
+            if raw is None:
+                return False
+            record = _deserialize_verified_calibration(mac, raw)
+            if (
+                record.verification_id != verification_id
+                or record.source_handoff_available
+                or record.source_handoff_transaction_id != transaction_id
+            ):
+                return False
+            raw["source_handoff_firmware_installed"] = True
+            await self._store.async_save(data)
+            return True
+
+    async def async_complete_verified_calibration_handoff(
+        self, mac: str, verification_id: str, transaction_id: str
+    ) -> bool:
+        """Make configuration authoritative only after install and flash clear."""
+        mac = canonical_mac(mac)
+        async with self._update_lock:
+            data = await self.async_load()
+            raw = data.get("meters", {}).get(mac, {}).get("verified_calibration")
+            if raw is None:
+                return False
+            record = _deserialize_verified_calibration(mac, raw)
+            if (
+                record.verification_id != verification_id
+                or record.source_handoff_available
+                or not record.source_handoff_firmware_installed
+                or record.source_handoff_transaction_id != transaction_id
+            ):
+                return False
+            raw["source_authority"] = CalibrationSourceAuthority.CONFIGURATION.value
             await self._store.async_save(data)
             return True

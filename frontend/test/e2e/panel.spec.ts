@@ -33,7 +33,7 @@ function inventory(addons: number) {
       reporting_multiplier: 1, selected_model_id: index === 3 ? null : "cs-ct-200a",
       selection_verified_against_config: index !== 3,
       address: { channel: index + 1, board_index: Math.floor(index / 6),
-        group_index: Math.floor((index % 6) / 3) + 1,
+        group_index: Math.floor((index % 6) / 3),
         phase: (["A", "B", "C"] as const)[index % 3] },
     })),
     catalog: { presets: [{ model_id: "cs-ct-200a", label: "CS-CT-200A-333mV", rated_current_a: 200,
@@ -88,7 +88,8 @@ function restart(addons: number) {
     topology_addon_count: addons, topology_project_name: project(addons), topology_connection_type: "wifi",
     topology_voltage_layout: "two_groups_per_board", connection_generation: 3, groups,
     verification_id: "b".repeat(32), source_authority: "saved_flash",
-    source_handoff_available: true, source_handoff_transaction_id: "c".repeat(32) };
+    source_handoff_available: true, source_handoff_transaction_id: null,
+    source_handoff_firmware_installed: false };
 }
 
 async function mockHomeAssistant(page: Page, options: { addons?: number; outcome?: Outcome;
@@ -124,31 +125,44 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       else if (operation === "rescan") {
         const state = options.rescan?.[rescans++] ?? "device";
         result = state === "none" ? { state: "no_device", devices: [] }
-          : { state: "device_discovered", devices: [device(addons, options.importable)] };
+          : { state: "device_discovered", devices: [device(addons, options.importable)], configuration_authoritative: false };
       } else if (operation === "adopt_device") result = { device_id: "meter-1", configuration: "meter.yaml" };
       else if (operation === "get_topology") result = topology(addons);
       else if (operation === "get_ct_inventory") result = inventory(addons);
+      else if (operation === "get_active_work") result = {
+        session: null, transaction: null, verified_calibration: null,
+      };
       else if (operation === "set_ha_labels") result = { mode: "home_assistant_labels",
         results: [{ channel: 1, state: "updated" }] };
       else if (operation === "preview_ct_config") {
         if (outcome === "collision") return fail("CT_NAME_COLLISION", "Names resolve to the same entity ID");
         result = currentTransaction = transaction("previewed", Number((frame.changes as Array<{ channel: number }>)[0]?.channel ?? 1));
+      } else if (operation === "preview_calibrated_gains") {
+        result = currentTransaction = { ...transaction("previewed", 1), transaction_id: "d".repeat(32) };
       } else if (operation === "apply_ct_config") {
-        result = currentTransaction = outcome === "validation"
+        result = currentTransaction = { ...(outcome === "validation"
           ? transaction("failed", addons ? 42 : 1, { evidence: ["validation_failed"], rollback: true, validation: true })
-          : transaction("validated", addons ? 42 : 1, { progress: ["config_written", "config_validated"], rollback: true });
+          : transaction("validated", addons ? 42 : 1, { progress: ["config_written", "config_validated"], rollback: true })),
+          transaction_id: String(frame.transaction_id) };
       } else if (operation === "compile_ct_config") {
-        result = currentTransaction = outcome === "compile"
+        result = currentTransaction = { ...(outcome === "compile"
           ? transaction("failed", addons ? 42 : 1, { evidence: ["compile_failed"], progress: ["config_written", "config_validated"], rollback: true })
           : transaction("install_confirmation_required", addons ? 42 : 1,
-            { progress: ["config_written", "config_validated", "firmware_compiled"], rollback: true });
-      } else if (operation === "install_ct_config") result = currentTransaction = transaction("verified", addons ? 42 : 1,
-        { progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"] });
+            { progress: ["config_written", "config_validated", "firmware_compiled"], rollback: true })),
+          transaction_id: String(frame.transaction_id) };
+      } else if (operation === "install_ct_config") result = currentTransaction = { ...transaction("verified", addons ? 42 : 1,
+        { progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"] }),
+        transaction_id: String(frame.transaction_id) };
+      else if (operation === "clear_calibration_flash") result = { ...restart(addons), source_authority: "configuration",
+        source_handoff_available: false, source_handoff_transaction_id: frame.transaction_id,
+        source_handoff_firmware_installed: true };
       else if (operation === "rollback_ct_config") result = currentTransaction = transaction("rolled_back", addons ? 42 : 1,
         { progress: ["config_restored"] });
       else if (operation === "start_session") result = currentSession = session("safety_required", false);
       else if (operation === "acknowledge_safety") result = currentSession = session("ready", true);
-      else if (operation === "check_stability") result = stability(frame);
+      else if (operation === "check_stability") result = frame.target === "voltage"
+        ? (frame.target_ids as string[]).map((target_id) => stability({ ...frame, target_id }))
+        : stability(frame);
       else if (operation === "calibrate_current") {
         const references = frame.references as Array<{ channel: number; reference: number }>;
         const channel = Number(references[0]?.channel); const reference = Number(references[0]?.reference);
@@ -163,6 +177,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
             restore_evidence: null, retry_allowed: false };
       } else if (operation === "get_session") result = currentSession = session("ready", true);
       else if (operation === "restart_and_verify") result = restart(addons);
+      else if (operation === "cancel_session") result = currentSession = session("cancelled", false);
       else if (operation === "subscribe_setup") result = { state: "no_device", devices: [] };
       else if (operation === "subscribe_config_transaction") result = currentTransaction;
       else if (operation === "subscribe_session") result = currentSession;
@@ -182,11 +197,10 @@ async function openInventory(page: Page): Promise<void> {
   await page.goto("/test/harness.html");
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
   await page.locator('[data-action="rescan"]').click();
-  await expect(page.getByRole("heading", { name: "Discover" })).toBeVisible();
-  await page.locator('[data-action="continue"]').click();
+  await page.locator('[data-action="configure-device"]').click();
   await expect(page.getByRole("heading", { name: "Topology", exact: true })).toBeVisible();
   await page.locator('[data-action="continue"]').click();
-  await expect(page.getByRole("heading", { name: "CT Configuration" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "CT Verification" })).toBeVisible();
 }
 
 async function reviewChannel(page: Page, channel: number): Promise<void> {
@@ -195,26 +209,27 @@ async function reviewChannel(page: Page, channel: number): Promise<void> {
     await page.getByRole("button", { name: /Group 2 · CT40/ }).click();
   }
   await page.getByLabel(`CT${channel} name`).fill(`Load ${channel}`);
-  await page.getByRole("button", { name: "Review changes" }).click();
-}
-
-async function install(page: Page, channel: number): Promise<void> {
-  await reviewChannel(page, channel);
-  await expect(page.getByLabel("Redacted substitution diff")).toContainText("<redacted>");
-  await page.getByRole("button", { name: "Apply" }).click();
-  await page.getByRole("button", { name: "Compile" }).click();
-  await page.getByRole("button", { name: "Install", exact: true }).click();
-  await expect(page.getByText("verified", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Skip voltage calibration" }).click();
+  await page.getByRole("button", { name: "Skip current calibration" }).click();
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
 }
 
 async function reachCurrent(page: Page, channel: number): Promise<void> {
-  await install(page, channel);
-  await page.locator('[data-action="continue"]').click();
+  if (channel === 42) {
+    await page.getByRole("tab", { name: "Add-on 6" }).click();
+    await page.getByRole("button", { name: /Group 2 · CT40/ }).click();
+  }
+  await page.getByLabel(`CT${channel} name`).fill(`Load ${channel}`);
+  await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Voltage", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Skip voltage calibration" }).click();
   await expect(page.getByRole("heading", { name: "Current", exact: true })).toBeVisible();
 }
 
@@ -234,8 +249,8 @@ test("native mocked HA websocket covers no-device, installer intent, wiring, res
   await page.locator('[name="connection-type"][value="ethernet_waveshare"]').locator("..").click();
   await expect(page.getByText("(15, 26)")).toBeVisible();
   await page.locator('[data-action="rescan"]').click();
-  await expect(page.getByText("Device Builder: Importable")).toBeVisible();
-  await page.getByRole("button", { name: "Adopt" }).click();
+  await expect(page.getByText("Device Builder: Yes — import available")).toBeVisible();
+  await page.getByRole("button", { name: "Import" }).click();
   await expect(page.getByText("Meter adopted in Device Builder.")).toBeVisible();
 
   expect(frames[0]).toEqual({ type: "auth", access_token: "playwright-token" });
@@ -254,14 +269,20 @@ test("six-channel inventory exposes ambiguous gain while label-only stays out of
   await expect(page.getByLabel("CT1 model")).toBeDisabled();
   await expect(page.getByLabel("CT1 multiplier")).toBeDisabled();
   await page.getByLabel("CT1 name").fill("Kitchen mains");
-  await page.getByRole("button", { name: "Save Home Assistant labels" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByText("Home Assistant labels saved.")).toBeVisible();
   expect(operations(frames).filter((value) => value === "set_ha_labels")).toHaveLength(1);
   expect(operations(frames)).not.toContain("preview_ct_config");
 
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByRole("heading", { name: "CT Verification" })).toBeVisible();
   await page.getByLabel("ESPHome / firmware names").check();
   await page.getByLabel("CT2 name").fill("Kitchen mains");
-  await page.getByRole("button", { name: "Review changes" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Skip voltage calibration" }).click();
+  await page.getByRole("button", { name: "Skip current calibration" }).click();
   await expect(page.getByRole("alert")).toContainText("preview is stale");
   expect(operations(frames).filter((value) => value === "preview_ct_config")).toHaveLength(1);
   expect(operations(frames)).not.toContain("apply_ct_config");
@@ -302,24 +323,34 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await page.getByRole("tab", { name: "Main Board" }).click();
   await page.getByLabel("CT1 reference").fill("5");
   await page.getByRole("button", { name: "Check stability" }).click();
-  await expect(page.getByText("Standard deviation").first()).toBeVisible();
+  await expect(page.getByLabel("current Current group 1 stability evidence")).toContainText("CT1");
+  await expect(page.getByLabel("current Current group 1 stability evidence")).toContainText("5.00 A");
+  await expect(page.getByText("Standard deviation")).toHaveCount(0);
   await page.getByRole("button", { name: "Calibrate current" }).click();
   await expect(page.getByLabel("Calibration evidence").first()).toContainText("Saved in flash: Yes");
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Restart and verify" }).click();
-  await expect(page.getByText("Setup and exact restart verification are complete.")).toBeVisible();
-  await expect(page.getByText("b".repeat(32), { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByLabel("Redacted substitution diff")).toBeVisible();
+  await page.getByRole("button", { name: "Apply" }).click();
+  await page.getByRole("button", { name: "Compile" }).click();
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
+  await expect(page.getByText(/Calibration was saved to YAML/)).toBeVisible();
 
   const ordered = operations(frames);
   expect(ordered.indexOf("apply_ct_config")).toBeLessThan(ordered.indexOf("compile_ct_config"));
   expect(ordered.indexOf("compile_ct_config")).toBeLessThan(ordered.indexOf("install_ct_config"));
-  expect(frames.find((frame) => frame.type.endsWith("/preview_ct_config"))).toMatchObject({
+  expect(frames.find((frame) => frame.type.endsWith("/preview_calibrated_gains"))).toMatchObject({
     changes: [{ channel: 42, name: "Load 42" }],
   });
   expect(frames.find((frame) => frame.type.endsWith("/acknowledge_safety"))).toMatchObject({ acknowledged: true });
   expect(frames.find((frame) => frame.type.endsWith("/calibrate_current"))).toMatchObject({ references: [{ channel: 1,
-    reference: 5 }], confirm_iteration: true });
+    reference: 5 }], pending_multipliers: [{ channel: 42, reporting_multiplier: 1 }], confirm_iteration: true });
   expect(ordered).toContain("restart_and_verify");
+  expect(ordered.indexOf("restart_and_verify")).toBeLessThan(ordered.indexOf("preview_calibrated_gains"));
+  expect(ordered.indexOf("install_ct_config", ordered.indexOf("preview_calibrated_gains")))
+    .toBeLessThan(ordered.indexOf("clear_calibration_flash"));
 });
 
 test("add-on CT42 indeterminate disconnect never auto-represses calibration", async ({ page }) => {

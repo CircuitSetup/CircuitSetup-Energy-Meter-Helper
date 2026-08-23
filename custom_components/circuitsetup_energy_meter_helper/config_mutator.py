@@ -99,6 +99,8 @@ def build_calibrated_gain_mutation(
     snapshot: ConfigSnapshot,
     topology: MeterTopology,
     verified: VerifiedCalibrationRecord,
+    requested_channels: Iterable[CTChangeRequest] = (),
+    calibrated_current_channels: frozenset[int] = frozenset(),
 ) -> ConfigMutationPlan:
     """Build a reviewed final-gain plan bound to the calibration source hash."""
     if getattr(snapshot, "configuration_authoritative", True) is not True:
@@ -121,8 +123,28 @@ def build_calibrated_gain_mutation(
     ):
         raise ConfigMutationError("verified calibration topology does not match target")
     document = ESPHomeConfigDocument.parse(snapshot.content)
+    requests = tuple(requested_channels)
+    _validate_requests(requests, topology)
+    catalog = CTPresetCatalog.load()
     changes: list[SubstitutionChange] = []
     values: dict[str, str] = {}
+    requested_by_channel = {request.channel: request for request in requests}
+    for request in requests:
+        _append_change(
+            changes,
+            values,
+            f"ct{request.channel}_name",
+            request.name,
+            document.substitutions,
+        )
+        if request.channel not in calibrated_current_channels:
+            _append_change(
+                changes,
+                values,
+                f"current_cal_ct{request.channel}",
+                str(_requested_gain(request, catalog)),
+                document.substitutions,
+            )
     voltage_values: dict[int, set[int]] = {1: set(), 2: set()}
     addressed: list[tuple[str, int, int, tuple[int, int, int]]] = []
     seen_channels: set[int] = set()
@@ -141,6 +163,8 @@ def build_calibrated_gain_mutation(
         addressed.append((group.instance_id, first_channel, group_index, voltage_gains))
         voltage_values[group_index].update(voltage_gains)
         for channel, (_, current_gain) in zip(channels, group.phase_gains, strict=True):
+            if channel in requested_by_channel and channel not in calibrated_current_channels:
+                continue
             key = f"current_cal_ct{channel}"
             _append_change(
                 changes,
