@@ -1,5 +1,5 @@
 import { render } from "lit";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "../src/index";
 import { espWebInstaller } from "../src/components/esp-web-installer";
@@ -23,6 +23,15 @@ const device = {
   importable: true,
   configuration: null,
 };
+
+const firmwareIndex = [
+  { productId: "6chan_energy_meter_main_board", name: "Main board", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
+  { productId: "6chan_energy_meter_1-addon", name: "One add-on", versions: [{ version: "2026.8.0" }, { version: "2026.6.0" }] },
+  { productId: "6chan_energy_meter_1-addon_ethernet", name: "One add-on Ethernet", versions: [{ version: "2026.6.0" }] },
+  { productId: "6chan_energy_meter_1-addon_ethernet_waveshare", name: "One add-on Waveshare", versions: [{ version: "2026.9.0" }] },
+];
+
+const firmwareResponse = (index = firmwareIndex) => new Response(JSON.stringify(index), { status: 200 });
 
 const makeHass = (responses: Record<string, unknown>): HomeAssistant => ({
   callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
@@ -60,7 +69,12 @@ const contrastRatio = (first: string, second: string): number => {
   return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
 };
 
-afterEach(() => document.body.replaceChildren());
+beforeEach(() => vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(firmwareResponse()))));
+
+afterEach(() => {
+  document.body.replaceChildren();
+  vi.unstubAllGlobals();
+});
 
 describe("ESP Web Tools installer", () => {
   const option: FirmwareOption = {
@@ -117,6 +131,132 @@ describe("ESP Web Tools installer", () => {
 });
 
 describe("CircuitSetup panel", () => {
+  it("loads the firmware catalog once when the panel connects", async () => {
+    const fetcher = vi.fn(() => Promise.resolve(firmwareResponse()));
+    vi.stubGlobal("fetch", fetcher);
+
+    await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts an in-flight firmware catalog request when disconnected", async () => {
+    let signal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      signal = init?.signal ?? undefined;
+      signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    })));
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+
+    panel.remove();
+    await tick();
+
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("disables firmware selection while the catalog is loading", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.disabled).toBe(true);
+    expect(panel.shadowRoot?.querySelector("esp-web-install-button")).toBeNull();
+  });
+
+  it("shows a catalog retry without disabling discovery rescan", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("offline"))));
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=firmware-retry]")?.disabled).toBe(false);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.disabled).toBe(false);
+  });
+
+  it("retries a failed catalog request and renders its versions", async () => {
+    const fetcher = vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(firmwareResponse());
+    vi.stubGlobal("fetch", fetcher);
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=firmware-retry]")?.click();
+    await tick();
+    await panel.updateComplete;
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.8.0");
+    expect(panel.shadowRoot?.querySelector("[data-action=firmware-retry]")).toBeNull();
+  });
+
+  it("selects the newest firmware version initially", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.8.0");
+  });
+
+  it("recomputes firmware versions when add-on hardware changes", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="1"]')?.click();
+    await panel.updateComplete;
+
+    expect([...panel.shadowRoot?.querySelectorAll<HTMLOptionElement>("[data-action=firmware-version] option") ?? []]
+      .map((option) => option.value)).toEqual(["2026.8.0", "2026.6.0"]);
+  });
+
+  it("keeps a selected firmware version when the new hardware still supports it", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="1"]')?.click();
+    await panel.updateComplete;
+    const version = panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]");
+    if (version) { version.value = "2026.6.0"; version.dispatchEvent(new Event("change")); }
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="connection-type"][value="ethernet_lilygo"]')?.click();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.6.0");
+  });
+
+  it("falls back to the newest available version and announces an unavailable selection", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="1"]')?.click();
+    await panel.updateComplete;
+    const version = panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]");
+    if (version) { version.value = "2026.6.0"; version.dispatchEvent(new Event("change")); }
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="connection-type"][value="ethernet_waveshare"]')?.click();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.9.0");
+    expect(panel.shadowRoot?.querySelector(".sr-status")?.textContent).toContain("2026.9.0");
+  });
+
+  it("ignores a stale catalog completion from an earlier panel connection", async () => {
+    let resolveFirst: ((response: Response) => void) | undefined;
+    let resolveSecond: ((response: Response) => void) | undefined;
+    const fetcher = vi.fn(() => new Promise<Response>((resolve) => {
+      if (fetcher.mock.calls.length === 1) resolveFirst = resolve;
+      else resolveSecond = resolve;
+    }));
+    vi.stubGlobal("fetch", fetcher);
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    panel.remove();
+    document.body.append(panel);
+    await tick();
+    resolveSecond?.(firmwareResponse([{ productId: "6chan_energy_meter_main_board", name: "Current", versions: [{ version: "2026.9.0" }] }]));
+    await tick();
+    resolveFirst?.(firmwareResponse([{ productId: "6chan_energy_meter_main_board", name: "Stale", versions: [{ version: "2026.1.0" }] }]));
+    await tick();
+    await panel.updateComplete;
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.9.0");
+  });
+
   it("shows existing meters immediately alongside the new-device setup", async () => {
     const panel = await mount(
       makeHass({ setup_status: { state: "device_discovered", devices: [device] } }),

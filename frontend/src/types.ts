@@ -4,6 +4,8 @@ export type ConnectionType =
   | "ethernet_waveshare"
   | "unknown";
 
+export type FirmwareCatalogState = "idle" | "loading" | "ready" | "error";
+
 export type SetupState =
   | "no_device"
   | "installer_guide"
