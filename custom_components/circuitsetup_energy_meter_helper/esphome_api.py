@@ -14,7 +14,12 @@ from homeassistant.core import HomeAssistant
 
 from .log_parser import parse_calibration_sources
 from .models import canonical_mac
-from .state_tracker import SensorSampleWindow, StateDisconnectedError, StateTracker
+from .state_tracker import (
+    AbsoluteSensorSampleWindow,
+    SensorSampleWindow,
+    StateDisconnectedError,
+    StateTracker,
+)
 
 _ANSI_CSI = re.compile(r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]")
 _ANSI_OSC = re.compile(r"(?:\x1b\]|\x9d).*?(?:\x07|\x1b\\|\x9c)", re.DOTALL)
@@ -351,6 +356,33 @@ class ESPHomeApiSession:
                 device_id=device_id,
                 fresh_after=boundary,
                 sample_count=sample_count,
+                timeout=timeout,
+            )
+        except StateDisconnectedError as error:
+            if self._closed:
+                raise asyncio.CancelledError from None
+            raise ESPHomeSessionDisconnectedError(str(error)) from error
+
+    async def async_wait_for_absolute_sensor_window(
+        self,
+        key: int,
+        *,
+        device_id: int = 0,
+        sample_count: int,
+        connection_generation: int,
+        after: float | None = None,
+        timeout: float = 10.0,
+    ) -> AbsoluteSensorSampleWindow:
+        """Wait for a zero-capable window from one connection generation."""
+        self._ready_client()
+        boundary = monotonic() if after is None else after
+        try:
+            return await self._state_tracker.wait_absolute_sensor_states(
+                key,
+                device_id=device_id,
+                fresh_after=boundary,
+                sample_count=sample_count,
+                connection_generation=connection_generation,
                 timeout=timeout,
             )
         except StateDisconnectedError as error:

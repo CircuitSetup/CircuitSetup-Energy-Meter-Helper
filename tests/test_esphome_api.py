@@ -44,6 +44,7 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeSessionDisconnectedError,
 )
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
+    FreshWindowError,
     StateUnavailableError,
 )
 
@@ -426,6 +427,52 @@ def test_commands_register_acknowledgement_first_and_wait_for_fresh_samples() ->
         assert acknowledged.state == 123.5
         assert (await waiter).values == (10.0, 12.0)
         assert client.events[-2:] == ["number:2:4:123.5", "button:2:9"]
+
+    asyncio.run(run())
+
+
+def test_absolute_sensor_window_accepts_zero_on_the_requested_generation() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        boundary = monotonic()
+        waiter = asyncio.create_task(
+            session.async_wait_for_absolute_sensor_window(
+                5,
+                sample_count=3,
+                connection_generation=1,
+                after=boundary,
+                timeout=0.5,
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_state is not None
+        for value in (0.0, -0.1, 0.1):
+            client.on_state(SensorState(5, value))
+
+        window = await waiter
+
+        assert window.connection_generation == 1
+        assert window.mean == 0.0
+        assert window.absolute_peak == 0.1
+        assert window.absolute_spread == 0.2
+
+    asyncio.run(run())
+
+
+def test_absolute_sensor_window_rejects_another_connection_generation() -> None:
+    async def run() -> None:
+        session = make_session([FakeClient()])
+        await session.async_connect()
+
+        with pytest.raises(FreshWindowError, match="generation"):
+            await session.async_wait_for_absolute_sensor_window(
+                5,
+                sample_count=3,
+                connection_generation=2,
+                timeout=0.5,
+            )
 
     asyncio.run(run())
 

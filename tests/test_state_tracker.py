@@ -87,6 +87,94 @@ def test_fresh_window_rejects_invalid_evidence(
         tracker.sensor_window(SensorState, 3, fresh_after=0.0, sample_count=2)
 
 
+def test_absolute_window_accepts_zero_and_retains_generation_and_statistics() -> None:
+    tracker = StateTracker()
+    tracker.connect(4)
+    for timestamp, value in ((10.1, 0.0), (10.2, -0.2), (10.3, 0.1)):
+        tracker.record(SensorState(3, value), received_at=timestamp)
+
+    window = tracker.absolute_sensor_window(
+        SensorState,
+        3,
+        fresh_after=10.0,
+        sample_count=3,
+        connection_generation=4,
+    )
+
+    assert window.values == (0.0, -0.2, 0.1)
+    assert window.received_at == (10.1, 10.2, 10.3)
+    assert window.connection_generation == 4
+    assert window.mean == pytest.approx(-1.0 / 30.0)
+    assert window.minimum == -0.2
+    assert window.maximum == 0.1
+    assert window.absolute_peak == 0.2
+    assert window.absolute_spread == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize(
+    ("states", "generation", "message"),
+    (
+        ((SensorState(3, 0.0), SensorState(3, 0.0)), 1, "missing fresh"),
+        (
+            (
+                SensorState(3, 0.0),
+                SensorState(3, math.inf),
+                SensorState(3, 0.0),
+            ),
+            1,
+            "non-finite",
+        ),
+        (
+            (SensorState(3, 0.0), SensorState(3, 0.0), SensorState(3, 0.0)),
+            2,
+            "generation",
+        ),
+    ),
+)
+def test_absolute_window_rejects_insufficient_nonfinite_and_wrong_generation(
+    states: tuple[SensorState, ...], generation: int, message: str
+) -> None:
+    tracker = StateTracker()
+    tracker.connect(1)
+    for index, state in enumerate(states, start=1):
+        tracker.record(state, received_at=float(index))
+
+    with pytest.raises(FreshWindowError, match=message):
+        tracker.absolute_sensor_window(
+            SensorState,
+            3,
+            fresh_after=0.0,
+            sample_count=3,
+            connection_generation=generation,
+        )
+
+
+def test_absolute_window_rejects_stale_samples_and_fewer_than_three_requested() -> (
+    None
+):
+    tracker = StateTracker()
+    tracker.connect(1)
+    for timestamp in (1.0, 2.0, 3.0):
+        tracker.record(SensorState(3, 0.0), received_at=timestamp)
+
+    with pytest.raises(FreshWindowError, match="missing fresh"):
+        tracker.absolute_sensor_window(
+            SensorState,
+            3,
+            fresh_after=3.0,
+            sample_count=3,
+            connection_generation=1,
+        )
+    with pytest.raises(ValueError, match="at least three"):
+        tracker.absolute_sensor_window(
+            SensorState,
+            3,
+            fresh_after=0.0,
+            sample_count=2,
+            connection_generation=1,
+        )
+
+
 def test_number_ack_requires_post_dispatch_state_and_half_step_tolerance() -> None:
     async def run() -> None:
         tracker = StateTracker()
