@@ -87,6 +87,7 @@ export class CircuitSetupPanel extends LitElement {
   private sessionSubscriptionScope = 0;
   private transactionUnsub: (() => void) | null = null;
   private sessionUnsub: (() => void) | null = null;
+  private sessionStarting = false;
   private mobileStepsOpen = false;
   private focusHeading = false;
 
@@ -445,18 +446,23 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async startSession(): Promise<void> {
-    if (!this.api || !this.selectedDeviceId) return;
-    const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
-    this.clearSubscription("session");
-    this.session = null;
-    this.resetCalibrationRun();
-    await this.run(async () => {
-      const session = await api.startSession(deviceId);
-      if (!this.ownsOperation(generation, api, deviceId) || session.device_id !== deviceId) return;
-      this.session = session;
-      this.navigate("safety");
-      await this.subscribeSession(this.connectionGeneration);
-    }, "Calibration session could not be started.", () => this.ownsOperation(generation, api, deviceId));
+    if (!this.api || !this.selectedDeviceId || this.sessionStarting) return;
+    this.sessionStarting = true;
+    try {
+      const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
+      this.clearSubscription("session");
+      this.session = null;
+      this.resetCalibrationRun();
+      await this.run(async () => {
+        const session = await api.startSession(deviceId);
+        if (!this.ownsOperation(generation, api, deviceId) || session.device_id !== deviceId) return;
+        this.session = session;
+        this.navigate("safety");
+        await this.subscribeSession(this.connectionGeneration);
+      }, "Calibration session could not be started.", () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      this.sessionStarting = false;
+    }
   }
 
   private async subscribeSession(generation: number): Promise<void> {

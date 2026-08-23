@@ -1399,7 +1399,7 @@ const Xt = Le`
 ];
 class Qt extends z {
   constructor() {
-    super(...arguments), this.hass = null, this.panel = null, this.api = null, this.setup = null, this.step = "setup", this.selectedDeviceId = null, this.topology = null, this.inventory = null, this.transaction = null, this.session = null, this.stabilityByTarget = /* @__PURE__ */ new Map(), this.calibrationByTarget = /* @__PURE__ */ new Map(), this.restartResult = null, this.addonCount = 0, this.connection = "wifi", this.board = 0, this.ctGroup = 0, this.group = 0, this.channel = 1, this.reference = 0, this.reportingMultiplier = null, this.safetyAcknowledged = !1, this.drafts = /* @__PURE__ */ new Map(), this.labelOnly = !1, this.error = "", this.announcement = "", this.unsubs = [], this.connectionGeneration = 0, this.operationGeneration = 0, this.transactionSubscriptionScope = 0, this.sessionSubscriptionScope = 0, this.transactionUnsub = null, this.sessionUnsub = null, this.mobileStepsOpen = !1, this.focusHeading = !1;
+    super(...arguments), this.hass = null, this.panel = null, this.api = null, this.setup = null, this.step = "setup", this.selectedDeviceId = null, this.topology = null, this.inventory = null, this.transaction = null, this.session = null, this.stabilityByTarget = /* @__PURE__ */ new Map(), this.calibrationByTarget = /* @__PURE__ */ new Map(), this.restartResult = null, this.addonCount = 0, this.connection = "wifi", this.board = 0, this.ctGroup = 0, this.group = 0, this.channel = 1, this.reference = 0, this.reportingMultiplier = null, this.safetyAcknowledged = !1, this.drafts = /* @__PURE__ */ new Map(), this.labelOnly = !1, this.error = "", this.announcement = "", this.unsubs = [], this.connectionGeneration = 0, this.operationGeneration = 0, this.transactionSubscriptionScope = 0, this.sessionSubscriptionScope = 0, this.transactionUnsub = null, this.sessionUnsub = null, this.sessionStarting = !1, this.mobileStepsOpen = !1, this.focusHeading = !1;
   }
   static {
     this.styles = Xt;
@@ -1638,12 +1638,18 @@ class Qt extends z {
     );
   }
   async startSession() {
-    if (!this.api || !this.selectedDeviceId) return;
-    const e = this.api, t = this.selectedDeviceId, i = ++this.operationGeneration;
-    this.clearSubscription("session"), this.session = null, this.resetCalibrationRun(), await this.run(async () => {
-      const s = await e.startSession(t);
-      !this.ownsOperation(i, e, t) || s.device_id !== t || (this.session = s, this.navigate("safety"), await this.subscribeSession(this.connectionGeneration));
-    }, "Calibration session could not be started.", () => this.ownsOperation(i, e, t));
+    if (!(!this.api || !this.selectedDeviceId || this.sessionStarting)) {
+      this.sessionStarting = !0;
+      try {
+        const e = this.api, t = this.selectedDeviceId, i = ++this.operationGeneration;
+        this.clearSubscription("session"), this.session = null, this.resetCalibrationRun(), await this.run(async () => {
+          const s = await e.startSession(t);
+          !this.ownsOperation(i, e, t) || s.device_id !== t || (this.session = s, this.navigate("safety"), await this.subscribeSession(this.connectionGeneration));
+        }, "Calibration session could not be started.", () => this.ownsOperation(i, e, t));
+      } finally {
+        this.sessionStarting = !1;
+      }
+    }
   }
   async subscribeSession(e) {
     if (!this.api || !this.session) return;
