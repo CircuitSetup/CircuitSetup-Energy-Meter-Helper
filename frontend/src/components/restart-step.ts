@@ -12,7 +12,7 @@ export function restartStep(
   const recovery = state.includes("failed") || state.includes("indeterminate");
   return html`
     <section class="step-content" aria-labelledby="step-heading">
-      <p>Restart verification checks the exact meter identity, topology, restored references, gains, and entity bindings.</p>
+      <p>Restart verification checks the exact meter identity, topology, restored references, gains, voltage/current offsets, power offsets, and entity bindings.</p>
       <div class="status-band" role="status">${state || "Ready for restart verification"}</div>
       ${result ? html`<dl class="status-list"><div><dt>Verification</dt><dd>${result.verification_id}</dd></div><div><dt>Authority</dt><dd>${result.source_authority.replaceAll("_", " ")}</dd></div><div><dt>Connection generation</dt><dd>${result.connection_generation}</dd></div><div><dt>Source handoff</dt><dd>${result.source_handoff_available ? result.config_filename : "Unavailable in runtime-only mode"}</dd></div></dl>` : ""}
       ${state === "cancelled" ? html`<div class="recovery-panel"><strong>Session cancelled</strong><p>Cleanup completed without claiming restart verification.</p></div>` : ""}

@@ -6,6 +6,9 @@ import type {
   LabelUpdateResult,
   DiscoveredDevice,
   MeterTopology,
+  OffsetCalibrationResult,
+  OffsetReadinessResult,
+  OffsetTable,
   RestartVerificationResult,
   SessionStatus,
   SetupSnapshot,
@@ -30,7 +33,7 @@ const CONTROL = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const PROPERTY_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const SETUP_STATES = new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]);
 const TRANSACTION_STATES = new Set(["previewed", "write_confirmed", "written", "validated", "compiled", "install_confirmation_required", "installing", "reconnecting", "verified", "rolled_back", "failed"]);
-const SESSION_STATES = new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "indeterminate", "verified", "cancelled"]);
+const SESSION_STATES = new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "partial", "indeterminate", "verified", "cancelled"]);
 const CONNECTIONS = new Set(["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]);
 const EVIDENCE_SOURCES = new Set(["config_project", "config_packages", "dashboard_import", "native_project", "native_entity_counts"]);
 const PHASES = new Set(["A", "B", "C"]);
@@ -45,6 +48,10 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
 const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
+const OFFSET_CAPABILITIES = new Set(["available", "unavailable", "invalid"]);
+const OFFSET_DISPOSITIONS = new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
+const OFFSET_STAGE_STATES = new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
+const OFFSET_RESULT_STATES = new Set(["applied_pending_restart_verification", "partial", "indeterminate"]);
 
 type PublicRecord = Record<string, unknown>;
 type Validator<T> = (value: unknown) => T;
@@ -89,6 +96,10 @@ function optionalString(value: unknown, label: string): void {
 }
 function close(actual: number, expected: number): boolean {
   return Math.abs(actual - expected) <= 1e-9 * Math.max(1, Math.abs(actual), Math.abs(expected));
+}
+function exactKeys(item: PublicRecord, keys: readonly string[], label: string): void {
+  const actual = Object.keys(item);
+  if (actual.length !== keys.length || actual.some((key) => !keys.includes(key))) throw new Error(`${label} response is invalid`);
 }
 
 function device(value: unknown, label: string): void {
@@ -155,8 +166,119 @@ function transaction(value: unknown, label: string): TransactionStatus {
 function session(value: unknown, label: string): SessionStatus {
   const item = record(value, label); string(item.session_id, label); string(item.device_id, label); enumeration(item.state, SESSION_STATES, label); boolean(item.safety_acknowledged, label);
   const preflight = record(item.preflight, label); array(preflight.issues, label).forEach((entry) => { const issue = record(entry, label); enumeration(issue.code, PREFLIGHT_CODES, label); string(issue.role, label); string(issue.detail, label); }); array(preflight.zeroed_roles, label).forEach((entry) => string(entry, label));
+  if (item.entity_role_counts !== undefined) Object.values(record(item.entity_role_counts, label)).forEach((count) => { if (integer(count, label) < 0) throw new Error(`${label} response is invalid`); });
   if (item.calibration_sources !== undefined) Object.values(record(item.calibration_sources, label)).forEach((source) => enumeration(source, new Set(["flash", "configuration", "unknown"]), label));
+  const offsetFields = [item.offset_capability, item.offset_disposition, item.offset_boards, item.has_pending_calibration];
+  if (offsetFields.every((field) => field === undefined)) return value as SessionStatus;
+  if (offsetFields.some((field) => field === undefined)) throw new Error(`${label} response is invalid`);
+  const capability = record(item.offset_capability, label);
+  exactKeys(capability, ["status", "repair_reason"], label);
+  const capabilityStatus = enumeration(capability.status, OFFSET_CAPABILITIES, label);
+  if (capabilityStatus === "invalid") string(capability.repair_reason, label);
+  else if (capability.repair_reason !== null) throw new Error(`${label} response is invalid`);
+  const disposition = enumeration(item.offset_disposition, OFFSET_DISPOSITIONS, label);
+  const boards = array(item.offset_boards, label, 7);
+  if (boards.length < 1) throw new Error(`${label} response is invalid`);
+  const stageStates: string[] = [];
+  boards.forEach((entry, boardIndex) => {
+    const board = record(entry, label); exactKeys(board, ["board_index", "stages"], label);
+    if (integer(board.board_index, label) !== boardIndex) throw new Error(`${label} response is invalid`);
+    const stages = array(board.stages, label, 2);
+    if (stages.length !== 2) throw new Error(`${label} response is invalid`);
+    stages.forEach((entry, index) => {
+      const stage = record(entry, label); exactKeys(stage, ["stage", "state"], label);
+      if (integer(stage.stage, label) !== index + 1) throw new Error(`${label} response is invalid`);
+      stageStates.push(enumeration(stage.state, OFFSET_STAGE_STATES, label));
+    });
+  });
+  const expectedDisposition = stageStates.every((state) => state === "skipped") ? "skipped"
+    : stageStates.every((state) => state === "completed") ? "completed"
+      : stageStates.every((state) => state === "not_started") ? "not_started"
+        : stageStates.some((state) => state === "partial" || state === "indeterminate")
+          || stageStates.some((state) => state === "skipped") ? "partial" : "in_progress";
+  if (disposition !== expectedDisposition) throw new Error(`${label} response is invalid`);
+  boolean(item.has_pending_calibration, label);
   return value as SessionStatus;
+}
+
+function offsetReadiness(value: unknown, label: string, expectedBoard: number, expectedStage: 1 | 2): OffsetReadinessResult {
+  const item = record(value, label); exactKeys(item, ["stage", "ready", "connection_generation", "entities", "reasons", "thresholds"], label);
+  if (integer(item.stage, label) !== expectedStage || expectedBoard < 0 || expectedBoard > 6) throw new Error(`${label} response is invalid`);
+  const ready = boolean(item.ready, label); const generation = integer(item.connection_generation, label);
+  if (generation < 1) throw new Error(`${label} response is invalid`);
+  const thresholds = record(item.thresholds, label);
+  exactKeys(thresholds, ["sample_count", "zero_voltage_peak_volts", "zero_voltage_spread_volts", "zero_current_peak_amps", "zero_current_spread_amps", "voltage_present_minimum_volts", "voltage_present_spread_volts"], label);
+  const sampleCount = integer(thresholds.sample_count, label);
+  const thresholdValues = [thresholds.zero_voltage_peak_volts, thresholds.zero_voltage_spread_volts,
+    thresholds.zero_current_peak_amps, thresholds.zero_current_spread_amps,
+    thresholds.voltage_present_minimum_volts, thresholds.voltage_present_spread_volts].map((entry) => number(entry, label));
+  if (sampleCount < 3 || sampleCount > 100 || thresholdValues.some((entry) => entry < 0)
+    || thresholdValues[4] === 0) throw new Error(`${label} response is invalid`);
+  const entities = array(item.entities, label, 12);
+  if (entities.length !== 12) throw new Error(`${label} response is invalid`);
+  const roles = new Set<string>(); let voltages = 0; let currents = 0;
+  const entityStates = entities.map((entry) => {
+    const entity = record(entry, label); exactKeys(entity, ["role", "quantity", "ready", "reasons", "window"], label);
+    const role = string(entity.role, label)!; const quantity = enumeration(entity.quantity, new Set(["voltage", "current"]), label);
+    if (roles.has(role)) throw new Error(`${label} response is invalid`); roles.add(role);
+    if (quantity === "voltage") ++voltages; else ++currents;
+    const entityReady = boolean(entity.ready, label); const reasons = array(entity.reasons, label, 12);
+    reasons.forEach((reason) => string(reason, label));
+    if (entity.window === null) {
+      if (entityReady || reasons.length === 0) throw new Error(`${label} response is invalid`);
+    } else {
+      const window = record(entity.window, label);
+      exactKeys(window, ["values", "received_at", "connection_generation", "mean", "minimum", "maximum", "absolute_peak", "absolute_spread"], label);
+      const values = array(window.values, label, sampleCount).map((entry) => number(entry, label));
+      const receivedAt = array(window.received_at, label, sampleCount).map((entry) => number(entry, label));
+      const mean = number(window.mean, label); const minimum = number(window.minimum, label); const maximum = number(window.maximum, label);
+      const peak = number(window.absolute_peak, label); const spread = number(window.absolute_spread, label);
+      const calculatedMean = values.reduce((sum, entry) => sum + entry, 0) / values.length;
+      if (values.length !== sampleCount || receivedAt.length !== sampleCount || integer(window.connection_generation, label) !== generation
+        || receivedAt.some((entry, index) => index > 0 && entry <= receivedAt[index - 1]!)
+        || !close(mean, calculatedMean) || !close(minimum, Math.min(...values)) || !close(maximum, Math.max(...values))
+        || !close(peak, Math.max(...values.map(Math.abs))) || !close(spread, maximum - minimum)) throw new Error(`${label} response is invalid`);
+    }
+    if (entityReady !== (reasons.length === 0)) throw new Error(`${label} response is invalid`);
+    return entityReady;
+  });
+  const reasons = array(item.reasons, label, 100); reasons.forEach((reason) => string(reason, label));
+  const allEntitiesReady = entityStates.every(Boolean);
+  if (voltages !== 6 || currents !== 6 || ready !== allEntitiesReady || ready !== (reasons.length === 0)) throw new Error(`${label} response is invalid`);
+  return value as OffsetReadinessResult;
+}
+
+function signedTable(value: unknown, label: string): OffsetTable {
+  const phases = array(value, label, 3);
+  if (phases.length !== 3) throw new Error(`${label} response is invalid`);
+  phases.forEach((entry) => {
+    const pair = array(entry, label, 2);
+    if (pair.length !== 2 || pair.some((value) => { const result = integer(value, label); return result < -32_768 || result > 32_767; })) throw new Error(`${label} response is invalid`);
+  });
+  return value as OffsetTable;
+}
+
+function offsetCalibration(value: unknown, label: string, expectedBoard: number, expectedStage: 1 | 2): OffsetCalibrationResult {
+  const item = record(value, label); exactKeys(item, ["state", "board_index", "stage", "expected_tables", "unfinished_group_keys", "retry_allowed", "error"], label);
+  const state = enumeration(item.state, OFFSET_RESULT_STATES, label);
+  if (integer(item.board_index, label) !== expectedBoard || integer(item.stage, label) !== expectedStage) throw new Error(`${label} response is invalid`);
+  const groupKeys = expectedBoard === 0 ? ["meter_main1", "meter_main2"] : [`addon${expectedBoard}_1`, `addon${expectedBoard}_2`];
+  const completed = array(item.expected_tables, label, 2).map((entry) => {
+    const table = array(entry, label, 2);
+    if (table.length !== 2) throw new Error(`${label} response is invalid`);
+    const key = string(table[0], label)!; if (!groupKeys.includes(key)) throw new Error(`${label} response is invalid`);
+    signedTable(table[1], label); return key;
+  });
+  const unfinished = array(item.unfinished_group_keys, label, 2).map((entry) => string(entry, label)!);
+  const all = [...completed, ...unfinished]; const retryAllowed = boolean(item.retry_allowed, label);
+  if (all.length !== 2 || new Set(all).size !== 2 || all.some((key) => !groupKeys.includes(key))) throw new Error(`${label} response is invalid`);
+  if (state === "applied_pending_restart_verification") {
+    if (completed.length !== 2 || unfinished.length !== 0 || retryAllowed || item.error !== null) throw new Error(`${label} response is invalid`);
+  } else {
+    string(item.error, label);
+    if (!retryAllowed || completed.length !== (state === "partial" ? 1 : 0)) throw new Error(`${label} response is invalid`);
+  }
+  return value as OffsetCalibrationResult;
 }
 function stability(value: unknown, label: string, expectedTarget: "voltage" | "current", expectedTargetId: string): StabilityResult {
   const item = record(value, label); const target = enumeration(item.target, new Set(["voltage", "current"]), label); string(item.target_id, label); const stable = boolean(item.stable, label);
@@ -278,11 +400,30 @@ function restart(value: unknown, label: string, expected: MeterTopology): Restar
     || item.source_handoff_transaction_id !== null && !SERVER_ID.test(item.source_handoff_transaction_id as string)
     || addonCount !== expected.addon_count || item.topology_project_name !== expected.project_name
     || item.topology_connection_type !== expected.connection_type || item.topology_voltage_layout !== expected.voltage_layout) throw new Error(`${label} response is invalid`);
-  const groups = array(item.groups, label, 14);
   const allowedIds = new Set(["meter_main1", "meter_main2", ...Array.from({ length: addonCount }, (_, index) => [`addon${index + 1}_1`, `addon${index + 1}_2`]).flat()]);
-  const seenIds = new Set<string>();
-  if (groups.length < 1) throw new Error(`${label} response is invalid`);
-  groups.forEach((entry) => { const group = record(entry, label); const instanceId = string(group.instance_id, label)!; if (!allowedIds.has(instanceId) || seenIds.has(instanceId)) throw new Error(`${label} response is invalid`); seenIds.add(instanceId); const phases = array(group.phase_gains, label, 3); if (phases.length !== 3) throw new Error(`${label} response is invalid`); phases.forEach((phase) => { const gains = array(phase, label, 2); if (gains.length !== 2) throw new Error(`${label} response is invalid`); gains.forEach((gain) => { const amount = integer(gain, label); if (amount < 1 || amount > 65535) throw new Error(`${label} response is invalid`); }); }); });
+  const validateGroups = (field: "groups" | "offset_groups" | "power_offset_groups", tableField: "phase_gains" | "phase_offsets" | "phase_power_offsets", signed: boolean) => {
+    const groups = array(item[field] ?? [], label, 14); const seenIds = new Set<string>();
+    groups.forEach((entry) => {
+      const group = record(entry, label); exactKeys(group, ["instance_id", tableField], label);
+      const instanceId = string(group.instance_id, label)!;
+      if (!allowedIds.has(instanceId) || seenIds.has(instanceId)) throw new Error(`${label} response is invalid`);
+      seenIds.add(instanceId);
+      if (signed) signedTable(group[tableField], label);
+      else {
+        const phases = array(group[tableField], label, 3);
+        if (phases.length !== 3) throw new Error(`${label} response is invalid`);
+        phases.forEach((phase) => {
+          const gains = array(phase, label, 2);
+          if (gains.length !== 2 || gains.some((gain) => { const amount = integer(gain, label); return amount < 1 || amount > 65_535; })) throw new Error(`${label} response is invalid`);
+        });
+      }
+    });
+    return groups.length;
+  };
+  const resultCount = validateGroups("groups", "phase_gains", false)
+    + validateGroups("offset_groups", "phase_offsets", true)
+    + validateGroups("power_offset_groups", "phase_power_offsets", true);
+  if (resultCount < 1) throw new Error(`${label} response is invalid`);
   return value as RestartVerificationResult;
 }
 
@@ -400,6 +541,16 @@ export class HelperApi {
     this.call("acknowledge_safety", (value) => session(value, "acknowledge_safety"), { session_id: sessionId, acknowledged: true });
   public checkStability = (sessionId: string, target: "voltage" | "current", targetId: string) =>
     this.call("check_stability", (value) => stability(value, "check_stability", target, targetId), { session_id: sessionId, target, target_id: targetId });
+  public checkOffsetReadiness = (sessionId: string, boardIndex: number, stage: 1 | 2) =>
+    this.call("check_offset_readiness", (value) => offsetReadiness(value, "check_offset_readiness", boardIndex, stage), {
+      session_id: sessionId, board_index: boardIndex, stage,
+    });
+  public calibrateOffset = (sessionId: string, boardIndex: number, stage: 1 | 2, confirmRetry: boolean) =>
+    this.call("calibrate_offset", (value) => offsetCalibration(value, "calibrate_offset", boardIndex, stage), {
+      session_id: sessionId, board_index: boardIndex, stage, confirm_retry: confirmRetry,
+    });
+  public skipOffsetCalibration = (sessionId: string) =>
+    this.call("skip_offset_calibration", (value) => session(value, "skip_offset_calibration"), { session_id: sessionId });
   public calibrateVoltage = (sessionId: string, groupKey: string, reference: number, confirmIteration: boolean) =>
     this.call("calibrate_voltage", (value) => calibration(value, "calibrate_voltage", { target: "voltage", groupKey, reference }), {
       session_id: sessionId,
@@ -425,6 +576,8 @@ export class HelperApi {
   };
   public restartAndVerify = (sessionId: string, expectedTopology: MeterTopology) =>
     this.call("restart_and_verify", (value) => restart(value, "restart_and_verify", expectedTopology), { session_id: sessionId });
+  public completeCalibrationWithoutChanges = (sessionId: string) =>
+    this.call("complete_calibration_without_changes", (value) => session(value, "complete_calibration_without_changes"), { session_id: sessionId });
   public cancelSession = (sessionId: string) =>
     this.call("cancel_session", (value) => session(value, "cancel_session"), { session_id: sessionId });
   public subscribeSetup = (callback: (message: SetupSnapshot) => void) =>

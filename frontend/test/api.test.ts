@@ -48,7 +48,10 @@ const inventory = {
 const transaction = { transaction_id: "tx-1", state: "previewed", source_sha256: "a".repeat(64),
   changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], upload_progress: [] };
 const session = { session_id: "session-1", device_id: "meter-1", state: "ready", safety_acknowledged: true,
-  preflight: { issues: [], zeroed_roles: ["reference"] } };
+  preflight: { issues: [], zeroed_roles: ["reference"] }, entity_role_counts: {},
+  offset_capability: { status: "available", repair_reason: null }, offset_disposition: "not_started",
+  offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] }],
+  has_pending_calibration: false };
 const stability = { target: "current", target_id: "1", stable: true,
   windows: [{ samples: [1], mean: 1, standard_deviation: 0, range_percent: 0 }] };
 const gainEvidence = (instanceId: string, target: "voltage" | "current", reference: number, phase = "A") => ({
@@ -80,7 +83,21 @@ const restart = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha
   groups: ["meter_main1", "meter_main2"].map((instance_id) => ({
     instance_id, phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]],
   })), verification_id: "1".repeat(32),
-  source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null };
+  offset_groups: [], power_offset_groups: [], source_authority: "saved_flash",
+  source_handoff_available: true, source_handoff_transaction_id: null };
+const readiness = { stage: 1, ready: true, connection_generation: 4,
+  entities: ["voltage", "current"].flatMap((quantity) => Array.from({ length: 6 }, (_, index) => ({
+    role: `${quantity}_${index + 1}`, quantity, ready: true, reasons: [],
+    window: { values: [0, 0, 0], received_at: [1, 2, 3], connection_generation: 4,
+      mean: 0, minimum: 0, maximum: 0, absolute_peak: 0, absolute_spread: 0 },
+  }))), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
+    zero_voltage_spread_volts: 0.5, zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
+    voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2 } };
+const offsetResult = { state: "applied_pending_restart_verification", board_index: 0, stage: 1,
+  expected_tables: [
+    ["meter_main1", [[1, -1], [2, -2], [3, -3]]],
+    ["meter_main2", [[4, -4], [5, -5], [6, -6]]],
+  ], unfinished_group_keys: [], retry_allowed: false, error: null };
 
 function validResponse(operation: string): unknown {
   if (["setup_status", "set_installer_intent", "rescan"].includes(operation)) return { state: "device_discovered", devices: [device] };
@@ -89,6 +106,9 @@ function validResponse(operation: string): unknown {
   if (operation === "get_ct_inventory") return inventory;
   if (["preview_ct_config", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config"].includes(operation)) return transaction;
   if (["start_session", "get_session", "acknowledge_safety", "cancel_session"].includes(operation)) return session;
+  if (["skip_offset_calibration", "complete_calibration_without_changes"].includes(operation)) return session;
+  if (operation === "check_offset_readiness") return readiness;
+  if (operation === "calibrate_offset") return offsetResult;
   if (operation === "check_stability") return stability;
   if (operation === "calibrate_voltage") return { ...calibration, group_key: "addon6_2", phase: null,
     changed_channels: [40, 41, 42], before_values: [119, 119, 119], after_values: [120, 120, 120], error_percent_values: [0, 0, 0],
@@ -135,9 +155,13 @@ describe("HelperApi", () => {
     await api.acknowledgeSafety("session-1");
     hass.responses.check_stability = { ...stability, target_id: "42" };
     await api.checkStability("session-1", "current", "42");
+    await api.checkOffsetReadiness("session-1", 0, 1);
+    await api.calibrateOffset("session-1", 0, 1, false);
+    await api.skipOffsetCalibration("session-1");
     await api.calibrateVoltage("session-1", "addon6_2", 120, true);
     await api.calibrateCurrent("session-1", [{ channel: 42, reference: 25, reporting_multiplier: 1 }], true);
     await api.restartAndVerify("session-1", topology);
+    await api.completeCalibrationWithoutChanges("session-1");
     await api.cancelSession("session-1");
     await api.getDiagnosticsSummary();
     await api.subscribeSetup(() => undefined);
@@ -161,9 +185,13 @@ describe("HelperApi", () => {
       "circuitsetup_energy_meter_helper/get_session",
       "circuitsetup_energy_meter_helper/acknowledge_safety",
       "circuitsetup_energy_meter_helper/check_stability",
+      "circuitsetup_energy_meter_helper/check_offset_readiness",
+      "circuitsetup_energy_meter_helper/calibrate_offset",
+      "circuitsetup_energy_meter_helper/skip_offset_calibration",
       "circuitsetup_energy_meter_helper/calibrate_voltage",
       "circuitsetup_energy_meter_helper/calibrate_current",
       "circuitsetup_energy_meter_helper/restart_and_verify",
+      "circuitsetup_energy_meter_helper/complete_calibration_without_changes",
       "circuitsetup_energy_meter_helper/cancel_session",
       "circuitsetup_energy_meter_helper/get_diagnostics_summary",
       "circuitsetup_energy_meter_helper/subscribe_setup",
@@ -191,6 +219,35 @@ describe("HelperApi", () => {
     expect(hass.messages.find((message) => String(message.type).endsWith("/calibrate_current"))).toMatchObject({
       references: [{ channel: 42, reference: 25, reporting_multiplier: 1 }],
     });
+  });
+
+  it("rejects malformed offset session, readiness, and calibration payloads", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    hass.responses.get_session = { ...session, offset_capability: { status: "invalid", repair_reason: null } };
+    await expect(api.getSession("session-1")).rejects.toThrow("get_session");
+    hass.responses.check_offset_readiness = { ...readiness, ready: false };
+    await expect(api.checkOffsetReadiness("session-1", 0, 1)).rejects.toThrow("check_offset_readiness");
+    hass.responses.check_offset_readiness = { ...readiness, ready: false, entities: readiness.entities.map((entity, index) => index === 0
+      ? { ...entity, ready: false, reasons: ["voltage is not near zero"] }
+      : entity) };
+    await expect(api.checkOffsetReadiness("session-1", 0, 1)).rejects.toThrow("check_offset_readiness");
+    hass.responses.calibrate_offset = { ...offsetResult,
+      expected_tables: [["meter_main1", [[1, -1], [2, -2], [3, 32768]]]] };
+    await expect(api.calibrateOffset("session-1", 0, 1, false)).rejects.toThrow("calibrate_offset");
+  });
+
+  it("accepts offset-only restart evidence and rejects malformed signed tables", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    const offsetOnly = { ...restart, groups: [], offset_groups: [
+      { instance_id: "meter_main1", phase_offsets: [[1, -1], [2, -2], [3, -3]] },
+    ] };
+    hass.responses.restart_and_verify = offsetOnly;
+    await expect(api.restartAndVerify("session-1", topology)).resolves.toMatchObject({ groups: [], offset_groups: offsetOnly.offset_groups });
+    hass.responses.restart_and_verify = { ...offsetOnly,
+      offset_groups: [{ instance_id: "meter_main1", phase_offsets: [[1, -1], [2, -2], [3, 32768]] }] };
+    await expect(api.restartAndVerify("session-1", topology)).rejects.toThrow("restart_and_verify");
   });
 
   it("refuses recursively nested browser payload fields that may contain secrets", () => {

@@ -178,7 +178,68 @@ export interface SessionStatus {
   state: string;
   safety_acknowledged: boolean;
   preflight: { issues: PreflightIssue[]; zeroed_roles: string[] };
+  entity_role_counts?: Record<string, number>;
   calibration_sources?: Record<string, "flash" | "configuration" | "unknown">;
+  offset_capability?: {
+    status: "available" | "unavailable" | "invalid";
+    repair_reason: string | null;
+  };
+  offset_disposition?: "not_started" | "in_progress" | "completed" | "skipped" | "partial";
+  offset_boards?: OffsetBoardStatus[];
+  has_pending_calibration?: boolean;
+}
+
+export type OffsetStageState = "not_started" | "in_progress" | "completed" | "skipped" | "partial" | "indeterminate";
+
+export interface OffsetBoardStatus {
+  board_index: number;
+  stages: Array<{ stage: 1 | 2; state: OffsetStageState }>;
+}
+
+export interface OffsetReadinessThresholds {
+  sample_count: number;
+  zero_voltage_peak_volts: number;
+  zero_voltage_spread_volts: number;
+  zero_current_peak_amps: number;
+  zero_current_spread_amps: number;
+  voltage_present_minimum_volts: number;
+  voltage_present_spread_volts: number;
+}
+
+export interface OffsetReadinessResult {
+  stage: 1 | 2;
+  ready: boolean;
+  connection_generation: number;
+  entities: Array<{
+    role: string;
+    quantity: "voltage" | "current";
+    ready: boolean;
+    reasons: string[];
+    window: {
+      values: number[];
+      received_at: number[];
+      connection_generation: number;
+      mean: number;
+      minimum: number;
+      maximum: number;
+      absolute_peak: number;
+      absolute_spread: number;
+    } | null;
+  }>;
+  reasons: string[];
+  thresholds: OffsetReadinessThresholds;
+}
+
+export type OffsetTable = [[number, number], [number, number], [number, number]];
+
+export interface OffsetCalibrationResult {
+  state: "applied_pending_restart_verification" | "partial" | "indeterminate";
+  board_index: number;
+  stage: 1 | 2;
+  expected_tables: Array<[string, OffsetTable]>;
+  unfinished_group_keys: string[];
+  retry_allowed: boolean;
+  error: string | null;
 }
 
 export interface StabilityResult {
@@ -234,6 +295,8 @@ interface RestartVerificationBase {
   topology_voltage_layout: string;
   connection_generation: number;
   groups: Array<{ instance_id: string; phase_gains: number[][] }>;
+  offset_groups: Array<{ instance_id: string; phase_offsets: OffsetTable }>;
+  power_offset_groups: Array<{ instance_id: string; phase_power_offsets: OffsetTable }>;
   verification_id: string;
   source_authority: "saved_flash";
   source_handoff_transaction_id: string | null;
@@ -251,6 +314,7 @@ export type PanelStep =
   | "ct"
   | "build"
   | "safety"
+  | "offset"
   | "voltage"
   | "current"
   | "restart"
