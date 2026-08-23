@@ -114,7 +114,7 @@ def test_current_channel_mapping_multiplier_and_invariants(
                 ),
             )
         )
-        markers, persist = marker_writer(session.events)
+        _, persist = marker_writer(session.events)
         engine = CalibrationEngine(SessionManager(), persist)
 
         result = await engine.async_calibrate_current(

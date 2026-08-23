@@ -431,7 +431,7 @@ class HelperStore:
         if raw is None:
             return None
         if not isinstance(raw, dict):
-            raise ValueError("stored interrupted session is invalid")
+            raise TypeError("stored interrupted session is invalid")
         try:
             return StoredInterruptedSession(
                 raw["state"],
