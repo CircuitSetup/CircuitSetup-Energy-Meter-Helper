@@ -1,8 +1,14 @@
+[I][atm90e32:1023] [CALIBRATION][addon1_2] Offset calibration restore verified.
+[I][atm90e32:1079] [CALIBRATION][addon1_2] Power offset calibration restore verified.
 [W][atm90e32:306] [CALIBRATION][addon1_2] ================= Offset mismatch: using flash values =================
+[W][atm90e32:314] [CALIBRATION][addon1_2] | Phase |   offset_voltage   |   offset_current   |
+[W][atm90e32:315] [CALIBRATION][addon1_2] |       |  config  |  flash  |  config  |  flash  |
 [W][atm90e32:314] [CALIBRATION][addon1_2] |   A   |     -10  |    -12  |      30  |     31  |
 [W][atm90e32:314] [CALIBRATION][addon1_2] |   B   |     -10  |    -13  |      30  |     32  |
 [W][atm90e32:314] [CALIBRATION][addon1_2] |   C   |     -10  |    -14  |      30  |     33  |
 [W][atm90e32:328] [CALIBRATION][addon1_2] ================= Power offset mismatch: using flash values =================
+[W][atm90e32:332] [CALIBRATION][addon1_2] | Phase | offset_active_power|offset_reactive_power|
+[W][atm90e32:333] [CALIBRATION][addon1_2] |       |  config  |  flash  |  config  |  flash  |
 [W][atm90e32:337] [CALIBRATION][addon1_2] |   A   |     100  |    101  |    -200  |   -201  |
 [W][atm90e32:337] [CALIBRATION][addon1_2] |   B   |     100  |    102  |    -200  |   -202  |
 [W][atm90e32:337] [CALIBRATION][addon1_2] |   C   |     100  |    103  |    -200  |   -203  |

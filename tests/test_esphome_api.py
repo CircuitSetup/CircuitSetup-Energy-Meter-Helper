@@ -523,6 +523,30 @@ def test_log_buffer_filters_redacts_and_enforces_both_caps() -> None:
     asyncio.run(run())
 
 
+def test_log_buffer_retains_exact_offset_button_dispatch_lines() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        assert client.on_log is not None
+
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    b"[I][atm90e32.button:037] 1. Run Main Meter 1 Offset Cal\n"
+                    b"[I][atm90e32.button:060] 2. Run Main Meter 1 Power Offset Cal\n"
+                )
+            )
+        )
+
+        assert session.log_lines[-2:] == (
+            "[I][atm90e32.button:037] 1. Run Main Meter 1 Offset Cal",
+            "[I][atm90e32.button:060] 2. Run Main Meter 1 Power Offset Cal",
+        )
+
+    asyncio.run(run())
+
+
 def test_requests_dump_config_and_reports_current_calibration_sources() -> None:
     async def run() -> None:
         client = FakeClient()

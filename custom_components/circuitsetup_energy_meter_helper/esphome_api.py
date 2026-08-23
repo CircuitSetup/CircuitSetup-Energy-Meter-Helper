@@ -32,6 +32,7 @@ _SECRET = re.compile(
 _CALIBRATION_TERMS = (
     "calibrat",
     "gain",
+    "offset",
     "register",
     "restore",
     "voltage",
