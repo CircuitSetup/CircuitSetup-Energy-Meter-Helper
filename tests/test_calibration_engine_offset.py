@@ -115,6 +115,7 @@ class FakeOffsetSession:
     ) -> None:
         self.connected = True
         self.connection_generation = 1
+        self.meter = meter
         self.stage = stage
         self.outcomes = outcomes or {}
         self.window_generation = window_generation
@@ -213,6 +214,35 @@ def _clear_keys(meter: Any) -> set[int]:
     }
 
 
+async def _complete_stage_one(
+    engine: CalibrationEngine,
+    session: FakeOffsetSession,
+    board_index: int,
+    markers: list[Any] | None = None,
+) -> None:
+    instance_ids = (
+        ("meter_main1", "meter_main2")
+        if board_index == 0
+        else (f"addon{board_index}_1", f"addon{board_index}_2")
+    )
+    stage = session.stage
+    outcomes = session.outcomes
+    overrides = session.window_overrides
+    session.stage = 1
+    session.outcomes = dict(zip(instance_ids, OFFSET_TABLES, strict=True))
+    session.window_overrides = {}
+    result = await engine.async_calibrate_offset_board(
+        MAC, session, session.meter, board_index, 1
+    )
+    assert result.state.value == "applied_pending_restart_verification"
+    session.stage = stage
+    session.outcomes = outcomes
+    session.window_overrides = overrides
+    session.events.clear()
+    if markers is not None:
+        markers.clear()
+
+
 @pytest.mark.parametrize(
     ("stage", "tables", "property_name"),
     (
@@ -233,6 +263,12 @@ def test_board_offset_calibrates_both_chips_in_order_under_one_lease(
         session.sessions = sessions
         markers, persist = _marker_writer(session.events)
         engine = CalibrationEngine(sessions, persist)
+
+        if stage == 2:
+            await _complete_stage_one(engine, session, 1, markers)
+            session.stage = 2
+            session.outcomes = outcomes
+            sessions.acquire_count = 0
 
         result = await engine.async_calibrate_offset_board(
             MAC, session, meter, 1, stage
@@ -338,13 +374,25 @@ def test_offset_rechecks_every_stage_condition_immediately_before_mutation(
         sessions = SessionManager()
         engine = CalibrationEngine(sessions, persist)
 
+        if stage == 2:
+            await _complete_stage_one(engine, session, 0, markers)
+
         with pytest.raises(CalibrationError, match="readiness"):
             await engine.async_calibrate_offset_board(MAC, session, meter, 0, stage)
 
         assert len([event for event in session.events if event[0] == "readiness"]) == 12
         assert markers == []
         assert not any(event[0] in {"number", "button"} for event in session.events)
-        assert sessions.pending_calibration(MAC) is None
+        pending = sessions.pending_calibration(MAC)
+        if stage == 1:
+            assert pending is None
+        else:
+            assert pending is not None
+            assert set(pending.expected_phase_offsets) == {
+                "meter_main1",
+                "meter_main2",
+            }
+            assert pending.expected_phase_power_offsets == {}
         assert not sessions.is_calibration_locked(MAC)
 
     asyncio.run(run())
@@ -401,6 +449,96 @@ def test_second_chip_failure_is_partial_and_retry_runs_only_unfinished_chip() ->
     asyncio.run(run())
 
 
+def test_generation_change_in_marker_writer_blocks_every_native_mutation() -> None:
+    async def run() -> None:
+        meter = binding_with_offset_controls()
+        session = FakeOffsetSession(
+            meter,
+            1,
+            dict(zip(("meter_main1", "meter_main2"), OFFSET_TABLES, strict=True)),
+        )
+        sessions = SessionManager()
+        session.sessions = sessions
+
+        async def reconnecting_marker(
+            mac: str, marker: StoredInterruptedSession | None
+        ) -> None:
+            session.events.append(("marker", mac, marker.state if marker else None))
+            session.connection_generation = 2
+
+        engine = CalibrationEngine(sessions, reconnecting_marker)
+
+        with pytest.raises(CalibrationError, match="stale"):
+            await engine.async_calibrate_offset_board(MAC, session, meter, 0, 1)
+
+        assert [event[0] for event in session.events].count("marker") == 1
+        assert not any(event[0] in {"number", "button"} for event in session.events)
+        assert not sessions.is_calibration_locked(MAC)
+
+    asyncio.run(run())
+
+
+def test_stage_two_requires_both_selected_stage_one_tables() -> None:
+    async def run() -> None:
+        meter = binding_with_offset_controls()
+        session = FakeOffsetSession(
+            meter,
+            2,
+            dict(zip(("meter_main1", "meter_main2"), POWER_TABLES, strict=True)),
+        )
+        markers, persist = _marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        with pytest.raises(CalibrationError, match="Stage 1"):
+            await engine.async_calibrate_offset_board(MAC, session, meter, 0, 2)
+
+        assert markers == []
+        assert not any(
+            event[0] in {"readiness", "number", "button"} for event in session.events
+        )
+
+        session.stage = 1
+        session.outcomes = {
+            "meter_main1": OFFSET_TABLES[0],
+            "meter_main2": LogEvidenceError("save failed"),
+        }
+        partial = await engine.async_calibrate_offset_board(MAC, session, meter, 0, 1)
+        assert partial.state.value == "partial"
+        session.events.clear()
+        markers.clear()
+        session.stage = 2
+        session.outcomes = dict(
+            zip(("meter_main1", "meter_main2"), POWER_TABLES, strict=True)
+        )
+
+        with pytest.raises(CalibrationError, match="Stage 1"):
+            await engine.async_calibrate_offset_board(MAC, session, meter, 0, 2)
+
+        assert markers == []
+        assert not any(event[0] == "button" for event in session.events)
+
+    asyncio.run(run())
+
+
+def test_other_boards_do_not_make_first_selected_failure_partial() -> None:
+    async def run() -> None:
+        meter = binding_with_offset_controls(1)
+        session = FakeOffsetSession(meter, 1)
+        _, persist = _marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+        await _complete_stage_one(engine, session, 0)
+        session.outcomes = {"addon1_1": LogEvidenceError("save failed")}
+
+        result = await engine.async_calibrate_offset_board(MAC, session, meter, 1, 1)
+
+        assert result.state.value == "indeterminate"
+        assert result.expected_tables == ()
+        assert result.unfinished_group_keys == ("addon1_1", "addon1_2")
+        assert [event[0] for event in session.events].count("button") == 1
+
+    asyncio.run(run())
+
+
 def test_wrong_generation_offset_evidence_is_indeterminate_and_not_retained() -> None:
     async def run() -> None:
         meter = binding_with_offset_controls()
@@ -444,6 +582,8 @@ def test_offset_cancellation_keeps_marker_zeros_references_and_releases_lease() 
         session.sessions = sessions
         markers, persist = _marker_writer(session.events)
         engine = CalibrationEngine(sessions, persist)
+        await _complete_stage_one(engine, session, 0, markers)
+        session.stage = 2
         task = asyncio.create_task(
             engine.async_calibrate_offset_board(MAC, session, meter, 0, 2)
         )

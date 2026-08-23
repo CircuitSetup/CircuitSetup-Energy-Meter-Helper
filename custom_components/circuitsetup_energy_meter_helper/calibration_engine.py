@@ -484,6 +484,13 @@ class CalibrationEngine:
             if origin is not None:
                 origin = await self._calibration_origin(lease, session, binding)
             expected = _pending_offset_tables(origin, stage)
+            if stage == 2 and not all(
+                origin is not None and instance_id in origin.expected_phase_offsets
+                for _, _, instance_id in selected
+            ):
+                raise CalibrationError(
+                    "Stage 1 offset calibration must complete for both selected chips"
+                )
             if all(instance_id in expected for _, _, instance_id in selected):
                 return _offset_result(
                     OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION,
@@ -515,6 +522,8 @@ class CalibrationEngine:
                 for reference in group.current_references
             )
             await self._persist_interrupted(mac, self._marker(channels))
+            generation = readiness.connection_generation
+            self._validate_offset_generation(session, generation)
             self.sessions.record_calibration_iteration(mac, operation, attempt)
             zeroer = _BoundZeroer(self, binding, {})
             async with zero_reference_guard(zeroer, session):
@@ -526,12 +535,15 @@ class CalibrationEngine:
                     )
                     try:
                         evidence = await self._run_offset(
-                            mac, session, button, instance_id, stage
+                            mac, session, button, instance_id, stage, generation
                         )
                     except Exception as error:  # noqa: BLE001 - typed partial result
                         state = (
                             OffsetCalibrationState.PARTIAL
-                            if expected
+                            if any(
+                                selected_id in expected
+                                for _, _, selected_id in selected
+                            )
                             else OffsetCalibrationState.INDETERMINATE
                         )
                         return _offset_result(
@@ -895,8 +907,9 @@ class CalibrationEngine:
         button: BoundEntity,
         instance_id: str,
         stage: OffsetReadinessStage,
+        generation: int,
     ) -> OffsetRunEvidence | PowerOffsetRunEvidence:
-        generation = int(session.connection_generation)
+        self._validate_offset_generation(session, generation)
         sequence = self._next_sequence(mac)
         dispatched_after = monotonic()
         waiter = self._offset_waiter(
@@ -909,6 +922,7 @@ class CalibrationEngine:
             stage=stage,
         )
         try:
+            self._validate_offset_generation(session, generation)
             await session.async_press_button(
                 button.descriptor.key, device_id=button.descriptor.device_id
             )
@@ -937,6 +951,11 @@ class CalibrationEngine:
                 "offset save or register verification failed"
             )
         return evidence
+
+    @staticmethod
+    def _validate_offset_generation(session: Any, generation: int) -> None:
+        if int(session.connection_generation) != generation:
+            raise CalibrationError("offset readiness is stale after reconnect")
 
     def _offset_waiter(
         self,
