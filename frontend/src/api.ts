@@ -230,7 +230,9 @@ function offsetReadiness(value: unknown, label: string, expectedBoard: number, e
     for (const phase of ["a", "b", "c"]) expectedRoles.set(`${group}.voltage_${phase}`, "voltage");
     for (let offset = 1; offset <= 3; ++offset) expectedRoles.set(`ct${expectedBoard * 6 + groupOffset * 3 + offset}.current_sensor`, "current");
   }
-  const roles = new Set<string>(); const topLevelReasons: string[] = [];
+  const disconnectedReason = "entity binding is not on the active connection generation";
+  const unavailablePrefix = "fresh window unavailable: ";
+  const roles = new Set<string>(); const topLevelReasons: string[] = []; let disconnectedEntities = 0;
   entities.forEach((entry) => {
     const entity = record(entry, label); exactKeys(entity, ["role", "quantity", "ready", "reasons", "window"], label);
     const role = string(entity.role, label)!; const quantity = enumeration(entity.quantity, new Set(["voltage", "current"]), label);
@@ -238,7 +240,11 @@ function offsetReadiness(value: unknown, label: string, expectedBoard: number, e
     const entityReady = boolean(entity.ready, label); const reasons = array(entity.reasons, label, 12).map((reason) => string(reason, label)!);
     let expectedReasons: string[];
     if (entity.window === null) {
-      if (entityReady || reasons.length === 0) throw new Error(`${label} response is invalid`);
+      if (entityReady || reasons.length !== 1) throw new Error(`${label} response is invalid`);
+      if (reasons[0] === disconnectedReason) ++disconnectedEntities;
+      else if (!reasons[0]!.startsWith(unavailablePrefix) || reasons[0]!.slice(unavailablePrefix.length).trim().length === 0) {
+        throw new Error(`${label} response is invalid`);
+      }
       expectedReasons = reasons;
     } else {
       const window = record(entity.window, label);
@@ -271,7 +277,9 @@ function offsetReadiness(value: unknown, label: string, expectedBoard: number, e
   });
   const reasons = array(item.reasons, label, 100).map((reason) => string(reason, label)!);
   const connectionChangedReasons = [...topLevelReasons, "connection generation changed while collecting readiness"];
-  const reasonsMatch = exactStrings(reasons, topLevelReasons) || exactStrings(reasons, connectionChangedReasons);
+  const disconnected = disconnectedEntities === entities.length && exactStrings(reasons, [disconnectedReason]);
+  const reasonsMatch = disconnected || (disconnectedEntities === 0
+    && (exactStrings(reasons, topLevelReasons) || exactStrings(reasons, connectionChangedReasons)));
   if (roles.size !== expectedRoles.size || !reasonsMatch
     || ready !== (reasons.length === 0)) throw new Error(`${label} response is invalid`);
   return value as OffsetReadinessResult;

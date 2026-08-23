@@ -282,6 +282,33 @@ describe("HelperApi", () => {
     await expect(api.checkOffsetReadiness("session-1", 0, 1)).resolves.toMatchObject({ ready: false });
   });
 
+  it("accepts exact disconnected and gather-failure null windows but rejects invented reasons", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    const disconnected = "entity binding is not on the active connection generation";
+    hass.responses.check_offset_readiness = { ...readiness, ready: false,
+      entities: readiness.entities.map((entity) => ({ ...entity, ready: false, reasons: [disconnected], window: null })),
+      reasons: [disconnected] };
+    await expect(api.checkOffsetReadiness("session-1", 0, 1)).resolves.toMatchObject({ ready: false });
+
+    const unavailable = "fresh window unavailable: timed out";
+    hass.responses.check_offset_readiness = { ...readiness, ready: false,
+      entities: readiness.entities.map((entity, index) => index === 0
+        ? { ...entity, ready: false, reasons: [unavailable], window: null }
+        : entity),
+      reasons: [`main_1.voltage_a: ${unavailable}`] };
+    await expect(api.checkOffsetReadiness("session-1", 0, 1)).resolves.toMatchObject({ ready: false });
+
+    for (const invented of ["sensor unavailable", "fresh window unavailable: "]) {
+      hass.responses.check_offset_readiness = { ...readiness, ready: false,
+        entities: readiness.entities.map((entity, index) => index === 0
+          ? { ...entity, ready: false, reasons: [invented], window: null }
+          : entity),
+        reasons: [`main_1.voltage_a: ${invented}`] };
+      await expect(api.checkOffsetReadiness("session-1", 0, 1)).rejects.toThrow("check_offset_readiness");
+    }
+  });
+
   it("requires an authoritative no-change terminal response for the requested session", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");

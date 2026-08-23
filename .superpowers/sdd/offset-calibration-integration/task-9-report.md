@@ -39,11 +39,11 @@ RED:
 
 GREEN:
 
-- Focused API suite: `19 passed`.
-- Full frontend suite: `61 passed` across API, accessibility, and panel tests.
+- Focused API suite: `20 passed`.
+- Full frontend suite: `62 passed` across API, accessibility, and panel tests.
 - Browser-rendered Playwright suite: `6 passed`.
 - TypeScript typecheck: passed.
-- Production Vite build: passed (`26 modules transformed`, 138.39 kB / 34.60
+- Production Vite build: passed (`26 modules transformed`, 138.73 kB / 34.70
   kB gzip). The generated integration bundle was restored to `HEAD` afterward
   and is not part of this task's changes.
 - No source lint script is configured in `frontend/package.json`.
@@ -70,6 +70,19 @@ GREEN:
   voltage at 120 V, malformed no-change responses, duplicate completion clicks,
   and the backend collection-generation suffix. All focused failures passed
   after the smallest decoder/panel/mock changes.
+
+## Fix round 2
+
+- Matched the readiness backend's disconnected branch: all twelve exact-board
+  entities may carry the same null-window connection-generation reason while
+  the top-level response contains that reason once without role prefixes.
+- Normal null-window collection failures now accept only the backend grammar
+  `fresh window unavailable: <nonempty detail>`. Arbitrary reasons, empty
+  details, mixed disconnected evidence, and contradictory aggregates fail
+  closed; numeric threshold and window-generation validation is unchanged.
+- RED reproduced rejection of the valid disconnected DTO and acceptance of
+  invented null-window reasons. GREEN covers the disconnected result, a valid
+  timed-out gather result, and both malformed reason forms.
 
 ## Files
 
