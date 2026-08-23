@@ -57,7 +57,8 @@ def test_release_runs_firmware_tests_and_generated_compile_matrix() -> None:
 
     assert "firmware/Software/ESPHome/tests" in workflow
     assert "firmware/Software/ESPHome/tests/compile_matrix.py" in workflow
-    assert "esphome==2026.8.0" in workflow
+    assert "esphome==" not in workflow
+    assert '"--from", "esphome",' in workflow
     assert "esphome\", \"compile" in workflow
 
 

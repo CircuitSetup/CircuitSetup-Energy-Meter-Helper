@@ -59,7 +59,7 @@ jobs:
           for configuration in matrix["configurations"]:
               subprocess.run(
                   [
-                      "uvx", "--python", "3.12", "--from", "esphome==2026.8.0",
+                      "uvx", "--python", "3.12", "--from", "esphome",
                       "esphome", "compile", f"firmware/{configuration}",
                   ],
                   check=True,
