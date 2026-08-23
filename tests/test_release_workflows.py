@@ -44,13 +44,21 @@ def test_release_validation_is_read_only_until_publish() -> None:
     )
 
 
-def test_ci_and_release_run_firmware_tests_and_generated_compile_matrix() -> None:
-    for path in WORKFLOWS:
-        workflow = path.read_text()
-        assert "firmware/Software/ESPHome/tests" in workflow
-        assert "firmware/Software/ESPHome/tests/compile_matrix.py" in workflow
-        assert "esphome==2026.8.0" in workflow
-        assert "esphome\", \"compile" in workflow
+def test_ci_runs_firmware_tests_without_compiling_every_meter() -> None:
+    workflow = WORKFLOWS[0].read_text()
+
+    assert "firmware/Software/ESPHome/tests" in workflow
+    assert "firmware/Software/ESPHome/tests/compile_matrix.py" not in workflow
+    assert "esphome\", \"compile" not in workflow
+
+
+def test_release_runs_firmware_tests_and_generated_compile_matrix() -> None:
+    workflow = WORKFLOWS[1].read_text()
+
+    assert "firmware/Software/ESPHome/tests" in workflow
+    assert "firmware/Software/ESPHome/tests/compile_matrix.py" in workflow
+    assert "esphome==2026.8.0" in workflow
+    assert "esphome\", \"compile" in workflow
 
 
 def test_hacs_validation_uses_the_event_ref() -> None:
