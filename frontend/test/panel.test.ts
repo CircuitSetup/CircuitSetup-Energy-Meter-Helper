@@ -1,9 +1,12 @@
+import { render } from "lit";
 import { afterEach, describe, expect, it } from "vitest";
 
 import "../src/index";
+import { espWebInstaller } from "../src/components/esp-web-installer";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
 import { changesFromDrafts, type CtDraft } from "../src/components/ct-inventory-step";
+import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
 import type { CtInventory } from "../src/types";
 
@@ -58,6 +61,60 @@ const contrastRatio = (first: string, second: string): number => {
 };
 
 afterEach(() => document.body.replaceChildren());
+
+describe("ESP Web Tools installer", () => {
+  const option: FirmwareOption = {
+    productId: "6chan_energy_meter_main_board",
+    version: "2026.8.0",
+  };
+  const manifest = "https://circuitsetup.github.io/ESPWebInstaller/manifests/manifest_6chan_energy_meter_main_board-2026.8.0.json";
+
+  it("renders one install button for a resolved firmware option", () => {
+    const root = document.createElement("div");
+    render(espWebInstaller(option), root);
+
+    const installer = root.querySelector<HTMLElement & { manifest: string }>("esp-web-install-button");
+    expect(root.querySelectorAll("esp-web-install-button")).toHaveLength(1);
+    expect(installer?.manifest).toBe(manifest);
+    expect(installer?.querySelector<HTMLButtonElement>('[slot="activate"]')?.getAttribute("aria-label")).toBe("Install firmware");
+    expect(installer?.querySelector('[slot="unsupported"]')?.textContent).toContain("supported Chromium browser");
+    expect(installer?.querySelector('[slot="not-allowed"]')?.textContent).toContain("HTTPS or localhost");
+  });
+
+  it("renders no active install button without a resolved option", () => {
+    const root = document.createElement("div");
+    render(espWebInstaller(null), root);
+
+    expect(root.querySelector("esp-web-install-button")).toBeNull();
+  });
+
+  it("renders no active install button for an invalid resolved option", () => {
+    const root = document.createElement("div");
+    render(espWebInstaller({ productId: "not/a-product", version: "2026.8.0" }), root);
+
+    expect(root.querySelector("esp-web-install-button")).toBeNull();
+  });
+
+  it("updates the existing install button manifest when the selected version changes", () => {
+    const root = document.createElement("div");
+    render(espWebInstaller(option), root);
+    const installer = root.querySelector<HTMLElement & { manifest: string }>("esp-web-install-button");
+
+    render(espWebInstaller({ ...option, version: "2026.8.1" }), root);
+
+    expect(root.querySelector("esp-web-install-button")).toBe(installer);
+    expect(installer?.manifest).toBe(
+      "https://circuitsetup.github.io/ESPWebInstaller/manifests/manifest_6chan_energy_meter_main_board-2026.8.1.json",
+    );
+  });
+
+  it("does not provide an external navigation control", () => {
+    const root = document.createElement("div");
+    render(espWebInstaller(option), root);
+
+    expect(root.querySelector("a")).toBeNull();
+  });
+});
 
 describe("CircuitSetup panel", () => {
   it("shows existing meters immediately alongside the new-device setup", async () => {

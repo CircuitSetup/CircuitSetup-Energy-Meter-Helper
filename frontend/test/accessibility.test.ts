@@ -2,6 +2,8 @@ import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
 import { currentStep } from "../src/components/current-step";
+import { espWebInstaller } from "../src/components/esp-web-installer";
+import { panelStyles } from "../src/styles";
 import { voltageStep } from "../src/components/voltage-step";
 import type { CtInventory, MeterTopology } from "../src/types";
 
@@ -27,6 +29,19 @@ const mount = (template: ReturnType<typeof currentStep>) => {
   render(template, container);
   return container;
 };
+
+it("gives the firmware activation control the panel target size and focus treatment", () => {
+  container = document.createElement("div");
+  document.body.append(container);
+  render(espWebInstaller({ productId: "6chan_energy_meter_main_board", version: "2026.8.0" }), container);
+
+  const activate = container.querySelector<HTMLButtonElement>('[slot="activate"]');
+  expect(activate?.getAttribute("aria-label")).toBe("Install firmware");
+  expect(activate?.matches("button")).toBe(true);
+  expect(panelStyles.cssText).toContain(".esp-web-installer [slot=\"activate\"]");
+  expect(panelStyles.cssText).toContain("min-height: 44px");
+  expect(panelStyles.cssText).toContain(".esp-web-installer [slot=\"activate\"]:focus-visible");
+});
 
 describe("calibration tab semantics", () => {
   it("supports roving keyboard focus and a linked current-board tabpanel", () => {

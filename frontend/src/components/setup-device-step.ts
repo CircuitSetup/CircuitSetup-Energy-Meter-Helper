@@ -1,5 +1,4 @@
 import { html, type TemplateResult } from "lit";
-import "esp-web-tools/dist/web/install-button.js";
 import type { ConnectionType, SetupSnapshot } from "../types";
 
 const CONNECTIONS: Array<[Exclude<ConnectionType, "unknown">, string]> = [
