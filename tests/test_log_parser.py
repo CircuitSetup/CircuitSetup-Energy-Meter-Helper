@@ -464,6 +464,81 @@ def test_offset_run_rejects_inexact_success_terminal() -> None:
         )
 
 
+def test_offset_run_rejects_prefixed_success_terminal_payload() -> None:
+    lines = [
+        CalibrationLogLine(
+            item.connection_generation,
+            item.operation_sequence,
+            item.arrived_at,
+            item.line.replace(
+                "Offset calibration completed and verified.",
+                "unexpected Offset calibration completed and verified.",
+            ),
+        )
+        for item in log_lines("offset_success.log")
+    ]
+    with pytest.raises(LogEvidenceError, match="terminal"):
+        parse_offset_run(
+            lines,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="1. Run Main Meter 1 Offset Cal",
+            dispatched_after=10.0,
+        )
+
+
+def test_offset_run_rejects_same_instance_power_offset_terminal() -> None:
+    lines = log_lines("offset_success.log")
+    lines.insert(
+        -1,
+        CalibrationLogLine(
+            3,
+            8,
+            17.5,
+            "[I][atm90e32:787] [CALIBRATION][meter_main1] Power offset calibration saved to memory.",
+        ),
+    )
+    lines.insert(
+        -1,
+        CalibrationLogLine(
+            3,
+            8,
+            17.6,
+            "[I][atm90e32:879] [CALIBRATION][meter_main1] Power offset calibration completed and verified.",
+        ),
+    )
+
+    with pytest.raises(LogEvidenceError, match="interleaved.*categor"):
+        parse_offset_run(
+            lines,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="1. Run Main Meter 1 Offset Cal",
+            dispatched_after=10.0,
+        )
+
+
+def test_offset_run_rejects_save_before_phase_table() -> None:
+    source = log_lines("offset_success.log")
+    reordered = [*source[:3], source[6], *source[3:6], source[7]]
+    lines = [
+        CalibrationLogLine(3, 8, 11.0 + index, item.line)
+        for index, item in enumerate(reordered)
+    ]
+
+    with pytest.raises(LogEvidenceError, match="order"):
+        parse_offset_run(
+            lines,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="1. Run Main Meter 1 Offset Cal",
+            dispatched_after=10.0,
+        )
+
+
 def test_parses_both_verified_restore_shapes() -> None:
     positive = parse_restore(
         log_lines("restore_positive.log", sequence=0),
@@ -533,6 +608,7 @@ def test_restore_rejects_missing_failure_or_out_of_range_offset_evidence(
             connection_generation=3,
             expected_instance_ids={"meter_main1"},
             started_after=10.0,
+            operation_sequence=0,
             expected_categories={
                 "meter_main1": {"gain", "offset", "power_offset"}
             },
@@ -578,6 +654,30 @@ def test_gain_only_restore_ignores_unrequested_offset_config_fallback() -> None:
     assert restored.phase_gains == ((7305, 27518), (7305, 28312), (7305, 27518))
     assert restored.phase_offsets is None
     assert restored.phase_power_offsets is None
+
+
+def test_offset_restore_rejects_terminal_and_table_from_different_sequences() -> None:
+    lines = [
+        CalibrationLogLine(
+            item.connection_generation,
+            1
+            if "Offset calibration restore verified." in item.line
+            else 2,
+            item.arrived_at,
+            item.line,
+        )
+        for item in log_lines("restore_positive.log", sequence=0)
+    ]
+
+    with pytest.raises(LogEvidenceError, match="offset restore"):
+        parse_restore(
+            lines,
+            connection_generation=3,
+            expected_instance_ids={"meter_main1"},
+            started_after=10.0,
+            operation_sequence=1,
+            expected_categories={"meter_main1": {"offset"}},
+        )
 
 
 def test_restore_rejects_failure_or_missing_instance() -> None:

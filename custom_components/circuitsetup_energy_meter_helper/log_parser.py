@@ -441,6 +441,7 @@ def _parse_offset_operation(
         else "Offset calibration failed; previous values restored."
     )
     readback_pattern = _POWER_OFFSET_READBACK_RE if power else _OFFSET_READBACK_RE
+    selected_category = "power_offset" if power else "offset"
 
     matching = sorted(
         (
@@ -489,6 +490,11 @@ def _parse_offset_operation(
         instance = _instance(item.line)
         if instance is not None and instance != target_instance_id:
             raise LogEvidenceError("interleaved ATM90E32 instance in operation window")
+        category = _offset_log_category(item.line)
+        if category is not None and instance != target_instance_id:
+            raise LogEvidenceError(f"{kind} evidence is missing the target instance tag")
+        if category is not None and category != selected_category:
+            raise LogEvidenceError("interleaved offset calibration category")
         if is_evidence(item) and instance != target_instance_id:
             raise LogEvidenceError(f"{kind} evidence is missing the target instance tag")
 
@@ -506,20 +512,26 @@ def _parse_offset_operation(
         raise LogEvidenceError(f"{kind} evidence appeared before the target header")
 
     block = matching[button_index:]
-    normalized = [re.sub(r"\s+", "", item.line) for item in matching[header_index:]]
-    if sum(columns in line for line in normalized) != 1:
+    column_indices = [
+        index
+        for index in range(header_index, len(matching))
+        if columns in re.sub(r"\s+", "", matching[index].line)
+    ]
+    if len(column_indices) != 1:
         raise LogEvidenceError(f"{kind} table columns are missing or duplicate")
+    column_index = column_indices[0]
 
     final_indices = [
         index
         for index in range(header_index, len(matching))
-        if matching[index].line.endswith((completed, failed))
+        if _calibration_payload(matching[index].line) in (completed, failed)
     ]
     if len(final_indices) != 1:
         raise LogEvidenceError(f"{kind} terminal result is missing or multiple")
     final_index = final_indices[0]
 
     phase_rows: dict[Phase, tuple[int, int]] = {}
+    phase_indices: dict[Phase, int] = {}
     for index, item in enumerate(matching[header_index:], start=header_index):
         row = row_pattern.search(item.line)
         if row:
@@ -532,24 +544,29 @@ def _parse_offset_operation(
                 _signed_16(row.group(value_names[0]), kind),
                 _signed_16(row.group(value_names[1]), kind),
             )
+            phase_indices[phase] = index
         elif _SIGNED_ROW_LIKE_RE.search(item.line):
             raise LogEvidenceError(f"malformed or extra {kind} row")
     if set(phase_rows) != {"A", "B", "C"}:
         raise LogEvidenceError(f"{kind} evidence must contain exactly phases A, B, and C")
 
-    save_successes = [
-        item for item in matching[header_index:] if item.line.endswith(saved)
+    save_success_indices = [
+        index
+        for index in range(header_index, len(matching))
+        if _calibration_payload(matching[index].line) == saved
     ]
     save_failures = [
-        item for item in matching[header_index:] if item.line.endswith(save_failed)
+        item
+        for item in matching[header_index:]
+        if _calibration_payload(item.line) == save_failed
     ]
     mismatches = [
         item
         for item in matching[header_index:]
         if readback_pattern.search(item.line) is not None
     ]
-    final_line = matching[final_index].line
-    if final_line.endswith(failed):
+    final_payload = _calibration_payload(matching[final_index].line)
+    if final_payload == failed:
         if save_failures:
             raise LogEvidenceError(f"{kind} save failure terminal")
         if mismatches:
@@ -559,10 +576,19 @@ def _parse_offset_operation(
         raise LogEvidenceError(f"{kind} save failure contradicts success terminal")
     if mismatches:
         raise LogEvidenceError(f"{kind} register mismatch contradicts success terminal")
-    if len(save_successes) != 1:
+    if len(save_success_indices) != 1:
         raise LogEvidenceError(f"{kind} save result is missing or duplicate")
-    if matching.index(save_successes[0]) > final_index:
-        raise LogEvidenceError(f"{kind} save result followed the success terminal")
+    event_indices = [
+        header_index,
+        column_index,
+        *(phase_indices[phase] for phase in ("A", "B", "C")),
+        save_success_indices[0],
+        final_index,
+    ]
+    if event_indices != sorted(event_indices) or len(set(event_indices)) != len(
+        event_indices
+    ):
+        raise LogEvidenceError(f"{kind} evidence is out of firmware order")
 
     return (
         tuple((phase, phase_rows[phase]) for phase in ("A", "B", "C")),
@@ -576,6 +602,7 @@ def parse_restore(
     connection_generation: int,
     expected_instance_ids: set[str],
     started_after: float,
+    operation_sequence: int | None = None,
     expected_categories: dict[
         str, set[Literal["gain", "offset", "power_offset"]]
     ]
@@ -594,12 +621,22 @@ def parse_restore(
         for categories in expected_categories.values()
     ):
         raise ValueError("restore categories must be gain, offset, or power_offset")
+    offset_requested = any(
+        categories & {"offset", "power_offset"}
+        for categories in expected_categories.values()
+    )
+    if offset_requested and operation_sequence is None:
+        raise ValueError("offset restore operation sequence is required")
 
     matching = sorted(
         (
             item
             for item in lines
             if item.connection_generation == connection_generation
+            and (
+                operation_sequence is None
+                or item.operation_sequence == operation_sequence
+            )
             and item.arrived_at > started_after
         ),
         key=lambda item: item.arrived_at,
@@ -733,6 +770,36 @@ def _instance(line: str) -> str | None:
     return match.group("instance") if match else None
 
 
+def _calibration_payload(line: str) -> str | None:
+    match = _INSTANCE_RE.search(line)
+    return line[match.end() :].strip() if match else None
+
+
+def _offset_log_category(
+    line: str,
+) -> Literal["offset", "power_offset"] | None:
+    payload = _calibration_payload(line) or line
+    normalized = re.sub(r"\s+", "", payload)
+    if (
+        "Power Offset Calibration" in payload
+        or "offset_active_power" in normalized
+        or "Power offset calibration" in payload
+        or "Power offset readback" in payload
+        or "Power offset mismatch" in payload
+        or "power offset calibration" in payload
+    ):
+        return "power_offset"
+    if (
+        "Offset Calibration" in payload
+        or "offset_voltage" in normalized
+        or "Offset calibration" in payload
+        or "Offset readback" in payload
+        or "Offset mismatch" in payload
+    ):
+        return "offset"
+    return None
+
+
 def _button_text(line: str) -> str | None:
     match = _BUTTON_RE.search(line)
     return match.group("button") if match else None
@@ -789,10 +856,11 @@ def _restore_offset_category(
         )
     )
     disabled = "Power & Voltage/Current offset calibration is disabled"
+    payloads = [_calibration_payload(item.line) for item in lines]
     category_observed = any(
         positive_header in item.line
         or mismatch_header in item.line
-        or item.line.endswith(verified_term)
+        or _calibration_payload(item.line) == verified_term
         or fallback_term in item.line
         or any(term in item.line for term in failure_terms)
         for item in lines
@@ -810,7 +878,7 @@ def _restore_offset_category(
     if not expected and not category_observed:
         return None, False, False
 
-    verified = [item for item in lines if item.line.endswith(verified_term)]
+    verified = [payload for payload in payloads if payload == verified_term]
     if len(verified) != 1:
         raise LogEvidenceError(
             f"{instance_id}: {kind} restore verification is missing or duplicate"
