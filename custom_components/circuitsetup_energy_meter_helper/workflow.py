@@ -170,6 +170,16 @@ def _ct_change_requests(
     )
 
 
+def _stored_reporting_multipliers(
+    selections: tuple[StoredCTSelection, ...], config_sha256: str
+) -> dict[int, float]:
+    return {
+        selection.channel: selection.reporting_multiplier
+        for selection in selections
+        if selection.config_sha256 == config_sha256
+    }
+
+
 class LazyDeviceBuilder:
     """Connect the existing pinned client only when a Device Builder call is made."""
 
@@ -328,9 +338,14 @@ class EntryWorkflow:
             document, native_project_name=device.project_name
         )
         catalog = await self._hass.async_add_executor_job(CTPresetCatalog.load)
+        selections = await self._store.async_get_ct_selections(mac)
         inventory = CTInventory.from_document(
-            document, topology, catalog, snapshot.sha256,
-            await self._store.async_get_ct_selections(mac),
+            document,
+            topology,
+            catalog,
+            snapshot.sha256,
+            selections,
+            _stored_reporting_multipliers(selections, snapshot.sha256),
         )
         plan_id = uuid4().hex
         self._discard_device_plans(mac)
@@ -1096,11 +1111,14 @@ class EntryWorkflow:
         if handle.configuration is None:
             raise WorkflowCapabilityUnavailable("configuration inventory is unavailable")
         snapshot = await self._require_builder().async_get_config(handle.configuration)
+        selections = await self._store.async_get_ct_selections(handle.mac)
         return CTInventory.from_document(
             ESPHomeConfigDocument.parse(snapshot.content),
             handle.topology,
             CTPresetCatalog.load(),
             snapshot.sha256,
+            selections,
+            _stored_reporting_multipliers(selections, snapshot.sha256),
         )
 
     async def _async_snapshot(self, device: DiscoveredDevice) -> ESPHomeConfigSnapshot:

@@ -127,6 +127,10 @@ class DeviceBuilder(Protocol):
 
 
 class VerifiedPersistence(Protocol):
+    async def async_get_ct_selections(
+        self, mac: str
+    ) -> tuple[StoredCTSelection, ...]: ...
+
     async def async_save_verified_ct_selections(
         self, mac: str, selections: tuple[StoredCTSelection, ...]
     ) -> None: ...
@@ -361,10 +365,18 @@ class ConfigTransactionManager:
         ):
             raise ValueError("source snapshot does not match mutation plan")
         _validate_changes(plan.changes)
+        mac = canonical_mac(mac)
+        merged = {
+            selection.channel: selection
+            for selection in await self._persistence.async_get_ct_selections(mac)
+            if selection.config_sha256 == source_snapshot.sha256
+        }
+        merged.update({selection.channel: selection for selection in selections})
+        selections = tuple(merged[channel] for channel in sorted(merged))
         transaction = _ConfigTransaction(
             uuid4().hex,
             self._clock() + self._confirmation_ttl,
-            canonical_mac(mac),
+            mac,
             topology,
             plan.source_sha256,
             plan.changes,
@@ -448,9 +460,7 @@ class ConfigTransactionManager:
                     )
                     for request in requested_channels
                 )
-            status = await self.async_preview(
-                mac, topology, plan, snapshot, selections
-            )
+            status = await self.async_preview(mac, topology, plan, snapshot, selections)
             transaction = self._transaction(status.transaction_id)
             transaction.verification_id = verification_id
             transaction.reservation_release = lambda: (
@@ -952,7 +962,7 @@ class ConfigTransactionManager:
                 try:
                     async with _operation(transaction):
                         await self._rollback_locked(transaction)
-                except (RollbackFailedError, asyncio.CancelledError):
+                except RollbackFailedError, asyncio.CancelledError:
                     pass
 
             cleanup = asyncio.create_task(recover_then_settle())

@@ -200,13 +200,12 @@ async function openInventory(page: Page): Promise<void> {
   await page.locator('[data-action="configure-device"]').click();
   await expect(page.getByRole("heading", { name: "Topology", exact: true })).toBeVisible();
   await page.locator('[data-action="continue"]').click();
-  await expect(page.getByRole("heading", { name: "CT Verification" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "CT Settings" })).toBeVisible();
 }
 
 async function reviewChannel(page: Page, channel: number): Promise<void> {
   if (channel === 42) {
     await page.getByRole("tab", { name: "Add-on 6" }).click();
-    await page.getByRole("button", { name: /Group 2 · CT40/ }).click();
   }
   await page.getByLabel(`CT${channel} name`).fill(`Load ${channel}`);
   await page.getByRole("button", { name: "Continue" }).click();
@@ -221,7 +220,6 @@ async function reviewChannel(page: Page, channel: number): Promise<void> {
 async function reachCurrent(page: Page, channel: number): Promise<void> {
   if (channel === 42) {
     await page.getByRole("tab", { name: "Add-on 6" }).click();
-    await page.getByRole("button", { name: /Group 2 · CT40/ }).click();
   }
   await page.getByLabel(`CT${channel} name`).fill(`Load ${channel}`);
   await page.getByRole("button", { name: "Continue" }).click();
@@ -264,6 +262,15 @@ test("six-channel inventory exposes ambiguous gain while label-only stays out of
   const frames = await mockHomeAssistant(page, { outcome: "collision" });
   await openInventory(page);
   await expect(page.locator('[data-ct-row]')).toHaveCount(6);
+  await expect(page.locator('[data-group-nav]')).toHaveCount(0);
+  await expect(page.locator('.ct-index')).toHaveText(["CT1", "CT2", "CT3", "CT4", "CT5", "CT6"]);
+  await expect(page.locator('.row-count')).toHaveText("Showing 1–6 of 6 CTs");
+  const alignment = await page.locator('.name-mode label').evaluateAll((labels) => labels.map((label) => {
+    const input = label.querySelector('input')!.getBoundingClientRect();
+    const row = label.getBoundingClientRect();
+    return Math.abs(input.y + input.height / 2 - row.y - row.height / 2);
+  }));
+  expect(alignment.every((difference) => difference < 1)).toBe(true);
   await expect(page.getByLabel("CT4 model")).toHaveValue("");
   await page.getByLabel("Home Assistant labels only").check();
   await expect(page.getByLabel("CT1 model")).toBeDisabled();
@@ -275,7 +282,7 @@ test("six-channel inventory exposes ambiguous gain while label-only stays out of
   expect(operations(frames)).not.toContain("preview_ct_config");
 
   await page.getByRole("button", { name: "Back" }).click();
-  await expect(page.getByRole("heading", { name: "CT Verification" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "CT Settings" })).toBeVisible();
   await page.getByLabel("ESPHome / firmware names").check();
   await page.getByLabel("CT2 name").fill("Kitchen mains");
   await page.getByRole("button", { name: "Continue" }).click();
