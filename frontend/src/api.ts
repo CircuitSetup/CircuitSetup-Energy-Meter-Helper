@@ -44,7 +44,7 @@ const MAC = /^[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
-const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
+const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
 
 type PublicRecord = Record<string, unknown>;
 type Validator<T> = (value: unknown) => T;
@@ -268,11 +268,17 @@ function groupChannels(groupKey: string): number[] {
 }
 function restart(value: unknown, label: string, expected: MeterTopology): RestartVerificationResult {
   const item = record(value, label); for (const key of ["mac", "topology_project_name", "topology_voltage_layout", "verification_id"] as const) string(item[key], label);
-  const addonCount = integer(item.topology_addon_count, label); enumeration(item.topology_connection_type, CONNECTIONS, label); const generation = integer(item.connection_generation, label); enumeration(item.source_authority, new Set(["saved_flash"]), label); const sourceHandoff = boolean(item.source_handoff_available, label); optionalString(item.source_handoff_transaction_id, label);
-  if (sourceHandoff) {
+  const addonCount = integer(item.topology_addon_count, label); enumeration(item.topology_connection_type, CONNECTIONS, label); const generation = integer(item.connection_generation, label); const authority = enumeration(item.source_authority, new Set(["saved_flash", "configuration"]), label); const sourceHandoff = boolean(item.source_handoff_available, label); const installed = boolean(item.source_handoff_firmware_installed, label); optionalString(item.source_handoff_transaction_id, label);
+  const hasConfig = item.config_filename !== null || item.config_sha256 !== null;
+  if (hasConfig) {
     string(item.config_filename, label); string(item.config_sha256, label);
     if (!CONFIGURATION.test(item.config_filename as string) || !SHA256.test(item.config_sha256 as string)) throw new Error(`${label} response is invalid`);
-  } else if (item.config_filename !== null || item.config_sha256 !== null) throw new Error(`${label} response is invalid`);
+  }
+  if ((item.config_filename === null) !== (item.config_sha256 === null)
+    || sourceHandoff && (!hasConfig || installed || item.source_handoff_transaction_id !== null || authority !== "saved_flash")
+    || !sourceHandoff && hasConfig && item.source_handoff_transaction_id === null
+    || installed && (!hasConfig || item.source_handoff_transaction_id === null)
+    || authority === "configuration" && (!installed || sourceHandoff)) throw new Error(`${label} response is invalid`);
   if (!MAC.test(item.mac as string)
     || !SERVER_ID.test(item.verification_id as string) || generation < 1
     || item.source_handoff_transaction_id !== null && !SERVER_ID.test(item.source_handoff_transaction_id as string)
@@ -425,6 +431,21 @@ export class HelperApi {
   };
   public restartAndVerify = (sessionId: string, expectedTopology: MeterTopology) =>
     this.call("restart_and_verify", (value) => restart(value, "restart_and_verify", expectedTopology), { session_id: sessionId });
+  public previewCalibratedGains = (sessionId: string, verificationId: string) =>
+    this.call("preview_calibrated_gains", (value) => transaction(value, "preview_calibrated_gains"), {
+      session_id: sessionId,
+      verification_id: verificationId,
+    });
+  public clearCalibrationFlash = (
+    sessionId: string,
+    verificationId: string,
+    transactionId: string,
+    expectedTopology: MeterTopology,
+  ) => this.call("clear_calibration_flash", (value) => restart(value, "clear_calibration_flash", expectedTopology), {
+    session_id: sessionId,
+    verification_id: verificationId,
+    transaction_id: transactionId,
+  });
   public cancelSession = (sessionId: string) =>
     this.call("cancel_session", (value) => session(value, "cancel_session"), { session_id: sessionId });
   public subscribeSetup = (callback: (message: SetupSnapshot) => void) =>

@@ -140,6 +140,10 @@ class VerifiedPersistence(Protocol):
         self, mac: str, verification_id: str, transaction_id: str
     ) -> bool: ...
 
+    async def async_mark_verified_calibration_installed(
+        self, mac: str, verification_id: str, transaction_id: str
+    ) -> bool: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ReconnectEvidence:
@@ -757,6 +761,28 @@ class ConfigTransactionManager:
                     ConfigTransactionState.FAILED,
                     TransactionEvidenceCode.PERSISTENCE_FAILED,
                 )
+            if transaction.verification_id is not None:
+                try:
+                    installed = await self._persistence.async_mark_verified_calibration_installed(
+                        transaction.mac,
+                        transaction.verification_id,
+                        transaction.transaction_id,
+                    )
+                except asyncio.CancelledError:
+                    self._finish(
+                        transaction,
+                        ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.CANCELLED,
+                    )
+                    raise
+                except Exception:  # noqa: BLE001 - external storage boundary
+                    installed = False
+                if not installed:
+                    return self._finish(
+                        transaction,
+                        ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.PERSISTENCE_FAILED,
+                    )
             _progress(transaction, TransactionProgress.METADATA_PERSISTED)
             return self._finish(transaction, ConfigTransactionState.VERIFIED)
 

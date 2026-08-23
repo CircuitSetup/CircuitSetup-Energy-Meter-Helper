@@ -88,7 +88,8 @@ function restart(addons: number) {
     topology_addon_count: addons, topology_project_name: project(addons), topology_connection_type: "wifi",
     topology_voltage_layout: "two_groups_per_board", connection_generation: 3, groups,
     verification_id: "b".repeat(32), source_authority: "saved_flash",
-    source_handoff_available: true, source_handoff_transaction_id: "c".repeat(32) };
+    source_handoff_available: true, source_handoff_transaction_id: null,
+    source_handoff_firmware_installed: false };
 }
 
 async function mockHomeAssistant(page: Page, options: { addons?: number; outcome?: Outcome;
@@ -133,17 +134,25 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       else if (operation === "preview_ct_config") {
         if (outcome === "collision") return fail("CT_NAME_COLLISION", "Names resolve to the same entity ID");
         result = currentTransaction = transaction("previewed", Number((frame.changes as Array<{ channel: number }>)[0]?.channel ?? 1));
+      } else if (operation === "preview_calibrated_gains") {
+        result = currentTransaction = { ...transaction("previewed", 1), transaction_id: "d".repeat(32) };
       } else if (operation === "apply_ct_config") {
-        result = currentTransaction = outcome === "validation"
+        result = currentTransaction = { ...(outcome === "validation"
           ? transaction("failed", addons ? 42 : 1, { evidence: ["validation_failed"], rollback: true, validation: true })
-          : transaction("validated", addons ? 42 : 1, { progress: ["config_written", "config_validated"], rollback: true });
+          : transaction("validated", addons ? 42 : 1, { progress: ["config_written", "config_validated"], rollback: true })),
+          transaction_id: String(frame.transaction_id) };
       } else if (operation === "compile_ct_config") {
-        result = currentTransaction = outcome === "compile"
+        result = currentTransaction = { ...(outcome === "compile"
           ? transaction("failed", addons ? 42 : 1, { evidence: ["compile_failed"], progress: ["config_written", "config_validated"], rollback: true })
           : transaction("install_confirmation_required", addons ? 42 : 1,
-            { progress: ["config_written", "config_validated", "firmware_compiled"], rollback: true });
-      } else if (operation === "install_ct_config") result = currentTransaction = transaction("verified", addons ? 42 : 1,
-        { progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"] });
+            { progress: ["config_written", "config_validated", "firmware_compiled"], rollback: true })),
+          transaction_id: String(frame.transaction_id) };
+      } else if (operation === "install_ct_config") result = currentTransaction = { ...transaction("verified", addons ? 42 : 1,
+        { progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"] }),
+        transaction_id: String(frame.transaction_id) };
+      else if (operation === "clear_calibration_flash") result = { ...restart(addons), source_authority: "configuration",
+        source_handoff_available: false, source_handoff_transaction_id: frame.transaction_id,
+        source_handoff_firmware_installed: true };
       else if (operation === "rollback_ct_config") result = currentTransaction = transaction("rolled_back", addons ? 42 : 1,
         { progress: ["config_restored"] });
       else if (operation === "start_session") result = currentSession = session("safety_required", false);
@@ -309,6 +318,12 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await page.getByRole("button", { name: "Restart and verify" }).click();
   await expect(page.getByText("Setup and exact restart verification are complete.")).toBeVisible();
   await expect(page.getByText("b".repeat(32), { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Save calibration to YAML" }).click();
+  await expect(page.getByLabel("Redacted substitution diff")).toBeVisible();
+  await page.getByRole("button", { name: "Apply" }).click();
+  await page.getByRole("button", { name: "Compile" }).click();
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await expect(page.locator(".success-band")).toContainText("Calibration saved to YAML; flash values cleared.");
 
   const ordered = operations(frames);
   expect(ordered.indexOf("apply_ct_config")).toBeLessThan(ordered.indexOf("compile_ct_config"));
@@ -320,6 +335,9 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   expect(frames.find((frame) => frame.type.endsWith("/calibrate_current"))).toMatchObject({ references: [{ channel: 1,
     reference: 5 }], confirm_iteration: true });
   expect(ordered).toContain("restart_and_verify");
+  expect(ordered.indexOf("restart_and_verify")).toBeLessThan(ordered.indexOf("preview_calibrated_gains"));
+  expect(ordered.indexOf("install_ct_config", ordered.indexOf("preview_calibrated_gains")))
+    .toBeLessThan(ordered.indexOf("clear_calibration_flash"));
 });
 
 test("add-on CT42 indeterminate disconnect never auto-represses calibration", async ({ page }) => {

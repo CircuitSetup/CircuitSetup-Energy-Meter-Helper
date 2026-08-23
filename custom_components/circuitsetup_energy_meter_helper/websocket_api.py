@@ -57,6 +57,8 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}calibrate_voltage",
     f"{_PREFIX}calibrate_current",
     f"{_PREFIX}restart_and_verify",
+    f"{_PREFIX}preview_calibrated_gains",
+    f"{_PREFIX}clear_calibration_flash",
     f"{_PREFIX}cancel_session",
 )
 SUBSCRIPTION_COMMANDS = (
@@ -69,6 +71,7 @@ _TRANSACTION_STATUS_COMMANDS = frozenset(
     f"{_PREFIX}{operation}"
     for operation in (
         "preview_ct_config",
+        "preview_calibrated_gains",
         "apply_ct_config",
         "compile_ct_config",
         "install_ct_config",
@@ -95,6 +98,7 @@ _FORBIDDEN_VALUE = re.compile(
     re.IGNORECASE,
 )
 _SHA256 = vol.All(str, vol.Match(r"^[0-9a-f]{64}$"))
+_SERVER_ID = vol.All(str, vol.Match(r"^[0-9a-f]{32}$"))
 _ID = vol.All(str, vol.Length(min=1, max=128))
 
 
@@ -187,6 +191,14 @@ class WorkflowOwner(Protocol):
     ) -> Any: ...
 
     async def async_restart_and_verify(self, session_id: str) -> Any: ...
+
+    async def async_preview_calibrated_gains(
+        self, session_id: str, verification_id: str
+    ) -> Any: ...
+
+    async def async_clear_calibration_flash(
+        self, session_id: str, verification_id: str, transaction_id: str
+    ) -> Any: ...
 
     async def async_cancel_session(self, session_id: str) -> Any: ...
 
@@ -331,6 +343,14 @@ class EntryWebsocketController:
             )
         if operation == "restart_and_verify" and workflow is not None:
             return await workflow.async_restart_and_verify(msg["session_id"])
+        if operation == "preview_calibrated_gains" and workflow is not None:
+            return await workflow.async_preview_calibrated_gains(
+                msg["session_id"], msg["verification_id"]
+            )
+        if operation == "clear_calibration_flash" and workflow is not None:
+            return await workflow.async_clear_calibration_flash(
+                msg["session_id"], msg["verification_id"], msg["transaction_id"]
+            )
         if operation == "cancel_session" and workflow is not None:
             return await workflow.async_cancel_session(msg["session_id"])
         raise CapabilityUnavailable
@@ -774,6 +794,17 @@ def _schema(command: str) -> dict[Any, Any]:
         }
     elif operation == "start_session":
         schema[vol.Required("device_id")] = _ID
+    elif operation == "preview_calibrated_gains":
+        schema |= {
+            vol.Required("session_id"): _SERVER_ID,
+            vol.Required("verification_id"): _SERVER_ID,
+        }
+    elif operation == "clear_calibration_flash":
+        schema |= {
+            vol.Required("session_id"): _SERVER_ID,
+            vol.Required("verification_id"): _SERVER_ID,
+            vol.Required("transaction_id"): _SERVER_ID,
+        }
     elif operation == "acknowledge_safety":
         schema |= {
             vol.Required("session_id"): _ID,

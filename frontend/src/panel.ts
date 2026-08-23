@@ -67,6 +67,7 @@ export class CircuitSetupPanel extends LitElement {
   private stabilityByTarget = new Map<string, StabilityResult>();
   private calibrationByTarget = new Map<string, CalibrationResult>();
   private restartResult: RestartVerificationResult | null = null;
+  private calibrationHandoff = false;
   private addonCount = 0;
   private connection: Exclude<ConnectionType, "unknown"> = "wifi";
   private board = 0;
@@ -191,6 +192,7 @@ export class CircuitSetupPanel extends LitElement {
     this.stabilityByTarget = new Map();
     this.calibrationByTarget = new Map();
     this.restartResult = null;
+    this.calibrationHandoff = false;
     this.group = 0;
     this.channel = 1;
     this.voltageReferences = [0, 0];
@@ -452,6 +454,44 @@ export class CircuitSetupPanel extends LitElement {
     (unsubscribe) => { this.transactionUnsub = unsubscribe; });
   }
 
+  private async reviewCalibrationHandoff(): Promise<void> {
+    if (!this.api || !this.session || !this.restartResult?.source_handoff_available) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const verificationId = this.restartResult.verification_id; const generation = ++this.operationGeneration;
+    this.clearSubscription("transaction");
+    this.transaction = null;
+    await this.run(async () => {
+      const transaction = await api.previewCalibratedGains(sessionId, verificationId);
+      if (!this.ownsOperation(generation, api, deviceId)
+        || this.session?.session_id !== sessionId
+        || this.restartResult?.verification_id !== verificationId) return;
+      this.calibrationHandoff = true;
+      this.transaction = transaction;
+      this.navigate("build");
+      await this.subscribeTransaction(this.connectionGeneration);
+    }, "Calibration gains could not be prepared for YAML review.",
+    () => this.ownsOperation(generation, api, deviceId));
+  }
+
+  private async clearCalibrationHandoff(): Promise<void> {
+    const restart = this.restartResult;
+    if (!this.api || !this.session || !this.topology || !restart?.source_handoff_firmware_installed
+      || !restart.source_handoff_transaction_id) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
+    await this.run(async () => {
+      const result = await api.clearCalibrationFlash(
+        sessionId, restart.verification_id, restart.source_handoff_transaction_id!, this.topology!,
+      );
+      if (!this.ownsOperation(generation, api, deviceId)
+        || this.session?.session_id !== sessionId) return;
+      this.restartResult = result;
+      this.navigate("summary");
+      this.announcement = "Calibration saved to YAML; flash values cleared.";
+    }, "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values.",
+    () => this.ownsOperation(generation, api, deviceId));
+  }
+
   private async transactionAction(action: "apply" | "compile" | "install" | "rollback"): Promise<void> {
     if (!this.api || !this.transaction || !this.selectedDeviceId) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const current = this.transaction;
@@ -474,7 +514,28 @@ export class CircuitSetupPanel extends LitElement {
         || this.transaction.source_sha256 !== current.source_sha256) return;
       this.transaction = transaction;
       this.announcement = `Configuration ${this.transaction.state}.`;
-    }, "This confirmation is stale. Reload the CT inventory before making another change.",
+      if (action === "install" && this.calibrationHandoff
+        && transaction.state === "verified" && this.session && this.topology && this.restartResult) {
+        this.restartResult = {
+          ...this.restartResult,
+          source_handoff_available: false,
+          source_handoff_transaction_id: transaction.transaction_id,
+          source_handoff_firmware_installed: true,
+        };
+        this.navigate("summary");
+        const result = await api.clearCalibrationFlash(
+          this.session.session_id,
+          this.restartResult.verification_id,
+          transaction.transaction_id,
+          this.topology,
+        );
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.restartResult = result;
+        this.announcement = "Calibration saved to YAML; flash values cleared.";
+      }
+    }, action === "install" && this.calibrationHandoff
+      ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values."
+      : "This confirmation is stale. Reload the CT inventory before making another change.",
     () => this.ownsOperation(generation, api, deviceId));
   }
 
@@ -736,7 +797,8 @@ export class CircuitSetupPanel extends LitElement {
       (group) => this.selectCtGroup(group), (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.reviewChanges(), this.labelOnly)}`;
     if (this.step === "build") return buildInstallStep(this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
-      () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(), () => void this.startSession());
+      () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(),
+      () => void (this.calibrationHandoff ? this.navigate("summary") : this.startSession()));
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back());
     if (this.step === "voltage") return html`${voltageStep(this.topology, this.session, this.board, this.voltageReferences, this.stabilityFor("voltage"), this.resultFor("voltage"), this.voltageBusy,
@@ -751,7 +813,9 @@ export class CircuitSetupPanel extends LitElement {
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" @click=${() => this.navigate("restart")}>Continue</button></footer>`;
     if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult,
       Boolean(this.transaction?.rollback_available), () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());
-    return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.selectedProjectVersion(), () => this.back());
+    return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.selectedProjectVersion(),
+      () => void (this.restartResult?.source_handoff_firmware_installed
+        ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back());
   }
 
   public override render(): TemplateResult {

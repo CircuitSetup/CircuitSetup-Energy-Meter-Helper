@@ -927,7 +927,8 @@ describe("CircuitSetup panel", () => {
       topology_voltage_layout: "two_groups", connection_generation: 4,
       groups: ["meter_main1", "meter_main2"].map((instance_id) => ({ instance_id,
         phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]] })), verification_id: "4".repeat(32),
-      source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null };
+      source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null,
+      source_handoff_firmware_installed: false };
     const cancelled = { session_id: "session", device_id: "meter-1", state: "cancelled", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled,
       restart_and_verify: restartResult }));
@@ -964,6 +965,67 @@ describe("CircuitSetup panel", () => {
     panel.showState("restart"); await panel.updateComplete;
     expect(text(panel)).toContain("Source handoff");
     expect(text(panel)).toContain("Unavailable in runtime-only mode");
+  });
+
+  it("saves verified calibration through review and clears flash only after install", async () => {
+    const operations: string[] = [];
+    const topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] } as const;
+    const transactionId = "2".repeat(32);
+    const preview = { transaction_id: transactionId, state: "previewed", source_sha256: "a".repeat(64),
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [] };
+    const restartResult = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
+      topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
+      topology_voltage_layout: "two_groups", connection_generation: 4,
+      groups: [{ instance_id: "meter_main1", phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]] }],
+      verification_id: "1".repeat(32), source_authority: "saved_flash", source_handoff_available: true,
+      source_handoff_transaction_id: null, source_handoff_firmware_installed: false };
+    const completed = { ...restartResult, source_authority: "configuration", source_handoff_available: false,
+      source_handoff_transaction_id: transactionId, source_handoff_firmware_installed: true };
+    let clearResponse: unknown = new Error("disconnect");
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        operations.push(operation);
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "preview_calibrated_gains") return preview as T;
+        if (operation === "install_ct_config") return { ...preview, state: "verified" } as T;
+        if (operation === "clear_calibration_flash") {
+          if (clearResponse instanceof Error) throw clearResponse;
+          return clearResponse as T;
+        }
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & {
+      transactionAction(action: "install"): Promise<void>;
+    };
+    state.topology = topology;
+    state.session = { session_id: "3".repeat(32), device_id: "meter-1", state: "verified",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+    state.restartResult = restartResult;
+    panel.showState("summary"); await panel.updateComplete;
+
+    const save = panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=save-calibration]");
+    expect(save?.textContent).toContain("Save calibration to YAML");
+    save?.click(); await tick(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Build & Install");
+
+    state.transaction = { ...preview, state: "install_confirmation_required" };
+    await state.transactionAction("install"); await panel.updateComplete;
+    expect(operations.slice(-2)).toEqual(["install_ct_config", "clear_calibration_flash"]);
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
+    const retry = panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=save-calibration]");
+    expect(retry?.textContent).toContain("Retry clearing saved flash values");
+    clearResponse = completed;
+    retry?.click(); await tick(); await panel.updateComplete;
+    expect(operations.filter((operation) => operation === "install_ct_config")).toHaveLength(1);
+    expect(operations.filter((operation) => operation === "clear_calibration_flash")).toHaveLength(2);
+    expect(text(panel)).toContain("Calibration saved to YAML; flash values cleared");
+    expect((state.restartResult as { source_authority: string }).source_authority).toBe("configuration");
   });
 
   it("reconnect assigns the returned live session instead of discarding it", async () => {

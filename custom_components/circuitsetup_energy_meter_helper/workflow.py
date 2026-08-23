@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.cookies import SimpleCookie
 from math import isfinite
 from statistics import pstdev
@@ -46,7 +46,7 @@ from .preflight import PreflightResult, async_preflight
 from .provisioning import DiscoveredDevice, ProvisioningCoordinator
 from .session_manager import CalibrationBusyError, SessionManager
 from .state_tracker import SensorSampleWindow
-from .store import HelperStore
+from .store import CalibrationSourceAuthority, HelperStore
 from .topology import topology_from_config, topology_from_native
 
 DEFAULT_HANDLE_TTL = 15 * 60.0
@@ -697,6 +697,70 @@ class EntryWorkflow:
         finally:
             self._release_claim(handle, revision)
 
+    async def async_preview_calibrated_gains(
+        self, session_id: str, verification_id: str
+    ) -> Any:
+        """Open the existing reviewed YAML transaction for a verified session."""
+        handle = self._session(session_id)
+        if handle.state != "verified" or self.transactions is None:
+            raise WorkflowHandleError("calibration source handoff is unavailable")
+        return await self.transactions.async_preview_calibrated_gains(
+            handle.mac, handle.topology, verification_id
+        )
+
+    async def async_clear_calibration_flash(
+        self, session_id: str, verification_id: str, transaction_id: str
+    ) -> Any:
+        """Clear only installed, verified gain groups and prove YAML is authoritative."""
+        handle, revision = self._claim_ready_session(session_id)
+        try:
+            if handle.state != "verified":
+                raise WorkflowHandleError("calibration source handoff is unavailable")
+            record = await self._store.async_get_verified_calibration(handle.mac)
+            if (
+                record is None
+                or record.verification_id != verification_id
+                or record.source_handoff_transaction_id != transaction_id
+                or not record.source_handoff_firmware_installed
+                or record.source_handoff_available
+            ):
+                raise WorkflowHandleError("calibrated firmware installation is unverified")
+            api = self._require_api()
+            if handle.binding.connection_generation != api.connection_generation:
+                handle.binding = handle.binding.rebind(
+                    EntityCatalog(api.entities, api.connection_generation),
+                    handle.substitutions,
+                )
+            groups = {
+                group.key.replace("main_", "meter_main"): group
+                for group in handle.binding.groups
+            }
+            instance_ids = {group.instance_id for group in record.groups}
+            if not instance_ids.issubset(groups):
+                raise WorkflowHandleError("verified calibration groups are unavailable")
+            sources = await api.async_calibration_sources(instance_ids)
+            for instance_id in sorted(instance_ids):
+                if sources.get(instance_id) == "configuration":
+                    continue
+                restore = groups[instance_id].restore_gain.descriptor
+                await api.async_press_button(restore.key, device_id=restore.device_id)
+            sources = await api.async_calibration_sources(instance_ids)
+            if any(sources.get(instance_id) != "configuration" for instance_id in instance_ids):
+                raise WorkflowHandleError("flash calibration clear could not be verified")
+            if not await self._store.async_complete_verified_calibration_handoff(
+                handle.mac, verification_id, transaction_id
+            ):
+                raise WorkflowHandleError("calibration source handoff is stale")
+            self._assert_claim(handle, revision)
+            handle.calibration_sources.update(sources)
+            self._refresh(handle)
+            self._publish(handle)
+            return replace(
+                record, source_authority=CalibrationSourceAuthority.CONFIGURATION
+            )
+        finally:
+            self._release_claim(handle, revision)
+
     async def async_cancel_session(self, session_id: str) -> SessionStatus:
         handle = self._session(session_id)
         with self._guard(handle.mac):
@@ -765,6 +829,7 @@ class EntryWorkflow:
                 EntityCatalog(api.entities, api.connection_generation),
                 handle.substitutions,
             )
+            handle.binding = binding
         return ReconnectEvidence(
             canonical_mac(mac),
             topology,

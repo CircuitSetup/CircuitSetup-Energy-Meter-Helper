@@ -56,7 +56,12 @@ from custom_components.circuitsetup_energy_meter_helper.session_manager import (
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
     SensorSampleWindow,
 )
-from custom_components.circuitsetup_energy_meter_helper.store import HelperStore
+from custom_components.circuitsetup_energy_meter_helper.store import (
+    CalibrationSourceAuthority,
+    HelperStore,
+    VerifiedCalibrationRecord,
+    VerifiedGainGroup,
+)
 from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
     ALL_COMMANDS,
     MUTATION_COMMANDS,
@@ -520,6 +525,14 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         }
     elif suffix == "start_session":
         base["device_id"] = "meter"
+    elif suffix == "preview_calibrated_gains":
+        base |= {"session_id": "3" * 32, "verification_id": "1" * 32}
+    elif suffix == "clear_calibration_flash":
+        base |= {
+            "session_id": "3" * 32,
+            "verification_id": "1" * 32,
+            "transaction_id": "2" * 32,
+        }
     elif suffix == "acknowledge_safety":
         base |= {"session_id": "session", "acknowledged": True}
     elif suffix == "check_stability":
@@ -1307,6 +1320,161 @@ def test_native_only_restart_verification_persists_without_source_handoff(
 
         assert result is record
         assert (await workflow.async_get_session(status.session_id)).state == "verified"
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_controller_routes_calibration_handoff_identity_without_browser_yaml() -> None:
+    """Missing routes would strand the verified backend gain transaction."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        controller = EntryWebsocketController(
+            ProvisioningCoordinator(hass), SessionManager(), HelperStore(hass)
+        )
+        calls: list[tuple[object, ...]] = []
+
+        class Workflow:
+            async def async_preview_calibrated_gains(
+                self, session_id: str, verification_id: str
+            ) -> str:
+                calls.append(("preview", session_id, verification_id))
+                return "previewed"
+
+            async def async_clear_calibration_flash(
+                self, session_id: str, verification_id: str, transaction_id: str
+            ) -> str:
+                calls.append(("clear", session_id, verification_id, transaction_id))
+                return "configuration"
+
+        controller.workflow = Workflow()  # type: ignore[assignment]
+        assert await controller.async_call(
+            f"{DOMAIN}/preview_calibrated_gains",
+            {"session_id": "session", "verification_id": "1" * 32},
+            "admin",
+        ) == "previewed"
+        assert await controller.async_call(
+            f"{DOMAIN}/clear_calibration_flash",
+            {
+                "session_id": "session",
+                "verification_id": "1" * 32,
+                "transaction_id": "2" * 32,
+            },
+            "admin",
+        ) == "configuration"
+        assert calls == [
+            ("preview", "session", "1" * 32),
+            ("clear", "session", "1" * 32, "2" * 32),
+        ]
+
+    asyncio.run(run())
+
+
+def test_verified_session_previews_exact_calibration_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing workflow bridge would leave the existing gain mutation unreachable."""
+
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        handle = workflow._sessions[status.session_id]
+        handle.state = "verified"
+        calls: list[tuple[str, MeterTopology, str]] = []
+
+        class Transactions:
+            async def async_preview_calibrated_gains(
+                self, mac: str, topology: MeterTopology, verification_id: str
+            ) -> str:
+                calls.append((mac, topology, verification_id))
+                return "preview"
+
+        workflow.transactions = Transactions()  # type: ignore[assignment]
+
+        result = await workflow.async_preview_calibrated_gains(
+            status.session_id, "1" * 32
+        )
+
+        assert result == "preview"
+        assert calls == [(handle.mac, handle.topology, "1" * 32)]
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wrong ordering or group selection could erase unrelated flash calibration."""
+
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        handle = workflow._sessions[status.session_id]
+        handle.state = "verified"
+        transaction_id = "2" * 32
+        record = VerifiedCalibrationRecord(
+            mac=handle.mac,
+            config_filename="meter.yaml",
+            config_sha256="a" * 64,
+            topology_addon_count=handle.topology.addon_count,
+            topology_project_name=handle.topology.project_name,
+            topology_connection_type=handle.topology.connection_type,
+            topology_voltage_layout=handle.topology.voltage_layout,
+            connection_generation=handle.binding.connection_generation,
+            groups=(
+                VerifiedGainGroup(
+                    "meter_main1",
+                    ((7301, 28001), (7301, 28002), (7301, 28003)),
+                ),
+            ),
+            verification_id="1" * 32,
+            source_handoff_available=False,
+            source_handoff_transaction_id=transaction_id,
+            source_handoff_firmware_installed=True,
+        )
+        completed: list[tuple[str, str, str]] = []
+
+        class Store:
+            async def async_get_verified_calibration(
+                self, mac: str
+            ) -> VerifiedCalibrationRecord | None:
+                return record if mac == record.mac else None
+
+            async def async_complete_verified_calibration_handoff(
+                self, mac: str, verification_id: str, target_transaction_id: str
+            ) -> bool:
+                completed.append((mac, verification_id, target_transaction_id))
+                return True
+
+        source_reads = 0
+        pressed: list[tuple[int, int]] = []
+
+        async def sources(_instances: set[str]) -> dict[str, str]:
+            nonlocal source_reads
+            source_reads += 1
+            return {"meter_main1": "flash" if source_reads == 1 else "configuration"}
+
+        async def press(key: int, *, device_id: int = 0) -> None:
+            pressed.append((key, device_id))
+
+        workflow._store = Store()  # type: ignore[assignment]
+        workflow._api.async_calibration_sources = sources  # type: ignore[method-assign,union-attr]
+        workflow._api.async_press_button = press  # type: ignore[method-assign,union-attr]
+        restore = handle.binding.groups[0].restore_gain.descriptor
+
+        result = await workflow.async_clear_calibration_flash(
+            status.session_id, record.verification_id, transaction_id
+        )
+
+        assert pressed == [(restore.key, restore.device_id)]
+        assert completed == [(record.mac, record.verification_id, transaction_id)]
+        assert result.source_authority is CalibrationSourceAuthority.CONFIGURATION
+        assert handle.calibration_sources["meter_main1"] == "configuration"
+        assert handle.calibration_sources["meter_main2"] == "unknown"
         await workflow.async_close()
 
     asyncio.run(run())

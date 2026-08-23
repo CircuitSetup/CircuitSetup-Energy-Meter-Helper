@@ -80,14 +80,15 @@ const restart = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha
   groups: ["meter_main1", "meter_main2"].map((instance_id) => ({
     instance_id, phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]],
   })), verification_id: "1".repeat(32),
-  source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null };
+  source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null,
+  source_handoff_firmware_installed: false };
 
 function validResponse(operation: string): unknown {
   if (["setup_status", "set_installer_intent", "rescan"].includes(operation)) return { state: "device_discovered", devices: [device] };
   if (operation === "list_meters") return [device];
   if (operation === "get_topology") return topology;
   if (operation === "get_ct_inventory") return inventory;
-  if (["preview_ct_config", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config"].includes(operation)) return transaction;
+  if (["preview_ct_config", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config"].includes(operation)) return transaction;
   if (["start_session", "get_session", "acknowledge_safety", "cancel_session"].includes(operation)) return session;
   if (operation === "check_stability") return stability;
   if (operation === "calibrate_voltage") return { ...calibration, group_key: "addon6_2", phase: null,
@@ -138,6 +139,17 @@ describe("HelperApi", () => {
     await api.calibrateVoltage("session-1", "addon6_2", 120, true);
     await api.calibrateCurrent("session-1", [{ channel: 42, reference: 25, reporting_multiplier: 1 }], true);
     await api.restartAndVerify("session-1", topology);
+    await api.previewCalibratedGains("session-1", "1".repeat(32));
+    hass.responses.clear_calibration_flash = {
+      ...restart,
+      source_authority: "configuration",
+      source_handoff_available: false,
+      source_handoff_transaction_id: "2".repeat(32),
+      source_handoff_firmware_installed: true,
+    };
+    await api.clearCalibrationFlash(
+      "session-1", "1".repeat(32), "2".repeat(32), topology,
+    );
     await api.cancelSession("session-1");
     await api.getDiagnosticsSummary();
     await api.subscribeSetup(() => undefined);
@@ -164,6 +176,8 @@ describe("HelperApi", () => {
       "circuitsetup_energy_meter_helper/calibrate_voltage",
       "circuitsetup_energy_meter_helper/calibrate_current",
       "circuitsetup_energy_meter_helper/restart_and_verify",
+      "circuitsetup_energy_meter_helper/preview_calibrated_gains",
+      "circuitsetup_energy_meter_helper/clear_calibration_flash",
       "circuitsetup_energy_meter_helper/cancel_session",
       "circuitsetup_energy_meter_helper/get_diagnostics_summary",
       "circuitsetup_energy_meter_helper/subscribe_setup",
