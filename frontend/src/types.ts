@@ -181,6 +181,12 @@ export interface SessionStatus {
   calibration_sources?: Record<string, "flash" | "configuration" | "unknown">;
 }
 
+export interface ActiveWork {
+  session: SessionStatus | null;
+  transaction: TransactionStatus | null;
+  verified_calibration: RestartVerificationResult | null;
+}
+
 export interface StabilityResult {
   target: "voltage" | "current";
   target_id: string;

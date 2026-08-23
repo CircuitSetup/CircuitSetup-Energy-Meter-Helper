@@ -129,6 +129,9 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       } else if (operation === "adopt_device") result = { device_id: "meter-1", configuration: "meter.yaml" };
       else if (operation === "get_topology") result = topology(addons);
       else if (operation === "get_ct_inventory") result = inventory(addons);
+      else if (operation === "get_active_work") result = {
+        session: null, transaction: null, verified_calibration: null,
+      };
       else if (operation === "set_ha_labels") result = { mode: "home_assistant_labels",
         results: [{ channel: 1, state: "updated" }] };
       else if (operation === "preview_ct_config") {
@@ -157,7 +160,9 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         { progress: ["config_restored"] });
       else if (operation === "start_session") result = currentSession = session("safety_required", false);
       else if (operation === "acknowledge_safety") result = currentSession = session("ready", true);
-      else if (operation === "check_stability") result = stability(frame);
+      else if (operation === "check_stability") result = frame.target === "voltage"
+        ? (frame.target_ids as string[]).map((target_id) => stability({ ...frame, target_id }))
+        : stability(frame);
       else if (operation === "calibrate_current") {
         const references = frame.references as Array<{ channel: number; reference: number }>;
         const channel = Number(references[0]?.channel); const reference = Number(references[0]?.reference);

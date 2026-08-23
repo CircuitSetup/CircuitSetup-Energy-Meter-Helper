@@ -302,6 +302,19 @@ class ConfigTransactionManager:
         ):
             raise KeyError("stale configuration transaction")
 
+    def active_status(self, mac: str) -> TransactionStatus | None:
+        """Return the newest live safe transaction status for one meter."""
+        mac = canonical_mac(mac)
+        for candidate in reversed(self.sessions._transactions()):
+            if not isinstance(candidate, _ConfigTransaction) or candidate.mac != mac:
+                continue
+            try:
+                transaction = self._transaction(candidate.transaction_id)
+            except KeyError:
+                continue
+            return _status(transaction)
+        return None
+
     def subscribe(
         self,
         transaction_id: str,
@@ -860,26 +873,40 @@ class ConfigTransactionManager:
             expected_current_sha256
             or sha256(plan.proposed_content.encode()).hexdigest()
         )
+        if TransactionProgress.CONFIG_RESTORED not in transaction.progress:
+            try:
+                # DeviceBuilder.async_restore_content owns restore plus exactly one validation.
+                async with asyncio.timeout(self._reconciliation_timeout):
+                    await self._device_builder.async_restore_content(
+                        plan.configuration,
+                        prior_content,
+                        expected_current_sha256=expected_current_sha256,
+                    )
+            except asyncio.CancelledError:
+                _evidence(transaction, TransactionEvidenceCode.CANCELLED)
+                self._retain_write_recovery(transaction)
+                raise
+            except (TimeoutError, ConfigChangedError):
+                return self._retain_write_recovery(transaction)
+            except Exception as error:
+                _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
+                self._retain_write_recovery(transaction)
+                raise RollbackFailedError("configuration rollback failed") from error
+            _progress(transaction, TransactionProgress.CONFIG_RESTORED)
+            self.publish_status(_status(transaction))
+        transaction.write_started = False
         try:
-            # DeviceBuilder.async_restore_content owns restore plus exactly one validation.
-            async with asyncio.timeout(self._reconciliation_timeout):
-                await self._device_builder.async_restore_content(
-                    plan.configuration,
-                    prior_content,
-                    expected_current_sha256=expected_current_sha256,
-                )
+            await transaction.async_release_reservation()
         except asyncio.CancelledError:
-            _evidence(transaction, TransactionEvidenceCode.CANCELLED)
-            self._retain_write_recovery(transaction)
+            if not transaction.reservation_claimed:
+                self._finish(transaction, ConfigTransactionState.ROLLED_BACK)
+            else:
+                self._retain_write_recovery(transaction)
             raise
-        except (TimeoutError, ConfigChangedError):
-            return self._retain_write_recovery(transaction)
         except Exception as error:
             _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
             self._retain_write_recovery(transaction)
-            raise RollbackFailedError("configuration rollback failed") from error
-        _progress(transaction, TransactionProgress.CONFIG_RESTORED)
-        self.publish_status(_status(transaction))
+            raise RollbackFailedError("configuration rollback cleanup failed") from error
         return self._finish(transaction, ConfigTransactionState.ROLLED_BACK)
 
     async def _rollback_after_cancellation(

@@ -56,7 +56,7 @@ from tests.test_calibration_engine_voltage import (
     gain_evidence,
     sample_window,
 )
-from tests.test_config_transaction import Builder, Persistence, Verifier
+from tests.test_config_transaction import Builder, Job, Persistence, Verifier
 from tests.test_entity_binding import (
     ButtonInfo,
     substitutions,
@@ -1294,6 +1294,7 @@ def test_transaction_rereads_and_refuses_cross_device_stale_or_changed_origin() 
             "aabbccddeeff", topology(0), current_record.verification_id
         )
         assert status.state is ConfigTransactionState.PREVIEWED
+        assert manager2.active_status(current_record.mac) == status
         with pytest.raises(ConfigMutationError, match="already been used"):
             await manager2.async_preview_calibrated_gains(
                 "aabbccddeeff", topology(0), current_record.verification_id
@@ -1727,6 +1728,40 @@ def test_store_writes_only_compact_verified_calibration_schema() -> None:
         assert not await store.async_claim_verified_calibration(
             record.mac, record.verification_id, "5" * 32
         )
+
+    asyncio.run(run())
+
+
+def test_successful_validation_rollback_releases_handoff_for_retry() -> None:
+    async def run() -> None:
+        source = _snapshot()
+        record = _record(source, ((7301, 1),) * 3)
+        persistence = CalibrationPersistence((record,))
+        builder = Builder(
+            remote_content=source.content,
+            validation=(Job(False, "invalid generated configuration"),),
+        )
+        manager = ConfigTransactionManager(
+            builder,
+            Verifier(RuntimeError()),
+            persistence,
+            SessionManager(),
+        )
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+
+        result = await manager.async_confirm_write(
+            preview.transaction_id, "admin-user"
+        )
+
+        assert result.state is ConfigTransactionState.ROLLED_BACK
+        assert builder.remote_content == source.content
+        assert persistence.claimed == {}
+        retry = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+        assert retry.state is ConfigTransactionState.PREVIEWED
 
     asyncio.run(run())
 

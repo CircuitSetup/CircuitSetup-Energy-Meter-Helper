@@ -148,6 +148,7 @@ describe("CircuitSetup panel", () => {
         const operation = String(message.type).split("/").at(-1) ?? "";
         operations.push(operation);
         if (operation === "setup_status") return setup as T;
+        if (operation === "get_active_work") return { session: null, transaction: null, verified_calibration: null } as T;
         if (operation === "start_session") return { session_id: "native-session", device_id: "meter-1",
           state: "safety_required", safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } } as T;
         return {} as T;
@@ -238,6 +239,7 @@ describe("CircuitSetup panel", () => {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
         if (operation === "setup_status") return setup as T;
+        if (operation === "get_active_work") return { session: null, transaction: null, verified_calibration: null } as T;
         if (operation === "start_session") { starts += 1; return await start as T; }
         return {} as T;
       },
@@ -428,27 +430,26 @@ describe("CircuitSetup panel", () => {
   });
 
   it("calibrates both chips on only the selected voltage board", async () => {
-    const targets: string[] = [];
-    const calibrated: string[] = [];
+    const targets: string[][] = [];
+    const calibrated: string[][] = [];
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
         if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
         if (operation === "check_stability") {
-          const targetId = String(message.target_id);
-          targets.push(targetId);
-          return { target: "voltage", target_id: targetId, stable: true,
+          const targetIds = message.target_ids as string[];
+          targets.push(targetIds);
+          return targetIds.map((target_id) => ({ target: "voltage", target_id, stable: true,
             windows: Array.from({ length: 3 }, () => ({ samples: [120], mean: 120,
-              standard_deviation: 0, range_percent: 0 })) } as T;
+              standard_deviation: 0, range_percent: 0 })) })) as T;
         }
         if (operation === "calibrate_voltage") {
-          const groupKey = String(message.group_key);
-          calibrated.push(groupKey);
-          const firstChannel = (calibrated.length - 1) * 3 + 1;
-          return { state: "indeterminate", group_key: groupKey, phase: null,
-            changed_channels: [firstChannel, firstChannel + 1, firstChannel + 2], iteration: 1,
+          const references = message.references as Array<{ group_key: string; reference: number }>;
+          calibrated.push(references.map((item) => item.group_key));
+          return references.map(({ group_key }, index) => ({ state: "indeterminate", group_key, phase: null,
+            changed_channels: [index * 3 + 1, index * 3 + 2, index * 3 + 3], iteration: 1,
             before_values: [120, 120, 120], after_values: [], error_percent_values: [], gain_evidence: null,
-            restore_evidence: null, retry_allowed: false } as T;
+            restore_evidence: null, retry_allowed: false })) as T;
         }
         return {} as T;
       },
@@ -490,10 +491,10 @@ describe("CircuitSetup panel", () => {
     check?.click();
     check?.click();
     await tick(); await panel.updateComplete;
-    expect(targets).toEqual(["main_1", "main_2"]);
+    expect(targets).toEqual([["main_1", "main_2"]]);
     expect(text(panel)).toContain("Live data loaded");
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".calibration-step button.primary")?.click();
-    await expect.poll(() => calibrated).toEqual(["main_1", "main_2"]);
+    await expect.poll(() => calibrated).toEqual([["main_1", "main_2"]]);
     await panel.updateComplete;
 
     state.board = 1;
@@ -744,6 +745,7 @@ describe("CircuitSetup panel", () => {
     const messages: Record<string, unknown>[] = [];
     const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] },
       set_ha_labels: { mode: "home_assistant_labels", results: [{ channel: 1, state: "updated" }] },
+      get_active_work: { session: null, transaction: null, verified_calibration: null },
       start_session: { session_id: "session", device_id: "meter-1", state: "safety_required",
         safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } } });
     const callWS = hass.callWS;
@@ -759,6 +761,9 @@ describe("CircuitSetup panel", () => {
       catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
     };
     const panel = await mount(hass);
+    (panel as unknown as Record<string, unknown>).topology = { addon_count: 0, board_count: 1, ct_count: 6,
+      group_count: 2, connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
     panel.showInventory(inventory);
     await panel.updateComplete;
     panel.shadowRoot?.querySelectorAll<HTMLInputElement>('[name="name-mode"]')[1]?.click();
@@ -818,6 +823,44 @@ describe("CircuitSetup panel", () => {
     expect(operations).toEqual(["subscribe_setup", "subscribe_setup", "subscribe_config_transaction", "subscribe_session"]);
   });
 
+  it("restores authoritative active work instead of creating a second session after reload", async () => {
+    const operations: string[] = [];
+    const topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
+    const session = { session_id: "session-active", device_id: "meter-1", state: "ready",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+    const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [] };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>) => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        operations.push(operation);
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "get_active_work") return { session, transaction, verified_calibration: null } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async (_callback, message) => {
+        operations.push(String(message.type).split("/").at(-1) ?? "");
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { startSession(): Promise<void> };
+    state.topology = topology;
+
+    await state.startSession();
+    await panel.updateComplete;
+
+    expect(operations).toContain("get_active_work");
+    expect(operations).not.toContain("start_session");
+    expect(operations).toContain("subscribe_config_transaction");
+    expect(operations).toContain("subscribe_session");
+    expect(state.session).toEqual(session);
+    expect(state.transaction).toEqual(transaction);
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Flash & Verify");
+  });
+
   it("revokes replaced transaction and session subscriptions and ignores captured old callbacks", async () => {
     const callbacks: Array<(message: unknown) => void> = [];
     const unsubscriptions: number[] = [];
@@ -862,6 +905,7 @@ describe("CircuitSetup panel", () => {
       safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } };
     const panel = await mount(makeHass({
       setup_status: { state: "device_discovered", devices: [device] },
+      get_active_work: { session: null, transaction: null, verified_calibration: null },
       start_session: freshSession,
     }));
     const state = panel as unknown as Record<string, unknown> & {
@@ -963,6 +1007,7 @@ describe("CircuitSetup panel", () => {
     state.selectDevice("meter-1");
     const sessionCall = state.startSession();
     state.selectDevice("meter-2");
+    pending.get("get_active_work")?.({ session: null, transaction: null, verified_calibration: null });
     pending.get("start_session")?.({ session_id: "session-a", device_id: "meter-1", state: "safety_required",
       safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } });
     await sessionCall;

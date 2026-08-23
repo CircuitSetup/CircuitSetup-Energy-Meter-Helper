@@ -38,6 +38,7 @@ READ_COMMANDS = (
     f"{_PREFIX}list_meters",
     f"{_PREFIX}get_topology",
     f"{_PREFIX}get_ct_inventory",
+    f"{_PREFIX}get_active_work",
     f"{_PREFIX}get_session",
     f"{_PREFIX}get_diagnostics_summary",
 )
@@ -149,6 +150,8 @@ class WorkflowOwner(Protocol):
 
     async def async_get_ct_inventory(self, device_id: str) -> Any: ...
 
+    async def async_get_active_work(self, device_id: str) -> Any: ...
+
     async def async_get_session(self, session_id: str) -> Any: ...
 
     async def async_adopt_device(self, device_id: str) -> Any: ...
@@ -172,14 +175,13 @@ class WorkflowOwner(Protocol):
     ) -> Any: ...
 
     async def async_check_stability(
-        self, session_id: str, target: str, target_id: str
+        self, session_id: str, target: str, target_id: str | tuple[str, ...]
     ) -> Any: ...
 
     async def async_calibrate_voltage(
         self,
         session_id: str,
-        group_key: str,
-        reference: float,
+        references: tuple[Mapping[str, Any], ...],
         confirm_iteration: bool,
     ) -> Any: ...
 
@@ -284,6 +286,8 @@ class EntryWebsocketController:
             }
         if operation == "get_ct_inventory" and workflow is not None:
             return await workflow.async_get_ct_inventory(msg["device_id"])
+        if operation == "get_active_work" and workflow is not None:
+            return await workflow.async_get_active_work(msg["device_id"])
         if operation == "get_session" and workflow is not None:
             return await workflow.async_get_session(msg["session_id"])
         if operation == "set_installer_intent":
@@ -329,14 +333,23 @@ class EntryWebsocketController:
                 msg["session_id"], msg["acknowledged"]
             )
         if operation == "check_stability" and workflow is not None:
+            target = msg["target"]
+            target_id: str | tuple[str, ...]
+            if target == "voltage":
+                if "target_id" in msg or "target_ids" not in msg:
+                    raise ValueError("voltage stability requires one board")
+                target_id = tuple(msg["target_ids"])
+            else:
+                if "target_ids" in msg or "target_id" not in msg:
+                    raise ValueError("current stability requires one channel")
+                target_id = msg["target_id"]
             return await workflow.async_check_stability(
-                msg["session_id"], msg["target"], msg["target_id"]
+                msg["session_id"], target, target_id
             )
         if operation == "calibrate_voltage" and workflow is not None:
             return await workflow.async_calibrate_voltage(
                 msg["session_id"],
-                msg["group_key"],
-                msg["reference"],
+                tuple(msg["references"]),
                 msg["confirm_iteration"],
             )
         if operation == "calibrate_current" and workflow is not None:
@@ -809,7 +822,7 @@ def _schema(command: str) -> dict[Any, Any]:
             vol.Required("transaction_id"): _ID,
             vol.Required("source_sha256"): _SHA256,
         }
-    elif operation == "start_session":
+    elif operation in {"get_active_work", "start_session"}:
         schema[vol.Required("device_id")] = _ID
     elif operation == "preview_calibrated_gains":
         schema |= {
@@ -847,13 +860,24 @@ def _schema(command: str) -> dict[Any, Any]:
         schema |= {
             vol.Required("session_id"): _ID,
             vol.Required("target"): vol.In(("voltage", "current")),
-            vol.Required("target_id"): _ID,
+            vol.Optional("target_id"): _ID,
+            vol.Optional("target_ids"): vol.All([_ID], vol.Length(min=2, max=2)),
         }
     elif operation == "calibrate_voltage":
         schema |= {
             vol.Required("session_id"): _ID,
-            vol.Required("group_key"): _ID,
-            vol.Required("reference"): vol.Coerce(float),
+            vol.Required("references"): vol.All(
+                [
+                    vol.Schema(
+                        {
+                            vol.Required("group_key"): _ID,
+                            vol.Required("reference"): vol.Coerce(float),
+                        },
+                        extra=vol.PREVENT_EXTRA,
+                    )
+                ],
+                vol.Length(min=2, max=2),
+            ),
             vol.Optional("confirm_iteration", default=False): bool,
         }
     elif operation == "calibrate_current":

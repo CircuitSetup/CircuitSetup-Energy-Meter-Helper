@@ -613,6 +613,30 @@ export class CircuitSetupPanel extends LitElement {
       this.session = null;
       this.resetCalibrationRun();
       await this.run(async () => {
+        if (!this.topology) throw new Error("Topology is required before calibration");
+        const active = await api.getActiveWork(deviceId, this.topology);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.session = active.session?.state === "cancelled" ? null : active.session;
+        this.transaction = active.transaction;
+        this.safetyAcknowledged = this.session?.safety_acknowledged ?? false;
+        this.calibrationHandoff = Boolean(this.transaction && active.verified_calibration
+          && active.verified_calibration.source_handoff_transaction_id === this.transaction.transaction_id);
+        this.restartResult = this.calibrationHandoff || this.session?.state === "verified"
+          ? active.verified_calibration : null;
+        if (this.transaction) {
+          this.navigate("build");
+          await this.subscribeTransaction(this.connectionGeneration);
+          if (this.session) await this.subscribeSession(this.connectionGeneration);
+          return;
+        }
+        if (this.session) {
+          this.navigate(this.session.state === "safety_required" || this.session.state === "preflight_failed"
+            ? "safety"
+            : this.session.state === "applied_pending_restart_verification" ? "restart"
+            : this.session.state === "verified" && this.restartResult ? "summary" : "voltage");
+          await this.subscribeSession(this.connectionGeneration);
+          return;
+        }
         const session = await api.startSession(deviceId);
         if (!this.ownsOperation(generation, api, deviceId) || session.device_id !== deviceId) return;
         this.session = session;
@@ -681,14 +705,20 @@ export class CircuitSetupPanel extends LitElement {
     if (target === "voltage") { this.voltageBusy = true; this.requestUpdate(); }
     try {
       await this.run(async () => {
+        if (target === "voltage") {
+          const results = await api.checkVoltageStability(sessionId, targetIds);
+          if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+          const updated = new Map(this.stabilityByTarget);
+          results.forEach((result) => updated.set(`voltage:${result.target_id}`, result));
+          this.stabilityByTarget = updated;
+          this.announcement = "Loaded voltage data from both chips on this board.";
+          return;
+        }
         for (const [index, targetId] of targetIds.entries()) {
           const result = await api.checkStability(sessionId, target, targetId);
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
           this.stabilityByTarget = new Map(this.stabilityByTarget).set(`${target}:${targetId}`, result);
-          if (target === "voltage") {
-            this.announcement = `Loaded voltage data from chip ${index + 1} of ${targetIds.length}.`;
-            this.requestUpdate();
-          }
+          if (index < targetIds.length - 1) this.requestUpdate();
         }
       }, "Stable samples could not be collected.", () => this.ownsOperation(generation, api, deviceId));
     } finally {
@@ -710,28 +740,30 @@ export class CircuitSetupPanel extends LitElement {
     if (target === "voltage") { this.voltageBusy = true; this.requestUpdate(); }
     try {
       await this.run(async () => {
-        for (const [index, targetId] of targetIds.entries()) {
-          const result = target === "voltage"
-            ? await api.calibrateVoltage(sessionId, targetId,
-              this.voltageReferences[this.topology?.voltage_layout === "two_voltages" ? index : 0]!, true)
-            : await api.calibrateCurrent(sessionId, currentReferences, true,
-              this.inventory && !this.labelOnly
-                ? changesFromDrafts(this.inventory, this.drafts).map((change) => ({
-                  channel: change.channel,
-                  reporting_multiplier: change.reporting_multiplier ?? 1,
-                }))
-                : []);
+        if (target === "voltage") {
+          const results = await api.calibrateVoltage(sessionId, targetIds.map((groupKey, index) => ({
+            group_key: groupKey,
+            reference: this.voltageReferences[this.topology?.voltage_layout === "two_voltages" ? index : 0]!,
+          })), true);
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
           const updated = new Map(this.calibrationByTarget);
-          if (target === "current") currentReferences.forEach((item) => updated.set(`current:${item.channel}`, result));
-          else updated.set(`${target}:${targetId}`, result);
+          results.forEach((result) => updated.set(`voltage:${result.group_key}`, result));
           this.calibrationByTarget = updated;
-          this.announcement = target === "voltage"
-            ? `Calibrated voltage chip ${index + 1} of ${targetIds.length}.`
-            : `Calibration iteration ${result.iteration} finished with state ${result.state}.`;
-          this.requestUpdate();
-          if (target === "current") break;
+          this.announcement = "Calibrated both voltage chips on this board.";
+          return;
         }
+        const result = await api.calibrateCurrent(sessionId, currentReferences, true,
+          this.inventory && !this.labelOnly
+            ? changesFromDrafts(this.inventory, this.drafts).map((change) => ({
+              channel: change.channel,
+              reporting_multiplier: change.reporting_multiplier ?? 1,
+            }))
+            : []);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        const updated = new Map(this.calibrationByTarget);
+        currentReferences.forEach((item) => updated.set(`current:${item.channel}`, result));
+        this.calibrationByTarget = updated;
+        this.announcement = `Calibration iteration ${result.iteration} finished with state ${result.state}.`;
       }, "Calibration did not complete. Reconnect and inspect before another attempt.",
       () => this.ownsOperation(generation, api, deviceId));
     } finally {

@@ -104,6 +104,25 @@ function validResponse(operation: string): unknown {
 }
 
 describe("HelperApi", () => {
+  it("loads the authoritative active work for one device", async () => {
+    const hass = new FakeHass();
+    hass.responses.get_active_work = {
+      session,
+      transaction,
+      verified_calibration: restart,
+    };
+    const api = new HelperApi(hass, "entry-1");
+
+    const active = await api.getActiveWork("meter-1", topology);
+
+    expect(active).toEqual({ session, transaction, verified_calibration: restart });
+    expect(hass.messages).toEqual([{
+      type: "circuitsetup_energy_meter_helper/get_active_work",
+      entry_id: "entry-1",
+      device_id: "meter-1",
+    }]);
+  });
+
   it("sends the exact Task 19 command identifiers and confirmation handles", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
@@ -134,9 +153,24 @@ describe("HelperApi", () => {
     await api.startSession("meter-1");
     await api.getSession("session-1");
     await api.acknowledgeSafety("session-1");
-    hass.responses.check_stability = { ...stability, target_id: "42" };
-    await api.checkStability("session-1", "current", "42");
-    await api.calibrateVoltage("session-1", "addon6_2", 120, true);
+    hass.responses.check_stability = ["addon6_1", "addon6_2"].map((target_id) => ({
+      target: "voltage", target_id, stable: true,
+      windows: Array.from({ length: 3 }, () => ({ samples: [120], mean: 120,
+        standard_deviation: 0, range_percent: 0 })),
+    }));
+    await api.checkVoltageStability("session-1", ["addon6_1", "addon6_2"]);
+    hass.responses.calibrate_voltage = [
+      { ...calibration, group_key: "addon6_1", phase: null, changed_channels: [37, 38, 39],
+        before_values: [120, 120, 120], after_values: [120, 120, 120], error_percent_values: [0, 0, 0],
+        gain_evidence: gainEvidence("addon6_1", "voltage", 120) },
+      { ...calibration, group_key: "addon6_2", phase: null, changed_channels: [40, 41, 42],
+        before_values: [120, 120, 120], after_values: [120, 120, 120], error_percent_values: [0, 0, 0],
+        gain_evidence: gainEvidence("addon6_2", "voltage", 120) },
+    ];
+    await api.calibrateVoltage("session-1", [
+      { group_key: "addon6_1", reference: 120 },
+      { group_key: "addon6_2", reference: 120 },
+    ], true);
     await api.calibrateCurrent("session-1", [{ channel: 42, reference: 25, reporting_multiplier: 1 }], true,
       [{ channel: 42, reporting_multiplier: 1 }]);
     await api.restartAndVerify("session-1", topology);
@@ -191,6 +225,11 @@ describe("HelperApi", () => {
       .toMatchObject({ changes: [{ channel: 1, name: "Mains", model_id: "cs-ct-200a", reporting_multiplier: 2 }] });
     expect(hass.messages.find((message) => String(message.type).endsWith("calibrate_current")))
       .toMatchObject({ pending_multipliers: [{ channel: 42, reporting_multiplier: 1 }] });
+    expect(hass.messages.find((message) => String(message.type).endsWith("check_stability")))
+      .toMatchObject({ target: "voltage", target_ids: ["addon6_1", "addon6_2"] });
+    expect(hass.messages.find((message) => String(message.type).endsWith("calibrate_voltage")))
+      .toMatchObject({ references: [{ group_key: "addon6_1", reference: 120 },
+        { group_key: "addon6_2", reference: 120 }] });
     expect(hass.messages[7]).toEqual({
       type: "circuitsetup_energy_meter_helper/preview_ct_config",
       entry_id: "entry-1",

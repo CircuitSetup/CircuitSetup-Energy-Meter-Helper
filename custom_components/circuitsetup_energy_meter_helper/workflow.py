@@ -358,6 +358,26 @@ class EntryWorkflow:
     async def async_get_session(self, session_id: str) -> SessionStatus:
         return self._session(session_id).status()
 
+    async def async_get_active_work(self, device_id: str) -> dict[str, Any]:
+        """Return safe resumable work for one selected device."""
+        self._device(device_id)
+        mac = self._mac(device_id)
+        with self._guard(mac):
+            self._prune_device_sessions_locked(mac)
+            session = next(
+                (item.status() for item in self._sessions.values() if item.mac == mac),
+                None,
+            )
+        return {
+            "session": session,
+            "transaction": (
+                self.transactions.active_status(mac)
+                if self.transactions is not None
+                else None
+            ),
+            "verified_calibration": await self._store.async_get_verified_calibration(mac),
+        }
+
     async def async_adopt_device(self, device_id: str) -> dict[str, str]:
         device = self._device(device_id)
         builder = self._require_builder()
@@ -572,21 +592,39 @@ class EntryWorkflow:
             return self._publish(handle)
 
     async def async_check_stability(
-        self, session_id: str, target: str, target_id: str
-    ) -> dict[str, Any]:
+        self, session_id: str, target: str, target_id: str | tuple[str, ...]
+    ) -> dict[str, Any] | tuple[dict[str, Any], ...]:
         handle, revision = self._claim_ready_session(session_id)
         api = self._require_api()
         try:
             entities: tuple[Any, ...]
             if target == "voltage":
-                group = next(
-                    (item for item in handle.binding.groups if item.key == target_id),
-                    None,
+                if not isinstance(target_id, tuple) or len(target_id) != 2:
+                    raise WorkflowHandleError("voltage stability requires one board")
+                groups = tuple(
+                    next(
+                        (item for item in handle.binding.groups if item.key == group_key),
+                        None,
+                    )
+                    for group_key in target_id
                 )
-                if group is None:
+                if any(group is None for group in groups) or len(
+                    {
+                        group.voltage_reference.descriptor.device_id
+                        for group in groups
+                        if group is not None
+                    }
+                ) != 1:
                     raise WorkflowHandleError("unknown voltage target")
-                entities = group.voltage_sensors
+                entities = tuple(
+                    entity
+                    for group in groups
+                    if group is not None
+                    for entity in group.voltage_sensors
+                )
             else:
+                if not isinstance(target_id, str):
+                    raise WorkflowHandleError("unknown current target")
                 try:
                     channel = int(target_id)
                 except ValueError:
@@ -617,6 +655,22 @@ class EntryWorkflow:
             handle.state = "stable" if stable else "unstable"
             self._refresh(handle)
             self._publish(handle)
+            if target == "voltage":
+                return tuple(
+                    {
+                        "target": target,
+                        "target_id": group_key,
+                        "stable": all(
+                            window.range_percent <= 1.0
+                            for window in windows[index * 3 : index * 3 + 3]
+                        ),
+                        "windows": tuple(
+                            _public_sample_window(window)
+                            for window in windows[index * 3 : index * 3 + 3]
+                        ),
+                    }
+                    for index, group_key in enumerate(target_id)
+                )
             return {
                 "target": target,
                 "target_id": target_id,
@@ -629,34 +683,48 @@ class EntryWorkflow:
     async def async_calibrate_voltage(
         self,
         session_id: str,
-        group_key: str,
-        reference: float,
+        references: tuple[Mapping[str, Any], ...],
         confirm_iteration: bool,
     ) -> Any:
         handle, revision = self._claim_ready_session(session_id)
         try:
-            iteration = self._sessions_owner.next_calibration_iteration(
-                handle.mac, f"voltage:{group_key}"
+            if len(references) != 2:
+                raise WorkflowHandleError("voltage calibration requires one board")
+            calibrated = tuple(
+                (
+                    str(item["group_key"]),
+                    float(item["reference"]),
+                    self._sessions_owner.next_calibration_iteration(
+                        handle.mac, f"voltage:{item['group_key']}"
+                    ),
+                )
+                for item in references
             )
             self._assert_claim(handle, revision)
-            result = await self._calibration.async_calibrate_voltage(
+            results = await self._calibration.async_calibrate_voltages(
                 handle.mac,
                 self._require_api(),
                 handle.binding,
-                group_key,
-                reference,
+                calibrated,
                 1.0,
-                iteration=iteration,
                 confirm_iteration=confirm_iteration,
                 substitutions=handle.substitutions,
             )
             self._assert_claim(handle, revision)
-            if result.gain_evidence is not None and result.gain_evidence.flash_saved:
-                handle.calibration_sources[result.gain_evidence.instance_id] = "flash"
-            handle.state = str(result.state)
+            for result in results:
+                if result.gain_evidence is not None and result.gain_evidence.flash_saved:
+                    handle.calibration_sources[result.gain_evidence.instance_id] = "flash"
+            handle.state = next(
+                (
+                    str(result.state)
+                    for result in results
+                    if str(result.state) != "applied_pending_restart_verification"
+                ),
+                "applied_pending_restart_verification",
+            )
             self._refresh(handle)
             self._publish(handle)
-            return result
+            return results
         finally:
             self._release_claim(handle, revision)
 

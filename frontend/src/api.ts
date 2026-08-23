@@ -1,4 +1,5 @@
 import type {
+  ActiveWork,
   CalibrationResult,
   ConnectionType,
   CtChange,
@@ -292,6 +293,14 @@ function restart(value: unknown, label: string, expected: MeterTopology): Restar
   return value as RestartVerificationResult;
 }
 
+function activeWork(value: unknown, label: string, expected: MeterTopology): ActiveWork {
+  const item = record(value, label);
+  if (item.session !== null) session(item.session, label);
+  if (item.transaction !== null) transaction(item.transaction, label);
+  if (item.verified_calibration !== null) restart(item.verified_calibration, label, expected);
+  return value as ActiveWork;
+}
+
 export class HelperApi {
   public constructor(
     private readonly hass: HomeAssistant,
@@ -363,6 +372,8 @@ export class HelperApi {
     this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
   public getCtInventory = (deviceId: string) =>
     this.call("get_ct_inventory", (value) => ctInventory(value, "get_ct_inventory"), { device_id: deviceId });
+  public getActiveWork = (deviceId: string, expectedTopology: MeterTopology) =>
+    this.call("get_active_work", (value) => activeWork(value, "get_active_work", expectedTopology), { device_id: deviceId });
   public getSession = (sessionId: string) =>
     this.call("get_session", (value) => session(value, "get_session"), { session_id: sessionId });
   public getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (value) => record(value, "get_diagnostics_summary"));
@@ -406,13 +417,34 @@ export class HelperApi {
     this.call("acknowledge_safety", (value) => session(value, "acknowledge_safety"), { session_id: sessionId, acknowledged: true });
   public checkStability = (sessionId: string, target: "voltage" | "current", targetId: string) =>
     this.call("check_stability", (value) => stability(value, "check_stability", target, targetId), { session_id: sessionId, target, target_id: targetId });
-  public calibrateVoltage = (sessionId: string, groupKey: string, reference: number, confirmIteration: boolean) =>
-    this.call("calibrate_voltage", (value) => calibration(value, "calibrate_voltage", { target: "voltage", groupKey, reference }), {
-      session_id: sessionId,
-      group_key: groupKey,
-      reference,
-      confirm_iteration: confirmIteration,
-    });
+  public checkVoltageStability = (sessionId: string, groupKeys: string[]) => {
+    if (groupKeys.length !== 2 || new Set(groupKeys).size !== 2) return Promise.reject(new Error("check_stability board is invalid"));
+    return this.call("check_stability", (value) => {
+      const results = array(value, "check_stability", 2);
+      if (results.length !== 2) throw new Error("check_stability response is invalid");
+      return results.map((item, index) => stability(item, "check_stability", "voltage", groupKeys[index]!));
+    }, { session_id: sessionId, target: "voltage", target_ids: groupKeys });
+  };
+  public calibrateVoltage = (
+    sessionId: string,
+    references: Array<{ group_key: string; reference: number }>,
+    confirmIteration: boolean,
+  ) => {
+    const channels = references.map((item) => groupChannels(item.group_key));
+    if (references.length !== 2 || new Set(references.map((item) => item.group_key)).size !== 2
+      || channels.some((item) => item.length !== 3)
+      || new Set(channels.map((item) => Math.floor((item[0]! - 1) / 6))).size !== 1
+      || references.some((item) => !Number.isFinite(item.reference) || item.reference <= 0)) {
+      return Promise.reject(new Error("calibrate_voltage board is invalid"));
+    }
+    return this.call("calibrate_voltage", (value) => {
+      const results = array(value, "calibrate_voltage", 2);
+      if (results.length !== 2) throw new Error("calibrate_voltage response is invalid");
+      return results.map((item, index) => calibration(item, "calibrate_voltage", {
+        target: "voltage", groupKey: references[index]!.group_key, reference: references[index]!.reference,
+      }));
+    }, { session_id: sessionId, references, confirm_iteration: confirmIteration });
+  };
   public calibrateCurrent = (
     sessionId: string,
     references: Array<{ channel: number; reference: number; reporting_multiplier: number }>,

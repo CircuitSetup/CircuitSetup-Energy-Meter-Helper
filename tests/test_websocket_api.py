@@ -529,7 +529,7 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
             "transaction_id": "transaction",
             "source_sha256": "a" * 64,
         }
-    elif suffix == "start_session":
+    elif suffix in {"get_active_work", "start_session"}:
         base["device_id"] = "meter"
     elif suffix == "preview_calibrated_gains":
         base |= {"session_id": "3" * 32, "verification_id": "1" * 32}
@@ -542,9 +542,19 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
     elif suffix == "acknowledge_safety":
         base |= {"session_id": "session", "acknowledged": True}
     elif suffix == "check_stability":
-        base |= {"session_id": "session", "target": "voltage", "target_id": "main_1"}
+        base |= {
+            "session_id": "session",
+            "target": "voltage",
+            "target_ids": ["main_1", "main_2"],
+        }
     elif suffix == "calibrate_voltage":
-        base |= {"session_id": "session", "group_key": "main_1", "reference": 120.0}
+        base |= {
+            "session_id": "session",
+            "references": [
+                {"group_key": "main_1", "reference": 120.0},
+                {"group_key": "main_2", "reference": 120.0},
+            ],
+        }
     elif suffix == "calibrate_current":
         base |= {
             "session_id": "session",
@@ -1064,6 +1074,12 @@ substitutions:
         inventory = await workflow.async_get_ct_inventory("meter")
         assert any(target.__name__ == "load" for target, _args in hass.executor_jobs)
         session = await workflow.async_start_session("meter")
+        active = await workflow.async_get_active_work("meter")
+        assert active == {
+            "session": session,
+            "transaction": None,
+            "verified_calibration": None,
+        }
         with pytest.raises(WorkflowHandleError, match="already active"):
             await workflow.async_start_session("meter")
         await workflow.async_acknowledge_safety(session.session_id, True)
@@ -1167,7 +1183,7 @@ def test_stability_collects_all_phase_windows_concurrently(
             del device_id
             started.append((key, after, timeout))
             sample_counts.append(sample_count)
-            if len(started) == 3:
+            if len(started) == 6:
                 all_started.set()
             await all_started.wait()
             return SensorSampleWindow(
@@ -1179,15 +1195,17 @@ def test_stability_collects_all_phase_windows_concurrently(
         await workflow.async_acknowledge_safety(status.session_id, True)
 
         result = await asyncio.wait_for(
-            workflow.async_check_stability(status.session_id, "voltage", "main_1"),
+            workflow.async_check_stability(
+                status.session_id, "voltage", ("main_1", "main_2")
+            ),
             0.2,
         )
 
-        assert result["stable"]
-        assert len(started) == 3
+        assert all(item["stable"] for item in result)
+        assert len(started) == 6
         assert len({after for _, after, _ in started}) == 1
         assert all(after is not None for _, after, _ in started)
-        assert sample_counts == [1, 1, 1]
+        assert sample_counts == [1] * 6
         assert all(timeout >= 30 for _, _, timeout in started)
         await workflow.async_close()
 
@@ -1295,7 +1313,7 @@ def test_configuration_inventory_remains_authoritative_for_multiplier(
     asyncio.run(run())
 
 
-def test_native_only_voltage_calibration_needs_no_builder_snapshot(
+def test_native_only_board_voltage_calibration_needs_no_builder_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def run() -> None:
@@ -1305,21 +1323,33 @@ def test_native_only_voltage_calibration_needs_no_builder_snapshot(
         calls: list[dict[str, Any]] = []
 
         class Calibration:
-            async def async_calibrate_voltage(
+            async def async_calibrate_voltages(
                 self, *_args: Any, **kwargs: Any
             ) -> Any:
                 calls.append(kwargs)
-                return SimpleNamespace(
-                    state="applied_pending_restart_verification", gain_evidence=None
+                return (
+                    SimpleNamespace(
+                        state="applied_pending_restart_verification",
+                        gain_evidence=None,
+                    ),
+                    SimpleNamespace(
+                        state="applied_pending_restart_verification",
+                        gain_evidence=None,
+                    ),
                 )
 
         workflow._calibration = Calibration()  # type: ignore[assignment]
 
         await workflow.async_calibrate_voltage(
-            status.session_id, "main_1", 120.0, False
+            status.session_id,
+            (
+                {"group_key": "main_1", "reference": 120.0},
+                {"group_key": "main_2", "reference": 120.0},
+            ),
+            False,
         )
 
-        assert calls == [{"iteration": 1, "confirm_iteration": False, "substitutions": {}}]
+        assert calls == [{"confirm_iteration": False, "substitutions": {}}]
         await workflow.async_close()
 
     asyncio.run(run())
@@ -2109,6 +2139,7 @@ def test_every_topology_and_calibration_route_delegates_and_session_events_unsub
     commands = (
         "get_topology",
         "get_ct_inventory",
+        "get_active_work",
         "get_session",
         "adopt_device",
         "preview_ct_config",

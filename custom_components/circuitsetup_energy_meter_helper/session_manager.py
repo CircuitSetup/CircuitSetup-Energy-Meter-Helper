@@ -129,6 +129,9 @@ class SessionManager:
     def _get_transaction(self, transaction_id: str) -> Any | None:
         return self._config_transactions.get(transaction_id)
 
+    def _transactions(self) -> tuple[Any, ...]:
+        return tuple(self._config_transactions.values())
+
     def _remove_transaction(self, transaction_id: str) -> None:
         self._config_transactions.pop(transaction_id, None)
 
