@@ -6,6 +6,7 @@ import json
 import math
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from functools import cache
 from importlib import resources
 from typing import Any
 
@@ -37,10 +38,16 @@ def raw_gain_for_preset(preset: CTPreset, multiplier: float) -> int:
     """Convert a physical default gain to its raw ESPHome value."""
     if preset.default_gain_ct is None:
         raise ValueError("custom preset requires an explicit gain")
+    return raw_gain(preset.default_gain_ct, multiplier)
+
+
+def raw_gain(gain: int, multiplier: float) -> int:
+    """Divide one physical gain by its reporting multiplier."""
+    _require_gain(gain)
     if not math.isfinite(multiplier) or multiplier <= 0:
         raise ValueError("multiplier must be finite and positive")
     result = int(
-        (Decimal(preset.default_gain_ct) / Decimal(str(multiplier))).quantize(
+        (Decimal(gain) / Decimal(str(multiplier))).quantize(
             Decimal(1), rounding=ROUND_HALF_UP
         )
     )
@@ -76,6 +83,7 @@ class CTPresetCatalog:
     schema_version: int = CATALOG_SCHEMA_VERSION
 
     @classmethod
+    @cache
     def load(cls) -> CTPresetCatalog:
         """Load packaged data, independent of Home Assistant's working directory."""
         raw = (

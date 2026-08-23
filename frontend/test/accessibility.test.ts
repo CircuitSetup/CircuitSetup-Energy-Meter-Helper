@@ -61,6 +61,44 @@ describe("calibration tab semantics", () => {
     expect(select).toHaveBeenCalledWith(1);
     expect(document.activeElement).toBe(tabs[1]);
   });
+
+  it("scopes current source evidence to the selected board and labels live amps", () => {
+    const root = mount(currentStep(topology, null, {
+      session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] }, calibration_sources: {
+        meter_main1: "configuration", meter_main2: "configuration",
+        addon1_1: "flash", addon1_2: "configuration",
+      },
+    }, 7, new Map([[7, 5]]), 1, {
+      target: "current", target_id: "Current group 3", stable: true,
+      windows: [{ samples: [5, 5.01], mean: 5.005, standard_deviation: 0.005, range_percent: 0.2 }],
+    }, null, noop, noop, noop, noop, noop, noop, noop));
+    const source = root.querySelector('[aria-label="Current calibration source"]');
+    const live = root.querySelector('[aria-label="current Current group 3 stability evidence"]');
+
+    expect(source?.textContent).toContain("addon1_1");
+    expect(source?.textContent).toContain("Saved flash");
+    expect(source?.textContent).toContain("Yes");
+    expect(source?.textContent).not.toContain("meter_main");
+    expect(live?.textContent).toContain("CT7");
+    expect(live?.textContent).toContain("5.00 A");
+    expect(live?.textContent).not.toMatch(/Mean|Standard deviation|Range/);
+  });
+
+  it("labels selected-board voltage readings V1 through V3 without statistics", () => {
+    const root = mount(voltageStep(topology, null, 1, [120, 0], {
+      target: "voltage", target_id: "Board 2", stable: true,
+      windows: Array.from({ length: 3 }, (_, index) => ({ samples: [120 + index], mean: 120 + index,
+        standard_deviation: 0, range_percent: 0 })),
+    }, null, false, noop, noop, noop, noop, noop, noop));
+    const live = root.querySelector('[aria-label="voltage Board 2 stability evidence"]');
+
+    expect(live?.textContent).toContain("V1");
+    expect(live?.textContent).toContain("V2");
+    expect(live?.textContent).toContain("V3");
+    expect(live?.textContent).toContain("120.00 V");
+    expect(live?.textContent).not.toMatch(/Mean|Standard deviation|Range/);
+  });
 });
 
 it("gives the CT inventory table explicit header and data-cell semantics", () => {
@@ -77,7 +115,7 @@ it("gives the CT inventory table explicit header and data-cell semantics", () =>
       address: {
         channel: index + 1,
         board_index: 0,
-        group_index: Math.floor(index / 3) + 1,
+        group_index: Math.floor(index / 3),
         phase: (["A", "B", "C"] as const)[index % 3]!,
       },
     })),
@@ -99,10 +137,10 @@ it("gives the CT inventory table explicit header and data-cell semantics", () =>
   const drafts = new Map<number, CtDraft>();
   container = document.createElement("div");
   document.body.append(container);
-  render(ctInventoryStep(inventory, 0, 0, drafts, noop, noop, noop, noop, noop), container);
+  render(ctInventoryStep(inventory, 0, drafts, noop, noop, noop, noop), container);
 
-  expect(container.querySelectorAll('[role="columnheader"]')).toHaveLength(7);
-  expect(container.querySelector('[data-ct-row]')?.querySelectorAll(':scope > [role="cell"]')).toHaveLength(7);
+  expect(container.querySelectorAll('[role="columnheader"]')).toHaveLength(8);
+  expect(container.querySelector('[data-ct-row]')?.querySelectorAll(':scope > [role="cell"]')).toHaveLength(8);
   const table = container.querySelector('[role="table"]');
   expect(table?.getAttribute("aria-rowcount")).toBe("7");
   expect(table?.querySelector('.ct-header')?.getAttribute("aria-rowindex")).toBe("1");

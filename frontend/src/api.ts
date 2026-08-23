@@ -1,4 +1,5 @@
 import type {
+  ActiveWork,
   CalibrationResult,
   ConnectionType,
   CtChange,
@@ -47,7 +48,7 @@ const MAC = /^[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
-const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
+const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
 const OFFSET_CAPABILITIES = new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
@@ -151,7 +152,7 @@ function ctInventory(value: unknown, label: string): CtInventory {
   const item = record(value, label); string(item.plan_id, label); string(item.source_sha256, label);
   const channels = array(item.channels, label);
   if (channels.length < 6 || channels.length > 42 || channels.length % 6 !== 0) throw new Error(`${label} response is invalid`);
-  channels.forEach((entry, index) => { const channel = record(entry, label); const channelNumber = integer(channel.channel, label); string(channel.name, label); integer(channel.raw_gain_ct, label); number(channel.reporting_multiplier, label); optionalString(channel.selected_model_id, label); boolean(channel.selection_verified_against_config, label); optionalString(channel.display_label, label); const address = record(channel.address, label); const addressChannel = integer(address.channel, label); const boardIndex = integer(address.board_index, label); const groupIndex = integer(address.group_index, label); const phase = enumeration(address.phase, PHASES, label); const expectedChannel = index + 1; if (channelNumber !== expectedChannel || addressChannel !== expectedChannel || boardIndex !== Math.floor(index / 6) || groupIndex !== Math.floor((index % 6) / 3) + 1 || phase !== ["A", "B", "C"][index % 3]) throw new Error(`${label} response is invalid`); });
+  channels.forEach((entry, index) => { const channel = record(entry, label); const channelNumber = integer(channel.channel, label); string(channel.name, label); integer(channel.raw_gain_ct, label); number(channel.reporting_multiplier, label); optionalString(channel.selected_model_id, label); boolean(channel.selection_verified_against_config, label); optionalString(channel.display_label, label); const address = record(channel.address, label); const addressChannel = integer(address.channel, label); const boardIndex = integer(address.board_index, label); const groupIndex = integer(address.group_index, label); const phase = enumeration(address.phase, PHASES, label); const expectedChannel = index + 1; if (channelNumber !== expectedChannel || addressChannel !== expectedChannel || boardIndex !== Math.floor(index / 6) || groupIndex !== Math.floor((index % 6) / 3) || phase !== ["A", "B", "C"][index % 3]) throw new Error(`${label} response is invalid`); });
   const catalog = record(item.catalog, label); string(catalog.source_repository, label); string(catalog.source_ref, label); integer(catalog.schema_version, label);
   const presets = array(catalog.presets, label);
   if (presets.length > 64) throw new Error(`${label} response is invalid`);
@@ -427,11 +428,17 @@ function groupChannels(groupKey: string): number[] {
 }
 function restart(value: unknown, label: string, expected: MeterTopology): RestartVerificationResult {
   const item = record(value, label); for (const key of ["mac", "topology_project_name", "topology_voltage_layout", "verification_id"] as const) string(item[key], label);
-  const addonCount = integer(item.topology_addon_count, label); enumeration(item.topology_connection_type, CONNECTIONS, label); const generation = integer(item.connection_generation, label); enumeration(item.source_authority, new Set(["saved_flash"]), label); const sourceHandoff = boolean(item.source_handoff_available, label); optionalString(item.source_handoff_transaction_id, label);
-  if (sourceHandoff) {
+  const addonCount = integer(item.topology_addon_count, label); enumeration(item.topology_connection_type, CONNECTIONS, label); const generation = integer(item.connection_generation, label); const authority = enumeration(item.source_authority, new Set(["saved_flash", "configuration"]), label); const sourceHandoff = boolean(item.source_handoff_available, label); const installed = boolean(item.source_handoff_firmware_installed, label); optionalString(item.source_handoff_transaction_id, label);
+  const hasConfig = item.config_filename !== null || item.config_sha256 !== null;
+  if (hasConfig) {
     string(item.config_filename, label); string(item.config_sha256, label);
     if (!CONFIGURATION.test(item.config_filename as string) || !SHA256.test(item.config_sha256 as string)) throw new Error(`${label} response is invalid`);
-  } else if (item.config_filename !== null || item.config_sha256 !== null) throw new Error(`${label} response is invalid`);
+  }
+  if ((item.config_filename === null) !== (item.config_sha256 === null)
+    || sourceHandoff && (!hasConfig || installed || item.source_handoff_transaction_id !== null || authority !== "saved_flash")
+    || !sourceHandoff && hasConfig && item.source_handoff_transaction_id === null
+    || installed && (!hasConfig || item.source_handoff_transaction_id === null)
+    || authority === "configuration" && (!installed || sourceHandoff)) throw new Error(`${label} response is invalid`);
   if (!MAC.test(item.mac as string)
     || !SERVER_ID.test(item.verification_id as string) || generation < 1
     || item.source_handoff_transaction_id !== null && !SERVER_ID.test(item.source_handoff_transaction_id as string)
@@ -462,6 +469,14 @@ function restart(value: unknown, label: string, expected: MeterTopology): Restar
     + validateGroups("power_offset_groups", "phase_power_offsets", true);
   if (resultCount < 1) throw new Error(`${label} response is invalid`);
   return value as RestartVerificationResult;
+}
+
+function activeWork(value: unknown, label: string, expected: MeterTopology): ActiveWork {
+  const item = record(value, label);
+  if (item.session !== null) session(item.session, label);
+  if (item.transaction !== null) transaction(item.transaction, label);
+  if (item.verified_calibration !== null) restart(item.verified_calibration, label, expected);
+  return value as ActiveWork;
 }
 
 export class HelperApi {
@@ -535,6 +550,8 @@ export class HelperApi {
     this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
   public getCtInventory = (deviceId: string) =>
     this.call("get_ct_inventory", (value) => ctInventory(value, "get_ct_inventory"), { device_id: deviceId });
+  public getActiveWork = (deviceId: string, expectedTopology: MeterTopology) =>
+    this.call("get_active_work", (value) => activeWork(value, "get_active_work", expectedTopology), { device_id: deviceId });
   public getSession = (sessionId: string) =>
     this.call("get_session", (value) => session(value, "get_session"), { session_id: sessionId });
   public getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (value) => record(value, "get_diagnostics_summary"));
@@ -588,14 +605,40 @@ export class HelperApi {
     });
   public skipOffsetCalibration = (sessionId: string) =>
     this.call("skip_offset_calibration", (value) => session(value, "skip_offset_calibration"), { session_id: sessionId });
-  public calibrateVoltage = (sessionId: string, groupKey: string, reference: number, confirmIteration: boolean) =>
-    this.call("calibrate_voltage", (value) => calibration(value, "calibrate_voltage", { target: "voltage", groupKey, reference }), {
-      session_id: sessionId,
-      group_key: groupKey,
-      reference,
-      confirm_iteration: confirmIteration,
-    });
-  public calibrateCurrent = (sessionId: string, references: Array<{ channel: number; reference: number; reporting_multiplier: number }>, confirmIteration: boolean) => {
+  public checkVoltageStability = (sessionId: string, groupKeys: string[]) => {
+    if (groupKeys.length !== 2 || new Set(groupKeys).size !== 2) return Promise.reject(new Error("check_stability board is invalid"));
+    return this.call("check_stability", (value) => {
+      const results = array(value, "check_stability", 2);
+      if (results.length !== 2) throw new Error("check_stability response is invalid");
+      return results.map((item, index) => stability(item, "check_stability", "voltage", groupKeys[index]!));
+    }, { session_id: sessionId, target: "voltage", target_ids: groupKeys });
+  };
+  public calibrateVoltage = (
+    sessionId: string,
+    references: Array<{ group_key: string; reference: number }>,
+    confirmIteration: boolean,
+  ) => {
+    const channels = references.map((item) => groupChannels(item.group_key));
+    if (references.length !== 2 || new Set(references.map((item) => item.group_key)).size !== 2
+      || channels.some((item) => item.length !== 3)
+      || new Set(channels.map((item) => Math.floor((item[0]! - 1) / 6))).size !== 1
+      || references.some((item) => !Number.isFinite(item.reference) || item.reference <= 0)) {
+      return Promise.reject(new Error("calibrate_voltage board is invalid"));
+    }
+    return this.call("calibrate_voltage", (value) => {
+      const results = array(value, "calibrate_voltage", 2);
+      if (results.length !== 2) throw new Error("calibrate_voltage response is invalid");
+      return results.map((item, index) => calibration(item, "calibrate_voltage", {
+        target: "voltage", groupKey: references[index]!.group_key, reference: references[index]!.reference,
+      }));
+    }, { session_id: sessionId, references, confirm_iteration: confirmIteration });
+  };
+  public calibrateCurrent = (
+    sessionId: string,
+    references: Array<{ channel: number; reference: number; reporting_multiplier: number }>,
+    confirmIteration: boolean,
+    pendingMultipliers: Array<{ channel: number; reporting_multiplier: number }> = [],
+  ) => {
     if (references.length < 1 || references.length > 3
       || new Set(references.map((item) => item.channel)).size !== references.length
       || new Set(references.map((item) => channelGroup(item.channel))).size !== 1
@@ -609,6 +652,7 @@ export class HelperApi {
       session_id: sessionId,
       references,
       confirm_iteration: confirmIteration,
+      pending_multipliers: pendingMultipliers,
     });
   };
   public restartAndVerify = (sessionId: string, expectedTopology: MeterTopology) =>
@@ -621,6 +665,22 @@ export class HelperApi {
       }
       return result;
     }, { session_id: sessionId });
+  public previewCalibratedGains = (sessionId: string, verificationId: string, changes: CtChange[] = []) =>
+    this.call("preview_calibrated_gains", (value) => transaction(value, "preview_calibrated_gains"), {
+      session_id: sessionId,
+      verification_id: verificationId,
+      changes,
+    });
+  public clearCalibrationFlash = (
+    sessionId: string,
+    verificationId: string,
+    transactionId: string,
+    expectedTopology: MeterTopology,
+  ) => this.call("clear_calibration_flash", (value) => restart(value, "clear_calibration_flash", expectedTopology), {
+    session_id: sessionId,
+    verification_id: verificationId,
+    transaction_id: transactionId,
+  });
   public cancelSession = (sessionId: string) =>
     this.call("cancel_session", (value) => session(value, "cancel_session"), { session_id: sessionId });
   public subscribeSetup = (callback: (message: SetupSnapshot) => void) =>

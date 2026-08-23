@@ -466,7 +466,12 @@ def test_complete_without_changes_finishes_once_without_restart_or_persistence()
             await workflow.async_skip_offset_calibration(handle.session_id)
         with pytest.raises(WorkflowHandleError, match="already finalized"):
             await workflow.async_calibrate_voltage(
-                handle.session_id, "main_1", 120.0, False
+                handle.session_id,
+                (
+                    {"group_key": "main_1", "reference": 120.0},
+                    {"group_key": "main_2", "reference": 120.0},
+                ),
+                False,
             )
         repeated = await workflow.async_complete_calibration_without_changes(
             handle.session_id

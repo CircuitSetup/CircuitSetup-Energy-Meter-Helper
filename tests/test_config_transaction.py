@@ -168,15 +168,24 @@ class UncertainUpdateBuilder(Builder):
 
 
 class Persistence:
-    def __init__(self, error: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        error: BaseException | None = None,
+        selections: tuple[StoredCTSelection, ...] = (),
+    ) -> None:
         self.saved: list[object] = []
         self.error = error
+        self.selections = selections
+
+    async def async_get_ct_selections(self, _mac: str) -> tuple[StoredCTSelection, ...]:
+        return self.selections
 
     async def async_save_verified_ct_selections(
         self, mac: str, selections: tuple[StoredCTSelection, ...]
     ) -> None:
         if self.error is not None:
             raise self.error
+        self.selections = selections
         self.saved.append((mac, selections))
 
 
@@ -288,6 +297,27 @@ def test_preview_binds_source_and_exposes_only_bounded_safe_dto() -> None:
         bad = ESPHomeConfigSnapshot("meter.yaml", "different", _source().sha256)
         with pytest.raises(ValueError, match="source snapshot"):
             await manager.async_preview("aabbccddeeff", _topology(), _plan(), bad)
+
+    asyncio.run(run())
+
+
+def test_preview_preserves_unchanged_hash_bound_ct_selections() -> None:
+    """A later CT edit must retain a previously installed CT multiplier."""
+
+    async def run() -> None:
+        source = _source()
+        existing = StoredCTSelection(1, "custom", "Mains", 13_759, 2.0, source.sha256)
+        update = StoredCTSelection(2, "custom", "Kitchen", 27_518, 1.0, source.sha256)
+        persistence = Persistence(selections=(existing,))
+        manager = _manager(Builder(), persistence)
+
+        preview = await manager.async_preview(
+            "aabbccddeeff", _topology(), _plan(), source, (update,)
+        )
+
+        transaction = manager._transaction(preview.transaction_id)
+        assert [selection.channel for selection in transaction.selections] == [1, 2]
+        assert transaction.selections[0].reporting_multiplier == 2.0
 
     asyncio.run(run())
 

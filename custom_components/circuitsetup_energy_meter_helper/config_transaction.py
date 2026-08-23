@@ -13,7 +13,14 @@ from time import monotonic
 from typing import Protocol
 from uuid import uuid4
 
-from .config_mutator import ConfigMutationError, build_calibrated_gain_mutation
+from .config_document import ESPHomeConfigDocument
+from .config_mutator import (
+    ConfigMutationError,
+    CTChangeRequest,
+    build_calibrated_gain_mutation,
+)
+from .ct_catalog import CTPresetCatalog
+from .ct_inventory import CTInventory
 from .device_builder import (
     ConfigChangedError,
     ESPHomeConfigSnapshot,
@@ -120,6 +127,10 @@ class DeviceBuilder(Protocol):
 
 
 class VerifiedPersistence(Protocol):
+    async def async_get_ct_selections(
+        self, mac: str
+    ) -> tuple[StoredCTSelection, ...]: ...
+
     async def async_save_verified_ct_selections(
         self, mac: str, selections: tuple[StoredCTSelection, ...]
     ) -> None: ...
@@ -137,6 +148,10 @@ class VerifiedPersistence(Protocol):
     ) -> bool: ...
 
     async def async_release_verified_calibration(
+        self, mac: str, verification_id: str, transaction_id: str
+    ) -> bool: ...
+
+    async def async_mark_verified_calibration_installed(
         self, mac: str, verification_id: str, transaction_id: str
     ) -> bool: ...
 
@@ -291,6 +306,19 @@ class ConfigTransactionManager:
         ):
             raise KeyError("stale configuration transaction")
 
+    def active_status(self, mac: str) -> TransactionStatus | None:
+        """Return the newest live safe transaction status for one meter."""
+        mac = canonical_mac(mac)
+        for candidate in reversed(self.sessions._transactions()):
+            if not isinstance(candidate, _ConfigTransaction) or candidate.mac != mac:
+                continue
+            try:
+                transaction = self._transaction(candidate.transaction_id)
+            except KeyError:
+                continue
+            return _status(transaction)
+        return None
+
     def subscribe(
         self,
         transaction_id: str,
@@ -337,10 +365,18 @@ class ConfigTransactionManager:
         ):
             raise ValueError("source snapshot does not match mutation plan")
         _validate_changes(plan.changes)
+        mac = canonical_mac(mac)
+        merged = {
+            selection.channel: selection
+            for selection in await self._persistence.async_get_ct_selections(mac)
+            if selection.config_sha256 == source_snapshot.sha256
+        }
+        merged.update({selection.channel: selection for selection in selections})
+        selections = tuple(merged[channel] for channel in sorted(merged))
         transaction = _ConfigTransaction(
             uuid4().hex,
             self._clock() + self._confirmation_ttl,
-            canonical_mac(mac),
+            mac,
             topology,
             plan.source_sha256,
             plan.changes,
@@ -357,6 +393,8 @@ class ConfigTransactionManager:
         mac: str,
         topology: MeterTopology,
         verification_id: str,
+        requested_channels: tuple[CTChangeRequest, ...] = (),
+        calibrated_current_channels: frozenset[int] = frozenset(),
     ) -> TransactionStatus:
         """Re-read YAML and open the normal reviewed transaction for final gains."""
         mac = canonical_mac(mac)
@@ -390,8 +428,39 @@ class ConfigTransactionManager:
             snapshot = await self._device_builder.async_get_config(
                 verified.config_filename
             )
-            plan = build_calibrated_gain_mutation(snapshot, topology, verified)
-            status = await self.async_preview(mac, topology, plan, snapshot)
+            plan = build_calibrated_gain_mutation(
+                snapshot,
+                topology,
+                verified,
+                requested_channels,
+                calibrated_current_channels,
+            )
+            selections: tuple[StoredCTSelection, ...] = ()
+            if requested_channels:
+                catalog = CTPresetCatalog.load()
+                inventory = CTInventory.from_document(
+                    ESPHomeConfigDocument.parse(plan.proposed_content),
+                    topology,
+                    catalog,
+                    snapshot.sha256,
+                    reporting_multipliers={
+                        request.channel: request.reporting_multiplier
+                        for request in requested_channels
+                    },
+                )
+                by_channel = {item.channel: item for item in inventory.channels}
+                selections = tuple(
+                    StoredCTSelection(
+                        request.channel,
+                        request.model_id,
+                        request.custom_label,
+                        by_channel[request.channel].raw_gain_ct,
+                        request.reporting_multiplier,
+                        snapshot.sha256,
+                    )
+                    for request in requested_channels
+                )
+            status = await self.async_preview(mac, topology, plan, snapshot, selections)
             transaction = self._transaction(status.transaction_id)
             transaction.verification_id = verification_id
             transaction.reservation_release = lambda: (
@@ -757,6 +826,28 @@ class ConfigTransactionManager:
                     ConfigTransactionState.FAILED,
                     TransactionEvidenceCode.PERSISTENCE_FAILED,
                 )
+            if transaction.verification_id is not None:
+                try:
+                    installed = await self._persistence.async_mark_verified_calibration_installed(
+                        transaction.mac,
+                        transaction.verification_id,
+                        transaction.transaction_id,
+                    )
+                except asyncio.CancelledError:
+                    self._finish(
+                        transaction,
+                        ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.CANCELLED,
+                    )
+                    raise
+                except Exception:  # noqa: BLE001 - external storage boundary
+                    installed = False
+                if not installed:
+                    return self._finish(
+                        transaction,
+                        ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.PERSISTENCE_FAILED,
+                    )
             _progress(transaction, TransactionProgress.METADATA_PERSISTED)
             return self._finish(transaction, ConfigTransactionState.VERIFIED)
 
@@ -792,26 +883,40 @@ class ConfigTransactionManager:
             expected_current_sha256
             or sha256(plan.proposed_content.encode()).hexdigest()
         )
+        if TransactionProgress.CONFIG_RESTORED not in transaction.progress:
+            try:
+                # DeviceBuilder.async_restore_content owns restore plus exactly one validation.
+                async with asyncio.timeout(self._reconciliation_timeout):
+                    await self._device_builder.async_restore_content(
+                        plan.configuration,
+                        prior_content,
+                        expected_current_sha256=expected_current_sha256,
+                    )
+            except asyncio.CancelledError:
+                _evidence(transaction, TransactionEvidenceCode.CANCELLED)
+                self._retain_write_recovery(transaction)
+                raise
+            except (TimeoutError, ConfigChangedError):
+                return self._retain_write_recovery(transaction)
+            except Exception as error:
+                _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
+                self._retain_write_recovery(transaction)
+                raise RollbackFailedError("configuration rollback failed") from error
+            _progress(transaction, TransactionProgress.CONFIG_RESTORED)
+            self.publish_status(_status(transaction))
+        transaction.write_started = False
         try:
-            # DeviceBuilder.async_restore_content owns restore plus exactly one validation.
-            async with asyncio.timeout(self._reconciliation_timeout):
-                await self._device_builder.async_restore_content(
-                    plan.configuration,
-                    prior_content,
-                    expected_current_sha256=expected_current_sha256,
-                )
+            await transaction.async_release_reservation()
         except asyncio.CancelledError:
-            _evidence(transaction, TransactionEvidenceCode.CANCELLED)
-            self._retain_write_recovery(transaction)
+            if not transaction.reservation_claimed:
+                self._finish(transaction, ConfigTransactionState.ROLLED_BACK)
+            else:
+                self._retain_write_recovery(transaction)
             raise
-        except (TimeoutError, ConfigChangedError):
-            return self._retain_write_recovery(transaction)
         except Exception as error:
             _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
             self._retain_write_recovery(transaction)
-            raise RollbackFailedError("configuration rollback failed") from error
-        _progress(transaction, TransactionProgress.CONFIG_RESTORED)
-        self.publish_status(_status(transaction))
+            raise RollbackFailedError("configuration rollback cleanup failed") from error
         return self._finish(transaction, ConfigTransactionState.ROLLED_BACK)
 
     async def _rollback_after_cancellation(
@@ -857,7 +962,7 @@ class ConfigTransactionManager:
                 try:
                     async with _operation(transaction):
                         await self._rollback_locked(transaction)
-                except (RollbackFailedError, asyncio.CancelledError):
+                except RollbackFailedError, asyncio.CancelledError:
                     pass
 
             cleanup = asyncio.create_task(recover_then_settle())

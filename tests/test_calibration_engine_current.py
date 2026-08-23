@@ -147,7 +147,7 @@ def test_current_calibrates_multiple_references_on_one_chip_in_one_gain_run() ->
                 reference_currents=(5.0, 4.0, 0.0),
             )
         )
-        _, persist = marker_writer(session.events)
+        markers, persist = marker_writer(session.events)
         engine = CalibrationEngine(SessionManager(), persist)
 
         result = await engine.async_calibrate_currents(
@@ -159,6 +159,10 @@ def test_current_calibrates_multiple_references_on_one_chip_in_one_gain_run() ->
         )
 
         assert result.changed_channels == (1, 2)
+        assert [marker.state for marker in markers if marker is not None] == [
+            "active",
+            "flash_saved",
+        ]
         assert [event[0] for event in session.events].count("button") == 1
         assert session.window_calls == 0
         ct1 = meter.role("ct1.reference_current").descriptor
@@ -713,7 +717,10 @@ def test_iteration_cannot_be_reset_replayed_or_jump_directly() -> None:
                 await reset_engine.async_calibrate_current(
                     "aabbccddeeff", reset_session, meter, 1, 10.0, 1.0, 1.0
                 )
-        assert len(reset_markers) == 1
+        assert [marker.state for marker in reset_markers if marker is not None] == [
+            "active",
+            "flash_saved",
+        ]
         assert [event[0] for event in reset_session.events].count("button") == 1
 
         direct_session = SequencedSession(
@@ -795,7 +802,10 @@ def test_iteration_cannot_be_reset_replayed_or_jump_directly() -> None:
             await replay_engine.async_calibrate_current(
                 "aabbccddeeff", replay_session, meter, 1, 10.0, 1.0, 1.0
             )
-        assert len(replay_markers) == 3
+        assert [marker.state for marker in replay_markers if marker is not None] == [
+            "active",
+            "flash_saved",
+        ] * 3
         assert [event[0] for event in replay_session.events].count("button") == 3
         assert len(replay_session.events) == before_refusal
 

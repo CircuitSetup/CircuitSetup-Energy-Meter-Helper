@@ -15,7 +15,7 @@ export function topologyMismatch(topology: MeterTopology): boolean {
     || topology.evidence.some((item) => item.addon_count !== expected);
 }
 
-export function topologyStep(topology: MeterTopology, projectVersion: string | null, back: () => void, continueFlow: () => void, forceMismatch = false): TemplateResult {
+export function topologyStep(topology: MeterTopology, projectVersion: string | null, back: () => void, continueFlow: () => void, forceMismatch = false, busy = false): TemplateResult {
   const mismatch = forceMismatch || topologyMismatch(topology);
   return html`
     <section class="step-content" aria-labelledby="step-heading">
@@ -40,7 +40,7 @@ export function topologyStep(topology: MeterTopology, projectVersion: string | n
       ` : html`<div class="success-band" role="status">All topology evidence agrees.</div>`}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        ${mismatch ? "" : html`<button class="primary" data-action="continue" @click=${continueFlow}>Continue</button>`}
+        ${mismatch ? "" : html`<button class="primary" data-action="continue" ?disabled=${busy} @click=${continueFlow}>${busy ? "Loading CTs…" : "Continue"}</button>`}
       </footer>
     </section>
   `;

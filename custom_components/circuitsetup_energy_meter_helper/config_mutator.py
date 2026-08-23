@@ -11,13 +11,23 @@ from math import isfinite
 from typing import Protocol
 
 from .config_document import ConfigScalar, ESPHomeConfigDocument
-from .ct_catalog import CTPresetCatalog, custom_preset, raw_gain_for_preset
+from .ct_catalog import CTPresetCatalog, custom_preset, raw_gain, raw_gain_for_preset
 from .ct_inventory import CTInventory
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import VerifiedCalibrationRecord
 
 _SUBSTITUTIONS_RE = re.compile(r"^substitutions:\s*(?:#.*)?(?:\r?\n)?$")
+_SENSOR_RE = re.compile(r"^sensor:\s*(?:#.*)?(?:\r?\n)?$")
 _TOP_LEVEL_RE = re.compile(r"^[\w-]+:")
+_MULTIPLIER_START = "  # CircuitSetup Energy Meter Helper reporting multipliers"
+_MULTIPLIER_END = "  # End reporting multipliers"
+_MULTIPLIER_ENTRY_RE = re.compile(
+    r"    phase_[abc]: # CT(?P<channel>[1-9]|[1-3][0-9]|4[0-2])\r?\n"
+    r"      current:\r?\n        filters:\r?\n"
+    r"          - multiply: (?P<current>[^\r\n]+)\r?\n"
+    r"      power:\r?\n        filters:\r?\n"
+    r"          - multiply: (?P<power>[^\r\n]+)\r?\n"
+)
 _PLAIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]*$")
 _YAML_RESERVED = {"null", "true", "false", "yes", "no", "on", "off", "~"}
 
@@ -78,12 +88,13 @@ def build_ct_mutation(
         gain = _requested_gain(request, catalog)
         _append_change(changes, values, name_key, request.name, document.substitutions)
         _append_change(changes, values, gain_key, str(gain), document.substitutions)
-    if not changes:
+    proposed_content = _apply_reporting_multipliers(
+        _apply_changes(document, changes, values), requests
+    )
+    if proposed_content == snapshot.content:
         return ConfigMutationPlan(
             snapshot.configuration, snapshot.sha256, (), "", snapshot.content
         )
-
-    proposed_content = _apply_changes(document, changes, values)
     proposed_document = ESPHomeConfigDocument.parse(proposed_content)
     CTInventory.from_document(proposed_document, topology, catalog, snapshot.sha256)
     return ConfigMutationPlan(
@@ -99,6 +110,8 @@ def build_calibrated_gain_mutation(
     snapshot: ConfigSnapshot,
     topology: MeterTopology,
     verified: VerifiedCalibrationRecord,
+    requested_channels: Iterable[CTChangeRequest] = (),
+    calibrated_current_channels: frozenset[int] = frozenset(),
 ) -> ConfigMutationPlan:
     """Build a reviewed final-gain plan bound to the calibration source hash."""
     if getattr(snapshot, "configuration_authoritative", True) is not True:
@@ -121,8 +134,28 @@ def build_calibrated_gain_mutation(
     ):
         raise ConfigMutationError("verified calibration topology does not match target")
     document = ESPHomeConfigDocument.parse(snapshot.content)
+    requests = tuple(requested_channels)
+    _validate_requests(requests, topology)
+    catalog = CTPresetCatalog.load()
     changes: list[SubstitutionChange] = []
     values: dict[str, str] = {}
+    requested_by_channel = {request.channel: request for request in requests}
+    for request in requests:
+        _append_change(
+            changes,
+            values,
+            f"ct{request.channel}_name",
+            request.name,
+            document.substitutions,
+        )
+        if request.channel not in calibrated_current_channels:
+            _append_change(
+                changes,
+                values,
+                f"current_cal_ct{request.channel}",
+                str(_requested_gain(request, catalog)),
+                document.substitutions,
+            )
     voltage_values: dict[int, set[int]] = {1: set(), 2: set()}
     addressed: list[tuple[str, int, int, tuple[int, int, int]]] = []
     seen_channels: set[int] = set()
@@ -141,6 +174,11 @@ def build_calibrated_gain_mutation(
         addressed.append((group.instance_id, first_channel, group_index, voltage_gains))
         voltage_values[group_index].update(voltage_gains)
         for channel, (_, current_gain) in zip(channels, group.phase_gains, strict=True):
+            if (
+                channel in requested_by_channel
+                and channel not in calibrated_current_channels
+            ):
+                continue
             key = f"current_cal_ct{channel}"
             _append_change(
                 changes,
@@ -192,7 +230,9 @@ def build_calibrated_gain_mutation(
             str(next(iter(gains))),
             document.substitutions,
         )
-    proposed_content = _apply_changes(document, changes, values)
+    proposed_content = _apply_reporting_multipliers(
+        _apply_changes(document, changes, values), requests
+    )
     return ConfigMutationPlan(
         snapshot.configuration,
         snapshot.sha256,
@@ -286,7 +326,7 @@ def _requested_gain(request: CTChangeRequest, catalog: CTPresetCatalog) -> int:
             request.custom_gain_ct,
             burden_output_acknowledged=request.burden_output_acknowledged,
         )
-        return request.custom_gain_ct
+        return raw_gain(request.custom_gain_ct, request.reporting_multiplier)
     preset = catalog.by_model_id(request.model_id)
     if preset is None:
         raise ConfigMutationError("unknown CT preset")
@@ -351,6 +391,179 @@ def _apply_changes(
     for start, end, replacement in sorted(edits, reverse=True):
         result = result[:start] + replacement + result[end:]
     return result
+
+
+def _apply_reporting_multipliers(
+    content: str, requests: tuple[CTChangeRequest, ...]
+) -> str:
+    starts = [
+        match.start() for match in re.finditer(re.escape(_MULTIPLIER_START), content)
+    ]
+    ends = [match.end() for match in re.finditer(re.escape(_MULTIPLIER_END), content)]
+    if len(starts) != len(ends) or len(starts) > 1 or starts and starts[0] >= ends[0]:
+        raise ConfigMutationError("reporting multiplier block is not safely writable")
+    multipliers: dict[int, float] = {}
+    if starts:
+        managed = content[starts[0] : ends[0]]
+        entries = tuple(_MULTIPLIER_ENTRY_RE.finditer(managed))
+        if len(entries) != managed.count("    phase_"):
+            raise ConfigMutationError(
+                "reporting multiplier block is not safely writable"
+            )
+        for entry in entries:
+            try:
+                current = float(entry.group("current"))
+                power = float(entry.group("power"))
+            except ValueError as error:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                ) from error
+            if current != power or not isfinite(current) or current <= 0:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            channel = int(entry.group("channel"))
+            if channel in multipliers:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            multipliers[channel] = current
+        end = ends[0]
+        if content[end : end + 2] == "\r\n":
+            end += 2
+        elif content[end : end + 1] == "\n":
+            end += 1
+        content = content[: starts[0]] + content[end:]
+    for request in requests:
+        if request.reporting_multiplier == 1:
+            multipliers.pop(request.channel, None)
+        else:
+            multipliers[request.channel] = request.reporting_multiplier
+    if not multipliers:
+        return content
+    _reject_local_output_filters(content, multipliers)
+    newline = "\r\n" if "\r\n" in content else "\n"
+    block: list[str] = [_MULTIPLIER_START]
+    current_id = ""
+    for channel, value in sorted(multipliers.items()):
+        meter_id, phase = _channel_meter_phase(channel)
+        if meter_id != current_id:
+            block.append(f"  - id: !extend ${{{meter_id}}}")
+            current_id = meter_id
+        multiplier = f"{value:g}"
+        block.extend(
+            (
+                f"    phase_{phase}: # CT{channel}",
+                "      current:",
+                "        filters:",
+                f"          - multiply: {multiplier}",
+                "      power:",
+                "        filters:",
+                f"          - multiply: {multiplier}",
+            )
+        )
+    block.append(_MULTIPLIER_END)
+    rendered = newline.join(block) + newline
+    lines = content.splitlines(keepends=True)
+    sensor_lines = [
+        index for index, line in enumerate(lines) if line.startswith("sensor:")
+    ]
+    if len(sensor_lines) > 1 or (
+        sensor_lines and _SENSOR_RE.fullmatch(lines[sensor_lines[0]]) is None
+    ):
+        raise ConfigMutationError("no unambiguous writable sensor block")
+    if not sensor_lines:
+        separator = "" if not content or content.endswith(("\n", "\r")) else newline
+        return content + separator + "sensor:" + newline + rendered
+    start = sensor_lines[0]
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if (
+            line.strip()
+            and not line.lstrip().startswith("#")
+            and _TOP_LEVEL_RE.match(line)
+        ):
+            end = index
+            break
+    offset = sum(len(line) for line in lines[:end])
+    return content[:offset] + rendered + content[offset:]
+
+
+def _channel_meter_phase(channel: int) -> tuple[str, str]:
+    board = (channel - 1) // 6
+    group = (channel - 1) % 6 // 3 + 1
+    meter_id = f"main_meter_id{group}" if board == 0 else f"addon{board}_id{group}"
+    return meter_id, "abc"[(channel - 1) % 3]
+
+
+def _reject_local_output_filters(content: str, channels: Iterable[int]) -> None:
+    targets = {_channel_meter_phase(channel): channel for channel in channels}
+    lines = content.splitlines()
+    for index, line in enumerate(lines):
+        item = re.match(r"(?P<indent> *)-\s+", line)
+        if item is None:
+            continue
+        item_indent = len(item.group("indent"))
+        item_end = len(lines)
+        for candidate in range(index + 1, len(lines)):
+            stripped = lines[candidate].strip()
+            indent = len(lines[candidate]) - len(lines[candidate].lstrip(" "))
+            if stripped and not stripped.startswith("#") and indent <= item_indent:
+                item_end = candidate
+                break
+        extend = re.fullmatch(
+            r" *-\s+id:\s*!extend\s+\$\{(?P<id>[\w-]+)\}\s*(?:#.*)?",
+            line,
+        )
+        owner_id = extend.group("id") if extend is not None else None
+        if owner_id is None:
+            for candidate in range(index + 1, item_end):
+                identifier = re.fullmatch(
+                    rf" {{{item_indent + 2}}}id:\s*\$\{{(?P<id>[\w-]+)\}}\s*(?:#.*)?",
+                    lines[candidate],
+                )
+                if identifier is not None:
+                    owner_id = identifier.group("id")
+                    break
+        if owner_id is None or not any(owner_id == target[0] for target in targets):
+            continue
+        for (target_meter_id, phase), channel in targets.items():
+            if target_meter_id != owner_id:
+                continue
+            phase_line = next(
+                (
+                    candidate
+                    for candidate in range(index + 1, item_end)
+                    if lines[candidate].strip().split(" #", 1)[0] == f"phase_{phase}:"
+                ),
+                None,
+            )
+            if phase_line is None:
+                continue
+            phase_indent = len(lines[phase_line]) - len(lines[phase_line].lstrip(" "))
+            for candidate in range(phase_line + 1, item_end):
+                stripped = lines[candidate].strip()
+                indent = len(lines[candidate]) - len(lines[candidate].lstrip(" "))
+                if stripped and not stripped.startswith("#") and indent <= phase_indent:
+                    break
+                if stripped in {"current:", "power:"}:
+                    output_indent = indent
+                    for nested in range(candidate + 1, item_end):
+                        nested_value = lines[nested].strip()
+                        nested_indent = len(lines[nested]) - len(
+                            lines[nested].lstrip(" ")
+                        )
+                        if (
+                            nested_value
+                            and not nested_value.startswith("#")
+                            and nested_indent <= output_indent
+                        ):
+                            break
+                        if nested_value == "filters:":
+                            raise ConfigMutationError(
+                                f"existing CT{channel} output filters are not safely writable"
+                            )
 
 
 def _substitution_block(

@@ -39,6 +39,7 @@ READ_COMMANDS = (
     f"{_PREFIX}list_meters",
     f"{_PREFIX}get_topology",
     f"{_PREFIX}get_ct_inventory",
+    f"{_PREFIX}get_active_work",
     f"{_PREFIX}get_session",
     f"{_PREFIX}get_diagnostics_summary",
 )
@@ -62,6 +63,8 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}calibrate_current",
     f"{_PREFIX}restart_and_verify",
     f"{_PREFIX}complete_calibration_without_changes",
+    f"{_PREFIX}preview_calibrated_gains",
+    f"{_PREFIX}clear_calibration_flash",
     f"{_PREFIX}cancel_session",
 )
 SUBSCRIPTION_COMMANDS = (
@@ -74,6 +77,7 @@ _TRANSACTION_STATUS_COMMANDS = frozenset(
     f"{_PREFIX}{operation}"
     for operation in (
         "preview_ct_config",
+        "preview_calibrated_gains",
         "apply_ct_config",
         "compile_ct_config",
         "install_ct_config",
@@ -100,6 +104,7 @@ _FORBIDDEN_VALUE = re.compile(
     re.IGNORECASE,
 )
 _SHA256 = vol.All(str, vol.Match(r"^[0-9a-f]{64}$"))
+_SERVER_ID = vol.All(str, vol.Match(r"^[0-9a-f]{32}$"))
 _ID = vol.All(str, vol.Length(min=1, max=128))
 
 
@@ -150,6 +155,8 @@ class WorkflowOwner(Protocol):
 
     async def async_get_ct_inventory(self, device_id: str) -> Any: ...
 
+    async def async_get_active_work(self, device_id: str) -> Any: ...
+
     async def async_get_session(self, session_id: str) -> Any: ...
 
     async def async_adopt_device(self, device_id: str) -> Any: ...
@@ -173,7 +180,7 @@ class WorkflowOwner(Protocol):
     ) -> Any: ...
 
     async def async_check_stability(
-        self, session_id: str, target: str, target_id: str
+        self, session_id: str, target: str, target_id: str | tuple[str, ...]
     ) -> Any: ...
 
     async def async_check_offset_readiness(
@@ -194,8 +201,7 @@ class WorkflowOwner(Protocol):
     async def async_calibrate_voltage(
         self,
         session_id: str,
-        group_key: str,
-        reference: float,
+        references: tuple[Mapping[str, Any], ...],
         confirm_iteration: bool,
     ) -> Any: ...
 
@@ -204,12 +210,24 @@ class WorkflowOwner(Protocol):
         session_id: str,
         references: tuple[Mapping[str, Any], ...],
         confirm_iteration: bool,
+        pending_multipliers: tuple[Mapping[str, Any], ...] = (),
     ) -> Any: ...
 
     async def async_restart_and_verify(self, session_id: str) -> Any: ...
 
     async def async_complete_calibration_without_changes(
         self, session_id: str
+    ) -> Any: ...
+
+    async def async_preview_calibrated_gains(
+        self,
+        session_id: str,
+        verification_id: str,
+        changes: tuple[Mapping[str, Any], ...] = (),
+    ) -> Any: ...
+
+    async def async_clear_calibration_flash(
+        self, session_id: str, verification_id: str, transaction_id: str
     ) -> Any: ...
 
     async def async_cancel_session(self, session_id: str) -> Any: ...
@@ -292,6 +310,8 @@ class EntryWebsocketController:
             }
         if operation == "get_ct_inventory" and workflow is not None:
             return await workflow.async_get_ct_inventory(msg["device_id"])
+        if operation == "get_active_work" and workflow is not None:
+            return await workflow.async_get_active_work(msg["device_id"])
         if operation == "get_session" and workflow is not None:
             return await workflow.async_get_session(msg["session_id"])
         if operation == "set_installer_intent":
@@ -337,8 +357,18 @@ class EntryWebsocketController:
                 msg["session_id"], msg["acknowledged"]
             )
         if operation == "check_stability" and workflow is not None:
+            target = msg["target"]
+            target_id: str | tuple[str, ...]
+            if target == "voltage":
+                if "target_id" in msg or "target_ids" not in msg:
+                    raise ValueError("voltage stability requires one board")
+                target_id = tuple(msg["target_ids"])
+            else:
+                if "target_ids" in msg or "target_id" not in msg:
+                    raise ValueError("current stability requires one channel")
+                target_id = msg["target_id"]
             return await workflow.async_check_stability(
-                msg["session_id"], msg["target"], msg["target_id"]
+                msg["session_id"], target, target_id
             )
         if operation == "check_offset_readiness" and workflow is not None:
             return await workflow.async_check_offset_readiness(
@@ -357,11 +387,18 @@ class EntryWebsocketController:
         if operation == "calibrate_voltage" and workflow is not None:
             return await workflow.async_calibrate_voltage(
                 msg["session_id"],
-                msg["group_key"],
-                msg["reference"],
+                tuple(msg["references"]),
                 msg["confirm_iteration"],
             )
         if operation == "calibrate_current" and workflow is not None:
+            pending_multipliers = tuple(msg.get("pending_multipliers", ()))
+            if pending_multipliers:
+                return await workflow.async_calibrate_current(
+                    msg["session_id"],
+                    tuple(msg["references"]),
+                    msg["confirm_iteration"],
+                    pending_multipliers,
+                )
             return await workflow.async_calibrate_current(
                 msg["session_id"],
                 tuple(msg["references"]),
@@ -372,6 +409,19 @@ class EntryWebsocketController:
         if operation == "complete_calibration_without_changes" and workflow is not None:
             return await workflow.async_complete_calibration_without_changes(
                 msg["session_id"]
+            )
+        if operation == "preview_calibrated_gains" and workflow is not None:
+            changes = tuple(msg.get("changes", ()))
+            if changes:
+                return await workflow.async_preview_calibrated_gains(
+                    msg["session_id"], msg["verification_id"], changes
+                )
+            return await workflow.async_preview_calibrated_gains(
+                msg["session_id"], msg["verification_id"]
+            )
+        if operation == "clear_calibration_flash" and workflow is not None:
+            return await workflow.async_clear_calibration_flash(
+                msg["session_id"], msg["verification_id"], msg["transaction_id"]
             )
         if operation == "cancel_session" and workflow is not None:
             return await workflow.async_cancel_session(msg["session_id"])
@@ -814,8 +864,35 @@ def _schema(command: str) -> dict[Any, Any]:
             vol.Required("transaction_id"): _ID,
             vol.Required("source_sha256"): _SHA256,
         }
-    elif operation == "start_session":
+    elif operation in {"get_active_work", "start_session"}:
         schema[vol.Required("device_id")] = _ID
+    elif operation == "preview_calibrated_gains":
+        schema |= {
+            vol.Required("session_id"): _SERVER_ID,
+            vol.Required("verification_id"): _SERVER_ID,
+            vol.Optional("changes", default=[]): vol.All(
+                [
+                    {
+                        vol.Required("channel"): vol.All(int, vol.Range(min=1, max=42)),
+                        vol.Required("name"): vol.All(str, vol.Length(min=1, max=64)),
+                        vol.Required("model_id"): _ID,
+                        vol.Optional("reporting_multiplier", default=1.0): vol.All(
+                            vol.Coerce(float), vol.Range(min=0, min_included=False)
+                        ),
+                        vol.Optional("custom_gain_ct"): vol.All(int, vol.Range(min=1, max=65535)),
+                        vol.Optional("custom_label"): vol.All(str, vol.Length(min=1, max=64)),
+                        vol.Optional("burden_output_acknowledged", default=False): bool,
+                    }
+                ],
+                vol.Length(max=42),
+            ),
+        }
+    elif operation == "clear_calibration_flash":
+        schema |= {
+            vol.Required("session_id"): _SERVER_ID,
+            vol.Required("verification_id"): _SERVER_ID,
+            vol.Required("transaction_id"): _SERVER_ID,
+        }
     elif operation == "acknowledge_safety":
         schema |= {
             vol.Required("session_id"): _ID,
@@ -825,7 +902,8 @@ def _schema(command: str) -> dict[Any, Any]:
         schema |= {
             vol.Required("session_id"): _ID,
             vol.Required("target"): vol.In(("voltage", "current")),
-            vol.Required("target_id"): _ID,
+            vol.Optional("target_id"): _ID,
+            vol.Optional("target_ids"): vol.All([_ID], vol.Length(min=2, max=2)),
         }
     elif operation in {"check_offset_readiness", "calibrate_offset"}:
         schema |= {
@@ -841,8 +919,18 @@ def _schema(command: str) -> dict[Any, Any]:
     elif operation == "calibrate_voltage":
         schema |= {
             vol.Required("session_id"): _ID,
-            vol.Required("group_key"): _ID,
-            vol.Required("reference"): vol.Coerce(float),
+            vol.Required("references"): vol.All(
+                [
+                    vol.Schema(
+                        {
+                            vol.Required("group_key"): _ID,
+                            vol.Required("reference"): vol.Coerce(float),
+                        },
+                        extra=vol.PREVENT_EXTRA,
+                    )
+                ],
+                vol.Length(min=2, max=2),
+            ),
             vol.Optional("confirm_iteration", default=False): bool,
         }
     elif operation == "calibrate_current":
@@ -864,6 +952,20 @@ def _schema(command: str) -> dict[Any, Any]:
                 vol.Length(min=1, max=3),
             ),
             vol.Optional("confirm_iteration", default=False): bool,
+            vol.Optional("pending_multipliers", default=[]): vol.All(
+                [
+                    vol.Schema(
+                        {
+                            vol.Required("channel"): vol.All(
+                                int, vol.Range(min=1, max=42)
+                            ),
+                            vol.Required("reporting_multiplier"): _reporting_multiplier,
+                        },
+                        extra=vol.PREVENT_EXTRA,
+                    )
+                ],
+                vol.Length(max=42),
+            ),
         }
     elif operation in {
         "get_session",

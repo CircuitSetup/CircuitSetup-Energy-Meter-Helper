@@ -242,6 +242,12 @@ export interface OffsetCalibrationResult {
   error: string | null;
 }
 
+export interface ActiveWork {
+  session: SessionStatus | null;
+  transaction: TransactionStatus | null;
+  verified_calibration: RestartVerificationResult | null;
+}
+
 export interface StabilityResult {
   target: "voltage" | "current";
   target_id: string;
@@ -298,18 +304,18 @@ interface RestartVerificationBase {
   offset_groups: Array<{ instance_id: string; phase_offsets: OffsetTable }>;
   power_offset_groups: Array<{ instance_id: string; phase_power_offsets: OffsetTable }>;
   verification_id: string;
-  source_authority: "saved_flash";
+  source_authority: "saved_flash" | "configuration";
+  config_filename: string | null;
+  config_sha256: string | null;
+  source_handoff_available: boolean;
   source_handoff_transaction_id: string | null;
+  source_handoff_firmware_installed: boolean;
 }
 
-export type RestartVerificationResult = RestartVerificationBase & (
-  | { source_handoff_available: true; config_filename: string; config_sha256: string }
-  | { source_handoff_available: false; config_filename: null; config_sha256: null }
-);
+export type RestartVerificationResult = RestartVerificationBase;
 
 export type PanelStep =
   | "setup"
-  | "discover"
   | "topology"
   | "ct"
   | "build"

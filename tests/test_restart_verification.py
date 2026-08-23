@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from hashlib import sha256
 from typing import Any
 
@@ -20,11 +21,13 @@ from custom_components.circuitsetup_energy_meter_helper.calibration_engine impor
 )
 from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
     ConfigMutationError,
+    CTChangeRequest,
     build_calibrated_gain_mutation,
 )
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
     ConfigTransactionManager,
     ConfigTransactionState,
+    ReconnectEvidence,
 )
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ConfigChangedError,
@@ -53,7 +56,7 @@ from tests.test_calibration_engine_voltage import (
     gain_evidence,
     sample_window,
 )
-from tests.test_config_transaction import Builder, Persistence, Verifier
+from tests.test_config_transaction import Builder, Job, Persistence, Verifier
 from tests.test_entity_binding import (
     ButtonInfo,
     substitutions,
@@ -1273,6 +1276,30 @@ def test_uniform_gains_build_surgical_hash_bound_source_mutation() -> None:
     assert record.source_authority is CalibrationSourceAuthority.SAVED_FLASH
 
 
+def test_final_gain_preview_combines_ct_edits_without_overwriting_calibrated_current() -> None:
+    content = _snapshot().content.replace(
+        "substitutions:\n",
+        "substitutions:\n  ct1_name: 'CT 1'\n  ct2_name: 'CT 2'\n",
+    )
+    snapshot = _snapshot(content)
+    record = _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003)))
+    plan = build_calibrated_gain_mutation(
+        snapshot,
+        topology(0),
+        record,
+        (
+            CTChangeRequest(1, "Mains", "sct_013_030_30a_1v", 2),
+            CTChangeRequest(2, "Solar", "sct_013_030_30a_1v", 2),
+        ),
+        frozenset({1}),
+    )
+
+    assert "ct1_name: 'Mains'" in plan.proposed_content
+    assert "ct2_name: 'Solar'" in plan.proposed_content
+    assert "current_cal_ct1: '28001'" in plan.proposed_content
+    assert "current_cal_ct2: '4325'" in plan.proposed_content
+
+
 def test_divergent_voltage_gains_return_exact_extend_snippet_and_never_auto_write() -> (
     None
 ):
@@ -1380,6 +1407,7 @@ class CalibrationPersistence(Persistence):
         super().__init__()
         self.records = {record.mac: record for record in records}
         self.claimed: dict[str, str] = {}
+        self.installed: list[tuple[str, str, str]] = []
 
     async def async_get_verified_calibration(
         self, mac: str
@@ -1420,6 +1448,14 @@ class CalibrationPersistence(Persistence):
         ):
             return False
         self.claimed.pop(verification_id)
+        return True
+
+    async def async_mark_verified_calibration_installed(
+        self, mac: str, verification_id: str, transaction_id: str
+    ) -> bool:
+        if self.claimed.get(verification_id) != transaction_id:
+            return False
+        self.installed.append((mac, verification_id, transaction_id))
         return True
 
 
@@ -1483,6 +1519,7 @@ def test_transaction_rereads_and_refuses_cross_device_stale_or_changed_origin() 
             "aabbccddeeff", topology(0), current_record.verification_id
         )
         assert status.state is ConfigTransactionState.PREVIEWED
+        assert manager2.active_status(current_record.mac) == status
         with pytest.raises(ConfigMutationError, match="already been used"):
             await manager2.async_preview_calibrated_gains(
                 "aabbccddeeff", topology(0), current_record.verification_id
@@ -1891,6 +1928,7 @@ def test_store_writes_only_compact_verified_calibration_schema() -> None:
             "source_authority": "saved_flash",
             "source_handoff_available": True,
             "source_handoff_transaction_id": None,
+            "source_handoff_firmware_installed": False,
         }
         assert "content" not in repr(saved)
         assert await store.async_get_verified_calibration(record.mac) == record
@@ -1915,6 +1953,126 @@ def test_store_writes_only_compact_verified_calibration_schema() -> None:
         assert not await store.async_claim_verified_calibration(
             record.mac, record.verification_id, "5" * 32
         )
+
+    asyncio.run(run())
+
+
+def test_successful_validation_rollback_releases_handoff_for_retry() -> None:
+    async def run() -> None:
+        source = _snapshot()
+        record = _record(source, ((7301, 1),) * 3)
+        persistence = CalibrationPersistence((record,))
+        builder = Builder(
+            remote_content=source.content,
+            validation=(Job(False, "invalid generated configuration"),),
+        )
+        manager = ConfigTransactionManager(
+            builder,
+            Verifier(RuntimeError()),
+            persistence,
+            SessionManager(),
+        )
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+
+        result = await manager.async_confirm_write(
+            preview.transaction_id, "admin-user"
+        )
+
+        assert result.state is ConfigTransactionState.ROLLED_BACK
+        assert builder.remote_content == source.content
+        assert persistence.claimed == {}
+        retry = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+        assert retry.state is ConfigTransactionState.PREVIEWED
+
+    asyncio.run(run())
+
+
+def test_store_records_verified_firmware_before_flash_handoff_completion() -> None:
+    """A claimed handoff cannot become configuration-authoritative before install."""
+
+    async def run() -> None:
+        snapshot = _snapshot()
+        record = _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003)))
+        store = object.__new__(HelperStore)
+        store._update_lock = asyncio.Lock()
+        from tests.test_store import _CopyingStorage
+
+        store._store = _CopyingStorage()
+        transaction_id = "3" * 32
+        await store.async_save_verified_calibration(record)
+        with pytest.raises(ValueError, match="installed handoff requires a transaction"):
+            replace(
+                record,
+                source_handoff_available=False,
+                source_handoff_firmware_installed=True,
+            )
+        with pytest.raises(ValueError, match="configuration authority requires install"):
+            replace(
+                record,
+                source_authority=CalibrationSourceAuthority.CONFIGURATION,
+                source_handoff_available=False,
+                source_handoff_transaction_id="3" * 32,
+            )
+        assert await store.async_claim_verified_calibration(
+            record.mac, record.verification_id, transaction_id
+        )
+
+        assert not await store.async_complete_verified_calibration_handoff(
+            record.mac, record.verification_id, transaction_id
+        )
+        assert await store.async_mark_verified_calibration_installed(
+            record.mac, record.verification_id, transaction_id
+        )
+        assert await store.async_complete_verified_calibration_handoff(
+            record.mac, record.verification_id, transaction_id
+        )
+
+        completed = await store.async_get_verified_calibration(record.mac)
+        assert completed is not None
+        assert completed.source_authority is CalibrationSourceAuthority.CONFIGURATION
+        assert completed.source_handoff_firmware_installed
+        assert not completed.source_handoff_available
+        assert completed.source_handoff_transaction_id == transaction_id
+        assert completed.source_status == "Configuration calibration is authoritative."
+
+    asyncio.run(run())
+
+
+def test_verified_install_marks_calibrated_firmware_before_flash_can_clear() -> None:
+    """Removing the post-install marker would permit a premature flash clear."""
+
+    async def run() -> None:
+        source = _snapshot()
+        record = _record(source, ((7301, 28001), (7301, 28002), (7301, 28003)))
+        persistence = CalibrationPersistence((record,))
+        manager = ConfigTransactionManager(
+            Builder(remote_content=source.content),
+            Verifier(
+                ReconnectEvidence(
+                    record.mac,
+                    topology(0),
+                    {channel: f"CT {channel}" for channel in range(1, 7)},
+                    6,
+                )
+            ),
+            persistence,
+            SessionManager(),
+        )
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        result = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert result.state is ConfigTransactionState.VERIFIED
+        assert persistence.installed == [
+            (record.mac, record.verification_id, preview.transaction_id)
+        ]
 
     asyncio.run(run())
 

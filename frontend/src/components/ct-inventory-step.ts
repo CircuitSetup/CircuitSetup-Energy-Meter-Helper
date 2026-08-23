@@ -20,14 +20,13 @@ const resultingGain = (preset: CtPreset | undefined, multiplier: number, customG
 export function ctInventoryStep(
   inventory: CtInventory,
   board: number,
-  group: number,
   drafts: Map<number, CtDraft>,
   setBoard: (board: number) => void,
-  setGroup: (group: number) => void,
   update: (channel: number, patch: Partial<CtDraft>) => void,
   back: () => void,
   review: () => void,
   labelOnly = false,
+  busy = false,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -41,15 +40,12 @@ export function ctInventoryStep(
             @click=${() => setBoard(index)}>${index === 0 ? "Main Board" : `Add-on ${index}`}</button>
         `)}
       </div>
-      <div class="group-nav" aria-label="Three-channel groups">
-        <button data-group-nav aria-current=${group === 0} @click=${() => setGroup(0)}>Group 1 · CT${board * 6 + 1}–${board * 6 + 3}</button>
-        <button data-group-nav aria-current=${group === 1} @click=${() => setGroup(1)}>Group 2 · CT${board * 6 + 4}–${board * 6 + 6}</button>
-      </div>
       <p>Configure each CT on this board. Select its model, adjust the multiplier, and review the resulting gain.</p>
+      <p class="info-band">If you expect to measure more than 65.535 A on a CT, use a multiplier of 2 for a 120 A CT or 4 for a 200 A CT. The multiplier divides the gain and multiplies current and power output by the same amount.</p>
       <div id="board-panel" role="tabpanel" aria-labelledby=${`board-tab-${board}`}>
       <div class="ct-table" role="table" aria-rowcount=${inventory.channels.length + 1}>
         <div class="ct-header" role="row" aria-rowindex="1">
-          <span role="columnheader">Name</span><span role="columnheader">Model</span><span role="columnheader">Current gain</span><span role="columnheader">Multiplier</span><span role="columnheader">Resulting gain</span><span role="columnheader">Burden</span><span role="columnheader">Status</span>
+          <span role="columnheader">CT</span><span role="columnheader">Name</span><span role="columnheader">Model</span><span role="columnheader">Current gain</span><span role="columnheader">Multiplier</span><span role="columnheader">Resulting gain</span><span role="columnheader">Burden</span><span role="columnheader">Status</span>
         </div>
         <div class="ct-window" aria-label="Current transformers">
           ${rows.map((channel) => {
@@ -64,7 +60,8 @@ export function ctInventoryStep(
             const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : undefined);
             const dirty = isDirty(channel, draft);
             return html`
-              <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index - 1} role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
+              <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index} role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
+                <strong class="ct-index" role="cell">CT${channel.channel}</strong>
                 <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
                   @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
                 <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} ?disabled=${labelOnly}
@@ -121,10 +118,10 @@ export function ctInventoryStep(
         </div>
       </div>
       </div>
-      <p class="row-count">Showing ${rows.length} of ${inventory.channels.length} CTs</p>
+      <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        <button class="primary" ?disabled=${labelOnly ? ![...drafts].some(([channel, draft]) => draft.name !== inventory.channels.find((item) => item.channel === channel)?.name) : !hasValidChanges(inventory, drafts)} @click=${review}>${labelOnly ? "Save Home Assistant labels" : "Review changes"}</button>
+        <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
       </footer>
     </section>
   `;
@@ -149,7 +146,8 @@ export function changesFromDrafts(inventory: CtInventory, drafts: Map<number, Ct
 
 function isDirty(channel: CtInventory["channels"][number], draft: CtDraft): boolean {
   return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier
-    || draft.modelId === "custom" && (draft.customGainCt !== channel.raw_gain_ct || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));
+    || draft.modelId === "custom" && (resultingGain(undefined, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct
+      || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));
 }
 
 function validDraft(inventory: CtInventory, draft: CtDraft): boolean {
@@ -160,15 +158,19 @@ function validDraft(inventory: CtInventory, draft: CtDraft): boolean {
   return Boolean(preset) && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged);
 }
 
-function hasValidChanges(inventory: CtInventory, drafts: Map<number, CtDraft>): boolean {
-  let dirty = false;
+export function draftsAreValid(inventory: CtInventory, drafts: Map<number, CtDraft>, labelOnly = false): boolean {
+  if (labelOnly) return [...drafts].every(([channel, draft]) => {
+    const current = inventory.channels.find((item) => item.channel === channel);
+    return Boolean(current) && Boolean(draft.name.trim())
+      && draft.modelId === (current!.selected_model_id ?? "")
+      && draft.multiplier === current!.reporting_multiplier;
+  });
   for (const channel of inventory.channels) {
     const draft = drafts.get(channel.channel);
     if (!draft) return false;
     if (isDirty(channel, draft)) {
-      dirty = true;
       if (!validDraft(inventory, draft)) return false;
     }
   }
-  return dirty;
+  return true;
 }

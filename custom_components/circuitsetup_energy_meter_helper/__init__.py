@@ -12,6 +12,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 
 from .config_transaction import ConfigTransactionManager
 from .const import CONF_ESPHOME_ENTRY_ID, DOMAIN
+from .ct_catalog import CTPresetCatalog
 from .device_builder import _wait_for_owned_cleanup
 from .diagnostics import async_get_config_entry_diagnostics
 from .esphome_api import ESPHomeApiSession
@@ -41,7 +42,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     registered = False
     panel_registered = False
     try:
-        coordinator = ProvisioningCoordinator(hass)
+        await asyncio.to_thread(CTPresetCatalog.load)
+
+        async def current_device_builder_listing() -> dict[str, Any] | None:
+            return (
+                await device_builder.async_list_devices()
+                if device_builder is not None
+                else None
+            )
+
+        coordinator = ProvisioningCoordinator(
+            hass, listing_reader=current_device_builder_listing
+        )
+        device_builder = await create_device_builder(hass)
         await coordinator.async_start()
         sessions = SessionManager()
         store = HelperStore(hass)
@@ -49,7 +62,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         api_session = (
             ESPHomeApiSession(hass, esphome_entry_id) if esphome_entry_id else None
         )
-        device_builder = await create_device_builder(hass)
         workflow = EntryWorkflow(
             hass,
             coordinator,

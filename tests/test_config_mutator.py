@@ -72,6 +72,167 @@ def test_noop_is_byte_identical_and_surgical_edit_only_changes_requested_keys() 
     assert plan.source_sha256 == snapshot.sha256
 
 
+def test_reporting_multiplier_divides_gain_and_multiplies_current_and_power() -> None:
+    """CT scaling must keep the ATM90E32 register and reported output in sync."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace(
+        "logger:\n  level: DEBUG\n",
+        "sensor:\n  - platform: uptime\n    name: Uptime\nlogger:\n  level: DEBUG\n",
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    plan = build_ct_mutation(
+        snapshot,
+        _topology(),
+        (CTChangeRequest(2, "CT 2", "sct_013_030_30a_1v", 2),),
+    )
+
+    assert 'current_cal_ct2: "4325"' in plan.proposed_content
+    assert (
+        """  - id: !extend ${main_meter_id1}
+    phase_b: # CT2
+      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 2
+"""
+        in plan.proposed_content
+    )
+    assert "- platform: uptime" in plan.proposed_content
+
+
+def test_reporting_multiplier_updates_and_removes_its_managed_filters() -> None:
+    """Repeated edits must not retain or duplicate obsolete output scaling."""
+    first = build_ct_mutation(
+        _snapshot(),
+        _topology(),
+        (
+            CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 2),
+            CTChangeRequest(2, "CT 2", "sct_013_030_30a_1v", 2),
+        ),
+    )
+    snapshot = ESPHomeConfigSnapshot(
+        "meter.yaml",
+        first.proposed_content,
+        sha256(first.proposed_content.encode()).hexdigest(),
+    )
+    updated = build_ct_mutation(
+        snapshot,
+        _topology(),
+        (CTChangeRequest(2, "CT 2", "sct_013_030_30a_1v", 4),),
+    )
+
+    assert (
+        updated.proposed_content.count(
+            "CircuitSetup Energy Meter Helper reporting multipliers"
+        )
+        == 1
+    )
+    assert (
+        """    phase_a: # CT1
+      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 2
+"""
+        in updated.proposed_content
+    )
+    assert "multiply: 4" in updated.proposed_content
+
+    snapshot = ESPHomeConfigSnapshot(
+        "meter.yaml",
+        updated.proposed_content,
+        sha256(updated.proposed_content.encode()).hexdigest(),
+    )
+    reset = build_ct_mutation(
+        snapshot,
+        _topology(),
+        (CTChangeRequest(2, "CT 2", "sct_013_030_30a_1v", 1),),
+    )
+    assert "phase_a: # CT1" in reset.proposed_content
+    assert "phase_b: # CT2" not in reset.proposed_content
+    assert "multiply: 4" not in reset.proposed_content
+
+
+def test_reporting_multiplier_is_applied_even_when_rounded_gain_is_unchanged() -> None:
+    """Output scaling is still a mutation when register rounding produces no edit."""
+    plan = build_ct_mutation(
+        _snapshot(),
+        _topology(),
+        (CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 1.00001),),
+    )
+
+    assert plan.changes == ()
+    assert plan.proposed_content != _snapshot().content
+    assert plan.proposed_content.count("multiply: 1.00001") == 2
+
+
+def test_reporting_multiplier_refuses_conflicting_or_duplicate_filter_blocks() -> None:
+    """Never silently replace a local output filter or accept ambiguous managed data."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace(
+        "logger:\n  level: DEBUG\n",
+        """sensor:
+  - id: !extend ${main_meter_id1}
+    phase_b:
+      current:
+        filters:
+          - throttle: 5s
+logger:
+  level: DEBUG
+""",
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+    with pytest.raises(ConfigMutationError, match="filters"):
+        build_ct_mutation(
+            snapshot,
+            _topology(),
+            (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+        )
+
+    owning_content = content.replace(
+        "  - id: !extend ${main_meter_id1}\n",
+        "  - platform: atm90e32\n    id: ${main_meter_id1}\n",
+    )
+    owning_snapshot = replace(
+        snapshot,
+        content=owning_content,
+        sha256=sha256(owning_content.encode()).hexdigest(),
+    )
+    with pytest.raises(ConfigMutationError, match="filters"):
+        build_ct_mutation(
+            owning_snapshot,
+            _topology(),
+            (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+        )
+
+    first = build_ct_mutation(
+        _snapshot(),
+        _topology(),
+        (CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 2),),
+    )
+    duplicate = first.proposed_content.replace(
+        "    phase_a: # CT1\n", "    phase_a: # CT1\n    phase_a: # CT1\n"
+    )
+    duplicate_snapshot = ESPHomeConfigSnapshot(
+        "meter.yaml", duplicate, sha256(duplicate.encode()).hexdigest()
+    )
+    with pytest.raises(ConfigMutationError, match="safely writable"):
+        build_ct_mutation(
+            duplicate_snapshot,
+            _topology(),
+            (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+        )
+
+
 def test_missing_keys_insert_only_in_writable_substitutions_or_refuse_with_snippet() -> (
     None
 ):
@@ -164,6 +325,7 @@ def test_custom_needs_its_explicit_gain_label_and_acknowledgement() -> None:
                 1,
                 "CT 1",
                 "custom",
+                reporting_multiplier=2,
                 custom_gain_ct=100,
                 custom_label="Odd load",
                 burden_output_acknowledged=True,
@@ -171,3 +333,5 @@ def test_custom_needs_its_explicit_gain_label_and_acknowledgement() -> None:
         ),
     )
     assert [change.key for change in plan.changes] == ["current_cal_ct1"]
+    assert 'current_cal_ct1: "50"' in plan.proposed_content
+    assert plan.proposed_content.count("multiply: 2") == 2
