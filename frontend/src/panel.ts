@@ -402,7 +402,7 @@ export class CircuitSetupPanel extends LitElement {
     const deviceId = this.selectedDeviceId;
     const generation = ++this.operationGeneration;
     await this.run(async () => {
-      await api.setInstallerIntent(this.addonCount, this.connection);
+      await api.setInstallerIntent(this.addonCount, this.connection, this.selectedFirmware());
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;

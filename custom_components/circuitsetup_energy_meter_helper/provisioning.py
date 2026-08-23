@@ -12,8 +12,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .models import InstallerIntent, SetupState
-
-ESP_WEB_INSTALLER_URL = "https://circuitsetup.github.io/ESPWebInstaller/"
 ADDON_JUMPER_PINS = (
     (0, 16),
     (27, 17),

@@ -335,6 +335,33 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("USB flash complete");
   });
 
+  it("records the firmware selected at Rescan click time", async () => {
+    const messages: Record<string, unknown>[] = [];
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        messages.push(message);
+        const operation = String(message.type).split("/").at(-1);
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "set_installer_intent") return { state: "installer_guide", devices: [] } as T;
+        if (operation === "rescan") return { state: "device_discovered", devices: [device] } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    await tick();
+    const select = panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]");
+    select!.value = "2026.7.0";
+    select!.dispatchEvent(new Event("change"));
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+
+    expect(messages.find((message) => String(message.type).endsWith("/set_installer_intent"))).toMatchObject({
+      firmware_product_id: "6chan_energy_meter_main_board",
+      esphome_version: "2026.7.0",
+    });
+  });
+
   it("blocks topology mismatch and announces a focused live error", async () => {
     const panel = await mount(
       makeHass({ setup_status: { state: "device_discovered", devices: [device] } }),

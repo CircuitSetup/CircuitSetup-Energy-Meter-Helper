@@ -37,6 +37,8 @@ export interface DiscoveredDevice {
 export interface InstallerIntent {
   addon_count: number;
   connection_type: Exclude<ConnectionType, "unknown">;
+  firmware_product_id?: string;
+  esphome_version?: string;
 }
 
 export interface SetupSnapshot {

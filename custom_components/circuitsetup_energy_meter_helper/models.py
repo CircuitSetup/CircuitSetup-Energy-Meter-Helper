@@ -30,6 +30,12 @@ _MAC = re.compile(
     r"(?:[0-9a-fA-F]{12}|[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}|"
     r"[0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})"
 )
+_FIRMWARE_PRODUCT_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
+_ESPHOME_VERSION = re.compile(
+    r"^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$"
+)
+_FIRMWARE_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_FIRMWARE_MAX_LENGTH = 160
 
 
 def canonical_mac(value: str) -> str:
@@ -67,17 +73,47 @@ class InstallerIntent:
 
     addon_count: int
     connection_type: ConnectionType
+    firmware_product_id: str | None = None
+    esphome_version: str | None = None
 
     def __post_init__(self) -> None:
         if not 0 <= self.addon_count <= 6:
             raise ValueError("addon_count must be between 0 and 6")
         if self.connection_type not in _CONNECTION_TYPES - {"unknown"}:
             raise ValueError("unsupported connection_type")
+        validate_installer_firmware(
+            self.firmware_product_id,
+            self.esphome_version,
+        )
 
     @property
     def ct_count(self) -> int:
         """Return six CT channels for every installed board."""
         return 6 * (self.addon_count + 1)
+
+
+def validate_installer_firmware(
+    firmware_product_id: str | None, esphome_version: str | None
+) -> None:
+    """Accept only a complete pair of safe firmware catalog identifiers."""
+    if (firmware_product_id is None) != (esphome_version is None):
+        raise ValueError("firmware product and ESPHome version must be paired")
+    if firmware_product_id is None:
+        return
+    if (
+        not isinstance(firmware_product_id, str)
+        or len(firmware_product_id) > _FIRMWARE_MAX_LENGTH
+        or _FIRMWARE_CONTROL.search(firmware_product_id)
+        or _FIRMWARE_PRODUCT_ID.fullmatch(firmware_product_id) is None
+    ):
+        raise ValueError("invalid firmware_product_id")
+    if (
+        not isinstance(esphome_version, str)
+        or len(esphome_version) > _FIRMWARE_MAX_LENGTH
+        or _FIRMWARE_CONTROL.search(esphome_version)
+        or _ESPHOME_VERSION.fullmatch(esphome_version) is None
+    ):
+        raise ValueError("invalid esphome_version")
 
 
 def _safe_line(value: str, field: str, limit: int = 256) -> None:
