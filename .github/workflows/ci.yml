@@ -8,7 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  backend:
+  unit:
+    name: Unit tests and lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -20,14 +21,8 @@ jobs:
       - run: uv run mypy custom_components/circuitsetup_energy_meter_helper
       - run: uv run pytest -q --cov=custom_components.circuitsetup_energy_meter_helper --cov-report=term-missing
       - run: uv pip check
-      - name: Validate HACS repository
-        uses: docker://ghcr.io/hacs/action@sha256:41f6310585d9fb72c7a0e183cce0594355715bc24112b62bc4279b83412edccb
-        env:
-          INPUT_CATEGORY: integration
-          INPUT_COMMENT: "false"
-          INPUT_GITHUB_TOKEN: ${{ github.token }}
-
-  frontend:
+  browser-e2e:
+    name: Browser E2E and accessibility
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,6 +41,47 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+
+  home-assistant-contract:
+    name: Home Assistant contract tests (${{ matrix.ha-channel }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ha-channel: stable
+            experimental: false
+          - ha-channel: dev
+            experimental: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.14"
+      - run: uv sync --all-groups
+      - name: Install Home Assistant dev
+        if: matrix.ha-channel == 'dev'
+        run: uv pip install --upgrade git+https://github.com/home-assistant/core.git@dev
+      - name: Show Home Assistant version
+        run: |
+          uv run --no-sync python -c "from homeassistant.const import __version__; print(f'Home Assistant version: {__version__}')"
+      - name: Run Home Assistant contract tests
+        run: uv run --no-sync pytest -q
+
+  home-assistant-control-entity-contract:
+    name: Home Assistant control entity contract
+    needs: home-assistant-contract
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require Home Assistant contract matrix
+        run: |
+          if [ "${{ needs.home-assistant-contract.result }}" != "success" ]; then
+            echo "Home Assistant contract matrix result: ${{ needs.home-assistant-contract.result }}"
+            exit 1
+          fi
+          echo "Home Assistant contract matrix completed successfully."
 
   firmware-contract:
     runs-on: ubuntu-latest
