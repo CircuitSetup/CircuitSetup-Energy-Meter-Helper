@@ -582,9 +582,9 @@ export class HelperApi {
     this.call("check_offset_readiness", (value) => offsetReadiness(value, "check_offset_readiness", boardIndex, stage), {
       session_id: sessionId, board_index: boardIndex, stage,
     });
-  public calibrateOffset = (sessionId: string, boardIndex: number, stage: 1 | 2, confirmRetry: boolean) =>
+  public calibrateOffset = (sessionId: string, boardIndex: number, stage: 1 | 2, preparationAcknowledged: true, confirmRetry: boolean) =>
     this.call("calibrate_offset", (value) => offsetCalibration(value, "calibrate_offset", boardIndex, stage), {
-      session_id: sessionId, board_index: boardIndex, stage, confirm_retry: confirmRetry,
+      session_id: sessionId, board_index: boardIndex, stage, preparation_acknowledged: preparationAcknowledged, confirm_retry: confirmRetry,
     });
   public skipOffsetCalibration = (sessionId: string) =>
     this.call("skip_offset_calibration", (value) => session(value, "skip_offset_calibration"), { session_id: sessionId });

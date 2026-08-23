@@ -342,7 +342,7 @@ class EntryWorkflow:
         self._calibration = CalibrationEngine(
             sessions,
             store.async_save_interrupted_session,
-            persist_verified=store.async_save_verified_calibration,
+            persist_verified=store.async_finalize_verified_calibration,
             calibration_snapshot_reader=(
                 self._async_calibration_snapshot if device_builder is not None else None
             ),
@@ -699,8 +699,11 @@ class EntryWorkflow:
         session_id: str,
         board_index: int,
         stage: OffsetReadinessStage,
+        preparation_acknowledged: bool,
         confirm_retry: bool = False,
     ) -> OffsetCalibrationResult:
+        if preparation_acknowledged is not True:
+            raise WorkflowHandleError("physical preparation acknowledgement is absent")
         handle, revision = self._claim_ready_session(session_id)
         active = False
         try:
@@ -866,7 +869,10 @@ class EntryWorkflow:
         self, session_id: str
     ) -> SessionStatus:
         handle = self._session(session_id)
-        if self._has_pending_calibration(handle.mac):
+        if self._sessions_owner.pending_calibration(handle.mac) is not None or (
+            handle.state != "verified"
+            and handle.state not in {"ready", "stable", "unstable"}
+        ):
             raise WorkflowHandleError(
                 "calibration changes require restart verification"
             )

@@ -365,8 +365,6 @@ class CalibrationEngine:
             try:
                 async with connection_guard(generation):
                     _require_connected_generation(session, generation)
-                    await self._persist_interrupted(pending.mac, None)
-                    _require_connected_generation(session, generation)
                     await self._persist_verified(record)
                     _require_connected_generation(session, generation)
                     self.sessions.consume_calibration_origin(

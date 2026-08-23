@@ -78,6 +78,7 @@ def _workflow(
         SimpleNamespace(
             async_save_interrupted_session=save,
             async_save_verified_calibration=save,
+            async_finalize_verified_calibration=save,
         ),
         None,
         api,
@@ -162,10 +163,31 @@ def test_gain_only_binding_without_offset_capability_reports_unavailable() -> No
         with pytest.raises(WorkflowCapabilityUnavailable):
             await workflow.async_check_offset_readiness(handle.session_id, 0, 1)
         with pytest.raises(WorkflowCapabilityUnavailable):
-            await workflow.async_calibrate_offset(handle.session_id, 0, 1)
+            await workflow.async_calibrate_offset(handle.session_id, 0, 1, True)
         assert (
             await workflow.async_skip_offset_calibration(handle.session_id)
         ).offset_disposition == "skipped"
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("acknowledged", (None, False, 0, 1, "yes"))
+def test_offset_calibration_requires_literal_physical_preparation_acknowledgement(
+    acknowledged: object,
+) -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+
+        with pytest.raises(WorkflowHandleError, match="preparation"):
+            await workflow.async_calibrate_offset(
+                handle.session_id,
+                0,
+                1,
+                preparation_acknowledged=acknowledged,  # type: ignore[arg-type]
+            )
+
+        assert handle.offset_results == {}
         await workflow.async_close()
 
     asyncio.run(run())
@@ -234,7 +256,7 @@ def test_one_offset_call_maps_one_board_stage_and_status_retains_result() -> Non
 
         workflow._calibration = Calibration()  # type: ignore[assignment]
 
-        result = await workflow.async_calibrate_offset(handle.session_id, 0, 1)
+        result = await workflow.async_calibrate_offset(handle.session_id, 0, 1, True)
         status = await workflow.async_get_session(handle.session_id)
 
         assert result.expected_tables == (("meter_main1", OFFSET_TABLE),)
@@ -277,7 +299,7 @@ def test_noncanonical_offset_targets_cannot_bypass_partial_retry_confirmation() 
                 )
 
         workflow._calibration = Calibration()  # type: ignore[assignment]
-        await workflow.async_calibrate_offset(handle.session_id, 0, 1)
+        await workflow.async_calibrate_offset(handle.session_id, 0, 1, True)
 
         for board_index, stage in ((False, 1), (0.0, 1), (0, True), (0, 1.0)):
             with pytest.raises(WorkflowHandleError, match="target is invalid"):
@@ -285,6 +307,7 @@ def test_noncanonical_offset_targets_cannot_bypass_partial_retry_confirmation() 
                     handle.session_id,
                     board_index,  # type: ignore[arg-type]
                     stage,  # type: ignore[arg-type]
+                    True,
                 )
 
         assert calls == [(0, 1, False)]
@@ -394,7 +417,7 @@ def test_unavailable_or_invalid_offset_is_skip_only(
         with pytest.raises(WorkflowCapabilityUnavailable):
             await workflow.async_check_offset_readiness(handle.session_id, 0, 1)
         with pytest.raises(WorkflowCapabilityUnavailable):
-            await workflow.async_calibrate_offset(handle.session_id, 0, 1)
+            await workflow.async_calibrate_offset(handle.session_id, 0, 1, True)
         assert (
             await workflow.async_skip_offset_calibration(handle.session_id)
         ).offset_disposition == "skipped"
@@ -462,6 +485,33 @@ def test_complete_without_changes_finishes_once_without_restart_or_persistence()
         sessions._pending_calibrations.clear()
         with pytest.raises(WorkflowHandleError, match="already finalized"):
             await workflow.async_restart_and_verify(handle.session_id)
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "partial",
+        "indeterminate",
+        "applied_pending_restart_verification",
+        "result_outside_tolerance",
+    ),
+)
+def test_complete_without_changes_rejects_mutation_or_recovery_state_without_tables(
+    state: str,
+) -> None:
+    async def run() -> None:
+        workflow, handle, sessions, _api = _workflow()
+        handle.state = state
+        if state == "indeterminate":
+            sessions._pending_calibrations[MAC] = _pending(handle)
+
+        with pytest.raises(WorkflowHandleError, match="restart verification"):
+            await workflow.async_complete_calibration_without_changes(handle.session_id)
+
+        assert handle.state == state
         await workflow.async_close()
 
     asyncio.run(run())

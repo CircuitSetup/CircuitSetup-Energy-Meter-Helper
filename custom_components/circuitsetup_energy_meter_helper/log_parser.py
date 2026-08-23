@@ -440,6 +440,11 @@ def _parse_offset_operation(
         if power
         else "Offset calibration failed; previous values restored."
     )
+    rollback_failed = (
+        "Power offset calibration failed; rollback readback verification failed."
+        if power
+        else "Offset calibration failed; rollback readback verification failed."
+    )
     readback_pattern = _POWER_OFFSET_READBACK_RE if power else _OFFSET_READBACK_RE
     selected_category = "power_offset" if power else "offset"
 
@@ -472,7 +477,7 @@ def _parse_offset_operation(
     def is_header(item: CalibrationLogLine) -> bool:
         return title in item.line and "====" in item.line
 
-    evidence_terms = (saved, save_failed, completed, failed)
+    evidence_terms = (saved, save_failed, completed, failed, rollback_failed)
 
     def is_evidence(item: CalibrationLogLine) -> bool:
         normalized = re.sub(r"\s+", "", item.line)
@@ -524,7 +529,8 @@ def _parse_offset_operation(
     final_indices = [
         index
         for index in range(header_index, len(matching))
-        if _calibration_payload(matching[index].line) in (completed, failed)
+        if _calibration_payload(matching[index].line)
+        in (completed, failed, rollback_failed)
     ]
     if len(final_indices) != 1:
         raise LogEvidenceError(f"{kind} terminal result is missing or multiple")
@@ -566,6 +572,8 @@ def _parse_offset_operation(
         if readback_pattern.search(item.line) is not None
     ]
     final_payload = _calibration_payload(matching[final_index].line)
+    if final_payload == rollback_failed:
+        raise LogEvidenceError(f"{kind} rollback readback failure terminal")
     if final_payload == failed:
         if save_failures:
             raise LogEvidenceError(f"{kind} save failure terminal")
@@ -660,10 +668,9 @@ def parse_restore(
         "offset restore failed verification",
         "Offset calibration restore failed verification",
     )
-    observed_instance_ids = {
-        instance_id
-        for item in matching
-        if (
+
+    def is_restore_evidence(item: CalibrationLogLine) -> bool:
+        return (
             any(term in item.line for term in restore_terms)
             or _RESTORE_ROW_RE.search(item.line) is not None
             or _COMPARE_ROW_RE.search(item.line) is not None
@@ -671,8 +678,27 @@ def parse_restore(
             or _POWER_OFFSET_ROW_RE.search(item.line) is not None
             or _OFFSET_COMPARE_ROW_RE.search(item.line) is not None
             or _POWER_OFFSET_COMPARE_ROW_RE.search(item.line) is not None
-            or "|Phase|voltage_gain|current_gain|" in re.sub(r"\s+", "", item.line)
+            or "|Phase|voltage_gain|current_gain|"
+            in re.sub(r"\s+", "", item.line)
         )
+
+    for item in matching:
+        if not is_restore_evidence(item):
+            continue
+        tags = tuple(_INSTANCE_RE.finditer(item.line))
+        if len(tags) != 1 or item.line.count("[CALIBRATION][") != 1:
+            raise LogEvidenceError(
+                "restore evidence must contain exactly one instance tag"
+            )
+        if tags[0].group("instance") not in expected_instance_ids:
+            raise LogEvidenceError(
+                f"unexpected restore instance {tags[0].group('instance')}"
+            )
+
+    observed_instance_ids = {
+        instance_id
+        for item in matching
+        if is_restore_evidence(item)
         if (instance_id := _instance(item.line)) is not None
     }
     for instance_id in expected_instance_ids | observed_instance_ids:

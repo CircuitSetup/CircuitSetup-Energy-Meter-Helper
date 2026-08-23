@@ -165,7 +165,7 @@ describe("HelperApi", () => {
     hass.responses.check_stability = { ...stability, target_id: "42" };
     await api.checkStability("session-1", "current", "42");
     await api.checkOffsetReadiness("session-1", 0, 1);
-    await api.calibrateOffset("session-1", 0, 1, false);
+    await api.calibrateOffset("session-1", 0, 1, true, false);
     await api.skipOffsetCalibration("session-1");
     await api.calibrateVoltage("session-1", "addon6_2", 120, true);
     await api.calibrateCurrent("session-1", [{ channel: 42, reference: 25, reporting_multiplier: 1 }], true);
@@ -228,6 +228,9 @@ describe("HelperApi", () => {
     expect(hass.messages.find((message) => String(message.type).endsWith("/calibrate_current"))).toMatchObject({
       references: [{ channel: 42, reference: 25, reporting_multiplier: 1 }],
     });
+    expect(hass.messages.find((message) => String(message.type).endsWith("/calibrate_offset"))).toMatchObject({
+      preparation_acknowledged: true,
+    });
   });
 
   it("rejects malformed offset session, readiness, and calibration payloads", async () => {
@@ -249,7 +252,7 @@ describe("HelperApi", () => {
     await expect(api.checkOffsetReadiness("session-1", 0, 1)).rejects.toThrow("check_offset_readiness");
     hass.responses.calibrate_offset = { ...offsetResult,
       expected_tables: [["main_1", [[1, -1], [2, -2], [3, 32768]]]] };
-    await expect(api.calibrateOffset("session-1", 0, 1, false)).rejects.toThrow("calibrate_offset");
+    await expect(api.calibrateOffset("session-1", 0, 1, true, false)).rejects.toThrow("calibrate_offset");
   });
 
   it("accepts Stage 2 present-voltage evidence for the exact requested board", async () => {

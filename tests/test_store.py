@@ -7,12 +7,15 @@ import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.models import (
     StoredCTSelection,
+    StoredInterruptedSession,
     StoredMeterRecord,
 )
 from custom_components.circuitsetup_energy_meter_helper.store import (
     STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
     HelperStore,
+    VerifiedCalibrationRecord,
+    VerifiedGainGroup,
     _HelperStorage,
     migrate_storage,
     serialize_meter_record,
@@ -198,6 +201,54 @@ def test_concurrent_verified_updates_cannot_overwrite_another_meter() -> None:
         for malformed in ("00112233445", "00:11-22:33:44:55"):
             with pytest.raises(ValueError, match="MAC"):
                 await store.async_save_verified_ct_selections(malformed, (selection,))
+
+    asyncio.run(run())
+
+
+def test_final_verified_save_failure_preserves_durable_interruption_marker() -> None:
+    async def run() -> None:
+        class FailingStorage(_CopyingStorage):
+            async def async_save(self, data: dict[str, object]) -> None:
+                del data
+                raise OSError("store unavailable")
+
+        mac = "aabbccddeeff"
+        marker = StoredInterruptedSession("indeterminate", "2026-08-23T00:00:00Z", (1,), None)
+        backend = FailingStorage()
+        backend.data = {
+            "meters": {
+                mac: {
+                    "interrupted_session": {
+                        "state": marker.state,
+                        "started_at": marker.started_at,
+                        "changed_channels": [1],
+                        "config_transaction_id": None,
+                    }
+                }
+            }
+        }
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        record = VerifiedCalibrationRecord(
+            mac=mac,
+            config_filename="meter.yaml",
+            config_sha256="a" * 64,
+            topology_addon_count=0,
+            topology_project_name="circuitsetup.6c-energy-meter",
+            topology_connection_type="wifi",
+            topology_voltage_layout="single",
+            connection_generation=2,
+            groups=(VerifiedGainGroup("meter_main1", ((7305, 27518),) * 3),),
+            verification_id="b" * 32,
+        )
+
+        with pytest.raises(OSError, match="store unavailable"):
+            await store.async_finalize_verified_calibration(record)
+
+        durable = backend.data["meters"][mac]  # type: ignore[index]
+        assert durable["interrupted_session"] is not None
+        assert "verified_calibration" not in durable
 
     asyncio.run(run())
 

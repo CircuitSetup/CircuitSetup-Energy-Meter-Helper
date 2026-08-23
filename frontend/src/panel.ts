@@ -582,12 +582,12 @@ export class CircuitSetupPanel extends LitElement {
     const prior = this.offsetResultByTarget.get(key);
     const stageState = this.session.offset_boards?.[board]?.stages[stage - 1]?.state;
     const retryRequired = Boolean(prior?.retry_allowed) || stageState === "partial" || stageState === "indeterminate";
-    if (retryRequired && !this.offsetRetryConfirmed) return;
+    if (this.offsetAcknowledged[stage - 1] !== true || retryRequired && !this.offsetRetryConfirmed) return;
     const generation = ++this.operationGeneration;
     this.offsetBusy = true; this.requestUpdate();
     try {
       await this.run(async () => {
-        const result = await api.calibrateOffset(sessionId, board, stage, retryRequired);
+        const result = await api.calibrateOffset(sessionId, board, stage, true, retryRequired);
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
         this.offsetResultByTarget = new Map(this.offsetResultByTarget).set(key, result);
         const boards = (this.session.offset_boards ?? []).map((item) => item.board_index !== board ? item : ({
@@ -602,6 +602,9 @@ export class CircuitSetupPanel extends LitElement {
           : states.some((state) => state === "partial" || state === "indeterminate") ? "partial" as const : "in_progress" as const;
         this.session = { ...this.session, offset_boards: boards, offset_disposition: disposition,
           has_pending_calibration: this.session.has_pending_calibration || result.expected_tables.length > 0 };
+        this.offsetAcknowledged = this.offsetAcknowledged.map((value, index) => index === stage - 1 ? false : value);
+        this.offsetReadinessByTarget = new Map(this.offsetReadinessByTarget);
+        this.offsetReadinessByTarget.delete(key);
         this.offsetRetryConfirmed = false;
         this.announcement = result.state === "applied_pending_restart_verification"
           ? `Board ${board + 1} Stage ${stage} saved; restart verification required.`

@@ -185,6 +185,7 @@ class WorkflowOwner(Protocol):
         session_id: str,
         board_index: int,
         stage: OffsetReadinessStage,
+        preparation_acknowledged: bool,
         confirm_retry: bool = False,
     ) -> Any: ...
 
@@ -348,6 +349,7 @@ class EntryWebsocketController:
                 msg["session_id"],
                 msg["board_index"],
                 msg["stage"],
+                msg["preparation_acknowledged"],
                 msg["confirm_retry"],
             )
         if operation == "skip_offset_calibration" and workflow is not None:
@@ -834,6 +836,7 @@ def _schema(command: str) -> dict[Any, Any]:
             vol.Required("stage"): vol.All(_strict_integer, vol.In((1, 2))),
         }
         if operation == "calibrate_offset":
+            schema[vol.Required("preparation_acknowledged")] = _literal_true
             schema[vol.Optional("confirm_retry", default=False)] = bool
     elif operation == "calibrate_voltage":
         schema |= {
@@ -890,6 +893,12 @@ def _strict_integer(value: Any) -> int:
     if type(value) is not int:
         raise vol.Invalid("value must be an integer")
     return value
+
+
+def _literal_true(value: Any) -> bool:
+    if value is not True:
+        raise vol.Invalid("value must be true")
+    return True
 
 
 def sanitize_payload(

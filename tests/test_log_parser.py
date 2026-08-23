@@ -422,6 +422,53 @@ def test_offset_runs_reject_failure_terminals(
         )
 
 
+@pytest.mark.parametrize(
+    ("parser", "fixture", "button", "completed", "rollback_failed"),
+    (
+        (
+            parse_offset_run,
+            "offset_success.log",
+            "1. Run Main Meter 1 Offset Cal",
+            "Offset calibration completed and verified.",
+            "Offset calibration failed; rollback readback verification failed.",
+        ),
+        (
+            parse_power_offset_run,
+            "power_offset_success.log",
+            "2. Run Main Meter 1 Power Offset Cal",
+            "Power offset calibration completed and verified.",
+            "Power offset calibration failed; rollback readback verification failed.",
+        ),
+    ),
+)
+def test_offset_runs_reject_distinct_rollback_readback_failure_terminal(
+    parser: Callable[..., object],
+    fixture: str,
+    button: str,
+    completed: str,
+    rollback_failed: str,
+) -> None:
+    lines = [
+        CalibrationLogLine(
+            item.connection_generation,
+            item.operation_sequence,
+            item.arrived_at,
+            item.line.replace(completed, rollback_failed),
+        )
+        for item in log_lines(fixture)
+    ]
+
+    with pytest.raises(LogEvidenceError, match="rollback readback"):
+        parser(
+            lines,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name=button,
+            dispatched_after=10.0,
+        )
+
+
 def test_offset_run_rejects_duplicate_or_contradictory_terminals() -> None:
     for terminal in (
         "[I][atm90e32:834] [CALIBRATION][meter_main1] Offset calibration completed and verified.",
@@ -696,10 +743,39 @@ def test_restore_rejects_failure_or_missing_instance() -> None:
             expected_instance_ids={"meter_main1"},
             started_after=10.0,
         )
-    with pytest.raises(LogEvidenceError, match="missing restore"):
+    with pytest.raises(LogEvidenceError, match="unexpected restore instance"):
         parse_restore(
             log_lines("restore_positive.log", sequence=0),
             connection_generation=3,
             expected_instance_ids={"addon2_1"},
             started_after=10.0,
+        )
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    (
+        "[E][atm90e32:1000] Offset calibration restore failed verification; using config values.",
+        "[E][atm90e32:1000] [CALIBRATION][meter_main1] [CALIBRATION][meter_main1] Offset calibration restore failed verification; using config values.",
+        "[E][atm90e32:1000] [CALIBRATION][meter main1] Offset calibration restore failed verification; using config values.",
+        "[E][atm90e32:1000] [CALIBRATION][meter_main2] Offset calibration restore failed verification; using config values.",
+    ),
+    ids=("untagged-terminal", "duplicate-tag", "malformed-tag", "wrong-tag"),
+)
+def test_restore_rejects_contradictory_evidence_without_one_expected_instance_tag(
+    contradiction: str,
+) -> None:
+    lines = log_lines("restore_positive.log", sequence=0)
+    lines.append(CalibrationLogLine(3, 0, 99.0, contradiction))
+
+    with pytest.raises(LogEvidenceError, match="instance"):
+        parse_restore(
+            lines,
+            connection_generation=3,
+            expected_instance_ids={"meter_main1"},
+            started_after=10.0,
+            operation_sequence=0,
+            expected_categories={
+                "meter_main1": {"gain", "offset", "power_offset"}
+            },
         )

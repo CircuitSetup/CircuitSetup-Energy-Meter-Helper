@@ -526,6 +526,8 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         base |= {"session_id": "session", "target": "voltage", "target_id": "main_1"}
     elif suffix in {"check_offset_readiness", "calibrate_offset"}:
         base |= {"session_id": "session", "board_index": 0, "stage": 1}
+        if suffix == "calibrate_offset":
+            base["preparation_acknowledged"] = True
     elif suffix in {
         "skip_offset_calibration",
         "complete_calibration_without_changes",
@@ -1971,9 +1973,18 @@ def test_offset_websocket_schemas_bound_board_stage_and_retry_confirmation() -> 
         readiness = hass.data["websocket_api"][f"{DOMAIN}/check_offset_readiness"][1]
         calibrate = hass.data["websocket_api"][f"{DOMAIN}/calibrate_offset"][1]
         assert readiness is not None and calibrate is not None
-        assert (
-            calibrate(_message(f"{DOMAIN}/calibrate_offset"))["confirm_retry"] is False
-        )
+        valid = _message(f"{DOMAIN}/calibrate_offset") | {
+            "preparation_acknowledged": True
+        }
+        assert calibrate(valid)["confirm_retry"] is False
+
+        missing = _message(f"{DOMAIN}/calibrate_offset")
+        missing.pop("preparation_acknowledged")
+        with pytest.raises(vol.Invalid):
+            calibrate(missing)
+        for invalid in (False, 0, 1, "yes"):
+            with pytest.raises(vol.Invalid):
+                calibrate(valid | {"preparation_acknowledged": invalid})
 
         for validator, command in (
             (readiness, "check_offset_readiness"),
@@ -1990,11 +2001,13 @@ def test_offset_websocket_schemas_bound_board_stage_and_retry_confirmation() -> 
                 ("stage", 1.0),
             ):
                 message = _message(f"{DOMAIN}/{command}")
+                if command == "calibrate_offset":
+                    message["preparation_acknowledged"] = True
                 message[key] = value
                 with pytest.raises(vol.Invalid):
                     validator(message)
 
-        message = _message(f"{DOMAIN}/calibrate_offset")
+        message = valid
         message["confirm_retry"] = "yes"
         with pytest.raises(vol.Invalid):
             calibrate(message)

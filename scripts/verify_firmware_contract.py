@@ -102,7 +102,17 @@ def _verify_calibration_package(path: Path, prefix: str) -> None:
         for key, name_template in expected_controls:
             body = dict(controls)[key]
             expected_name_line = f'      name: "{name_template.format(name=expected_name)}"'
-            if expected_name_line not in body or body.count("disabled_by_default: true") != 1:
+            if (
+                expected_name_line not in body
+                or len(re.findall(r"^      name:", body, re.MULTILINE)) != 1
+                or len(
+                    re.findall(
+                        r"^      disabled_by_default:", body, re.MULTILINE
+                    )
+                )
+                != 1
+                or body.count("disabled_by_default: true") != 1
+            ):
                 raise SystemExit(f"{path.name}: calibration buttons are incomplete")
     ids = re.findall(
         rf"^    id: \$\{{{re.escape(id_prefix)}_id([12])\}}$", source, re.MULTILINE

@@ -534,7 +534,7 @@ def test_restart_arms_disconnect_rebinds_and_persists_exact_changed_set() -> Non
             "Saved flash calibration remains authoritative until it is explicitly cleared."
         )
         assert saved == [result.record]
-        assert markers == [None]
+        assert markers == []
         event_count = len(session.events)
         with pytest.raises(RestartVerificationError, match="origin"):
             await engine.async_verify_after_restart(
@@ -589,7 +589,7 @@ def test_restart_claim_blocks_group_revision_during_persistence() -> None:
     asyncio.run(run())
 
 
-def test_marker_clear_failure_prevents_verified_persistence_and_origin_consumption() -> (
+def test_atomic_final_save_failure_preserves_origin_for_retry() -> (
     None
 ):
     async def run() -> None:
@@ -603,26 +603,26 @@ def test_marker_clear_failure_prevents_verified_persistence_and_origin_consumpti
         )
         sessions = SessionManager()
         await _prime_origin(sessions, session, binding, expected)
-        saved: list[VerifiedCalibrationRecord] = []
+        attempted: list[VerifiedCalibrationRecord] = []
 
-        async def fail_marker_clear(mac: str, marker: object) -> None:
-            assert mac == "aabbccddeeff"
-            assert marker is None
-            raise OSError("marker store unavailable")
+        async def unexpected_marker_clear(mac: str, marker: object) -> None:
+            del mac, marker
+            raise AssertionError("final persistence must not clear separately")
 
         async def persist(record: VerifiedCalibrationRecord) -> None:
-            saved.append(record)
+            attempted.append(record)
+            raise OSError("final store unavailable")
 
         engine = CalibrationEngine(
-            sessions, fail_marker_clear, persist_verified=persist
+            sessions, unexpected_marker_clear, persist_verified=persist
         )
-        with pytest.raises(OSError, match="marker store unavailable"):
+        with pytest.raises(OSError, match="final store unavailable"):
             await engine.async_verify_after_restart(
                 "aabbccddeeff", session, binding, substitutions=substitutions(0)
             )
 
         pending = sessions.pending_calibration("aabbccddeeff")
-        assert saved == []
+        assert len(attempted) == 1
         assert pending is not None
         assert pending.claimed_revision is None
         assert [event[0] for event in session.events].count("restart") == 1

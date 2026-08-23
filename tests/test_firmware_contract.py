@@ -226,6 +226,22 @@ def test_rejects_calibration_reference_that_cannot_be_zeroed(tmp_path: Path) -> 
             "calibration buttons",
         ),
         (
+            '      name: "1. Run ${addon6_name1} Offset Cal"\n',
+            (
+                '      name: "1. Run ${addon6_name1} Offset Cal"\n'
+                '      name: "Duplicate"\n'
+            ),
+            "calibration buttons",
+        ),
+        (
+            "      disabled_by_default: true\n",
+            (
+                "      disabled_by_default: true\n"
+                "      disabled_by_default: false\n"
+            ),
+            "calibration buttons",
+        ),
+        (
             "    clear_gain_calibration:\n",
             (
                 "    spare_calibration:\n"

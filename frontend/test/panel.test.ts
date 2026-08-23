@@ -205,14 +205,23 @@ describe("CircuitSetup panel", () => {
     await tick(); await panel.updateComplete;
     expect(text(panel)).toContain("One chip finished; recovery is required");
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(true);
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>("#offset-board-panel > label.check-row input")?.checked).toBe(false);
+    panel.shadowRoot?.querySelector<HTMLInputElement>("#offset-board-panel > label.check-row input")?.click();
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='check-offset']")?.click();
+    await tick(); await panel.updateComplete;
     panel.shadowRoot?.querySelector<HTMLInputElement>(".recovery-panel input")?.click();
     await panel.updateComplete;
     panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.click();
     await tick(); await panel.updateComplete;
 
     expect(messages.filter((message) => String(message.type).endsWith("/calibrate_offset"))
-      .map((message) => ({ board_index: message.board_index, stage: message.stage, confirm_retry: message.confirm_retry })))
-      .toEqual([{ board_index: 0, stage: 1, confirm_retry: false }, { board_index: 0, stage: 1, confirm_retry: true }]);
+      .map((message) => ({ board_index: message.board_index, stage: message.stage,
+        preparation_acknowledged: message.preparation_acknowledged, confirm_retry: message.confirm_retry })))
+      .toEqual([
+        { board_index: 0, stage: 1, preparation_acknowledged: true, confirm_retry: false },
+        { board_index: 0, stage: 1, preparation_acknowledged: true, confirm_retry: true },
+      ]);
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-offset-stage='2']")?.disabled).toBe(false);
     panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-offset-stage='2']")?.click();
     await panel.updateComplete;

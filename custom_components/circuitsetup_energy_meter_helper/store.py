@@ -521,6 +521,17 @@ class HelperStore:
             meter["verified_calibration"] = _serialize_verified_calibration(record)
             await self._store.async_save(data)
 
+    async def async_finalize_verified_calibration(
+        self, record: VerifiedCalibrationRecord
+    ) -> None:
+        """Atomically clear recovery and persist the verified record."""
+        async with self._update_lock:
+            data = await self.async_load()
+            meter = data.setdefault("meters", {}).setdefault(record.mac, {})
+            meter["interrupted_session"] = None
+            meter["verified_calibration"] = _serialize_verified_calibration(record)
+            await self._store.async_save(data)
+
     async def async_get_verified_calibration(
         self, mac: str
     ) -> VerifiedCalibrationRecord | None:
