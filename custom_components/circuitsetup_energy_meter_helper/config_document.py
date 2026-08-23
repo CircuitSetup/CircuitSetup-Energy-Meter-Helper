@@ -228,7 +228,17 @@ class _DocumentParser:
                 matches.append((index, mapping))
         if len(matches) > 1:
             raise ESPHomeConfigParseError(f"duplicate {key}", matches[1][0] + 1)
-        return self._scalar(*matches[0]) if matches else None
+        if not matches:
+            return None
+        index, mapping = matches[0]
+        if not self._has_value(mapping.rest) and index + 1 < end:
+            continuation = self._bodies[index + 1]
+            if (
+                len(continuation) - len(continuation.lstrip(" ")) > mapping.indent
+                and continuation.lstrip(" ").startswith("github://")
+            ):
+                return self._scalar_parts(index + 1, continuation, 0)
+        return self._scalar(index, mapping)
 
     def _direct_child_indent(
         self, start: int, end: int, parent_indent: int
