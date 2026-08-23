@@ -39,3 +39,11 @@ GREEN:
 
 - No hardware was attached; this verifies server correlation, signed-table comparison, persistence gating, and compatibility in software only.
 - Existing Home Assistant/backoff dependencies emit five deprecation warnings under Python 3.14; no Task 6 failure is involved.
+
+## Fix round 1
+
+- Important finding: finalization cleared the interrupted marker after verified persistence and pending-origin consumption. A marker-store failure therefore reported an error after committing both finalization effects.
+- RED: an injected marker-clear `OSError` observed one verified write and no pending origin.
+- GREEN: marker cleanup now runs first inside the existing connection-generation guard. Failure produces no verified write or origin consumption; the exact claim is released, the pending aggregate remains retryable, and Restart was dispatched once.
+- Focused regression: `3 passed`; adjacent restart/storage/parser/calibration suite: `147 passed`; full Python suite: `521 passed`.
+- Targeted Ruff check/format, mypy, and `git diff --check`: clean.

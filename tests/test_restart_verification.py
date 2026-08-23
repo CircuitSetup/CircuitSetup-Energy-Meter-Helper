@@ -589,6 +589,47 @@ def test_restart_claim_blocks_group_revision_during_persistence() -> None:
     asyncio.run(run())
 
 
+def test_marker_clear_failure_prevents_verified_persistence_and_origin_consumption() -> (
+    None
+):
+    async def run() -> None:
+        expected = {"meter_main1": ((7301, 1), (7301, 2), (7301, 3))}
+        session = RestartSession(
+            {"meter_main1": _restore("meter_main1", expected["meter_main1"])},
+            addons=0,
+        )
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(0), substitutions(0)
+        )
+        sessions = SessionManager()
+        await _prime_origin(sessions, session, binding, expected)
+        saved: list[VerifiedCalibrationRecord] = []
+
+        async def fail_marker_clear(mac: str, marker: object) -> None:
+            assert mac == "aabbccddeeff"
+            assert marker is None
+            raise OSError("marker store unavailable")
+
+        async def persist(record: VerifiedCalibrationRecord) -> None:
+            saved.append(record)
+
+        engine = CalibrationEngine(
+            sessions, fail_marker_clear, persist_verified=persist
+        )
+        with pytest.raises(OSError, match="marker store unavailable"):
+            await engine.async_verify_after_restart(
+                "aabbccddeeff", session, binding, substitutions=substitutions(0)
+            )
+
+        pending = sessions.pending_calibration("aabbccddeeff")
+        assert saved == []
+        assert pending is not None
+        assert pending.claimed_revision is None
+        assert [event[0] for event in session.events].count("restart") == 1
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     ("evidence", "match"),
     (

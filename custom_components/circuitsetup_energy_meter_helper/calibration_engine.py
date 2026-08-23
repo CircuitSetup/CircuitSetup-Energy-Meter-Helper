@@ -365,13 +365,14 @@ class CalibrationEngine:
             try:
                 async with connection_guard(generation):
                     _require_connected_generation(session, generation)
+                    await self._persist_interrupted(pending.mac, None)
+                    _require_connected_generation(session, generation)
                     await self._persist_verified(record)
                     _require_connected_generation(session, generation)
                     self.sessions.consume_calibration_origin(
                         lease, pending.operation_id, pending.revision
                     )
                     consumed = True
-                    await self._persist_interrupted(pending.mac, None)
                     return RestartVerificationResult(record, rebound)
             except ESPHomeSessionDisconnectedError as error:
                 raise RestartVerificationError(
