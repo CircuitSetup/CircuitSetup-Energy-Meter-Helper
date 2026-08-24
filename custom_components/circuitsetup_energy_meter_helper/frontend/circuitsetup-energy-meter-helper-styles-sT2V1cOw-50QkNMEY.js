@@ -272,9 +272,9 @@ let I = class extends HTMLElement {
   }
 };
 I.elementStyles = [], I.shadowRootOptions = { mode: "open" }, I[N("elementProperties")] = /* @__PURE__ */ new Map(), I[N("finalized")] = /* @__PURE__ */ new Map(), yt?.({ ReactiveElement: I }), (O.reactiveElementVersions ?? (O.reactiveElementVersions = [])).push("2.1.0");
-const Y = globalThis, G = Y.trustedTypes, _t = G ? G.createPolicy("lit-html", { createHTML: (i) => i }) : void 0, zt = "$lit$", $ = `lit$${Math.random().toFixed(9).slice(2)}$`, Ht = "?" + $, se = `<${Ht}>`, S = document, M = () => S.createComment(""), U = (i) => i === null || typeof i != "object" && typeof i != "function", at = Array.isArray, X = `[\x20\t
-\f\r]`, z = /<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g, $t = /-->/g, At = />/g, w = RegExp(`>|${X}(?:([^\\s"'>=/]+)(${X}*=${X}*(?:[^\x20\t
-\f\r"'\`<>=]|("|')|))|$)`, "g"), wt = /'/g, Ct = /"/g, Nt = /^(?:script|style|textarea|title)$/i, Mt = (i) => (t, ...e) => ({ _$litType$: i, strings: t, values: e }), A = Mt(1), Me = Mt(2), P = /* @__PURE__ */ Symbol.for("lit-noChange"), c = /* @__PURE__ */ Symbol.for("lit-nothing"), Et = /* @__PURE__ */ new WeakMap(), E = S.createTreeWalker(S, 129);
+const Y = globalThis, G = Y.trustedTypes, _t = G ? G.createPolicy("lit-html", { createHTML: (i) => i }) : void 0, zt = "$lit$", w = `lit$${Math.random().toFixed(9).slice(2)}$`, Ht = "?" + w, se = `<${Ht}>`, S = document, M = () => S.createComment(""), U = (i) => i === null || typeof i != "object" && typeof i != "function", at = Array.isArray, X = `[\x20\t
+\f\r]`, z = /<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g, wt = /-->/g, $t = />/g, A = RegExp(`>|${X}(?:([^\\s"'>=/]+)(${X}*=${X}*(?:[^\x20\t
+\f\r"'\`<>=]|("|')|))|$)`, "g"), At = /'/g, Ct = /"/g, Nt = /^(?:script|style|textarea|title)$/i, Mt = (i) => (t, ...e) => ({ _$litType$: i, strings: t, values: e }), $ = Mt(1), Me = Mt(2), P = /* @__PURE__ */ Symbol.for("lit-noChange"), c = /* @__PURE__ */ Symbol.for("lit-nothing"), Et = /* @__PURE__ */ new WeakMap(), E = S.createTreeWalker(S, 129);
 function Ut(i, t) {
   if (!at(i) || !i.hasOwnProperty("raw")) throw Error("invalid template strings array");
   return _t !== void 0 ? _t.createHTML(t) : t;
@@ -285,9 +285,9 @@ const oe = (i, t) => {
   for (let l = 0; l < e; l++) {
     const a = i[l];
     let h, p, u = -1, y = 0;
-    for (; y < a.length && (n.lastIndex = y, p = n.exec(a), p !== null); ) y = n.lastIndex, n === z ? p[1] === "!--" ? n = $t : p[1] !== void 0 ? n = At : p[2] !== void 0 ? (Nt.test(p[2]) && (o = RegExp("</" + p[2], "g")), n = w) : p[3] !== void 0 && (n = w) : n === w ? p[0] === ">" ? (n = o ?? z, u = -1) : p[1] === void 0 ? u = -2 : (u = n.lastIndex - p[2].length, h = p[1], n = p[3] === void 0 ? w : p[3] === '"' ? Ct : wt) : n === Ct || n === wt ? n = w : n === $t || n === At ? n = z : (n = w, o = void 0);
-    const x = n === w && i[l + 1].startsWith("/>") ? " " : "";
-    r += n === z ? a + se : u >= 0 ? (s.push(h), a.slice(0, u) + zt + a.slice(u) + $ + x) : a + $ + (u === -2 ? l : x);
+    for (; y < a.length && (n.lastIndex = y, p = n.exec(a), p !== null); ) y = n.lastIndex, n === z ? p[1] === "!--" ? n = wt : p[1] !== void 0 ? n = $t : p[2] !== void 0 ? (Nt.test(p[2]) && (o = RegExp("</" + p[2], "g")), n = A) : p[3] !== void 0 && (n = A) : n === A ? p[0] === ">" ? (n = o ?? z, u = -1) : p[1] === void 0 ? u = -2 : (u = n.lastIndex - p[2].length, h = p[1], n = p[3] === void 0 ? A : p[3] === '"' ? Ct : At) : n === Ct || n === At ? n = A : n === wt || n === $t ? n = z : (n = A, o = void 0);
+    const x = n === A && i[l + 1].startsWith("/>") ? " " : "";
+    r += n === z ? a + se : u >= 0 ? (s.push(h), a.slice(0, u) + zt + a.slice(u) + w + x) : a + w + (u === -2 ? l : x);
   }
   return [Ut(i, r + (i[e] || "<?>") + (t === 2 ? "</svg>" : t === 3 ? "</math>" : "")), s];
 };
@@ -304,11 +304,11 @@ class D {
     for (; (o = E.nextNode()) !== null && a.length < l; ) {
       if (o.nodeType === 1) {
         if (o.hasAttributes()) for (const u of o.getAttributeNames()) if (u.endsWith(zt)) {
-          const y = p[n++], x = o.getAttribute(u).split($), k = /([.?@])?(.*)/.exec(y);
+          const y = p[n++], x = o.getAttribute(u).split(w), k = /([.?@])?(.*)/.exec(y);
           a.push({ type: 1, index: r, name: k[2], strings: x, ctor: k[1] === "." ? ne : k[1] === "?" ? ae : k[1] === "@" ? le : K }), o.removeAttribute(u);
-        } else u.startsWith($) && (a.push({ type: 6, index: r }), o.removeAttribute(u));
+        } else u.startsWith(w) && (a.push({ type: 6, index: r }), o.removeAttribute(u));
         if (Nt.test(o.tagName)) {
-          const u = o.textContent.split($), y = u.length - 1;
+          const u = o.textContent.split(w), y = u.length - 1;
           if (y > 0) {
             o.textContent = G ? G.emptyScript : "";
             for (let x = 0; x < y; x++) o.append(u[x], M()), E.nextNode(), a.push({ type: 2, index: ++r });
@@ -318,7 +318,7 @@ class D {
       } else if (o.nodeType === 8) if (o.data === Ht) a.push({ type: 2, index: r });
       else {
         let u = -1;
-        for (; (u = o.data.indexOf($, u + 1)) !== -1; ) a.push({ type: 7, index: r }), u += $.length - 1;
+        for (; (u = o.data.indexOf(w, u + 1)) !== -1; ) a.push({ type: 7, index: r }), u += w.length - 1;
       }
       r++;
     }
@@ -588,7 +588,7 @@ function ue(i) {
     } });
   };
 }
-const ve = T`:host{border-start-start-radius:var(--_container-shape-start-start);border-start-end-radius:var(--_container-shape-start-end);border-end-start-radius:var(--_container-shape-end-start);border-end-end-radius:var(--_container-shape-end-end);box-sizing:border-box;cursor:pointer;display:inline-flex;gap:8px;min-height:var(--_container-height);outline:none;padding-block:calc((var(--_container-height) - max(var(--_label-text-line-height),var(--_icon-size)))/2);padding-inline-start:var(--_leading-space);padding-inline-end:var(--_trailing-space);place-content:center;place-items:center;position:relative;font-family:var(--_label-text-font);font-size:var(--_label-text-size);line-height:var(--_label-text-line-height);font-weight:var(--_label-text-weight);text-overflow:ellipsis;text-wrap:nowrap;user-select:none;-webkit-tap-highlight-color:rgba(0,0,0,0);vertical-align:top;--md-ripple-hover-color: var(--_hover-state-layer-color);--md-ripple-pressed-color: var(--_pressed-state-layer-color);--md-ripple-hover-opacity: var(--_hover-state-layer-opacity);--md-ripple-pressed-opacity: var(--_pressed-state-layer-opacity)}md-focus-ring{--md-focus-ring-shape-start-start: var(--_container-shape-start-start);--md-focus-ring-shape-start-end: var(--_container-shape-start-end);--md-focus-ring-shape-end-end: var(--_container-shape-end-end);--md-focus-ring-shape-end-start: var(--_container-shape-end-start)}:host(:is([disabled],[soft-disabled])){cursor:default;pointer-events:none}.button{border-radius:inherit;cursor:inherit;display:inline-flex;align-items:center;justify-content:center;border:none;outline:none;-webkit-appearance:none;vertical-align:middle;background:rgba(0,0,0,0);text-decoration:none;min-width:calc(64px - var(--_leading-space) - var(--_trailing-space));width:100%;z-index:0;height:100%;font:inherit;color:var(--_label-text-color);padding:0;gap:inherit;text-transform:inherit}.button::-moz-focus-inner{padding:0;border:0}:host(:hover) .button{color:var(--_hover-label-text-color)}:host(:focus-within) .button{color:var(--_focus-label-text-color)}:host(:active) .button{color:var(--_pressed-label-text-color)}.background{background:var(--_container-color);border-radius:inherit;inset:0;position:absolute}.label{overflow:hidden}:is(.button,.label,.label slot),.label ::slotted(*){text-overflow:inherit}:host(:is([disabled],[soft-disabled])) .label{color:var(--_disabled-label-text-color);opacity:var(--_disabled-label-text-opacity)}:host(:is([disabled],[soft-disabled])) .background{background:var(--_disabled-container-color);opacity:var(--_disabled-container-opacity)}@media(forced-colors: active){.background{border:1px solid CanvasText}:host(:is([disabled],[soft-disabled])){--_disabled-icon-color: GrayText;--_disabled-icon-opacity: 1;--_disabled-container-opacity: 1;--_disabled-label-text-color: GrayText;--_disabled-label-text-opacity: 1}}:host([has-icon]:not([trailing-icon])){padding-inline-start:var(--_with-leading-icon-leading-space);padding-inline-end:var(--_with-leading-icon-trailing-space)}:host([has-icon][trailing-icon]){padding-inline-start:var(--_with-trailing-icon-leading-space);padding-inline-end:var(--_with-trailing-icon-trailing-space)}::slotted([slot=icon]){display:inline-flex;position:relative;writing-mode:horizontal-tb;fill:currentColor;flex-shrink:0;color:var(--_icon-color);font-size:var(--_icon-size);inline-size:var(--_icon-size);block-size:var(--_icon-size)}:host(:hover) ::slotted([slot=icon]){color:var(--_hover-icon-color)}:host(:focus-within) ::slotted([slot=icon]){color:var(--_focus-icon-color)}:host(:active) ::slotted([slot=icon]){color:var(--_pressed-icon-color)}:host(:is([disabled],[soft-disabled])) ::slotted([slot=icon]){color:var(--_disabled-icon-color);opacity:var(--_disabled-icon-opacity)}.touch{position:absolute;top:50%;height:48px;left:0;right:0;transform:translateY(-50%)}:host([touch-target=wrapper]){margin:max(0px,(48px - var(--_container-height))/2) 0}:host([touch-target=none]) .touch{display:none}
+const ve = T`:host{border-start-start-radius:var(--_container-shape-start-start);border-start-end-radius:var(--_container-shape-start-end);border-end-start-radius:var(--_container-shape-end-start);border-end-end-radius:var(--_container-shape-end-end);box-sizing:border-box;cursor:pointer;display:inline-flex;gap:8px;min-height:var(--_container-height);outline:none;padding-block:calc((var(--_container-height) - max(var(--_label-text-line-height),var(--_icon-size)))/2);padding-inline-start:var(--_leading-space);padding-inline-end:var(--_trailing-space);place-content:center;place-items:center;position:relative;font-family:var(--_label-text-font);font-size:var(--_label-text-size);line-height:var(--_label-text-line-height);font-weight:var(--_label-text-weight);text-overflow:ellipsis;text-wrap:nowrap;user-select:none;-webkit-tap-highlight-color:rgba(0,0,0,0);vertical-align:top;--md-ripple-hover-color: var(--_hover-state-layer-color);--md-ripple-pressed-color: var(--_pressed-state-layer-color);--md-ripple-hover-opacity: var(--_hover-state-layer-opacity);--md-ripple-pressed-opacity: var(--_pressed-state-layer-opacity)}ewt-focus-ring{--md-focus-ring-shape-start-start: var(--_container-shape-start-start);--md-focus-ring-shape-start-end: var(--_container-shape-start-end);--md-focus-ring-shape-end-end: var(--_container-shape-end-end);--md-focus-ring-shape-end-start: var(--_container-shape-end-start)}:host(:is([disabled],[soft-disabled])){cursor:default;pointer-events:none}.button{border-radius:inherit;cursor:inherit;display:inline-flex;align-items:center;justify-content:center;border:none;outline:none;-webkit-appearance:none;vertical-align:middle;background:rgba(0,0,0,0);text-decoration:none;min-width:calc(64px - var(--_leading-space) - var(--_trailing-space));width:100%;z-index:0;height:100%;font:inherit;color:var(--_label-text-color);padding:0;gap:inherit;text-transform:inherit}.button::-moz-focus-inner{padding:0;border:0}:host(:hover) .button{color:var(--_hover-label-text-color)}:host(:focus-within) .button{color:var(--_focus-label-text-color)}:host(:active) .button{color:var(--_pressed-label-text-color)}.background{background:var(--_container-color);border-radius:inherit;inset:0;position:absolute}.label{overflow:hidden}:is(.button,.label,.label slot),.label ::slotted(*){text-overflow:inherit}:host(:is([disabled],[soft-disabled])) .label{color:var(--_disabled-label-text-color);opacity:var(--_disabled-label-text-opacity)}:host(:is([disabled],[soft-disabled])) .background{background:var(--_disabled-container-color);opacity:var(--_disabled-container-opacity)}@media(forced-colors: active){.background{border:1px solid CanvasText}:host(:is([disabled],[soft-disabled])){--_disabled-icon-color: GrayText;--_disabled-icon-opacity: 1;--_disabled-container-opacity: 1;--_disabled-label-text-color: GrayText;--_disabled-label-text-opacity: 1}}:host([has-icon]:not([trailing-icon])){padding-inline-start:var(--_with-leading-icon-leading-space);padding-inline-end:var(--_with-leading-icon-trailing-space)}:host([has-icon][trailing-icon]){padding-inline-start:var(--_with-trailing-icon-leading-space);padding-inline-end:var(--_with-trailing-icon-trailing-space)}::slotted([slot=icon]){display:inline-flex;position:relative;writing-mode:horizontal-tb;fill:currentColor;flex-shrink:0;color:var(--_icon-color);font-size:var(--_icon-size);inline-size:var(--_icon-size);block-size:var(--_icon-size)}:host(:hover) ::slotted([slot=icon]){color:var(--_hover-icon-color)}:host(:focus-within) ::slotted([slot=icon]){color:var(--_focus-icon-color)}:host(:active) ::slotted([slot=icon]){color:var(--_pressed-icon-color)}:host(:is([disabled],[soft-disabled])) ::slotted([slot=icon]){color:var(--_disabled-icon-color);opacity:var(--_disabled-icon-opacity)}.touch{position:absolute;top:50%;height:48px;left:0;right:0;transform:translateY(-50%)}:host([touch-target=wrapper]){margin:max(0px,(48px - var(--_container-height))/2) 0}:host([touch-target=none]) .touch{display:none}
 `, Lt = /* @__PURE__ */ Symbol("attachableController");
 let Ft;
 Ft = new MutationObserver(((i) => {
@@ -684,7 +684,7 @@ const Tt = /* @__PURE__ */ Symbol("handledByFocusRing"), me = T`:host{animation-
 `;
 let Q = class extends lt {
 };
-Q.styles = [me], Q = d([pt("md-focus-ring")], Q);
+Q.styles = [me], Q = d([pt("ewt-focus-ring")], Q);
 const ge = { ATTRIBUTE: 1, PROPERTY: 3, BOOLEAN_ATTRIBUTE: 4 }, be = (i) => (...t) => ({ _$litDirective$: i, values: t });
 class ye {
   constructor(t) {
@@ -770,7 +770,7 @@ class H extends _ {
   }
   render() {
     const t = { hovered: this.hovered, pressed: this.pressed };
-    return A`<div class="surface ${jt(t)}"></div>`;
+    return $`<div class="surface ${jt(t)}"></div>`;
   }
   update(t) {
     t.has("disabled") && this.disabled && (this.hovered = !1, this.pressed = !1), super.update(t);
@@ -876,10 +876,10 @@ const _e = T`:host{display:flex;margin:auto;pointer-events:none}:host([disabled]
 `;
 let tt = class extends H {
 };
-tt.styles = [_e], tt = d([pt("md-ripple")], tt);
-const Vt = ["role", "ariaAtomic", "ariaAutoComplete", "ariaBusy", "ariaChecked", "ariaColCount", "ariaColIndex", "ariaColSpan", "ariaCurrent", "ariaDisabled", "ariaExpanded", "ariaHasPopup", "ariaHidden", "ariaInvalid", "ariaKeyShortcuts", "ariaLabel", "ariaLevel", "ariaLive", "ariaModal", "ariaMultiLine", "ariaMultiSelectable", "ariaOrientation", "ariaPlaceholder", "ariaPosInSet", "ariaPressed", "ariaReadOnly", "ariaRequired", "ariaRoleDescription", "ariaRowCount", "ariaRowIndex", "ariaRowSpan", "ariaSelected", "ariaSetSize", "ariaSort", "ariaValueMax", "ariaValueMin", "ariaValueNow", "ariaValueText"], $e = Vt.map(Wt);
+tt.styles = [_e], tt = d([pt("ewt-ripple")], tt);
+const Vt = ["role", "ariaAtomic", "ariaAutoComplete", "ariaBusy", "ariaChecked", "ariaColCount", "ariaColIndex", "ariaColSpan", "ariaCurrent", "ariaDisabled", "ariaExpanded", "ariaHasPopup", "ariaHidden", "ariaInvalid", "ariaKeyShortcuts", "ariaLabel", "ariaLevel", "ariaLive", "ariaModal", "ariaMultiLine", "ariaMultiSelectable", "ariaOrientation", "ariaPlaceholder", "ariaPosInSet", "ariaPressed", "ariaReadOnly", "ariaRequired", "ariaRoleDescription", "ariaRowCount", "ariaRowIndex", "ariaRowSpan", "ariaSelected", "ariaSetSize", "ariaSort", "ariaValueMax", "ariaValueMin", "ariaValueNow", "ariaValueText"], we = Vt.map(Wt);
 function et(i) {
-  return $e.includes(i);
+  return we.includes(i);
 }
 function Wt(i) {
   return i.replace("aria", "aria-").replace(/Elements?/g, "").toLowerCase();
@@ -924,14 +924,14 @@ function st(i) {
   return i.replace(/-\w/, ((t) => t[1].toUpperCase()));
 }
 const ut = /* @__PURE__ */ Symbol("internals"), ot = /* @__PURE__ */ Symbol("privateInternals");
-function Ae(i) {
+function $e(i) {
   return class extends i {
     get [ut]() {
       return this[ot] || (this[ot] = this.attachInternals()), this[ot];
     }
   };
 }
-function we(i) {
+function Ae(i) {
   i.addInitializer(((t) => {
     const e = t;
     e.addEventListener("click", (async (s) => {
@@ -957,7 +957,7 @@ function Ee(i) {
   })(i);
 }
 let rt = !1;
-const Se = qt(Ae(_));
+const Se = qt($e(_));
 class m extends Se {
   get name() {
     return this.getAttribute("name") ?? "";
@@ -982,20 +982,20 @@ class m extends Se {
   render() {
     var t;
     const e = this.disabled || this.softDisabled, s = this.href ? this.renderLink() : this.renderButton(), o = this.href ? "link" : "button";
-    return A`
+    return $`
       ${(t = this.renderElevationOrOutline) === null || t === void 0 ? void 0 : t.call(this)}
       <div class="background"></div>
-      <md-focus-ring part="focus-ring" for=${o}></md-focus-ring>
-      <md-ripple
+      <ewt-focus-ring part="focus-ring" for=${o}></ewt-focus-ring>
+      <ewt-ripple
         part="ripple"
         for=${o}
-        ?disabled="${e}"></md-ripple>
+        ?disabled="${e}"></ewt-ripple>
       ${s}
     `;
   }
   renderButton() {
     const { ariaLabel: t, ariaHasPopup: e, ariaExpanded: s } = this;
-    return A`<button
+    return $`<button
       id="button"
       class="button"
       ?disabled=${this.disabled}
@@ -1008,7 +1008,7 @@ class m extends Se {
   }
   renderLink() {
     const { ariaLabel: t, ariaHasPopup: e, ariaExpanded: s } = this;
-    return A`<a
+    return $`<a
       id="link"
       class="button"
       aria-label="${t || c}"
@@ -1023,10 +1023,10 @@ class m extends Se {
     </a>`;
   }
   renderContent() {
-    const t = A`<slot
+    const t = $`<slot
       name="icon"
       @slotchange="${this.handleSlotChange}"></slot>`;
-    return A`
+    return $`
       <span class="touch"></span>
       ${this.trailingIcon ? c : t}
       <span class="label"><slot></slot></span>
@@ -1041,7 +1041,7 @@ class m extends Se {
     this.hasIcon = this.assignedIcons.length > 0;
   }
 }
-we(m), m.formAssociated = !0, m.shadowRootOptions = { mode: "open", delegatesFocus: !0 }, d([f({ type: Boolean, reflect: !0 })], m.prototype, "disabled", void 0), d([f({ type: Boolean, attribute: "soft-disabled", reflect: !0 })], m.prototype, "softDisabled", void 0), d([f()], m.prototype, "href", void 0), d([f()], m.prototype, "download", void 0), d([f()], m.prototype, "target", void 0), d([f({ type: Boolean, attribute: "trailing-icon", reflect: !0 })], m.prototype, "trailingIcon", void 0), d([f({ type: Boolean, attribute: "has-icon", reflect: !0 })], m.prototype, "hasIcon", void 0), d([f()], m.prototype, "type", void 0), d([f({ reflect: !0 })], m.prototype, "value", void 0), d([b(".button")], m.prototype, "buttonElement", void 0), d([ue({ slot: "icon", flatten: !0 })], m.prototype, "assignedIcons", void 0);
+Ae(m), m.formAssociated = !0, m.shadowRootOptions = { mode: "open", delegatesFocus: !0 }, d([f({ type: Boolean, reflect: !0 })], m.prototype, "disabled", void 0), d([f({ type: Boolean, attribute: "soft-disabled", reflect: !0 })], m.prototype, "softDisabled", void 0), d([f()], m.prototype, "href", void 0), d([f()], m.prototype, "download", void 0), d([f()], m.prototype, "target", void 0), d([f({ type: Boolean, attribute: "trailing-icon", reflect: !0 })], m.prototype, "trailingIcon", void 0), d([f({ type: Boolean, attribute: "has-icon", reflect: !0 })], m.prototype, "hasIcon", void 0), d([f()], m.prototype, "type", void 0), d([f({ reflect: !0 })], m.prototype, "value", void 0), d([b(".button")], m.prototype, "buttonElement", void 0), d([ue({ slot: "icon", flatten: !0 })], m.prototype, "assignedIcons", void 0);
 class Pe extends m {
 }
 const Te = T`:host{--_container-height: var(--md-text-button-container-height, 40px);--_disabled-label-text-color: var(--md-text-button-disabled-label-text-color, var(--md-sys-color-on-surface, #1d1b20));--_disabled-label-text-opacity: var(--md-text-button-disabled-label-text-opacity, 0.38);--_focus-label-text-color: var(--md-text-button-focus-label-text-color, var(--md-sys-color-primary, #6750a4));--_hover-label-text-color: var(--md-text-button-hover-label-text-color, var(--md-sys-color-primary, #6750a4));--_hover-state-layer-color: var(--md-text-button-hover-state-layer-color, var(--md-sys-color-primary, #6750a4));--_hover-state-layer-opacity: var(--md-text-button-hover-state-layer-opacity, 0.08);--_label-text-color: var(--md-text-button-label-text-color, var(--md-sys-color-primary, #6750a4));--_label-text-font: var(--md-text-button-label-text-font, var(--md-sys-typescale-label-large-font, var(--md-ref-typeface-plain, Roboto)));--_label-text-line-height: var(--md-text-button-label-text-line-height, var(--md-sys-typescale-label-large-line-height, 1.25rem));--_label-text-size: var(--md-text-button-label-text-size, var(--md-sys-typescale-label-large-size, 0.875rem));--_label-text-weight: var(--md-text-button-label-text-weight, var(--md-sys-typescale-label-large-weight, var(--md-ref-typeface-weight-medium, 500)));--_pressed-label-text-color: var(--md-text-button-pressed-label-text-color, var(--md-sys-color-primary, #6750a4));--_pressed-state-layer-color: var(--md-text-button-pressed-state-layer-color, var(--md-sys-color-primary, #6750a4));--_pressed-state-layer-opacity: var(--md-text-button-pressed-state-layer-opacity, 0.12);--_disabled-icon-color: var(--md-text-button-disabled-icon-color, var(--md-sys-color-on-surface, #1d1b20));--_disabled-icon-opacity: var(--md-text-button-disabled-icon-opacity, 0.38);--_focus-icon-color: var(--md-text-button-focus-icon-color, var(--md-sys-color-primary, #6750a4));--_hover-icon-color: var(--md-text-button-hover-icon-color, var(--md-sys-color-primary, #6750a4));--_icon-color: var(--md-text-button-icon-color, var(--md-sys-color-primary, #6750a4));--_icon-size: var(--md-text-button-icon-size, 18px);--_pressed-icon-color: var(--md-text-button-pressed-icon-color, var(--md-sys-color-primary, #6750a4));--_container-shape-start-start: var(--md-text-button-container-shape-start-start, var(--md-text-button-container-shape, var(--md-sys-shape-corner-full, 9999px)));--_container-shape-start-end: var(--md-text-button-container-shape-start-end, var(--md-text-button-container-shape, var(--md-sys-shape-corner-full, 9999px)));--_container-shape-end-end: var(--md-text-button-container-shape-end-end, var(--md-text-button-container-shape, var(--md-sys-shape-corner-full, 9999px)));--_container-shape-end-start: var(--md-text-button-container-shape-end-start, var(--md-text-button-container-shape, var(--md-sys-shape-corner-full, 9999px)));--_leading-space: var(--md-text-button-leading-space, 12px);--_trailing-space: var(--md-text-button-trailing-space, 12px);--_with-leading-icon-leading-space: var(--md-text-button-with-leading-icon-leading-space, 12px);--_with-leading-icon-trailing-space: var(--md-text-button-with-leading-icon-trailing-space, 16px);--_with-trailing-icon-leading-space: var(--md-text-button-with-trailing-icon-leading-space, 16px);--_with-trailing-icon-trailing-space: var(--md-text-button-with-trailing-icon-trailing-space, 12px);--_container-color: none;--_disabled-container-color: none;--_disabled-container-opacity: 0}
@@ -1064,7 +1064,7 @@ function Ie(i, t) {
 }
 let nt = class extends W {
 };
-nt.styles = [ke], nt = d([pt("md-divider")], nt);
+nt.styles = [ke], nt = d([pt("ewt-divider")], nt);
 const Oe = { dialog: [[[{ transform: "translateY(-50px)" }, { transform: "translateY(0)" }], { duration: 500, easing: F.EMPHASIZED }]], scrim: [[[{ opacity: 0 }, { opacity: 0.32 }], { duration: 500, easing: "linear" }]], container: [[[{ opacity: 0 }, { opacity: 1 }], { duration: 50, easing: "linear", pseudoElement: "::before" }], [[{ height: "35%" }, { height: "100%" }], { duration: 500, easing: F.EMPHASIZED, pseudoElement: "::before" }]], headline: [[[{ opacity: 0 }, { opacity: 0, offset: 0.2 }, { opacity: 1 }], { duration: 250, easing: "linear", fill: "forwards" }]], content: [[[{ opacity: 0 }, { opacity: 0, offset: 0.2 }, { opacity: 1 }], { duration: 250, easing: "linear", fill: "forwards" }]], actions: [[[{ opacity: 0 }, { opacity: 0, offset: 0.5 }, { opacity: 1 }], { duration: 300, easing: "linear", fill: "forwards" }]] }, Re = { dialog: [[[{ transform: "translateY(0)" }, { transform: "translateY(-50px)" }], { duration: 150, easing: F.EMPHASIZED_ACCELERATE }]], scrim: [[[{ opacity: 0.32 }, { opacity: 0 }], { duration: 150, easing: "linear" }]], container: [[[{ height: "100%" }, { height: "35%" }], { duration: 150, easing: F.EMPHASIZED_ACCELERATE, pseudoElement: "::before" }], [[{ opacity: "1" }, { opacity: "0" }], { delay: 100, duration: 50, easing: "linear", pseudoElement: "::before" }]], headline: [[[{ opacity: 1 }, { opacity: 0 }], { duration: 100, easing: "linear", fill: "forwards" }]], content: [[[{ opacity: 1 }, { opacity: 0 }], { duration: 100, easing: "linear", fill: "forwards" }]], actions: [[[{ opacity: 1 }, { opacity: 0 }], { duration: 100, easing: "linear", fill: "forwards" }]] }, ze = qt(_);
 class v extends ze {
   get open() {
@@ -1099,14 +1099,14 @@ class v extends ze {
     super.disconnectedCallback(), this.isConnectedPromise = this.getIsConnectedPromise();
   }
   render() {
-    const t = this.open && !(this.isAtScrollTop && this.isAtScrollBottom), e = { "has-headline": this.hasHeadline, "has-actions": this.hasActions, "has-icon": this.hasIcon, scrollable: t, "show-top-divider": t && !this.isAtScrollTop, "show-bottom-divider": t && !this.isAtScrollBottom }, s = this.open && !this.noFocusTrap, o = A`
+    const t = this.open && !(this.isAtScrollTop && this.isAtScrollBottom), e = { "has-headline": this.hasHeadline, "has-actions": this.hasActions, "has-icon": this.hasIcon, scrollable: t, "show-top-divider": t && !this.isAtScrollTop, "show-bottom-divider": t && !this.isAtScrollBottom }, s = this.open && !this.noFocusTrap, o = $`
       <div
         class="focus-trap"
         tabindex="0"
         aria-hidden="true"
         @focus=${this.handleFocusTrapFocus}></div>
     `, { ariaLabel: r } = this;
-    return A`
+    return $`
       <div class="scrim"></div>
       <dialog
         class=${jt(e)}
@@ -1129,7 +1129,7 @@ class v extends ze {
                 name="headline"
                 @slotchange=${this.handleHeadlineChange}></slot>
             </h2>
-            <md-divider></md-divider>
+            <ewt-divider></ewt-divider>
           </div>
           <div class="scroller">
             <div class="content">
@@ -1139,7 +1139,7 @@ class v extends ze {
             </div>
           </div>
           <div class="actions">
-            <md-divider></md-divider>
+            <ewt-divider></ewt-divider>
             <slot name="actions" @slotchange=${this.handleActionsChange}></slot>
           </div>
         </div>
@@ -1238,7 +1238,7 @@ function He(i) {
   return i.matches(":is(button,input,select,textarea,object,:is(a,area)[href],[tabindex],[contenteditable=true])" + e + ':not([tabindex^="-"])') ? !0 : !!i.localName.includes("-") && !!i.matches(e) && (((t = i.shadowRoot) === null || t === void 0 ? void 0 : t.delegatesFocus) ?? !1);
 }
 d([f({ type: Boolean })], v.prototype, "open", null), d([f({ type: Boolean })], v.prototype, "quick", void 0), d([f({ attribute: !1 })], v.prototype, "returnValue", void 0), d([f()], v.prototype, "type", void 0), d([f({ type: Boolean, attribute: "no-focus-trap" })], v.prototype, "noFocusTrap", void 0), d([b("dialog")], v.prototype, "dialog", void 0), d([b(".scrim")], v.prototype, "scrim", void 0), d([b(".container")], v.prototype, "container", void 0), d([b(".headline")], v.prototype, "headline", void 0), d([b(".content")], v.prototype, "content", void 0), d([b(".actions")], v.prototype, "actions", void 0), d([C()], v.prototype, "isAtScrollTop", void 0), d([C()], v.prototype, "isAtScrollBottom", void 0), d([b(".scroller")], v.prototype, "scroller", void 0), d([b(".top.anchor")], v.prototype, "topAnchor", void 0), d([b(".bottom.anchor")], v.prototype, "bottomAnchor", void 0), d([b(".focus-trap")], v.prototype, "firstFocusTrap", void 0), d([C()], v.prototype, "hasHeadline", void 0), d([C()], v.prototype, "hasActions", void 0), d([C()], v.prototype, "hasIcon", void 0);
-const Ne = T`:host{border-start-start-radius:var(--md-dialog-container-shape-start-start, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));border-start-end-radius:var(--md-dialog-container-shape-start-end, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));border-end-end-radius:var(--md-dialog-container-shape-end-end, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));border-end-start-radius:var(--md-dialog-container-shape-end-start, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));display:contents;margin:auto;max-height:min(560px,100% - 48px);max-width:min(560px,100% - 48px);min-height:140px;min-width:280px;position:fixed;height:fit-content;width:fit-content}dialog{background:rgba(0,0,0,0);border:none;border-radius:inherit;flex-direction:column;height:inherit;margin:inherit;max-height:inherit;max-width:inherit;min-height:inherit;min-width:inherit;outline:none;overflow:visible;padding:0;width:inherit}dialog[open]{display:flex}::backdrop{background:none}.scrim{background:var(--md-sys-color-scrim, #000);display:none;inset:0;opacity:32%;pointer-events:none;position:fixed;z-index:1}:host([open]) .scrim{display:flex}h2{all:unset;align-self:stretch}.headline{align-items:center;color:var(--md-dialog-headline-color, var(--md-sys-color-on-surface, #1d1b20));display:flex;flex-direction:column;font-family:var(--md-dialog-headline-font, var(--md-sys-typescale-headline-small-font, var(--md-ref-typeface-brand, Roboto)));font-size:var(--md-dialog-headline-size, var(--md-sys-typescale-headline-small-size, 1.5rem));line-height:var(--md-dialog-headline-line-height, var(--md-sys-typescale-headline-small-line-height, 2rem));font-weight:var(--md-dialog-headline-weight, var(--md-sys-typescale-headline-small-weight, var(--md-ref-typeface-weight-regular, 400)));position:relative}slot[name=headline]::slotted(*){align-items:center;align-self:stretch;box-sizing:border-box;display:flex;gap:8px;padding:24px 24px 0}.icon{display:flex}slot[name=icon]::slotted(*){color:var(--md-dialog-icon-color, var(--md-sys-color-secondary, #625b71));fill:currentColor;font-size:var(--md-dialog-icon-size, 24px);margin-top:24px;height:var(--md-dialog-icon-size, 24px);width:var(--md-dialog-icon-size, 24px)}.has-icon slot[name=headline]::slotted(*){justify-content:center;padding-top:16px}.scrollable slot[name=headline]::slotted(*){padding-bottom:16px}.scrollable.has-headline slot[name=content]::slotted(*){padding-top:8px}.container{border-radius:inherit;display:flex;flex-direction:column;flex-grow:1;overflow:hidden;position:relative;transform-origin:top}.container::before{background:var(--md-dialog-container-color, var(--md-sys-color-surface-container-high, #ece6f0));border-radius:inherit;content:"";inset:0;position:absolute}.scroller{display:flex;flex:1;flex-direction:column;overflow:hidden;z-index:1}.scrollable .scroller{overflow-y:scroll}.content{color:var(--md-dialog-supporting-text-color, var(--md-sys-color-on-surface-variant, #49454f));font-family:var(--md-dialog-supporting-text-font, var(--md-sys-typescale-body-medium-font, var(--md-ref-typeface-plain, Roboto)));font-size:var(--md-dialog-supporting-text-size, var(--md-sys-typescale-body-medium-size, 0.875rem));line-height:var(--md-dialog-supporting-text-line-height, var(--md-sys-typescale-body-medium-line-height, 1.25rem));flex:1;font-weight:var(--md-dialog-supporting-text-weight, var(--md-sys-typescale-body-medium-weight, var(--md-ref-typeface-weight-regular, 400)));height:min-content;position:relative}slot[name=content]::slotted(*){box-sizing:border-box;padding:24px}.anchor{position:absolute}.top.anchor{top:0}.bottom.anchor{bottom:0}.actions{position:relative}slot[name=actions]::slotted(*){box-sizing:border-box;display:flex;gap:8px;justify-content:flex-end;padding:16px 24px 24px}.has-actions slot[name=content]::slotted(*){padding-bottom:8px}md-divider{display:none;position:absolute}.has-headline.show-top-divider .headline md-divider,.has-actions.show-bottom-divider .actions md-divider{display:flex}.headline md-divider{bottom:0}.actions md-divider{top:0}@media(forced-colors: active){dialog{outline:2px solid WindowText}}
+const Ne = T`:host{border-start-start-radius:var(--md-dialog-container-shape-start-start, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));border-start-end-radius:var(--md-dialog-container-shape-start-end, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));border-end-end-radius:var(--md-dialog-container-shape-end-end, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));border-end-start-radius:var(--md-dialog-container-shape-end-start, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));display:contents;margin:auto;max-height:min(560px,100% - 48px);max-width:min(560px,100% - 48px);min-height:140px;min-width:280px;position:fixed;height:fit-content;width:fit-content}dialog{background:rgba(0,0,0,0);border:none;border-radius:inherit;flex-direction:column;height:inherit;margin:inherit;max-height:inherit;max-width:inherit;min-height:inherit;min-width:inherit;outline:none;overflow:visible;padding:0;width:inherit}dialog[open]{display:flex}::backdrop{background:none}.scrim{background:var(--md-sys-color-scrim, #000);display:none;inset:0;opacity:32%;pointer-events:none;position:fixed;z-index:1}:host([open]) .scrim{display:flex}h2{all:unset;align-self:stretch}.headline{align-items:center;color:var(--md-dialog-headline-color, var(--md-sys-color-on-surface, #1d1b20));display:flex;flex-direction:column;font-family:var(--md-dialog-headline-font, var(--md-sys-typescale-headline-small-font, var(--md-ref-typeface-brand, Roboto)));font-size:var(--md-dialog-headline-size, var(--md-sys-typescale-headline-small-size, 1.5rem));line-height:var(--md-dialog-headline-line-height, var(--md-sys-typescale-headline-small-line-height, 2rem));font-weight:var(--md-dialog-headline-weight, var(--md-sys-typescale-headline-small-weight, var(--md-ref-typeface-weight-regular, 400)));position:relative}slot[name=headline]::slotted(*){align-items:center;align-self:stretch;box-sizing:border-box;display:flex;gap:8px;padding:24px 24px 0}.icon{display:flex}slot[name=icon]::slotted(*){color:var(--md-dialog-icon-color, var(--md-sys-color-secondary, #625b71));fill:currentColor;font-size:var(--md-dialog-icon-size, 24px);margin-top:24px;height:var(--md-dialog-icon-size, 24px);width:var(--md-dialog-icon-size, 24px)}.has-icon slot[name=headline]::slotted(*){justify-content:center;padding-top:16px}.scrollable slot[name=headline]::slotted(*){padding-bottom:16px}.scrollable.has-headline slot[name=content]::slotted(*){padding-top:8px}.container{border-radius:inherit;display:flex;flex-direction:column;flex-grow:1;overflow:hidden;position:relative;transform-origin:top}.container::before{background:var(--md-dialog-container-color, var(--md-sys-color-surface-container-high, #ece6f0));border-radius:inherit;content:"";inset:0;position:absolute}.scroller{display:flex;flex:1;flex-direction:column;overflow:hidden;z-index:1}.scrollable .scroller{overflow-y:scroll}.content{color:var(--md-dialog-supporting-text-color, var(--md-sys-color-on-surface-variant, #49454f));font-family:var(--md-dialog-supporting-text-font, var(--md-sys-typescale-body-medium-font, var(--md-ref-typeface-plain, Roboto)));font-size:var(--md-dialog-supporting-text-size, var(--md-sys-typescale-body-medium-size, 0.875rem));line-height:var(--md-dialog-supporting-text-line-height, var(--md-sys-typescale-body-medium-line-height, 1.25rem));flex:1;font-weight:var(--md-dialog-supporting-text-weight, var(--md-sys-typescale-body-medium-weight, var(--md-ref-typeface-weight-regular, 400)));height:min-content;position:relative}slot[name=content]::slotted(*){box-sizing:border-box;padding:24px}.anchor{position:absolute}.top.anchor{top:0}.bottom.anchor{bottom:0}.actions{position:relative}slot[name=actions]::slotted(*){box-sizing:border-box;display:flex;gap:8px;justify-content:flex-end;padding:16px 24px 24px}.has-actions slot[name=content]::slotted(*){padding-bottom:8px}ewt-divider{display:none;position:absolute}.has-headline.show-top-divider .headline ewt-divider,.has-actions.show-bottom-divider .actions ewt-divider{display:flex}.headline ewt-divider{bottom:0}.actions ewt-divider{top:0}@media(forced-colors: active){dialog{outline:2px solid WindowText}}
 `;
 class Ot extends v {
 }
@@ -1270,7 +1270,7 @@ const De = T`
 `;
 export {
   ye as I,
-  Ae as J,
+  $e as J,
   ut as K,
   jt as O,
   Ce as Q,
@@ -1278,7 +1278,7 @@ export {
   ge as T,
   Me as V,
   qt as W,
-  we as X,
+  Ae as X,
   De as a,
   b,
   _ as c,
@@ -1288,7 +1288,7 @@ export {
   Dt as g,
   Ee as h,
   Ie as i,
-  A as j,
+  $ as j,
   ce as k,
   ke as l,
   f as m,

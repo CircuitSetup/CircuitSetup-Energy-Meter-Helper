@@ -24,3 +24,42 @@ test("inline ESP Web Tools registers in the helper panel without opening a page"
   expect(await installer.evaluate((element) => (element as HTMLElement & { manifest: string }).manifest)).toBe(MANIFEST_URL);
   expect(await pageOpened).toBe(false);
 });
+
+test("ESP Web Tools coexists with Home Assistant Material elements", async ({ page }) => {
+  await page.addInitScript(() => {
+    for (const tag of [
+      "md-divider",
+      "md-elevation",
+      "md-filled-field",
+      "md-focus-ring",
+      "md-item",
+      "md-menu",
+      "md-ripple",
+    ]) customElements.define(tag, class extends HTMLElement {});
+    Object.defineProperty(navigator, "serial", {
+      configurable: true,
+      value: {
+        requestPort: async () => {
+          throw new DOMException("No port selected", "NotFoundError");
+        },
+      },
+    });
+  });
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+
+  await page.goto("/test/harness.html");
+  await page.getByRole("button", { name: "Install firmware" }).click();
+
+  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("ew-dialog")))).toBe(true);
+  expect(await page.evaluate(() => [
+    "md-divider",
+    "md-elevation",
+    "md-filled-field",
+    "md-focus-ring",
+    "md-item",
+    "md-menu",
+    "md-ripple",
+  ].every((tag) => Boolean(customElements.get(tag))))).toBe(true);
+  expect(errors).not.toContain(expect.stringContaining("already been used with this registry"));
+});

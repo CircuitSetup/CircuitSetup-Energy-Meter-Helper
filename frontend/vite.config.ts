@@ -6,13 +6,21 @@ import { configDefaults } from "vitest/config";
 const bundleName = "circuitsetup-energy-meter-helper-panel.js";
 const distDir = resolve(import.meta.dirname, "dist");
 const componentDir = resolve(import.meta.dirname, "../custom_components/circuitsetup_energy_meter_helper/frontend");
+const isEspWebToolsModule = (id: string) => id.replaceAll("\\", "/").includes("/esp-web-tools/dist/web/");
 const isInstallerModule = (id: string) => id.replaceAll("\\", "/").endsWith("/esp-web-tools/dist/web/install-button.js");
+const namespaceEspWebToolsElements = (code: string) => code.replaceAll(
+  /(?<!-)md-(divider|elevation|filled-field|focus-ring|item|menu|ripple)(?!-)/g,
+  "ewt-$1",
+);
 const normalizeWhitespace = (code: string) => code.replace(/[ \t]+(?=\r?\n)/g, (whitespace) =>
   whitespace.replaceAll(" ", "\\x20").replaceAll("\t", "\\t"));
 
 function copyStableBundle(): Plugin {
   return {
     name: "copy-stable-home-assistant-bundle",
+    transform(code, id) {
+      if (isEspWebToolsModule(id)) return { code: namespaceEspWebToolsElements(code), map: null };
+    },
     generateBundle(_options, bundle) {
       const chunks = Object.values(bundle).filter((output) => output.type === "chunk");
       const entry = chunks.find((chunk) => chunk.fileName === bundleName);
@@ -21,6 +29,10 @@ function copyStableBundle(): Plugin {
       }
       if (!chunks.some((chunk) => chunk !== entry && chunk.moduleIds.some(isInstallerModule))) {
         this.error("ESP Web Tools must be emitted as a separate local chunk");
+      }
+      if (chunks.some((chunk) => chunk.moduleIds.some(isEspWebToolsModule)
+        && /(?<!-)md-(?:divider|elevation|filled-field|focus-ring|item|menu|ripple)(?!-)/.test(chunk.code))) {
+        this.error("ESP Web Tools Material elements must be namespaced for Home Assistant");
       }
     },
     renderChunk: {
@@ -36,6 +48,9 @@ function copyStableBundle(): Plugin {
 
 export default defineConfig({
   plugins: [copyStableBundle()],
+  optimizeDeps: {
+    exclude: ["esp-web-tools"],
+  },
   test: {
     environment: "jsdom",
     exclude: [...configDefaults.exclude, "test/e2e/**"],
