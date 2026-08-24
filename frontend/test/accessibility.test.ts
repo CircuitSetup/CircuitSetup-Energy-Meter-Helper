@@ -63,10 +63,15 @@ it("keeps Setup Device free of legacy installer and IO0 controls", () => {
 });
 
 describe("calibration tab semantics", () => {
+  it("keeps the skip action centered in a three-column footer", () => {
+    expect(panelStyles.cssText).toContain(".action-footer.offset-footer { display: grid; grid-template-columns: 1fr auto 1fr;");
+    expect(panelStyles.cssText).not.toContain(".offset-footer .primary { grid-column: 1 / -1; }");
+  });
+
   it("supports roving keyboard focus and a linked current-board tabpanel", () => {
     const select = vi.fn();
     const root = mount(
-      currentStep(topology, null, null, 1, new Map(), null, null, null, select, noop, noop, noop, noop, noop, noop),
+      currentStep(topology, null, null, 1, new Map(), null, null, null, new Set(), select, noop, noop, noop, noop, noop, noop),
     );
     const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
 
@@ -82,7 +87,7 @@ describe("calibration tab semantics", () => {
 
   it("supports arrow keys and a linked voltage-group tabpanel", () => {
     const select = vi.fn();
-    const root = mount(voltageStep({ ...topology, voltage_layout: "two_voltages" }, null, 0, [0, 0], null, null,
+    const root = mount(voltageStep({ ...topology, voltage_layout: "two_voltages" }, null, 0, [0, 0], null, [],
       false, select, noop, noop, noop, noop, noop));
     const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
 
@@ -106,17 +111,26 @@ describe("calibration tab semantics", () => {
     }, 7, new Map([[7, 5]]), 1, {
       target: "current", target_id: "Current group 3", stable: true,
       windows: [{ samples: [5, 5.01], mean: 5.005, standard_deviation: 0.005, range_percent: 0.2 }],
-    }, null, noop, noop, noop, noop, noop, noop, noop));
+    }, null, new Set(), noop, noop, noop, noop, noop, noop, noop));
     const source = root.querySelector('[aria-label="Current calibration source"]');
     const live = root.querySelector('[aria-label="current Current group 3 stability evidence"]');
 
     expect(source?.textContent).toContain("addon1_1");
     expect(source?.textContent).toContain("Saved flash");
-    expect(source?.textContent).toContain("Yes");
+    expect(source?.textContent).toContain("No");
     expect(source?.textContent).not.toContain("meter_main");
     expect(live?.textContent).toContain("CT7");
     expect(live?.textContent).toContain("5.00 A");
     expect(live?.textContent).not.toMatch(/Mean|Standard deviation|Range/);
+  });
+
+  it("does not misreport an unresolved active gain source as configuration", () => {
+    const root = mount(currentStep(topology, null, {
+      session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] }, calibration_sources: { meter_main1: "unknown" },
+    }, 1, new Map(), 1, null, null, new Set(), noop, noop, noop, noop, noop, noop, noop));
+
+    expect(root.querySelector('[aria-label="Current calibration source"]')?.textContent).toContain("Unknown");
   });
 
   it("labels selected-board voltage readings V1 through V3 without statistics", () => {
@@ -124,7 +138,7 @@ describe("calibration tab semantics", () => {
       target: "voltage", target_id: "Board 2", stable: true,
       windows: Array.from({ length: 3 }, (_, index) => ({ samples: [120 + index], mean: 120 + index,
         standard_deviation: 0, range_percent: 0 })),
-    }, null, false, noop, noop, noop, noop, noop, noop));
+    }, [], false, noop, noop, noop, noop, noop, noop));
     const live = root.querySelector('[aria-label="voltage Board 2 stability evidence"]');
 
     expect(live?.textContent).toContain("V1");

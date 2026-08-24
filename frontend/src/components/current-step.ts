@@ -12,6 +12,7 @@ export function currentStep(
   reportingMultiplier: number | null,
   stability: StabilityResult | null,
   result: CalibrationResult | null,
+  completedInstanceIds: ReadonlySet<string>,
   select: (channel: number) => void,
   setReference: (channel: number, value: number | null) => void,
   setReportingMultiplier: (value: number | null) => void,
@@ -47,18 +48,19 @@ export function currentStep(
           aria-pressed=${value === first} @click=${() => select(value)}>Group ${board * 2 + offset + 1}</button>`; })}
       </div>
       <h2>Calibrate CT${first}–CT${first + 2}</h2>
-      ${calibrationSourceEvidence(session, sourceIds)}
+      ${calibrationSourceEvidence(session, sourceIds, "Current", completedInstanceIds)}
       <div class="reference-block">
         ${channels.map((value) => html`<label>CT${value} reference
           <input data-current-reference=${value} aria-label=${`CT${value} reference`} type="number" min="0.01" step="0.01"
             .value=${references.has(value) ? String(references.get(value)) : ""}
             @input=${(event: Event) => { const input = event.target as HTMLInputElement; setReference(value, input.value === "" ? null : Number(input.value)); }} /></label>`)}
       ${multiplierRequired ? html`<label>Reporting multiplier <select data-role="reporting-multiplier" required @change=${(event: Event) => { const value = Number((event.target as HTMLSelectElement).value); setReportingMultiplier(value || null); }}><option value="" ?selected=${reportingMultiplier === null}>Choose multiplier</option>${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${reportingMultiplier === value}>${value}</option>`)}</select></label><p>Confirm the meter's reporting multiplier before runtime-only current calibration.</p>` : ""}
-        <button class="primary" @click=${calibrate} ?disabled=${!referenceReady || !stability?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button>
       </div>
-      <div class="stability-line"><button class="secondary" @click=${check} ?disabled=${!referenceReady}>Check stability</button></div>
+      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${!referenceReady}>Check stability</button>
+        <button class="primary" @click=${calibrate} ?disabled=${!referenceReady || !stability?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
       ${stability ? html`<div class=${stability.stable ? "success-band" : "warning-band"} role="status">${stability.stable ? "Live data loaded" : "Live data is unavailable"}</div>` : ""}
       ${stabilityEvidence(stability, selected.map((value) => `CT${value}`))}
+      ${result?.state === "applied_pending_restart_verification" ? html`<div class="success-band" role="status">Current calibration complete for CT${first}–CT${first + 2}.</div>` : ""}
       ${calibrationEvidence(result)}
       ${result?.state.includes("indeterminate") ? html`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${reconnect}>Reconnect and inspect</button><button class="danger" @click=${cancel}>Cancel session</button></aside>` : ""}
       </div>

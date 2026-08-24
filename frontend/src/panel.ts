@@ -110,6 +110,9 @@ export class CircuitSetupPanel extends LitElement {
   private voltageBusy = false;
   private offsetBusy = false;
   private finishBusy = false;
+  private restartBusy = false;
+  private voltageSkipped = false;
+  private currentSkipped = false;
   private mobileStepsOpen = false;
   private focusHeading = false;
 
@@ -300,6 +303,9 @@ export class CircuitSetupPanel extends LitElement {
     this.offsetAcknowledged = [false, false];
     this.offsetRetryConfirmed = false;
     this.finishBusy = false;
+    this.restartBusy = false;
+    this.voltageSkipped = false;
+    this.currentSkipped = false;
   }
 
   private selectDevice(deviceId: string | null): void {
@@ -1013,30 +1019,38 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async restart(): Promise<void> {
-    if (!this.api || !this.session || !this.topology) return;
+    if (!this.api || !this.session || !this.topology || this.restartBusy) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const topology = this.topology;
     const generation = ++this.operationGeneration;
     this.restartResult = null;
-    await this.run(async () => {
-      let result: RestartVerificationResult;
-      try {
-        result = await api.restartAndVerify(sessionId, topology);
-      } catch (error) {
-        if (this.ownsOperation(generation, api, deviceId)
-          && this.session?.session_id === sessionId && this.topology === topology) {
-          this.restartResult = null;
-          this.session = { ...this.session, state: "restart_failed" };
+    this.restartBusy = true;
+    this.announcement = "Restarting the meter and verifying restored calibration values.";
+    this.requestUpdate();
+    try {
+      await this.run(async () => {
+        let result: RestartVerificationResult;
+        try {
+          result = await api.restartAndVerify(sessionId, topology);
+        } catch (error) {
+          if (this.ownsOperation(generation, api, deviceId)
+            && this.session?.session_id === sessionId && this.topology === topology) {
+            this.restartResult = null;
+            this.session = { ...this.session, state: "restart_failed" };
+          }
+          throw error;
         }
-        throw error;
-      }
-      if (!this.ownsOperation(generation, api, deviceId)
-        || this.session?.session_id !== sessionId || this.topology !== topology) return;
-      this.restartResult = result;
-      this.completedWithoutChanges = false;
-      this.session = { ...this.session!, state: "verified" };
-    }, "Restart verification failed; review recovery evidence before rollback.",
-    () => this.ownsOperation(generation, api, deviceId));
+        if (!this.ownsOperation(generation, api, deviceId)
+          || this.session?.session_id !== sessionId || this.topology !== topology) return;
+        this.restartResult = result;
+        this.completedWithoutChanges = false;
+        this.session = { ...this.session!, state: "verified" };
+      }, "Restart verification failed; review recovery evidence before rollback.",
+      () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      this.restartBusy = false;
+      this.requestUpdate();
+    }
     const restartResult = this.restartResult as RestartVerificationResult | null;
     if (restartResult?.source_handoff_available) {
       await this.reviewCalibrationHandoff();
@@ -1103,6 +1117,26 @@ export class CircuitSetupPanel extends LitElement {
       if (result) return result;
     }
     return null;
+  }
+
+  private voltageResultsForBoard(): CalibrationResult[] {
+    return this.voltageGroupKeys().flatMap((targetId) => {
+      const result = this.calibrationByTarget.get(`voltage:${targetId}`);
+      return result ? [result] : [];
+    });
+  }
+
+  private calibratedInstances(target: "voltage" | "current"): Set<string> {
+    return new Set([...this.calibrationByTarget.entries()].flatMap(([key, result]) =>
+      key.startsWith(`${target}:`) && result.state === "applied_pending_restart_verification"
+        && result.gain_evidence?.flash_saved ? [result.gain_evidence.instance_id] : []));
+  }
+
+  private hasCompletedCalibration(target: "voltage" | "current"): boolean {
+    if (target === "voltage") return this.voltageGroupKeys().every((targetId) =>
+      this.calibrationByTarget.get(`voltage:${targetId}`)?.state === "applied_pending_restart_verification");
+    return [...this.calibrationByTarget.entries()].some(([key, result]) =>
+      key.startsWith(`${target}:`) && result.state === "applied_pending_restart_verification");
   }
 
   private stabilityFor(target: "voltage" | "current"): StabilityResult | null {
@@ -1172,18 +1206,23 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.offsetRetryConfirmed = value; this.requestUpdate(); },
       () => void this.checkOffsetReadiness(), () => void this.calibrateOffset(), () => void this.reconnectSession(),
       () => void this.skipOffset(), () => this.back(), () => this.navigate("voltage"));
-    if (this.step === "voltage") return html`${voltageStep(this.topology, this.session, this.board, this.voltageReferences, this.stabilityFor("voltage"), this.resultFor("voltage"), this.voltageBusy,
+    if (this.step === "voltage") return html`${voltageStep(this.topology, this.session, this.board, this.voltageReferences, this.stabilityFor("voltage"), this.voltageResultsForBoard(), this.voltageBusy,
       (value) => { this.board = value; this.requestUpdate(); },
       (index, value) => { this.voltageReferences = this.voltageReferences.map((current, offset) => offset === index ? value : current); this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
-      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.voltageBusy} @click=${() => this.navigate("current")}>${this.resultFor("voltage") ? "Continue" : "Skip voltage calibration"}</button></footer>`;
+      <footer class="action-footer offset-footer"><button class="secondary" @click=${() => this.back()}>Back</button>
+        <button class="secondary" ?disabled=${this.voltageBusy || this.voltageSkipped} @click=${() => { this.voltageSkipped = true; this.announcement = "Remaining voltage calibration was skipped; completed gains were preserved."; this.requestUpdate(); }}>Skip voltage calibration</button>
+        <button class="primary" ?disabled=${this.voltageBusy || !this.voltageSkipped && !this.hasCompletedCalibration("voltage")} @click=${() => this.navigate("current")}>Continue</button></footer>`;
     if (this.step === "current") return html`${currentStep(this.topology, this.inventory, this.session, this.channel, this.currentReferences, this.reportingMultiplier, this.stabilityFor("current"), this.resultFor("current"),
+      this.calibratedInstances("current"),
       (value) => { this.channel = value; this.requestUpdate(); },
       (channel, value) => { const references = new Map(this.currentReferences); if (value === null || !Number.isFinite(value) || value <= 0) references.delete(channel); else references.set(channel, value); this.currentReferences = references; this.requestUpdate(); },
       (value) => { this.reportingMultiplier = value; this.requestUpdate(); },
       () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession())}
-      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.finishBusy} @click=${() => void this.finishCurrent()}>${this.finishBusy ? "Finishing…" : this.session?.has_pending_calibration ? "Continue to Restart" : "Finish without calibration"}</button></footer>`;
+      <footer class="action-footer offset-footer"><button class="secondary" @click=${() => this.back()}>Back</button>
+        <button class="secondary" ?disabled=${this.finishBusy || this.currentSkipped} @click=${() => { this.currentSkipped = true; this.announcement = "Remaining current calibration was skipped; completed gains were preserved."; this.requestUpdate(); }}>Skip current calibration</button>
+        <button class="primary" ?disabled=${this.finishBusy || !this.currentSkipped && !this.hasCompletedCalibration("current")} @click=${() => void this.finishCurrent()}>${this.finishBusy ? "Finishing…" : "Continue"}</button></footer>`;
     if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult,
-      Boolean(this.transaction?.rollback_available), () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());
+      Boolean(this.transaction?.rollback_available), this.restartBusy, () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());
     if (this.step === "summary") return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult,
       this.completedWithoutChanges, this.selectedProjectVersion(),
       () => void (this.restartResult?.source_handoff_firmware_installed
@@ -1233,7 +1272,7 @@ export class CircuitSetupPanel extends LitElement {
           <h1 id="step-heading" tabindex="-1">${STEPS[currentIndex]?.[1]}</h1>
           ${this.error ? html`<div class="error-panel" role="alert" tabindex="-1"><strong>${this.error}</strong></div>` : nothing}
           ${this.stepBody()}
-          ${currentIndex >= 2 && this.step !== "summary" ? technicalDetails(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.completedWithoutChanges) : nothing}
+          ${currentIndex >= 2 && !["voltage", "current", "summary"].includes(this.step) ? technicalDetails(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.completedWithoutChanges) : nothing}
           <div class="sr-status" role="status" aria-live="polite">${this.announcement}</div>
         </main>
       </div>

@@ -284,7 +284,9 @@ async function reviewChannel(page: Page, channel: number): Promise<void> {
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Skip voltage calibration" }).click();
-  await page.getByRole("button", { name: "Finish without calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Skip current calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
 }
 
@@ -305,6 +307,7 @@ async function reachCurrent(page: Page, channel: number): Promise<void> {
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Voltage", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Skip voltage calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Current", exact: true })).toBeVisible();
 }
 
@@ -440,7 +443,9 @@ test("six-channel inventory exposes ambiguous gain while label-only stays out of
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Skip voltage calibration" }).click();
-  await page.getByRole("button", { name: "Finish without calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Skip current calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("preview is stale");
   expect(operations(frames).filter((value) => value === "preview_ct_config")).toHaveLength(1);
   expect(operations(frames)).not.toContain("apply_ct_config");
@@ -486,6 +491,7 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await expect(page.getByText("Standard deviation")).toHaveCount(0);
   await page.getByRole("button", { name: "Calibrate current" }).click();
   await expect(page.getByLabel("Calibration evidence").first()).toContainText("Saved in flash: Yes");
+  await expect(page.getByText("Current calibration complete for CT1–CT3.")).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Restart and verify" }).click();
   await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();

@@ -16,14 +16,19 @@ export function calibrationProgress(
       class="progress-number">${index + 1}</span><span>${label}</span></li>`)}</ol>`;
 }
 
-export function calibrationSourceEvidence(session: SessionStatus | null, instanceIds?: string[]): TemplateResult {
+export function calibrationSourceEvidence(
+  session: SessionStatus | null,
+  instanceIds: string[],
+  target: "Voltage" | "Current",
+  completedInstanceIds: ReadonlySet<string>,
+): TemplateResult {
   const sources = Object.entries(session?.calibration_sources ?? {})
-    .filter(([instance]) => instanceIds === undefined || instanceIds.includes(instance));
-  return html`<section class="measurement-evidence calibration-source" aria-label="Current calibration source">
-    <h3>Current calibration source</h3>
-    ${sources.length ? html`<table><thead><tr><th>Chip</th><th>Source</th><th>Saved in flash</th></tr></thead><tbody>
-      ${sources.map(([instance, source]) => html`<tr><td>${instance}</td><td>${source === "configuration" ? "Configuration" : source === "flash" ? "Saved flash" : "Unknown"}</td><td>${source === "flash" ? "Yes" : source === "configuration" ? "No" : "Unknown"}</td></tr>`)}
-    </tbody></table>` : html`<p>Calibration source is not available.</p>`}
+    .filter(([instance]) => instanceIds.includes(instance));
+  return html`<section class="measurement-evidence calibration-source" aria-label=${`${target} calibration source`}>
+    <h3>Active gain source</h3>
+    ${sources.length ? html`<table><thead><tr><th>Chip</th><th>Active gain source</th><th>${target} calibrated this session</th></tr></thead><tbody>
+      ${sources.map(([instance, source]) => html`<tr><td>${instance}</td><td>${source === "flash" ? "Saved flash" : source === "configuration" ? "Configuration" : "Unknown"}</td><td>${completedInstanceIds.has(instance) ? "Yes" : "No"}</td></tr>`)}
+    </tbody></table><p>ATM90E32 stores voltage and current gains in one table. The active source does not mean this calibration step was completed.</p>` : html`<p>Calibration source is not available.</p>`}
   </section>`;
 }
 
