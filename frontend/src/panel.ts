@@ -207,6 +207,7 @@ export class CircuitSetupPanel extends LitElement {
     const eligible = discovered.filter((device) => device.project_name.startsWith(CIRCUITSETUP_PROJECT_PREFIX));
     this.setup = snapshot;
     this.setupDeviceIds = new Set(snapshot.devices.map((device) => device.entry_id));
+    if (this.pendingAction) { this.requestUpdate(); return; }
     if (this.step !== "setup" || this.topology || !eligible.length) return this.requestUpdate();
     if (allowAutomaticImport && eligible.length === 1 && !this.pendingAction) {
       const deviceId = eligible[0]!.entry_id;
@@ -468,6 +469,7 @@ export class CircuitSetupPanel extends LitElement {
     this.requestUpdate();
     const api = this.api;
     const deviceId = this.selectedDeviceId;
+    const setupDeviceIds = new Set(this.setupDeviceIds);
     const generation = ++this.operationGeneration;
     await this.run(async () => {
       await api.setInstallerIntent(this.addonCount, this.connection, this.selectedFirmware());
@@ -475,6 +477,7 @@ export class CircuitSetupPanel extends LitElement {
       const setup = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.pendingAction = "";
+      this.setupDeviceIds = setupDeviceIds;
       this.receiveSetupSnapshot(setup, true);
       if (!setup.devices.length) {
         this.announcement = "No compatible meter found. Check the network and rescan.";
