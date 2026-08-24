@@ -6,6 +6,7 @@ import { changesFromDrafts, ctInventoryStep, type CtDraft } from "./components/c
 import { currentStep } from "./components/current-step";
 import { espWebInstaller } from "./components/esp-web-installer";
 import { offsetStep } from "./components/offset-step";
+import { newInstallPackageOptions, resizePackageOptions } from "./components/package-options";
 import { restartStep } from "./components/restart-step";
 import { safetyStep } from "./components/safety-step";
 import { setupDeviceStep } from "./components/setup-device-step";
@@ -17,6 +18,7 @@ import { chooseFirmwareVersion, fetchFirmwareIndex, resolveFirmwareOptions, type
 import { panelStyles } from "./styles";
 import type {
   CalibrationResult,
+  BoardPackageOptions,
   ConnectionType,
   CtInventory,
   FirmwareCatalogState,
@@ -29,6 +31,7 @@ import type {
   SetupSnapshot,
   StabilityResult,
   TransactionStatus,
+  TopologyResult,
 } from "./types";
 
 const STEPS: Array<[PanelStep, string]> = [
@@ -80,6 +83,8 @@ export class CircuitSetupPanel extends LitElement {
   private offsetResultByTarget = new Map<string, OffsetCalibrationResult>();
   private calibrationHandoff = false;
   private addonCount = 0;
+  private packageOptions = newInstallPackageOptions(0);
+  private sourcePackageOptions: BoardPackageOptions | null = newInstallPackageOptions(0);
   private connection: Exclude<ConnectionType, "unknown"> = "wifi";
   private board = 0;
   private group = 0;
@@ -113,6 +118,7 @@ export class CircuitSetupPanel extends LitElement {
   private sessionStarting = false;
   private pendingAction = "";
   private importFailedDeviceId: string | null = null;
+  private newInstallDeviceId: string | null = null;
   private voltageBusy = false;
   private offsetBusy = false;
   private finishBusy = false;
@@ -148,6 +154,7 @@ export class CircuitSetupPanel extends LitElement {
     this.firmwareCatalogError = "";
     this.resolvedFirmwareOptions = [];
     this.setupDeviceIds = new Set();
+    this.newInstallDeviceId = null;
     this.pendingAction = "";
     super.disconnectedCallback();
   }
@@ -174,6 +181,10 @@ export class CircuitSetupPanel extends LitElement {
       if (intent) {
         this.addonCount = intent.addon_count;
         this.connection = intent.connection_type;
+        this.packageOptions = intent.power_quality && intent.status_fields
+          ? { power_quality: [...intent.power_quality], status_fields: [...intent.status_fields] }
+          : newInstallPackageOptions(intent.addon_count);
+        this.sourcePackageOptions = newInstallPackageOptions(intent.addon_count);
         this.refreshFirmwareOptions();
       }
       if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.firstDeviceId(this.setup.devices));
@@ -212,6 +223,7 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step !== "setup" || this.topology || !eligible.length) return this.requestUpdate();
     if (allowAutomaticImport && eligible.length === 1 && !this.pendingAction) {
       const deviceId = eligible[0]!.entry_id;
+      this.newInstallDeviceId = deviceId;
       this.selectDevice(deviceId);
       this.announcement = "Device added to Home Assistant. Importing into ESPHome Builder…";
       void this.adopt(deviceId);
@@ -348,6 +360,7 @@ export class CircuitSetupPanel extends LitElement {
     this.clearSubscription("transaction");
     this.clearSubscription("session");
     this.selectedDeviceId = deviceId;
+    if (deviceId !== this.newInstallDeviceId) this.newInstallDeviceId = null;
     this.topology = null;
     this.inventory = null;
     this.transaction = null;
@@ -368,6 +381,34 @@ export class CircuitSetupPanel extends LitElement {
       ? "Topology mismatch"
       : "";
     this.requestUpdate();
+  }
+
+  private showTopologyResult(result: MeterTopology | TopologyResult): void {
+    if ("topology" in result && result.topology) {
+      if (result.package_options) {
+        if (this.selectedDeviceId !== this.newInstallDeviceId) {
+          this.packageOptions = {
+            power_quality: [...result.package_options.power_quality],
+            status_fields: [...result.package_options.status_fields],
+          };
+        }
+        this.sourcePackageOptions = {
+          power_quality: [...result.package_options.power_quality],
+          status_fields: [...result.package_options.status_fields],
+        };
+      }
+      this.showTopology(result.topology);
+    } else {
+      this.sourcePackageOptions = null;
+      this.showTopology(result as MeterTopology);
+    }
+  }
+
+  private setAddonCount(value: number): void {
+    this.addonCount = value;
+    this.packageOptions = resizePackageOptions(this.packageOptions, value);
+    this.sourcePackageOptions = newInstallPackageOptions(value);
+    this.refreshFirmwareOptions();
   }
 
   public showInventory(inventory: CtInventory): void {
@@ -425,6 +466,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private async configureDevice(deviceId: string): Promise<void> {
     if (this.pendingAction) return;
+    this.newInstallDeviceId = null;
     this.selectDevice(deviceId);
     this.pendingAction = `topology:${deviceId}`;
     this.requestUpdate();
@@ -473,7 +515,12 @@ export class CircuitSetupPanel extends LitElement {
     const setupDeviceIds = new Set(this.setupDeviceIds);
     const generation = ++this.operationGeneration;
     await this.run(async () => {
-      await api.setInstallerIntent(this.addonCount, this.connection, this.selectedFirmware());
+      await api.setInstallerIntent(
+        this.addonCount,
+        this.connection,
+        this.selectedFirmware(),
+        this.packageOptions,
+      );
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -511,7 +558,7 @@ export class CircuitSetupPanel extends LitElement {
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = null;
       this.announcement = "Meter imported into ESPHome Builder.";
-      this.showTopology("topology" in result ? result.topology : result);
+      this.showTopologyResult(result);
     } catch (error) {
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = deviceId;
@@ -555,7 +602,7 @@ export class CircuitSetupPanel extends LitElement {
     await this.run(async () => {
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      this.showTopology("topology" in result ? result.topology : result);
+      this.showTopologyResult(result);
     }, "Topology evidence could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
   }
 
@@ -599,15 +646,23 @@ export class CircuitSetupPanel extends LitElement {
     this.requestUpdate();
   }
 
+  private hasPackageChanges(): boolean {
+    return Boolean(this.sourcePackageOptions && (["power_quality", "status_fields"] as const)
+      .some((feature) => this.packageOptions[feature]
+        .some((enabled, board) => enabled !== this.sourcePackageOptions?.[feature][board])));
+  }
+
   private async reviewChanges(): Promise<void> {
     if (!this.api || !this.inventory || !this.selectedDeviceId) return;
-    const changes = changesFromDrafts(this.inventory, this.drafts);
-    if (!changes.length) return this.fail(new Error(), "Select at least one CT change before review.");
+    let changes = changesFromDrafts(this.inventory, this.drafts);
+    if (!changes.length && !this.hasPackageChanges()) {
+      return this.fail(new Error(), "Select at least one configuration change before review.");
+    }
     const api = this.api; const deviceId = this.selectedDeviceId; const inventory = this.inventory;
     const generation = ++this.operationGeneration;
     this.clearSubscription("transaction");
     this.transaction = null;
-    if (this.labelOnly) {
+    if (this.labelOnly && changes.length) {
       const labels = changes.filter((change) => change.name !== this.inventory!.channels.find((item) => item.channel === change.channel)?.name)
         .map(({ channel, name }) => ({ channel, name }));
       if (!labels.length || changes.some((change) => {
@@ -618,7 +673,8 @@ export class CircuitSetupPanel extends LitElement {
       }
       await this.run(async () => { await api.setHaLabels(deviceId, inventory.plan_id, inventory.source_sha256, labels); this.announcement = "Home Assistant labels saved."; },
         "Home Assistant labels could not be saved.", () => this.ownsOperation(generation, api, deviceId));
-      return;
+      if (this.error || !this.hasPackageChanges()) return;
+      changes = [];
     }
     await this.run(async () => {
       let transaction: TransactionStatus;
@@ -630,6 +686,7 @@ export class CircuitSetupPanel extends LitElement {
           liveInventory.plan_id,
           liveInventory.source_sha256,
           changes,
+          this.sourcePackageOptions ? this.packageOptions : undefined,
         );
       } catch (error) {
         if ((error as WsError).code !== "stale_confirmation") throw error;
@@ -709,7 +766,12 @@ export class CircuitSetupPanel extends LitElement {
       const changes = this.inventory && !this.labelOnly
         ? changesFromDrafts(this.inventory, this.drafts)
         : [];
-      const transaction = await api.previewCalibratedGains(sessionId, verificationId, changes);
+      const transaction = await api.previewCalibratedGains(
+        sessionId,
+        verificationId,
+        changes,
+        this.sourcePackageOptions ? this.packageOptions : undefined,
+      );
       if (!this.ownsOperation(generation, api, deviceId)
         || this.session?.session_id !== sessionId
         || this.restartResult?.verification_id !== verificationId) return;
@@ -1165,7 +1227,7 @@ export class CircuitSetupPanel extends LitElement {
     try {
       await this.cancelSession(null);
       if (this.error) return;
-      if (changes.length) await this.reviewChanges();
+      if (changes.length || this.hasPackageChanges()) await this.reviewChanges();
       else this.finishFlow("No changes were made. Select another device to configure.");
     } finally {
       this.pendingAction = "";
@@ -1272,13 +1334,16 @@ export class CircuitSetupPanel extends LitElement {
 
   private stepBody(): TemplateResult {
     if (this.step === "setup") return html`${setupDeviceStep(this.setup, this.addonCount, this.connection,
-      (value) => { this.addonCount = value; this.refreshFirmwareOptions(); },
+      (value) => this.setAddonCount(value),
       (value) => { this.connection = value; this.refreshFirmwareOptions(); },
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, Boolean(this.topology),
-      this.firmwareCatalog(), this.importFailedDeviceId)}
+      this.firmwareCatalog(), this.importFailedDeviceId, this.packageOptions,
+      (options) => { this.packageOptions = options; this.requestUpdate(); })}
       ${this.topology ? topologyStep(this.topology, this.selectedProjectVersion(),
         () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
-          ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session") : nothing}`;
+          ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session",
+        this.sourcePackageOptions ? this.packageOptions : null,
+        (options) => { this.packageOptions = options; this.requestUpdate(); }) : nothing}`;
     if (this.step === "ct" && this.inventory) return html`<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
       (board) => { this.board = board; this.requestUpdate(); },
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session")}`;

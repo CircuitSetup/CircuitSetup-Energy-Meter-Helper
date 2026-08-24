@@ -773,6 +773,167 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toMatch(/(?:USB flash|installation|provisioning) complete/i);
   });
 
+  it("persists new-install package choices with installer intent", async () => {
+    const messages: Record<string, unknown>[] = [];
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        messages.push(message);
+        const operation = String(message.type).split("/").at(-1);
+        return (operation === "rescan"
+          ? { state: "no_device", devices: [] }
+          : { state: "installer_guide", devices: [] }) as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="1"]')?.click();
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[data-all-feature="power_quality"]')?.click();
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="rescan"]')?.click();
+    await tick();
+
+    expect(messages.find((message) => String(message.type).endsWith("set_installer_intent"))).toMatchObject({
+      power_quality: [true, true],
+      status_fields: [true, false],
+    });
+  });
+
+  it("shows existing package state from the selected meter config", async () => {
+    const configured = {
+      ...device,
+      project_name: "circuitsetup.6c-energy-meter-1-addon",
+      importable: false,
+      configuration: "meter.yaml",
+    };
+    const existingTopology: MeterTopology = {
+      addon_count: 1,
+      board_count: 2,
+      ct_count: 12,
+      group_count: 4,
+      connection_type: "wifi",
+      voltage_layout: "two_groups",
+      project_name: configured.project_name,
+      evidence: [{ source: "config_project", addon_count: 1, detail: configured.project_name }],
+    };
+    const panel = await mount(makeHass({
+      setup_status: { state: "device_discovered", devices: [configured] },
+      get_topology: {
+        topology: existingTopology,
+        package_options: { power_quality: [true, false], status_fields: [false, true] },
+      },
+    }));
+
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="configure-device"]')?.click();
+    await tick();
+    await panel.updateComplete;
+
+    expect([...panel.shadowRoot?.querySelectorAll<HTMLInputElement>('[data-feature="power_quality"]') ?? []]
+      .map((input) => input.checked)).toEqual([true, false]);
+    expect([...panel.shadowRoot?.querySelectorAll<HTMLInputElement>('[data-feature="status_fields"]') ?? []]
+      .map((input) => input.checked)).toEqual([false, true]);
+  });
+
+  it("keeps selected package choices when a new meter config is imported", async () => {
+    let setupCallback: ((snapshot: unknown) => void) | undefined;
+    let adopted = false;
+    const newDevice = {
+      ...device,
+      project_name: "circuitsetup.6c-energy-meter-1-addon",
+    };
+    const newTopology: MeterTopology = {
+      addon_count: 1,
+      board_count: 2,
+      ct_count: 12,
+      group_count: 4,
+      connection_type: "wifi",
+      voltage_layout: "two_groups",
+      project_name: newDevice.project_name,
+      evidence: [{ source: "config_project", addon_count: 1, detail: newDevice.project_name }],
+    };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1);
+        if (operation === "setup_status") return (adopted
+          ? { state: "device_discovered", devices: [{ ...newDevice, configuration: "meter.yaml" }], bound_device_id: newDevice.entry_id }
+          : { state: "no_device", devices: [] }) as T;
+        if (operation === "adopt_device") { adopted = true; return { device_id: newDevice.entry_id, configuration: "meter.yaml" } as T; }
+        if (operation === "get_topology") return {
+          topology: newTopology,
+          package_options: { power_quality: [false, false], status_fields: [true, false] },
+        } as T;
+        return { state: "installer_guide", devices: [] } as T;
+      },
+      connection: { subscribeMessage: async (callback) => {
+        setupCallback = callback as (snapshot: unknown) => void;
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="1"]')?.click();
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[data-all-feature="power_quality"]')?.click();
+    setupCallback?.({ state: "device_discovered", devices: [newDevice] });
+    await tick();
+    await tick();
+    await panel.updateComplete;
+
+    expect([...panel.shadowRoot?.querySelectorAll<HTMLInputElement>('[data-feature="power_quality"]') ?? []]
+      .map((input) => input.checked)).toEqual([true, true]);
+  });
+
+  it("opens config review for a package-only change in label mode", async () => {
+    const messages: Record<string, unknown>[] = [];
+    const inventory: CtInventory = {
+      plan_id: "plan-1",
+      source_sha256: "a".repeat(64),
+      channels: Array.from({ length: 6 }, (_, index) => ({
+        channel: index + 1,
+        name: `CT${index + 1}`,
+        raw_gain_ct: 5500,
+        reporting_multiplier: 1,
+        selected_model_id: "model",
+        selection_verified_against_config: true,
+        address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3),
+          phase: (["A", "B", "C"] as const)[index % 3]! },
+      })),
+      catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
+        secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }],
+        source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
+    };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        messages.push(message);
+        const operation = String(message.type).split("/").at(-1);
+        if (operation === "setup_status") return { state: "device_discovered", devices: [{ ...device, configuration: "meter.yaml" }] } as T;
+        if (operation === "get_ct_inventory") return inventory as T;
+        if (operation === "preview_ct_config") return { transaction_id: "tx", state: "previewed",
+          source_sha256: inventory.source_sha256, changes: [], redacted_diff: "+ power quality",
+          rollback_available: false, evidence: [], progress: [], upload_progress: [] } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    panel.showInventory(inventory);
+    const state = panel as unknown as {
+      packageOptions: { power_quality: boolean[]; status_fields: boolean[] };
+      sourcePackageOptions: { power_quality: boolean[]; status_fields: boolean[] };
+      labelOnly: boolean;
+      reviewChanges(): Promise<void>;
+    };
+    state.sourcePackageOptions = { power_quality: [false], status_fields: [true] };
+    state.packageOptions = { power_quality: [true], status_fields: [true] };
+    state.labelOnly = true;
+
+    await state.reviewChanges();
+
+    expect(messages.find((message) => String(message.type).endsWith("preview_ct_config"))).toMatchObject({
+      changes: [],
+      package_options: { power_quality: [true], status_fields: [true] },
+    });
+  });
+
   it("keeps Rescan on Setup Device and reports no compatible meter without claiming completion", async () => {
     const panel = await mount(makeHass({
       setup_status: { state: "no_device", devices: [] },

@@ -33,7 +33,11 @@ from .calibration_engine import (
     OffsetCalibrationState,
 )
 from .config_document import ESPHomeConfigDocument
-from .config_mutator import CTChangeRequest, build_ct_mutation
+from .config_mutator import (
+    CTChangeRequest,
+    build_ct_mutation,
+    package_options_from_document,
+)
 from .config_transaction import ConfigTransactionManager, ReconnectEvidence
 from .ct_catalog import REPORTING_MULTIPLIERS, CTPresetCatalog
 from .ct_inventory import CTInventory
@@ -388,16 +392,23 @@ class EntryWorkflow:
             ),
         )
 
-    async def async_get_topology(self, device_id: str) -> MeterTopology:
+    async def async_get_topology(
+        self, device_id: str
+    ) -> MeterTopology | dict[str, Any]:
         device = self._device(device_id)
         try:
             snapshot = await self._async_snapshot(device)
         except WorkflowCapabilityUnavailable:
             return topology_from_native(device.project_name)
-        return topology_from_config(
-            ESPHomeConfigDocument.parse(snapshot.content),
+        document = ESPHomeConfigDocument.parse(snapshot.content)
+        topology = topology_from_config(
+            document,
             native_project_name=device.project_name,
         )
+        return {
+            "topology": topology,
+            "package_options": package_options_from_document(document, topology),
+        }
 
     def transaction_device_identity(self, device_id: str) -> str:
         """Translate the browser's owned ESPHome entry handle to canonical MAC."""
@@ -498,13 +509,19 @@ class EntryWorkflow:
         plan_id: str,
         source_sha256: str,
         changes: tuple[Mapping[str, Any], ...],
+        package_options: Mapping[str, Any] | None = None,
     ) -> Any:
         plan = self._plan(plan_id, device_id, source_sha256)
         manager = self.transactions
         if manager is None:
             raise WorkflowCapabilityUnavailable("configuration writes are unavailable")
         requests = _ct_change_requests(changes)
-        mutation = build_ct_mutation(plan.snapshot, plan.topology, requests)
+        mutation = build_ct_mutation(
+            plan.snapshot,
+            plan.topology,
+            requests,
+            package_options=package_options,
+        )
         updated_inventory = CTInventory.from_document(
             ESPHomeConfigDocument.parse(mutation.proposed_content),
             plan.topology,
@@ -1035,6 +1052,7 @@ class EntryWorkflow:
         session_id: str,
         verification_id: str,
         changes: tuple[Mapping[str, Any], ...] = (),
+        package_options: Mapping[str, Any] | None = None,
     ) -> Any:
         """Open the existing reviewed YAML transaction for a verified session."""
         handle = self._session(session_id)
@@ -1051,13 +1069,18 @@ class EntryWorkflow:
                 "calibrated reporting multiplier is missing from final CT changes"
             )
         calibrated_channels = frozenset(handle.calibrated_current_channels)
-        if requests or calibrated_channels:
-            return await self.transactions.async_preview_calibrated_gains(
+        if requests or calibrated_channels or package_options is not None:
+            args = (
                 handle.mac,
                 handle.topology,
                 verification_id,
                 requests,
                 calibrated_channels,
+            )
+            if package_options is None:
+                return await self.transactions.async_preview_calibrated_gains(*args)
+            return await self.transactions.async_preview_calibrated_gains(
+                *args, package_options=package_options
             )
         return await self.transactions.async_preview_calibrated_gains(
             handle.mac, handle.topology, verification_id
@@ -1172,7 +1195,12 @@ class EntryWorkflow:
             if device_id is None:
                 raise WorkflowCapabilityUnavailable("device identity is unavailable")
             device = self._device(device_id)
-            topology = await self.async_get_topology(device_id)
+            topology_result = await self.async_get_topology(device_id)
+            topology = (
+                topology_result["topology"]
+                if isinstance(topology_result, dict)
+                else topology_result
+            )
             snapshot = await self._async_snapshot(device)
             document = ESPHomeConfigDocument.parse(snapshot.content)
             substitutions = {

@@ -25,7 +25,7 @@ from .ct_catalog import REPORTING_MULTIPLIERS
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
-from .models import InstallerIntent, validate_installer_firmware
+from .models import InstallerIntent
 from .offset_readiness import OffsetReadinessStage
 from .provisioning import ProvisioningCoordinator
 from .repairs import async_reconcile_issues, signals_from_result
@@ -107,6 +107,9 @@ _FORBIDDEN_KEY = re.compile(
     r"secret|ssid|summary|token|yaml)(?:$|_)",
     re.IGNORECASE,
 )
+_PACKAGE_CHANGE_RE = re.compile(
+    r"(?:power_quality|status_fields)_(?:main|addon[1-6])"
+)
 _FORBIDDEN_VALUE = re.compile(
     r"(?:api[_ -]?key|credential|encryption[_ -]?key|noise[_ -]?psk|password|"
     r"secret|token)(?:\s*[:=]|\b)",
@@ -176,6 +179,7 @@ class WorkflowOwner(Protocol):
         plan_id: str,
         source_sha256: str,
         changes: tuple[Mapping[str, Any], ...],
+        package_options: Mapping[str, Any] | None = None,
     ) -> Any: ...
 
     async def async_set_ha_labels(
@@ -233,6 +237,7 @@ class WorkflowOwner(Protocol):
         session_id: str,
         verification_id: str,
         changes: tuple[Mapping[str, Any], ...] = (),
+        package_options: Mapping[str, Any] | None = None,
     ) -> Any: ...
 
     async def async_clear_calibration_flash(
@@ -337,6 +342,12 @@ class EntryWebsocketController:
                     msg["connection_type"],
                     msg.get("firmware_product_id"),
                     msg.get("esphome_version"),
+                    tuple(msg["power_quality"])
+                    if "power_quality" in msg
+                    else None,
+                    tuple(msg["status_fields"])
+                    if "status_fields" in msg
+                    else None,
                 )
             )
             return await self.async_call(f"{_PREFIX}setup_status", msg, user_id)
@@ -359,6 +370,7 @@ class EntryWebsocketController:
                 msg["plan_id"],
                 msg["source_sha256"],
                 tuple(msg["changes"]),
+                msg.get("package_options"),
             )
         if operation == "set_ha_labels" and workflow is not None:
             return await workflow.async_set_ha_labels(
@@ -433,12 +445,11 @@ class EntryWebsocketController:
             )
         if operation == "preview_calibrated_gains" and workflow is not None:
             changes = tuple(msg.get("changes", ()))
-            if changes:
-                return await workflow.async_preview_calibrated_gains(
-                    msg["session_id"], msg["verification_id"], changes
-                )
             return await workflow.async_preview_calibrated_gains(
-                msg["session_id"], msg["verification_id"]
+                msg["session_id"],
+                msg["verification_id"],
+                changes,
+                msg.get("package_options"),
             )
         if operation == "clear_calibration_flash" and workflow is not None:
             return await workflow.async_clear_calibration_flash(
@@ -882,6 +893,12 @@ def _schema(command: str) -> Any:
             ),
             vol.Optional("firmware_product_id"): str,
             vol.Optional("esphome_version"): str,
+            vol.Optional("power_quality"): vol.All(
+                [bool], vol.Length(min=1, max=7)
+            ),
+            vol.Optional("status_fields"): vol.All(
+                [bool], vol.Length(min=1, max=7)
+            ),
         }
         return vol.All(vol.Schema(schema), _validate_installer_firmware_schema)
     elif operation in {"get_topology", "get_ct_inventory", "adopt_device"}:
@@ -909,9 +926,18 @@ def _schema(command: str) -> Any:
                         vol.Optional("burden_output_acknowledged", default=False): bool,
                     }
                 ],
-                vol.Length(min=1, max=42),
+                vol.Length(max=42),
             ),
+            vol.Optional("package_options"): {
+                vol.Required("power_quality"): vol.All(
+                    [bool], vol.Length(min=1, max=7)
+                ),
+                vol.Required("status_fields"): vol.All(
+                    [bool], vol.Length(min=1, max=7)
+                ),
+            },
         }
+        return vol.All(vol.Schema(schema), _validate_config_preview_schema)
     elif operation == "set_ha_labels":
         schema |= {
             vol.Required("device_id"): _ID,
@@ -956,6 +982,14 @@ def _schema(command: str) -> Any:
                 ],
                 vol.Length(max=42),
             ),
+            vol.Optional("package_options"): {
+                vol.Required("power_quality"): vol.All(
+                    [bool], vol.Length(min=1, max=7)
+                ),
+                vol.Required("status_fields"): vol.All(
+                    [bool], vol.Length(min=1, max=7)
+                ),
+            },
         }
     elif operation == "clear_calibration_flash":
         schema |= {
@@ -1050,13 +1084,24 @@ def _schema(command: str) -> Any:
 
 
 def _validate_installer_firmware_schema(value: dict[str, Any]) -> dict[str, Any]:
-    """Reject incomplete or unsafe firmware selections before handler mutation."""
+    """Reject incomplete or unsafe installer selections before handler mutation."""
     try:
-        validate_installer_firmware(
-            value.get("firmware_product_id"), value.get("esphome_version")
+        InstallerIntent(
+            value["addon_count"],
+            value["connection_type"],
+            value.get("firmware_product_id"),
+            value.get("esphome_version"),
+            tuple(value["power_quality"]) if "power_quality" in value else None,
+            tuple(value["status_fields"]) if "status_fields" in value else None,
         )
     except ValueError as error:
         raise vol.Invalid(str(error)) from error
+    return value
+
+
+def _validate_config_preview_schema(value: dict[str, Any]) -> dict[str, Any]:
+    if not value["changes"] and "package_options" not in value:
+        raise vol.Invalid("at least one configuration change is required")
     return value
 
 
@@ -1130,7 +1175,12 @@ def sanitize_payload(
                 and isinstance(item, str)
                 and any(
                     pattern.fullmatch(item) is not None
-                    for pattern in (CT_NAME_RE, CT_GAIN_RE, VOLTAGE_GAIN_RE)
+                    for pattern in (
+                        CT_NAME_RE,
+                        CT_GAIN_RE,
+                        VOLTAGE_GAIN_RE,
+                        _PACKAGE_CHANGE_RE,
+                    )
                 )
             )
             if (

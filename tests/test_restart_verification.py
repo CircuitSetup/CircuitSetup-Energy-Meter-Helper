@@ -1279,6 +1279,31 @@ def test_uniform_gains_build_surgical_hash_bound_source_mutation() -> None:
     assert record.source_authority is CalibrationSourceAuthority.SAVED_FLASH
 
 
+def test_final_gain_mutation_keeps_selected_board_packages_in_same_review() -> None:
+    """A calibrated handoff must not drop package choices made during setup."""
+    content = _snapshot().content + """packages:
+  circuitsetup_meter:
+    files:
+      #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
+      - Software/ESPHome/status_fields/6chan_main_status.yaml
+"""
+    snapshot = _snapshot(content)
+    record = _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003)))
+
+    plan = build_calibrated_gain_mutation(
+        snapshot,
+        topology(0),
+        record,
+        package_options={
+            "power_quality": (True,),
+            "status_fields": (False,),
+        },
+    )
+
+    assert "      - Software/ESPHome/power_quality/6chan_main_power_quality.yaml" in plan.proposed_content
+    assert "      #- Software/ESPHome/status_fields/6chan_main_status.yaml" in plan.proposed_content
+
+
 def test_final_gain_preview_combines_ct_edits_without_overwriting_calibrated_current() -> None:
     content = _snapshot().content.replace(
         "substitutions:\n",

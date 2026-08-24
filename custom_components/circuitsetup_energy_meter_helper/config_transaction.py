@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from hashlib import sha256
 from time import monotonic
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from .config_document import ESPHomeConfigDocument
@@ -395,6 +395,8 @@ class ConfigTransactionManager:
         verification_id: str,
         requested_channels: tuple[CTChangeRequest, ...] = (),
         calibrated_current_channels: frozenset[int] = frozenset(),
+        *,
+        package_options: Mapping[str, Any] | None = None,
     ) -> TransactionStatus:
         """Re-read YAML and open the normal reviewed transaction for final gains."""
         mac = canonical_mac(mac)
@@ -439,6 +441,7 @@ class ConfigTransactionManager:
                 verified,
                 requested_channels,
                 calibrated_current_channels,
+                package_options=package_options,
             )
             selections: tuple[StoredCTSelection, ...] = ()
             if requested_channels:
