@@ -67,15 +67,19 @@ export const panelStyles = css`
   .connection-options label::before { content: ""; width: 22px; height: 22px; margin-right: 22px; border: 2px solid #aeb7c4; border-radius: 50%; }
   .connection-options .selected { border-color: #1769d3; }
   .connection-options .selected::before { border: 6px solid #1769d3; }
-  .summary-band, .info-band, .io-guidance, .success-band, .warning-band, .status-band { background: var(--band); border: 1px solid var(--border); border-radius: 5px; padding: 14px 16px; }
+  .summary-band, .info-band, .success-band, .warning-band, .status-band { background: var(--band); border: 1px solid var(--border); border-radius: 5px; padding: 14px 16px; }
   dl { margin: 0; }
   dl div { display: flex; gap: 12px; }
   dt { font-weight: 700; }
   dd { margin: 0; }
   .summary-band strong, .success-band { color: var(--teal); }
-  .io-guidance { border-color: #1769d3; background: #fff; }
-  .io-guidance h2 { margin-top: 0; }
-  .installer { width: min(100%, 760px); }
+  .esp-web-installer {
+    --esp-tools-button-color: var(--orange);
+    --esp-tools-button-text-color: #fff;
+    --esp-tools-button-border-radius: 5px;
+  }
+  .esp-web-installer [slot="activate"] { min-height: 44px; color: #fff; background: var(--orange); border-color: var(--orange); }
+  .esp-web-installer [slot="activate"]:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
   .error-panel, .recovery-panel { display: grid; gap: 6px; margin-top: 16px; padding: 16px; border: 1px solid var(--danger); border-radius: 5px; color: var(--danger); background: #fff; }
   .error-panel span, .error-panel li, .recovery-panel p { color: #4a3340; }
   .meter-list { display: grid; gap: 10px; }

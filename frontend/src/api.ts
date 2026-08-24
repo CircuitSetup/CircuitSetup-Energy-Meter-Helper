@@ -16,6 +16,7 @@ import type {
   StabilityResult,
   TransactionStatus,
 } from "./types";
+import type { FirmwareOption } from "./firmware-installer";
 
 export interface HomeAssistant {
   callWS<T>(message: Record<string, unknown>): Promise<T>;
@@ -48,6 +49,8 @@ const MAC = /^[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
+const FIRMWARE_PRODUCT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
+const ESPHOME_VERSION = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$/;
 const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
 const OFFSET_CAPABILITIES = new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
@@ -120,6 +123,13 @@ function setup(value: unknown, label: string): SetupSnapshot {
     if (count < 0 || count > 6) throw new Error(`${label} response is invalid`);
     const connection = enumeration(intent.connection_type, CONNECTIONS, label);
     if (connection === "unknown") throw new Error(`${label} response is invalid`);
+    const productId = intent.firmware_product_id;
+    const version = intent.esphome_version;
+    if ((productId === undefined) !== (version === undefined)
+      || productId !== undefined && (typeof productId !== "string" || productId.length > 160 || !FIRMWARE_PRODUCT_ID.test(productId))
+      || version !== undefined && (typeof version !== "string" || version.length > 160 || !ESPHOME_VERSION.test(version))) {
+      throw new Error(`${label} response is invalid`);
+    }
   }
   return value as SetupSnapshot;
 }
@@ -555,8 +565,18 @@ export class HelperApi {
   public getSession = (sessionId: string) =>
     this.call("get_session", (value) => session(value, "get_session"), { session_id: sessionId });
   public getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (value) => record(value, "get_diagnostics_summary"));
-  public setInstallerIntent = (addonCount: number, connectionType: Exclude<ConnectionType, "unknown">) =>
-    this.call("set_installer_intent", (value) => setup(value, "set_installer_intent"), { addon_count: addonCount, connection_type: connectionType });
+  public setInstallerIntent = (
+    addonCount: number,
+    connectionType: Exclude<ConnectionType, "unknown">,
+    firmware: FirmwareOption | null,
+  ) => this.call("set_installer_intent", (value) => setup(value, "set_installer_intent"), {
+    addon_count: addonCount,
+    connection_type: connectionType,
+    ...(firmware && firmware.productId.length <= 160 && firmware.version.length <= 160
+      && FIRMWARE_PRODUCT_ID.test(firmware.productId) && ESPHOME_VERSION.test(firmware.version)
+      ? { firmware_product_id: firmware.productId, esphome_version: firmware.version }
+      : {}),
+  });
   public rescan = () => this.call("rescan", (value) => setup(value, "rescan"));
   public adoptDevice = (deviceId: string) =>
     this.call("adopt_device", (value) => { const item = record(value, "adopt_device"); string(item.device_id, "adopt_device"); string(item.configuration, "adopt_device"); return value as { device_id: string; configuration: string }; }, { device_id: deviceId });

@@ -6,6 +6,22 @@ type Outcome = "success" | "collision" | "validation" | "compile";
 type Calibration = "main-success" | "addon-indeterminate" | undefined;
 
 const hash = "a".repeat(64);
+const FIRMWARE_INDEX_URL = "https://circuitsetup.github.io/ESPWebInstaller/manifests/firmware_index.json";
+const FIRMWARE_INDEX = [
+  { productId: "6chan_energy_meter_main_board", name: "Main board", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
+  { productId: "6chan_energy_meter_1-addon", name: "One add-on", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
+  { productId: "6chan_energy_meter_6-addons_ethernet", name: "Six add-ons LilyGO", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
+  { productId: "6chan_energy_meter_6-addons_ethernet_waveshare", name: "Six add-ons Waveshare", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
+];
+
+async function mockFirmwareIndex(page: Page, index: typeof FIRMWARE_INDEX | null = FIRMWARE_INDEX, requests?: string[]) {
+  await page.route(FIRMWARE_INDEX_URL, async (route) => {
+    requests?.push(route.request().url());
+    await route.fulfill(index === null
+      ? { status: 503, contentType: "application/json", body: "[]" }
+      : { contentType: "application/json", body: JSON.stringify(index) });
+  });
+}
 
 function project(addons: number): string {
   return addons ? `circuitsetup.6c-energy-meter-${addons}-addons` : "circuitsetup.6c-energy-meter";
@@ -123,13 +139,17 @@ function restart(addons: number) {
 }
 
 async function mockHomeAssistant(page: Page, options: { addons?: number; outcome?: Outcome;
-  calibration?: Calibration; rescan?: Array<"none" | "device">; importable?: boolean } = {}) {
+  calibration?: Calibration; rescan?: Array<"none" | "device">; importable?: boolean;
+  setupEvent?: "none" | "device"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
+  firmwareRequests?: string[] } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
   let rescans = 0;
   let currentTransaction = transaction("previewed", addons ? 42 : 1);
   let currentSession = session("safety_required", false, addons);
+
+  await mockFirmwareIndex(page, options.firmwareIndex, options.firmwareRequests);
 
   await page.routeWebSocket("**/api/websocket", (socket) => {
     socket.send(JSON.stringify({ type: "auth_required", ha_version: "2026.8.0" }));
@@ -229,7 +249,10 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       else return fail("unknown_command", operation);
       ok(result);
       if (operation.startsWith("subscribe_")) {
-        setTimeout(() => socket.send(JSON.stringify({ id, type: "event", event: result })), 0);
+        const event = operation === "subscribe_setup" && options.setupEvent === "device"
+          ? { state: "device_discovered", devices: [device(addons, options.importable)] }
+          : result;
+        setTimeout(() => socket.send(JSON.stringify({ id, type: "event", event })), 0);
       }
     });
   });
@@ -288,14 +311,11 @@ test("native mocked HA websocket covers no-device, installer intent, wiring, res
   const frames = await mockHomeAssistant(page, { addons: 6, rescan: ["none", "device"], importable: true });
   await page.goto("/test/harness.html");
   await expect(page.getByText("No compatible device found")).toBeVisible();
-  const popupPromise = page.waitForEvent("popup");
-  await page.getByRole("button", { name: "Open CircuitSetup Web Installer" }).click();
-  const popup = await popupPromise;
-  await expect(popup).toHaveURL("https://circuitsetup.github.io/ESPWebInstaller/");
-  await popup.close();
 
   await page.locator('[data-action="rescan"]').click();
   await expect(page.getByText("No compatible device found")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
+  await expect(page.getByText(/(?:USB flash|installation|provisioning) complete/i)).toHaveCount(0);
   await page.locator('[name="addon-count"][value="6"]').locator("..").click();
   await page.locator('[name="connection-type"][value="ethernet_waveshare"]').locator("..").click();
   await expect(page.getByText("(15, 26)")).toBeVisible();
@@ -309,6 +329,81 @@ test("native mocked HA websocket covers no-device, installer intent, wiring, res
   expect(intents).toMatchObject([{ addon_count: 0, connection_type: "wifi" },
     { addon_count: 6, connection_type: "ethernet_waveshare" }]);
   expect(operations(frames)).toEqual(expect.arrayContaining(["subscribe_setup", "rescan", "adopt_device"]));
+});
+
+test("a setup subscription hands a newly discovered meter to Discover once", async ({ page }) => {
+  await mockHomeAssistant(page, { setupEvent: "device" });
+  await page.goto("/test/harness.html");
+
+  await expect(page.getByRole("heading", { name: "Discover", exact: true })).toBeVisible();
+  await expect(page.getByText("CircuitSetup energy meter discovered.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Discover", exact: true })).toHaveCount(1);
+});
+
+test("inline provisioning resolves selected manifests without popup, navigation, credentials, or URL payloads", async ({ page }) => {
+  const firmwareRequests: string[] = [];
+  const frames = await mockHomeAssistant(page, { firmwareRequests });
+  const popups: Page[] = [];
+  const navigations: string[] = [];
+  page.on("popup", (popup) => popups.push(popup));
+  page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) navigations.push(frame.url()); });
+  await page.goto("/test/harness.html");
+
+  const manifest = () => page.locator("esp-web-install-button").evaluate((element) =>
+    (element as HTMLElement & { manifest: string }).manifest,
+  );
+  const manifestUrl = (productId: string, version: string) =>
+    `https://circuitsetup.github.io/ESPWebInstaller/manifests/manifest_${productId}-${version}.json`;
+  await expect.poll(manifest).toBe(manifestUrl("6chan_energy_meter_main_board", "2026.8.0"));
+  expect(firmwareRequests).toEqual([FIRMWARE_INDEX_URL]);
+  await expect(page.getByText("6chan_energy_meter_main_board · ESPHome 2026.8.0", { exact: true })).toBeVisible();
+  expect(await page.locator(".setup-step").evaluate((step) => {
+    const order = [
+      step.querySelector('[name="addon-count"]')?.closest("fieldset"),
+      step.querySelector('[name="connection-type"]')?.closest("fieldset"),
+      step.querySelector('[aria-labelledby="jumper-heading"]'),
+      step.querySelector('[data-action="firmware-version"]'),
+      step.querySelector("esp-web-install-button"),
+      [...step.querySelectorAll(".info-band")].find((element) => element.textContent?.includes("Add to Home Assistant")),
+      step.querySelector('[data-action="rescan"]'),
+    ];
+    return order.slice(1).every((element, index) => Boolean(order[index] && element &&
+      order[index].compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING));
+  })).toBe(true);
+  await expect(page.locator('esp-web-install-button [slot="unsupported"]')).toContainText("supported Chromium browser");
+  await expect(page.locator('esp-web-install-button [slot="not-allowed"]')).toContainText("HTTPS or localhost");
+
+  await page.locator('[name="addon-count"][value="1"]').locator("..").click();
+  await expect.poll(manifest).toBe(manifestUrl("6chan_energy_meter_1-addon", "2026.8.0"));
+  await page.locator('[name="addon-count"][value="6"]').locator("..").click();
+  await page.locator('[name="connection-type"][value="ethernet_lilygo"]').locator("..").click();
+  await expect.poll(manifest).toBe(manifestUrl("6chan_energy_meter_6-addons_ethernet", "2026.8.0"));
+  await page.locator('[name="connection-type"][value="ethernet_waveshare"]').locator("..").click();
+  await expect.poll(manifest).toBe(manifestUrl("6chan_energy_meter_6-addons_ethernet_waveshare", "2026.8.0"));
+  await page.locator('[data-action="firmware-version"]').selectOption("2026.7.0");
+  await expect.poll(manifest).toBe(manifestUrl("6chan_energy_meter_6-addons_ethernet_waveshare", "2026.7.0"));
+
+  const credentialInputs = await page.locator("input").evaluateAll((inputs) => inputs.filter((input) =>
+    ["name", "aria-label", "autocomplete", "data-testid", "placeholder"].some((attribute) =>
+      /ssid|password|passphrase|credentials/i.test(input.getAttribute(attribute) ?? "")),
+  ).map((input) => input.outerHTML));
+  const frameKeys = (value: unknown): string[] => Array.isArray(value) ? value.flatMap(frameKeys)
+    : value && typeof value === "object" ? Object.entries(value).flatMap(([key, entry]) => [key, ...frameKeys(entry)]) : [];
+  const payloadKeys = frames.flatMap(frameKeys);
+  expect(credentialInputs).toEqual([]);
+  expect(payloadKeys.filter((key) => /ssid|password|passphrase|credentials/i.test(key))).toEqual([]);
+  expect(JSON.stringify(frames)).not.toMatch(/manifest|binary(?:_url)?|firmware_url/i);
+  expect(popups).toEqual([]);
+  expect(navigations).toEqual([page.url()]);
+});
+
+test("a firmware catalog failure leaves Retry and Rescan available", async ({ page }) => {
+  await mockHomeAssistant(page, { firmwareIndex: null });
+  await page.goto("/test/harness.html");
+
+  await expect(page.getByText("Firmware catalog could not be loaded.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Rescan for device", exact: true })).toBeVisible();
 });
 
 test("six-channel inventory exposes ambiguous gain while label-only stays out of preview and collisions refuse", async ({ page }) => {

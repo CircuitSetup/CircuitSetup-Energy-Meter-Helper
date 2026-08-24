@@ -7,11 +7,23 @@ import sys
 from pathlib import Path
 
 PREFIX = "6chan_energy_meter_"
-VARIANTS = {"main_board", "main_ethernet", "main_ethernet_waveshare"} | {
-    f"{count}-addon{'s' if count > 1 else ''}{suffix}"
-    for count in range(1, 7)
-    for suffix in ("", "_ethernet", "_ethernet_waveshare")
-} | {"3-addons_2-voltages"}
+PROJECT_PREFIX = "circuitsetup.6c-energy-meter"
+DASHBOARD_IMPORT_PREFIX = (
+    "github://CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter/Software/ESPHome/"
+)
+COMMON_PACKAGE_PATTERN = re.compile(
+    r"^\s*-\s+Software/ESPHome/(6chan_common(?:_ethernet(?:_waveshare)?)?\.yaml)$",
+    re.MULTILINE,
+)
+VARIANTS = (
+    {"main_board", "main_ethernet", "main_ethernet_waveshare"}
+    | {
+        f"{count}-addon{'s' if count > 1 else ''}{suffix}"
+        for count in range(1, 7)
+        for suffix in ("", "_ethernet", "_ethernet_waveshare")
+    }
+    | {"3-addons_2-voltages"}
+)
 EXPECTED_CONFIGS = {f"{PREFIX}{variant}.yaml" for variant in VARIANTS}
 REPRESENTATIVES = (
     "main_board",
@@ -36,7 +48,7 @@ def _project_for(filename: str) -> str:
         variant = ""
     elif variant.startswith("main-"):
         variant = variant.removeprefix("main-")
-    return "circuitsetup.6c-energy-meter" + (f"-{variant}" if variant else "")
+    return PROJECT_PREFIX + (f"-{variant}" if variant else "")
 
 
 def _addon_count(project: str) -> int:
@@ -53,6 +65,55 @@ def _indices(source: str, prefix: str, suffix: str = "") -> list[int]:
             re.MULTILINE,
         )
     ]
+
+
+def _has_component(source: str, name: str) -> bool:
+    return (
+        re.search(rf"^{re.escape(name)}:\s*(?:#.*)?$", source, re.MULTILINE) is not None
+    )
+
+
+def _dashboard_import_url(source: str) -> str | None:
+    dashboard = re.search(
+        r"(?m)^(?P<indent>[ \t]*)dashboard_import:\s*(?:#.*)?\r?$",
+        source,
+    )
+    if dashboard is None:
+        return None
+    child_indent = None
+    for line in source[dashboard.end() :].splitlines():
+        indent = line[: len(line) - len(line.lstrip(" \t"))]
+        content = line[len(indent) :]
+        if not content:
+            continue
+        if len(indent) <= len(dashboard["indent"]):
+            return None
+        if content.startswith("#"):
+            continue
+        if child_indent is None:
+            child_indent = indent
+        if indent != child_indent:
+            continue
+        import_url = re.fullmatch(
+            r"""package_import_url:[ \t]*(?P<value>"[^"\r\n]*"|'[^'\r\n]*'|[^#\r\n]*?)[ \t]*(?:#.*)?""",
+            content,
+        )
+        if import_url is not None:
+            value = import_url["value"].strip()
+            return value[1:-1] if value[:1] in {"'", '"'} else value
+    return None
+
+
+def _resolves_logger(source: str, firmware_dir: Path) -> bool:
+    if _has_component(source, "logger"):
+        return True
+    for package in COMMON_PACKAGE_PATTERN.findall(source):
+        path = firmware_dir / package
+        if path.is_file() and _has_component(
+            path.read_text(encoding="utf-8"), "logger"
+        ):
+            return True
+    return False
 
 
 def _package_names(source: str, directory: str, suffix: str = "") -> list[str]:
@@ -172,7 +233,9 @@ def _verify_compile_matrix(firmware_root: Path) -> None:
         or configurations != sorted(configurations)
         or any(not (firmware_root / item).is_file() for item in configurations)
     ):
-        raise SystemExit("firmware compile matrix differs from required representatives")
+        raise SystemExit(
+            "firmware compile matrix differs from required representatives"
+        )
 
 
 def verify(helper_root: Path, firmware_root: Path) -> None:
@@ -198,7 +261,11 @@ def verify(helper_root: Path, firmware_root: Path) -> None:
     for filename, path in configs.items():
         source = path.read_text(encoding="utf-8")
         project = re.search(r"^    name: (\S+)$", source, re.MULTILINE)
-        if not project or project.group(1) != _project_for(filename):
+        if not project or not project.group(1).startswith(PROJECT_PREFIX):
+            raise SystemExit(
+                f"{filename}: project name does not use helper discovery prefix"
+            )
+        if project.group(1) != _project_for(filename):
             raise SystemExit(f"{filename}: project name does not match filename")
         if not re.search(r'^    version: ["\']1\.8["\']$', source, re.MULTILINE):
             raise SystemExit(f"{filename}: project version is not 1.8")
@@ -214,21 +281,42 @@ def verify(helper_root: Path, firmware_root: Path) -> None:
         ]
         if sensors != expected_sensors or calibrations != expected_calibrations:
             raise SystemExit(f"{filename}: package board indices are not contiguous")
-        if any(not (firmware_dir / "meter_sensors" / name).is_file() for name in sensors):
+        if any(
+            not (firmware_dir / "meter_sensors" / name).is_file() for name in sensors
+        ):
             raise SystemExit(f"{filename}: referenced sensor package is missing")
         if any(
-            not (firmware_dir / "calibration" / name).is_file()
-            for name in calibrations
+            not (firmware_dir / "calibration" / name).is_file() for name in calibrations
         ):
             raise SystemExit(f"{filename}: referenced calibration package is missing")
         channels = list(range(1, 6 * (addon_count + 1) + 1))
-        if _indices(source, "ct", "_name") != channels or _indices(
-            source, "current_cal_ct"
-        ) != channels:
+        if (
+            _indices(source, "ct", "_name") != channels
+            or _indices(source, "current_cal_ct") != channels
+        ):
             raise SystemExit(f"{filename}: CT substitutions are not contiguous")
+        if not _has_component(source, "dashboard_import"):
+            raise SystemExit(f"{filename}: firmware must define dashboard_import")
+        if (
+            _dashboard_import_url(source)
+            != f"{DASHBOARD_IMPORT_PREFIX}{filename}@master"
+        ):
+            raise SystemExit(f"{filename}: dashboard import does not match filename")
+        if not _has_component(source, "api"):
+            raise SystemExit(f"{filename}: firmware must define api")
+        if not _resolves_logger(source, firmware_dir):
+            raise SystemExit(f"{filename}: firmware must define logger")
+        if "_ethernet" not in filename:
+            if not _has_component(source, "wifi"):
+                raise SystemExit(f"{filename}: Wi-Fi firmware must define wifi")
+            if not _has_component(source, "improv_serial"):
+                raise SystemExit(
+                    f"{filename}: Wi-Fi firmware must define improv_serial"
+                )
 
     calibration_files = {
-        path.name for path in (firmware_dir / "calibration").glob("6chan_*_calibration.yaml")
+        path.name
+        for path in (firmware_dir / "calibration").glob("6chan_*_calibration.yaml")
     }
     expected_calibration_files = {"6chan_main_calibration.yaml"} | {
         f"6chan_addon{index}_calibration.yaml" for index in range(1, 7)

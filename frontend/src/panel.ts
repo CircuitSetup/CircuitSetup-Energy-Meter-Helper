@@ -4,6 +4,7 @@ import { HelperApi, type HomeAssistant } from "./api";
 import { buildInstallStep } from "./components/build-install-step";
 import { changesFromDrafts, ctInventoryStep, type CtDraft } from "./components/ct-inventory-step";
 import { currentStep } from "./components/current-step";
+import { espWebInstaller } from "./components/esp-web-installer";
 import { offsetStep } from "./components/offset-step";
 import { restartStep } from "./components/restart-step";
 import { safetyStep } from "./components/safety-step";
@@ -12,11 +13,13 @@ import { summaryStep } from "./components/summary-step";
 import { technicalDetails } from "./components/technical-details";
 import { topologyMismatch, topologyStep } from "./components/topology-step";
 import { voltageStep } from "./components/voltage-step";
+import { chooseFirmwareVersion, fetchFirmwareIndex, resolveFirmwareOptions, type FirmwareIndex, type FirmwareOption } from "./firmware-installer";
 import { panelStyles } from "./styles";
 import type {
   CalibrationResult,
   ConnectionType,
   CtInventory,
+  FirmwareCatalogState,
   MeterTopology,
   OffsetCalibrationResult,
   OffsetReadinessResult,
@@ -30,6 +33,7 @@ import type {
 
 const STEPS: Array<[PanelStep, string]> = [
   ["setup", "Setup Device"],
+  ["discover", "Discover"],
   ["topology", "Topology"],
   ["ct", "CT Settings"],
   ["safety", "Safety"],
@@ -89,6 +93,13 @@ export class CircuitSetupPanel extends LitElement {
   private labelOnly = false;
   private error = "";
   private announcement = "";
+  private firmwareIndex: FirmwareIndex | null = null;
+  private firmwareCatalogState: FirmwareCatalogState = "idle";
+  private firmwareCatalogError = "";
+  private selectedEspHomeVersion: string | null = null;
+  private resolvedFirmwareOptions: FirmwareOption[] = [];
+  private firmwareFetchController: AbortController | null = null;
+  private setupDeviceIds = new Set<string>();
   private unsubs: Array<() => void> = [];
   private connectionGeneration = 0;
   private operationGeneration = 0;
@@ -107,6 +118,7 @@ export class CircuitSetupPanel extends LitElement {
   public override connectedCallback(): void {
     super.connectedCallback();
     const generation = ++this.connectionGeneration;
+    this.loadFirmwareIndex();
     void this.ensureApi(generation);
   }
 
@@ -121,6 +133,13 @@ export class CircuitSetupPanel extends LitElement {
     this.transactionUnsub = null;
     this.sessionUnsub = null;
     this.api = null;
+    this.firmwareFetchController?.abort();
+    this.firmwareFetchController = null;
+    this.firmwareIndex = null;
+    this.firmwareCatalogState = "idle";
+    this.firmwareCatalogError = "";
+    this.resolvedFirmwareOptions = [];
+    this.setupDeviceIds = new Set();
     super.disconnectedCallback();
   }
 
@@ -141,16 +160,26 @@ export class CircuitSetupPanel extends LitElement {
       const setup = await api.setupStatus();
       if (!this.owns(generation, api)) return;
       this.setup = setup;
+      this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
       const intent = this.setup.installer_intent;
       if (intent) {
         this.addonCount = intent.addon_count;
         this.connection = intent.connection_type;
+        this.refreshFirmwareOptions();
       }
-      if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.setup.devices[0]?.entry_id ?? null);
+      if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.firstDeviceId(this.setup.devices));
       await this.ownSubscription(api.subscribeSetup((snapshot) => {
         if (!this.owns(generation, api)) return;
+        const discovered = snapshot.devices
+          .filter((device) => !this.setupDeviceIds.has(device.entry_id))
+          .sort((first, second) => first.entry_id.localeCompare(second.entry_id));
         this.setup = snapshot;
-        if (!this.selectedDeviceId && snapshot.devices.length) this.selectDevice(snapshot.devices[0]?.entry_id ?? null);
+        this.setupDeviceIds = new Set(snapshot.devices.map((device) => device.entry_id));
+        if (this.step === "setup" && discovered.length) {
+          this.selectDevice(discovered[0]!.entry_id);
+          this.navigate("discover");
+          this.announcement = "CircuitSetup energy meter discovered.";
+        }
         this.requestUpdate();
       }), generation, api);
       if (this.transaction) await this.subscribeTransaction(generation);
@@ -163,6 +192,65 @@ export class CircuitSetupPanel extends LitElement {
 
   private owns(generation: number, api: HelperApi): boolean {
     return this.isConnected && generation === this.connectionGeneration && api === this.api;
+  }
+
+  private ownsFirmwareCatalog(generation: number, controller: AbortController): boolean {
+    return this.isConnected && generation === this.connectionGeneration && controller === this.firmwareFetchController;
+  }
+
+  private loadFirmwareIndex(): void {
+    if (this.firmwareCatalogState === "loading" || this.firmwareIndex) return;
+    const generation = this.connectionGeneration;
+    const controller = new AbortController();
+    this.firmwareFetchController?.abort();
+    this.firmwareFetchController = controller;
+    this.firmwareCatalogState = "loading";
+    this.firmwareCatalogError = "";
+    this.requestUpdate();
+    void fetchFirmwareIndex(globalThis.fetch, controller.signal).then((index) => {
+      if (!this.ownsFirmwareCatalog(generation, controller)) return;
+      this.firmwareIndex = index;
+      this.firmwareFetchController = null;
+      this.firmwareCatalogState = "ready";
+      this.refreshFirmwareOptions();
+    }).catch(() => {
+      if (!this.ownsFirmwareCatalog(generation, controller)) return;
+      this.firmwareFetchController = null;
+      this.firmwareCatalogState = "error";
+      this.firmwareCatalogError = "Firmware catalog could not be loaded.";
+      this.requestUpdate();
+    });
+  }
+
+  private refreshFirmwareOptions(): void {
+    const options = this.firmwareIndex
+      ? resolveFirmwareOptions(this.firmwareIndex, this.addonCount, this.connection)
+      : [];
+    const previous = this.selectedEspHomeVersion;
+    const selected = chooseFirmwareVersion(options, previous);
+    this.resolvedFirmwareOptions = options;
+    this.selectedEspHomeVersion = selected;
+    if (previous && selected !== previous) this.announcement = selected
+      ? `Firmware version changed to ${selected}.`
+      : "No firmware version is available for this hardware.";
+    this.requestUpdate();
+  }
+
+  private selectFirmwareVersion(version: string): void {
+    if (!this.resolvedFirmwareOptions.some((option) => option.version === version)) return;
+    this.selectedEspHomeVersion = version;
+    this.requestUpdate();
+  }
+
+  private retryFirmwareIndex(): void {
+    this.firmwareCatalogError = "";
+    this.firmwareCatalogState = "idle";
+    this.requestUpdate();
+    this.loadFirmwareIndex();
+  }
+
+  private selectedFirmware(): FirmwareOption | null {
+    return this.resolvedFirmwareOptions.find((option) => option.version === this.selectedEspHomeVersion) ?? null;
   }
 
   private ownsOperation(generation: number, api: HelperApi, deviceId: string | null): boolean {
@@ -229,6 +317,10 @@ export class CircuitSetupPanel extends LitElement {
     this.drafts = new Map();
     this.board = 0;
     this.resetCalibrationRun();
+  }
+
+  private firstDeviceId(devices: SetupSnapshot["devices"]): string | null {
+    return devices.map((device) => device.entry_id).sort((first, second) => first.localeCompare(second))[0] ?? null;
   }
 
   public showTopology(topology: MeterTopology): void {
@@ -346,13 +438,22 @@ export class CircuitSetupPanel extends LitElement {
     const deviceId = this.selectedDeviceId;
     const generation = ++this.operationGeneration;
     await this.run(async () => {
-      await api.setInstallerIntent(this.addonCount, this.connection);
+      await api.setInstallerIntent(this.addonCount, this.connection, this.selectedFirmware());
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      const unchangedDiscovery = this.step === "discover" && this.selectedDeviceId !== null
+        && setup.devices.length === this.setupDeviceIds.size
+        && setup.devices.some((device) => device.entry_id === this.selectedDeviceId)
+        && setup.devices.every((device) => this.setupDeviceIds.has(device.entry_id));
       this.setup = setup;
-      if (setup.devices.length) this.announcement = "Compatible meter discovered. Select it above to configure it.";
-      else {
+      this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
+      if (setup.devices.length && !unchangedDiscovery) {
+        this.selectDevice(this.firstDeviceId(setup.devices));
+        this.navigate("discover");
+        this.announcement = "CircuitSetup energy meter discovered.";
+      }
+      else if (!setup.devices.length) {
         this.announcement = "No compatible meter found. Check the network and rescan.";
       }
     }, "Rescan failed.", () => this.ownsOperation(generation, api, deviceId));
@@ -1052,9 +1153,12 @@ export class CircuitSetupPanel extends LitElement {
 
   private stepBody(): TemplateResult {
     if (this.step === "setup") return setupDeviceStep(this.setup, this.addonCount, this.connection,
-      (value) => { this.addonCount = value; this.requestUpdate(); },
-      (value) => { this.connection = value; this.requestUpdate(); },
-      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction);
+      (value) => { this.addonCount = value; this.refreshFirmwareOptions(); },
+      (value) => { this.connection = value; this.refreshFirmwareOptions(); },
+      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, false, this.firmwareCatalog());
+    if (this.step === "discover") return setupDeviceStep(this.setup, this.addonCount, this.connection,
+      () => undefined, () => undefined,
+      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, true);
     if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(),
       () => this.back(), () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
         ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session");
@@ -1098,6 +1202,26 @@ export class CircuitSetupPanel extends LitElement {
     return html`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct"
       ? "CT settings are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;
+  }
+
+  private firmwareCatalog(): TemplateResult {
+    const loading = this.firmwareCatalogState === "loading";
+    return html`<section class="step-content" aria-labelledby="firmware-heading">
+      <h2 id="firmware-heading">Install firmware</h2>
+      <label>ESPHome firmware version
+        <select data-action="firmware-version" ?disabled=${loading || this.firmwareCatalogState !== "ready" || !this.resolvedFirmwareOptions.length}
+          @change=${(event: Event) => this.selectFirmwareVersion((event.target as HTMLSelectElement).value)}>
+          ${this.resolvedFirmwareOptions.map((option, index) => html`<option value=${option.version} ?selected=${option.version === this.selectedEspHomeVersion}>${option.version}${index === 0 ? " (newest)" : ""}</option>`)}
+        </select>
+      </label>
+      ${this.firmwareCatalogState === "error" ? html`<div class="error-panel" role="status">
+        <strong>${this.firmwareCatalogError}</strong>
+        <button class="secondary" data-action="firmware-retry" @click=${() => this.retryFirmwareIndex()}>Retry</button>
+      </div>` : nothing}
+      ${loading ? html`<p role="status">Loading firmware versions…</p>` : nothing}
+      ${this.firmwareCatalogState === "ready" && !this.resolvedFirmwareOptions.length ? html`<p role="status">No firmware version is available for this hardware.</p>` : nothing}
+      ${this.firmwareCatalogState === "ready" ? espWebInstaller(this.selectedFirmware()) : nothing}
+    </section>`;
   }
 
   public override render(): TemplateResult {

@@ -100,6 +100,61 @@ def test_installer_intent_rejects_unsupported_connection() -> None:
         InstallerIntent(addon_count=0, connection_type="serial")
 
 
+def test_installer_intent_accepts_an_optional_paired_firmware_selection() -> None:
+    """A chosen catalog firmware is retained as safe identifiers, not a URL."""
+    intent = InstallerIntent(
+        addon_count=1,
+        connection_type="wifi",
+        firmware_product_id="6chan_energy_meter_1-addon",
+        esphome_version="2026.8.0-dev.1",
+    )
+
+    assert intent.firmware_product_id == "6chan_energy_meter_1-addon"
+    assert intent.esphome_version == "2026.8.0-dev.1"
+
+
+@pytest.mark.parametrize(
+    ("firmware_product_id", "esphome_version"),
+    [("6chan_energy_meter_main_board", None), (None, "2026.8.0")],
+)
+def test_installer_intent_rejects_an_unpaired_firmware_selection(
+    firmware_product_id: str | None, esphome_version: str | None
+) -> None:
+    """Both firmware fields must be present together or omitted together."""
+    with pytest.raises(ValueError, match="paired"):
+        InstallerIntent(
+            addon_count=0,
+            connection_type="wifi",
+            firmware_product_id=firmware_product_id,
+            esphome_version=esphome_version,
+        )
+
+
+@pytest.mark.parametrize(
+    ("firmware_product_id", "esphome_version"),
+    [
+        ("../firmware", "2026.8.0"),
+        ("https://firmware", "2026.8.0"),
+        ("firmware\x00id", "2026.8.0"),
+        ("a" * 129, "2026.8.0"),
+        ("firmware", "https://2026.8.0"),
+        ("firmware", "2026.8.0\x00"),
+        ("firmware", "2026.8.0-" + "a" * 152),
+    ],
+)
+def test_installer_intent_rejects_unsafe_firmware_selection(
+    firmware_product_id: str, esphome_version: str
+) -> None:
+    """Traversal, URL-like, control, and oversized catalog values never persist."""
+    with pytest.raises(ValueError):
+        InstallerIntent(
+            addon_count=0,
+            connection_type="wifi",
+            firmware_product_id=firmware_product_id,
+            esphome_version=esphome_version,
+        )
+
+
 def test_rescan_requires_circuitsetup_runtime_project_prefix() -> None:
     """ATM90E32-like names alone never classify a device as compatible."""
 

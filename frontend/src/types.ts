@@ -4,6 +4,8 @@ export type ConnectionType =
   | "ethernet_waveshare"
   | "unknown";
 
+export type FirmwareCatalogState = "idle" | "loading" | "ready" | "error";
+
 export type SetupState =
   | "no_device"
   | "installer_guide"
@@ -35,6 +37,8 @@ export interface DiscoveredDevice {
 export interface InstallerIntent {
   addon_count: number;
   connection_type: Exclude<ConnectionType, "unknown">;
+  firmware_product_id?: string;
+  esphome_version?: string;
 }
 
 export interface SetupSnapshot {
@@ -316,6 +320,7 @@ export type RestartVerificationResult = RestartVerificationBase;
 
 export type PanelStep =
   | "setup"
+  | "discover"
   | "topology"
   | "ct"
   | "build"

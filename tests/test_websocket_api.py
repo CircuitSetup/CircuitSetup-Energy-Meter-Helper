@@ -72,6 +72,7 @@ from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
     ALL_COMMANDS,
     MUTATION_COMMANDS,
     EntryWebsocketController,
+    _schema,
     sanitize_payload,
 )
 from custom_components.circuitsetup_energy_meter_helper.workflow import (
@@ -604,6 +605,60 @@ async def _invoke(
     if hass.tasks:
         await asyncio.gather(*hass.tasks)
         hass.tasks.clear()
+
+
+def test_installer_intent_schema_requires_a_valid_paired_firmware_selection() -> None:
+    """Malformed or one-sided firmware fields fail before the handler can mutate state."""
+    schema = vol.Schema(_schema(f"{DOMAIN}/set_installer_intent"))
+    valid = {
+        "type": f"{DOMAIN}/set_installer_intent",
+        "entry_id": "helper",
+        "addon_count": 1,
+        "connection_type": "wifi",
+        "firmware_product_id": "6chan_energy_meter_1-addon",
+        "esphome_version": "2026.8.0",
+    }
+
+    assert schema(valid) == valid
+    for partial in (
+        {key: value for key, value in valid.items() if key != "firmware_product_id"},
+        {key: value for key, value in valid.items() if key != "esphome_version"},
+        {**valid, "firmware_product_id": "../firmware"},
+        {**valid, "firmware_product_id": "firmware\x00id"},
+        {**valid, "firmware_product_id": "a" * 129},
+        {**valid, "esphome_version": "https://2026.8.0"},
+        {**valid, "esphome_version": "2026.8.0-" + "a" * 152},
+    ):
+        with pytest.raises(vol.Invalid):
+            schema(partial)
+
+
+def test_setup_status_exposes_only_safe_installer_firmware_identifiers() -> None:
+    """Public setup status retains selection IDs without a manifest or binary URL."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        entry = FakeEntry(data={})
+        assert await async_setup_entry(hass, entry)
+        connection = FakeConnection()
+        intent = _message(f"{DOMAIN}/set_installer_intent")
+        intent |= {
+            "firmware_product_id": "6chan_energy_meter_1-addon",
+            "esphome_version": "2026.8.0",
+        }
+        await _invoke(hass, connection, intent)
+        await _invoke(hass, connection, _message(f"{DOMAIN}/setup_status", 2))
+
+        snapshot = connection.results[-1][1]
+        assert snapshot["installer_intent"] == {
+            "addon_count": 1,
+            "connection_type": "wifi",
+            "firmware_product_id": "6chan_energy_meter_1-addon",
+            "esphome_version": "2026.8.0",
+        }
+        assert "url" not in repr(snapshot).casefold()
+
+    asyncio.run(run())
 
 
 def test_setup_registers_exact_commands_and_live_owners_then_unloads() -> None:

@@ -1,9 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { render } from "lit";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "../src/index";
+import { espWebInstaller } from "../src/components/esp-web-installer";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
 import { changesFromDrafts, type CtDraft } from "../src/components/ct-inventory-step";
+import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
 import type { CtInventory } from "../src/types";
 
@@ -21,6 +24,14 @@ const device = {
   configuration: null,
 };
 
+const firmwareIndex = [
+  { productId: "6chan_energy_meter_main_board", name: "Main board", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
+  { productId: "6chan_energy_meter_1-addon", name: "One add-on", versions: [{ version: "2026.8.0" }, { version: "2026.6.0" }] },
+  { productId: "6chan_energy_meter_1-addon_ethernet", name: "One add-on Ethernet", versions: [{ version: "2026.6.0" }] },
+  { productId: "6chan_energy_meter_1-addon_ethernet_waveshare", name: "One add-on Waveshare", versions: [{ version: "2026.9.0" }] },
+];
+
+const firmwareResponse = (index = firmwareIndex) => new Response(JSON.stringify(index), { status: 200 });
 const offsetReadinessEntities = (voltage = 0) => [0, 1].flatMap((groupOffset) => [
   ...["a", "b", "c"].map((phase) => ({ role: `main_${groupOffset + 1}.voltage_${phase}`, quantity: "voltage", ready: true, reasons: [],
     window: { values: [voltage, voltage, voltage], received_at: [1, 2, 3], connection_generation: 4,
@@ -66,35 +77,364 @@ const contrastRatio = (first: string, second: string): number => {
   return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
 };
 
-afterEach(() => document.body.replaceChildren());
+beforeEach(() => vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(firmwareResponse()))));
+
+afterEach(() => {
+  document.body.replaceChildren();
+  vi.unstubAllGlobals();
+});
+
+describe("ESP Web Tools installer", () => {
+  const option: FirmwareOption = {
+    productId: "6chan_energy_meter_main_board",
+    version: "2026.8.0",
+  };
+  const manifest = "https://circuitsetup.github.io/ESPWebInstaller/manifests/manifest_6chan_energy_meter_main_board-2026.8.0.json";
+
+  it("loads ESP Web Tools only when the installer is rendered", async () => {
+    expect(customElements.get("esp-web-install-button")).toBeUndefined();
+
+    const root = document.createElement("div");
+    render(espWebInstaller(option), root);
+
+    expect(root.querySelector('[role="status"]')?.textContent).toContain("Loading installer");
+    expect(root.querySelector("esp-web-install-button")).toBeNull();
+    await vi.waitFor(() => expect(root.querySelector("esp-web-install-button")).not.toBeNull());
+  });
+
+  it("renders one install button for a resolved firmware option", async () => {
+    const root = document.createElement("div");
+    render(espWebInstaller(option), root);
+
+    await vi.waitFor(() => expect(root.querySelector("esp-web-install-button")).not.toBeNull());
+    const installer = root.querySelector<HTMLElement & { manifest: string }>("esp-web-install-button");
+    expect(root.querySelectorAll("esp-web-install-button")).toHaveLength(1);
+    expect(installer?.manifest).toBe(manifest);
+    expect(root.textContent).toContain("6chan_energy_meter_main_board · ESPHome 2026.8.0");
+    expect(root.textContent).not.toContain("https://");
+    expect(installer?.querySelector<HTMLButtonElement>('[slot="activate"]')?.getAttribute("aria-label")).toBe("Install firmware");
+    expect(installer?.querySelector('[slot="unsupported"]')?.textContent).toContain("supported Chromium browser");
+    expect(installer?.querySelector('[slot="not-allowed"]')?.textContent).toContain("HTTPS or localhost");
+  });
+
+  it("renders no active install button without a resolved option", () => {
+    const root = document.createElement("div");
+    render(espWebInstaller(null), root);
+
+    expect(root.querySelector("esp-web-install-button")).toBeNull();
+  });
+
+  it("renders no active install button for an invalid resolved option", () => {
+    const root = document.createElement("div");
+    render(espWebInstaller({ productId: "not/a-product", version: "2026.8.0" }), root);
+
+    expect(root.querySelector("esp-web-install-button")).toBeNull();
+  });
+
+  it("updates the existing install button manifest when the selected version changes", async () => {
+    const root = document.createElement("div");
+    render(espWebInstaller(option), root);
+    await vi.waitFor(() => expect(root.querySelector("esp-web-install-button")).not.toBeNull());
+    const installer = root.querySelector<HTMLElement & { manifest: string }>("esp-web-install-button");
+
+    render(espWebInstaller({ ...option, version: "2026.8.1" }), root);
+
+    expect(root.querySelector("esp-web-install-button")).toBe(installer);
+    expect(installer?.manifest).toBe(
+      "https://circuitsetup.github.io/ESPWebInstaller/manifests/manifest_6chan_energy_meter_main_board-2026.8.1.json",
+    );
+  });
+
+  it("does not provide an external navigation control", async () => {
+    const root = document.createElement("div");
+    render(espWebInstaller(option), root);
+
+    await vi.waitFor(() => expect(root.querySelector("esp-web-install-button")).not.toBeNull());
+    expect(root.querySelector("a")).toBeNull();
+  });
+});
 
 describe("CircuitSetup panel", () => {
-  it("shows existing meters with semantic ten-step navigation and setup controls", async () => {
+  it("loads the firmware catalog once when the panel connects", async () => {
+    const fetcher = vi.fn(() => Promise.resolve(firmwareResponse()));
+    vi.stubGlobal("fetch", fetcher);
+
+    await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts an in-flight firmware catalog request when disconnected", async () => {
+    let signal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      signal = init?.signal ?? undefined;
+      signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    })));
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+
+    panel.remove();
+    await tick();
+
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("disables firmware selection while the catalog is loading", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.disabled).toBe(true);
+    expect(panel.shadowRoot?.querySelector("esp-web-install-button")).toBeNull();
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.disabled).toBe(false);
+  });
+
+  it("keeps the firmware selector labelled and disabled when no firmware is available", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(firmwareResponse([]))));
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+    await panel.updateComplete;
+
+    const selector = panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]");
+    expect(selector?.labels?.[0]?.textContent).toContain("ESPHome firmware version");
+    expect(selector?.disabled).toBe(true);
+    expect(text(panel)).toContain("No firmware version is available for this hardware.");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.disabled).toBe(false);
+  });
+
+  it("shows a catalog retry without disabling discovery rescan", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("offline"))));
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=firmware-retry]")?.disabled).toBe(false);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.disabled).toBe(false);
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.disabled).toBe(true);
+  });
+
+  it("retries a failed catalog request and renders its versions", async () => {
+    const fetcher = vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(firmwareResponse());
+    vi.stubGlobal("fetch", fetcher);
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=firmware-retry]")?.click();
+    await tick();
+    await panel.updateComplete;
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.8.0");
+    expect(panel.shadowRoot?.querySelector("[data-action=firmware-retry]")).toBeNull();
+  });
+
+  it("selects the newest firmware version initially", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+
+    const selector = panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]");
+    expect(selector?.value).toBe("2026.8.0");
+    expect(selector?.labels?.[0]?.textContent).toContain("ESPHome firmware version");
+    expect(selector?.options[0]?.textContent).toBe("2026.8.0 (newest)");
+  });
+
+  it("recomputes firmware versions when add-on hardware changes", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="1"]')?.click();
+    await panel.updateComplete;
+
+    expect([...panel.shadowRoot?.querySelectorAll<HTMLOptionElement>("[data-action=firmware-version] option") ?? []]
+      .map((option) => option.value)).toEqual(["2026.8.0", "2026.6.0"]);
+  });
+
+  it("keeps a selected firmware version when the new hardware still supports it", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="1"]')?.click();
+    await panel.updateComplete;
+    const version = panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]");
+    if (version) { version.value = "2026.6.0"; version.dispatchEvent(new Event("change")); }
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="connection-type"][value="ethernet_lilygo"]')?.click();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.6.0");
+  });
+
+  it("falls back to the newest available version and announces an unavailable selection", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    await tick();
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="1"]')?.click();
+    await panel.updateComplete;
+    const version = panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]");
+    if (version) { version.value = "2026.6.0"; version.dispatchEvent(new Event("change")); }
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="connection-type"][value="ethernet_waveshare"]')?.click();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.9.0");
+    expect(panel.shadowRoot?.querySelector(".sr-status")?.textContent).toContain("2026.9.0");
+  });
+
+  it("ignores a stale catalog completion from an earlier panel connection", async () => {
+    let resolveFirst: ((response: Response) => void) | undefined;
+    let resolveSecond: ((response: Response) => void) | undefined;
+    const fetcher = vi.fn(() => new Promise<Response>((resolve) => {
+      if (fetcher.mock.calls.length === 1) resolveFirst = resolve;
+      else resolveSecond = resolve;
+    }));
+    vi.stubGlobal("fetch", fetcher);
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    panel.remove();
+    document.body.append(panel);
+    await tick();
+    resolveSecond?.(firmwareResponse([{ productId: "6chan_energy_meter_main_board", name: "Current", versions: [{ version: "2026.9.0" }] }]));
+    await tick();
+    resolveFirst?.(firmwareResponse([{ productId: "6chan_energy_meter_main_board", name: "Stale", versions: [{ version: "2026.1.0" }] }]));
+    await tick();
+    await panel.updateComplete;
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.9.0");
+  });
+
+  it("shows existing meters with semantic eleven-step navigation and setup controls", async () => {
     const panel = await mount(
       makeHass({ setup_status: { state: "device_discovered", devices: [device] } }),
     );
 
     expect(text(panel)).toContain("CircuitSetup Energy Meter Helper");
-    expect(panel.shadowRoot?.querySelectorAll("nav ol li")).toHaveLength(10);
+    expect(panel.shadowRoot?.querySelectorAll("nav ol li")).toHaveLength(11);
     expect(Array.from(panel.shadowRoot?.querySelectorAll("nav ol li") ?? []).map((item) => item.textContent?.trim()))
-      .toContain("5Offset");
-    expect(panel.shadowRoot?.querySelector(".mobile-progress")?.textContent).toContain("of 10");
+      .toContain("6Offset");
+    expect(panel.shadowRoot?.querySelector(".mobile-progress")?.textContent).toContain("of 11");
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
     expect(text(panel)).toContain("Configure an existing device");
     expect(text(panel)).toContain("Basement meter");
     expect(text(panel)).toContain("Device Builder: Yes — import available");
     expect(text(panel)).toContain("Set up a new device");
-    expect(text(panel)).not.toContain("Discover");
     expect(panel.shadowRoot?.querySelectorAll('[name="addon-count"]')).toHaveLength(7);
     expect(panel.shadowRoot?.querySelectorAll('[name="connection-type"]')).toHaveLength(3);
-    expect(text(panel)).toContain("Open CircuitSetup Web Installer");
-    expect(text(panel)).toContain("helper continues only after");
+    expect(text(panel)).toContain("Install firmware");
+    expect(text(panel)).toContain("Complete the ESP Web Tools network setup and Add to Home Assistant when offered.");
+    expect(text(panel)).toContain("Rescan for device");
     expect(text(panel)).toContain("USB data cable");
+    expect(panel.shadowRoot?.querySelector("esp-web-install-button")).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector("button.installer")).toBeNull();
+    expect([...panel.shadowRoot?.querySelectorAll("dt") ?? []].some((term) => term.textContent === "IO0")).toBe(false);
+    expect([...panel.shadowRoot?.querySelectorAll("input") ?? []].some((input) =>
+      [input.getAttribute("name"), input.getAttribute("aria-label"), input.getAttribute("autocomplete"), input.getAttribute("data-testid")]
+        .some((value) => /ssid|network password|wifi password|passphrase/i.test(value ?? "")))).toBe(false);
     expect(panel.shadowRoot?.querySelector("details")).toBeNull();
+    const setupOrder = [
+      panel.shadowRoot?.querySelector('[name="addon-count"]')?.closest("fieldset"),
+      panel.shadowRoot?.querySelector('[name="connection-type"]')?.closest("fieldset"),
+      panel.shadowRoot?.querySelector('[aria-labelledby="jumper-heading"]'),
+      panel.shadowRoot?.querySelector('[data-action="firmware-version"]'),
+      panel.shadowRoot?.querySelector("esp-web-install-button"),
+      [...panel.shadowRoot?.querySelectorAll(".info-band") ?? []].find((element) => element.textContent?.includes("Add to Home Assistant")),
+      panel.shadowRoot?.querySelector('[data-action="rescan"]'),
+    ];
+    const completeOrder = setupOrder.filter((element): element is Element => Boolean(element));
+    expect(completeOrder).toHaveLength(setupOrder.length);
+    expect(completeOrder.slice(1).every((element, index) => Boolean(
+      completeOrder[index]!.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ))).toBe(true);
     panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="6"]')?.click();
     await panel.updateComplete;
     expect(text(panel)).toContain("Add-on 6");
     expect(text(panel)).toContain("(15, 26)");
+  });
+
+  it("uses Ethernet-only next steps for Ethernet hardware", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="connection-type"][value="ethernet_lilygo"]')?.click();
+    await panel.updateComplete;
+
+    expect(text(panel)).toContain("connect Ethernet and power, wait for an address");
+    expect(text(panel)).toContain("complete Add to Home Assistant, then return here");
+    expect(text(panel)).not.toContain("ESP Web Tools asks for your Wi-Fi network and password");
+    const handoff = panel.shadowRoot?.querySelectorAll(".info-band")[1]?.textContent ?? "";
+    expect(handoff).not.toMatch(/wi-fi|password|credential/i);
+  });
+
+  it("advances setup discovery only when a subscription adds a compatible device", async () => {
+    let setupCallback: ((message: unknown) => void) | undefined;
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async (callback) => {
+        setupCallback = callback as (message: unknown) => void;
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    const meter2 = { ...device, entry_id: "meter-2", title: "Garage meter" };
+    setupCallback?.({ state: "device_discovered", devices: [meter2, device] });
+    await panel.updateComplete;
+
+    const state = panel as unknown as { selectedDeviceId: string | null };
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+    expect(panel.shadowRoot?.querySelector(".sr-status")?.textContent).toContain("CircuitSetup energy meter discovered.");
+    expect(panel.shadowRoot?.querySelector('[name="addon-count"]')).toBeNull();
+    expect(panel.shadowRoot?.querySelector("esp-web-install-button")).toBeNull();
+  });
+
+  it("does not reset selection or re-enter Discover for a repeated setup snapshot", async () => {
+    let setupCallback: ((message: unknown) => void) | undefined;
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        if (String(message.type).endsWith("/setup_status")) return { state: "no_device", devices: [] } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async (callback) => {
+        setupCallback = callback as (message: unknown) => void;
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    const meter2 = { ...device, entry_id: "meter-2", title: "Garage meter" };
+    const snapshot = { state: "device_discovered", devices: [device, meter2] };
+    setupCallback?.(snapshot);
+    await panel.updateComplete;
+    const state = panel as unknown as { selectedDeviceId: string | null; showState(step: "setup"): void };
+    state.selectedDeviceId = "meter-2";
+    state.showState("setup");
+    setupCallback?.(snapshot);
+    await panel.updateComplete;
+
+    expect(state.selectedDeviceId).toBe("meter-2");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+  });
+
+  it("records discovery updates outside Setup Device as the baseline without auto-advancing on return", async () => {
+    let setupCallback: ((message: unknown) => void) | undefined;
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        if (String(message.type).endsWith("/setup_status")) return { state: "no_device", devices: [] } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async (callback) => {
+        setupCallback = callback as (message: unknown) => void;
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as { showState(step: "topology" | "setup"): void };
+    state.showState("topology");
+    setupCallback?.({ state: "device_discovered", devices: [device] });
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Topology");
+    state.showState("setup");
+    setupCallback?.({ state: "device_discovered", devices: [device] });
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
   });
 
   it("routes accepted safety acknowledgement to the Offset step", async () => {
@@ -380,10 +720,110 @@ describe("CircuitSetup panel", () => {
     await tick();
     await panel.updateComplete;
 
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+    expect((panel as unknown as { selectedDeviceId: string | null }).selectedDeviceId).toBe("meter-1");
     expect(text(panel)).toContain("Basement meter");
     expect(text(panel)).toContain("2026.8.0");
-    expect(text(panel)).not.toContain("USB flash complete");
+    expect(text(panel)).not.toMatch(/(?:USB flash|installation|provisioning) complete/i);
+  });
+
+  it("keeps Rescan on Setup Device and reports no compatible meter without claiming completion", async () => {
+    const panel = await mount(makeHass({
+      setup_status: { state: "no_device", devices: [] },
+      set_installer_intent: { state: "installer_guide", devices: [] },
+      rescan: { state: "no_device", devices: [] },
+    }));
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+    expect(panel.shadowRoot?.querySelector(".sr-status")?.textContent).toContain("No compatible meter found");
+    expect(text(panel)).not.toMatch(/(?:USB flash|installation|provisioning) complete/i);
+  });
+
+  it("keeps the subscription discovery selection when the same Rescan result arrives later", async () => {
+    let setupCallback: ((message: unknown) => void) | undefined;
+    let resolveRescan: ((value: unknown) => void) | undefined;
+    const snapshot = { state: "device_discovered", devices: [device] };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "set_installer_intent") return { state: "installer_guide", devices: [] } as T;
+        if (operation === "rescan") return await new Promise<T>((resolve) => { resolveRescan = resolve as (value: unknown) => void; });
+        return {} as T;
+      },
+      connection: { subscribeMessage: async (callback) => {
+        setupCallback = callback as (message: unknown) => void;
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+    setupCallback?.(snapshot);
+    await panel.updateComplete;
+    const state = panel as unknown as { selectedDeviceId: string | null; topology: unknown; announcement: string };
+    const preservedTopology = { source: "subscription" };
+    state.topology = preservedTopology;
+
+    resolveRescan?.(snapshot);
+    await tick();
+    await panel.updateComplete;
+
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(state.topology).toBe(preservedTopology);
+    expect(state.announcement).toBe("CircuitSetup energy meter discovered.");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+  });
+
+  it("keeps the current Discover selection when Rescan returns the same compatible device", async () => {
+    const snapshot = { state: "device_discovered", devices: [device] };
+    const panel = await mount(makeHass({
+      setup_status: snapshot,
+      set_installer_intent: { state: "installer_guide", devices: [] },
+      rescan: snapshot,
+    }));
+    const state = panel as unknown as { showState(step: "discover"): void; topology: unknown; announcement: string };
+    state.showState("discover");
+    const preservedTopology = { source: "discover" };
+    state.topology = preservedTopology;
+    state.announcement = "CircuitSetup energy meter discovered.";
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+    await panel.updateComplete;
+
+    expect(state.topology).toBe(preservedTopology);
+    expect(state.announcement).toBe("CircuitSetup energy meter discovered.");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+  });
+
+  it("records the firmware selected at Rescan click time", async () => {
+    const messages: Record<string, unknown>[] = [];
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        messages.push(message);
+        const operation = String(message.type).split("/").at(-1);
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "set_installer_intent") return { state: "installer_guide", devices: [] } as T;
+        if (operation === "rescan") return { state: "device_discovered", devices: [device] } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    await tick();
+    const select = panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]");
+    select!.value = "2026.7.0";
+    select!.dispatchEvent(new Event("change"));
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+
+    expect(messages.find((message) => String(message.type).endsWith("/set_installer_intent"))).toMatchObject({
+      firmware_product_id: "6chan_energy_meter_main_board",
+      esphome_version: "2026.7.0",
+    });
   });
 
   it("blocks topology mismatch and announces a focused live error", async () => {
@@ -1096,6 +1536,30 @@ describe("CircuitSetup panel", () => {
     expect(unsubscribed).toBe(1);
     panel.remove();
     expect(unsubscribed).toBe(2);
+  });
+
+  it("ignores a stale setup event after reconnect while the current subscription can advance discovery", async () => {
+    const callbacks: Array<(message: unknown) => void> = [];
+    const hass: HomeAssistant = {
+      callWS: async <T>() => ({ state: "no_device", devices: [] } as T),
+      connection: { subscribeMessage: async (callback) => {
+        callbacks.push(callback as (message: unknown) => void);
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    panel.remove();
+    document.body.append(panel);
+    await tick();
+    await panel.updateComplete;
+
+    callbacks[0]?.({ state: "device_discovered", devices: [device] });
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+
+    callbacks[1]?.({ state: "device_discovered", devices: [device] });
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
   });
 
   it("reattaches setup, transaction, and session subscriptions for retained live handles", async () => {

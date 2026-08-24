@@ -133,6 +133,40 @@ function validResponse(operation: string): unknown {
 }
 
 describe("HelperApi", () => {
+  it("sends paired selected firmware identifiers without a manifest URL", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+
+    await api.setInstallerIntent(1, "wifi", {
+      productId: "6chan_energy_meter_1-addon",
+      version: "2026.8.0",
+    });
+
+    expect(hass.messages).toContainEqual({
+      type: "circuitsetup_energy_meter_helper/set_installer_intent",
+      entry_id: "entry-1",
+      addon_count: 1,
+      connection_type: "wifi",
+      firmware_product_id: "6chan_energy_meter_1-addon",
+      esphome_version: "2026.8.0",
+    });
+    expect(JSON.stringify(hass.messages)).not.toMatch(/manifest|firmware_url|binary_url/i);
+  });
+
+  it("omits both firmware identifiers without a catalog selection", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+
+    await api.setInstallerIntent(1, "wifi", null);
+
+    expect(hass.messages.at(-1)).toEqual({
+      type: "circuitsetup_energy_meter_helper/set_installer_intent",
+      entry_id: "entry-1",
+      addon_count: 1,
+      connection_type: "wifi",
+    });
+  });
+
   it("loads the authoritative active work for one device", async () => {
     const hass = new FakeHass();
     hass.responses.get_active_work = {
@@ -161,7 +195,7 @@ describe("HelperApi", () => {
     await api.listMeters();
     await api.getTopology("meter-1");
     await api.getCtInventory("meter-1");
-    await api.setInstallerIntent(6, "ethernet_waveshare");
+    await api.setInstallerIntent(6, "ethernet_waveshare", null);
     await api.rescan();
     await api.adoptDevice("meter-1");
     await api.previewCtConfig("meter-1", "plan-1", hash, [
@@ -441,6 +475,8 @@ describe("HelperApi", () => {
     expect(() => HelperApi.assertPublicPayload({ nested: { wifi_password: "no" } })).toThrow(
       "private field",
     );
+    expect(() => HelperApi.assertPublicPayload({ ssid: "private network" })).toThrow("private field");
+    expect(() => HelperApi.assertPublicPayload({ nested: { credentials: { token: "no" } } })).toThrow("private field");
     expect(() => HelperApi.assertPublicPayload({ authentication_token_value: "no" })).toThrow(
       "private field",
     );

@@ -24,7 +24,7 @@ from .const import DOMAIN
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
-from .models import InstallerIntent
+from .models import InstallerIntent, validate_installer_firmware
 from .offset_readiness import OffsetReadinessStage
 from .provisioning import ProvisioningCoordinator
 from .repairs import async_reconcile_issues, signals_from_result
@@ -284,9 +284,13 @@ class EntryWebsocketController:
         if operation == "setup_status":
             result: dict[str, Any] = _dataclass_mapping(self.provisioning.snapshot)
             if self.provisioning.installer_intent is not None:
-                result["installer_intent"] = _dataclass_mapping(
-                    self.provisioning.installer_intent
-                )
+                result["installer_intent"] = {
+                    key: value
+                    for key, value in _dataclass_mapping(
+                        self.provisioning.installer_intent
+                    ).items()
+                    if value is not None
+                }
             return result
         if operation == "list_meters":
             return self.provisioning.snapshot.devices
@@ -316,7 +320,12 @@ class EntryWebsocketController:
             return await workflow.async_get_session(msg["session_id"])
         if operation == "set_installer_intent":
             await self.provisioning.async_set_installer_intent(
-                InstallerIntent(msg["addon_count"], msg["connection_type"])
+                InstallerIntent(
+                    msg["addon_count"],
+                    msg["connection_type"],
+                    msg.get("firmware_product_id"),
+                    msg.get("esphome_version"),
+                )
             )
             return await self.async_call(f"{_PREFIX}setup_status", msg, user_id)
         if operation == "rescan":
@@ -801,7 +810,7 @@ def _handler(command: str) -> websocket_api.WebSocketCommandHandler:
     return websocket_api.websocket_command(schema)(decorated)
 
 
-def _schema(command: str) -> dict[Any, Any]:
+def _schema(command: str) -> Any:
     operation = command.removeprefix(_PREFIX)
     schema: dict[Any, Any] = {
         vol.Required("type"): command,
@@ -813,7 +822,10 @@ def _schema(command: str) -> dict[Any, Any]:
             vol.Required("connection_type"): vol.In(
                 ("wifi", "ethernet_lilygo", "ethernet_waveshare")
             ),
+            vol.Optional("firmware_product_id"): str,
+            vol.Optional("esphome_version"): str,
         }
+        return vol.All(vol.Schema(schema), _validate_installer_firmware_schema)
     elif operation in {"get_topology", "get_ct_inventory", "adopt_device"}:
         schema[vol.Required("device_id")] = _ID
     elif operation == "preview_ct_config":
@@ -977,6 +989,17 @@ def _schema(command: str) -> dict[Any, Any]:
     }:
         schema[vol.Required("session_id")] = _ID
     return schema
+
+
+def _validate_installer_firmware_schema(value: dict[str, Any]) -> dict[str, Any]:
+    """Reject incomplete or unsafe firmware selections before handler mutation."""
+    try:
+        validate_installer_firmware(
+            value.get("firmware_product_id"), value.get("esphome_version")
+        )
+    except ValueError as error:
+        raise vol.Invalid(str(error)) from error
+    return value
 
 
 def _reporting_multiplier(value: Any) -> float:
