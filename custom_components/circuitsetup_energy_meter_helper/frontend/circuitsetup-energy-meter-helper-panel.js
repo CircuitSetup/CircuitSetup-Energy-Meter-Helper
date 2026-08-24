@@ -1443,7 +1443,7 @@ function _s(n, e) {
   return t.href;
 }
 let vs;
-const ms = () => vs ??= import("./circuitsetup-energy-meter-helper-install-button-DQKfsq9O.js"), ut = (n, e) => l`
+const ms = () => vs ??= import("./circuitsetup-energy-meter-helper-install-button-DpSoc-pA.js"), ut = (n, e) => l`
   <p class="firmware-summary">${n.productId} · ESPHome ${n.version}</p>
   <esp-web-install-button class="esp-web-installer" .manifest=${e}>
     <button slot="activate" aria-label="Install firmware">Install firmware</button>

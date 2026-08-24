@@ -1,6 +1,6 @@
-import { ESP32ROM as S } from "./circuitsetup-energy-meter-helper-esp32-DNPRK0Ay-BmbbHw2T.js";
-import "./circuitsetup-energy-meter-helper-install-dialog-im156JnI-B7RvV7QK.js";
-import "./circuitsetup-energy-meter-helper-styles-sT2V1cOw-CuhdIKie.js";
+import { ESP32ROM as S } from "./circuitsetup-energy-meter-helper-esp32-DNPRK0Ay-vAclOYbI.js";
+import "./circuitsetup-energy-meter-helper-install-dialog-im156JnI-BNCTyjx2.js";
+import "./circuitsetup-energy-meter-helper-styles-sT2V1cOw-50QkNMEY.js";
 class F extends S {
   constructor() {
     super(...arguments), this.CHIP_NAME = "ESP32-S3", this.IMAGE_CHIP_ID = 9, this.EFUSE_BASE = 1610641408, this.MAC_EFUSE_REG = this.EFUSE_BASE + 68, this.EFUSE_BLOCK1_ADDR = this.EFUSE_BASE + 68, this.EFUSE_BLOCK2_ADDR = this.EFUSE_BASE + 92, this.UART_CLKDIV_REG = 1610612756, this.UART_CLKDIV_MASK = 1048575, this.UART_DATE_REG_ADDR = 1610612864, this.FLASH_WRITE_SIZE = 1024, this.BOOTLOADER_FLASH_OFFSET = 0, this.SPI_REG_BASE = 1610620928, this.SPI_USR_OFFS = 24, this.SPI_USR1_OFFS = 28, this.SPI_USR2_OFFS = 32, this.SPI_MOSI_DLEN_OFFS = 36, this.SPI_MISO_DLEN_OFFS = 40, this.SPI_W0_OFFS = 88, this.USB_RAM_BLOCK = 2048, this.UARTDEV_BUF_NO_USB = 3, this.UARTDEV_BUF_NO = 1070526796, this.IROM_MAP_START = 1107296256, this.IROM_MAP_END = 1140850688, this.MEMORY_MAP = [[0, 65536, "PADDING"], [1006632960, 1023410176, "DROM"], [1023410176, 1040187392, "EXTRAM_DATA"], [1611653120, 1611661312, "RTC_DRAM"], [1070104576, 1070596096, "BYTE_ACCESSIBLE"], [1070104576, 1077813248, "MEM_INTERNAL"], [1070104576, 1070596096, "DRAM"], [1073741824, 1073848576, "IROM_MASK"], [1077346304, 1077805056, "IRAM"], [1611653120, 1611661312, "RTC_IRAM"], [1107296256, 1115684864, "IROM"], [1342177280, 1342185472, "RTC_DATA"]];
