@@ -66,9 +66,7 @@ def _calibration_package(prefix: str, first_channel: int) -> str:
     return "button:\n" + "".join(groups[::2]) + "number:\n" + "".join(groups[1::2])
 
 
-def _contract_fixture(
-    tmp_path: Path, *, api_ready: bool = True
-) -> tuple[Path, Path]:
+def _contract_fixture(tmp_path: Path, *, api_ready: bool = True) -> tuple[Path, Path]:
     helper_root = tmp_path / "helper"
     firmware_root = tmp_path / "firmware"
     helper_data = (
@@ -88,13 +86,21 @@ def _contract_fixture(
         calibration.mkdir()
         sensors.mkdir()
         tests.mkdir()
+        for common in (
+            "6chan_common.yaml",
+            "6chan_common_ethernet.yaml",
+            "6chan_common_ethernet_waveshare.yaml",
+        ):
+            (firmware_data / common).write_text("logger:\n", encoding="utf-8")
         for board in range(7):
             prefix = "main" if board == 0 else f"addon{board}"
             (calibration / f"6chan_{prefix}_calibration.yaml").write_text(
                 _calibration_package(prefix, board * 6 + 1), encoding="utf-8"
             )
             sensor = "main_sensor" if board == 0 else prefix
-            (sensors / f"6chan_{sensor}.yaml").write_text("sensor: []\n", encoding="utf-8")
+            (sensors / f"6chan_{sensor}.yaml").write_text(
+                "sensor: []\n", encoding="utf-8"
+            )
 
     variants = ["main_board", "main_ethernet", "main_ethernet_waveshare"]
     variants += [
@@ -112,17 +118,38 @@ def _contract_fixture(
         project = "circuitsetup.6c-energy-meter"
         if project_suffix:
             project += f"-{project_suffix}"
-        source = f'esphome:\n  project:\n    name: {project}\n    version: "1.8"\n'
+        filename = f"6chan_energy_meter_{variant}.yaml"
+        source = (
+            f'esphome:\n  project:\n    name: {project}\n    version: "1.8"\n'
+            "dashboard_import:\n"
+            "  package_import_url: github://CircuitSetup/"
+            "Expandable-6-Channel-ESP32-Energy-Meter/Software/ESPHome/"
+            f"{filename}@master\n"
+            "  import_full_config: true\n"
+            "api:\n"
+        )
+        source += (
+            "ethernet:\n"
+            if "_ethernet" in variant
+            else "wifi:\n  ap:\nimprov_serial:\n"
+        )
         if api_ready:
             match = re.search(r"(\d+)-addons?", variant)
             addon_count = int(match.group(1)) if match else 0
             channel_count = 6 * (addon_count + 1)
             source += "substitutions:\n" + "".join(
-                f"  ct{channel}_name: CT{channel}\n"
-                f"  current_cal_ct{channel}: '27518'\n"
+                f"  ct{channel}_name: CT{channel}\n  current_cal_ct{channel}: '27518'\n"
                 for channel in range(1, channel_count + 1)
             )
+            common = (
+                "6chan_common_ethernet_waveshare.yaml"
+                if "_ethernet_waveshare" in variant
+                else "6chan_common_ethernet.yaml"
+                if "_ethernet" in variant
+                else "6chan_common.yaml"
+            )
             source += "packages:\n  meter_sensors:\n"
+            source += f"    - Software/ESPHome/{common}\n"
             source += "    - Software/ESPHome/meter_sensors/6chan_main_sensor.yaml\n"
             source += "".join(
                 f"    - Software/ESPHome/meter_sensors/6chan_addon{board}.yaml\n"
@@ -134,17 +161,26 @@ def _contract_fixture(
                 f"    - Software/ESPHome/calibration/6chan_addon{board}_calibration.yaml\n"
                 for board in range(1, addon_count + 1)
             )
-        (firmware_data / f"6chan_energy_meter_{variant}.yaml").write_text(source, encoding="utf-8")
+        (firmware_data / f"6chan_energy_meter_{variant}.yaml").write_text(
+            source, encoding="utf-8"
+        )
     if api_ready:
-        matrix = [f"Software/ESPHome/6chan_energy_meter_{variant}.yaml" for variant in REPRESENTATIVES]
+        matrix = [
+            f"Software/ESPHome/6chan_energy_meter_{variant}.yaml"
+            for variant in REPRESENTATIVES
+        ]
         (tests / "compile_matrix.py").write_text(
-            "import json\nprint(json.dumps({'configurations': " + repr(sorted(matrix)) + "}))\n",
+            "import json\nprint(json.dumps({'configurations': "
+            + repr(sorted(matrix))
+            + "}))\n",
             encoding="utf-8",
         )
     return helper_root, firmware_root
 
 
-def _run_contract(helper_root: Path, firmware_root: Path) -> subprocess.CompletedProcess[str]:
+def _run_contract(
+    helper_root: Path, firmware_root: Path
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), str(helper_root), str(firmware_root)],
         capture_output=True,
@@ -177,8 +213,7 @@ def test_rejects_project_metadata_without_runtime_calibration_contract(
 def test_rejects_calibration_reference_that_cannot_be_zeroed(tmp_path: Path) -> None:
     helper_root, firmware_root = _contract_fixture(tmp_path)
     package = (
-        firmware_root
-        / "Software/ESPHome/calibration/6chan_addon6_calibration.yaml"
+        firmware_root / "Software/ESPHome/calibration/6chan_addon6_calibration.yaml"
     )
     package.write_text(
         package.read_text(encoding="utf-8").replace(
@@ -267,9 +302,146 @@ def test_rejects_project_metadata_drift(
     """Every official filename must advertise its matching API-ready project."""
     helper_root, firmware_root = _contract_fixture(tmp_path)
     config = firmware_root / "Software/ESPHome/6chan_energy_meter_1-addon.yaml"
-    config.write_text(config.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(old, new), encoding="utf-8"
+    )
 
     result = _run_contract(helper_root, firmware_root)
 
     assert result.returncode != 0
     assert message in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("filename", "old", "new", "message"),
+    (
+        (
+            "6chan_energy_meter_main_board.yaml",
+            "wifi:\n",
+            "",
+            "Wi-Fi firmware must define wifi",
+        ),
+        (
+            "6chan_energy_meter_main_board.yaml",
+            "improv_serial:\n",
+            "",
+            "Wi-Fi firmware must define improv_serial",
+        ),
+        (
+            "6chan_energy_meter_main_board.yaml",
+            "api:\n",
+            "",
+            "firmware must define api",
+        ),
+        (
+            "6chan_energy_meter_main_board.yaml",
+            "dashboard_import:\n",
+            "",
+            "firmware must define dashboard_import",
+        ),
+        (
+            "6chan_energy_meter_main_board.yaml",
+            "6chan_energy_meter_main_board.yaml@master",
+            "wrong.yaml@master",
+            "dashboard import does not match filename",
+        ),
+        (
+            "6chan_energy_meter_main_board.yaml",
+            "circuitsetup.6c-energy-meter",
+            "another.vendor-meter",
+            "project name does not use helper discovery prefix",
+        ),
+        (
+            "6chan_energy_meter_1-addon.yaml",
+            "6chan_energy_meter_1-addon.yaml@master",
+            "6chan_energy_meter_2-addons.yaml@master",
+            "dashboard import does not match filename",
+        ),
+    ),
+)
+def test_rejects_missing_or_mismatched_provisioning_contract(
+    tmp_path: Path, filename: str, old: str, new: str, message: str
+) -> None:
+    """Provisioning needs the runtime and topology identity advertised by source."""
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    config = firmware_root / "Software/ESPHome" / filename
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(old, new), encoding="utf-8"
+    )
+
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode != 0
+    assert message in result.stderr
+
+
+def test_rejects_source_configurations_that_do_not_resolve_logger(
+    tmp_path: Path,
+) -> None:
+    """A source configuration must retain the shared logger package."""
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    common = firmware_root / "Software/ESPHome/6chan_common.yaml"
+    common.write_text("\n", encoding="utf-8")
+
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode != 0
+    assert "firmware must define logger" in result.stderr
+
+
+def test_rejects_dashboard_import_url_spoofed_by_comment(tmp_path: Path) -> None:
+    """The expected import URL in a comment must not satisfy the contract."""
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    config = firmware_root / "Software/ESPHome/6chan_energy_meter_main_board.yaml"
+    expected = (
+        "github://CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter/"
+        "Software/ESPHome/6chan_energy_meter_main_board.yaml@master"
+    )
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            expected, f"wrong.yaml@master # {expected}"
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode != 0
+    assert "dashboard import does not match filename" in result.stderr
+
+
+def test_rejects_nested_dashboard_import_url_masking_direct_url(
+    tmp_path: Path,
+) -> None:
+    """Only dashboard_import's direct URL key establishes the import identity."""
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    config = firmware_root / "Software/ESPHome/6chan_energy_meter_main_board.yaml"
+    expected = (
+        "github://CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter/"
+        "Software/ESPHome/6chan_energy_meter_main_board.yaml@master"
+    )
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            f"dashboard_import:\n  package_import_url: {expected}",
+            "dashboard_import:\n  metadata:\n"
+            f"    package_import_url: {expected}\n"
+            "  package_import_url: wrong.yaml@master",
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode != 0
+    assert "dashboard import does not match filename" in result.stderr
+
+
+def test_accepts_ethernet_without_improv_serial(tmp_path: Path) -> None:
+    """Ethernet remains compatible without the Wi-Fi-only serial provisioner."""
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    config = firmware_root / "Software/ESPHome/6chan_energy_meter_1-addon_ethernet.yaml"
+
+    assert "improv_serial:" not in config.read_text(encoding="utf-8")
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode == 0, result.stderr
