@@ -664,7 +664,8 @@ export class HelperApi {
       || new Set(references.map((item) => channelGroup(item.channel))).size !== 1
       || references.some((item) => !Number.isInteger(item.channel) || item.channel < 1 || item.channel > 42
         || !Number.isFinite(item.reference) || item.reference <= 0
-        || !Number.isFinite(item.reporting_multiplier) || item.reporting_multiplier < 0.001 || item.reporting_multiplier > 1000)) {
+        || ![1, 2, 4, 8].includes(item.reporting_multiplier))
+      || pendingMultipliers.some((item) => ![1, 2, 4, 8].includes(item.reporting_multiplier))) {
       return Promise.reject(new Error("calibrate_current references are invalid"));
     }
     return this.call("calibrate_current", (value) => calibration(value, "calibrate_current", { target: "current",

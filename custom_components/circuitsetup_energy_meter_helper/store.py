@@ -11,6 +11,7 @@ from typing import Any, cast
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
+from .ct_catalog import REPORTING_MULTIPLIERS
 from .models import (
     PhaseOffsetTable,
     PhasePowerOffsetTable,
@@ -22,7 +23,7 @@ from .models import (
 )
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 2
+STORAGE_MINOR_VERSION = 3
 STORAGE_KEY = "circuitsetup_energy_meter_helper"
 
 
@@ -216,7 +217,24 @@ def migrate_storage(
         and minor_version > STORAGE_MINOR_VERSION
     ):
         raise ValueError("Storage version is newer than supported")
-    if (version, minor_version) == (1, 1):
+    if (version, minor_version) in {(1, 1), (1, 2)}:
+        meters = data.get("meters", {})
+        if isinstance(meters, dict):
+            for meter in meters.values():
+                if not isinstance(meter, dict) or not isinstance(
+                    selections := meter.get("ct_selections"), list
+                ):
+                    continue
+                meter["ct_selections"] = [
+                    item
+                    for item in selections
+                    if not isinstance(item, dict)
+                    or "reporting_multiplier" not in item
+                    or (
+                        not isinstance(item["reporting_multiplier"], bool)
+                        and item["reporting_multiplier"] in REPORTING_MULTIPLIERS
+                    )
+                ]
         return data
     if (version, minor_version) != (STORAGE_VERSION, STORAGE_MINOR_VERSION):
         raise ValueError(f"Storage version {version} cannot be migrated")

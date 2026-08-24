@@ -999,13 +999,13 @@ describe("CircuitSetup panel", () => {
     state.stabilityByTarget = new Map([["current:1", { target: "current", target_id: "1", stable: true,
       windows: [{ samples: [5, 5, 5], mean: 5, standard_deviation: 0, range_percent: 0 }] }]]);
     panel.showState("current"); await panel.updateComplete;
-    const input = panel.shadowRoot?.querySelector<HTMLInputElement>("[data-role=reporting-multiplier]");
+    const input = panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-role=reporting-multiplier]");
     const calibrate = Array.from(panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("button.primary") ?? [])
       .find((button) => button.textContent?.includes("Calibrate current"));
     expect(input).not.toBeNull();
     expect(calibrate?.disabled).toBe(true);
     input!.value = "2";
-    input!.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    input!.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
     await panel.updateComplete;
     const enabled = Array.from(panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("button.primary") ?? [])
       .find((button) => button.textContent?.includes("Calibrate current"));
@@ -1438,6 +1438,41 @@ describe("CircuitSetup panel", () => {
     if (label) { label.value = "Clamp"; label.dispatchEvent(new Event("input")); }
     burden?.click(); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
+  });
+
+  it("offers only the supported CT reporting multipliers", async () => {
+    const inventory: CtInventory = {
+      plan_id: "plan-1", source_sha256: "a".repeat(64),
+      channels: [{ channel: 1, name: "CT1", raw_gain_ct: 5500, reporting_multiplier: 1,
+        selected_model_id: "model", selection_verified_against_config: true,
+        address: { channel: 1, board_index: 0, group_index: 0, phase: "A" } }],
+      catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
+        secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "" }],
+        source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
+    };
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    panel.showInventory(inventory); await panel.updateComplete;
+
+    const multiplier = panel.shadowRoot?.querySelector('[aria-label="CT1 multiplier"]');
+    expect(multiplier).toBeInstanceOf(HTMLSelectElement);
+    expect([...((multiplier as HTMLSelectElement).options)].map((option) => Number(option.value))).toEqual([1, 2, 4, 8]);
+  });
+
+  it("formats config changes as preserved diff lines", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.transaction = { transaction_id: "tx", state: "previewed", source_sha256: "a".repeat(64),
+      changes: [], redacted_diff: "- current_cal_ct1: 27518\n+ current_cal_ct1: 13759\n+     phase_a:",
+      rollback_available: false, evidence: [], progress: [] };
+
+    panel.showState("build"); await panel.updateComplete;
+
+    const lines = [...(panel.shadowRoot?.querySelectorAll(".config-diff .diff-line") ?? [])];
+    expect(lines.map((line) => line.textContent)).toEqual([
+      "- current_cal_ct1: 27518", "+ current_cal_ct1: 13759", "+     phase_a:",
+    ]);
+    expect(lines.map((line) => line.className)).toEqual(expect.arrayContaining([expect.stringContaining("removed"), expect.stringContaining("added")]));
+    expect(panel.shadowRoot?.querySelector("style")?.textContent).toContain("white-space: pre");
   });
 
   it("keeps a persisted verified Custom selection clean during an unrelated edit", async () => {
@@ -1878,6 +1913,8 @@ describe("CircuitSetup panel", () => {
 
     expect(text(panel)).toContain("0 records (unreported)");
     expect(text(panel)).not.toContain("unreported reported");
+    expect(text(panel)).toContain("ESPHome rejected the config (code 2)");
+    expect(text(panel)).toContain("original config was restored");
   });
 
   it("renders scoped samples, calibration, build, and restart authority without fabricating Summary", async () => {

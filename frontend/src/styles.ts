@@ -103,6 +103,10 @@ export const panelStyles = css`
   .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 16px 30px; background: var(--band); border-top: 1px solid var(--border); }
   .row-count { color: var(--muted); padding-left: 12px; }
   pre { max-height: 260px; overflow: auto; padding: 16px; color: #243047; background: var(--band); border: 1px solid var(--border); white-space: pre-wrap; }
+  .config-diff { white-space: pre; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
+  .diff-line { display: block; min-width: max-content; }
+  .diff-line.added { background: #e6f4ea; }
+  .diff-line.removed { background: #fce8e6; }
   .status-list, .summary-list { display: grid; gap: 8px; }
   .confirmation-actions { display: flex; gap: 12px; margin-top: 20px; }
   .check-row { display: flex; align-items: center; gap: 10px; }

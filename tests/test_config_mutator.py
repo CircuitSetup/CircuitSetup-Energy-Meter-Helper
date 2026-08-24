@@ -190,17 +190,14 @@ def test_reporting_multiplier_updates_and_removes_its_managed_filters() -> None:
     assert "multiply: 4" not in reset.proposed_content
 
 
-def test_reporting_multiplier_is_applied_even_when_rounded_gain_is_unchanged() -> None:
-    """Output scaling is still a mutation when register rounding produces no edit."""
-    plan = build_ct_mutation(
-        _snapshot(),
-        _topology(),
-        (CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 1.00001),),
-    )
-
-    assert plan.changes == ()
-    assert plan.proposed_content != _snapshot().content
-    assert plan.proposed_content.count("multiply: 1.00001") == 2
+def test_reporting_multiplier_rejects_values_outside_supported_steps() -> None:
+    """Only hardware-supported power-of-two reporting multipliers are writable."""
+    with pytest.raises(ConfigMutationError, match="1, 2, 4, or 8"):
+        build_ct_mutation(
+            _snapshot(),
+            _topology(),
+            (CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 3),),
+        )
 
 
 def test_reporting_multiplier_refuses_conflicting_or_duplicate_filter_blocks() -> None:
