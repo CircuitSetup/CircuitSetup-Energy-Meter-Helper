@@ -20,7 +20,7 @@ from homeassistant.core import HomeAssistant
 
 from .config_document import CT_GAIN_RE, CT_NAME_RE, VOLTAGE_GAIN_RE
 from .config_transaction import RollbackFailedError
-from .const import DOMAIN
+from .const import CONF_ESPHOME_ENTRY_ID, DOMAIN
 from .ct_catalog import REPORTING_MULTIPLIERS
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
@@ -254,10 +254,12 @@ class EntryWebsocketController:
         store: HelperStore,
         *,
         diagnostics_provider: DiagnosticsProvider | None = None,
+        esphome_entry_id: str | None = None,
     ) -> None:
         self.provisioning = provisioning
         self.sessions = sessions
         self.store = store
+        self.esphome_entry_id = esphome_entry_id
         self.transactions: TransactionOwner | None = None
         self.workflow: WorkflowOwner | None = None
         self._diagnostics_provider = diagnostics_provider
@@ -284,6 +286,7 @@ class EntryWebsocketController:
         operation = command.removeprefix(_PREFIX)
         if operation == "setup_status":
             result: dict[str, Any] = _dataclass_mapping(self.provisioning.snapshot)
+            result["bound_device_id"] = self.esphome_entry_id
             if self.provisioning.installer_intent is not None:
                 result["installer_intent"] = {
                     key: value
@@ -628,11 +631,11 @@ class _Router:
 
     async def call(self, connection: ActiveConnection, msg: Mapping[str, Any]) -> None:
         controller = self.controller(msg["entry_id"])
+        operation = msg["type"].removeprefix(_PREFIX)
         try:
             result = await controller.async_call(
                 msg["type"], msg, getattr(connection.user, "id", None)
             )
-            operation = msg["type"].removeprefix(_PREFIX)
             controller.diagnostics.record_result(operation, result)
             await async_reconcile_issues(
                 self.hass, msg["entry_id"], operation, signals_from_result(result)
@@ -664,6 +667,29 @@ class _Router:
                 authoritative=False,
             )
             _send_safe_error(connection, msg["id"], error)
+        else:
+            if operation == "adopt_device":
+                try:
+                    await self._async_rebind_device(
+                        msg["entry_id"],
+                        result["device_id"],
+                        controller.esphome_entry_id,
+                    )
+                except Exception as error:  # noqa: BLE001 - success was already sent
+                    controller.diagnostics.record_error(error)
+
+    async def _async_rebind_device(
+        self, entry_id: str, device_id: str, runtime_device_id: str | None
+    ) -> None:
+        entry = self.hass.config_entries.async_get_entry(entry_id)
+        if entry is None or runtime_device_id == device_id:
+            return
+        if entry.data.get(CONF_ESPHOME_ENTRY_ID) != device_id:
+            self.hass.config_entries.async_update_entry(
+                entry,
+                data={**entry.data, CONF_ESPHOME_ENTRY_ID: device_id},
+            )
+        await self.hass.config_entries.async_reload(entry_id)
 
     async def subscribe(
         self, connection: ActiveConnection, msg: Mapping[str, Any]

@@ -77,7 +77,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else None
         )
         workflow.transactions = transactions
-        controller = EntryWebsocketController(coordinator, sessions, store)
+        controller = EntryWebsocketController(
+            coordinator, sessions, store, esphome_entry_id=esphome_entry_id
+        )
         controller.set_diagnostics_provider(
             lambda: async_get_config_entry_diagnostics(hass, entry)
         )
