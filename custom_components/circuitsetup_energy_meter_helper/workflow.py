@@ -375,7 +375,7 @@ class EntryWorkflow:
         self._session_guards: dict[str, RLock] = {}
         self._subscribers: dict[str, set[Callable[[SessionStatus], None]]] = {}
         self._session_cleanup_tasks: dict[str, asyncio.Task[None]] = {}
-        self._cleaning_macs: set[str] = set()
+        self._cleaning_macs: dict[str, asyncio.Task[None]] = {}
         self._close_task: asyncio.Task[None] | None = None
         self._closing = False
         self.transactions: ConfigTransactionManager | None = None
@@ -605,6 +605,9 @@ class EntryWorkflow:
                 substitutions,
             )
         mac = self._mac(device_id)
+        cleanup = self._cleaning_macs.get(mac)
+        if cleanup is not None and await _wait_for_owned_cleanup(cleanup):
+            raise asyncio.CancelledError
         lease = await self._sessions_owner.async_acquire_calibration(mac)
         try:
             preflight = await async_preflight(api, binding, asyncio.Lock())
@@ -1464,7 +1467,7 @@ class EntryWorkflow:
             return existing
         cleanup = asyncio.create_task(self._async_finalize_revoked(handle, active_task))
         self._session_cleanup_tasks[handle.session_id] = cleanup
-        self._cleaning_macs.add(handle.mac)
+        self._cleaning_macs[handle.mac] = cleanup
         return cleanup
 
     async def _async_finalize_revoked(
@@ -1503,7 +1506,8 @@ class EntryWorkflow:
             errors.append(error)
         finally:
             with self._guard(handle.mac):
-                self._cleaning_macs.discard(handle.mac)
+                if self._cleaning_macs.get(handle.mac) is asyncio.current_task():
+                    self._cleaning_macs.pop(handle.mac, None)
         if errors:
             raise BaseExceptionGroup("calibration session cleanup failed", errors)
 

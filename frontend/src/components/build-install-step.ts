@@ -29,8 +29,8 @@ export function buildInstallStep(
       </div>
       ${status?.validation_detail ? html`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
-        <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count ?? "unreported"} reported)</dd></div>
-        <div><dt>Warnings</dt><dd>${status.validation_detail.warning_record_count} records (${status.validation_detail.reported_warning_count ?? "unreported"} reported)</dd></div>
+        <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>
+        <div><dt>Warnings</dt><dd>${status.validation_detail.warning_record_count} records (${status.validation_detail.reported_warning_count === null ? "unreported" : `${status.validation_detail.reported_warning_count} reported`})</dd></div>
       </dl>` : ""}
       ${status?.upload_progress?.length ? html`<ul class="upload-progress">${status.upload_progress.map((item) => html`
         <li>${item.stage}: ${item.percentage ?? item.progress ?? "in progress"}${item.percentage != null || item.progress != null ? "%" : ""}</li>
