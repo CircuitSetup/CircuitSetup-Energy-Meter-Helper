@@ -97,6 +97,45 @@ def test_parses_save_failure_and_register_mismatch() -> None:
     assert not mismatch.immediate_apply_acceptable
 
 
+def test_parses_both_completed_gain_runs_from_one_meter_board() -> None:
+    raw_lines = (
+        "[I][atm90e32.button:015] 3. Run Addon1 7-9 Gain Cal",
+        "[I][atm90e32:663] [CALIBRATION][addon1_1] ===== Gain Calibration =====",
+        "[I][atm90e32:733] [CALIBRATION][addon1_1] | A | 122.32 | 0.0010 | 122.40 | 0.0000 | 7569 -> 7573 | 11143 -> 11143 |",
+        "[I][atm90e32:733] [CALIBRATION][addon1_1] | B | 122.29 | 0.0010 | 122.40 | 0.0000 | 7571 -> 7577 | 11143 -> 11143 |",
+        "[I][atm90e32:733] [CALIBRATION][addon1_1] | C | 122.31 | 0.1380 | 122.40 | 0.0000 | 7572 -> 7577 | 11143 -> 11143 |",
+        "[I][atm90e32:752] [CALIBRATION][addon1_1] Gain calibration saved to memory.",
+        "[I][atm90e32.button:015] 3. Run Addon1 10-12 Gain Cal",
+        "[I][atm90e32:663] [CALIBRATION][addon1_2] ===== Gain Calibration =====",
+        "[I][atm90e32:733] [CALIBRATION][addon1_2] | A | 122.34 | 1.2670 | 122.40 | 0.0000 | 7577 -> 7580 | 11143 -> 11143 |",
+        "[I][atm90e32:733] [CALIBRATION][addon1_2] | B | 122.33 | 0.0030 | 122.40 | 0.0000 | 7577 -> 7581 | 11143 -> 11143 |",
+        "[I][atm90e32:733] [CALIBRATION][addon1_2] | C | 122.34 | 0.0010 | 122.40 | 0.0000 | 7565 -> 7568 | 11143 -> 11143 |",
+        "[I][atm90e32:752] [CALIBRATION][addon1_2] Gain calibration saved to memory.",
+    )
+    lines = [
+        CalibrationLogLine(3, 8, 11.0 + index, line)
+        for index, line in enumerate(raw_lines)
+    ]
+
+    evidence = tuple(
+        parse_gain_run(
+            lines,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id=instance_id,
+            button_name=button_name,
+            dispatched_after=10.0,
+        )
+        for instance_id, button_name in (
+            ("addon1_1", "3. Run Addon1 7-9 Gain Cal"),
+            ("addon1_2", "3. Run Addon1 10-12 Gain Cal"),
+        )
+    )
+
+    assert tuple(item.instance_id for item in evidence) == ("addon1_1", "addon1_2")
+    assert all(item.immediate_apply_acceptable for item in evidence)
+
+
 def test_gain_correlation_rejects_predispatch_wrong_generation_and_interleaving() -> (
     None
 ):
@@ -211,6 +250,25 @@ def test_gain_requires_target_tag_on_rows_and_one_terminal_save_result() -> None
     with pytest.raises(LogEvidenceError, match="target instance"):
         parse_gain_run(
             untagged,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="3. Run Main Meter 1 Gain Cal",
+            dispatched_after=10.0,
+        )
+
+    untagged_after_terminal = log_lines("gain_success.log")
+    untagged_after_terminal.append(
+        CalibrationLogLine(
+            3,
+            8,
+            untagged_after_terminal[-1].arrived_at + 1,
+            "[I] [CALIBRATION] ===== Gain Calibration =====",
+        )
+    )
+    with pytest.raises(LogEvidenceError, match="target instance"):
+        parse_gain_run(
+            untagged_after_terminal,
             connection_generation=3,
             operation_sequence=8,
             target_instance_id="meter_main1",

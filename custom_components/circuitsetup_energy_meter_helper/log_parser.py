@@ -231,12 +231,25 @@ def parse_gain_run(
             or "Mismatch detected for Phase" in item.line
         )
 
-    for item in matching[button_index + 1 :]:
+    terminal_seen = False
+    operation_end = len(matching)
+    for index, item in enumerate(
+        matching[button_index + 1 :], start=button_index + 1
+    ):
         instance = _instance(item.line)
+        if terminal_seen and "3. Run " in item.line and " Gain Cal" in item.line:
+            operation_end = index
+            break
         if instance is not None and instance != target_instance_id:
             raise LogEvidenceError("interleaved ATM90E32 instance in operation window")
         if is_evidence(item) and instance != target_instance_id:
             raise LogEvidenceError("gain evidence is missing the target instance tag")
+        if instance == target_instance_id and (
+            "gain calibration saved to memory" in item.line.casefold()
+            or "failed to save gain calibration to memory" in item.line.casefold()
+        ):
+            terminal_seen = True
+    matching = matching[:operation_end]
     header_indices = [
         index
         for index in range(button_index + 1, len(matching))
