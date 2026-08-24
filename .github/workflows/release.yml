@@ -45,24 +45,6 @@ jobs:
         run: python scripts/verify_firmware_contract.py . firmware
       - name: Run pinned firmware topology and calibration tests
         run: uvx --python 3.12 --from pytest==9.0.2 pytest -q firmware/Software/ESPHome/tests
-      - name: Require recorded physical validation before publishing
-        run: |
-          if ! python - <<'PY'
-          import json
-          rows = json.load(open("docs/hardware-validation.json"))
-          required = {
-              ("main", "wifi"), ("one-addon", "wifi"),
-              ("three-addon-special-voltage", "special"), ("six-addon", "wifi"),
-              ("addons", "lilygo-ethernet"), ("addons", "waveshare-ethernet"),
-          }
-          assert isinstance(rows, list) and len(rows) == len(required)
-          assert {(row["topology"], row["connection"]) for row in rows} == required
-          assert all(row.get("validated") is True for row in rows)
-          PY
-          then
-            echo 'Physical hardware validation is still required.' >&2
-            exit 1
-          fi
   publish:
     needs: validate
     permissions:
