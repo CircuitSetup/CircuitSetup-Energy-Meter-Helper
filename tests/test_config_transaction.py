@@ -756,6 +756,36 @@ def test_validation_detail_prefers_structured_protocol_counts() -> None:
     asyncio.run(run())
 
 
+def test_validation_detail_counts_esphome_failed_config_without_exposing_output() -> None:
+    async def run() -> None:
+        builder = Builder(
+            validation=(
+                Job(
+                    False,
+                    "",
+                    (
+                        "Failed config",
+                        "sensor.atm90e32: [source meter.yaml:42]",
+                        "  invalid value token=top-secret",
+                    ),
+                    2,
+                ),
+            )
+        )
+        manager = _manager(builder, Persistence())
+        preview = await _preview(manager)
+
+        status = await manager.async_confirm_write(preview.transaction_id, "admin")
+
+        assert status.validation_detail is not None
+        assert status.validation_detail.code == 2
+        assert status.validation_detail.error_record_count == 1
+        assert "meter.yaml" not in repr(status)
+        assert "top-secret" not in repr(status)
+
+    asyncio.run(run())
+
+
 def test_rollback_failure_retains_exact_source_and_retry_handle() -> None:
     async def run() -> None:
         builder = Builder(

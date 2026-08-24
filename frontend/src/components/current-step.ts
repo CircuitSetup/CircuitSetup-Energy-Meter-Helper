@@ -29,9 +29,7 @@ export function currentStep(
   const sourceIds = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
   const multiplierRequired = inventory === null;
   const multiplierValid = reportingMultiplier !== null
-    && Number.isFinite(reportingMultiplier)
-    && reportingMultiplier >= 0.001
-    && reportingMultiplier <= 1000;
+    && [1, 2, 4, 8].includes(reportingMultiplier);
   const referenceReady = selected.length > 0 && (!multiplierRequired || multiplierValid);
   return html`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
@@ -55,7 +53,7 @@ export function currentStep(
           <input data-current-reference=${value} aria-label=${`CT${value} reference`} type="number" min="0.01" step="0.01"
             .value=${references.has(value) ? String(references.get(value)) : ""}
             @input=${(event: Event) => { const input = event.target as HTMLInputElement; setReference(value, input.value === "" ? null : Number(input.value)); }} /></label>`)}
-      ${multiplierRequired ? html`<label>Reporting multiplier <input data-role="reporting-multiplier" type="number" min="0.001" max="1000" step="0.001" required .value=${reportingMultiplier === null ? "" : String(reportingMultiplier)} @input=${(event: Event) => { const value = Number((event.target as HTMLInputElement).value); setReportingMultiplier(Number.isFinite(value) && value >= 0.001 && value <= 1000 ? value : null); }} /></label><p>Confirm the meter's reporting multiplier before runtime-only current calibration.</p>` : ""}
+      ${multiplierRequired ? html`<label>Reporting multiplier <select data-role="reporting-multiplier" required @change=${(event: Event) => { const value = Number((event.target as HTMLSelectElement).value); setReportingMultiplier(value || null); }}><option value="" ?selected=${reportingMultiplier === null}>Choose multiplier</option>${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${reportingMultiplier === value}>${value}</option>`)}</select></label><p>Confirm the meter's reporting multiplier before runtime-only current calibration.</p>` : ""}
         <button class="primary" @click=${calibrate} ?disabled=${!referenceReady || !stability?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button>
       </div>
       <div class="stability-line"><button class="secondary" @click=${check} ?disabled=${!referenceReady}>Check stability</button></div>

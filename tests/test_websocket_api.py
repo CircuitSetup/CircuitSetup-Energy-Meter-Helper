@@ -1350,13 +1350,19 @@ def test_current_calibration_schema_rejects_unknown_or_invalid_multiplier() -> N
             float("inf"),
             0,
             0.0009,
+            3,
             1000.001,
         ):
             message = _message(command)
             message["references"][0]["reporting_multiplier"] = invalid
             with pytest.raises(vol.Invalid):
                 schema(message)
-        assert schema(_message(command))["references"][0]["reporting_multiplier"] == 1.0
+        for valid in (1, 2, 4, 8):
+            message = _message(command)
+            message["references"][0]["reporting_multiplier"] = valid
+            assert schema(message)["references"][0]["reporting_multiplier"] == float(
+                valid
+            )
 
     asyncio.run(run())
 
@@ -1788,6 +1794,30 @@ def test_session_preflight_holds_shared_config_ownership(
         lease.release()
         await workflow.async_cancel_session(status.session_id)
         await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_ct_preview_schemas_restrict_reporting_multipliers() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        for suffix in ("preview_ct_config", "preview_calibrated_gains"):
+            command = f"{DOMAIN}/{suffix}"
+            _handler, schema = hass.data["websocket_api"][command]
+            message = _message(command)
+            message["changes"] = [
+                {"channel": 1, "name": "Mains", "model_id": "custom"}
+            ]
+            for invalid in (0.5, 3, 16):
+                message["changes"][0]["reporting_multiplier"] = invalid
+                with pytest.raises(vol.Invalid):
+                    schema(message)
+            for valid in (1, 2, 4, 8):
+                message["changes"][0]["reporting_multiplier"] = valid
+                assert schema(message)["changes"][0]["reporting_multiplier"] == float(
+                    valid
+                )
 
     asyncio.run(run())
 

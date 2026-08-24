@@ -557,13 +557,19 @@ describe("HelperApi", () => {
     }
   });
 
-  it("rejects unknown or out-of-range current reporting multipliers", async () => {
+  it("accepts only supported current reporting multipliers", async () => {
     const api = new HelperApi(new FakeHass(), "entry-1");
-    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, 0, 0.0009, 1000.001]) {
+    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, 0, 0.5, 3, 16]) {
       await expect(api.calibrateCurrent("session-1", [{ channel: 1, reference: 5, reporting_multiplier: invalid }], true)).rejects.toThrow(
         "references",
       );
     }
+    await expect(api.calibrateCurrent(
+      "session-1",
+      [{ channel: 1, reference: 5, reporting_multiplier: 1 }],
+      true,
+      [{ channel: 1, reporting_multiplier: 3 }],
+    )).rejects.toThrow("references");
   });
 
   it("accepts the exact sanitized substitution change DTO without allowing generic keys", async () => {

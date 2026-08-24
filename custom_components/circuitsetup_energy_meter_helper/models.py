@@ -6,8 +6,9 @@ import re
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from enum import StrEnum
-from math import isfinite
 from typing import Literal
+
+from .ct_catalog import REPORTING_MULTIPLIERS
 
 _CONNECTION_TYPES = {
     "wifi",
@@ -243,8 +244,11 @@ class StoredCTSelection:
     def __post_init__(self) -> None:
         if self.channel < 1 or not 1 <= self.raw_gain_ct <= 65535:
             raise ValueError("channel and raw_gain_ct must be positive")
-        if not isfinite(self.reporting_multiplier) or self.reporting_multiplier <= 0:
-            raise ValueError("reporting_multiplier must be finite and positive")
+        if (
+            isinstance(self.reporting_multiplier, bool)
+            or self.reporting_multiplier not in REPORTING_MULTIPLIERS
+        ):
+            raise ValueError("reporting_multiplier must be 1, 2, 4, or 8")
         _safe_line(self.config_sha256, "config_sha256", 64)
         for field, value in (
             ("model_id", self.model_id),

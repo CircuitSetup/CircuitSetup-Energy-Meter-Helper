@@ -81,8 +81,10 @@ export function ctInventoryStep(
                   <option value="custom" ?selected=${draft.modelId === "custom"}>Custom</option>
                 </select></label>
                 <span role="cell"><span class="mobile-label">Current gain</span>${channel.raw_gain_ct}</span>
-                <label role="cell"><span class="mobile-label">Multiplier</span><input type="number" min="0.001" step="0.001" aria-label=${`CT${channel.channel} multiplier`} ?disabled=${labelOnly}
-                  .value=${String(draft.multiplier)} @input=${(event: Event) => update(channel.channel, { multiplier: Number((event.target as HTMLInputElement).value) })} /></label>
+                <label role="cell"><span class="mobile-label">Multiplier</span><select aria-label=${`CT${channel.channel} multiplier`} ?disabled=${labelOnly}
+                  @change=${(event: Event) => update(channel.channel, { multiplier: Number((event.target as HTMLSelectElement).value) })}>
+                  ${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${draft.multiplier === value}>${value}</option>`)}
+                </select></label>
                 <span role="cell"><span class="mobile-label">Resulting gain</span>${gain ?? "—"}</span>
                 <span role="cell"><span class="mobile-label">Burden</span>${preset?.requires_burden_jumper_cut ? "Check jumper" : "—"}</span>
                 <button role="cell" class="row-toggle" aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>
@@ -151,7 +153,7 @@ function isDirty(channel: CtInventory["channels"][number], draft: CtDraft): bool
 }
 
 function validDraft(inventory: CtInventory, draft: CtDraft): boolean {
-  if (!draft.name.trim() || !draft.modelId || !Number.isFinite(draft.multiplier) || draft.multiplier <= 0) return false;
+  if (!draft.name.trim() || !draft.modelId || ![1, 2, 4, 8].includes(draft.multiplier)) return false;
   if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt! >= 1 && draft.customGainCt! <= 65535
     && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel!) && draft.burdenAcknowledged;
   const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);

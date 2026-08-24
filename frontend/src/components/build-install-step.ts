@@ -12,6 +12,7 @@ export function buildInstallStep(
   continueFlow: () => void,
 ): TemplateResult {
   const state = status?.state ?? "previewed";
+  const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   return html`
     <section class="step-content" aria-labelledby="step-heading">
       ${configReview(status)}
@@ -22,6 +23,7 @@ export function buildInstallStep(
           ${status?.rollback_available ? html`<button class="danger" @click=${rollback}>Rollback</button>` : ""}
         </div>
       ` : ""}
+      ${validationFailed ? html`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>The original config was restored. Review the config changes and open ESPHome Device Builder logs for the exact validation error.</p></div>` : ""}
       <div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${state !== "previewed"}>Apply</button>
         <button class="secondary" @click=${compile} ?disabled=${state !== "validated"}>Compile</button>

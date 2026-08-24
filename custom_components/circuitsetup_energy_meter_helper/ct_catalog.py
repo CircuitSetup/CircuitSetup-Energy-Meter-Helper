@@ -13,6 +13,7 @@ from typing import Any
 CATALOG_SOURCE_REPOSITORY = "CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter"
 CATALOG_SOURCE_REF = "1e5e15368bb829aa2aac271a59e57d900eaa5025"
 CATALOG_SCHEMA_VERSION = 1
+REPORTING_MULTIPLIERS = frozenset((1.0, 2.0, 4.0, 8.0))
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,8 +45,8 @@ def raw_gain_for_preset(preset: CTPreset, multiplier: float) -> int:
 def raw_gain(gain: int, multiplier: float) -> int:
     """Divide one physical gain by its reporting multiplier."""
     _require_gain(gain)
-    if not math.isfinite(multiplier) or multiplier <= 0:
-        raise ValueError("multiplier must be finite and positive")
+    if multiplier not in REPORTING_MULTIPLIERS:
+        raise ValueError("multiplier must be 1, 2, 4, or 8")
     result = int(
         (Decimal(gain) / Decimal(str(multiplier))).quantize(
             Decimal(1), rounding=ROUND_HALF_UP

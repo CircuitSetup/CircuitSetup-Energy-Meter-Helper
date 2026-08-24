@@ -7,11 +7,16 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
-from math import isfinite
 from typing import Protocol
 
 from .config_document import ConfigScalar, ESPHomeConfigDocument
-from .ct_catalog import CTPresetCatalog, custom_preset, raw_gain, raw_gain_for_preset
+from .ct_catalog import (
+    REPORTING_MULTIPLIERS,
+    CTPresetCatalog,
+    custom_preset,
+    raw_gain,
+    raw_gain_for_preset,
+)
 from .ct_inventory import CTInventory
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import VerifiedCalibrationRecord
@@ -308,13 +313,8 @@ def _validate_requests(
             )
         ):
             raise ConfigMutationError("CT name must be non-empty and control-free")
-        if (
-            not isfinite(request.reporting_multiplier)
-            or request.reporting_multiplier <= 0
-        ):
-            raise ConfigMutationError(
-                "reporting multiplier must be finite and positive"
-            )
+        if request.reporting_multiplier not in REPORTING_MULTIPLIERS:
+            raise ConfigMutationError("reporting multiplier must be 1, 2, 4, or 8")
 
 
 def _requested_gain(request: CTChangeRequest, catalog: CTPresetCatalog) -> int:
@@ -420,7 +420,7 @@ def _apply_reporting_multipliers(
                 raise ConfigMutationError(
                     "reporting multiplier block is not safely writable"
                 ) from error
-            if current != power or not isfinite(current) or current <= 0:
+            if current != power or current not in REPORTING_MULTIPLIERS:
                 raise ConfigMutationError(
                     "reporting multiplier block is not safely writable"
                 )

@@ -51,6 +51,10 @@ def test_stored_ct_selection_has_only_safe_metadata() -> None:
 
     assert selection.config_sha256 == "a" * 64
 
+    for invalid in (True, 0.5, 3.0, 16.0):
+        with pytest.raises(ValueError, match="1, 2, 4, or 8"):
+            StoredCTSelection(1, None, None, 27518, invalid, "a" * 64)
+
 
 def test_migrate_storage_rejects_unknown_newer_version() -> None:
     """Future data is never silently treated as the current schema."""
@@ -70,7 +74,7 @@ def test_store_migration_rejects_unknown_newer_minor_version() -> None:
         )
 
 
-def test_storage_1_1_migrates_to_1_2_without_rewriting_gain_only_records() -> None:
+def test_storage_1_1_migrates_without_rewriting_gain_only_records() -> None:
     legacy = {
         "meters": {
             "aabbccddeeff": {
@@ -88,12 +92,38 @@ def test_storage_1_1_migrates_to_1_2_without_rewriting_gain_only_records() -> No
 
     migrated = migrate_storage(1, 1, deepcopy(legacy))
 
-    assert STORAGE_MINOR_VERSION == 2
+    assert STORAGE_MINOR_VERSION == 3
     assert migrated == legacy
     assert (
         "offset_groups"
         not in migrated["meters"]["aabbccddeeff"]["verified_calibration"]
     )
+
+
+def test_storage_1_2_drops_unsupported_legacy_ct_multipliers() -> None:
+    selection = {
+        "channel": 1,
+        "model_id": "custom",
+        "display_label": "Main",
+        "raw_gain_ct": 27518,
+        "config_sha256": "a" * 64,
+    }
+    legacy = {
+        "meters": {
+            "aabbccddeeff": {
+                "ct_selections": [
+                    {**selection, "reporting_multiplier": 2.0},
+                    {**selection, "channel": 2, "reporting_multiplier": 3.0},
+                ]
+            }
+        }
+    }
+
+    migrated = migrate_storage(1, 2, deepcopy(legacy))
+
+    assert migrated["meters"]["aabbccddeeff"]["ct_selections"] == [
+        {**selection, "reporting_multiplier": 2.0}
+    ]
 
 
 def test_offset_only_verified_record_round_trips_signed_tables() -> None:
