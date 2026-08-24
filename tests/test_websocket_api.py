@@ -269,8 +269,9 @@ class FakeConfigEntries:
         entry.data = data
         self.events.append(("update", data[CONF_ESPHOME_ENTRY_ID]))
 
-    async def async_reload(self, entry_id: str) -> None:
+    async def async_reload(self, entry_id: str) -> bool:
         self.events.append(("reload", entry_id))
+        return True
 
 
 class FakeHass:
@@ -800,6 +801,25 @@ def test_adoption_rebind_retries_reload_after_a_previous_reload_failure() -> Non
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("command", (f"{DOMAIN}/setup_status", f"{DOMAIN}/subscribe_setup"))
+def test_reload_gap_returns_capability_unavailable(command: str) -> None:
+    """Calls during controller replacement keep the websocket error contract."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        assert await async_setup_entry(hass, FakeEntry(data={}))
+        hass.data[DOMAIN]["_websocket_router"].remove("helper")
+        connection = FakeConnection()
+
+        await _invoke(hass, connection, _message(command))
+
+        assert connection.errors == [
+            (1, "capability_unavailable", "This capability is not available")
+        ]
+
+    asyncio.run(run())
+
+
 def test_adoption_rebind_serializes_concurrent_duplicate_requests() -> None:
     """Concurrent adoption requests cannot both import the same Builder device."""
 
@@ -842,7 +862,7 @@ def test_adoption_rebind_serializes_concurrent_duplicate_requests() -> None:
         controller.workflow = Workflow(builder)
         router = hass.data[DOMAIN]["_websocket_router"]
 
-        async def reload(entry_id: str) -> None:
+        async def reload(entry_id: str) -> bool:
             events.append(("reload", entry_id))
             replacement = EntryWebsocketController(
                 controller.provisioning,
@@ -853,6 +873,7 @@ def test_adoption_rebind_serializes_concurrent_duplicate_requests() -> None:
             replacement.workflow = Workflow(builder)
             router.remove(entry_id)
             router.add(entry_id, replacement)
+            return True
 
         hass.config_entries.async_reload = reload  # type: ignore[method-assign]
         connection = FakeConnection(events=events)
@@ -870,6 +891,8 @@ def test_adoption_rebind_serializes_concurrent_duplicate_requests() -> None:
         assert builder.import_calls == 1
         assert events.count(("update", "new-meter")) == 1
         assert events.count(("reload", "helper")) == 1
+        assert router.controllers["helper"] is not controller
+        assert router.controllers["helper"].esphome_entry_id == "new-meter"
         assert connection.errors == []
 
     asyncio.run(run())
@@ -920,7 +943,7 @@ def test_adoption_rebind_blocks_work_creation_until_the_live_controller_exists(
         old_workflow = Workflow("old", calls)
         controller.workflow = old_workflow
 
-        async def reload(entry_id: str) -> None:
+        async def reload(entry_id: str) -> bool:
             replacement = EntryWebsocketController(
                 controller.provisioning,
                 controller.sessions,
@@ -930,6 +953,7 @@ def test_adoption_rebind_blocks_work_creation_until_the_live_controller_exists(
             replacement.workflow = Workflow("new", calls)
             router.remove(entry_id)
             router.add(entry_id, replacement)
+            return True
 
         hass.config_entries.async_reload = reload  # type: ignore[method-assign]
         connection = FakeConnection()
@@ -1010,6 +1034,33 @@ def test_adoption_rebind_records_a_reload_failure_without_a_second_response() ->
             ("reload", "helper"),
         ]
         assert connection.errors == []
+        assert list(controller.diagnostics.errors) == ["operation_failed"]
+
+    asyncio.run(run())
+
+
+def test_adoption_rebind_records_a_false_reload_result() -> None:
+    """A rejected Home Assistant reload is recorded after adoption succeeds."""
+
+    class Workflow:
+        async def async_adopt_device(self, _device_id: str) -> dict[str, str]:
+            return {"device_id": "new-meter", "configuration": "new-meter.yaml"}
+
+    async def run() -> None:
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "old-meter"})
+        hass = FakeHass((entry,))
+        assert await async_setup_entry(hass, entry)
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+        controller.workflow = Workflow()
+
+        async def false_reload(_entry_id: str) -> bool:
+            return False
+
+        hass.config_entries.async_reload = false_reload  # type: ignore[method-assign]
+        message = _message(f"{DOMAIN}/adopt_device")
+        message["device_id"] = "new-meter"
+        await _invoke(hass, FakeConnection(), message)
+
         assert list(controller.diagnostics.errors) == ["operation_failed"]
 
     asyncio.run(run())

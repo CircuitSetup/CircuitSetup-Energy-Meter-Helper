@@ -653,8 +653,9 @@ class _Router:
         msg: Mapping[str, Any],
         operation: str,
     ) -> None:
-        controller = self.controller(msg["entry_id"])
+        controller: EntryWebsocketController | None = None
         try:
+            controller = self.controller(msg["entry_id"])
             result = await controller.async_call(
                 msg["type"], msg, getattr(connection.user, "id", None)
             )
@@ -672,7 +673,8 @@ class _Router:
                 ),
             )
         except asyncio.CancelledError as error:
-            controller.diagnostics.record_error(error)
+            if controller is not None:
+                controller.diagnostics.record_error(error)
             await async_reconcile_issues(
                 self.hass,
                 msg["entry_id"],
@@ -682,7 +684,8 @@ class _Router:
             )
             raise
         except Exception as error:  # noqa: BLE001 - stable websocket error boundary
-            controller.diagnostics.record_error(error)
+            if controller is not None:
+                controller.diagnostics.record_error(error)
             await async_reconcile_issues(
                 self.hass,
                 msg["entry_id"],
@@ -713,15 +716,19 @@ class _Router:
                 entry,
                 data={**entry.data, CONF_ESPHOME_ENTRY_ID: device_id},
             )
-        await self.hass.config_entries.async_reload(entry_id)
+        if not await self.hass.config_entries.async_reload(entry_id):
+            raise RuntimeError("helper rebind failed")
+        replacement = self.controllers.get(entry_id)
+        if replacement is None or replacement.esphome_entry_id != device_id:
+            raise RuntimeError("helper rebind did not publish the adopted device")
 
     async def subscribe(
         self, connection: ActiveConnection, msg: Mapping[str, Any]
     ) -> None:
-        controller = self.controller(msg["entry_id"])
         entry_id = msg["entry_id"]
         msg_id = msg["id"]
         try:
+            controller = self.controller(entry_id)
             pending: deque[Any] = deque()
             allow_transaction_change_keys = msg["type"] in _TRANSACTION_STATUS_COMMANDS
             initial_sent = False

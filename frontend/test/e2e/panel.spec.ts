@@ -350,7 +350,8 @@ test("native mocked HA websocket covers automatic onboarding after rescan discov
   await page.locator('[data-action="rescan"]').click();
   await expect(page.getByText("Device added to Home Assistant. Importing into ESPHome Builder…")).toBeVisible();
   await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Topology", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Topology evidence", exact: true })).toBeVisible();
 
   expect(frames[0]).toEqual({ type: "auth", access_token: "playwright-token" });
   const intents = frames.filter((frame) => frame.type.endsWith("/set_installer_intent"));
