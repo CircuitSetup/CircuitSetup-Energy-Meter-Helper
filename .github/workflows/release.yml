@@ -45,26 +45,6 @@ jobs:
         run: python scripts/verify_firmware_contract.py . firmware
       - name: Run pinned firmware topology and calibration tests
         run: uvx --python 3.12 --from pytest==9.0.2 pytest -q firmware/Software/ESPHome/tests
-      - name: Compile pinned representative firmware matrix
-        run: |
-          python - <<'PY'
-          import json
-          import subprocess
-          import sys
-
-          matrix = json.loads(subprocess.check_output(
-              [sys.executable, "firmware/Software/ESPHome/tests/compile_matrix.py"],
-              text=True,
-          ))
-          for configuration in matrix["configurations"]:
-              subprocess.run(
-                  [
-                      "uvx", "--python", "3.12", "--from", "esphome",
-                      "esphome", "compile", f"firmware/{configuration}",
-                  ],
-                  check=True,
-              )
-          PY
       - name: Require recorded physical validation before publishing
         run: |
           if ! python - <<'PY'

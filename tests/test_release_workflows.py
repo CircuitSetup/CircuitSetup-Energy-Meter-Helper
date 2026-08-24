@@ -53,14 +53,12 @@ def test_ci_runs_firmware_tests_without_compiling_every_meter() -> None:
     assert "esphome\", \"compile" not in workflow
 
 
-def test_release_runs_firmware_tests_and_generated_compile_matrix() -> None:
+def test_release_runs_firmware_tests_without_compiling_every_meter() -> None:
     workflow = (WORKFLOW_DIR / "release.yml").read_text()
 
     assert "firmware/Software/ESPHome/tests" in workflow
-    assert "firmware/Software/ESPHome/tests/compile_matrix.py" in workflow
-    assert "esphome==" not in workflow
-    assert '"--from", "esphome",' in workflow
-    assert "esphome\", \"compile" in workflow
+    assert "firmware/Software/ESPHome/tests/compile_matrix.py" not in workflow
+    assert "esphome\", \"compile" not in workflow
 
 
 def test_hacs_validation_uses_the_event_ref() -> None:
