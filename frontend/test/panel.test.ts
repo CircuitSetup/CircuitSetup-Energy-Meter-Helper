@@ -637,6 +637,8 @@ describe("CircuitSetup panel", () => {
     panel.showState("current");
     await panel.updateComplete;
 
+    panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button")[1]?.click();
+    await panel.updateComplete;
     const finish = panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary");
     finish?.click();
     finish?.click();
@@ -667,6 +669,8 @@ describe("CircuitSetup panel", () => {
     panel.showState("current");
     await panel.updateComplete;
 
+    panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button")[1]?.click();
+    await panel.updateComplete;
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.click();
     await tick(); await panel.updateComplete;
 
@@ -689,6 +693,8 @@ describe("CircuitSetup panel", () => {
     panel.showState("current");
     await panel.updateComplete;
 
+    panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button")[1]?.click();
+    await panel.updateComplete;
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.click();
     await panel.updateComplete;
 
@@ -1211,9 +1217,11 @@ describe("CircuitSetup panel", () => {
     const reference = panel.shadowRoot?.querySelector(".reference-block input");
     expect(Boolean(progress && reference
       && (progress.compareDocumentPosition(reference) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
-    expect(reference?.closest(".reference-block")?.querySelector("button.primary")).not.toBeNull();
-    const check = panel.shadowRoot?.querySelector<HTMLButtonElement>(".calibration-step button.secondary");
-    expect(check?.parentElement?.classList.contains("stability-line")).toBe(true);
+    expect(reference?.closest(".reference-block")?.querySelector("button.primary")).toBeNull();
+    const actions = panel.shadowRoot?.querySelector(".calibration-actions");
+    const check = actions?.querySelector<HTMLButtonElement>("button.secondary");
+    expect([...actions?.querySelectorAll("button") ?? []].map((button) => button.textContent?.trim()))
+      .toEqual(["Check stability", "Calibrate voltage"]);
     check?.click();
     check?.click();
     await tick(); await panel.updateComplete;
@@ -1229,8 +1237,109 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(state.voltageGroupKeys()).toEqual(["addon1_1", "addon1_2"]);
     expect(panel.shadowRoot?.querySelectorAll(".reference-block input")).toHaveLength(2);
-    expect(text(panel)).toContain("Saved in flash");
+    expect(text(panel)).toContain("Saved flash");
     expect(text(panel)).toContain("Configuration");
+  });
+
+  it("shows both voltage-chip results once and confirms board completion", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const result = (groupKey: string, instanceId: string, firstChannel: number) => ({
+      state: "applied_pending_restart_verification", group_key: groupKey, phase: null,
+      changed_channels: [firstChannel, firstChannel + 1, firstChannel + 2], iteration: 1,
+      before_values: [120, 120, 120], after_values: [122.4, 122.4, 122.4], error_percent_values: [0, 0, 0],
+      gain_evidence: { outcome: "success", instance_id: instanceId, operation_sequence: 1,
+        phases: ["A", "B", "C"].map((phase, index) => ({ phase, measured_voltage: 122.3 + index / 100,
+          measured_current: 0, reference_voltage: 122.4, reference_current: 0,
+          old_voltage_gain: 7585 + index, new_voltage_gain: 7591 + index,
+          old_current_gain: 11143, new_current_gain: 11143 })), flash_saved: true },
+      restore_evidence: { reference: "zeroed" }, retry_allowed: false,
+    });
+    const state = panel as unknown as Record<string, unknown>;
+    state.session = { session_id: "session", device_id: "meter-1", state: "applied_pending_restart_verification",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] },
+      calibration_sources: { meter_main1: "flash", meter_main2: "flash" }, has_pending_calibration: true };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [] };
+    state.voltageReferences = [122.4, 0];
+    state.calibrationByTarget = new Map([
+      ["voltage:main_1", result("main_1", "meter_main1", 1)],
+      ["voltage:main_2", result("main_2", "meter_main2", 4)],
+    ]);
+
+    panel.showState("voltage");
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelectorAll('[aria-label="Calibration evidence"]')).toHaveLength(2);
+    expect(text(panel)).toContain("Gain evidence · meter_main1");
+    expect(text(panel)).toContain("Gain evidence · meter_main2");
+    expect(text(panel)).toContain("Voltage calibration complete for Main Board");
+    expect(text(panel)).toContain("Voltage calibrated this session");
+    expect(panel.shadowRoot?.querySelector("details")).toBeNull();
+  });
+
+  it("separates active flash source from current calibration completion", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.session = { session_id: "session", device_id: "meter-1", state: "applied_pending_restart_verification",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] },
+      calibration_sources: { meter_main1: "flash", meter_main2: "flash" }, has_pending_calibration: true };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [] };
+    state.inventory = { channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1,
+      reporting_multiplier: 1 })) };
+    state.calibrationByTarget = new Map([["voltage:main_1", { state: "applied_pending_restart_verification",
+      group_key: "main_1", phase: null, changed_channels: [1, 2, 3], iteration: 1,
+      before_values: [], after_values: [], error_percent_values: [],
+      gain_evidence: { instance_id: "meter_main1", flash_saved: true }, restore_evidence: null, retry_allowed: false }]]);
+
+    panel.showState("current");
+    await panel.updateComplete;
+
+    const sourceRows = [...panel.shadowRoot?.querySelectorAll(".calibration-source tbody tr") ?? []]
+      .map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent?.trim()).join(" "));
+    expect(sourceRows).toEqual([
+      "meter_main1 Saved flash No",
+      "meter_main2 Saved flash No",
+    ]);
+    expect(text(panel)).toContain("Current calibrated this session");
+    expect(text(panel)).not.toContain("Current calibration complete");
+    expect(panel.shadowRoot?.querySelector("details")).toBeNull();
+  });
+
+  it("keeps skip separate from continue without discarding completed gains", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    const completed = new Map([["voltage:main_1", { state: "applied_pending_restart_verification",
+      group_key: "main_1", phase: null, changed_channels: [1, 2, 3], iteration: 1,
+      before_values: [], after_values: [], error_percent_values: [], gain_evidence: null,
+      restore_evidence: null, retry_allowed: false }]]);
+    state.session = { session_id: "session", device_id: "meter-1", state: "applied_pending_restart_verification",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] }, calibration_sources: {},
+      has_pending_calibration: true };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [] };
+    state.inventory = { channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1,
+      reporting_multiplier: 1 })) };
+    state.calibrationByTarget = completed;
+
+    panel.showState("voltage"); await panel.updateComplete;
+    let footer = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []];
+    expect(footer.map((button) => button.textContent?.trim())).toEqual(["Back", "Skip voltage calibration", "Continue"]);
+    footer[1]?.click(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Voltage");
+    expect(state.calibrationByTarget).toBe(completed);
+    footer = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []];
+    footer[2]?.click(); await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Current");
+    footer = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []];
+    expect(footer.map((button) => button.textContent?.trim())).toEqual(["Back", "Skip current calibration", "Continue"]);
+    footer[1]?.click(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Current");
+    expect(state.calibrationByTarget).toBe(completed);
+    footer = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []];
+    footer[2]?.click(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Restart");
   });
 
   it("confirms an existing-device selection while topology loads", async () => {
@@ -1294,11 +1403,20 @@ describe("CircuitSetup panel", () => {
     voltageSkip?.click();
     await panel.updateComplete;
 
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Voltage");
+    [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []]
+      .find((button) => button.textContent?.trim() === "Continue")?.click();
+    await panel.updateComplete;
+
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Current");
-    const finish = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []]
-      .find((button) => button.textContent?.includes("Finish without calibration"));
-    expect(finish).toBeDefined();
-    finish?.click();
+    const currentSkip = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []]
+      .find((button) => button.textContent?.includes("Skip current calibration"));
+    expect(currentSkip).toBeDefined();
+    currentSkip?.click();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Current");
+    [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []]
+      .find((button) => button.textContent?.trim() === "Continue")?.click();
     await tick();
     await panel.updateComplete;
 
@@ -1828,6 +1946,47 @@ describe("CircuitSetup panel", () => {
     expect(rollback?.disabled).toBe(false);
     rollback?.click(); await tick(); await panel.updateComplete;
     expect(rollbackCalls).toBe(1);
+  });
+
+  it("shows restart progress and suppresses duplicate verification requests", async () => {
+    let resolveRestart!: (value: unknown) => void;
+    const pendingRestart = new Promise<unknown>((resolve) => { resolveRestart = resolve; });
+    let restartCalls = 0;
+    const restartResult = { mac: "aabbccddeeff", config_filename: null, config_sha256: null,
+      topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
+      topology_voltage_layout: "standard", connection_generation: 4,
+      groups: [{ instance_id: "meter_main1", phase_gains: [[7305, 5500], [7305, 5500], [7305, 5500]] }],
+      verification_id: "4".repeat(32),
+      source_authority: "saved_flash", source_handoff_available: false, source_handoff_transaction_id: null,
+      source_handoff_firmware_installed: false, offset_groups: [], power_offset_groups: [] };
+    const panel = await mount({
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "restart_and_verify") { restartCalls += 1; return await pendingRestart as T; }
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    });
+    const state = panel as unknown as Record<string, unknown>;
+    state.session = { session_id: "session", device_id: "meter-1", state: "applied_pending_restart_verification",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] }, has_pending_calibration: true };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [] };
+    panel.showState("restart"); await panel.updateComplete;
+
+    panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.click();
+    await panel.updateComplete;
+    const busy = panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary");
+    expect(busy?.disabled).toBe(true);
+    expect(busy?.textContent).toContain("Restarting and verifying");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .secondary")?.disabled).toBe(true);
+    busy?.click(); await tick();
+    expect(restartCalls).toBe(1);
+
+    resolveRestart(restartResult);
+    await vi.waitFor(() => expect((state.restartResult as { verification_id?: string } | null)?.verification_id)
+      .toBe("4".repeat(32)));
   });
 
   it("returns from Safety to CT Settings and cleans up the active session", async () => {

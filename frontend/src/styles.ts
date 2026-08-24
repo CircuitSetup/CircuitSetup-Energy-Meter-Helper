@@ -108,8 +108,7 @@ export const panelStyles = css`
   .check-row { display: flex; align-items: center; gap: 10px; }
   .reference-block { display: grid; max-width: 420px; gap: 12px; }
   .reference-block label { display: grid; gap: 6px; font-weight: 700; }
-  .reference-block .primary { justify-self: start; }
-  .stability-line { display: block; margin: 18px 0 10px; }
+  .calibration-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0 10px; }
   .calibration-step input { padding: 10px; border: 1px solid #b8c1cc; }
   .group-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
   .group-grid section { border: 1px solid var(--border); }
@@ -126,7 +125,9 @@ export const panelStyles = css`
   .offset-stage-stepper .active button { color: #fff; background: var(--navy); border-color: var(--navy); }
   .offset-stage-stepper .complete button { color: var(--teal); border-color: var(--teal); }
   .offset-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0; }
-  .offset-footer { gap: 12px; }
+  .action-footer.offset-footer { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; }
+  .offset-footer > :first-child { justify-self: start; }
+  .offset-footer > :last-child { justify-self: end; }
   .threshold-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 24px; margin: 12px 0; }
   .measurement-evidence { margin: 14px 0; padding: 12px 16px; border: 1px solid var(--border); background: var(--band); }
   .measurement-evidence h3 { margin-top: 0; }
@@ -156,8 +157,6 @@ export const panelStyles = css`
     .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid { grid-template-columns: 1fr; }
     .progress-steps { grid-template-columns: 1fr; gap: 8px; }
     .action-footer { left: 0; padding: 12px 18px; }
-    .offset-footer { display: grid; grid-template-columns: 1fr 1fr; }
-    .offset-footer .primary { grid-column: 1 / -1; }
     .offset-step { padding-bottom: 84px; }
     .identity-strip, .confirmation-actions, .group-nav { align-items: stretch; flex-direction: column; }
     .evidence-table { display: block; overflow-x: auto; }
