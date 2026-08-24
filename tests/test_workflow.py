@@ -132,15 +132,18 @@ def adoption_workflow(
     listing: dict[str, list[dict[str, str]]],
     previous_entry_id: str | None = "old-meter",
     import_error: bool = False,
+    device_name: str | None = "new-meter",
 ) -> tuple[EntryWorkflow, Any]:
     """Build a trusted-discovery adoption workflow with local fakes."""
 
     class Builder:
         def __init__(self) -> None:
             self.listing = listing
+            self.list_calls = 0
             self.imports: list[dict[str, str]] = []
 
         async def async_list_devices(self) -> dict[str, list[dict[str, str]]]:
+            self.list_calls += 1
             return self.listing
 
         async def async_import_device(self, payload: dict[str, str]) -> str:
@@ -153,7 +156,7 @@ def adoption_workflow(
         "new-meter": SimpleNamespace(
             title="New meter",
             unique_id="aabbccddeeff",
-            data={"device_name": "new-meter"},
+            data={} if device_name is None else {"device_name": device_name},
             runtime_data=SimpleNamespace(
                 device_info=SimpleNamespace(
                     package_import_url="github://circuitsetup/package.yaml",
@@ -239,6 +242,27 @@ def test_adopt_reuses_existing_builder_configuration() -> None:
             "device_id": "new-meter",
             "configuration": "existing.yaml",
         }
+        assert builder.imports == []
+
+    asyncio.run(run())
+
+
+def test_adopt_rejects_missing_device_name_before_builder_lookup() -> None:
+    async def run() -> None:
+        workflow, builder = adoption_workflow(
+            listing={
+                "configured": [
+                    {"name": "unrelated", "configuration": "unrelated.yaml"}
+                ],
+                "importable": [],
+            },
+            device_name=None,
+        )
+
+        with pytest.raises(WorkflowCapabilityUnavailable, match="metadata"):
+            await workflow.async_adopt_device("new-meter")
+
+        assert builder.list_calls == 0
         assert builder.imports == []
 
     asyncio.run(run())

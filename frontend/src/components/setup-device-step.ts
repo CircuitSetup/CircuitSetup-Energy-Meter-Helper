@@ -20,7 +20,7 @@ export function setupDeviceStep(
   busyAction = "",
   discoverOnly = false,
   firmwareCatalog: TemplateResult = html``,
-  importFailed = false,
+  importFailedDeviceId: string | null = null,
 ): TemplateResult {
   return html`
     <section class="step-content setup-step" aria-labelledby="step-heading">
@@ -33,7 +33,7 @@ export function setupDeviceStep(
               <span><strong>${device.title}</strong><small>${device.project_name} · ${device.project_version ?? "version unavailable"}</small></span>
               <span>Device Builder: ${device.configuration ? "Yes" : device.importable ? "Yes — import available" : "No"}</span>
               ${device.importable && !device.configuration ? html`<button class="secondary" ?disabled=${Boolean(busyAction)}
-                @click=${() => adopt(device.entry_id)}>${importFailed ? "Retry import" : "Import"}</button>` : ""}
+                @click=${() => adopt(device.entry_id)}>${importFailedDeviceId === device.entry_id ? "Retry import" : "Import"}</button>` : ""}
               <button class="primary" data-action="configure-device" ?disabled=${Boolean(busyAction)}
                 @click=${() => configure(device.entry_id)}>${busyAction === `topology:${device.entry_id}` ? "Loading topology…" : "Configure"}</button>
             </div>

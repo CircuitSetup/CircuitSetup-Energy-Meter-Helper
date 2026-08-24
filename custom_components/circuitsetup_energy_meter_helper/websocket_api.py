@@ -86,6 +86,14 @@ _TRANSACTION_STATUS_COMMANDS = frozenset(
         "subscribe_config_transaction",
     )
 )
+_OWNERSHIP_CREATION_OPERATIONS = frozenset(
+    (
+        "adopt_device",
+        "preview_ct_config",
+        "preview_calibrated_gains",
+        "start_session",
+    )
+)
 
 _ROUTER = "_websocket_router"
 _MAX_ITEMS = 100
@@ -632,8 +640,20 @@ class _Router:
             raise CapabilityUnavailable from None
 
     async def call(self, connection: ActiveConnection, msg: Mapping[str, Any]) -> None:
-        controller = self.controller(msg["entry_id"])
         operation = msg["type"].removeprefix(_PREFIX)
+        if operation in _OWNERSHIP_CREATION_OPERATIONS:
+            async with self._rebind_lock:
+                await self._call(connection, msg, operation)
+            return
+        await self._call(connection, msg, operation)
+
+    async def _call(
+        self,
+        connection: ActiveConnection,
+        msg: Mapping[str, Any],
+        operation: str,
+    ) -> None:
+        controller = self.controller(msg["entry_id"])
         try:
             result = await controller.async_call(
                 msg["type"], msg, getattr(connection.user, "id", None)
@@ -656,7 +676,7 @@ class _Router:
             await async_reconcile_issues(
                 self.hass,
                 msg["entry_id"],
-                msg["type"].removeprefix(_PREFIX),
+                operation,
                 signals_from_result(error),
                 authoritative=False,
             )
@@ -664,7 +684,9 @@ class _Router:
         except Exception as error:  # noqa: BLE001 - stable websocket error boundary
             controller.diagnostics.record_error(error)
             await async_reconcile_issues(
-                self.hass, msg["entry_id"], msg["type"].removeprefix(_PREFIX),
+                self.hass,
+                msg["entry_id"],
+                operation,
                 signals_from_result(error),
                 authoritative=False,
             )
@@ -682,17 +704,16 @@ class _Router:
     async def _async_rebind_device(
         self, entry_id: str, device_id: str
     ) -> None:
-        async with self._rebind_lock:
-            controller = self.controllers.get(entry_id)
-            entry = self.hass.config_entries.async_get_entry(entry_id)
-            if entry is None or controller is None or controller.esphome_entry_id == device_id:
-                return
-            if entry.data.get(CONF_ESPHOME_ENTRY_ID) != device_id:
-                self.hass.config_entries.async_update_entry(
-                    entry,
-                    data={**entry.data, CONF_ESPHOME_ENTRY_ID: device_id},
-                )
-            await self.hass.config_entries.async_reload(entry_id)
+        controller = self.controllers.get(entry_id)
+        entry = self.hass.config_entries.async_get_entry(entry_id)
+        if entry is None or controller is None or controller.esphome_entry_id == device_id:
+            return
+        if entry.data.get(CONF_ESPHOME_ENTRY_ID) != device_id:
+            self.hass.config_entries.async_update_entry(
+                entry,
+                data={**entry.data, CONF_ESPHOME_ENTRY_ID: device_id},
+            )
+        await self.hass.config_entries.async_reload(entry_id)
 
     async def subscribe(
         self, connection: ActiveConnection, msg: Mapping[str, Any]

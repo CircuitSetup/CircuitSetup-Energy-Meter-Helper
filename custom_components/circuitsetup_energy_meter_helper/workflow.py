@@ -473,13 +473,15 @@ class EntryWorkflow:
         self._assert_rebind_idle(device_id)
         builder = self._require_builder()
         entry = self._entry(device_id)
+        name = getattr(entry, "data", {}).get("device_name")
+        if not isinstance(name, str):
+            raise WorkflowCapabilityUnavailable("adoption metadata is unavailable")
         status = device_builder_status(entry, await builder.async_list_devices())
         if status.configuration is not None:
             return {"device_id": device_id, "configuration": status.configuration}
         info = getattr(getattr(entry, "runtime_data", None), "device_info", None)
         package_url = getattr(info, "package_import_url", None)
-        name = getattr(entry, "data", {}).get("device_name")
-        if not isinstance(package_url, str) or not isinstance(name, str):
+        if not isinstance(package_url, str):
             raise WorkflowCapabilityUnavailable("adoption metadata is unavailable")
         configuration = await builder.async_import_device(
             {

@@ -148,6 +148,7 @@ export class CircuitSetupPanel extends LitElement {
     this.firmwareCatalogError = "";
     this.resolvedFirmwareOptions = [];
     this.setupDeviceIds = new Set();
+    this.pendingAction = "";
     super.disconnectedCallback();
   }
 
