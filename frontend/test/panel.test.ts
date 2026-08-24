@@ -8,7 +8,7 @@ import type { CircuitSetupPanel } from "../src/panel";
 import { changesFromDrafts, type CtDraft } from "../src/components/ct-inventory-step";
 import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
-import type { CtInventory } from "../src/types";
+import type { CtInventory, MeterTopology } from "../src/types";
 
 const tick = async () => {
   await Promise.resolve();
@@ -299,16 +299,18 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.9.0");
   });
 
-  it("shows existing meters with semantic eleven-step navigation and setup controls", async () => {
+  it("shows existing meters with semantic nine-step navigation and setup controls", async () => {
     const panel = await mount(
       makeHass({ setup_status: { state: "device_discovered", devices: [device] } }),
     );
 
     expect(text(panel)).toContain("CircuitSetup Energy Meter Helper");
-    expect(panel.shadowRoot?.querySelectorAll("nav ol li")).toHaveLength(11);
-    expect(Array.from(panel.shadowRoot?.querySelectorAll("nav ol li") ?? []).map((item) => item.textContent?.trim()))
-      .toContain("6Offset");
-    expect(panel.shadowRoot?.querySelector(".mobile-progress")?.textContent).toContain("of 11");
+    const steps = Array.from(panel.shadowRoot?.querySelectorAll("nav ol li") ?? []).map((item) => item.textContent?.trim());
+    expect(steps).toHaveLength(9);
+    expect(steps).toContain("4Offset");
+    expect(steps.join(" ")).not.toContain("Discover");
+    expect(steps.join(" ")).not.toContain("Topology");
+    expect(panel.shadowRoot?.querySelector(".mobile-progress")?.textContent).toContain("of 9");
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
     expect(text(panel)).toContain("Configure an existing device");
     expect(text(panel)).toContain("Basement meter");
@@ -359,7 +361,7 @@ describe("CircuitSetup panel", () => {
     expect(handoff).not.toMatch(/wi-fi|password|credential/i);
   });
 
-  it("advances setup discovery only when a subscription adds a compatible device", async () => {
+  it("keeps a newly discovered compatible device on Setup Device", async () => {
     let setupCallback: ((message: unknown) => void) | undefined;
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
@@ -379,13 +381,12 @@ describe("CircuitSetup panel", () => {
 
     const state = panel as unknown as { selectedDeviceId: string | null };
     expect(state.selectedDeviceId).toBe("meter-1");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
     expect(panel.shadowRoot?.querySelector(".sr-status")?.textContent).toContain("CircuitSetup energy meter discovered.");
-    expect(panel.shadowRoot?.querySelector('[name="addon-count"]')).toBeNull();
-    expect(panel.shadowRoot?.querySelector("esp-web-install-button")).toBeNull();
+    expect(panel.shadowRoot?.querySelector('[name="addon-count"]')).not.toBeNull();
   });
 
-  it("does not reset selection or re-enter Discover for a repeated setup snapshot", async () => {
+  it("does not reset selection for a repeated setup snapshot", async () => {
     let setupCallback: ((message: unknown) => void) | undefined;
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
@@ -412,7 +413,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
   });
 
-  it("records discovery updates outside Setup Device as the baseline without auto-advancing on return", async () => {
+  it("records discovery updates later in the flow without returning to Setup Device", async () => {
     let setupCallback: ((message: unknown) => void) | undefined;
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
@@ -425,11 +426,11 @@ describe("CircuitSetup panel", () => {
       } },
     };
     const panel = await mount(hass);
-    const state = panel as unknown as { showState(step: "topology" | "setup"): void };
-    state.showState("topology");
+    const state = panel as unknown as { showState(step: "ct" | "setup"): void };
+    state.showState("ct");
     setupCallback?.({ state: "device_discovered", devices: [device] });
     await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Topology");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Settings");
     state.showState("setup");
     setupCallback?.({ state: "device_discovered", devices: [device] });
     await panel.updateComplete;
@@ -726,7 +727,7 @@ describe("CircuitSetup panel", () => {
     await tick();
     await panel.updateComplete;
 
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
     expect((panel as unknown as { selectedDeviceId: string | null }).selectedDeviceId).toBe("meter-1");
     expect(text(panel)).toContain("Basement meter");
     expect(text(panel)).toContain("2026.8.0");
@@ -771,7 +772,9 @@ describe("CircuitSetup panel", () => {
     setupCallback?.(snapshot);
     await panel.updateComplete;
     const state = panel as unknown as { selectedDeviceId: string | null; topology: unknown; announcement: string };
-    const preservedTopology = { source: "subscription" };
+    const preservedTopology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
     state.topology = preservedTopology;
 
     resolveRescan?.(snapshot);
@@ -781,19 +784,48 @@ describe("CircuitSetup panel", () => {
     expect(state.selectedDeviceId).toBe("meter-1");
     expect(state.topology).toBe(preservedTopology);
     expect(state.announcement).toBe("CircuitSetup energy meter discovered.");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
   });
 
-  it("keeps the current Discover selection when Rescan returns the same compatible device", async () => {
+  it("does not replace an active inline topology review when another meter is discovered", async () => {
+    let setupCallback: ((message: unknown) => void) | undefined;
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        if (String(message.type).endsWith("/setup_status")) return { state: "device_discovered", devices: [device] } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async (callback) => {
+        setupCallback = callback as (message: unknown) => void;
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    const topology: MeterTopology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
+    panel.showTopology(topology);
+    const meter2 = { ...device, entry_id: "meter-2", title: "Garage meter" };
+
+    setupCallback?.({ state: "device_discovered", devices: [device, meter2] });
+    await panel.updateComplete;
+
+    const state = panel as unknown as { selectedDeviceId: string | null; topology: unknown };
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(state.topology).toBe(topology);
+    expect(text(panel)).toContain("Topology evidence");
+  });
+
+  it("keeps the current Setup Device selection when Rescan returns the same compatible device", async () => {
     const snapshot = { state: "device_discovered", devices: [device] };
     const panel = await mount(makeHass({
       setup_status: snapshot,
       set_installer_intent: { state: "installer_guide", devices: [] },
       rescan: snapshot,
     }));
-    const state = panel as unknown as { showState(step: "discover"): void; topology: unknown; announcement: string };
-    state.showState("discover");
-    const preservedTopology = { source: "discover" };
+    const state = panel as unknown as { topology: unknown; announcement: string };
+    const preservedTopology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
     state.topology = preservedTopology;
     state.announcement = "CircuitSetup energy meter discovered.";
     panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
@@ -802,7 +834,7 @@ describe("CircuitSetup panel", () => {
 
     expect(state.topology).toBe(preservedTopology);
     expect(state.announcement).toBe("CircuitSetup energy meter discovered.");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
   });
 
   it("records the firmware selected at Rescan click time", async () => {
@@ -1350,7 +1382,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Restart");
   });
 
-  it("confirms an existing-device selection while topology loads", async () => {
+  it("keeps topology review inline on Setup Device", async () => {
     let resolveTopology!: (value: unknown) => void;
     const pending = new Promise<unknown>((resolve) => { resolveTopology = resolve; });
     const hass: HomeAssistant = {
@@ -1374,7 +1406,24 @@ describe("CircuitSetup panel", () => {
       connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
       evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] });
     await tick(); await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Topology");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+    expect(text(panel)).toContain("Topology evidence");
+    expect(panel.shadowRoot?.querySelector("[data-action=continue]")).not.toBeNull();
+  });
+
+  it("clears inline topology and mismatch errors when Back is clicked", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    panel.showTopology({ addon_count: 0, board_count: 1, ct_count: 5, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] });
+    await panel.updateComplete;
+
+    [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("button") ?? []]
+      .find((button) => button.textContent?.trim() === "Back")?.click();
+    await panel.updateComplete;
+
+    expect(text(panel)).not.toContain("Topology evidence");
+    expect(panel.shadowRoot?.querySelector("[role=alert]")).toBeNull();
   });
 
   it("skips gain calibration and completes the unchanged session without a restart", async () => {
@@ -1720,7 +1769,7 @@ describe("CircuitSetup panel", () => {
 
     callbacks[1]?.({ state: "device_discovered", devices: [device] });
     await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Discover");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
   });
 
   it("reattaches setup, transaction, and session subscriptions for retained live handles", async () => {

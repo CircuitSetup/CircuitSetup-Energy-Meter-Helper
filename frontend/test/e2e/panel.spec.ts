@@ -266,7 +266,8 @@ async function openInventory(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').click();
-  await expect(page.getByRole("heading", { name: "Topology", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Topology evidence", exact: true })).toBeVisible();
   await page.locator('[data-action="continue"]').click();
   await expect(page.getByRole("heading", { name: "CT Settings" })).toBeVisible();
 }
@@ -334,13 +335,13 @@ test("native mocked HA websocket covers no-device, installer intent, wiring, res
   expect(operations(frames)).toEqual(expect.arrayContaining(["subscribe_setup", "rescan", "adopt_device"]));
 });
 
-test("a setup subscription hands a newly discovered meter to Discover once", async ({ page }) => {
+test("a setup subscription keeps a newly discovered meter on Setup Device", async ({ page }) => {
   await mockHomeAssistant(page, { setupEvent: "device" });
   await page.goto("/test/harness.html");
 
-  await expect(page.getByRole("heading", { name: "Discover", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
   await expect(page.getByText("CircuitSetup energy meter discovered.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Discover", exact: true })).toHaveCount(1);
+  await expect(page.getByRole("heading", { name: "Discover", exact: true })).toHaveCount(0);
 });
 
 test("inline provisioning resolves selected manifests without popup, navigation, credentials, or URL payloads", async ({ page }) => {

@@ -33,8 +33,6 @@ import type {
 
 const STEPS: Array<[PanelStep, string]> = [
   ["setup", "Setup Device"],
-  ["discover", "Discover"],
-  ["topology", "Topology"],
   ["ct", "CT Settings"],
   ["safety", "Safety"],
   ["offset", "Offset"],
@@ -178,9 +176,8 @@ export class CircuitSetupPanel extends LitElement {
           .sort((first, second) => first.entry_id.localeCompare(second.entry_id));
         this.setup = snapshot;
         this.setupDeviceIds = new Set(snapshot.devices.map((device) => device.entry_id));
-        if (this.step === "setup" && discovered.length) {
+        if (this.step === "setup" && !this.topology && discovered.length) {
           this.selectDevice(discovered[0]!.entry_id);
-          this.navigate("discover");
           this.announcement = "CircuitSetup energy meter discovered.";
         }
         this.requestUpdate();
@@ -331,7 +328,6 @@ export class CircuitSetupPanel extends LitElement {
 
   public showTopology(topology: MeterTopology): void {
     this.topology = topology;
-    this.navigate("topology");
     this.error = topologyMismatch(topology)
       || topology.project_name !== this.selectedProjectName()
       ? "Topology mismatch"
@@ -374,10 +370,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private back(): void {
-    if (this.step === "topology") {
-      this.selectDevice(null);
-      this.navigate("setup");
-    } else if (this.step === "ct") this.navigate("topology");
+    if (this.step === "ct") this.navigate("setup");
     else if (this.step === "safety") void this.cancelSession("ct");
     else if (this.step === "offset") this.navigate("safety");
     else if (this.step === "voltage") this.navigate("offset");
@@ -448,7 +441,7 @@ export class CircuitSetupPanel extends LitElement {
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      const unchangedDiscovery = this.step === "discover" && this.selectedDeviceId !== null
+      const unchangedDiscovery = this.selectedDeviceId !== null
         && setup.devices.length === this.setupDeviceIds.size
         && setup.devices.some((device) => device.entry_id === this.selectedDeviceId)
         && setup.devices.every((device) => this.setupDeviceIds.has(device.entry_id));
@@ -456,7 +449,6 @@ export class CircuitSetupPanel extends LitElement {
       this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
       if (setup.devices.length && !unchangedDiscovery) {
         this.selectDevice(this.firstDeviceId(setup.devices));
-        this.navigate("discover");
         this.announcement = "CircuitSetup energy meter discovered.";
       }
       else if (!setup.devices.length) {
@@ -1186,16 +1178,13 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private stepBody(): TemplateResult {
-    if (this.step === "setup") return setupDeviceStep(this.setup, this.addonCount, this.connection,
+    if (this.step === "setup") return html`${setupDeviceStep(this.setup, this.addonCount, this.connection,
       (value) => { this.addonCount = value; this.refreshFirmwareOptions(); },
       (value) => { this.connection = value; this.refreshFirmwareOptions(); },
-      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, false, this.firmwareCatalog());
-    if (this.step === "discover") return setupDeviceStep(this.setup, this.addonCount, this.connection,
-      () => undefined, () => undefined,
-      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, true);
-    if (this.step === "topology" && this.topology) return topologyStep(this.topology, this.selectedProjectVersion(),
-      () => this.back(), () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
-        ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session");
+      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, Boolean(this.topology), this.firmwareCatalog())}
+      ${this.topology ? topologyStep(this.topology, this.selectedProjectVersion(),
+        () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
+          ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session") : nothing}`;
     if (this.step === "ct" && this.inventory) return html`<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
       (board) => { this.board = board; this.requestUpdate(); },
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session")}`;
@@ -1283,7 +1272,7 @@ export class CircuitSetupPanel extends LitElement {
           <h1 id="step-heading" tabindex="-1">${STEPS[currentIndex]?.[1]}</h1>
           ${this.error ? html`<div class="error-panel" role="alert" tabindex="-1"><strong>${this.error}</strong></div>` : nothing}
           ${this.stepBody()}
-          ${currentIndex >= 4 && !["voltage", "current", "summary"].includes(this.step) ? technicalDetails(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.completedWithoutChanges) : nothing}
+          ${currentIndex >= 2 && !["voltage", "current", "summary"].includes(this.step) ? technicalDetails(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.completedWithoutChanges) : nothing}
           <div class="sr-status" role="status" aria-live="polite">${this.announcement}</div>
         </main>
       </div>
