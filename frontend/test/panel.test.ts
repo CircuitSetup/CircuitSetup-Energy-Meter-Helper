@@ -1306,13 +1306,19 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("details")).toBeNull();
   });
 
-  it("keeps skip separate from continue without discarding completed gains", async () => {
+  it("requires both voltage chips or explicit skip without discarding completed gains", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     const state = panel as unknown as Record<string, unknown>;
-    const completed = new Map([["voltage:main_1", { state: "applied_pending_restart_verification",
-      group_key: "main_1", phase: null, changed_channels: [1, 2, 3], iteration: 1,
-      before_values: [], after_values: [], error_percent_values: [], gain_evidence: null,
-      restore_evidence: null, retry_allowed: false }]]);
+    const completed = new Map([
+      ["voltage:main_1", { state: "applied_pending_restart_verification",
+        group_key: "main_1", phase: null, changed_channels: [1, 2, 3], iteration: 1,
+        before_values: [], after_values: [], error_percent_values: [], gain_evidence: null,
+        restore_evidence: null, retry_allowed: false }],
+      ["voltage:main_2", { state: "result_outside_tolerance",
+        group_key: "main_2", phase: null, changed_channels: [], iteration: 1,
+        before_values: [], after_values: [], error_percent_values: [], gain_evidence: null,
+        restore_evidence: null, retry_allowed: true }],
+    ]);
     state.session = { session_id: "session", device_id: "meter-1", state: "applied_pending_restart_verification",
       safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] }, calibration_sources: {},
       has_pending_calibration: true };
@@ -1325,10 +1331,12 @@ describe("CircuitSetup panel", () => {
     panel.showState("voltage"); await panel.updateComplete;
     let footer = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []];
     expect(footer.map((button) => button.textContent?.trim())).toEqual(["Back", "Skip voltage calibration", "Continue"]);
+    expect(footer[2]?.disabled).toBe(true);
     footer[1]?.click(); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Voltage");
     expect(state.calibrationByTarget).toBe(completed);
     footer = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []];
+    expect(footer[2]?.disabled).toBe(false);
     footer[2]?.click(); await panel.updateComplete;
 
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Current");

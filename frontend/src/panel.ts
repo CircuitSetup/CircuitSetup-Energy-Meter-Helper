@@ -1141,6 +1141,8 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private hasCompletedCalibration(target: "voltage" | "current"): boolean {
+    if (target === "voltage") return this.voltageGroupKeys().every((targetId) =>
+      this.calibrationByTarget.get(`voltage:${targetId}`)?.state === "applied_pending_restart_verification");
     return [...this.calibrationByTarget.entries()].some(([key, result]) =>
       key.startsWith(`${target}:`) && result.state === "applied_pending_restart_verification");
   }
