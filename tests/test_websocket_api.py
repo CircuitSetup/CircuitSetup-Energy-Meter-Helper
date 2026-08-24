@@ -66,6 +66,7 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
     HelperStore,
     VerifiedCalibrationRecord,
     VerifiedGainGroup,
+    VerifiedOffsetGroup,
 )
 from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
     ALL_COMMANDS,
@@ -547,6 +548,15 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
             "target": "voltage",
             "target_ids": ["main_1", "main_2"],
         }
+    elif suffix in {"check_offset_readiness", "calibrate_offset"}:
+        base |= {"session_id": "session", "board_index": 0, "stage": 1}
+        if suffix == "calibrate_offset":
+            base["preparation_acknowledged"] = True
+    elif suffix in {
+        "skip_offset_calibration",
+        "complete_calibration_without_changes",
+    }:
+        base["session_id"] = "session"
     elif suffix == "calibrate_voltage":
         base |= {
             "session_id": "session",
@@ -1624,6 +1634,76 @@ def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
     asyncio.run(run())
 
 
+def test_flash_handoff_rejects_verified_offset_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Offset tables remain flash-backed because YAML handoff carries gains only."""
+
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        handle = workflow._sessions[status.session_id]
+        handle.state = "verified"
+        transaction_id = "2" * 32
+        record = VerifiedCalibrationRecord(
+            mac=handle.mac,
+            config_filename="meter.yaml",
+            config_sha256="a" * 64,
+            topology_addon_count=handle.topology.addon_count,
+            topology_project_name=handle.topology.project_name,
+            topology_connection_type=handle.topology.connection_type,
+            topology_voltage_layout=handle.topology.voltage_layout,
+            connection_generation=handle.binding.connection_generation,
+            groups=(
+                VerifiedGainGroup(
+                    "meter_main1",
+                    ((7301, 28001), (7301, 28002), (7301, 28003)),
+                ),
+            ),
+            verification_id="1" * 32,
+            offset_groups=(
+                VerifiedOffsetGroup(
+                    "meter_main1", ((-12, 31), (-13, 32), (-14, 33))
+                ),
+            ),
+            source_handoff_available=False,
+            source_handoff_transaction_id=transaction_id,
+            source_handoff_firmware_installed=True,
+        )
+        completed = False
+
+        class Store:
+            async def async_get_verified_calibration(
+                self, mac: str
+            ) -> VerifiedCalibrationRecord | None:
+                return record if mac == record.mac else None
+
+            async def async_complete_verified_calibration_handoff(
+                self, *_args: str
+            ) -> bool:
+                nonlocal completed
+                completed = True
+                return True
+
+        async def unexpected_sources(_instances: set[str]) -> dict[str, str]:
+            raise AssertionError("offset handoff must stop before reading gain sources")
+
+        workflow._store = Store()  # type: ignore[assignment]
+        workflow._api.async_calibration_sources = unexpected_sources  # type: ignore[method-assign,union-attr]
+
+        with pytest.raises(WorkflowHandleError, match="offset calibration remains saved in flash"):
+            await workflow.async_clear_calibration_flash(
+                status.session_id, record.verification_id, transaction_id
+            )
+
+        assert not completed
+        assert record.source_authority is CalibrationSourceAuthority.SAVED_FLASH
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
 def test_session_preflight_holds_shared_config_ownership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2163,6 +2243,10 @@ def test_every_topology_and_calibration_route_delegates_and_session_events_unsub
         "start_session",
         "acknowledge_safety",
         "check_stability",
+        "check_offset_readiness",
+        "calibrate_offset",
+        "skip_offset_calibration",
+        "complete_calibration_without_changes",
         "calibrate_voltage",
         "calibrate_current",
         "restart_and_verify",
@@ -2199,6 +2283,125 @@ def test_every_topology_and_calibration_route_delegates_and_session_events_unsub
         assert connection.events[-1][1] == {"state": "live"}
         connection.subscriptions[len(commands) + 1]()
         assert workflow.callback is None
+
+    asyncio.run(run())
+
+
+def test_complete_without_changes_is_an_admin_session_only_mutation() -> None:
+    async def run() -> None:
+        command = f"{DOMAIN}/complete_calibration_without_changes"
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+
+        assert command in MUTATION_COMMANDS
+        handler, schema = hass.data["websocket_api"][command]
+        assert schema is not None
+        assert schema(_message(command))["session_id"] == "session"
+        with pytest.raises(vol.Invalid):
+            schema(_message(command) | {"unexpected": True})
+        with pytest.raises(Unauthorized):
+            handler(hass, FakeConnection(admin=False), schema(_message(command)))
+
+    asyncio.run(run())
+
+
+def test_verified_session_cannot_be_reopened_through_public_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, sessions = await _native_only_workflow(monkeypatch)
+        session = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(session.session_id, True)
+        terminal = await workflow.async_complete_calibration_without_changes(
+            session.session_id
+        )
+        events: list[Any] = []
+        workflow.subscribe_session(session.session_id, events.append)
+
+        hass = FakeHass()
+        entry = FakeEntry(data={})
+        await async_setup_entry(hass, entry)
+        controller = hass.data[DOMAIN][entry.entry_id]["websocket_controller"]
+        setup_workflow = controller.workflow
+        controller.workflow = workflow
+        connection = FakeConnection()
+
+        acknowledge = _message(f"{DOMAIN}/acknowledge_safety")
+        acknowledge["session_id"] = session.session_id
+        await _invoke(hass, connection, acknowledge)
+
+        skip = _message(f"{DOMAIN}/skip_offset_calibration", 2)
+        skip["session_id"] = session.session_id
+        await _invoke(hass, connection, skip)
+
+        complete = _message(f"{DOMAIN}/complete_calibration_without_changes", 3)
+        complete["session_id"] = session.session_id
+        await _invoke(hass, connection, complete)
+
+        assert connection.errors == [
+            (1, "stale_confirmation", "The confirmation is stale or invalid"),
+            (2, "stale_confirmation", "The confirmation is stale or invalid"),
+        ]
+        assert connection.results[-1] == (3, sanitize_payload(terminal))
+        assert events == []
+        assert (
+            await workflow.async_get_session(session.session_id)
+        ).state == "verified"
+
+        controller.workflow = setup_workflow
+        await async_unload_entry(hass, entry)
+        await workflow.async_close()
+        await sessions.async_unload()
+
+    asyncio.run(run())
+
+
+def test_offset_websocket_schemas_bound_board_stage_and_retry_confirmation() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+
+        readiness = hass.data["websocket_api"][f"{DOMAIN}/check_offset_readiness"][1]
+        calibrate = hass.data["websocket_api"][f"{DOMAIN}/calibrate_offset"][1]
+        assert readiness is not None and calibrate is not None
+        valid = _message(f"{DOMAIN}/calibrate_offset") | {
+            "preparation_acknowledged": True
+        }
+        assert calibrate(valid)["confirm_retry"] is False
+
+        missing = _message(f"{DOMAIN}/calibrate_offset")
+        missing.pop("preparation_acknowledged")
+        with pytest.raises(vol.Invalid):
+            calibrate(missing)
+        for invalid in (False, 0, 1, "yes"):
+            with pytest.raises(vol.Invalid):
+                calibrate(valid | {"preparation_acknowledged": invalid})
+
+        for validator, command in (
+            (readiness, "check_offset_readiness"),
+            (calibrate, "calibrate_offset"),
+        ):
+            for key, value in (
+                ("board_index", -1),
+                ("board_index", 7),
+                ("board_index", False),
+                ("board_index", 0.0),
+                ("stage", 0),
+                ("stage", 3),
+                ("stage", True),
+                ("stage", 1.0),
+            ):
+                message = _message(f"{DOMAIN}/{command}")
+                if command == "calibrate_offset":
+                    message["preparation_acknowledged"] = True
+                message[key] = value
+                with pytest.raises(vol.Invalid):
+                    validator(message)
+
+        message = valid
+        message["confirm_retry"] = "yes"
+        with pytest.raises(vol.Invalid):
+            calibrate(message)
 
     asyncio.run(run())
 

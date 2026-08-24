@@ -49,6 +49,7 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
     HelperStore,
     VerifiedCalibrationRecord,
     VerifiedGainGroup,
+    VerifiedOffsetGroup,
 )
 from tests.test_calibration_engine_current import native_meter
 from tests.test_calibration_engine_voltage import (
@@ -266,6 +267,8 @@ async def _prime_origin(
     binding: object,
     expected: dict[str, GainTable],
     *,
+    offsets: dict[str, GainTable] | None = None,
+    power_offsets: dict[str, GainTable] | None = None,
     snapshot: ESPHomeConfigSnapshot | None = None,
 ) -> ESPHomeConfigSnapshot:
     if snapshot is None:
@@ -287,9 +290,193 @@ async def _prime_origin(
                 instance_id,
                 gains,
             )
+        for stage, tables in ((1, offsets or {}), (2, power_offsets or {})):
+            for instance_id, table in tables.items():
+                pending = sessions.record_offset_calibration_group(
+                    lease,
+                    pending.operation_id,
+                    pending.revision,
+                    session,
+                    binding,
+                    instance_id,
+                    stage,
+                    table,
+                )
     finally:
         lease.release()
     return snapshot
+
+
+def _category_restore(
+    instance_id: str,
+    *,
+    gains: GainTable | None = None,
+    offsets: GainTable | None = None,
+    power_offsets: GainTable | None = None,
+) -> RestoreEvidence:
+    return RestoreEvidence(
+        2,
+        instance_id,
+        gains,
+        "flash",
+        gains is not None,
+        "positive_loaded_line" if gains is not None else "offset_tables",
+        False,
+        (f"[CALIBRATION][{instance_id}] verified",),
+        offsets,
+        power_offsets,
+        offsets is not None,
+        power_offsets is not None,
+    )
+
+
+def test_offset_only_restart_verifies_selected_board_once() -> None:
+    async def run() -> None:
+        offsets = {
+            "addon1_1": ((-12, 31), (-13, 32), (-14, 33)),
+            "addon1_2": ((-21, 41), (-22, 42), (-23, 43)),
+        }
+        session = RestartSession(
+            {
+                instance_id: _category_restore(instance_id, offsets=table)
+                for instance_id, table in offsets.items()
+            },
+            addons=1,
+        )
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(1), substitutions(1)
+        )
+        sessions = SessionManager()
+        await _prime_origin(sessions, session, binding, {}, offsets=offsets)
+        saved: list[VerifiedCalibrationRecord] = []
+
+        async def persist(record: VerifiedCalibrationRecord) -> None:
+            saved.append(record)
+
+        result = await CalibrationEngine(
+            sessions, _ignore_marker, persist_verified=persist
+        ).async_verify_after_restart(
+            "aabbccddeeff", session, binding, substitutions=substitutions(1)
+        )
+
+        assert [event[0] for event in session.events].count("restart") == 1
+        restore_request = session.events[-1][1]
+        assert restore_request["expected_categories"] == {
+            instance_id: {"offset"} for instance_id in offsets
+        }
+        assert restore_request["operation_sequence"] > 0
+        assert result.record.groups == ()
+        assert {
+            group.instance_id: group.phase_offsets
+            for group in result.record.offset_groups
+        } == offsets
+        assert saved == [result.record]
+
+    asyncio.run(run())
+
+
+def test_mixed_restart_requires_each_exact_requested_category() -> None:
+    async def run() -> None:
+        gains = {"meter_main1": ((7301, 28001), (7301, 28002), (7301, 28003))}
+        offsets = {"meter_main1": ((-12, 31), (-13, 32), (-14, 33))}
+        power_offsets = {"addon1_2": ((101, -201), (102, -202), (103, -203))}
+        session = RestartSession(
+            {
+                "meter_main1": _category_restore(
+                    "meter_main1",
+                    gains=gains["meter_main1"],
+                    offsets=offsets["meter_main1"],
+                ),
+                "addon1_2": _category_restore(
+                    "addon1_2", power_offsets=power_offsets["addon1_2"]
+                ),
+            }
+        )
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(1), substitutions(1)
+        )
+        sessions = SessionManager()
+        await _prime_origin(
+            sessions,
+            session,
+            binding,
+            gains,
+            offsets=offsets,
+            power_offsets=power_offsets,
+        )
+
+        result = await CalibrationEngine(
+            sessions, _ignore_marker, persist_verified=_ignore_verified
+        ).async_verify_after_restart(
+            "aabbccddeeff", session, binding, substitutions=substitutions(1)
+        )
+
+        assert session.events[-1][1]["expected_categories"] == {
+            "meter_main1": {"gain", "offset"},
+            "addon1_2": {"power_offset"},
+        }
+        assert result.record.groups[0].phase_gains == gains["meter_main1"]
+        assert result.record.offset_groups[0].phase_offsets == offsets["meter_main1"]
+        assert (
+            result.record.power_offset_groups[0].phase_power_offsets
+            == power_offsets["addon1_2"]
+        )
+        assert not result.record.source_handoff_available
+        assert result.record.source_authority is CalibrationSourceAuthority.SAVED_FLASH
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("evidence", "match"),
+    (
+        ({}, "missing"),
+        (
+            {
+                "meter_main1": _category_restore(
+                    "meter_main1", offsets=((-12, 31), (-13, 32), (-14, 34))
+                )
+            },
+            "exact",
+        ),
+        (
+            {
+                "meter_main1": _category_restore(
+                    "meter_main1",
+                    offsets=((-12, 31), (-13, 32), (-14, 33)),
+                    power_offsets=((1, 2), (3, 4), (5, 6)),
+                )
+            },
+            "unexpected",
+        ),
+        ({"meter_main1": _category_restore("meter_main1")}, "verified"),
+    ),
+)
+def test_offset_restart_rejects_missing_mismatch_extra_or_fallback(
+    evidence: dict[str, RestoreEvidence], match: str
+) -> None:
+    async def run() -> None:
+        offsets = {"meter_main1": ((-12, 31), (-13, 32), (-14, 33))}
+        session = RestartSession(evidence, addons=0)
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(0), substitutions(0)
+        )
+        sessions = SessionManager()
+        await _prime_origin(sessions, session, binding, {}, offsets=offsets)
+        saved: list[VerifiedCalibrationRecord] = []
+
+        async def persist(record: VerifiedCalibrationRecord) -> None:
+            saved.append(record)
+
+        with pytest.raises(RestartVerificationError, match=match):
+            await CalibrationEngine(
+                sessions, _ignore_marker, persist_verified=persist
+            ).async_verify_after_restart(
+                "aabbccddeeff", session, binding, substitutions=substitutions(0)
+            )
+        assert saved == []
+
+    asyncio.run(run())
 
 
 def test_restart_arms_disconnect_rebinds_and_persists_exact_changed_set() -> None:
@@ -353,7 +540,7 @@ def test_restart_arms_disconnect_rebinds_and_persists_exact_changed_set() -> Non
             "Saved flash calibration remains authoritative until it is explicitly cleared."
         )
         assert saved == [result.record]
-        assert markers == [None]
+        assert markers == []
         event_count = len(session.events)
         with pytest.raises(RestartVerificationError, match="origin"):
             await engine.async_verify_after_restart(
@@ -404,6 +591,47 @@ def test_restart_claim_blocks_group_revision_during_persistence() -> None:
         assert [group.instance_id for group in result.record.groups] == ["meter_main1"]
         assert saved == [result.record]
         assert sessions.pending_calibration("aabbccddeeff") is None
+
+    asyncio.run(run())
+
+
+def test_atomic_final_save_failure_preserves_origin_for_retry() -> (
+    None
+):
+    async def run() -> None:
+        expected = {"meter_main1": ((7301, 1), (7301, 2), (7301, 3))}
+        session = RestartSession(
+            {"meter_main1": _restore("meter_main1", expected["meter_main1"])},
+            addons=0,
+        )
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(0), substitutions(0)
+        )
+        sessions = SessionManager()
+        await _prime_origin(sessions, session, binding, expected)
+        attempted: list[VerifiedCalibrationRecord] = []
+
+        async def unexpected_marker_clear(mac: str, marker: object) -> None:
+            del mac, marker
+            raise AssertionError("final persistence must not clear separately")
+
+        async def persist(record: VerifiedCalibrationRecord) -> None:
+            attempted.append(record)
+            raise OSError("final store unavailable")
+
+        engine = CalibrationEngine(
+            sessions, unexpected_marker_clear, persist_verified=persist
+        )
+        with pytest.raises(OSError, match="final store unavailable"):
+            await engine.async_verify_after_restart(
+                "aabbccddeeff", session, binding, substitutions=substitutions(0)
+            )
+
+        pending = sessions.pending_calibration("aabbccddeeff")
+        assert len(attempted) == 1
+        assert pending is not None
+        assert pending.claimed_revision is None
+        assert [event[0] for event in session.events].count("restart") == 1
 
     asyncio.run(run())
 
@@ -1232,6 +1460,91 @@ class CalibrationPersistence(Persistence):
             return False
         self.installed.append((mac, verification_id, transaction_id))
         return True
+
+
+def _with_offsets(
+    record: VerifiedCalibrationRecord,
+    *,
+    source_handoff_available: bool = True,
+    source_handoff_transaction_id: str | None = None,
+) -> VerifiedCalibrationRecord:
+    return replace(
+        record,
+        offset_groups=(
+            VerifiedOffsetGroup(
+                "meter_main1", ((-12, 31), (-13, 32), (-14, 33))
+            ),
+        ),
+        source_handoff_available=source_handoff_available,
+        source_handoff_transaction_id=source_handoff_transaction_id,
+    )
+
+
+def test_gain_preview_rejects_verified_offset_calibration() -> None:
+    """Dropping offset tables from the YAML preview would lose calibration."""
+
+    async def run() -> None:
+        source = _snapshot()
+        record = _with_offsets(_record(source, ((7301, 1),) * 3))
+        persistence = CalibrationPersistence((record,))
+        builder = Builder(remote_content=source.content)
+        manager = ConfigTransactionManager(
+            builder,
+            Verifier(RuntimeError()),
+            persistence,
+            SessionManager(),
+        )
+
+        with pytest.raises(ConfigMutationError, match="offset calibration remains saved in flash"):
+            await manager.async_preview_calibrated_gains(
+                record.mac, topology(0), record.verification_id
+            )
+
+        assert builder.calls == []
+        assert persistence.claimed == {}
+
+    asyncio.run(run())
+
+
+def test_gain_handoff_install_rejects_newly_mixed_verified_record() -> None:
+    """A stale gain-only preview must not install YAML after offsets are recorded."""
+
+    async def run() -> None:
+        source = _snapshot()
+        record = _record(source, ((7301, 1),) * 3)
+        persistence = CalibrationPersistence((record,))
+        builder = Builder(remote_content=source.content)
+        manager = ConfigTransactionManager(
+            builder,
+            Verifier(
+                ReconnectEvidence(
+                    record.mac,
+                    topology(0),
+                    {channel: f"CT {channel}" for channel in range(1, 7)},
+                    6,
+                )
+            ),
+            persistence,
+            SessionManager(),
+        )
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac, topology(0), record.verification_id
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        persistence.records[record.mac] = _with_offsets(
+            record,
+            source_handoff_available=False,
+            source_handoff_transaction_id=preview.transaction_id,
+        )
+
+        with pytest.raises(RuntimeError, match="offset calibration remains saved in flash"):
+            await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert "upload" not in builder.calls
+        assert persistence.installed == []
+
+    asyncio.run(run())
 
 
 def test_transaction_rereads_and_refuses_cross_device_stale_or_changed_origin() -> None:

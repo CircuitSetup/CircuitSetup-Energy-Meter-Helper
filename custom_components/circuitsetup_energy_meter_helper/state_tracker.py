@@ -45,6 +45,18 @@ class SensorSampleWindow:
     range_percent: float
 
 
+@dataclass(frozen=True, slots=True)
+class AbsoluteSensorSampleWindow:
+    values: tuple[float, ...]
+    received_at: tuple[float, ...]
+    connection_generation: int
+    mean: float
+    minimum: float
+    maximum: float
+    absolute_peak: float
+    absolute_spread: float
+
+
 @dataclass(slots=True)
 class _NumberWaiter:
     state_type: type[Any] | None
@@ -210,6 +222,58 @@ class StateTracker:
             100.0 * (maximum - minimum) / abs(mean),
         )
 
+    def absolute_sensor_window(
+        self,
+        state_type: type[Any],
+        key: int,
+        *,
+        fresh_after: float,
+        sample_count: int,
+        connection_generation: int,
+        device_id: int = 0,
+    ) -> AbsoluteSensorSampleWindow:
+        """Return a zero-capable absolute window on one connection generation."""
+        if sample_count < 3:
+            raise ValueError("sample_count must be at least three")
+        if not math.isfinite(fresh_after):
+            raise ValueError("fresh_after must be finite")
+        if connection_generation != self.connection_generation:
+            raise FreshWindowError("sensor samples are from another generation")
+        if not self.connected:
+            raise FreshWindowError("sensor samples are stale")
+        records = tuple(
+            record
+            for record in self._history.get((state_type, device_id, key), ())
+            if record.received_at > fresh_after
+        )
+        if len(records) < sample_count:
+            raise FreshWindowError("missing fresh sensor samples")
+        records = records[-sample_count:]
+        if any(record.stale for record in records):
+            raise FreshWindowError("sensor samples are stale")
+        if any(
+            bool(getattr(record.state, "missing_state", False)) for record in records
+        ):
+            raise FreshWindowError("sensor sample is unavailable")
+        try:
+            values = tuple(float(record.state.state) for record in records)
+        except TypeError, ValueError:
+            raise FreshWindowError("sensor sample is non-finite") from None
+        if not all(math.isfinite(value) for value in values):
+            raise FreshWindowError("sensor sample is non-finite")
+        minimum = min(values)
+        maximum = max(values)
+        return AbsoluteSensorSampleWindow(
+            values,
+            tuple(record.received_at for record in records),
+            connection_generation,
+            fmean(values),
+            minimum,
+            maximum,
+            max(abs(minimum), abs(maximum)),
+            maximum - minimum,
+        )
+
     async def wait_sensor_states(
         self,
         key: int,
@@ -242,6 +306,52 @@ class StateTracker:
                             key,
                             fresh_after=fresh_after,
                             sample_count=sample_count,
+                            device_id=device_id,
+                        )
+                    except FreshWindowError:
+                        pass
+                await event.wait()
+
+    async def wait_absolute_sensor_states(
+        self,
+        key: int,
+        *,
+        fresh_after: float,
+        sample_count: int,
+        connection_generation: int,
+        device_id: int = 0,
+        timeout: float = 10.0,
+    ) -> AbsoluteSensorSampleWindow:
+        """Wait for a zero-capable fresh sensor window on one generation."""
+        if sample_count < 3:
+            raise ValueError("sample_count must be at least three")
+        async with asyncio.timeout(timeout):
+            while True:
+                if not self.connected:
+                    raise StateDisconnectedError("native state connection was lost")
+                if connection_generation != self.connection_generation:
+                    raise FreshWindowError(
+                        "sensor samples are from another generation"
+                    )
+                event = self._state_event
+                state_type = next(
+                    (
+                        state_type
+                        for state_type, record_device, record_key in self._history
+                        if state_type.__name__ == "SensorState"
+                        and record_device == device_id
+                        and record_key == key
+                    ),
+                    None,
+                )
+                if state_type is not None:
+                    try:
+                        return self.absolute_sensor_window(
+                            state_type,
+                            key,
+                            fresh_after=fresh_after,
+                            sample_count=sample_count,
+                            connection_generation=connection_generation,
                             device_id=device_id,
                         )
                     except FreshWindowError:

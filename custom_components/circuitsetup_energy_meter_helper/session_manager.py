@@ -10,7 +10,12 @@ from uuid import uuid4
 
 from .device_builder import ESPHomeConfigSnapshot
 from .entity_binding import MeterBinding
-from .models import MeterTopology, canonical_mac
+from .models import (
+    MeterTopology,
+    PhaseOffsetTable,
+    PhasePowerOffsetTable,
+    canonical_mac,
+)
 
 type PhaseGainTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
 
@@ -68,12 +73,24 @@ class PendingCalibrationOrigin:
     config_filename: str | None
     config_sha256: str | None
     gain_groups: tuple[tuple[str, PhaseGainTable], ...]
+    offset_groups: tuple[tuple[str, PhaseOffsetTable], ...] = ()
+    power_offset_groups: tuple[tuple[str, PhasePowerOffsetTable], ...] = ()
     claimed_revision: int | None = None
 
     @property
     def expected_phase_gains(self) -> dict[str, PhaseGainTable]:
         """Return a detached table for exact evidence comparison."""
         return dict(self.gain_groups)
+
+    @property
+    def expected_phase_offsets(self) -> dict[str, PhaseOffsetTable]:
+        """Return retained voltage/current offset tables."""
+        return dict(self.offset_groups)
+
+    @property
+    def expected_phase_power_offsets(self) -> dict[str, PhasePowerOffsetTable]:
+        """Return retained active/reactive power offset tables."""
+        return dict(self.power_offset_groups)
 
 
 class SessionManager:
@@ -240,6 +257,67 @@ class SessionManager:
         self._pending_calibrations[lease.mac] = updated
         return updated
 
+    def record_offset_calibration_group(
+        self,
+        lease: CalibrationLease,
+        operation_id: str,
+        revision: int,
+        session: Any,
+        binding: MeterBinding,
+        instance_id: str,
+        stage: int,
+        phase_offsets: PhaseOffsetTable | PhasePowerOffsetTable,
+    ) -> PendingCalibrationOrigin:
+        """Retain one exact offset table under the active board operation."""
+        self._require_active_calibration_lease(lease)
+        pending = self._pending_calibrations.get(lease.mac)
+        if (
+            pending is None
+            or pending.operation_id != operation_id
+            or pending.revision != revision
+        ):
+            raise RuntimeError("calibration origin revision changed")
+        if pending.claimed_revision is not None:
+            raise CalibrationBusyError("calibration origin is claimed for restart")
+        if (
+            pending.session_identity != id(session)
+            or pending.topology != binding.topology
+        ):
+            raise RuntimeError("calibration topology changed after origin capture")
+        expected_ids = {
+            f"meter_main{group_index}"
+            if board_index == 0
+            else f"addon{board_index}_{group_index}"
+            for board_index in range(pending.topology.board_count)
+            for group_index in (1, 2)
+        }
+        if instance_id not in expected_ids:
+            raise RuntimeError("calibration group is outside the retained topology")
+        if stage == 1:
+            groups = pending.expected_phase_offsets
+        elif stage == 2:
+            groups = pending.expected_phase_power_offsets
+        else:
+            raise ValueError("offset calibration stage must be 1 or 2")
+        if instance_id in groups:
+            raise RuntimeError("offset calibration group is already complete")
+        groups[instance_id] = phase_offsets
+        updated = (
+            replace(
+                pending,
+                revision=pending.revision + 1,
+                offset_groups=tuple(groups.items()),
+            )
+            if stage == 1
+            else replace(
+                pending,
+                revision=pending.revision + 1,
+                power_offset_groups=tuple(groups.items()),
+            )
+        )
+        self._pending_calibrations[lease.mac] = updated
+        return updated
+
     def calibration_origin_for_update(
         self, lease: CalibrationLease, session: Any, binding: MeterBinding
     ) -> PendingCalibrationOrigin | None:
@@ -262,7 +340,9 @@ class SessionManager:
     ) -> PendingCalibrationOrigin:
         """Atomically freeze the exact aggregate used for restart verification."""
         pending = self.calibration_origin_for_update(lease, session, binding)
-        if pending is None or not pending.gain_groups:
+        if pending is None or not (
+            pending.gain_groups or pending.offset_groups or pending.power_offset_groups
+        ):
             raise RuntimeError("server-owned calibration origin is missing")
         claimed = replace(pending, claimed_revision=pending.revision)
         self._pending_calibrations[lease.mac] = claimed

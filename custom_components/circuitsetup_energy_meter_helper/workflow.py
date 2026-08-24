@@ -27,7 +27,12 @@ from homeassistant.components.hassio.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
-from .calibration_engine import DEFAULT_EVIDENCE_TIMEOUT, CalibrationEngine
+from .calibration_engine import (
+    DEFAULT_EVIDENCE_TIMEOUT,
+    CalibrationEngine,
+    OffsetCalibrationResult,
+    OffsetCalibrationState,
+)
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import CTChangeRequest, build_ct_mutation
 from .config_transaction import ConfigTransactionManager, ReconnectEvidence
@@ -38,10 +43,20 @@ from .device_builder import (
     ESPHomeConfigSnapshot,
     _wait_for_owned_cleanup,
 )
-from .entity_binding import MeterBinding, bind_meter, bind_native_meter
+from .entity_binding import (
+    MeterBinding,
+    OffsetControlStatus,
+    bind_meter,
+    bind_native_meter,
+)
 from .entity_catalog import EntityCatalog
 from .esphome_api import ESPHomeApiSession
 from .models import MeterTopology, StoredCTSelection, canonical_mac
+from .offset_readiness import (
+    OffsetReadinessResult,
+    OffsetReadinessStage,
+    async_check_offset_readiness,
+)
 from .preflight import PreflightResult, async_preflight
 from .provisioning import (
     DiscoveredDevice,
@@ -109,6 +124,10 @@ class SessionStatus:
     preflight: PreflightResult
     entity_role_counts: dict[str, int]
     calibration_sources: dict[str, str] = field(default_factory=dict)
+    offset_capability: dict[str, str | None] = field(default_factory=dict)
+    offset_disposition: str = "not_started"
+    offset_boards: tuple[dict[str, Any], ...] = ()
+    has_pending_calibration: bool = False
 
 
 @dataclass(slots=True)
@@ -128,10 +147,42 @@ class _SessionHandle:
     revision: int = 0
     active_task: asyncio.Task[Any] | None = None
     revoked: bool = False
+    offset_results: dict[tuple[int, int], OffsetCalibrationResult] = field(
+        default_factory=dict
+    )
+    offset_active: tuple[int, int] | None = None
+    offset_skipped: bool = False
     calibrated_current_channels: set[int] = field(default_factory=set)
     pending_reporting_multipliers: dict[int, float] = field(default_factory=dict)
 
     def status(self) -> SessionStatus:
+        capability = getattr(self.binding, "offset_capability", None)
+        boards: tuple[dict[str, Any], ...] = tuple(
+            {
+                "board_index": board_index,
+                "stages": tuple(
+                    {
+                        "stage": stage,
+                        "state": self._offset_stage_state(board_index, stage),
+                    }
+                    for stage in (1, 2)
+                ),
+            }
+            for board_index in range(self.topology.board_count)
+        )
+        stage_states = tuple(
+            stage["state"] for board in boards for stage in board["stages"]
+        )
+        if self.offset_skipped:
+            disposition = "partial" if self.offset_results else "skipped"
+        elif any(state in {"partial", "indeterminate"} for state in stage_states):
+            disposition = "partial"
+        elif stage_states and all(state == "completed" for state in stage_states):
+            disposition = "completed"
+        elif self.offset_active is not None or self.offset_results:
+            disposition = "in_progress"
+        else:
+            disposition = "not_started"
         return SessionStatus(
             self.session_id,
             self.device_id,
@@ -145,7 +196,32 @@ class _SessionHandle:
                 "current_sensors": sum(len(group.current_sensors) for group in self.binding.groups),
             },
             dict(self.calibration_sources),
+            {
+                "status": (
+                    capability.status.value
+                    if capability is not None
+                    else OffsetControlStatus.UNAVAILABLE.value
+                ),
+                "repair_reason": (
+                    capability.repair_reason if capability is not None else None
+                ),
+            },
+            disposition,
+            boards,
         )
+
+    def _offset_stage_state(self, board_index: int, stage: int) -> str:
+        if self.offset_active == (board_index, stage):
+            return "in_progress"
+        result = self.offset_results.get((board_index, stage))
+        if result is not None:
+            if (
+                result.state
+                is OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION
+            ):
+                return "completed"
+            return result.state.value
+        return "skipped" if self.offset_skipped else "not_started"
 
     def scrub(self) -> None:
         self.substitutions.clear()
@@ -307,7 +383,7 @@ class EntryWorkflow:
         self._calibration = CalibrationEngine(
             sessions,
             store.async_save_interrupted_session,
-            persist_verified=store.async_save_verified_calibration,
+            persist_verified=store.async_finalize_verified_calibration,
             calibration_snapshot_reader=(
                 self._async_calibration_snapshot if device_builder is not None else None
             ),
@@ -371,7 +447,7 @@ class EntryWorkflow:
         }
 
     async def async_get_session(self, session_id: str) -> SessionStatus:
-        return self._session(session_id).status()
+        return self._status(self._session(session_id))
 
     async def async_get_active_work(self, device_id: str) -> dict[str, Any]:
         """Return safe resumable work for one selected device."""
@@ -589,7 +665,7 @@ class EntryWorkflow:
                     "a calibration session is already active for this device"
                 )
             self._sessions[session_id] = handle
-        return handle.status()
+        return self._status(handle)
 
     async def async_acknowledge_safety(
         self, session_id: str, acknowledged: bool
@@ -597,6 +673,8 @@ class EntryWorkflow:
         handle = self._session(session_id)
         with self._guard(handle.mac):
             handle = self._session_locked(session_id)
+            if handle.state == "verified":
+                raise WorkflowHandleError("calibration session is already finalized")
             if not handle.preflight.ok or not acknowledged:
                 raise WorkflowHandleError(
                     "session is not ready for safety confirmation"
@@ -692,6 +770,96 @@ class EntryWorkflow:
                 "stable": stable,
                 "windows": tuple(_public_sample_window(window) for window in windows),
             }
+        finally:
+            self._release_claim(handle, revision)
+
+    async def async_check_offset_readiness(
+        self,
+        session_id: str,
+        board_index: int,
+        stage: OffsetReadinessStage,
+    ) -> OffsetReadinessResult:
+        handle, revision = self._claim_ready_session(session_id)
+        try:
+            self._validate_offset_target(handle, board_index, stage)
+            api = self._require_api()
+            result = await async_check_offset_readiness(
+                api, handle.binding, board_index, stage
+            )
+            self._assert_claim(handle, revision)
+            if (
+                result.stage != stage
+                or result.connection_generation != handle.binding.connection_generation
+                or int(api.connection_generation) != result.connection_generation
+            ):
+                raise WorkflowHandleError("offset readiness evidence is stale")
+            self._refresh(handle)
+            return result
+        finally:
+            self._release_claim(handle, revision)
+
+    async def async_calibrate_offset(
+        self,
+        session_id: str,
+        board_index: int,
+        stage: OffsetReadinessStage,
+        preparation_acknowledged: bool,
+        confirm_retry: bool = False,
+    ) -> OffsetCalibrationResult:
+        if preparation_acknowledged is not True:
+            raise WorkflowHandleError("physical preparation acknowledgement is absent")
+        handle, revision = self._claim_ready_session(session_id)
+        active = False
+        try:
+            self._validate_offset_target(handle, board_index, stage)
+            if handle.offset_skipped:
+                raise WorkflowHandleError("offset calibration is already finalized")
+            handle.offset_active = (board_index, stage)
+            active = True
+            self._publish(handle)
+            result = await self._calibration.async_calibrate_offset_board(
+                handle.mac,
+                self._require_api(),
+                handle.binding,
+                board_index,
+                stage,
+                confirm_retry=confirm_retry,
+            )
+            self._assert_claim(handle, revision)
+            handle.offset_results[(board_index, stage)] = result
+            handle.state = str(result.state)
+            self._refresh(handle)
+            return result
+        finally:
+            handle.offset_active = None
+            if active and (
+                self._sessions.get(handle.session_id) is handle
+                and not handle.revoked
+                and handle.revision == revision
+            ):
+                self._publish(handle)
+            self._release_claim(handle, revision)
+
+    async def async_skip_offset_calibration(self, session_id: str) -> SessionStatus:
+        handle, revision = self._claim_ready_session(session_id)
+        try:
+            if handle.offset_skipped or (
+                len(handle.offset_results) == handle.topology.board_count * 2
+                and all(
+                    result.state
+                    is OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION
+                    for result in handle.offset_results.values()
+                )
+            ):
+                raise WorkflowHandleError("offset calibration is already finalized")
+            self._assert_claim(handle, revision)
+            handle.offset_skipped = True
+            if self._has_pending_calibration(handle.mac):
+                handle.state = str(
+                    OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION
+                )
+            self._refresh(handle)
+            return self._publish(handle)
         finally:
             self._release_claim(handle, revision)
 
@@ -833,6 +1001,28 @@ class EntryWorkflow:
         finally:
             self._release_claim(handle, revision)
 
+    async def async_complete_calibration_without_changes(
+        self, session_id: str
+    ) -> SessionStatus:
+        handle = self._session(session_id)
+        if self._sessions_owner.pending_calibration(handle.mac) is not None or (
+            handle.state != "verified"
+            and handle.state not in {"ready", "stable", "unstable"}
+        ):
+            raise WorkflowHandleError(
+                "calibration changes require restart verification"
+            )
+        if handle.state == "verified":
+            return self._status(handle)
+        handle, revision = self._claim_ready_session(session_id)
+        try:
+            self._assert_claim(handle, revision)
+            handle.state = "verified"
+            self._refresh(handle)
+            return self._publish(handle)
+        finally:
+            self._release_claim(handle, revision)
+
     async def async_preview_calibrated_gains(
         self,
         session_id: str,
@@ -869,16 +1059,21 @@ class EntryWorkflow:
     async def async_clear_calibration_flash(
         self, session_id: str, verification_id: str, transaction_id: str
     ) -> Any:
-        """Clear only installed, verified gain groups and prove YAML is authoritative."""
-        handle, revision = self._claim_ready_session(session_id)
+        """Clear only installed, gain-only groups and prove YAML is authoritative."""
+        handle, revision = self._claim_ready_session(session_id, allow_verified=True)
         try:
             if handle.state != "verified":
                 raise WorkflowHandleError("calibration source handoff is unavailable")
             record = await self._store.async_get_verified_calibration(handle.mac)
+            if record is None or record.verification_id != verification_id:
+                raise WorkflowHandleError("calibrated firmware installation is unverified")
+            if record.has_offset_calibration:
+                raise WorkflowHandleError(
+                    "YAML handoff is unavailable; offset calibration remains saved "
+                    "in flash"
+                )
             if (
-                record is None
-                or record.verification_id != verification_id
-                or record.source_handoff_transaction_id != transaction_id
+                record.source_handoff_transaction_id != transaction_id
                 or not record.source_handoff_firmware_installed
                 or record.source_handoff_available
             ):
@@ -1204,7 +1399,9 @@ class EntryWorkflow:
             raise WorkflowHandleError("session is stale")
         return handle
 
-    def _claim_ready_session(self, session_id: str) -> tuple[_SessionHandle, int]:
+    def _claim_ready_session(
+        self, session_id: str, *, allow_verified: bool = False
+    ) -> tuple[_SessionHandle, int]:
         handle = self._session(session_id)
         task = asyncio.current_task()
         if task is None:
@@ -1213,6 +1410,8 @@ class EntryWorkflow:
             handle = self._session_locked(session_id)
             if not handle.safety_acknowledged or not handle.preflight.ok:
                 raise WorkflowHandleError("session safety confirmation is absent")
+            if handle.state == "verified" and not allow_verified:
+                raise WorkflowHandleError("calibration session is already finalized")
             if handle.active_task is not None:
                 raise WorkflowHandleError("session already has an active operation")
             handle.revision += 1
@@ -1309,13 +1508,53 @@ class EntryWorkflow:
             raise BaseExceptionGroup("calibration session cleanup failed", errors)
 
     def _publish(self, handle: _SessionHandle) -> SessionStatus:
-        status = handle.status()
+        status = self._status(handle)
         for callback in tuple(self._subscribers.get(handle.session_id, ())):
             try:
                 callback(status)
             except Exception:  # noqa: BLE001, S110 - subscriber isolation
                 pass
         return status
+
+    def _status(self, handle: _SessionHandle) -> SessionStatus:
+        status = handle.status()
+        if not isinstance(status, SessionStatus):
+            return status
+        return replace(
+            status,
+            has_pending_calibration=self._has_pending_calibration(handle.mac),
+        )
+
+    def _has_pending_calibration(self, mac: str) -> bool:
+        pending = self._sessions_owner.pending_calibration(mac)
+        return bool(
+            pending
+            and (
+                pending.gain_groups
+                or pending.offset_groups
+                or pending.power_offset_groups
+            )
+        )
+
+    @staticmethod
+    def _validate_offset_target(
+        handle: _SessionHandle,
+        board_index: int,
+        stage: OffsetReadinessStage,
+    ) -> None:
+        capability = getattr(handle.binding, "offset_capability", None)
+        if (
+            capability is None
+            or capability.status is not OffsetControlStatus.AVAILABLE
+        ):
+            raise WorkflowCapabilityUnavailable("offset calibration is unavailable")
+        if (
+            type(board_index) is not int
+            or type(stage) is not int
+            or not 0 <= board_index < handle.topology.board_count
+            or stage not in (1, 2)
+        ):
+            raise WorkflowHandleError("offset calibration target is invalid")
 
     def _require_builder(self) -> LazyDeviceBuilder:
         if self._builder is None:

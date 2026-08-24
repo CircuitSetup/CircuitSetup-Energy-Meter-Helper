@@ -1,0 +1,8 @@
+[I][atm90e32.button:060] 2. Run Main Meter 1 Power Offset Cal
+[I][atm90e32:848] [CALIBRATION][meter_main1] ===================== Power Offset Calibration =====================
+[I][atm90e32:850] [CALIBRATION][meter_main1] | Phase | offset_active_power | offset_reactive_power |
+[I][atm90e32:864] [CALIBRATION][meter_main1] |   A   |         -101        |          201        |
+[I][atm90e32:864] [CALIBRATION][meter_main1] |   B   |         -102        |          202        |
+[I][atm90e32:864] [CALIBRATION][meter_main1] |   C   |         -103        |          203        |
+[E][atm90e32:1300] [CALIBRATION][meter_main1] Power offset readback failed for Phase B: active -101/-102, reactive 202/202.
+[E][atm90e32:876] [CALIBRATION][meter_main1] Power offset calibration failed; previous values restored.

@@ -6,12 +6,14 @@ import asyncio
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .models import (
+    PhaseOffsetTable,
+    PhasePowerOffsetTable,
     StoredCTSelection,
     StoredInterruptedSession,
     StoredMeterRecord,
@@ -20,7 +22,7 @@ from .models import (
 )
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 1
+STORAGE_MINOR_VERSION = 2
 STORAGE_KEY = "circuitsetup_energy_meter_helper"
 
 
@@ -34,6 +36,33 @@ class CalibrationSourceAuthority(StrEnum):
 type PhaseGainTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
 
 
+def _validate_group_table(
+    instance_id: str,
+    table: PhaseGainTable | PhaseOffsetTable | PhasePowerOffsetTable,
+    *,
+    signed: bool,
+    label: str,
+) -> None:
+    if re.fullmatch(r"(?:meter_main[12]|addon[1-6]_[12])", instance_id) is None:
+        raise ValueError("instance_id is not a supported ATM90E32 group")
+    if (
+        type(table) is not tuple
+        or len(table) != 3
+        or any(type(phase) is not tuple or len(phase) != 2 for phase in table)
+        or any(type(value) is not int for phase in table for value in phase)
+    ):
+        raise ValueError(
+            "verified gains require three phases of two non-boolean integers"
+            if label == "gains"
+            else f"verified {label} require three signed phase pairs"
+        )
+    if signed:
+        if any(not -32_768 <= value <= 32_767 for phase in table for value in phase):
+            raise ValueError(f"verified {label} must be signed 16-bit values")
+    elif any(not 1 <= value <= 65_535 for phase in table for value in phase):
+        raise ValueError("verified gains must be 16-bit positive values")
+
+
 @dataclass(frozen=True, slots=True)
 class VerifiedGainGroup:
     """One exactly verified post-restart ATM90E32 gain table."""
@@ -42,29 +71,38 @@ class VerifiedGainGroup:
     phase_gains: PhaseGainTable
 
     def __post_init__(self) -> None:
-        if (
-            re.fullmatch(r"(?:meter_main[12]|addon[1-6]_[12])", self.instance_id)
-            is None
-        ):
-            raise ValueError("instance_id is not a supported ATM90E32 group")
-        if (
-            type(self.phase_gains) is not tuple
-            or len(self.phase_gains) != 3
-            or any(
-                type(phase) is not tuple or len(phase) != 2
-                for phase in self.phase_gains
-            )
-            or any(
-                type(value) is not int for phase in self.phase_gains for value in phase
-            )
-        ):
-            raise ValueError(
-                "verified gains require three phases of two non-boolean integers"
-            )
-        if any(
-            not 1 <= value <= 65_535 for phase in self.phase_gains for value in phase
-        ):
-            raise ValueError("verified gains must be 16-bit positive values")
+        _validate_group_table(
+            self.instance_id, self.phase_gains, signed=False, label="gains"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedOffsetGroup:
+    """One exactly verified voltage/current offset table."""
+
+    instance_id: str
+    phase_offsets: PhaseOffsetTable
+
+    def __post_init__(self) -> None:
+        _validate_group_table(
+            self.instance_id, self.phase_offsets, signed=True, label="offsets"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedPowerOffsetGroup:
+    """One exactly verified active/reactive power-offset table."""
+
+    instance_id: str
+    phase_power_offsets: PhasePowerOffsetTable
+
+    def __post_init__(self) -> None:
+        _validate_group_table(
+            self.instance_id,
+            self.phase_power_offsets,
+            signed=True,
+            label="power offsets",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +119,8 @@ class VerifiedCalibrationRecord:
     connection_generation: int
     groups: tuple[VerifiedGainGroup, ...]
     verification_id: str
+    offset_groups: tuple[VerifiedOffsetGroup, ...] = ()
+    power_offset_groups: tuple[VerifiedPowerOffsetGroup, ...] = ()
     source_authority: CalibrationSourceAuthority = (
         CalibrationSourceAuthority.SAVED_FLASH
     )
@@ -98,9 +138,10 @@ class VerifiedCalibrationRecord:
             or "\r" in self.config_filename
         ):
             raise ValueError("configuration filename must be a non-empty single line")
-        if self.config_sha256 is not None and re.fullmatch(
-            r"[0-9a-f]{64}", self.config_sha256
-        ) is None:
+        if (
+            self.config_sha256 is not None
+            and re.fullmatch(r"[0-9a-f]{64}", self.config_sha256) is None
+        ):
             raise ValueError("configuration hash must be SHA-256")
         if not 0 <= self.topology_addon_count <= 6:
             raise ValueError("topology add-on count is invalid")
@@ -112,7 +153,9 @@ class VerifiedCalibrationRecord:
             raise ValueError("topology project name must be a non-empty single line")
         if not self.topology_connection_type or not self.topology_voltage_layout:
             raise ValueError("topology connection and voltage layout are required")
-        if self.connection_generation < 1 or not self.groups:
+        if self.connection_generation < 1 or not (
+            self.groups or self.offset_groups or self.power_offset_groups
+        ):
             raise ValueError("verified calibration requires a generation and groups")
         if re.fullmatch(r"[0-9a-f]{32}", self.verification_id) is None:
             raise ValueError("verification ID must be a server-generated identifier")
@@ -120,7 +163,9 @@ class VerifiedCalibrationRecord:
             raise ValueError("source handoff state must be boolean")
         if type(self.source_handoff_firmware_installed) is not bool:
             raise ValueError("source handoff firmware state must be boolean")
-        if self.source_handoff_available and self.config_filename is None:
+        if self.source_handoff_available and (
+            self.config_filename is None or not self.groups
+        ):
             raise ValueError("source handoff requires configuration identity")
         if self.source_handoff_available and self.source_handoff_firmware_installed:
             raise ValueError("available source handoff cannot already be installed")
@@ -140,9 +185,10 @@ class VerifiedCalibrationRecord:
             is None
         ):
             raise ValueError("source handoff transaction ID is invalid")
-        instance_ids = tuple(group.instance_id for group in self.groups)
-        if len(instance_ids) != len(set(instance_ids)):
-            raise ValueError("verified calibration groups must be unique")
+        for groups in (self.groups, self.offset_groups, self.power_offset_groups):
+            instance_ids = tuple(group.instance_id for group in groups)
+            if len(instance_ids) != len(set(instance_ids)):
+                raise ValueError("verified calibration groups must be unique")
 
     @property
     def source_status(self) -> str:
@@ -153,6 +199,11 @@ class VerifiedCalibrationRecord:
             "Saved flash calibration remains authoritative until it is explicitly "
             "cleared."
         )
+
+    @property
+    def has_offset_calibration(self) -> bool:
+        """Return whether YAML gain handoff would omit verified calibration."""
+        return bool(self.offset_groups or self.power_offset_groups)
 
 
 def migrate_storage(
@@ -165,6 +216,8 @@ def migrate_storage(
         and minor_version > STORAGE_MINOR_VERSION
     ):
         raise ValueError("Storage version is newer than supported")
+    if (version, minor_version) == (1, 1):
+        return data
     if (version, minor_version) != (STORAGE_VERSION, STORAGE_MINOR_VERSION):
         raise ValueError(f"Storage version {version} cannot be migrated")
     return data
@@ -237,7 +290,7 @@ def _serialize_verified_calibration(
     """Serialize only exact gains and their configuration origin."""
     if not isinstance(record, VerifiedCalibrationRecord):
         raise TypeError("record must be VerifiedCalibrationRecord")
-    return {
+    serialized: dict[str, Any] = {
         "verification_id": record.verification_id,
         "config_filename": record.config_filename,
         "config_sha256": record.config_sha256,
@@ -260,6 +313,25 @@ def _serialize_verified_calibration(
             record.source_handoff_firmware_installed
         ),
     }
+    if record.offset_groups:
+        serialized["offset_groups"] = [
+            {
+                "instance_id": group.instance_id,
+                "phase_offsets": [list(phase) for phase in group.phase_offsets],
+            }
+            for group in record.offset_groups
+        ]
+    if record.power_offset_groups:
+        serialized["power_offset_groups"] = [
+            {
+                "instance_id": group.instance_id,
+                "phase_power_offsets": [
+                    list(phase) for phase in group.phase_power_offsets
+                ],
+            }
+            for group in record.power_offset_groups
+        ]
+    return serialized
 
 
 def _deserialize_verified_calibration(
@@ -294,6 +366,14 @@ def _deserialize_verified_calibration(
                 ),
             )
         )
+    offset_groups = cast(
+        list[VerifiedOffsetGroup],
+        _deserialize_offset_groups(raw.get("offset_groups", []), power=False),
+    )
+    power_offset_groups = cast(
+        list[VerifiedPowerOffsetGroup],
+        _deserialize_offset_groups(raw.get("power_offset_groups", []), power=True),
+    )
     try:
         raw_authority = raw.get("source_authority")
         if not isinstance(raw_authority, str):
@@ -310,6 +390,8 @@ def _deserialize_verified_calibration(
             connection_generation=raw["connection_generation"],
             groups=tuple(groups),
             verification_id=raw["verification_id"],
+            offset_groups=tuple(offset_groups),
+            power_offset_groups=tuple(power_offset_groups),
             source_authority=authority,
             source_handoff_available=raw["source_handoff_available"],
             source_handoff_transaction_id=raw.get("source_handoff_transaction_id"),
@@ -319,6 +401,38 @@ def _deserialize_verified_calibration(
         )
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError("stored verified calibration is invalid") from error
+
+
+def _deserialize_offset_groups(
+    raw_groups: object, *, power: bool
+) -> list[VerifiedOffsetGroup | VerifiedPowerOffsetGroup]:
+    if not isinstance(raw_groups, list):
+        raise TypeError("stored verified offset groups must be a list")
+    groups: list[VerifiedOffsetGroup | VerifiedPowerOffsetGroup] = []
+    field = "phase_power_offsets" if power else "phase_offsets"
+    group_type = VerifiedPowerOffsetGroup if power else VerifiedOffsetGroup
+    for item in raw_groups:
+        if not isinstance(item, dict):
+            raise TypeError("stored verified offset group must be a mapping")
+        instance_id = item.get("instance_id")
+        table = item.get(field)
+        if (
+            not isinstance(instance_id, str)
+            or not isinstance(table, list)
+            or len(table) != 3
+            or any(not isinstance(phase, list) or len(phase) != 2 for phase in table)
+        ):
+            raise ValueError("stored verified offset group is invalid")
+        group = group_type(
+            instance_id,
+            (
+                (table[0][0], table[0][1]),
+                (table[1][0], table[1][1]),
+                (table[2][0], table[2][1]),
+            ),
+        )
+        groups.append(group)
+    return groups
 
 
 def serialize_meter_record(record: StoredMeterRecord) -> dict[str, Any]:
@@ -397,11 +511,18 @@ class HelperStore:
 
     async def async_get_ct_selections(self, mac: str) -> tuple[StoredCTSelection, ...]:
         """Load only the safe persisted model selections for one meter."""
-        raw = (await self.async_load()).get("meters", {}).get(canonical_mac(mac), {}).get("ct_selections", [])
+        raw = (
+            (await self.async_load())
+            .get("meters", {})
+            .get(canonical_mac(mac), {})
+            .get("ct_selections", [])
+        )
         if not isinstance(raw, list):
             raise TypeError("stored CT selections must be a list")
         try:
-            return tuple(StoredCTSelection(**item) for item in raw if isinstance(item, dict))
+            return tuple(
+                StoredCTSelection(**item) for item in raw if isinstance(item, dict)
+            )
         except (TypeError, ValueError) as error:
             raise ValueError("stored CT selections are invalid") from error
 
@@ -453,6 +574,17 @@ class HelperStore:
             meter["verified_calibration"] = _serialize_verified_calibration(record)
             await self._store.async_save(data)
 
+    async def async_finalize_verified_calibration(
+        self, record: VerifiedCalibrationRecord
+    ) -> None:
+        """Atomically clear recovery and persist the verified record."""
+        async with self._update_lock:
+            data = await self.async_load()
+            meter = data.setdefault("meters", {}).setdefault(record.mac, {})
+            meter["interrupted_session"] = None
+            meter["verified_calibration"] = _serialize_verified_calibration(record)
+            await self._store.async_save(data)
+
     async def async_get_verified_calibration(
         self, mac: str
     ) -> VerifiedCalibrationRecord | None:
@@ -478,6 +610,7 @@ class HelperStore:
             if (
                 record.verification_id != verification_id
                 or not record.source_handoff_available
+                or record.has_offset_calibration
             ):
                 return False
             raw["source_handoff_available"] = False
@@ -500,6 +633,7 @@ class HelperStore:
             return (
                 record.verification_id == verification_id
                 and not record.source_handoff_available
+                and not record.has_offset_calibration
                 and record.source_handoff_transaction_id == transaction_id
             )
 
@@ -520,7 +654,7 @@ class HelperStore:
                 or record.source_handoff_transaction_id != transaction_id
             ):
                 return False
-            raw["source_handoff_available"] = True
+            raw["source_handoff_available"] = not record.has_offset_calibration
             raw["source_handoff_transaction_id"] = None
             raw["source_handoff_firmware_installed"] = False
             await self._store.async_save(data)
@@ -540,6 +674,7 @@ class HelperStore:
             if (
                 record.verification_id != verification_id
                 or record.source_handoff_available
+                or record.has_offset_calibration
                 or record.source_handoff_transaction_id != transaction_id
             ):
                 return False
@@ -561,6 +696,7 @@ class HelperStore:
             if (
                 record.verification_id != verification_id
                 or record.source_handoff_available
+                or record.has_offset_calibration
                 or not record.source_handoff_firmware_installed
                 or record.source_handoff_transaction_id != transaction_id
             ):

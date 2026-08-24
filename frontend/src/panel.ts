@@ -4,6 +4,7 @@ import { HelperApi, type HomeAssistant } from "./api";
 import { buildInstallStep } from "./components/build-install-step";
 import { changesFromDrafts, ctInventoryStep, type CtDraft } from "./components/ct-inventory-step";
 import { currentStep } from "./components/current-step";
+import { offsetStep } from "./components/offset-step";
 import { restartStep } from "./components/restart-step";
 import { safetyStep } from "./components/safety-step";
 import { setupDeviceStep } from "./components/setup-device-step";
@@ -17,6 +18,8 @@ import type {
   ConnectionType,
   CtInventory,
   MeterTopology,
+  OffsetCalibrationResult,
+  OffsetReadinessResult,
   PanelStep,
   RestartVerificationResult,
   SessionStatus,
@@ -30,6 +33,7 @@ const STEPS: Array<[PanelStep, string]> = [
   ["topology", "Topology"],
   ["ct", "CT Settings"],
   ["safety", "Safety"],
+  ["offset", "Offset"],
   ["voltage", "Voltage"],
   ["current", "Current"],
   ["restart", "Restart"],
@@ -65,6 +69,9 @@ export class CircuitSetupPanel extends LitElement {
   private stabilityByTarget = new Map<string, StabilityResult>();
   private calibrationByTarget = new Map<string, CalibrationResult>();
   private restartResult: RestartVerificationResult | null = null;
+  private completedWithoutChanges = false;
+  private offsetReadinessByTarget = new Map<string, OffsetReadinessResult>();
+  private offsetResultByTarget = new Map<string, OffsetCalibrationResult>();
   private calibrationHandoff = false;
   private addonCount = 0;
   private connection: Exclude<ConnectionType, "unknown"> = "wifi";
@@ -75,6 +82,9 @@ export class CircuitSetupPanel extends LitElement {
   private currentReferences = new Map<number, number>();
   private reportingMultiplier: number | null = null;
   private safetyAcknowledged = false;
+  private offsetStage: 1 | 2 = 1;
+  private offsetAcknowledged = [false, false];
+  private offsetRetryConfirmed = false;
   private drafts = new Map<number, CtDraft>();
   private labelOnly = false;
   private error = "";
@@ -89,6 +99,8 @@ export class CircuitSetupPanel extends LitElement {
   private sessionStarting = false;
   private pendingAction = "";
   private voltageBusy = false;
+  private offsetBusy = false;
+  private finishBusy = false;
   private mobileStepsOpen = false;
   private focusHeading = false;
 
@@ -190,12 +202,19 @@ export class CircuitSetupPanel extends LitElement {
     this.stabilityByTarget = new Map();
     this.calibrationByTarget = new Map();
     this.restartResult = null;
+    this.completedWithoutChanges = false;
+    this.offsetReadinessByTarget = new Map();
+    this.offsetResultByTarget = new Map();
     this.calibrationHandoff = false;
     this.group = 0;
     this.channel = 1;
     this.voltageReferences = [0, 0];
     this.currentReferences = new Map();
     this.reportingMultiplier = null;
+    this.offsetStage = 1;
+    this.offsetAcknowledged = [false, false];
+    this.offsetRetryConfirmed = false;
+    this.finishBusy = false;
   }
 
   private selectDevice(deviceId: string | null): void {
@@ -262,7 +281,8 @@ export class CircuitSetupPanel extends LitElement {
       this.navigate("setup");
     } else if (this.step === "ct") this.navigate("topology");
     else if (this.step === "safety") void this.cancelSession("ct");
-    else if (this.step === "voltage") this.navigate("safety");
+    else if (this.step === "offset") this.navigate("safety");
+    else if (this.step === "voltage") this.navigate("offset");
     else if (this.step === "current") this.navigate("voltage");
     else if (this.step === "restart") this.navigate("current");
     else if (this.step === "build") this.navigate(this.calibrationHandoff ? "restart" : "ct");
@@ -622,7 +642,8 @@ export class CircuitSetupPanel extends LitElement {
           this.navigate(this.session.state === "safety_required" || this.session.state === "preflight_failed"
             ? "safety"
             : this.session.state === "applied_pending_restart_verification" ? "restart"
-            : this.session.state === "verified" && this.restartResult ? "summary" : "voltage");
+            : this.session.state === "verified" && this.restartResult ? "summary"
+            : ["completed", "skipped"].includes(this.session.offset_disposition ?? "") ? "voltage" : "offset");
           await this.subscribeSession(this.connectionGeneration);
           return;
         }
@@ -678,10 +699,122 @@ export class CircuitSetupPanel extends LitElement {
       const session = await api.acknowledgeSafety(sessionId);
       if (!this.ownsOperation(generation, api, deviceId) || session.session_id !== sessionId) return;
       this.session = session;
-      this.navigate("voltage");
+      this.navigate("offset");
     }, "Safety acknowledgement could not be accepted.", () => this.ownsOperation(generation, api, deviceId));
     this.pendingAction = "";
     this.requestUpdate();
+  }
+
+  private offsetKey(board = this.board, stage = this.offsetStage): string {
+    return `${board}:${stage}`;
+  }
+
+  private async checkOffsetReadiness(): Promise<void> {
+    if (!this.api || !this.session || this.offsetBusy || !this.offsetAcknowledged[this.offsetStage - 1]) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const board = this.board; const stage = this.offsetStage; const generation = ++this.operationGeneration;
+    this.offsetBusy = true; this.requestUpdate();
+    try {
+      await this.run(async () => {
+        const result = await api.checkOffsetReadiness(sessionId, board, stage);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        this.offsetReadinessByTarget = new Map(this.offsetReadinessByTarget).set(this.offsetKey(board, stage), result);
+        this.announcement = result.ready ? `Board ${board + 1} Stage ${stage} measured readiness passed.`
+          : `Board ${board + 1} Stage ${stage} measured readiness did not pass.`;
+      }, "Measured offset readiness could not be collected. Reconnect and inspect the meter.",
+      () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      this.offsetBusy = false; this.requestUpdate();
+    }
+  }
+
+  private async calibrateOffset(): Promise<void> {
+    if (!this.api || !this.session || this.offsetBusy) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const board = this.board; const stage = this.offsetStage; const key = this.offsetKey(board, stage);
+    const prior = this.offsetResultByTarget.get(key);
+    const stageState = this.session.offset_boards?.[board]?.stages[stage - 1]?.state;
+    const retryRequired = Boolean(prior?.retry_allowed) || stageState === "partial" || stageState === "indeterminate";
+    if (this.offsetAcknowledged[stage - 1] !== true || retryRequired && !this.offsetRetryConfirmed) return;
+    const generation = ++this.operationGeneration;
+    this.offsetBusy = true; this.requestUpdate();
+    try {
+      await this.run(async () => {
+        const result = await api.calibrateOffset(sessionId, board, stage, true, retryRequired);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        this.offsetResultByTarget = new Map(this.offsetResultByTarget).set(key, result);
+        const boards = (this.session.offset_boards ?? []).map((item) => item.board_index !== board ? item : ({
+          ...item,
+          stages: item.stages.map((entry) => entry.stage !== stage ? entry : ({
+            ...entry,
+            state: result.state === "applied_pending_restart_verification" ? "completed" as const : result.state,
+          })),
+        }));
+        const states = boards.flatMap((item) => item.stages.map((entry) => entry.state));
+        const disposition = states.every((state) => state === "completed") ? "completed" as const
+          : states.some((state) => state === "partial" || state === "indeterminate") ? "partial" as const : "in_progress" as const;
+        this.session = { ...this.session, offset_boards: boards, offset_disposition: disposition,
+          has_pending_calibration: this.session.has_pending_calibration || result.expected_tables.length > 0 };
+        this.offsetAcknowledged = this.offsetAcknowledged.map((value, index) => index === stage - 1 ? false : value);
+        this.offsetReadinessByTarget = new Map(this.offsetReadinessByTarget);
+        this.offsetReadinessByTarget.delete(key);
+        this.offsetRetryConfirmed = false;
+        this.announcement = result.state === "applied_pending_restart_verification"
+          ? `Board ${board + 1} Stage ${stage} saved; restart verification required.`
+          : `Board ${board + 1} Stage ${stage} requires recovery before retry.`;
+      }, "Offset calibration did not complete. Reconnect and inspect before another attempt.",
+      () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      this.offsetBusy = false; this.requestUpdate();
+    }
+  }
+
+  private async skipOffset(): Promise<void> {
+    if (!this.api || !this.session || this.offsetBusy) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
+    this.offsetBusy = true; this.requestUpdate();
+    try {
+      await this.run(async () => {
+        const session = await api.skipOffsetCalibration(sessionId);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        this.session = session;
+        this.announcement = "Offset calibration skipped; existing flash values were preserved.";
+      }, "Offset calibration could not be skipped.", () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      this.offsetBusy = false; this.requestUpdate();
+    }
+  }
+
+  private async finishCurrent(): Promise<void> {
+    if (!this.session || this.finishBusy) return;
+    if (this.session.has_pending_calibration) {
+      this.navigate("restart");
+      return;
+    }
+    if (this.inventory && !this.labelOnly && changesFromDrafts(this.inventory, this.drafts).length) {
+      await this.finishWithoutCalibration();
+      return;
+    }
+    if (!this.api) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
+    this.finishBusy = true; this.requestUpdate();
+    try {
+      await this.run(async () => {
+        const session = await api.completeCalibrationWithoutChanges(sessionId);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        if (session.session_id !== sessionId || session.state !== "verified" || session.has_pending_calibration !== false) {
+          throw new Error("No-change completion response is not authoritative");
+        }
+        this.session = session;
+        this.completedWithoutChanges = true;
+        this.navigate("summary");
+        this.announcement = "Completed without calibration changes; no restart was required.";
+      }, "Calibration completion could not be confirmed.", () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      this.finishBusy = false; this.requestUpdate();
+    }
   }
 
   private async checkStability(target: "voltage" | "current"): Promise<void> {
@@ -738,6 +871,7 @@ export class CircuitSetupPanel extends LitElement {
           const updated = new Map(this.calibrationByTarget);
           results.forEach((result) => updated.set(`voltage:${result.group_key}`, result));
           this.calibrationByTarget = updated;
+          this.session = { ...this.session!, has_pending_calibration: true };
           this.announcement = "Calibrated both voltage chips on this board.";
           return;
         }
@@ -752,6 +886,7 @@ export class CircuitSetupPanel extends LitElement {
         const updated = new Map(this.calibrationByTarget);
         currentReferences.forEach((item) => updated.set(`current:${item.channel}`, result));
         this.calibrationByTarget = updated;
+        this.session = { ...this.session!, has_pending_calibration: true };
         this.announcement = `Calibration iteration ${result.iteration} finished with state ${result.state}.`;
       }, "Calibration did not complete. Reconnect and inspect before another attempt.",
       () => this.ownsOperation(generation, api, deviceId));
@@ -805,6 +940,7 @@ export class CircuitSetupPanel extends LitElement {
       if (!this.ownsOperation(generation, api, deviceId)
         || this.session?.session_id !== sessionId || this.topology !== topology) return;
       this.restartResult = result;
+      this.completedWithoutChanges = false;
       this.session = { ...this.session!, state: "verified" };
     }, "Restart verification failed; review recovery evidence before rollback.",
     () => this.ownsOperation(generation, api, deviceId));
@@ -931,6 +1067,18 @@ export class CircuitSetupPanel extends LitElement {
       () => this.finishFlow("Configuration changes were installed and verified."));
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back(), this.pendingAction === "safety");
+    if (this.step === "offset") return offsetStep(this.topology, this.session, this.board, this.offsetStage,
+      this.offsetAcknowledged[this.offsetStage - 1] ?? false, this.offsetRetryConfirmed,
+      this.offsetReadinessByTarget.get(this.offsetKey()) ?? null, this.offsetResultByTarget.get(this.offsetKey()) ?? null,
+      this.offsetBusy,
+      (value) => { this.board = value; this.offsetRetryConfirmed = false; this.requestUpdate(); },
+      (value) => { if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed")) {
+        this.offsetStage = value; this.board = 0; this.offsetRetryConfirmed = false; this.requestUpdate();
+      } },
+      (value) => { this.offsetAcknowledged = this.offsetAcknowledged.map((current, index) => index === this.offsetStage - 1 ? value : current); this.requestUpdate(); },
+      (value) => { this.offsetRetryConfirmed = value; this.requestUpdate(); },
+      () => void this.checkOffsetReadiness(), () => void this.calibrateOffset(), () => void this.reconnectSession(),
+      () => void this.skipOffset(), () => this.back(), () => this.navigate("voltage"));
     if (this.step === "voltage") return html`${voltageStep(this.topology, this.session, this.board, this.voltageReferences, this.stabilityFor("voltage"), this.resultFor("voltage"), this.voltageBusy,
       (value) => { this.board = value; this.requestUpdate(); },
       (index, value) => { this.voltageReferences = this.voltageReferences.map((current, offset) => offset === index ? value : current); this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
@@ -940,10 +1088,11 @@ export class CircuitSetupPanel extends LitElement {
       (channel, value) => { const references = new Map(this.currentReferences); if (value === null || !Number.isFinite(value) || value <= 0) references.delete(channel); else references.set(channel, value); this.currentReferences = references; this.requestUpdate(); },
       (value) => { this.reportingMultiplier = value; this.requestUpdate(); },
       () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession())}
-      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.pendingAction === "finish"} @click=${() => this.calibrationByTarget.size ? this.navigate("restart") : void this.finishWithoutCalibration()}>${this.pendingAction === "finish" ? "Finishing…" : this.resultFor("current") ? "Continue" : "Skip current calibration"}</button></footer>`;
+      <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button><button class="primary" ?disabled=${this.finishBusy} @click=${() => void this.finishCurrent()}>${this.finishBusy ? "Finishing…" : this.session?.has_pending_calibration ? "Continue to Restart" : "Finish without calibration"}</button></footer>`;
     if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult,
       Boolean(this.transaction?.rollback_available), () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());
-    if (this.step === "summary") return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.selectedProjectVersion(),
+    if (this.step === "summary") return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult,
+      this.completedWithoutChanges, this.selectedProjectVersion(),
       () => void (this.restartResult?.source_handoff_firmware_installed
         ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back());
     return html`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct"
@@ -971,7 +1120,7 @@ export class CircuitSetupPanel extends LitElement {
           <h1 id="step-heading" tabindex="-1">${STEPS[currentIndex]?.[1]}</h1>
           ${this.error ? html`<div class="error-panel" role="alert" tabindex="-1"><strong>${this.error}</strong></div>` : nothing}
           ${this.stepBody()}
-          ${currentIndex >= 4 && this.step !== "summary" ? technicalDetails(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult) : nothing}
+          ${currentIndex >= 4 && this.step !== "summary" ? technicalDetails(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.completedWithoutChanges) : nothing}
           <div class="sr-status" role="status" aria-live="polite">${this.announcement}</div>
         </main>
       </div>
