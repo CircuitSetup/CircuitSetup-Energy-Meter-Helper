@@ -707,6 +707,17 @@ describe("HelperApi", () => {
     await expect(api.restartAndVerify("session-1", topology)).rejects.toThrow("restart_and_verify");
   });
 
+  it("accepts nullable bound devices and rejects non-string bindings", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    hass.responses.setup_status = { state: "device_discovered", devices: [device], bound_device_id: null };
+    await expect(api.setupStatus()).resolves.toMatchObject({ bound_device_id: null });
+    hass.responses.setup_status = { state: "device_discovered", devices: [device], bound_device_id: "meter-1" };
+    await expect(api.setupStatus()).resolves.toMatchObject({ bound_device_id: "meter-1" });
+    hass.responses.setup_status = { state: "device_discovered", devices: [device], bound_device_id: 1 };
+    await expect(api.setupStatus()).rejects.toThrow("setup_status");
+  });
+
   it("accepts every backend preflight issue code", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");

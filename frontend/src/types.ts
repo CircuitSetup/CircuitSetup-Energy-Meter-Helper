@@ -46,6 +46,7 @@ export interface SetupSnapshot {
   devices: DiscoveredDevice[];
   configuration_authoritative?: boolean;
   installer_intent?: InstallerIntent;
+  bound_device_id?: string | null;
 }
 
 export interface TopologyEvidence {

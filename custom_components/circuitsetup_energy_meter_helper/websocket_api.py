@@ -20,7 +20,7 @@ from homeassistant.core import HomeAssistant
 
 from .config_document import CT_GAIN_RE, CT_NAME_RE, VOLTAGE_GAIN_RE
 from .config_transaction import RollbackFailedError
-from .const import DOMAIN
+from .const import CONF_ESPHOME_ENTRY_ID, DOMAIN
 from .ct_catalog import REPORTING_MULTIPLIERS
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
@@ -84,6 +84,14 @@ _TRANSACTION_STATUS_COMMANDS = frozenset(
         "install_ct_config",
         "rollback_ct_config",
         "subscribe_config_transaction",
+    )
+)
+_OWNERSHIP_CREATION_OPERATIONS = frozenset(
+    (
+        "adopt_device",
+        "preview_ct_config",
+        "preview_calibrated_gains",
+        "start_session",
     )
 )
 
@@ -254,10 +262,12 @@ class EntryWebsocketController:
         store: HelperStore,
         *,
         diagnostics_provider: DiagnosticsProvider | None = None,
+        esphome_entry_id: str | None = None,
     ) -> None:
         self.provisioning = provisioning
         self.sessions = sessions
         self.store = store
+        self.esphome_entry_id = esphome_entry_id
         self.transactions: TransactionOwner | None = None
         self.workflow: WorkflowOwner | None = None
         self._diagnostics_provider = diagnostics_provider
@@ -284,6 +294,7 @@ class EntryWebsocketController:
         operation = command.removeprefix(_PREFIX)
         if operation == "setup_status":
             result: dict[str, Any] = _dataclass_mapping(self.provisioning.snapshot)
+            result["bound_device_id"] = self.esphome_entry_id
             if self.provisioning.installer_intent is not None:
                 result["installer_intent"] = {
                     key: value
@@ -593,6 +604,8 @@ class _Router:
         self.hass = hass
         self.controllers: dict[str, EntryWebsocketController] = {}
         self.subscriptions: dict[str, set[Unsubscribe]] = {}
+        # ponytail: global rebind lock, use per-entry locks if multiple helper entries are supported.
+        self._rebind_lock = asyncio.Lock()
         for command in ALL_COMMANDS:
             websocket_api.async_register_command(hass, _handler(command))
 
@@ -627,12 +640,25 @@ class _Router:
             raise CapabilityUnavailable from None
 
     async def call(self, connection: ActiveConnection, msg: Mapping[str, Any]) -> None:
-        controller = self.controller(msg["entry_id"])
+        operation = msg["type"].removeprefix(_PREFIX)
+        if operation in _OWNERSHIP_CREATION_OPERATIONS:
+            async with self._rebind_lock:
+                await self._call(connection, msg, operation)
+            return
+        await self._call(connection, msg, operation)
+
+    async def _call(
+        self,
+        connection: ActiveConnection,
+        msg: Mapping[str, Any],
+        operation: str,
+    ) -> None:
+        controller: EntryWebsocketController | None = None
         try:
+            controller = self.controller(msg["entry_id"])
             result = await controller.async_call(
                 msg["type"], msg, getattr(connection.user, "id", None)
             )
-            operation = msg["type"].removeprefix(_PREFIX)
             controller.diagnostics.record_result(operation, result)
             await async_reconcile_issues(
                 self.hass, msg["entry_id"], operation, signals_from_result(result)
@@ -647,31 +673,62 @@ class _Router:
                 ),
             )
         except asyncio.CancelledError as error:
-            controller.diagnostics.record_error(error)
+            if controller is not None:
+                controller.diagnostics.record_error(error)
             await async_reconcile_issues(
                 self.hass,
                 msg["entry_id"],
-                msg["type"].removeprefix(_PREFIX),
+                operation,
                 signals_from_result(error),
                 authoritative=False,
             )
             raise
         except Exception as error:  # noqa: BLE001 - stable websocket error boundary
-            controller.diagnostics.record_error(error)
+            if controller is not None:
+                controller.diagnostics.record_error(error)
             await async_reconcile_issues(
-                self.hass, msg["entry_id"], msg["type"].removeprefix(_PREFIX),
+                self.hass,
+                msg["entry_id"],
+                operation,
                 signals_from_result(error),
                 authoritative=False,
             )
             _send_safe_error(connection, msg["id"], error)
+        else:
+            if operation == "adopt_device":
+                try:
+                    await self._async_rebind_device(
+                        msg["entry_id"],
+                        result["device_id"],
+                    )
+                except Exception as error:  # noqa: BLE001 - success was already sent
+                    controller.diagnostics.record_error(error)
+
+    async def _async_rebind_device(
+        self, entry_id: str, device_id: str
+    ) -> None:
+        controller = self.controllers.get(entry_id)
+        entry = self.hass.config_entries.async_get_entry(entry_id)
+        if entry is None or controller is None or controller.esphome_entry_id == device_id:
+            return
+        if entry.data.get(CONF_ESPHOME_ENTRY_ID) != device_id:
+            self.hass.config_entries.async_update_entry(
+                entry,
+                data={**entry.data, CONF_ESPHOME_ENTRY_ID: device_id},
+            )
+        if not await self.hass.config_entries.async_reload(entry_id):
+            raise RuntimeError("helper rebind failed")
+        replacement = self.controllers.get(entry_id)
+        if replacement is None or replacement.esphome_entry_id != device_id:
+            raise RuntimeError("helper rebind did not publish the adopted device")
 
     async def subscribe(
         self, connection: ActiveConnection, msg: Mapping[str, Any]
     ) -> None:
-        controller = self.controller(msg["entry_id"])
         entry_id = msg["entry_id"]
         msg_id = msg["id"]
         try:
+            controller = self.controller(entry_id)
             pending: deque[Any] = deque()
             allow_transaction_change_keys = msg["type"] in _TRANSACTION_STATUS_COMMANDS
             initial_sent = False
@@ -1144,8 +1201,10 @@ def _send_safe_error(
         code, message = "capability_unavailable", "This capability is not available"
     elif isinstance(error, ApiFailure):
         code, message = error.code, error.safe_message
-    elif isinstance(error, StaleConfirmation | WorkflowHandleError):
+    elif isinstance(error, StaleConfirmation):
         code, message = "stale_confirmation", "The confirmation is stale or invalid"
+    elif isinstance(error, WorkflowHandleError):
+        code, message = "stale_handle", "The selected device changed or is no longer available"
     elif isinstance(error, WorkflowCapabilityUnavailable):
         code, message = "capability_unavailable", "This capability is not available"
     elif isinstance(error, KeyError | ResourceNotFound):

@@ -32,7 +32,10 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     ConfigTransactionManager,
     ConfigTransactionState,
 )
-from custom_components.circuitsetup_energy_meter_helper.const import DOMAIN
+from custom_components.circuitsetup_energy_meter_helper.const import (
+    CONF_ESPHOME_ENTRY_ID,
+    DOMAIN,
+)
 from custom_components.circuitsetup_energy_meter_helper.ct_catalog import (
     CTPresetCatalog,
 )
@@ -41,6 +44,9 @@ from custom_components.circuitsetup_energy_meter_helper.ct_inventory import (
 )
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ESPHomeConfigSnapshot,
+)
+from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
+    ESPHomeApiSession,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
@@ -72,7 +78,9 @@ from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
     ALL_COMMANDS,
     MUTATION_COMMANDS,
     EntryWebsocketController,
+    StaleConfirmation,
     _schema,
+    _send_safe_error,
     sanitize_payload,
 )
 from custom_components.circuitsetup_energy_meter_helper.workflow import (
@@ -236,8 +244,11 @@ class FakeEntry:
 
 
 class FakeConfigEntries:
-    def __init__(self, entries: tuple[object, ...] = ()) -> None:
+    def __init__(
+        self, entries: tuple[object, ...] = (), events: list[tuple[str, Any]] | None = None
+    ) -> None:
         self.entries = entries
+        self.events = events if events is not None else []
 
     def async_entries(self, domain: str) -> list[object]:
         return [
@@ -254,13 +265,23 @@ class FakeConfigEntries:
             None,
         )
 
+    def async_update_entry(self, entry: FakeEntry, *, data: dict[str, str]) -> None:
+        entry.data = data
+        self.events.append(("update", data[CONF_ESPHOME_ENTRY_ID]))
+
+    async def async_reload(self, entry_id: str) -> bool:
+        self.events.append(("reload", entry_id))
+        return True
+
 
 class FakeHass:
     """Small HA surface sufficient for setup and async websocket handlers."""
 
-    def __init__(self, entries: tuple[object, ...] = ()) -> None:
+    def __init__(
+        self, entries: tuple[object, ...] = (), events: list[tuple[str, Any]] | None = None
+    ) -> None:
         self.data: dict[str, Any] = {}
-        self.config_entries = FakeConfigEntries(entries)
+        self.config_entries = FakeConfigEntries(entries, events)
         self.loop = asyncio.get_event_loop()
         self.config = SimpleNamespace(config_dir=".", path=lambda *parts: str(Path(".").joinpath(*parts)))
         self.tasks: list[asyncio.Task[None]] = []
@@ -475,15 +496,18 @@ class SupervisorTransport:
 
 
 class FakeConnection:
-    def __init__(self, *, admin: bool = True) -> None:
+    def __init__(self, *, admin: bool = True, events: list[tuple[str, Any]] | None = None) -> None:
         self.user = SimpleNamespace(id="admin", is_admin=admin)
         self.subscriptions: dict[int, Any] = {}
         self.results: list[tuple[int, Any]] = []
         self.errors: list[tuple[int, str, str]] = []
         self.events: list[tuple[int, Any]] = []
+        self._trace = events
 
     def send_result(self, msg_id: int, result: Any = None) -> None:
         self.results.append((msg_id, result))
+        if self._trace is not None:
+            self._trace.append(("result", result))
 
     def send_error(self, msg_id: int, code: str, message: str) -> None:
         self.errors.append((msg_id, code, message))
@@ -583,6 +607,21 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
     return base
 
 
+def test_stale_confirmation_and_workflow_handle_use_distinct_public_codes() -> None:
+    confirmation = FakeConnection()
+    handle = FakeConnection()
+
+    _send_safe_error(confirmation, 1, StaleConfirmation())
+    _send_safe_error(handle, 2, WorkflowHandleError("device is not owned"))
+
+    assert confirmation.errors == [
+        (1, "stale_confirmation", "The confirmation is stale or invalid")
+    ]
+    assert handle.errors == [
+        (2, "stale_handle", "The selected device changed or is no longer available")
+    ]
+
+
 def _assert_browser_safe(value: Any) -> None:
     serialized = repr(value).casefold()
     for forbidden in (
@@ -661,6 +700,372 @@ def test_setup_status_exposes_only_safe_installer_firmware_identifiers() -> None
     asyncio.run(run())
 
 
+def test_setup_status_exposes_the_runtime_bound_device_id() -> None:
+    """Reconnect state reflects the live controller binding, including no binding."""
+
+    async def snapshot(data: dict[str, str]) -> dict[str, Any]:
+        hass = FakeHass()
+        entry = FakeEntry(data=data)
+        assert await async_setup_entry(hass, entry)
+        connection = FakeConnection()
+        await _invoke(hass, connection, _message(f"{DOMAIN}/setup_status"))
+        await async_unload_entry(hass, entry)
+        return connection.results[-1][1]
+
+    async def run() -> None:
+        assert (await snapshot({}))["bound_device_id"] is None
+        assert (await snapshot({CONF_ESPHOME_ENTRY_ID: "meter-1"}))["bound_device_id"] == "meter-1"
+
+    asyncio.run(run())
+
+
+def test_adoption_rebinds_after_sending_the_success_result() -> None:
+    """A successful adoption persists and reloads only after its browser response."""
+
+    class Workflow:
+        async def async_adopt_device(self, device_id: str) -> dict[str, str]:
+            assert device_id == "new-meter"
+            return {"device_id": "new-meter", "configuration": "new-meter.yaml"}
+
+    async def run() -> None:
+        events: list[tuple[str, Any]] = []
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "old-meter"})
+        hass = FakeHass((entry,), events)
+        assert await async_setup_entry(hass, entry)
+        hass.data[DOMAIN][entry.entry_id]["websocket_controller"].workflow = Workflow()
+        connection = FakeConnection(events=events)
+        message = _message(f"{DOMAIN}/adopt_device")
+        message["device_id"] = "new-meter"
+
+        await _invoke(hass, connection, message)
+
+        assert events == [
+            ("result", {"device_id": "new-meter", "configuration": "new-meter.yaml"}),
+            ("update", "new-meter"),
+            ("reload", "helper"),
+        ]
+        assert entry.data == {CONF_ESPHOME_ENTRY_ID: "new-meter"}
+
+    asyncio.run(run())
+
+
+def test_adoption_failure_does_not_change_the_existing_binding() -> None:
+    """A rejected adoption cannot update or reload the helper entry."""
+
+    class Workflow:
+        async def async_adopt_device(self, _device_id: str) -> None:
+            raise WorkflowHandleError("adoption failed")
+
+    async def run() -> None:
+        events: list[tuple[str, Any]] = []
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "old-meter"})
+        hass = FakeHass((entry,), events)
+        assert await async_setup_entry(hass, entry)
+        hass.data[DOMAIN][entry.entry_id]["websocket_controller"].workflow = Workflow()
+        message = _message(f"{DOMAIN}/adopt_device")
+        message["device_id"] = "new-meter"
+
+        await _invoke(hass, FakeConnection(events=events), message)
+
+        assert entry.data == {CONF_ESPHOME_ENTRY_ID: "old-meter"}
+        assert events == []
+
+    asyncio.run(run())
+
+
+def test_adoption_rebind_retries_reload_after_a_previous_reload_failure() -> None:
+    """A stale runtime binding reloads even when the persisted target is already current."""
+
+    class Workflow:
+        async def async_adopt_device(self, _device_id: str) -> dict[str, str]:
+            return {"device_id": "new-meter", "configuration": "new-meter.yaml"}
+
+    async def run() -> None:
+        events: list[tuple[str, Any]] = []
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "old-meter"})
+        hass = FakeHass((entry,), events)
+        assert await async_setup_entry(hass, entry)
+        hass.data[DOMAIN][entry.entry_id]["websocket_controller"].workflow = Workflow()
+        entry.data = {CONF_ESPHOME_ENTRY_ID: "new-meter"}
+        connection = FakeConnection(events=events)
+        message = _message(f"{DOMAIN}/adopt_device")
+        message["device_id"] = "new-meter"
+
+        await _invoke(hass, connection, message)
+
+        assert events == [
+            ("result", {"device_id": "new-meter", "configuration": "new-meter.yaml"}),
+            ("reload", "helper"),
+        ]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("command", (f"{DOMAIN}/setup_status", f"{DOMAIN}/subscribe_setup"))
+def test_reload_gap_returns_capability_unavailable(command: str) -> None:
+    """Calls during controller replacement keep the websocket error contract."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        assert await async_setup_entry(hass, FakeEntry(data={}))
+        hass.data[DOMAIN]["_websocket_router"].remove("helper")
+        connection = FakeConnection()
+
+        await _invoke(hass, connection, _message(command))
+
+        assert connection.errors == [
+            (1, "capability_unavailable", "This capability is not available")
+        ]
+
+    asyncio.run(run())
+
+
+def test_adoption_rebind_serializes_concurrent_duplicate_requests() -> None:
+    """Concurrent adoption requests cannot both import the same Builder device."""
+
+    class Builder:
+        def __init__(self) -> None:
+            self.configured = False
+            self.import_calls = 0
+            self.import_started = asyncio.Event()
+            self.release_import = asyncio.Event()
+
+        async def async_list_devices(self) -> bool:
+            return self.configured
+
+        async def async_import_device(self) -> str:
+            self.import_calls += 1
+            self.import_started.set()
+            await self.release_import.wait()
+            self.configured = True
+            return "new-meter.yaml"
+
+    class Workflow:
+        def __init__(self, builder: Builder) -> None:
+            self.builder = builder
+
+        async def async_adopt_device(self, _device_id: str) -> dict[str, str]:
+            configuration = (
+                "new-meter.yaml"
+                if await self.builder.async_list_devices()
+                else await self.builder.async_import_device()
+            )
+            return {"device_id": "new-meter", "configuration": configuration}
+
+    async def run() -> None:
+        events: list[tuple[str, Any]] = []
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "old-meter"})
+        hass = FakeHass((entry,), events)
+        assert await async_setup_entry(hass, entry)
+        builder = Builder()
+        controller = hass.data[DOMAIN][entry.entry_id]["websocket_controller"]
+        controller.workflow = Workflow(builder)
+        router = hass.data[DOMAIN]["_websocket_router"]
+
+        async def reload(entry_id: str) -> bool:
+            events.append(("reload", entry_id))
+            replacement = EntryWebsocketController(
+                controller.provisioning,
+                controller.sessions,
+                controller.store,
+                esphome_entry_id="new-meter",
+            )
+            replacement.workflow = Workflow(builder)
+            router.remove(entry_id)
+            router.add(entry_id, replacement)
+            return True
+
+        hass.config_entries.async_reload = reload  # type: ignore[method-assign]
+        connection = FakeConnection(events=events)
+        first = _message(f"{DOMAIN}/adopt_device", 1)
+        second = _message(f"{DOMAIN}/adopt_device", 2)
+        first["device_id"] = second["device_id"] = "new-meter"
+        first_task = asyncio.create_task(router.call(connection, first))
+        await builder.import_started.wait()
+        second_task = asyncio.create_task(router.call(connection, second))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        builder.release_import.set()
+        await asyncio.gather(first_task, second_task)
+
+        assert builder.import_calls == 1
+        assert events.count(("update", "new-meter")) == 1
+        assert events.count(("reload", "helper")) == 1
+        assert router.controllers["helper"] is not controller
+        assert router.controllers["helper"].esphome_entry_id == "new-meter"
+        assert connection.errors == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ("start_session", "preview_ct_config", "preview_calibrated_gains"),
+)
+def test_adoption_rebind_blocks_work_creation_until_the_live_controller_exists(
+    operation: str,
+) -> None:
+    """Session and transaction creation cannot attach to a controller being rebound."""
+
+    class Workflow:
+        def __init__(self, label: str, calls: list[tuple[str, str]]) -> None:
+            self.label = label
+            self.calls = calls
+            self.adoption_started = asyncio.Event()
+            self.release_adoption = asyncio.Event()
+
+        async def async_adopt_device(self, _device_id: str) -> dict[str, str]:
+            self.adoption_started.set()
+            await self.release_adoption.wait()
+            return {"device_id": "new-meter", "configuration": "new-meter.yaml"}
+
+        async def async_start_session(self, _device_id: str) -> dict[str, str]:
+            self.calls.append((self.label, "start_session"))
+            return {"created_by": self.label}
+
+        async def async_preview_ct_config(self, *_args: Any) -> dict[str, str]:
+            self.calls.append((self.label, "preview_ct_config"))
+            return {"created_by": self.label}
+
+        async def async_preview_calibrated_gains(
+            self, *_args: Any
+        ) -> dict[str, str]:
+            self.calls.append((self.label, "preview_calibrated_gains"))
+            return {"created_by": self.label}
+
+    async def run() -> None:
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "old-meter"})
+        hass = FakeHass((entry,))
+        assert await async_setup_entry(hass, entry)
+        router = hass.data[DOMAIN]["_websocket_router"]
+        controller = hass.data[DOMAIN][entry.entry_id]["websocket_controller"]
+        calls: list[tuple[str, str]] = []
+        old_workflow = Workflow("old", calls)
+        controller.workflow = old_workflow
+
+        async def reload(entry_id: str) -> bool:
+            replacement = EntryWebsocketController(
+                controller.provisioning,
+                controller.sessions,
+                controller.store,
+                esphome_entry_id="new-meter",
+            )
+            replacement.workflow = Workflow("new", calls)
+            router.remove(entry_id)
+            router.add(entry_id, replacement)
+            return True
+
+        hass.config_entries.async_reload = reload  # type: ignore[method-assign]
+        connection = FakeConnection()
+        adoption = _message(f"{DOMAIN}/adopt_device", 1)
+        adoption["device_id"] = "new-meter"
+        adopting = asyncio.create_task(router.call(connection, adoption))
+        await old_workflow.adoption_started.wait()
+        creating = asyncio.create_task(
+            router.call(connection, _message(f"{DOMAIN}/{operation}", 2))
+        )
+        await asyncio.sleep(0)
+        old_workflow.release_adoption.set()
+        await asyncio.gather(adopting, creating)
+
+        assert calls == [("new", operation)]
+        assert connection.errors == []
+
+    asyncio.run(run())
+
+
+def test_adoption_rebind_skips_persistence_for_an_already_bound_runtime() -> None:
+    """An adopted device already serving the entry needs no lifecycle work."""
+
+    class Workflow:
+        async def async_adopt_device(self, _device_id: str) -> dict[str, str]:
+            return {"device_id": "new-meter", "configuration": "new-meter.yaml"}
+
+    async def run() -> None:
+        events: list[tuple[str, Any]] = []
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "new-meter"})
+        hass = FakeHass((entry,), events)
+        assert await async_setup_entry(hass, entry)
+        controller = hass.data[DOMAIN][entry.entry_id]["websocket_controller"]
+        controller.esphome_entry_id = "new-meter"
+        controller.workflow = Workflow()
+        connection = FakeConnection(events=events)
+        message = _message(f"{DOMAIN}/adopt_device")
+        message["device_id"] = "new-meter"
+
+        await _invoke(hass, connection, message)
+
+        assert events == [
+            ("result", {"device_id": "new-meter", "configuration": "new-meter.yaml"}),
+        ]
+
+    asyncio.run(run())
+
+
+def test_adoption_rebind_records_a_reload_failure_without_a_second_response() -> None:
+    """A reload failure is recoverable only after the adoption success frame."""
+
+    class Workflow:
+        async def async_adopt_device(self, _device_id: str) -> dict[str, str]:
+            return {"device_id": "new-meter", "configuration": "new-meter.yaml"}
+
+    async def run() -> None:
+        events: list[tuple[str, Any]] = []
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "old-meter"})
+        hass = FakeHass((entry,), events)
+        assert await async_setup_entry(hass, entry)
+        controller = hass.data[DOMAIN][entry.entry_id]["websocket_controller"]
+        controller.workflow = Workflow()
+
+        async def fail_reload(entry_id: str) -> None:
+            events.append(("reload", entry_id))
+            raise RuntimeError("reload failed")
+
+        hass.config_entries.async_reload = fail_reload  # type: ignore[method-assign]
+        connection = FakeConnection(events=events)
+        message = _message(f"{DOMAIN}/adopt_device")
+        message["device_id"] = "new-meter"
+
+        await _invoke(hass, connection, message)
+
+        assert events == [
+            ("result", {"device_id": "new-meter", "configuration": "new-meter.yaml"}),
+            ("update", "new-meter"),
+            ("reload", "helper"),
+        ]
+        assert connection.errors == []
+        assert list(controller.diagnostics.errors) == ["operation_failed"]
+
+    asyncio.run(run())
+
+
+def test_adoption_rebind_records_a_false_reload_result() -> None:
+    """A rejected Home Assistant reload is recorded after adoption succeeds."""
+
+    class Workflow:
+        async def async_adopt_device(self, _device_id: str) -> dict[str, str]:
+            return {"device_id": "new-meter", "configuration": "new-meter.yaml"}
+
+    async def run() -> None:
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "old-meter"})
+        hass = FakeHass((entry,))
+        assert await async_setup_entry(hass, entry)
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+        controller.workflow = Workflow()
+
+        async def false_reload(_entry_id: str) -> bool:
+            return False
+
+        hass.config_entries.async_reload = false_reload  # type: ignore[method-assign]
+        message = _message(f"{DOMAIN}/adopt_device")
+        message["device_id"] = "new-meter"
+        await _invoke(hass, FakeConnection(), message)
+
+        assert list(controller.diagnostics.errors) == ["operation_failed"]
+
+    asyncio.run(run())
+
+
 def test_setup_registers_exact_commands_and_live_owners_then_unloads() -> None:
     """Production setup must own one live router/session owner and remove callbacks."""
 
@@ -684,6 +1089,7 @@ def test_setup_registers_exact_commands_and_live_owners_then_unloads() -> None:
             (
                 1,
                 {
+                    "bound_device_id": None,
                     "configuration_authoritative": False,
                     "devices": [],
                     "state": "no_device",
@@ -723,7 +1129,7 @@ def test_setup_primes_ct_catalog_outside_event_loop(
     asyncio.run(run())
 
 
-def test_production_setup_builds_real_owners_and_delegates_config_phases() -> None:
+def test_production_setup_reload_reconstructs_real_owners_and_delegates_config_phases() -> None:
     """Configured setup wires real owners; tests replace only the external transport."""
 
     content = """esphome:
@@ -772,6 +1178,9 @@ substitutions:
         assert controller.workflow is runtime["workflow"]
         assert controller.transactions is runtime["transactions"]
         assert controller.workflow is not None and controller.transactions is not None
+        assert controller.esphome_entry_id == "meter"
+        assert isinstance(runtime["esphome_api"], ESPHomeApiSession)
+        assert runtime["esphome_api"].esphome_entry_id == "meter"
 
         inventory = await controller.async_call(
             f"{DOMAIN}/get_ct_inventory", {"device_id": "meter"}, None
@@ -840,6 +1249,23 @@ substitutions:
             )
         ]
 
+        await async_unload_entry(hass, entry)
+        entry.data = {CONF_ESPHOME_ENTRY_ID: "new-meter"}
+        websocket = BuilderTransportWebSocket(content)
+        transport = SupervisorTransport(websocket)
+        hass.data[DATA_COMPONENT] = HassIO(
+            asyncio.get_running_loop(),
+            transport,  # type: ignore[arg-type]
+            "supervisor",
+        )
+        assert await async_setup_entry(hass, entry)
+        reloaded = hass.data[DOMAIN][entry.entry_id]
+        assert reloaded["websocket_controller"].esphome_entry_id == "new-meter"
+        assert isinstance(reloaded["esphome_api"], ESPHomeApiSession)
+        assert reloaded["esphome_api"].esphome_entry_id == "new-meter"
+        assert isinstance(reloaded["transactions"], ConfigTransactionManager)
+        assert isinstance(reloaded["workflow"], EntryWorkflow)
+        assert reloaded["workflow"]._esphome_entry_id == "new-meter"
         await async_unload_entry(hass, entry)
 
     asyncio.run(run())
@@ -2477,8 +2903,8 @@ def test_verified_session_cannot_be_reopened_through_public_routes(
         await _invoke(hass, connection, complete)
 
         assert connection.errors == [
-            (1, "stale_confirmation", "The confirmation is stale or invalid"),
-            (2, "stale_confirmation", "The confirmation is stale or invalid"),
+            (1, "stale_handle", "The selected device changed or is no longer available"),
+            (2, "stale_handle", "The selected device changed or is no longer available"),
         ]
         assert connection.results[-1] == (3, sanitize_payload(terminal))
         assert events == []

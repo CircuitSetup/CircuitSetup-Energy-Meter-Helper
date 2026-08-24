@@ -118,6 +118,7 @@ function setup(value: unknown, label: string): SetupSnapshot {
   const item = record(value, label); enumeration(item.state, SETUP_STATES, label);
   array(item.devices, label).forEach((entry) => device(entry, label));
   if (item.configuration_authoritative !== undefined) boolean(item.configuration_authoritative, label);
+  if (item.bound_device_id !== undefined && item.bound_device_id !== null) string(item.bound_device_id, label);
   if (item.installer_intent !== undefined) {
     const intent = record(item.installer_intent, label); const count = integer(intent.addon_count, label);
     if (count < 0 || count > 6) throw new Error(`${label} response is invalid`);

@@ -20,6 +20,7 @@ export function setupDeviceStep(
   busyAction = "",
   discoverOnly = false,
   firmwareCatalog: TemplateResult = html``,
+  importFailedDeviceId: string | null = null,
 ): TemplateResult {
   return html`
     <section class="step-content setup-step" aria-labelledby="step-heading">
@@ -32,7 +33,7 @@ export function setupDeviceStep(
               <span><strong>${device.title}</strong><small>${device.project_name} · ${device.project_version ?? "version unavailable"}</small></span>
               <span>Device Builder: ${device.configuration ? "Yes" : device.importable ? "Yes — import available" : "No"}</span>
               ${device.importable && !device.configuration ? html`<button class="secondary" ?disabled=${Boolean(busyAction)}
-                @click=${() => adopt(device.entry_id)}>Import</button>` : ""}
+                @click=${() => adopt(device.entry_id)}>${importFailedDeviceId === device.entry_id ? "Retry import" : "Import"}</button>` : ""}
               <button class="primary" data-action="configure-device" ?disabled=${Boolean(busyAction)}
                 @click=${() => configure(device.entry_id)}>${busyAction === `topology:${device.entry_id}` ? "Loading topology…" : "Configure"}</button>
             </div>
@@ -79,9 +80,17 @@ export function setupDeviceStep(
         </dl>
       </section>
       ${firmwareCatalog}
+      <section class="next-steps" aria-labelledby="next-steps-heading">
+        <h2 id="next-steps-heading">What happens next</h2>
+        <ol>
+          <li>Install the selected firmware and select <strong>Next</strong> in ESP Web Tools.</li>
+          <li>Select <strong>Add to Home Assistant</strong> and approve the discovered ESPHome device.</li>
+          <li>Return here. The helper will import it into ESPHome Builder and continue.</li>
+        </ol>
+      </section>
       <p class="info-band">${connection === "wifi"
-        ? "Use a USB data cable. ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter. This helper does not store or send those credentials to Home Assistant. Complete the ESP Web Tools network setup and Add to Home Assistant when offered."
-        : "Use a USB data cable to install firmware, connect Ethernet and power, wait for an address, complete Add to Home Assistant, then return here. This helper continues when discovery reports your meter."}</p>
+        ? "Use a USB data cable. ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter. This helper does not store or send those credentials to Home Assistant."
+        : "Use a USB data cable, connect Ethernet and power, then wait for an address from DHCP."}</p>
       `}
       <button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>
     </section>
