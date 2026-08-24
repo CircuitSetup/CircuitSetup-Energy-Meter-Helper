@@ -257,6 +257,25 @@ def test_gain_requires_target_tag_on_rows_and_one_terminal_save_result() -> None
             dispatched_after=10.0,
         )
 
+    untagged_after_terminal = log_lines("gain_success.log")
+    untagged_after_terminal.append(
+        CalibrationLogLine(
+            3,
+            8,
+            untagged_after_terminal[-1].arrived_at + 1,
+            "[I] [CALIBRATION] ===== Gain Calibration =====",
+        )
+    )
+    with pytest.raises(LogEvidenceError, match="target instance"):
+        parse_gain_run(
+            untagged_after_terminal,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="3. Run Main Meter 1 Gain Cal",
+            dispatched_after=10.0,
+        )
+
     contradictory = log_lines("gain_save_failure.log")
     contradictory.append(
         CalibrationLogLine(

@@ -237,7 +237,7 @@ def parse_gain_run(
         matching[button_index + 1 :], start=button_index + 1
     ):
         instance = _instance(item.line)
-        if terminal_seen and instance != target_instance_id and is_evidence(item):
+        if terminal_seen and "3. Run " in item.line and " Gain Cal" in item.line:
             operation_end = index
             break
         if instance is not None and instance != target_instance_id:
