@@ -596,6 +596,8 @@ class _Router:
         self.hass = hass
         self.controllers: dict[str, EntryWebsocketController] = {}
         self.subscriptions: dict[str, set[Unsubscribe]] = {}
+        # ponytail: global rebind lock, use per-entry locks if multiple helper entries are supported.
+        self._rebind_lock = asyncio.Lock()
         for command in ALL_COMMANDS:
             websocket_api.async_register_command(hass, _handler(command))
 
@@ -673,23 +675,24 @@ class _Router:
                     await self._async_rebind_device(
                         msg["entry_id"],
                         result["device_id"],
-                        controller.esphome_entry_id,
                     )
                 except Exception as error:  # noqa: BLE001 - success was already sent
                     controller.diagnostics.record_error(error)
 
     async def _async_rebind_device(
-        self, entry_id: str, device_id: str, runtime_device_id: str | None
+        self, entry_id: str, device_id: str
     ) -> None:
-        entry = self.hass.config_entries.async_get_entry(entry_id)
-        if entry is None or runtime_device_id == device_id:
-            return
-        if entry.data.get(CONF_ESPHOME_ENTRY_ID) != device_id:
-            self.hass.config_entries.async_update_entry(
-                entry,
-                data={**entry.data, CONF_ESPHOME_ENTRY_ID: device_id},
-            )
-        await self.hass.config_entries.async_reload(entry_id)
+        async with self._rebind_lock:
+            controller = self.controllers.get(entry_id)
+            entry = self.hass.config_entries.async_get_entry(entry_id)
+            if entry is None or controller is None or controller.esphome_entry_id == device_id:
+                return
+            if entry.data.get(CONF_ESPHOME_ENTRY_ID) != device_id:
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    data={**entry.data, CONF_ESPHOME_ENTRY_ID: device_id},
+                )
+            await self.hass.config_entries.async_reload(entry_id)
 
     async def subscribe(
         self, connection: ActiveConnection, msg: Mapping[str, Any]

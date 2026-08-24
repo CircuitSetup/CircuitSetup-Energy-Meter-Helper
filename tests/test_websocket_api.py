@@ -800,6 +800,51 @@ def test_adoption_rebind_retries_reload_after_a_previous_reload_failure() -> Non
     asyncio.run(run())
 
 
+def test_adoption_rebind_serializes_concurrent_duplicate_requests() -> None:
+    """A completed reload lets a waiting duplicate observe the new live binding."""
+
+    class Workflow:
+        async def async_adopt_device(self, _device_id: str) -> dict[str, str]:
+            return {"device_id": "new-meter", "configuration": "new-meter.yaml"}
+
+    async def run() -> None:
+        events: list[tuple[str, Any]] = []
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "old-meter"})
+        hass = FakeHass((entry,), events)
+        assert await async_setup_entry(hass, entry)
+        controller = hass.data[DOMAIN][entry.entry_id]["websocket_controller"]
+        controller.workflow = Workflow()
+        first_reload_started = asyncio.Event()
+        release_reload = asyncio.Event()
+
+        async def reload(entry_id: str) -> None:
+            events.append(("reload", entry_id))
+            if not first_reload_started.is_set():
+                first_reload_started.set()
+                await release_reload.wait()
+                controller.esphome_entry_id = "new-meter"
+
+        hass.config_entries.async_reload = reload  # type: ignore[method-assign]
+        connection = FakeConnection(events=events)
+        first = _message(f"{DOMAIN}/adopt_device", 1)
+        second = _message(f"{DOMAIN}/adopt_device", 2)
+        first["device_id"] = second["device_id"] = "new-meter"
+        first_task = asyncio.create_task(_invoke(hass, connection, first))
+        await first_reload_started.wait()
+        second_task = asyncio.create_task(_invoke(hass, connection, second))
+        while len(connection.results) < 2:
+            await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        release_reload.set()
+        await asyncio.gather(first_task, second_task)
+
+        assert events.count(("update", "new-meter")) == 1
+        assert events.count(("reload", "helper")) == 1
+        assert connection.errors == []
+
+    asyncio.run(run())
+
+
 def test_adoption_rebind_skips_persistence_for_an_already_bound_runtime() -> None:
     """An adopted device already serving the entry needs no lifecycle work."""
 
