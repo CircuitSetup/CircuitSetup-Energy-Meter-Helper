@@ -1125,7 +1125,11 @@ def _validation_detail(result: JobResult) -> ValidationDetail:
             remaining = MAX_EVIDENCE_BYTES - bytes_seen
             encoded = line.encode()[:remaining]
             bytes_seen += len(encoded)
-            match = _DIAGNOSTIC_RECORD.match(encoded.decode("utf-8", "ignore"))
+            visible = encoded.decode("utf-8", "ignore")
+            if visible.strip().casefold() == "failed config":
+                error_records = min(999, error_records + 1)
+                continue
+            match = _DIAGNOSTIC_RECORD.match(visible)
             if match is None:
                 continue
             if match.group(1).lower() == "error":

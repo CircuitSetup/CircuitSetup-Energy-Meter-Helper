@@ -7,7 +7,6 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from http.cookies import SimpleCookie
-from math import isfinite
 from statistics import pstdev
 from threading import RLock
 from time import monotonic
@@ -36,7 +35,7 @@ from .calibration_engine import (
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import CTChangeRequest, build_ct_mutation
 from .config_transaction import ConfigTransactionManager, ReconnectEvidence
-from .ct_catalog import CTPresetCatalog
+from .ct_catalog import REPORTING_MULTIPLIERS, CTPresetCatalog
 from .ct_inventory import CTInventory
 from .device_builder import (
     DeviceBuilderClient,
@@ -930,8 +929,7 @@ class EntryWorkflow:
                 if (
                     channel in pending
                     or not 1 <= channel <= handle.topology.ct_count
-                    or not isfinite(multiplier)
-                    or not 0.001 <= multiplier <= 1000
+                    or multiplier not in REPORTING_MULTIPLIERS
                 ):
                     raise WorkflowHandleError("pending reporting multipliers are invalid")
                 pending[channel] = multiplier
@@ -1299,8 +1297,7 @@ class EntryWorkflow:
             )
         if (
             isinstance(confirmed, bool)
-            or not isfinite(confirmed)
-            or not 0.001 <= confirmed <= 1000
+            or confirmed not in REPORTING_MULTIPLIERS
         ):
             raise WorkflowHandleError("reporting multiplier is outside supported range")
         return confirmed

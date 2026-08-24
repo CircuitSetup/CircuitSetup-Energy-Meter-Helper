@@ -21,6 +21,7 @@ from homeassistant.core import HomeAssistant
 from .config_document import CT_GAIN_RE, CT_NAME_RE, VOLTAGE_GAIN_RE
 from .config_transaction import RollbackFailedError
 from .const import DOMAIN
+from .ct_catalog import REPORTING_MULTIPLIERS
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
@@ -839,9 +840,9 @@ def _schema(command: str) -> Any:
                         vol.Required("channel"): vol.All(int, vol.Range(min=1, max=42)),
                         vol.Required("name"): vol.All(str, vol.Length(min=1, max=64)),
                         vol.Required("model_id"): _ID,
-                        vol.Optional("reporting_multiplier", default=1.0): vol.All(
-                            vol.Coerce(float), vol.Range(min=0, min_included=False)
-                        ),
+                        vol.Optional(
+                            "reporting_multiplier", default=1.0
+                        ): _reporting_multiplier,
                         vol.Optional("custom_gain_ct"): vol.All(
                             int, vol.Range(min=1, max=65535)
                         ),
@@ -888,9 +889,9 @@ def _schema(command: str) -> Any:
                         vol.Required("channel"): vol.All(int, vol.Range(min=1, max=42)),
                         vol.Required("name"): vol.All(str, vol.Length(min=1, max=64)),
                         vol.Required("model_id"): _ID,
-                        vol.Optional("reporting_multiplier", default=1.0): vol.All(
-                            vol.Coerce(float), vol.Range(min=0, min_included=False)
-                        ),
+                        vol.Optional(
+                            "reporting_multiplier", default=1.0
+                        ): _reporting_multiplier,
                         vol.Optional("custom_gain_ct"): vol.All(int, vol.Range(min=1, max=65535)),
                         vol.Optional("custom_label"): vol.All(str, vol.Length(min=1, max=64)),
                         vol.Optional("burden_output_acknowledged", default=False): bool,
@@ -1009,8 +1010,8 @@ def _reporting_multiplier(value: Any) -> float:
         multiplier = float(value)
     except (TypeError, ValueError) as error:
         raise vol.Invalid("reporting_multiplier must be numeric") from error
-    if not math.isfinite(multiplier) or not 0.001 <= multiplier <= 1000:
-        raise vol.Invalid("reporting_multiplier must be between 0.001 and 1000")
+    if multiplier not in REPORTING_MULTIPLIERS:
+        raise vol.Invalid("reporting_multiplier must be 1, 2, 4, or 8")
     return multiplier
 
 
