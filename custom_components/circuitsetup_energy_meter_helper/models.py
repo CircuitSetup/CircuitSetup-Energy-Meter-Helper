@@ -25,6 +25,8 @@ _EVIDENCE_SOURCES = {
 
 ConnectionType = Literal["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]
 Phase = Literal["A", "B", "C"]
+type PhaseOffsetTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
+type PhasePowerOffsetTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
 
 _MAC = re.compile(
     r"(?:[0-9a-fA-F]{12}|[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}|"

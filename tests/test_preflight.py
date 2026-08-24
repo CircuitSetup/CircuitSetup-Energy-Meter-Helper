@@ -13,6 +13,9 @@ from custom_components.circuitsetup_energy_meter_helper.entity_binding import (
     ChannelBinding,
     GroupBinding,
     MeterBinding,
+    OffsetControlBinding,
+    OffsetControlCapability,
+    OffsetControlStatus,
     ResolutionSource,
     group_key,
 )
@@ -21,9 +24,12 @@ from custom_components.circuitsetup_energy_meter_helper.entity_catalog import (
 )
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
 from custom_components.circuitsetup_energy_meter_helper.preflight import (
+    PreflightCode,
+    PreflightIssue,
     ReferenceCleanupError,
     ReferenceZeroError,
     async_preflight,
+    validate_offset_controls,
     zero_reference_guard,
 )
 
@@ -156,6 +162,76 @@ def session_for(meter: MeterBinding, failures: set[int] | None = None) -> FakeSe
         state = state_type(descriptor.key, descriptor.device_id)
         session.state_cache[(state_type, descriptor.device_id, descriptor.key)] = state
     return session
+
+
+def binding_with_offset_controls(addon_count: int = 0) -> MeterBinding:
+    meter = binding(addon_count)
+    key = 10_000
+
+    def control(group: GroupBinding, name: str) -> BoundEntity:
+        nonlocal key
+        key += 1
+        descriptor = EntityDescriptor(
+            Info(), "button", f"offset_{key}", name, "", group.run_gain.descriptor.device_id, key, False
+        )
+        return BoundEntity(name, descriptor, ResolutionSource.OBJECT_ID)
+
+    controls = tuple(
+        OffsetControlBinding(
+            control(group, f"{group.key}.run_offset"),
+            control(group, f"{group.key}.restore_offset"),
+            control(group, f"{group.key}.run_power_offset"),
+            control(group, f"{group.key}.restore_power_offset"),
+        )
+        for group in meter.groups
+    )
+    return replace(
+        meter,
+        offset_capability=OffsetControlCapability(OffsetControlStatus.AVAILABLE, controls),
+    )
+
+
+def test_offset_preflight_preserves_skip_only_unavailable_and_invalid_capabilities() -> None:
+    unavailable = validate_offset_controls(binding(0))
+    invalid = validate_offset_controls(
+        replace(
+            binding(0),
+            offset_capability=OffsetControlCapability(
+                OffsetControlStatus.INVALID, (), "main_1 is missing an offset control"
+            ),
+        )
+    )
+
+    assert unavailable == (
+        PreflightIssue(
+            PreflightCode.UNAVAILABLE,
+            "offset_controls",
+            "offset calibration controls are unavailable",
+        ),
+    )
+    assert invalid == (
+        PreflightIssue(
+            PreflightCode.UNAVAILABLE,
+            "offset_controls",
+            "main_1 is missing an offset control",
+        ),
+    )
+
+
+def test_offset_preflight_validates_available_control_entities() -> None:
+    meter = binding_with_offset_controls()
+    broken = meter.offset_capability.controls[0].run_offset
+    object.__setattr__(broken.descriptor, "kind", "sensor")
+
+    issues = validate_offset_controls(meter)
+
+    assert issues == (
+        PreflightIssue(
+            PreflightCode.INVALID_KIND,
+            "main_1.run_offset",
+            "expected button, got sensor",
+        ),
+    )
 
 
 def test_maximum_topology_preflight_zeros_and_acknowledges_every_reference() -> None:

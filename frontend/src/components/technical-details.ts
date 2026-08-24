@@ -9,6 +9,7 @@ export function technicalDetails(
   stability: Map<string, StabilityResult>,
   calibration: Map<string, CalibrationResult>,
   restart: RestartVerificationResult | null = null,
+  completedWithoutChanges = false,
 ): TemplateResult {
   return html`
     <details>
@@ -22,7 +23,7 @@ export function technicalDetails(
           ${transaction?.validation_detail ? html`<p>Validation code ${transaction.validation_detail.code ?? "unavailable"}; ${transaction.validation_detail.error_record_count} error records; ${transaction.validation_detail.warning_record_count} warning records.</p>` : ""}
           ${transaction?.upload_progress?.length ? html`<ul>${transaction.upload_progress.map((item) => html`<li>${item.stage}: ${item.percentage ?? item.progress ?? "in progress"}${item.percentage != null || item.progress != null ? "%" : ""}</li>`)}</ul>` : ""}
         </section>
-        <section><h3>Authority source</h3><p>${restart?.source_authority.replaceAll("_", " ") ?? "Not yet established"}</p><p>${restart ? `Verification ${restart.verification_id}, generation ${restart.connection_generation}` : "No authoritative restart result."}</p></section>
+        <section><h3>Calibration completion record</h3><p>${restart ? `Restart-verified ${restart.source_authority.replaceAll("_", " ")} calibration record` : completedWithoutChanges ? "No-change completion; no restart-verified record was created" : "Not yet established"}</p><p>${restart ? `Verification ${restart.verification_id}, generation ${restart.connection_generation}; ${restart.offset_groups?.length ?? 0} voltage/current offset tables; ${restart.power_offset_groups?.length ?? 0} power-offset tables.` : completedWithoutChanges ? "The server confirmed there were no pending gain or offset changes." : "No authoritative restart result."}</p></section>
       </div>
     </details>
   `;

@@ -410,6 +410,11 @@ class ConfigTransactionManager:
                 raise ConfigMutationError(
                     "verified calibration belongs to another device"
                 )
+            if verified.has_offset_calibration:
+                raise ConfigMutationError(
+                    "YAML handoff is unavailable; offset calibration remains saved "
+                    "in flash"
+                )
             if (
                 verified.topology_addon_count != topology.addon_count
                 or verified.topology_project_name != topology.project_name
@@ -757,6 +762,19 @@ class ConfigTransactionManager:
                 raise RuntimeError(
                     "install confirmation is not legal in the current state"
                 )
+            if transaction.verification_id is not None:
+                verified = await self._persistence.async_get_verified_calibration(
+                    transaction.mac
+                )
+                if (
+                    verified is not None
+                    and verified.verification_id == transaction.verification_id
+                    and verified.has_offset_calibration
+                ):
+                    raise RuntimeError(
+                        "YAML handoff is unavailable; offset calibration remains "
+                        "saved in flash"
+                    )
             transaction.state = ConfigTransactionState.INSTALLING
             self.publish_status(_status(transaction))
             plan, _ = _sensitive(transaction)

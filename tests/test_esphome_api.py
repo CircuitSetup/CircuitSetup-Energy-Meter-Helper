@@ -44,6 +44,7 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeSessionDisconnectedError,
 )
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
+    FreshWindowError,
     StateUnavailableError,
 )
 
@@ -430,6 +431,52 @@ def test_commands_register_acknowledgement_first_and_wait_for_fresh_samples() ->
     asyncio.run(run())
 
 
+def test_absolute_sensor_window_accepts_zero_on_the_requested_generation() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        boundary = monotonic()
+        waiter = asyncio.create_task(
+            session.async_wait_for_absolute_sensor_window(
+                5,
+                sample_count=3,
+                connection_generation=1,
+                after=boundary,
+                timeout=0.5,
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_state is not None
+        for value in (0.0, -0.1, 0.1):
+            client.on_state(SensorState(5, value))
+
+        window = await waiter
+
+        assert window.connection_generation == 1
+        assert window.mean == 0.0
+        assert window.absolute_peak == 0.1
+        assert window.absolute_spread == 0.2
+
+    asyncio.run(run())
+
+
+def test_absolute_sensor_window_rejects_another_connection_generation() -> None:
+    async def run() -> None:
+        session = make_session([FakeClient()])
+        await session.async_connect()
+
+        with pytest.raises(FreshWindowError, match="generation"):
+            await session.async_wait_for_absolute_sensor_window(
+                5,
+                sample_count=3,
+                connection_generation=2,
+                timeout=0.5,
+            )
+
+    asyncio.run(run())
+
+
 def test_number_ack_uses_shared_tracker_and_rejects_unavailable_state() -> None:
     async def run() -> None:
         client = FakeClient(acknowledge_numbers=False)
@@ -472,6 +519,30 @@ def test_log_buffer_filters_redacts_and_enforces_both_caps() -> None:
         )
         assert "secret" not in "\n".join(session.log_lines)
         assert "wifi connected" not in session.log_lines
+
+    asyncio.run(run())
+
+
+def test_log_buffer_retains_exact_offset_button_dispatch_lines() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        assert client.on_log is not None
+
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    b"[I][atm90e32.button:037] 1. Run Main Meter 1 Offset Cal\n"
+                    b"[I][atm90e32.button:060] 2. Run Main Meter 1 Power Offset Cal\n"
+                )
+            )
+        )
+
+        assert session.log_lines[-2:] == (
+            "[I][atm90e32.button:037] 1. Run Main Meter 1 Offset Cal",
+            "[I][atm90e32.button:060] 2. Run Main Meter 1 Power Offset Cal",
+        )
 
     asyncio.run(run())
 

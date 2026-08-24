@@ -72,9 +72,39 @@ function transaction(state: string, channel: number, options: { evidence?: strin
       reported_warning_count: 0, error_record_count: 1, warning_record_count: 0 } } : {}) };
 }
 
-function session(state: string, acknowledged: boolean) {
+function offsetBoards(addons: number, stageState: "not_started" | "skipped" = "not_started") {
+  return Array.from({ length: addons + 1 }, (_, board_index) => ({ board_index,
+    stages: [{ stage: 1, state: stageState }, { stage: 2, state: stageState }] }));
+}
+
+function session(state: string, acknowledged: boolean, addons = 0, pending = false,
+  offsetState: "not_started" | "skipped" = "not_started") {
   return { session_id: "session-1", device_id: "meter-1", state, safety_acknowledged: acknowledged,
-    preflight: { issues: [], zeroed_roles: ["main_1.reference_voltage", "ct1.reference_current"] } };
+    preflight: { issues: [], zeroed_roles: ["main_1.reference_voltage", "ct1.reference_current"] },
+    entity_role_counts: {}, offset_capability: { status: "available", repair_reason: null },
+    offset_disposition: offsetState, offset_boards: offsetBoards(addons, offsetState),
+    has_pending_calibration: pending };
+}
+
+function offsetReadiness(frame: Frame) {
+  const board = Number(frame.board_index); const stage = Number(frame.stage) as 1 | 2;
+  const voltage = stage === 1 ? 0 : 120;
+  const entities = [0, 1].flatMap((groupOffset) => {
+    const group = board === 0 ? `main_${groupOffset + 1}` : `addon${board}_${groupOffset + 1}`;
+    return [
+      ...["a", "b", "c"].map((phase) => ({ role: `${group}.voltage_${phase}`, quantity: "voltage", ready: true, reasons: [],
+        window: { values: [voltage, voltage, voltage], received_at: [1, 2, 3], connection_generation: 2,
+          mean: voltage, minimum: voltage, maximum: voltage, absolute_peak: voltage, absolute_spread: 0 } })),
+      ...[1, 2, 3].map((offset) => ({ role: `ct${board * 6 + groupOffset * 3 + offset}.current_sensor`, quantity: "current", ready: true, reasons: [],
+        window: { values: [0, 0, 0], received_at: [1, 2, 3], connection_generation: 2,
+          mean: 0, minimum: 0, maximum: 0, absolute_peak: 0, absolute_spread: 0 } })),
+    ];
+  });
+  return { stage, ready: true, connection_generation: 2, entities, reasons: [], thresholds: {
+    sample_count: 3, zero_voltage_peak_volts: 1, zero_voltage_spread_volts: 0.5,
+    zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
+    voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2,
+  } };
 }
 
 function stability(frame: Frame) {
@@ -103,7 +133,7 @@ function restart(addons: number) {
   return { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: hash,
     topology_addon_count: addons, topology_project_name: project(addons), topology_connection_type: "wifi",
     topology_voltage_layout: "two_groups_per_board", connection_generation: 3, groups,
-    verification_id: "b".repeat(32), source_authority: "saved_flash",
+    verification_id: "b".repeat(32), offset_groups: [], power_offset_groups: [], source_authority: "saved_flash",
     source_handoff_available: true, source_handoff_transaction_id: null,
     source_handoff_firmware_installed: false };
 }
@@ -117,7 +147,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   const frames: Frame[] = [];
   let rescans = 0;
   let currentTransaction = transaction("previewed", addons ? 42 : 1);
-  let currentSession = session("safety_required", false);
+  let currentSession = session("safety_required", false, addons);
 
   await mockFirmwareIndex(page, options.firmwareIndex, options.firmwareRequests);
 
@@ -178,8 +208,18 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         source_handoff_firmware_installed: true };
       else if (operation === "rollback_ct_config") result = currentTransaction = transaction("rolled_back", addons ? 42 : 1,
         { progress: ["config_restored"] });
-      else if (operation === "start_session") result = currentSession = session("safety_required", false);
-      else if (operation === "acknowledge_safety") result = currentSession = session("ready", true);
+      else if (operation === "start_session") result = currentSession = session("safety_required", false, addons);
+      else if (operation === "acknowledge_safety") result = currentSession = session("ready", true, addons);
+      else if (operation === "check_offset_readiness") result = offsetReadiness(frame);
+      else if (operation === "calibrate_offset") {
+        const board = Number(frame.board_index); const stage = Number(frame.stage) as 1 | 2;
+        const keys = board === 0 ? ["main_1", "main_2"] : [`addon${board}_1`, `addon${board}_2`];
+        result = { state: "applied_pending_restart_verification", board_index: board, stage,
+          expected_tables: keys.map((key) => [key, [[1, -1], [2, -2], [3, -3]]]),
+          unfinished_group_keys: [], retry_allowed: false, error: null };
+      } else if (operation === "skip_offset_calibration") {
+        result = currentSession = session("ready", true, addons, currentSession.has_pending_calibration as boolean, "skipped");
+      }
       else if (operation === "check_stability") result = frame.target === "voltage"
         ? (frame.target_ids as string[]).map((target_id) => stability({ ...frame, target_id }))
         : stability(frame);
@@ -195,8 +235,13 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
             iteration: 1, before_values: [reference - 0.1], after_values: [reference], error_percent_values: [0],
             gain_evidence: gainEvidence(addon ? "addon6_2" : "meter_main1", reference, phase),
             restore_evidence: null, retry_allowed: false };
-      } else if (operation === "get_session") result = currentSession = session("ready", true);
+        if (options.calibration !== "addon-indeterminate") currentSession = { ...currentSession,
+          state: "applied_pending_restart_verification", has_pending_calibration: true };
+      } else if (operation === "get_session") result = currentSession;
       else if (operation === "restart_and_verify") result = restart(addons);
+      else if (operation === "complete_calibration_without_changes") result = currentSession = {
+        ...currentSession, state: "verified", has_pending_calibration: false,
+      };
       else if (operation === "cancel_session") result = currentSession = session("cancelled", false);
       else if (operation === "subscribe_setup") result = { state: "no_device", devices: [] };
       else if (operation === "subscribe_config_transaction") result = currentTransaction;
@@ -235,8 +280,10 @@ async function reviewChannel(page: Page, channel: number): Promise<void> {
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Skip offset calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Skip voltage calibration" }).click();
-  await page.getByRole("button", { name: "Skip current calibration" }).click();
+  await page.getByRole("button", { name: "Finish without calibration" }).click();
   await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
 }
 
@@ -249,6 +296,12 @@ async function reachCurrent(page: Page, channel: number): Promise<void> {
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Offset", exact: true })).toBeVisible();
+  const offsetCopy = await page.locator(".offset-step").textContent() ?? "";
+  expect(offsetCopy.indexOf("open-circuit current-output CT")).toBeLessThan(offsetCopy.indexOf("unplug the voltage transformer"));
+  await expect(page.getByRole("button", { name: "Run Stage 1 calibration" })).toBeDisabled();
+  await page.getByRole("button", { name: "Skip offset calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Voltage", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Skip voltage calibration" }).click();
   await expect(page.getByRole("heading", { name: "Current", exact: true })).toBeVisible();
@@ -383,8 +436,10 @@ test("six-channel inventory exposes ambiguous gain while label-only stays out of
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Skip offset calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Skip voltage calibration" }).click();
-  await page.getByRole("button", { name: "Skip current calibration" }).click();
+  await page.getByRole("button", { name: "Finish without calibration" }).click();
   await expect(page.getByRole("alert")).toContainText("preview is stale");
   expect(operations(frames).filter((value) => value === "preview_ct_config")).toHaveLength(1);
   expect(operations(frames)).not.toContain("apply_ct_config");

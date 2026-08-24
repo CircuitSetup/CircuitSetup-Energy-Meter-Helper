@@ -25,6 +25,7 @@ from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
 from .models import InstallerIntent, validate_installer_firmware
+from .offset_readiness import OffsetReadinessStage
 from .provisioning import ProvisioningCoordinator
 from .repairs import async_reconcile_issues, signals_from_result
 from .session_manager import CalibrationBusyError, SessionManager
@@ -55,9 +56,13 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}start_session",
     f"{_PREFIX}acknowledge_safety",
     f"{_PREFIX}check_stability",
+    f"{_PREFIX}check_offset_readiness",
+    f"{_PREFIX}calibrate_offset",
+    f"{_PREFIX}skip_offset_calibration",
     f"{_PREFIX}calibrate_voltage",
     f"{_PREFIX}calibrate_current",
     f"{_PREFIX}restart_and_verify",
+    f"{_PREFIX}complete_calibration_without_changes",
     f"{_PREFIX}preview_calibrated_gains",
     f"{_PREFIX}clear_calibration_flash",
     f"{_PREFIX}cancel_session",
@@ -178,6 +183,21 @@ class WorkflowOwner(Protocol):
         self, session_id: str, target: str, target_id: str | tuple[str, ...]
     ) -> Any: ...
 
+    async def async_check_offset_readiness(
+        self, session_id: str, board_index: int, stage: OffsetReadinessStage
+    ) -> Any: ...
+
+    async def async_calibrate_offset(
+        self,
+        session_id: str,
+        board_index: int,
+        stage: OffsetReadinessStage,
+        preparation_acknowledged: bool,
+        confirm_retry: bool = False,
+    ) -> Any: ...
+
+    async def async_skip_offset_calibration(self, session_id: str) -> Any: ...
+
     async def async_calibrate_voltage(
         self,
         session_id: str,
@@ -194,6 +214,10 @@ class WorkflowOwner(Protocol):
     ) -> Any: ...
 
     async def async_restart_and_verify(self, session_id: str) -> Any: ...
+
+    async def async_complete_calibration_without_changes(
+        self, session_id: str
+    ) -> Any: ...
 
     async def async_preview_calibrated_gains(
         self,
@@ -355,6 +379,20 @@ class EntryWebsocketController:
             return await workflow.async_check_stability(
                 msg["session_id"], target, target_id
             )
+        if operation == "check_offset_readiness" and workflow is not None:
+            return await workflow.async_check_offset_readiness(
+                msg["session_id"], msg["board_index"], msg["stage"]
+            )
+        if operation == "calibrate_offset" and workflow is not None:
+            return await workflow.async_calibrate_offset(
+                msg["session_id"],
+                msg["board_index"],
+                msg["stage"],
+                msg["preparation_acknowledged"],
+                msg["confirm_retry"],
+            )
+        if operation == "skip_offset_calibration" and workflow is not None:
+            return await workflow.async_skip_offset_calibration(msg["session_id"])
         if operation == "calibrate_voltage" and workflow is not None:
             return await workflow.async_calibrate_voltage(
                 msg["session_id"],
@@ -377,6 +415,10 @@ class EntryWebsocketController:
             )
         if operation == "restart_and_verify" and workflow is not None:
             return await workflow.async_restart_and_verify(msg["session_id"])
+        if operation == "complete_calibration_without_changes" and workflow is not None:
+            return await workflow.async_complete_calibration_without_changes(
+                msg["session_id"]
+            )
         if operation == "preview_calibrated_gains" and workflow is not None:
             changes = tuple(msg.get("changes", ()))
             if changes:
@@ -875,6 +917,17 @@ def _schema(command: str) -> Any:
             vol.Optional("target_id"): _ID,
             vol.Optional("target_ids"): vol.All([_ID], vol.Length(min=2, max=2)),
         }
+    elif operation in {"check_offset_readiness", "calibrate_offset"}:
+        schema |= {
+            vol.Required("session_id"): _ID,
+            vol.Required("board_index"): vol.All(
+                _strict_integer, vol.Range(min=0, max=6)
+            ),
+            vol.Required("stage"): vol.All(_strict_integer, vol.In((1, 2))),
+        }
+        if operation == "calibrate_offset":
+            schema[vol.Required("preparation_acknowledged")] = _literal_true
+            schema[vol.Optional("confirm_retry", default=False)] = bool
     elif operation == "calibrate_voltage":
         schema |= {
             vol.Required("session_id"): _ID,
@@ -928,7 +981,9 @@ def _schema(command: str) -> Any:
         }
     elif operation in {
         "get_session",
+        "skip_offset_calibration",
         "restart_and_verify",
+        "complete_calibration_without_changes",
         "cancel_session",
         "subscribe_session",
     }:
@@ -957,6 +1012,18 @@ def _reporting_multiplier(value: Any) -> float:
     if not math.isfinite(multiplier) or not 0.001 <= multiplier <= 1000:
         raise vol.Invalid("reporting_multiplier must be between 0.001 and 1000")
     return multiplier
+
+
+def _strict_integer(value: Any) -> int:
+    if type(value) is not int:
+        raise vol.Invalid("value must be an integer")
+    return value
+
+
+def _literal_true(value: Any) -> bool:
+    if value is not True:
+        raise vol.Invalid("value must be true")
+    return True
 
 
 def sanitize_payload(

@@ -32,11 +32,23 @@ def _calibration_package(prefix: str, first_channel: int) -> str:
         groups.append(
             f"""  - platform: atm90e32
     id: ${{{id_prefix}_id{group}}}
+    run_offset_calibration:
+      name: "1. Run ${{{id_prefix}_name{group}}} Offset Cal"
+      disabled_by_default: true
+    clear_offset_calibration:
+      name: "z1. Clear ${{{id_prefix}_name{group}}} Offset Cal"
+      disabled_by_default: true
+    run_power_offset_calibration:
+      name: "2. Run ${{{id_prefix}_name{group}}} Power Offset Cal"
+      disabled_by_default: true
+    clear_power_offset_calibration:
+      name: "z2. Clear ${{{id_prefix}_name{group}}} Power Offset Cal"
+      disabled_by_default: true
     run_gain_calibration:
-      name: Run gain {group}
+      name: "3. Run ${{{id_prefix}_name{group}}} Gain Cal"
       disabled_by_default: true
     clear_gain_calibration:
-      name: Restore gain {group}
+      name: "z3. Clear ${{{id_prefix}_name{group}}} Gain Cal"
       disabled_by_default: true
 """
         )
@@ -226,6 +238,75 @@ def test_rejects_calibration_reference_that_cannot_be_zeroed(tmp_path: Path) -> 
 
     assert result.returncode != 0
     assert "not API-ready" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    (
+        (
+            (
+                "    run_power_offset_calibration:\n"
+                "      name: \"2. Run ${addon6_name1} Power Offset Cal\"\n"
+                "      disabled_by_default: true\n"
+            ),
+            (
+                "    run_power_offset_calibration:\n"
+                "      name: \"2. Run ${addon6_name1} Power Offset Cal\"\n"
+            ),
+            "calibration buttons",
+        ),
+        (
+            'name: "3. Run ${addon6_name1} Gain Cal"',
+            'name: "Run ${addon6_name1} Gain Cal"',
+            "calibration buttons",
+        ),
+        (
+            '      name: "1. Run ${addon6_name1} Offset Cal"\n',
+            (
+                '      name: "1. Run ${addon6_name1} Offset Cal"\n'
+                '      name: "Duplicate"\n'
+            ),
+            "calibration buttons",
+        ),
+        (
+            "      disabled_by_default: true\n",
+            (
+                "      disabled_by_default: true\n"
+                "      disabled_by_default: false\n"
+            ),
+            "calibration buttons",
+        ),
+        (
+            "    clear_gain_calibration:\n",
+            (
+                "    spare_calibration:\n"
+                "      name: \"Spare\"\n"
+                "    clear_gain_calibration:\n"
+            ),
+            "calibration buttons",
+        ),
+        ("id: ${addon6_id1}", "id: ${wrong_id}", "calibration group IDs"),
+    ),
+)
+def test_rejects_calibration_button_contract_drift(
+    tmp_path: Path, old: str, new: str, message: str
+) -> None:
+    """Every calibration action must stay opt-in in Home Assistant."""
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    package = firmware_root / "Software/ESPHome/calibration/6chan_addon6_calibration.yaml"
+    package.write_text(
+        package.read_text(encoding="utf-8").replace(
+            old,
+            new,
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode != 0
+    assert message in result.stderr
 
 
 def test_rejects_incomplete_generated_compile_matrix(tmp_path: Path) -> None:

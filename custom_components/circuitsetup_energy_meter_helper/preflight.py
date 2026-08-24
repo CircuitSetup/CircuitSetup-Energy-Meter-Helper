@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, cast
 
-from .entity_binding import BoundEntity, MeterBinding
+from .entity_binding import BoundEntity, MeterBinding, OffsetControlStatus
 
 
 class PreflightCode(StrEnum):
@@ -143,6 +143,41 @@ def _validate_binding(binding: MeterBinding) -> list[PreflightIssue]:
         expected.extend((entity, "button", "") for entity in group.buttons)
         expected.extend((entity, "sensor", "V") for entity in group.voltage_sensors)
         expected.extend((entity, "sensor", "A") for entity in group.current_sensors)
+    issues.extend(_validate_entities(expected))
+    return issues
+
+
+def validate_offset_controls(binding: MeterBinding) -> tuple[PreflightIssue, ...]:
+    """Validate controls when an offset calibration operation is requested."""
+    capability = binding.offset_capability
+    if capability.status is OffsetControlStatus.UNAVAILABLE:
+        return (
+            PreflightIssue(
+                PreflightCode.UNAVAILABLE,
+                "offset_controls",
+                "offset calibration controls are unavailable",
+            ),
+        )
+    if capability.status is OffsetControlStatus.INVALID:
+        return (
+            PreflightIssue(
+                PreflightCode.UNAVAILABLE,
+                "offset_controls",
+                capability.repair_reason or "offset calibration controls need repair",
+            ),
+        )
+    expected = [
+        (entity, "button", "")
+        for controls in capability.controls
+        for entity in controls.entities
+    ]
+    return tuple(_validate_entities(expected))
+
+
+def _validate_entities(
+    expected: list[tuple[BoundEntity, str, str]],
+) -> list[PreflightIssue]:
+    issues: list[PreflightIssue] = []
     for entity, kind, unit in expected:
         descriptor = entity.descriptor
         if descriptor.kind != kind:

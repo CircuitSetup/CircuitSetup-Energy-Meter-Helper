@@ -7,12 +7,17 @@ import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.models import (
     StoredCTSelection,
+    StoredInterruptedSession,
     StoredMeterRecord,
 )
 from custom_components.circuitsetup_energy_meter_helper.store import (
+    STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
     HelperStore,
+    VerifiedCalibrationRecord,
+    VerifiedGainGroup,
     _HelperStorage,
+    migrate_storage,
     serialize_meter_record,
 )
 
@@ -58,7 +63,104 @@ def test_migrate_storage_rejects_unknown_newer_version() -> None:
 def test_store_migration_rejects_unknown_newer_minor_version() -> None:
     """The live Home Assistant migration hook fails closed on newer minor data."""
     with pytest.raises(ValueError, match="newer"):
-        asyncio.run(_HelperStorage._async_migrate_func(None, STORAGE_VERSION, 2, {}))
+        asyncio.run(
+            _HelperStorage._async_migrate_func(
+                None, STORAGE_VERSION, STORAGE_MINOR_VERSION + 1, {}
+            )
+        )
+
+
+def test_storage_1_1_migrates_to_1_2_without_rewriting_gain_only_records() -> None:
+    legacy = {
+        "meters": {
+            "aabbccddeeff": {
+                "verified_calibration": {
+                    "groups": [
+                        {
+                            "instance_id": "meter_main1",
+                            "phase_gains": [[7305, 27518]] * 3,
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    migrated = migrate_storage(1, 1, deepcopy(legacy))
+
+    assert STORAGE_MINOR_VERSION == 2
+    assert migrated == legacy
+    assert (
+        "offset_groups"
+        not in migrated["meters"]["aabbccddeeff"]["verified_calibration"]
+    )
+
+
+def test_offset_only_verified_record_round_trips_signed_tables() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        VerifiedCalibrationRecord,
+        VerifiedOffsetGroup,
+        VerifiedPowerOffsetGroup,
+        _deserialize_verified_calibration,
+        _serialize_verified_calibration,
+    )
+
+    record = VerifiedCalibrationRecord(
+        mac="aabbccddeeff",
+        config_filename=None,
+        config_sha256=None,
+        topology_addon_count=0,
+        topology_project_name="circuitsetup.6c-energy-meter",
+        topology_connection_type="wifi",
+        topology_voltage_layout="single",
+        connection_generation=2,
+        groups=(),
+        offset_groups=(
+            VerifiedOffsetGroup("meter_main1", ((-32768, 32767), (-13, 32), (-14, 33))),
+        ),
+        power_offset_groups=(
+            VerifiedPowerOffsetGroup(
+                "meter_main1", ((101, -201), (102, -202), (103, -203))
+            ),
+        ),
+        verification_id="a" * 32,
+        source_handoff_available=False,
+    )
+
+    raw = _serialize_verified_calibration(record)
+
+    assert _deserialize_verified_calibration(record.mac, raw) == record
+
+
+def test_gain_only_1_1_record_deserializes_with_absent_offset_fields() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        _deserialize_verified_calibration,
+    )
+
+    raw = {
+        "verification_id": "a" * 32,
+        "config_filename": "meter.yaml",
+        "config_sha256": "b" * 64,
+        "topology_addon_count": 0,
+        "topology_project_name": "circuitsetup.6c-energy-meter",
+        "topology_connection_type": "wifi",
+        "topology_voltage_layout": "single",
+        "connection_generation": 2,
+        "groups": [
+            {
+                "instance_id": "meter_main1",
+                "phase_gains": [[7305, 27518], [7305, 28312], [7305, 27518]],
+            }
+        ],
+        "source_authority": "saved_flash",
+        "source_handoff_available": True,
+        "source_handoff_transaction_id": None,
+    }
+
+    record = _deserialize_verified_calibration("aabbccddeeff", raw)
+
+    assert record.offset_groups == ()
+    assert record.power_offset_groups == ()
 
 
 def test_store_rejects_untyped_topology_payload() -> None:
@@ -99,6 +201,54 @@ def test_concurrent_verified_updates_cannot_overwrite_another_meter() -> None:
         for malformed in ("00112233445", "00:11-22:33:44:55"):
             with pytest.raises(ValueError, match="MAC"):
                 await store.async_save_verified_ct_selections(malformed, (selection,))
+
+    asyncio.run(run())
+
+
+def test_final_verified_save_failure_preserves_durable_interruption_marker() -> None:
+    async def run() -> None:
+        class FailingStorage(_CopyingStorage):
+            async def async_save(self, data: dict[str, object]) -> None:
+                del data
+                raise OSError("store unavailable")
+
+        mac = "aabbccddeeff"
+        marker = StoredInterruptedSession("indeterminate", "2026-08-23T00:00:00Z", (1,), None)
+        backend = FailingStorage()
+        backend.data = {
+            "meters": {
+                mac: {
+                    "interrupted_session": {
+                        "state": marker.state,
+                        "started_at": marker.started_at,
+                        "changed_channels": [1],
+                        "config_transaction_id": None,
+                    }
+                }
+            }
+        }
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        record = VerifiedCalibrationRecord(
+            mac=mac,
+            config_filename="meter.yaml",
+            config_sha256="a" * 64,
+            topology_addon_count=0,
+            topology_project_name="circuitsetup.6c-energy-meter",
+            topology_connection_type="wifi",
+            topology_voltage_layout="single",
+            connection_generation=2,
+            groups=(VerifiedGainGroup("meter_main1", ((7305, 27518),) * 3),),
+            verification_id="b" * 32,
+        )
+
+        with pytest.raises(OSError, match="store unavailable"):
+            await store.async_finalize_verified_calibration(record)
+
+        durable = backend.data["meters"][mac]  # type: ignore[index]
+        assert durable["interrupted_session"] is not None
+        assert "verified_calibration" not in durable
 
     asyncio.run(run())
 
