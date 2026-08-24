@@ -1792,6 +1792,45 @@ def test_session_preflight_holds_shared_config_ownership(
     asyncio.run(run())
 
 
+def test_new_session_waits_for_same_meter_cancellation_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Returning to an existing meter must not race its prior session cleanup."""
+
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        first = await workflow.async_start_session("meter")
+        cleanup_started = asyncio.Event()
+        cleanup_release = asyncio.Event()
+        original_finalize = workflow._async_finalize_revoked
+
+        async def delayed_finalize(handle: Any, active_task: Any) -> None:
+            cleanup_started.set()
+            await cleanup_release.wait()
+            await original_finalize(handle, active_task)
+
+        workflow._async_finalize_revoked = delayed_finalize  # type: ignore[method-assign]
+        cancelling = asyncio.create_task(
+            workflow.async_cancel_session(first.session_id)
+        )
+        await cleanup_started.wait()
+        starting = asyncio.create_task(workflow.async_start_session("meter"))
+        try:
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert not starting.done()
+        finally:
+            cleanup_release.set()
+            await cancelling
+        second = await starting
+
+        assert second.session_id != first.session_id
+        await workflow.async_cancel_session(second.session_id)
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("cancel_count", (1, 3))
 def test_cancel_revokes_session_before_waiting_calibration_can_mutate(
     monkeypatch: pytest.MonkeyPatch,
@@ -1996,7 +2035,7 @@ def test_cancel_session_reports_attached_reference_cleanup_failure_after_scrub()
         assert handle.substitutions == {}
         assert workflow._sessions == {}
         assert workflow._session_cleanup_tasks == {}
-        assert workflow._cleaning_macs == set()
+        assert workflow._cleaning_macs == {}
         assert active_task.cancelled()
         await workflow.async_close()
 

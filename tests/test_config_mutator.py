@@ -91,7 +91,7 @@ def test_reporting_multiplier_divides_gain_and_multiplies_current_and_power() ->
 
     assert 'current_cal_ct2: "4325"' in plan.proposed_content
     assert (
-        """  - id: !extend ${main_meter_id1}
+        """  - id: !extend meter_main1
     phase_b: # CT2
       current:
         filters:
@@ -103,6 +103,36 @@ def test_reporting_multiplier_divides_gain_and_multiplies_current_and_power() ->
         in plan.proposed_content
     )
     assert "- platform: uptime" in plan.proposed_content
+
+
+def test_reporting_multiplier_uses_configured_id_substitution_and_is_reviewable() -> None:
+    """New and legacy configs both get a resolvable, safely reviewable extension."""
+    snapshot = _snapshot()
+    configured = snapshot.content.replace(
+        "substitutions:\n", "substitutions:\n  main_meter_id1: custom_meter_1\n"
+    )
+    configured_snapshot = replace(
+        snapshot,
+        content=configured,
+        sha256=sha256(configured.encode()).hexdigest(),
+    )
+
+    configured_plan = build_ct_mutation(
+        configured_snapshot,
+        _topology(),
+        (CTChangeRequest(2, "CT 2", "sct_013_030_30a_1v", 2),),
+    )
+    legacy_plan = build_ct_mutation(
+        snapshot,
+        _topology(),
+        (CTChangeRequest(2, "CT 2", "sct_013_030_30a_1v", 2),),
+    )
+
+    assert "- id: !extend ${main_meter_id1}" in configured_plan.proposed_content
+    assert "- id: !extend meter_main1" in legacy_plan.proposed_content
+    assert "+           - multiply: 2" in legacy_plan.redacted_diff
+    assert "current_cal_ct2" in legacy_plan.redacted_diff
+    assert "top-secret" not in legacy_plan.redacted_diff
 
 
 def test_reporting_multiplier_updates_and_removes_its_managed_filters() -> None:

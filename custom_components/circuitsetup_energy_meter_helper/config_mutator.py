@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from math import isfinite
@@ -89,7 +89,7 @@ def build_ct_mutation(
         _append_change(changes, values, name_key, request.name, document.substitutions)
         _append_change(changes, values, gain_key, str(gain), document.substitutions)
     proposed_content = _apply_reporting_multipliers(
-        _apply_changes(document, changes, values), requests
+        _apply_changes(document, changes, values), requests, document.substitutions
     )
     if proposed_content == snapshot.content:
         return ConfigMutationPlan(
@@ -101,7 +101,7 @@ def build_ct_mutation(
         snapshot.configuration,
         snapshot.sha256,
         tuple(changes),
-        _redacted_diff(changes),
+        _review_diff(changes, snapshot.content, proposed_content),
         proposed_content,
     )
 
@@ -231,13 +231,13 @@ def build_calibrated_gain_mutation(
             document.substitutions,
         )
     proposed_content = _apply_reporting_multipliers(
-        _apply_changes(document, changes, values), requests
+        _apply_changes(document, changes, values), requests, document.substitutions
     )
     return ConfigMutationPlan(
         snapshot.configuration,
         snapshot.sha256,
         tuple(changes),
-        _redacted_diff(changes),
+        _review_diff(changes, snapshot.content, proposed_content),
         proposed_content,
     )
 
@@ -394,7 +394,9 @@ def _apply_changes(
 
 
 def _apply_reporting_multipliers(
-    content: str, requests: tuple[CTChangeRequest, ...]
+    content: str,
+    requests: tuple[CTChangeRequest, ...],
+    substitutions: Mapping[str, ConfigScalar],
 ) -> str:
     starts = [
         match.start() for match in re.finditer(re.escape(_MULTIPLIER_START), content)
@@ -441,14 +443,19 @@ def _apply_reporting_multipliers(
             multipliers[request.channel] = request.reporting_multiplier
     if not multipliers:
         return content
-    _reject_local_output_filters(content, multipliers)
+    _reject_local_output_filters(content, multipliers, substitutions)
     newline = "\r\n" if "\r\n" in content else "\n"
     block: list[str] = [_MULTIPLIER_START]
     current_id = ""
     for channel, value in sorted(multipliers.items()):
-        meter_id, phase = _channel_meter_phase(channel)
+        meter_key, phase = _channel_meter_phase(channel)
+        meter_id = (
+            f"${{{meter_key}}}"
+            if meter_key in substitutions
+            else _canonical_meter_id(meter_key)
+        )
         if meter_id != current_id:
-            block.append(f"  - id: !extend ${{{meter_id}}}")
+            block.append(f"  - id: !extend {meter_id}")
             current_id = meter_id
         multiplier = f"{value:g}"
         block.extend(
@@ -497,8 +504,28 @@ def _channel_meter_phase(channel: int) -> tuple[str, str]:
     return meter_id, "abc"[(channel - 1) % 3]
 
 
-def _reject_local_output_filters(content: str, channels: Iterable[int]) -> None:
-    targets = {_channel_meter_phase(channel): channel for channel in channels}
+def _canonical_meter_id(meter_key: str) -> str:
+    match = re.fullmatch(r"main_meter_id([12])", meter_key)
+    if match is not None:
+        return f"meter_main{match.group(1)}"
+    match = re.fullmatch(r"addon([1-6])_id([12])", meter_key)
+    if match is None:
+        raise ConfigMutationError("reporting multiplier meter ID is invalid")
+    return f"addon{match.group(1)}_{match.group(2)}"
+
+
+def _reject_local_output_filters(
+    content: str,
+    channels: Iterable[int],
+    substitutions: Mapping[str, ConfigScalar],
+) -> None:
+    targets: dict[tuple[str, str], int] = {}
+    for channel in channels:
+        meter_key, phase = _channel_meter_phase(channel)
+        aliases = {meter_key, _canonical_meter_id(meter_key)}
+        if meter_key in substitutions:
+            aliases.add(substitutions[meter_key].value)
+        targets.update({(alias, phase): channel for alias in aliases})
     lines = content.splitlines()
     for index, line in enumerate(lines):
         item = re.match(r"(?P<indent> *)-\s+", line)
@@ -513,14 +540,14 @@ def _reject_local_output_filters(content: str, channels: Iterable[int]) -> None:
                 item_end = candidate
                 break
         extend = re.fullmatch(
-            r" *-\s+id:\s*!extend\s+\$\{(?P<id>[\w-]+)\}\s*(?:#.*)?",
+            r" *-\s+id:\s*!extend\s+(?:\$\{)?(?P<id>[\w-]+)(?:\})?\s*(?:#.*)?",
             line,
         )
         owner_id = extend.group("id") if extend is not None else None
         if owner_id is None:
             for candidate in range(index + 1, item_end):
                 identifier = re.fullmatch(
-                    rf" {{{item_indent + 2}}}id:\s*\$\{{(?P<id>[\w-]+)\}}\s*(?:#.*)?",
+                    rf" {{{item_indent + 2}}}id:\s*(?:\$\{{)?(?P<id>[\w-]+)(?:\}})?\s*(?:#.*)?",
                     lines[candidate],
                 )
                 if identifier is not None:
@@ -669,3 +696,30 @@ def _redacted_diff(changes: Iterable[SubstitutionChange]) -> str:
             lines.append(f"- {change.key}: {change.old_value}")
         lines.append(f"+ {change.key}: {change.new_value}")
     return "\n".join(lines)
+
+
+def _review_diff(
+    changes: Iterable[SubstitutionChange], prior_content: str, proposed_content: str
+) -> str:
+    substitution_diff = _redacted_diff(changes)
+    multiplier_diff = _reporting_multiplier_diff(prior_content, proposed_content)
+    return "\n".join(part for part in (substitution_diff, multiplier_diff) if part)
+
+
+def _reporting_multiplier_diff(prior_content: str, proposed_content: str) -> str:
+    def managed_lines(content: str) -> tuple[str, ...]:
+        start = content.find(_MULTIPLIER_START)
+        if start < 0:
+            return ()
+        end = content.find(_MULTIPLIER_END, start)
+        return tuple(
+            content[start : end + len(_MULTIPLIER_END)].splitlines()
+        )
+
+    prior = managed_lines(prior_content)
+    proposed = managed_lines(proposed_content)
+    if prior == proposed:
+        return ""
+    return "\n".join(
+        (*(f"- {line}" for line in prior), *(f"+ {line}" for line in proposed))
+    )

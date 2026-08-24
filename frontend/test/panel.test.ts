@@ -1833,9 +1833,21 @@ describe("CircuitSetup panel", () => {
   it("returns from Safety to CT Settings and cleans up the active session", async () => {
     const cancelled = { session_id: "session", device_id: "meter-1", state: "cancelled",
       safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } };
-    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled }));
+    const fresh = { ...cancelled, session_id: "fresh-session", state: "safety_required" };
+    const operations: string[] = [];
+    const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled,
+      get_active_work: { session: null, transaction: null, verified_calibration: null }, start_session: fresh });
+    const callWS = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      operations.push(String(message.type).split("/").at(-1) ?? "");
+      return callWS<T>(message);
+    };
+    const panel = await mount(hass);
     const state = panel as unknown as Record<string, unknown>;
     state.session = { ...cancelled, state: "safety_required" };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
     state.inventory = { plan_id: "plan", source_sha256: "a".repeat(64), channels: [],
       catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 } };
     panel.showState("safety"); await panel.updateComplete;
@@ -1847,6 +1859,25 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("aside.workflow")?.classList.contains("mobile-open")).toBe(true);
     expect(panel.shadowRoot?.querySelector("style")?.textContent).toContain("focus-within");
+    panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.click();
+    await tick(); await panel.updateComplete;
+    expect(operations).toEqual(expect.arrayContaining(["cancel_session", "get_active_work", "start_session"]));
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
+    expect(text(panel)).not.toContain("Calibration session could not be started");
+  });
+
+  it("renders unavailable validation counts without contradictory wording", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.transaction = { transaction_id: "tx", state: "rolled_back", source_sha256: "a".repeat(64),
+      changes: [], redacted_diff: "", rollback_available: false, evidence: ["validation_failed"], progress: [],
+      validation_detail: { code: 2, reported_error_count: null, reported_warning_count: null,
+        error_record_count: 0, warning_record_count: 0 } };
+
+    panel.showState("build"); await panel.updateComplete;
+
+    expect(text(panel)).toContain("0 records (unreported)");
+    expect(text(panel)).not.toContain("unreported reported");
   });
 
   it("renders scoped samples, calibration, build, and restart authority without fabricating Summary", async () => {
