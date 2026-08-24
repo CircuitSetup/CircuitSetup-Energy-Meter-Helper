@@ -111,6 +111,22 @@ def test_absolute_window_accepts_zero_and_retains_generation_and_statistics() ->
     assert window.absolute_spread == pytest.approx(0.3)
 
 
+def test_absolute_window_accepts_one_fresh_sample() -> None:
+    tracker = StateTracker()
+    tracker.connect(4)
+    tracker.record(SensorState(3, 0.1), received_at=10.1)
+
+    window = tracker.absolute_sensor_window(
+        SensorState,
+        3,
+        fresh_after=10.0,
+        sample_count=1,
+        connection_generation=4,
+    )
+
+    assert window.values == (0.1,)
+
+
 @pytest.mark.parametrize(
     ("states", "generation", "message"),
     (
@@ -149,9 +165,7 @@ def test_absolute_window_rejects_insufficient_nonfinite_and_wrong_generation(
         )
 
 
-def test_absolute_window_rejects_stale_samples_and_fewer_than_three_requested() -> (
-    None
-):
+def test_absolute_window_rejects_stale_samples_and_nonpositive_count() -> None:
     tracker = StateTracker()
     tracker.connect(1)
     for timestamp in (1.0, 2.0, 3.0):
@@ -165,12 +179,12 @@ def test_absolute_window_rejects_stale_samples_and_fewer_than_three_requested() 
             sample_count=3,
             connection_generation=1,
         )
-    with pytest.raises(ValueError, match="at least three"):
+    with pytest.raises(ValueError, match="positive"):
         tracker.absolute_sensor_window(
             SensorState,
             3,
             fresh_after=0.0,
-            sample_count=2,
+            sample_count=0,
             connection_generation=1,
         )
 

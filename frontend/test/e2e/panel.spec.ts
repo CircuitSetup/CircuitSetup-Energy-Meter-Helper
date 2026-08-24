@@ -93,15 +93,15 @@ function offsetReadiness(frame: Frame) {
     const group = board === 0 ? `main_${groupOffset + 1}` : `addon${board}_${groupOffset + 1}`;
     return [
       ...["a", "b", "c"].map((phase) => ({ role: `${group}.voltage_${phase}`, quantity: "voltage", ready: true, reasons: [],
-        window: { values: [voltage, voltage, voltage], received_at: [1, 2, 3], connection_generation: 2,
+        window: { values: [voltage], received_at: [1], connection_generation: 2,
           mean: voltage, minimum: voltage, maximum: voltage, absolute_peak: voltage, absolute_spread: 0 } })),
       ...[1, 2, 3].map((offset) => ({ role: `ct${board * 6 + groupOffset * 3 + offset}.current_sensor`, quantity: "current", ready: true, reasons: [],
-        window: { values: [0, 0, 0], received_at: [1, 2, 3], connection_generation: 2,
+        window: { values: [0], received_at: [1], connection_generation: 2,
           mean: 0, minimum: 0, maximum: 0, absolute_peak: 0, absolute_spread: 0 } })),
     ];
   });
   return { stage, ready: true, connection_generation: 2, entities, reasons: [], thresholds: {
-    sample_count: 3, zero_voltage_peak_volts: 1, zero_voltage_spread_volts: 0.5,
+    sample_count: 1, zero_voltage_peak_volts: 1, zero_voltage_spread_volts: 0.5,
     zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
     voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2,
   } };

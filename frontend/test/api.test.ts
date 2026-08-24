@@ -91,15 +91,15 @@ const readinessEntities = (board: number, voltage = 0): OffsetReadinessResult["e
   const channel = board * 6 + groupOffset * 3;
   return [
     ...["a", "b", "c"].map((phase) => ({ role: `${group}.voltage_${phase}`, quantity: "voltage" as const, ready: true, reasons: [],
-      window: { values: [voltage, voltage, voltage], received_at: [1, 2, 3], connection_generation: 4,
+      window: { values: [voltage], received_at: [1], connection_generation: 4,
         mean: voltage, minimum: voltage, maximum: voltage, absolute_peak: Math.abs(voltage), absolute_spread: 0 } })),
     ...[1, 2, 3].map((offset) => ({ role: `ct${channel + offset}.current_sensor`, quantity: "current" as const, ready: true, reasons: [],
-      window: { values: [0, 0, 0], received_at: [1, 2, 3], connection_generation: 4,
+      window: { values: [0], received_at: [1], connection_generation: 4,
         mean: 0, minimum: 0, maximum: 0, absolute_peak: 0, absolute_spread: 0 } })),
   ];
 });
 const readiness = { stage: 1, ready: true, connection_generation: 4,
-  entities: readinessEntities(0), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
+  entities: readinessEntities(0), reasons: [], thresholds: { sample_count: 1, zero_voltage_peak_volts: 1,
     zero_voltage_spread_volts: 0.5, zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
     voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2 } };
 const offsetResult = { state: "applied_pending_restart_verification", board_index: 0, stage: 1,
@@ -366,7 +366,7 @@ describe("HelperApi", () => {
     const api = new HelperApi(hass, "entry-1");
     const entities = readinessEntities(0);
     entities[0] = { ...entities[0]!, ready: false, reasons: ["absolute peak exceeds zero_voltage_peak_volts"],
-      window: { ...entities[0]!.window!, values: [120, 120, 120], mean: 120, minimum: 120,
+      window: { ...entities[0]!.window!, values: [120], mean: 120, minimum: 120,
         maximum: 120, absolute_peak: 120 } };
     hass.responses.check_offset_readiness = { ...readiness, ready: false, entities,
       reasons: ["main_1.voltage_a: absolute peak exceeds zero_voltage_peak_volts"] };

@@ -25,7 +25,7 @@ from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
 )
 
 THRESHOLDS = OffsetReadinessThresholds(
-    sample_count=3,
+    sample_count=1,
     zero_voltage_peak_volts=0.5,
     zero_voltage_spread_volts=0.2,
     zero_current_peak_amps=0.1,
@@ -35,16 +35,14 @@ THRESHOLDS = OffsetReadinessThresholds(
 )
 
 
-def _window(
-    values: tuple[float, float, float], *, generation: int = 7
-) -> AbsoluteSensorSampleWindow:
+def _window(values: tuple[float, ...], *, generation: int = 7) -> AbsoluteSensorSampleWindow:
     minimum = min(values)
     maximum = max(values)
     return AbsoluteSensorSampleWindow(
         values,
-        (10.1, 10.2, 10.3),
+        tuple(10.1 + index / 10 for index in range(len(values))),
         generation,
-        sum(values) / 3,
+        sum(values) / len(values),
         minimum,
         maximum,
         max(abs(minimum), abs(maximum)),
@@ -106,7 +104,7 @@ class FakeSession:
 
 def test_stage_one_accepts_exact_zero_on_every_phase_and_returns_thresholds() -> None:
     async def run() -> None:
-        session = FakeSession({key: _window((0.0, 0.0, 0.0)) for key in range(1, 13)})
+        session = FakeSession({key: _window((0.0,)) for key in range(1, 13)})
 
         result = await async_check_offset_readiness(
             session, _binding(), 0, 1, thresholds=THRESHOLDS, timeout=0.5
@@ -117,18 +115,34 @@ def test_stage_one_accepts_exact_zero_on_every_phase_and_returns_thresholds() ->
         assert len(result.entities) == 12
         assert all(evidence.ready for evidence in result.entities)
         assert result.thresholds == THRESHOLDS
-        assert {call["sample_count"] for call in session.calls} == {3}
+        assert {call["sample_count"] for call in session.calls} == {1}
         assert {call["connection_generation"] for call in session.calls} == {7}
         assert len({call["after"] for call in session.calls}) == 1
 
     asyncio.run(run())
 
 
-def test_stage_one_reports_voltage_peak_and_current_spread_failures() -> None:
+def test_default_readiness_uses_one_fresh_sample_per_entity() -> None:
     async def run() -> None:
-        windows = {key: _window((0.0, 0.0, 0.0)) for key in range(1, 13)}
-        windows[1] = _window((0.4, 0.5, 0.6))
-        windows[4] = _window((-0.06, 0.0, 0.06))
+        window = AbsoluteSensorSampleWindow(
+            (0.0,), (10.1,), 7, 0.0, 0.0, 0.0, 0.0, 0.0
+        )
+        session = FakeSession({key: window for key in range(1, 13)})
+
+        result = await async_check_offset_readiness(session, _binding(), 0, 1)
+
+        assert result.ready
+        assert result.thresholds.sample_count == 1
+        assert len(result.entities) == 12
+
+    asyncio.run(run())
+
+
+def test_stage_one_reports_voltage_and_current_peak_failures() -> None:
+    async def run() -> None:
+        windows = {key: _window((0.0,)) for key in range(1, 13)}
+        windows[1] = _window((0.6,))
+        windows[4] = _window((0.11,))
 
         result = await async_check_offset_readiness(
             FakeSession(windows), _binding(), 0, 1, thresholds=THRESHOLDS
@@ -139,11 +153,11 @@ def test_stage_one_reports_voltage_peak_and_current_spread_failures() -> None:
             "absolute peak exceeds zero_voltage_peak_volts",
         )
         assert result.entities[3].reasons == (
-            "absolute spread exceeds zero_current_spread_amps",
+            "absolute peak exceeds zero_current_peak_amps",
         )
         assert result.reasons == (
             "main_1.voltage_a: absolute peak exceeds zero_voltage_peak_volts",
-            "ct1.current_sensor: absolute spread exceeds zero_current_spread_amps",
+            "ct1.current_sensor: absolute peak exceeds zero_current_peak_amps",
         )
 
     asyncio.run(run())
@@ -158,9 +172,9 @@ def test_stage_two_accepts_stable_present_voltage_and_zero_current() -> None:
             for entity in group.voltage_sensors
         }
         windows = {
-            key: _window((119.8, 120.0, 120.2))
+            key: _window((120.0,))
             if key in voltage_keys
-            else _window((-0.01, 0.0, 0.01))
+            else _window((0.0,))
             for key in range(1, 13)
         }
 
@@ -184,14 +198,13 @@ def test_stage_two_reports_absent_unstable_voltage_and_nonzero_current() -> None
             for entity in group.voltage_sensors
         }
         windows = {
-            key: _window((120.0, 120.0, 120.0))
+            key: _window((120.0,))
             if key in voltage_keys
-            else _window((0.0, 0.0, 0.0))
+            else _window((0.0,))
             for key in range(1, 13)
         }
-        windows[1] = _window((99.0, 99.0, 99.0))
-        windows[2] = _window((119.0, 120.0, 121.0))
-        windows[4] = _window((0.11, 0.11, 0.11))
+        windows[1] = _window((99.0,))
+        windows[4] = _window((0.11,))
 
         result = await async_check_offset_readiness(
             FakeSession(windows), binding, 0, 2, thresholds=THRESHOLDS
@@ -200,9 +213,6 @@ def test_stage_two_reports_absent_unstable_voltage_and_nonzero_current() -> None
         assert not result.ready
         assert result.entities[0].reasons == (
             "minimum is below voltage_present_minimum_volts",
-        )
-        assert result.entities[1].reasons == (
-            "absolute spread exceeds voltage_present_spread_volts",
         )
         assert result.entities[3].reasons == (
             "absolute peak exceeds zero_current_peak_amps",
@@ -213,8 +223,8 @@ def test_stage_two_reports_absent_unstable_voltage_and_nonzero_current() -> None
 
 def test_readiness_rejects_window_from_another_generation() -> None:
     async def run() -> None:
-        windows = {key: _window((0.0, 0.0, 0.0)) for key in range(1, 13)}
-        windows[7] = _window((0.0, 0.0, 0.0), generation=6)
+        windows = {key: _window((0.0,)) for key in range(1, 13)}
+        windows[7] = _window((0.0,), generation=6)
 
         result = await async_check_offset_readiness(
             FakeSession(windows), _binding(), 0, 1, thresholds=THRESHOLDS
@@ -234,7 +244,7 @@ def test_readiness_rejects_window_from_another_generation() -> None:
 def test_readiness_does_not_swallow_session_cancellation() -> None:
     async def run() -> None:
         windows: dict[int, AbsoluteSensorSampleWindow | BaseException] = {
-            key: _window((0.0, 0.0, 0.0)) for key in range(1, 13)
+            key: _window((0.0,)) for key in range(1, 13)
         }
         windows[1] = asyncio.CancelledError()
 

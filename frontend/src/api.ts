@@ -231,7 +231,7 @@ function offsetReadiness(value: unknown, label: string, expectedBoard: number, e
   const voltagePresentSpread = number(thresholds.voltage_present_spread_volts, label);
   const thresholdValues = [zeroVoltagePeak, zeroVoltageSpread, zeroCurrentPeak, zeroCurrentSpread,
     voltagePresentMinimum, voltagePresentSpread];
-  if (sampleCount < 3 || sampleCount > 100 || thresholdValues.some((entry) => entry < 0)
+  if (sampleCount < 1 || sampleCount > 100 || thresholdValues.some((entry) => entry < 0)
     || thresholdValues[4] === 0) throw new Error(`${label} response is invalid`);
   const entities = array(item.entities, label, 12);
   if (entities.length !== 12) throw new Error(`${label} response is invalid`);
@@ -274,13 +274,10 @@ function offsetReadiness(value: unknown, label: string, expectedBoard: number, e
       if (windowGeneration !== generation) expectedReasons.push("window is from another connection generation");
       else if (quantity === "current") {
         if (peak > zeroCurrentPeak) expectedReasons.push("absolute peak exceeds zero_current_peak_amps");
-        if (spread > zeroCurrentSpread) expectedReasons.push("absolute spread exceeds zero_current_spread_amps");
       } else if (expectedStage === 1) {
         if (peak > zeroVoltagePeak) expectedReasons.push("absolute peak exceeds zero_voltage_peak_volts");
-        if (spread > zeroVoltageSpread) expectedReasons.push("absolute spread exceeds zero_voltage_spread_volts");
       } else {
         if (minimum < voltagePresentMinimum) expectedReasons.push("minimum is below voltage_present_minimum_volts");
-        if (spread > voltagePresentSpread) expectedReasons.push("absolute spread exceeds voltage_present_spread_volts");
       }
     }
     if (!exactStrings(reasons, expectedReasons) || entityReady !== (expectedReasons.length === 0)) throw new Error(`${label} response is invalid`);

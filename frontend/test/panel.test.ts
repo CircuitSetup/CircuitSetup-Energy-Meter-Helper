@@ -34,10 +34,10 @@ const firmwareIndex = [
 const firmwareResponse = (index = firmwareIndex) => new Response(JSON.stringify(index), { status: 200 });
 const offsetReadinessEntities = (voltage = 0) => [0, 1].flatMap((groupOffset) => [
   ...["a", "b", "c"].map((phase) => ({ role: `main_${groupOffset + 1}.voltage_${phase}`, quantity: "voltage", ready: true, reasons: [],
-    window: { values: [voltage, voltage, voltage], received_at: [1, 2, 3], connection_generation: 4,
+    window: { values: [voltage], received_at: [1], connection_generation: 4,
       mean: voltage, minimum: voltage, maximum: voltage, absolute_peak: Math.abs(voltage), absolute_spread: 0 } })),
   ...[1, 2, 3].map((offset) => ({ role: `ct${groupOffset * 3 + offset}.current_sensor`, quantity: "current", ready: true, reasons: [],
-    window: { values: [0, 0, 0], received_at: [1, 2, 3], connection_generation: 4,
+    window: { values: [0], received_at: [1], connection_generation: 4,
       mean: 0, minimum: 0, maximum: 0, absolute_peak: 0, absolute_spread: 0 } })),
 ]);
 
@@ -506,7 +506,7 @@ describe("CircuitSetup panel", () => {
     const messages: Record<string, unknown>[] = [];
     let runs = 0;
     const readiness = { stage: 1, ready: true, connection_generation: 4,
-      entities: offsetReadinessEntities(), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
+      entities: offsetReadinessEntities(), reasons: [], thresholds: { sample_count: 1, zero_voltage_peak_volts: 1,
         zero_voltage_spread_volts: 0.5, zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
         voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2 } };
     const panel = await mount({

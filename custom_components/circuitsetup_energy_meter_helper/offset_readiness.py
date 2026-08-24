@@ -28,8 +28,8 @@ class OffsetReadinessThresholds:
     voltage_present_spread_volts: float
 
     def __post_init__(self) -> None:
-        if self.sample_count < 3:
-            raise ValueError("offset readiness requires at least three samples")
+        if self.sample_count < 1:
+            raise ValueError("offset readiness requires a positive sample count")
         values = (
             self.zero_voltage_peak_volts,
             self.zero_voltage_spread_volts,
@@ -46,7 +46,7 @@ class OffsetReadinessThresholds:
 
 # Provisional baseline only; tune from hardware validation before claiming accuracy.
 DEFAULT_OFFSET_READINESS_THRESHOLDS = OffsetReadinessThresholds(
-    sample_count=3,
+    sample_count=1,
     zero_voltage_peak_volts=1.0,
     zero_voltage_spread_volts=0.5,
     zero_current_peak_amps=0.25,
@@ -186,18 +186,12 @@ def _evaluate_entity(
     elif quantity == "current":
         if window.absolute_peak > thresholds.zero_current_peak_amps:
             reasons.append("absolute peak exceeds zero_current_peak_amps")
-        if window.absolute_spread > thresholds.zero_current_spread_amps:
-            reasons.append("absolute spread exceeds zero_current_spread_amps")
     elif stage == 1:
         if window.absolute_peak > thresholds.zero_voltage_peak_volts:
             reasons.append("absolute peak exceeds zero_voltage_peak_volts")
-        if window.absolute_spread > thresholds.zero_voltage_spread_volts:
-            reasons.append("absolute spread exceeds zero_voltage_spread_volts")
     else:
         if window.minimum < thresholds.voltage_present_minimum_volts:
             reasons.append("minimum is below voltage_present_minimum_volts")
-        if window.absolute_spread > thresholds.voltage_present_spread_volts:
-            reasons.append("absolute spread exceeds voltage_present_spread_volts")
     return OffsetEntityReadinessEvidence(
         entity.role, quantity, not reasons, tuple(reasons), window
     )

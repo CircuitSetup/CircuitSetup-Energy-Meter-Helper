@@ -42,16 +42,14 @@ POWER_TABLES = (
 )
 
 
-def _window(
-    values: tuple[float, float, float], generation: int = 1
-) -> AbsoluteSensorSampleWindow:
+def _window(values: tuple[float, ...], generation: int = 1) -> AbsoluteSensorSampleWindow:
     minimum = min(values)
     maximum = max(values)
     return AbsoluteSensorSampleWindow(
         values,
-        (1.0, 2.0, 3.0),
+        tuple(float(index) for index in range(1, len(values) + 1)),
         generation,
-        sum(values) / 3,
+        sum(values) / len(values),
         minimum,
         maximum,
         max(abs(minimum), abs(maximum)),
@@ -111,7 +109,7 @@ class FakeOffsetSession:
         outcomes: dict[str, tuple[tuple[int, int], ...] | BaseException] | None = None,
         *,
         window_generation: int = 1,
-        window_overrides: dict[int, tuple[float, float, float]] | None = None,
+        window_overrides: dict[int, tuple[float, ...]] | None = None,
     ) -> None:
         self.connected = True
         self.connection_generation = 1
@@ -134,9 +132,9 @@ class FakeOffsetSession:
     ) -> AbsoluteSensorSampleWindow:
         self.events.append(("readiness", key, kwargs))
         values = (
-            (120.0, 120.0, 120.0)
+            (120.0,)
             if self.stage == 2 and key in self.voltage_keys
-            else (0.0, 0.0, 0.0)
+            else (0.0,)
         )
         values = self.window_overrides.get(key, values)
         return _window(values, self.window_generation)
@@ -351,14 +349,14 @@ def test_offset_gates_controls_and_fresh_readiness_before_mutation() -> None:
 @pytest.mark.parametrize(
     ("stage", "sensor_role", "values"),
     (
-        (1, "main_1.voltage_a", (1.1, 1.1, 1.1)),
-        (1, "ct1.current_sensor", (0.3, 0.3, 0.3)),
-        (2, "main_2.voltage_c", (0.0, 0.0, 0.0)),
-        (2, "ct6.current_sensor", (0.3, 0.3, 0.3)),
+        (1, "main_1.voltage_a", (1.1,)),
+        (1, "ct1.current_sensor", (0.3,)),
+        (2, "main_2.voltage_c", (0.0,)),
+        (2, "ct6.current_sensor", (0.3,)),
     ),
 )
 def test_offset_rechecks_every_stage_condition_immediately_before_mutation(
-    stage: int, sensor_role: str, values: tuple[float, float, float]
+    stage: int, sensor_role: str, values: tuple[float, ...]
 ) -> None:
     async def run() -> None:
         meter = binding_with_offset_controls()

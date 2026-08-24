@@ -233,8 +233,8 @@ class StateTracker:
         device_id: int = 0,
     ) -> AbsoluteSensorSampleWindow:
         """Return a zero-capable absolute window on one connection generation."""
-        if sample_count < 3:
-            raise ValueError("sample_count must be at least three")
+        if sample_count < 1:
+            raise ValueError("sample_count must be positive")
         if not math.isfinite(fresh_after):
             raise ValueError("fresh_after must be finite")
         if connection_generation != self.connection_generation:
@@ -323,8 +323,8 @@ class StateTracker:
         timeout: float = 10.0,
     ) -> AbsoluteSensorSampleWindow:
         """Wait for a zero-capable fresh sensor window on one generation."""
-        if sample_count < 3:
-            raise ValueError("sample_count must be at least three")
+        if sample_count < 1:
+            raise ValueError("sample_count must be positive")
         async with asyncio.timeout(timeout):
             while True:
                 if not self.connected:
