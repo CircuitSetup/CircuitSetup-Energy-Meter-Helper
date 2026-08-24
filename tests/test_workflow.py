@@ -20,7 +20,11 @@ from custom_components.circuitsetup_energy_meter_helper.offset_readiness import 
     OffsetReadinessResult,
 )
 from custom_components.circuitsetup_energy_meter_helper.preflight import PreflightResult
+from custom_components.circuitsetup_energy_meter_helper.provisioning import (
+    DiscoveredDevice,
+)
 from custom_components.circuitsetup_energy_meter_helper.session_manager import (
+    CalibrationBusyError,
     PendingCalibrationOrigin,
     SessionManager,
 )
@@ -121,6 +125,188 @@ def _pending(
         offsets,
         power_offsets,
     )
+
+
+def adoption_workflow(
+    *,
+    listing: dict[str, list[dict[str, str]]],
+    previous_entry_id: str | None = "old-meter",
+    import_error: bool = False,
+) -> tuple[EntryWorkflow, Any]:
+    """Build a trusted-discovery adoption workflow with local fakes."""
+
+    class Builder:
+        def __init__(self) -> None:
+            self.listing = listing
+            self.imports: list[dict[str, str]] = []
+
+        async def async_list_devices(self) -> dict[str, list[dict[str, str]]]:
+            return self.listing
+
+        async def async_import_device(self, payload: dict[str, str]) -> str:
+            self.imports.append(payload)
+            if import_error:
+                raise RuntimeError("import failed")
+            return "new-meter.yaml"
+
+    entries = {
+        "new-meter": SimpleNamespace(
+            title="New meter",
+            unique_id="aabbccddeeff",
+            data={"device_name": "new-meter"},
+            runtime_data=SimpleNamespace(
+                device_info=SimpleNamespace(
+                    package_import_url="github://circuitsetup/package.yaml",
+                    project_name="circuitsetup.6c-energy-meter",
+                )
+            ),
+        ),
+        "old-meter": SimpleNamespace(unique_id="112233445566"),
+    }
+    builder = Builder()
+    workflow = EntryWorkflow(
+        SimpleNamespace(
+            config_entries=SimpleNamespace(async_get_entry=entries.get),
+        ),
+        SimpleNamespace(
+            snapshot=SimpleNamespace(
+                devices=(
+                    DiscoveredDevice(
+                        "new-meter", "New meter", "circuitsetup.6c-energy-meter"
+                    ),
+                )
+            )
+        ),
+        SessionManager(),
+        SimpleNamespace(
+            async_save_interrupted_session=lambda *_args: None,
+            async_save_verified_calibration=lambda *_args: None,
+            async_finalize_verified_calibration=lambda *_args: None,
+        ),
+        previous_entry_id,
+        None,
+        builder,
+    )
+    return workflow, builder
+
+
+def _adoption_session(state: str) -> _SessionHandle:
+    return _SessionHandle(
+        "adoption-session",
+        "old-meter",
+        "112233445566",
+        topology_from_native("circuitsetup.6c-energy-meter"),
+        None,
+        {},
+        SimpleNamespace(),
+        PreflightResult(()),
+        {},
+        float("inf"),
+        state=state,
+    )
+
+
+def test_adopt_imports_current_compatible_discovery_once() -> None:
+    async def run() -> None:
+        workflow, builder = adoption_workflow(listing={"configured": [], "importable": []})
+
+        first = await workflow.async_adopt_device("new-meter")
+        builder.listing = {
+            "configured": [{"name": "new-meter", "configuration": "new-meter.yaml"}],
+            "importable": [],
+        }
+        second = await workflow.async_adopt_device("new-meter")
+
+        assert first == {"device_id": "new-meter", "configuration": "new-meter.yaml"}
+        assert second == first
+        assert builder.imports == [{
+            "name": "new-meter",
+            "friendly_name": "New meter",
+            "package_import_url": "github://circuitsetup/package.yaml",
+        }]
+
+    asyncio.run(run())
+
+
+def test_adopt_reuses_existing_builder_configuration() -> None:
+    async def run() -> None:
+        workflow, builder = adoption_workflow(listing={
+            "configured": [{"name": "new-meter", "configuration": "existing.yaml"}],
+            "importable": [],
+        })
+
+        assert await workflow.async_adopt_device("new-meter") == {
+            "device_id": "new-meter",
+            "configuration": "existing.yaml",
+        }
+        assert builder.imports == []
+
+    asyncio.run(run())
+
+
+def test_adopt_rejects_device_outside_current_compatible_snapshot() -> None:
+    async def run() -> None:
+        workflow, builder = adoption_workflow(listing={"configured": [], "importable": []})
+
+        with pytest.raises(WorkflowHandleError, match="available"):
+            await workflow.async_adopt_device("unrelated-meter")
+        assert builder.imports == []
+
+    asyncio.run(run())
+
+
+def test_adopt_propagates_import_failure_without_rebinding() -> None:
+    async def run() -> None:
+        workflow, builder = adoption_workflow(
+            listing={"configured": [], "importable": []}, import_error=True
+        )
+
+        with pytest.raises(RuntimeError, match="import failed"):
+            await workflow.async_adopt_device("new-meter")
+
+        assert workflow._esphome_entry_id == "old-meter"
+        assert len(builder.imports) == 1
+
+    asyncio.run(run())
+
+
+def test_adopt_rejects_rebinding_while_previous_session_is_active() -> None:
+    async def run() -> None:
+        workflow, builder = adoption_workflow(listing={"configured": [], "importable": []})
+        workflow._sessions["active"] = _adoption_session("ready")
+
+        with pytest.raises(CalibrationBusyError, match="112233445566"):
+            await workflow.async_adopt_device("new-meter")
+        assert builder.imports == []
+
+    asyncio.run(run())
+
+
+def test_adopt_rejects_rebinding_while_previous_transaction_is_active() -> None:
+    async def run() -> None:
+        workflow, builder = adoption_workflow(listing={"configured": [], "importable": []})
+        workflow.transactions = SimpleNamespace(active_status=lambda mac: {"mac": mac})
+
+        with pytest.raises(CalibrationBusyError, match="112233445566"):
+            await workflow.async_adopt_device("new-meter")
+        assert builder.imports == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("state", ("verified", "cancelled"))
+def test_adopt_allows_rebinding_after_previous_session_is_finalized(state: str) -> None:
+    async def run() -> None:
+        workflow, builder = adoption_workflow(listing={"configured": [], "importable": []})
+        workflow._sessions["finalized"] = _adoption_session(state)
+
+        assert await workflow.async_adopt_device("new-meter") == {
+            "device_id": "new-meter",
+            "configuration": "new-meter.yaml",
+        }
+        assert len(builder.imports) == 1
+
+    asyncio.run(run())
 
 
 def test_offset_status_starts_with_capability_board_stages_and_no_pending() -> None:
