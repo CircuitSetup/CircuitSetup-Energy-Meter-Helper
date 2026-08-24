@@ -469,13 +469,19 @@ class EntryWorkflow:
         }
 
     async def async_adopt_device(self, device_id: str) -> dict[str, str]:
-        device = self._device(device_id)
+        device = self._adoption_device(device_id)
+        self._assert_rebind_idle(device_id)
         builder = self._require_builder()
         entry = self._entry(device_id)
+        name = getattr(entry, "data", {}).get("device_name")
+        if not isinstance(name, str):
+            raise WorkflowCapabilityUnavailable("adoption metadata is unavailable")
+        status = device_builder_status(entry, await builder.async_list_devices())
+        if status.configuration is not None:
+            return {"device_id": device_id, "configuration": status.configuration}
         info = getattr(getattr(entry, "runtime_data", None), "device_info", None)
         package_url = getattr(info, "package_import_url", None)
-        name = getattr(entry, "data", {}).get("device_name")
-        if not isinstance(package_url, str) or not isinstance(name, str):
+        if not isinstance(package_url, str):
             raise WorkflowCapabilityUnavailable("adoption metadata is unavailable")
         configuration = await builder.async_import_device(
             {
@@ -1353,6 +1359,36 @@ class EntryWorkflow:
                 raise WorkflowHandleError("device is not available")
             device = DiscoveredDevice(device_id, entry.title, project_name)
         return device
+
+    def _adoption_device(self, device_id: str) -> DiscoveredDevice:
+        if self._closed or self._closing:
+            raise WorkflowHandleError("workflow is closed")
+        device = next(
+            (
+                item
+                for item in self._provisioning.snapshot.devices
+                if item.entry_id == device_id
+            ),
+            None,
+        )
+        if device is None:
+            raise WorkflowHandleError("device is not available")
+        return device
+
+    def _assert_rebind_idle(self, device_id: str) -> None:
+        current = self._esphome_entry_id
+        if current is None or current == device_id:
+            return
+        mac = self._mac(current)
+        with self._guard(mac):
+            self._prune_device_sessions_locked(mac)
+            if any(
+                handle.mac == mac and handle.state not in {"verified", "cancelled"}
+                for handle in self._sessions.values()
+            ):
+                raise CalibrationBusyError(mac)
+        if self.transactions is not None and self.transactions.active_status(mac) is not None:
+            raise CalibrationBusyError(mac)
 
     def _entry(self, device_id: str) -> Any:
         getter = getattr(self._hass.config_entries, "async_get_entry", None)

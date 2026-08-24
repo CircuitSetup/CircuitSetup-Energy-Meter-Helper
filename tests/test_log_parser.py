@@ -36,6 +36,17 @@ def test_detects_current_flash_and_configuration_calibration_sources() -> None:
     }
 
 
+def test_detects_verified_gain_config_fallback_as_configuration() -> None:
+    sources = parse_calibration_sources(
+        (
+            "[CALIBRATION][meter_main1] Gain calibration restore failed verification; config values verified.",
+        ),
+        {"meter_main1"},
+    )
+
+    assert sources == {"meter_main1": "configuration"}
+
+
 def log_lines(
     fixture: str,
     *,
@@ -95,6 +106,69 @@ def test_parses_save_failure_and_register_mismatch() -> None:
     assert not failure.immediate_apply_acceptable
     assert mismatch.register_mismatch_phases == ("B",)
     assert not mismatch.immediate_apply_acceptable
+
+
+def test_parses_verified_gain_rollback_without_save_result() -> None:
+    lines = [
+        item
+        for item in log_lines("gain_success.log")
+        if "Gain calibration saved to memory." not in item.line
+    ]
+    lines.extend(
+        (
+            CalibrationLogLine(
+                3,
+                8,
+                20.0,
+                "[E] [CALIBRATION][meter_main1] Mismatch detected for Phase B!",
+            ),
+            CalibrationLogLine(
+                3,
+                8,
+                21.0,
+                "[E] [CALIBRATION][meter_main1] Gain calibration failed; previous values restored.",
+            ),
+        )
+    )
+
+    evidence = parse_gain_run(
+        lines,
+        connection_generation=3,
+        operation_sequence=8,
+        target_instance_id="meter_main1",
+        button_name="3. Run Main Meter 1 Gain Cal",
+        dispatched_after=10.0,
+    )
+
+    assert not evidence.flash_saved
+    assert evidence.register_mismatch_phases == ("B",)
+    assert not evidence.immediate_apply_acceptable
+
+
+def test_rejects_gain_rollback_readback_failure() -> None:
+    lines = [
+        item
+        for item in log_lines("gain_success.log")
+        if "Gain calibration saved to memory." not in item.line
+    ]
+    lines.append(
+        CalibrationLogLine(
+            3,
+            8,
+            20.0,
+            "[E] [CALIBRATION][meter_main1] Gain calibration failed; rollback readback verification failed.",
+        )
+    )
+
+    with pytest.raises(LogEvidenceError, match="rollback readback"):
+        parse_gain_run(
+            lines,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="3. Run Main Meter 1 Gain Cal",
+            dispatched_after=10.0,
+        )
 
 
 def test_parses_both_completed_gain_runs_from_one_meter_board() -> None:
@@ -806,6 +880,40 @@ def test_restore_rejects_failure_or_missing_instance() -> None:
             log_lines("restore_positive.log", sequence=0),
             connection_generation=3,
             expected_instance_ids={"addon2_1"},
+            started_after=10.0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("terminal", "message"),
+    (
+        (
+            "Gain calibration restore failed verification; config values verified.",
+            "fell back to config",
+        ),
+        (
+            "Gain calibration restore failed; config readback verification failed.",
+            "verification failed",
+        ),
+    ),
+)
+def test_restore_rejects_new_gain_fallback_terminals(
+    terminal: str, message: str
+) -> None:
+    lines = [
+        CalibrationLogLine(
+            3,
+            0,
+            11.0,
+            f"[E] [CALIBRATION][meter_main1] {terminal}",
+        )
+    ]
+
+    with pytest.raises(LogEvidenceError, match=message):
+        parse_restore(
+            lines,
+            connection_generation=3,
+            expected_instance_ids={"meter_main1"},
             started_after=10.0,
         )
 

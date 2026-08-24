@@ -4,11 +4,14 @@
 
 ## Verification
 
-- [ ] `ruff check .`
-- [ ] `pytest -q`
-- [ ] Home Assistant contract tests, when entity/platform behavior changes
+- [ ] `uv run ruff check .`
+- [ ] `uv run mypy custom_components/circuitsetup_energy_meter_helper`
+- [ ] `uv run pytest -q --cov=custom_components.circuitsetup_energy_meter_helper --cov-report=term-missing`
+- [ ] `uv pip check`
+- [ ] Frontend audit, typecheck, tests, build, and browser E2E checks are passing
+- [ ] Home Assistant contract tests are passing when integration behavior changes
+- [ ] Firmware contract checks are passing when firmware compatibility changes
 - [ ] HACS and hassfest checks are passing
-- [ ] ChatGPT Codex connector suggestions reviewed and addressed or explained
 
 ## Release Impact
 

@@ -27,8 +27,8 @@ function project(addons: number): string {
   return addons ? `circuitsetup.6c-energy-meter-${addons}-addons` : "circuitsetup.6c-energy-meter";
 }
 
-function device(addons: number, importable = false) {
-  return { entry_id: "meter-1", title: "CircuitSetup meter", project_name: project(addons),
+function device(addons: number, importable = false, entryId = "meter-1") {
+  return { entry_id: entryId, title: "CircuitSetup meter", project_name: project(addons),
     project_version: "2026.8.0", importable, configuration: importable ? null : "meter.yaml" };
 }
 
@@ -139,15 +139,24 @@ function restart(addons: number) {
 }
 
 async function mockHomeAssistant(page: Page, options: { addons?: number; outcome?: Outcome;
-  calibration?: Calibration; rescan?: Array<"none" | "device">; importable?: boolean;
-  setupEvent?: "none" | "device"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
+  calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
+  setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
   firmwareRequests?: string[] } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
   let rescans = 0;
+  let boundDeviceId: string | null = null;
+  let nextSetupStatusUnavailable = false;
+  let setupSubscriptionGeneration = 0;
   let currentTransaction = transaction("previewed", addons ? 42 : 1);
   let currentSession = session("safety_required", false, addons);
+  const setupDevices = options.setupEvent === "devices"
+    ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
+    : options.setupEvent === "device" ? [device(addons, options.importable)] : [];
+  const setupSnapshot = () => boundDeviceId
+    ? { state: "topology_review", devices: setupDevices, bound_device_id: boundDeviceId }
+    : { state: "no_device", devices: [] };
 
   await mockFirmwareIndex(page, options.firmwareIndex, options.firmwareRequests);
 
@@ -169,14 +178,26 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         error: { code, message } }));
       if (operation === "unsubscribe_events") return ok(null);
       let result: unknown;
-      if (operation === "setup_status") result = { state: "no_device", devices: [] };
+      if (operation === "setup_status") {
+        if (nextSetupStatusUnavailable) {
+          nextSetupStatusUnavailable = false;
+          return fail("capability_unavailable", "helper reload in progress");
+        }
+        result = setupSnapshot();
+      }
       else if (operation === "set_installer_intent") result = { state: "installer_guide", devices: [],
         installer_intent: { addon_count: frame.addon_count, connection_type: frame.connection_type } };
       else if (operation === "rescan") {
-        const state = options.rescan?.[rescans++] ?? "device";
+        const state = options.rescan?.[rescans++] ?? "devices";
         result = state === "none" ? { state: "no_device", devices: [] }
-          : { state: "device_discovered", devices: [device(addons, options.importable)], configuration_authoritative: false };
-      } else if (operation === "adopt_device") result = { device_id: "meter-1", configuration: "meter.yaml" };
+          : { state: "device_discovered", devices: state === "devices"
+            ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
+            : [device(addons, options.importable)], configuration_authoritative: false };
+      } else if (operation === "adopt_device") {
+        boundDeviceId = "meter-1";
+        nextSetupStatusUnavailable = true;
+        result = { device_id: "meter-1", configuration: "meter.yaml" };
+      }
       else if (operation === "get_topology") result = topology(addons);
       else if (operation === "get_ct_inventory") result = inventory(addons);
       else if (operation === "get_active_work") result = {
@@ -243,14 +264,17 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         ...currentSession, state: "verified", has_pending_calibration: false,
       };
       else if (operation === "cancel_session") result = currentSession = session("cancelled", false);
-      else if (operation === "subscribe_setup") result = { state: "no_device", devices: [] };
+      else if (operation === "subscribe_setup") {
+        ++setupSubscriptionGeneration;
+        result = setupSnapshot();
+      }
       else if (operation === "subscribe_config_transaction") result = currentTransaction;
       else if (operation === "subscribe_session") result = currentSession;
       else return fail("unknown_command", operation);
       ok(result);
       if (operation.startsWith("subscribe_")) {
-        const event = operation === "subscribe_setup" && options.setupEvent === "device"
-          ? { state: "device_discovered", devices: [device(addons, options.importable)] }
+        const event = operation === "subscribe_setup" && setupSubscriptionGeneration === 1 && setupDevices.length
+          ? { state: "device_discovered", devices: setupDevices }
           : result;
         setTimeout(() => socket.send(JSON.stringify({ id, type: "event", event })), 0);
       }
@@ -265,7 +289,7 @@ async function openInventory(page: Page): Promise<void> {
   await page.goto("/test/harness.html");
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
   await page.locator('[data-action="rescan"]').click();
-  await page.locator('[data-action="configure-device"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
   await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Topology evidence", exact: true })).toBeVisible();
   await page.locator('[data-action="continue"]').click();
@@ -311,7 +335,7 @@ async function reachCurrent(page: Page, channel: number): Promise<void> {
   await expect(page.getByRole("heading", { name: "Current", exact: true })).toBeVisible();
 }
 
-test("native mocked HA websocket covers no-device, installer intent, wiring, rescan, discovery, and adoption", async ({ page }) => {
+test("native mocked HA websocket covers automatic onboarding after rescan discovery", async ({ page }) => {
   const frames = await mockHomeAssistant(page, { addons: 6, rescan: ["none", "device"], importable: true });
   await page.goto("/test/harness.html");
   await expect(page.getByText("No compatible device found")).toBeVisible();
@@ -324,24 +348,28 @@ test("native mocked HA websocket covers no-device, installer intent, wiring, res
   await page.locator('[name="connection-type"][value="ethernet_waveshare"]').locator("..").click();
   await expect(page.getByText("(15, 26)")).toBeVisible();
   await page.locator('[data-action="rescan"]').click();
-  await expect(page.getByText("Device Builder: Yes — import available")).toBeVisible();
-  await page.getByRole("button", { name: "Import" }).click();
-  await expect(page.getByText("Meter adopted in Device Builder.")).toBeVisible();
+  await expect(page.getByText("Device added to Home Assistant. Importing into ESPHome Builder…")).toBeVisible();
+  await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Topology evidence", exact: true })).toBeVisible();
 
   expect(frames[0]).toEqual({ type: "auth", access_token: "playwright-token" });
   const intents = frames.filter((frame) => frame.type.endsWith("/set_installer_intent"));
   expect(intents).toMatchObject([{ addon_count: 0, connection_type: "wifi" },
     { addon_count: 6, connection_type: "ethernet_waveshare" }]);
-  expect(operations(frames)).toEqual(expect.arrayContaining(["subscribe_setup", "rescan", "adopt_device"]));
+  expect(operations(frames).filter((operation) => operation === "adopt_device")).toHaveLength(1);
+  expect(operations(frames).filter((operation) => operation === "subscribe_setup")).toHaveLength(2);
+  expect(operations(frames)).toEqual(expect.arrayContaining(["setup_status", "get_topology"]));
 });
 
-test("a setup subscription keeps a newly discovered meter on Setup Device", async ({ page }) => {
-  await mockHomeAssistant(page, { setupEvent: "device" });
+test("multiple newly discovered meters wait for an Import click", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { setupEvent: "devices", importable: true });
   await page.goto("/test/harness.html");
 
-  await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
-  await expect(page.getByText("CircuitSetup energy meter discovered.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Discover", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Import" })).toHaveCount(2);
+  expect(operations(frames)).not.toContain("adopt_device");
+  await page.getByRole("button", { name: "Import" }).first().click();
+  await expect.poll(() => operations(frames).filter((operation) => operation === "adopt_device").length).toBe(1);
 });
 
 test("inline provisioning resolves selected manifests without popup, navigation, credentials, or URL payloads", async ({ page }) => {
@@ -368,7 +396,7 @@ test("inline provisioning resolves selected manifests without popup, navigation,
       step.querySelector('[aria-labelledby="jumper-heading"]'),
       step.querySelector('[data-action="firmware-version"]'),
       step.querySelector("esp-web-install-button"),
-      [...step.querySelectorAll(".info-band")].find((element) => element.textContent?.includes("Add to Home Assistant")),
+      step.querySelector(".next-steps"),
       step.querySelector('[data-action="rescan"]'),
     ];
     return order.slice(1).every((element, index) => Boolean(order[index] && element &&

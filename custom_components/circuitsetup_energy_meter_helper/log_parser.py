@@ -55,6 +55,26 @@ _OFFSET_READBACK_RE = re.compile(r"Offset readback failed for Phase (?P<phase>[A
 _POWER_OFFSET_READBACK_RE = re.compile(
     r"Power offset readback failed for Phase (?P<phase>[ABC]):"
 )
+_GAIN_SAVED = "Gain calibration saved to memory."
+_GAIN_SAVE_FAILED = "Failed to save gain calibration to memory!"
+_GAIN_COMPLETED = "Gain calibration completed and verified."
+_GAIN_FAILED = "Gain calibration failed; previous values restored."
+_GAIN_ROLLBACK_FAILED = (
+    "Gain calibration failed; rollback readback verification failed."
+)
+_GAIN_RUN_TERMINALS = (
+    _GAIN_SAVED,
+    _GAIN_SAVE_FAILED,
+    _GAIN_COMPLETED,
+    _GAIN_FAILED,
+    _GAIN_ROLLBACK_FAILED,
+)
+_GAIN_CONFIG_FALLBACK = (
+    "Gain calibration restore failed verification; config values verified."
+)
+_GAIN_CONFIG_FALLBACK_FAILED = (
+    "Gain calibration restore failed; config readback verification failed."
+)
 
 
 class LogEvidenceError(ValueError):
@@ -186,8 +206,10 @@ def parse_calibration_sources(
             )
         ):
             sources[instance_id] = "flash"
-        elif "No stored gain calibrations found" in line or (
-            "Gain calibration is disabled" in line
+        elif (
+            "No stored gain calibrations found" in line
+            or "Gain calibration is disabled" in line
+            or _GAIN_CONFIG_FALLBACK in line
         ):
             sources[instance_id] = "configuration"
     return dict(sorted(sources.items()))
@@ -226,8 +248,7 @@ def parse_gain_run(
         return (
             is_header(item)
             or _GAIN_ROW_RE.search(item.line) is not None
-            or "gain calibration saved to memory" in item.line.casefold()
-            or "failed to save gain calibration to memory" in item.line.casefold()
+            or any(item.line.endswith(term) for term in _GAIN_RUN_TERMINALS)
             or "Mismatch detected for Phase" in item.line
         )
 
@@ -244,9 +265,8 @@ def parse_gain_run(
             raise LogEvidenceError("interleaved ATM90E32 instance in operation window")
         if is_evidence(item) and instance != target_instance_id:
             raise LogEvidenceError("gain evidence is missing the target instance tag")
-        if instance == target_instance_id and (
-            "gain calibration saved to memory" in item.line.casefold()
-            or "failed to save gain calibration to memory" in item.line.casefold()
+        if instance == target_instance_id and any(
+            item.line.endswith(term) for term in _GAIN_RUN_TERMINALS
         ):
             terminal_seen = True
     matching = matching[:operation_end]
@@ -271,6 +291,7 @@ def parse_gain_run(
     )
     phase_rows: dict[Phase, PhaseGainEvidence] = {}
     save_results: list[bool] = []
+    final_results: list[str] = []
     mismatches: list[Phase] = []
     terminal_seen = False
     for item in matching[header_index:]:
@@ -306,16 +327,31 @@ def parse_gain_run(
                 int(row.group("old_current_gain")),
                 int(row.group("new_current_gain")),
             )
-        if "Gain calibration saved to memory." in item.line:
+        payload = _calibration_payload(item.line)
+        if payload == _GAIN_SAVED:
             save_results.append(True)
             terminal_seen = True
-        elif "Failed to save gain calibration to memory!" in item.line:
+        elif payload == _GAIN_SAVE_FAILED:
             save_results.append(False)
+            terminal_seen = True
+        elif payload in (_GAIN_COMPLETED, _GAIN_FAILED, _GAIN_ROLLBACK_FAILED):
+            final_results.append(payload)
             terminal_seen = True
         if mismatch := _MISMATCH_RE.search(item.line):
             mismatches.append(cast(Phase, mismatch.group("phase")))
     if set(phase_rows) != {"A", "B", "C"}:
         raise LogEvidenceError("gain evidence must contain exactly phases A, B, and C")
+    if len(final_results) > 1:
+        raise LogEvidenceError("gain terminal result is duplicate or contradictory")
+    if final_results == [_GAIN_ROLLBACK_FAILED]:
+        raise LogEvidenceError("gain rollback readback failure terminal")
+    if final_results == [_GAIN_FAILED]:
+        if save_results == [True]:
+            raise LogEvidenceError("gain result contradicts verified rollback")
+        if not save_results:
+            save_results.append(False)
+    elif final_results == [_GAIN_COMPLETED] and save_results != [True]:
+        raise LogEvidenceError("gain completion requires a successful save result")
     if not save_results:
         raise LogEvidenceError("gain save result is missing")
     if len(save_results) != 1:
@@ -670,6 +706,8 @@ def parse_restore(
         "No stored gain calibrations found",
         "Gain calibration is disabled",
         "Gain verification failed!",
+        _GAIN_CONFIG_FALLBACK,
+        _GAIN_CONFIG_FALLBACK_FAILED,
         "Restored offset calibration from memory",
         "Restored power offset calibration from memory",
         "Offset mismatch: using flash values",
@@ -721,12 +759,15 @@ def parse_restore(
         categories = expected_categories.get(instance_id, {"gain"})
         gain_expected = "gain" in categories
         if gain_expected and any(
-            "Gain verification failed!" in item.line for item in instance_lines
+            "Gain verification failed!" in item.line
+            or _GAIN_CONFIG_FALLBACK_FAILED in item.line
+            for item in instance_lines
         ):
             raise LogEvidenceError(f"{instance_id}: gain verification failed")
         if gain_expected and any(
             "No stored gain calibrations found" in item.line
             or "Gain calibration is disabled" in item.line
+            or _GAIN_CONFIG_FALLBACK in item.line
             for item in instance_lines
         ):
             raise LogEvidenceError(f"{instance_id}: restore fell back to config")

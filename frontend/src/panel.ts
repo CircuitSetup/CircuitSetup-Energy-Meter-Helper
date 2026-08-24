@@ -42,6 +42,10 @@ const STEPS: Array<[PanelStep, string]> = [
   ["build", "Flash & Verify"],
   ["summary", "Summary"],
 ];
+const CIRCUITSETUP_PROJECT_PREFIX = "circuitsetup.6c-energy-meter";
+const REBIND_TIMEOUT_MS = 10_000;
+const REBIND_RETRY_MS = 250;
+const wait = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
 interface PanelConfig {
   config: { entry_id: string };
@@ -105,8 +109,10 @@ export class CircuitSetupPanel extends LitElement {
   private sessionSubscriptionScope = 0;
   private transactionUnsub: (() => void) | null = null;
   private sessionUnsub: (() => void) | null = null;
+  private setupUnsub: (() => void) | null = null;
   private sessionStarting = false;
   private pendingAction = "";
+  private importFailedDeviceId: string | null = null;
   private voltageBusy = false;
   private offsetBusy = false;
   private finishBusy = false;
@@ -133,6 +139,7 @@ export class CircuitSetupPanel extends LitElement {
     }
     this.transactionUnsub = null;
     this.sessionUnsub = null;
+    this.setupUnsub = null;
     this.api = null;
     this.firmwareFetchController?.abort();
     this.firmwareFetchController = null;
@@ -141,6 +148,7 @@ export class CircuitSetupPanel extends LitElement {
     this.firmwareCatalogError = "";
     this.resolvedFirmwareOptions = [];
     this.setupDeviceIds = new Set();
+    this.pendingAction = "";
     super.disconnectedCallback();
   }
 
@@ -169,19 +177,7 @@ export class CircuitSetupPanel extends LitElement {
         this.refreshFirmwareOptions();
       }
       if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.firstDeviceId(this.setup.devices));
-      await this.ownSubscription(api.subscribeSetup((snapshot) => {
-        if (!this.owns(generation, api)) return;
-        const discovered = snapshot.devices
-          .filter((device) => !this.setupDeviceIds.has(device.entry_id))
-          .sort((first, second) => first.entry_id.localeCompare(second.entry_id));
-        this.setup = snapshot;
-        this.setupDeviceIds = new Set(snapshot.devices.map((device) => device.entry_id));
-        if (this.step === "setup" && !this.topology && discovered.length) {
-          this.selectDevice(discovered[0]!.entry_id);
-          this.announcement = "CircuitSetup energy meter discovered.";
-        }
-        this.requestUpdate();
-      }), generation, api);
+      await this.subscribeSetup(generation, api);
       if (this.transaction) await this.subscribeTransaction(generation);
       if (this.session && this.session.state !== "cancelled") await this.subscribeSession(generation);
     } catch (error) {
@@ -196,6 +192,36 @@ export class CircuitSetupPanel extends LitElement {
 
   private ownsFirmwareCatalog(generation: number, controller: AbortController): boolean {
     return this.isConnected && generation === this.connectionGeneration && controller === this.firmwareFetchController;
+  }
+
+  private async subscribeSetup(generation: number, api: HelperApi): Promise<void> {
+    await this.ownSubscription(api.subscribeSetup((snapshot) => {
+      if (!this.owns(generation, api)) return;
+      this.receiveSetupSnapshot(snapshot, true);
+    }), generation, api, () => this.setupUnsub === null, (unsubscribe) => { this.setupUnsub = unsubscribe; });
+  }
+
+  private receiveSetupSnapshot(snapshot: SetupSnapshot, allowAutomaticImport: boolean): void {
+    const discovered = snapshot.devices
+      .filter((device) => !this.setupDeviceIds.has(device.entry_id))
+      .sort((first, second) => first.entry_id.localeCompare(second.entry_id));
+    const eligible = discovered.filter((device) => device.project_name.startsWith(CIRCUITSETUP_PROJECT_PREFIX));
+    this.setup = snapshot;
+    this.setupDeviceIds = new Set(snapshot.devices.map((device) => device.entry_id));
+    if (this.pendingAction) { this.requestUpdate(); return; }
+    if (this.step !== "setup" || this.topology || !eligible.length) return this.requestUpdate();
+    if (allowAutomaticImport && eligible.length === 1 && !this.pendingAction) {
+      const deviceId = eligible[0]!.entry_id;
+      this.selectDevice(deviceId);
+      this.announcement = "Device added to Home Assistant. Importing into ESPHome Builder…";
+      void this.adopt(deviceId);
+      return;
+    }
+    this.selectDevice(eligible.length === 1 ? eligible[0]!.entry_id : null);
+    this.announcement = eligible.length > 1
+      ? "Multiple CircuitSetup meters were discovered. Choose one to import."
+      : "CircuitSetup energy meter discovered.";
+    this.requestUpdate();
   }
 
   private loadFirmwareIndex(): void {
@@ -279,6 +305,15 @@ export class CircuitSetupPanel extends LitElement {
     const unsubscribe = kind === "transaction" ? this.transactionUnsub : this.sessionUnsub;
     if (kind === "transaction") this.transactionUnsub = null;
     else this.sessionUnsub = null;
+    if (!unsubscribe) return;
+    const index = this.unsubs.indexOf(unsubscribe);
+    if (index >= 0) this.unsubs.splice(index, 1);
+    try { unsubscribe(); } catch { /* Replacement ownership must still advance. */ }
+  }
+
+  private clearSetupSubscription(): void {
+    const unsubscribe = this.setupUnsub;
+    this.setupUnsub = null;
     if (!unsubscribe) return;
     const index = this.unsubs.indexOf(unsubscribe);
     if (index >= 0) this.unsubs.splice(index, 1);
@@ -435,39 +470,83 @@ export class CircuitSetupPanel extends LitElement {
     this.requestUpdate();
     const api = this.api;
     const deviceId = this.selectedDeviceId;
+    const setupDeviceIds = new Set(this.setupDeviceIds);
     const generation = ++this.operationGeneration;
     await this.run(async () => {
       await api.setInstallerIntent(this.addonCount, this.connection, this.selectedFirmware());
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      const unchangedDiscovery = this.selectedDeviceId !== null
-        && setup.devices.length === this.setupDeviceIds.size
-        && setup.devices.some((device) => device.entry_id === this.selectedDeviceId)
-        && setup.devices.every((device) => this.setupDeviceIds.has(device.entry_id));
-      this.setup = setup;
-      this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
-      if (setup.devices.length && !unchangedDiscovery) {
-        this.selectDevice(this.firstDeviceId(setup.devices));
-        this.announcement = "CircuitSetup energy meter discovered.";
-      }
-      else if (!setup.devices.length) {
+      this.pendingAction = "";
+      this.setupDeviceIds = setupDeviceIds;
+      this.receiveSetupSnapshot(setup, true);
+      if (!setup.devices.length) {
         this.announcement = "No compatible meter found. Check the network and rescan.";
       }
     }, "Rescan failed.", () => this.ownsOperation(generation, api, deviceId));
-    this.pendingAction = "";
+    if (this.pendingAction === "rescan") this.pendingAction = "";
     this.requestUpdate();
   }
 
   private async adopt(deviceId = this.selectedDeviceId): Promise<void> {
-    if (!this.api || !deviceId) return;
+    if (!this.api || !deviceId || this.pendingAction) return;
     if (deviceId !== this.selectedDeviceId) this.selectDevice(deviceId);
     const api = this.api; const generation = ++this.operationGeneration;
-    await this.run(async () => {
+    const connectionGeneration = this.connectionGeneration;
+    this.pendingAction = `adopt:${deviceId}`;
+    this.importFailedDeviceId = null;
+    this.error = "";
+    this.requestUpdate();
+    try {
       await api.adoptDevice(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      this.announcement = "Meter adopted in Device Builder.";
-    }, "Adoption is unavailable for this meter.", () => this.ownsOperation(generation, api, deviceId));
+      this.clearSetupSubscription();
+      const setup = await this.waitForBinding(api, deviceId, generation);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.setup = setup;
+      this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
+      await this.subscribeSetup(connectionGeneration, api);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      const result = await api.getTopology(deviceId);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.importFailedDeviceId = null;
+      this.announcement = "Meter imported into ESPHome Builder.";
+      this.showTopology("topology" in result ? result.topology : result);
+    } catch (error) {
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.importFailedDeviceId = deviceId;
+      const message = (error as WsError).code === "device_busy"
+        ? "Finish or cancel current work before importing another meter."
+        : error instanceof Error && error.message === "helper rebind timed out"
+          ? "Import completed, but Home Assistant is still reconnecting. Retry import or reload the helper."
+          : this.safeErrorMessage(error, "Adoption is unavailable for this meter.");
+      this.fail(error, message);
+    } finally {
+      if (this.ownsOperation(generation, api, deviceId)) {
+        this.pendingAction = "";
+        this.requestUpdate();
+      }
+    }
+  }
+
+  private async waitForBinding(api: HelperApi, deviceId: string, generation: number): Promise<SetupSnapshot> {
+    const deadline = Date.now() + REBIND_TIMEOUT_MS;
+    while (this.ownsOperation(generation, api, deviceId)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      try {
+        const snapshot = await Promise.race([
+          api.setupStatus(),
+          wait(remaining).then(() => { throw new Error("helper rebind timed out"); }),
+        ]);
+        if (snapshot.bound_device_id === deviceId) return snapshot;
+      } catch (error) {
+        if ((error as WsError).code !== "capability_unavailable") throw error;
+      }
+      if (Date.now() >= deadline) break;
+      await wait(Math.min(REBIND_RETRY_MS, deadline - Date.now()));
+    }
+    throw new Error("helper rebind timed out");
   }
 
   private async loadTopology(): Promise<void> {
@@ -1166,9 +1245,23 @@ export class CircuitSetupPanel extends LitElement {
     } catch (error) {
       if (!isCurrent()) return;
       const code = (error as WsError).code;
-      this.fail(error, code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : fallback);
+      const message = code === "stale_confirmation"
+        ? "This confirmation expired. Reload live data and review again."
+        : code === "stale_handle"
+          ? "The selected device changed or is no longer available. Rescan and try again."
+          : fallback;
+      this.fail(error, message);
     }
     if (isCurrent()) this.requestUpdate();
+  }
+
+  private safeErrorMessage(error: unknown, fallback: string): string {
+    const code = (error as WsError).code;
+    return code === "stale_confirmation"
+      ? "This confirmation expired. Reload live data and review again."
+      : code === "stale_handle"
+        ? "The selected device changed or is no longer available. Rescan and try again."
+        : fallback;
   }
 
   private fail(_error: unknown, safeMessage: string): void {
@@ -1181,7 +1274,8 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step === "setup") return html`${setupDeviceStep(this.setup, this.addonCount, this.connection,
       (value) => { this.addonCount = value; this.refreshFirmwareOptions(); },
       (value) => { this.connection = value; this.refreshFirmwareOptions(); },
-      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, Boolean(this.topology), this.firmwareCatalog())}
+      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, Boolean(this.topology),
+      this.firmwareCatalog(), this.importFailedDeviceId)}
       ${this.topology ? topologyStep(this.topology, this.selectedProjectVersion(),
         () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
           ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session") : nothing}`;
