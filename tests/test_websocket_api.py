@@ -1319,6 +1319,20 @@ def test_native_only_current_requires_explicit_reporting_multiplier(
                 False,
             )
 
+        with pytest.raises(WorkflowHandleError, match="reporting multiplier"):
+            await workflow.async_calibrate_current(
+                status.session_id,
+                ({"channel": 1, "reference": 5.0, "reporting_multiplier": 3.0},),
+                False,
+            )
+        with pytest.raises(WorkflowHandleError, match="reporting multiplier"):
+            await workflow.async_calibrate_current(
+                status.session_id,
+                ({"channel": 1, "reference": 5.0, "reporting_multiplier": 1.0},),
+                False,
+                ({"channel": 1, "reporting_multiplier": 3.0},),
+            )
+
         await workflow.async_calibrate_current(
             status.session_id,
             ({"channel": 1, "reference": 5.0, "reporting_multiplier": 2.0},),
