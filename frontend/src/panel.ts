@@ -173,7 +173,7 @@ export class CircuitSetupPanel extends LitElement {
           .sort((first, second) => first.entry_id.localeCompare(second.entry_id));
         this.setup = snapshot;
         this.setupDeviceIds = new Set(snapshot.devices.map((device) => device.entry_id));
-        if (this.step === "setup" && discovered.length) {
+        if (this.step === "setup" && !this.topology && discovered.length) {
           this.selectDevice(discovered[0]!.entry_id);
           this.announcement = "CircuitSetup energy meter discovered.";
         }
@@ -1149,7 +1149,7 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.connection = value; this.refreshFirmwareOptions(); },
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, Boolean(this.topology), this.firmwareCatalog())}
       ${this.topology ? topologyStep(this.topology, this.selectedProjectVersion(),
-        () => this.selectDevice(null), () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
+        () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
           ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session") : nothing}`;
     if (this.step === "ct" && this.inventory) return html`<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
       (board) => { this.board = board; this.requestUpdate(); },

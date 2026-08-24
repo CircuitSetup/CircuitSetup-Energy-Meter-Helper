@@ -8,7 +8,7 @@ import type { CircuitSetupPanel } from "../src/panel";
 import { changesFromDrafts, type CtDraft } from "../src/components/ct-inventory-step";
 import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
-import type { CtInventory } from "../src/types";
+import type { CtInventory, MeterTopology } from "../src/types";
 
 const tick = async () => {
   await Promise.resolve();
@@ -781,6 +781,34 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
   });
 
+  it("does not replace an active inline topology review when another meter is discovered", async () => {
+    let setupCallback: ((message: unknown) => void) | undefined;
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        if (String(message.type).endsWith("/setup_status")) return { state: "device_discovered", devices: [device] } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async (callback) => {
+        setupCallback = callback as (message: unknown) => void;
+        return () => undefined;
+      } },
+    };
+    const panel = await mount(hass);
+    const topology: MeterTopology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] };
+    panel.showTopology(topology);
+    const meter2 = { ...device, entry_id: "meter-2", title: "Garage meter" };
+
+    setupCallback?.({ state: "device_discovered", devices: [device, meter2] });
+    await panel.updateComplete;
+
+    const state = panel as unknown as { selectedDeviceId: string | null; topology: unknown };
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(state.topology).toBe(topology);
+    expect(text(panel)).toContain("Topology evidence");
+  });
+
   it("keeps the current Setup Device selection when Rescan returns the same compatible device", async () => {
     const snapshot = { state: "device_discovered", devices: [device] };
     const panel = await mount(makeHass({
@@ -1264,6 +1292,21 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
     expect(text(panel)).toContain("Topology evidence");
     expect(panel.shadowRoot?.querySelector("[data-action=continue]")).not.toBeNull();
+  });
+
+  it("clears inline topology and mismatch errors when Back is clicked", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    panel.showTopology({ addon_count: 0, board_count: 1, ct_count: 5, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
+      evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] });
+    await panel.updateComplete;
+
+    [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("button") ?? []]
+      .find((button) => button.textContent?.trim() === "Back")?.click();
+    await panel.updateComplete;
+
+    expect(text(panel)).not.toContain("Topology evidence");
+    expect(panel.shadowRoot?.querySelector("[role=alert]")).toBeNull();
   });
 
   it("skips gain calibration and completes the unchanged session without a restart", async () => {

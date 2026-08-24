@@ -1992,7 +1992,7 @@ class Rs extends ce {
       s && (this.addonCount = s.addon_count, this.connection = s.connection_type, this.refreshFirmwareOptions()), this.setup.devices.length && !this.selectedDeviceId && this.selectDevice(this.firstDeviceId(this.setup.devices)), await this.ownSubscription(t.subscribeSetup((o) => {
         if (!this.owns(e, t)) return;
         const r = o.devices.filter((a) => !this.setupDeviceIds.has(a.entry_id)).sort((a, c) => a.entry_id.localeCompare(c.entry_id));
-        this.setup = o, this.setupDeviceIds = new Set(o.devices.map((a) => a.entry_id)), this.step === "setup" && r.length && (this.selectDevice(r[0].entry_id), this.announcement = "CircuitSetup energy meter discovered."), this.requestUpdate();
+        this.setup = o, this.setupDeviceIds = new Set(o.devices.map((a) => a.entry_id)), this.step === "setup" && !this.topology && r.length && (this.selectDevice(r[0].entry_id), this.announcement = "CircuitSetup energy meter discovered."), this.requestUpdate();
       }), e, t), this.transaction && await this.subscribeTransaction(e), this.session && this.session.state !== "cancelled" && await this.subscribeSession(e);
     } catch (i) {
       this.owns(e, t) && this.fail(i, "Setup status could not be loaded.");
@@ -2652,7 +2652,9 @@ class Rs extends ce {
       ${this.topology ? Es(
       this.topology,
       this.selectedProjectVersion(),
-      () => this.selectDevice(null),
+      () => {
+        this.selectDevice(null), this.navigate("setup");
+      },
       () => {
         this.setup?.devices.find((e) => e.entry_id === this.selectedDeviceId)?.configuration ? this.loadInventory() : this.startSession();
       },
