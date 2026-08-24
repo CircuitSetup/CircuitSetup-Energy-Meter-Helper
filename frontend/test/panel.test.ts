@@ -1426,6 +1426,24 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("[role=alert]")).toBeNull();
   });
 
+  it("shows stale handle guidance when configuring a changed device", async () => {
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "get_topology") throw Object.assign(new Error("stale"), { code: "stale_handle" });
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=configure-device]")?.click();
+    await tick(); await panel.updateComplete;
+
+    expect(text(panel)).toContain("The selected device changed or is no longer available. Rescan and try again.");
+    expect(text(panel)).not.toContain("This confirmation expired");
+  });
+
   it("skips gain calibration and completes the unchanged session without a restart", async () => {
     const sent: Array<Record<string, unknown>> = [];
     const hass: HomeAssistant = {

@@ -1144,8 +1144,10 @@ def _send_safe_error(
         code, message = "capability_unavailable", "This capability is not available"
     elif isinstance(error, ApiFailure):
         code, message = error.code, error.safe_message
-    elif isinstance(error, StaleConfirmation | WorkflowHandleError):
+    elif isinstance(error, StaleConfirmation):
         code, message = "stale_confirmation", "The confirmation is stale or invalid"
+    elif isinstance(error, WorkflowHandleError):
+        code, message = "stale_handle", "The selected device changed or is no longer available"
     elif isinstance(error, WorkflowCapabilityUnavailable):
         code, message = "capability_unavailable", "This capability is not available"
     elif isinstance(error, KeyError | ResourceNotFound):

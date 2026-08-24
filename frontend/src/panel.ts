@@ -1166,7 +1166,12 @@ export class CircuitSetupPanel extends LitElement {
     } catch (error) {
       if (!isCurrent()) return;
       const code = (error as WsError).code;
-      this.fail(error, code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : fallback);
+      const message = code === "stale_confirmation"
+        ? "This confirmation expired. Reload live data and review again."
+        : code === "stale_handle"
+          ? "The selected device changed or is no longer available. Rescan and try again."
+          : fallback;
+      this.fail(error, message);
     }
     if (isCurrent()) this.requestUpdate();
   }

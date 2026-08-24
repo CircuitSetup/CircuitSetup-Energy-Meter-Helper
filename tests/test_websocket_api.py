@@ -72,6 +72,8 @@ from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
     ALL_COMMANDS,
     MUTATION_COMMANDS,
     EntryWebsocketController,
+    StaleConfirmation,
+    _send_safe_error,
     _schema,
     sanitize_payload,
 )
@@ -581,6 +583,21 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
     }:
         base["session_id"] = "session"
     return base
+
+
+def test_stale_confirmation_and_workflow_handle_use_distinct_public_codes() -> None:
+    confirmation = FakeConnection()
+    handle = FakeConnection()
+
+    _send_safe_error(confirmation, 1, StaleConfirmation())
+    _send_safe_error(handle, 2, WorkflowHandleError("device is not owned"))
+
+    assert confirmation.errors == [
+        (1, "stale_confirmation", "The confirmation is stale or invalid")
+    ]
+    assert handle.errors == [
+        (2, "stale_handle", "The selected device changed or is no longer available")
+    ]
 
 
 def _assert_browser_safe(value: Any) -> None:
@@ -2477,8 +2494,8 @@ def test_verified_session_cannot_be_reopened_through_public_routes(
         await _invoke(hass, connection, complete)
 
         assert connection.errors == [
-            (1, "stale_confirmation", "The confirmation is stale or invalid"),
-            (2, "stale_confirmation", "The confirmation is stale or invalid"),
+            (1, "stale_handle", "The selected device changed or is no longer available"),
+            (2, "stale_handle", "The selected device changed or is no longer available"),
         ]
         assert connection.results[-1] == (3, sanitize_payload(terminal))
         assert events == []
