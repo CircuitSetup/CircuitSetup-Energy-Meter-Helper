@@ -90,6 +90,8 @@ describe("ESP Web Tools installer", () => {
     const installer = root.querySelector<HTMLElement & { manifest: string }>("esp-web-install-button");
     expect(root.querySelectorAll("esp-web-install-button")).toHaveLength(1);
     expect(installer?.manifest).toBe(manifest);
+    expect(root.textContent).toContain("6chan_energy_meter_main_board · ESPHome 2026.8.0");
+    expect(root.textContent).not.toContain("https://");
     expect(installer?.querySelector<HTMLButtonElement>('[slot="activate"]')?.getAttribute("aria-label")).toBe("Install firmware");
     expect(installer?.querySelector('[slot="unsupported"]')?.textContent).toContain("supported Chromium browser");
     expect(installer?.querySelector('[slot="not-allowed"]')?.textContent).toContain("HTTPS or localhost");
@@ -300,6 +302,20 @@ describe("CircuitSetup panel", () => {
       [input.getAttribute("name"), input.getAttribute("aria-label"), input.getAttribute("autocomplete"), input.getAttribute("data-testid")]
         .some((value) => /ssid|network password|wifi password|passphrase/i.test(value ?? "")))).toBe(false);
     expect(panel.shadowRoot?.querySelector("details")).toBeNull();
+    const setupOrder = [
+      panel.shadowRoot?.querySelector('[name="addon-count"]')?.closest("fieldset"),
+      panel.shadowRoot?.querySelector('[name="connection-type"]')?.closest("fieldset"),
+      panel.shadowRoot?.querySelector('[aria-labelledby="jumper-heading"]'),
+      panel.shadowRoot?.querySelector('[data-action="firmware-version"]'),
+      panel.shadowRoot?.querySelector("esp-web-install-button"),
+      [...panel.shadowRoot?.querySelectorAll(".info-band") ?? []].find((element) => element.textContent?.includes("Add to Home Assistant")),
+      panel.shadowRoot?.querySelector('[data-action="rescan"]'),
+    ];
+    const completeOrder = setupOrder.filter((element): element is Element => Boolean(element));
+    expect(completeOrder).toHaveLength(setupOrder.length);
+    expect(completeOrder.slice(1).every((element, index) => Boolean(
+      completeOrder[index]!.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ))).toBe(true);
     panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="6"]')?.click();
     await panel.updateComplete;
     expect(text(panel)).toContain("Add-on 6");

@@ -19,6 +19,7 @@ export function setupDeviceStep(
   adopt: (deviceId: string) => void,
   busyAction = "",
   discoverOnly = false,
+  firmwareCatalog: TemplateResult = html``,
 ): TemplateResult {
   return html`
     <section class="step-content setup-step" aria-labelledby="step-heading">
@@ -40,7 +41,6 @@ export function setupDeviceStep(
           <strong>No compatible device found</strong>
           <span>Check power and connection, then try again.</span>
         </div>`}
-        <button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>
       </section>
       ${discoverOnly ? "" : html`<hr />
       <h2>Set up a new device</h2>
@@ -78,11 +78,12 @@ export function setupDeviceStep(
           ${ADDON_PINS.slice(0, addonCount).map((pins, index) => html`<div><dt>Add-on ${index + 1}</dt><dd>${pins}</dd></div>`)}
         </dl>
       </section>
-      <p class="info-band">Use Web Serial in a supported Chromium browser and a USB data cable to install firmware.</p>
+      ${firmwareCatalog}
       <p class="info-band">${connection === "wifi"
-        ? "ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter over USB. This helper does not store or send those credentials to Home Assistant. Complete the ESP Web Tools network setup and Add to Home Assistant when offered."
-        : "Install firmware over USB, connect Ethernet and power, wait for an address, complete Add to Home Assistant, then return here. This helper continues when discovery reports your meter."}</p>
+        ? "Use a USB data cable. ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter. This helper does not store or send those credentials to Home Assistant. Complete the ESP Web Tools network setup and Add to Home Assistant when offered."
+        : "Use a USB data cable to install firmware, connect Ethernet and power, wait for an address, complete Add to Home Assistant, then return here. This helper continues when discovery reports your meter."}</p>
       `}
+      <button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>
     </section>
   `;
 }

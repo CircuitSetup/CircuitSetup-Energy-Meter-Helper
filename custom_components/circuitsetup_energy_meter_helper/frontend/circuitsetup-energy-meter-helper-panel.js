@@ -259,10 +259,10 @@ const bc = (s, t) => {
   let r, o = t === 2 ? "<svg>" : t === 3 ? "<math>" : "", a = xe;
   for (let n = 0; n < e; n++) {
     const l = s[n];
-    let c, d, h = -1, g = 0;
-    for (; g < l.length && (a.lastIndex = g, d = a.exec(l), d !== null); ) g = a.lastIndex, a === xe ? d[1] === "!--" ? a = Lr : d[1] !== void 0 ? a = Yr : d[2] !== void 0 ? (ya.test(d[2]) && (r = RegExp("</" + d[2], "g")), a = Vt) : d[3] !== void 0 && (a = Vt) : a === Vt ? d[0] === ">" ? (a = r ?? xe, h = -1) : d[1] === void 0 ? h = -2 : (h = a.lastIndex - d[2].length, c = d[1], a = d[3] === void 0 ? Vt : d[3] === '"' ? Kr : Nr) : a === Kr || a === Nr ? a = Vt : a === Lr || a === Yr ? a = xe : (a = Vt, r = void 0);
-    const A = a === Vt && s[n + 1].startsWith("/>") ? " " : "";
-    o += a === xe ? l + _c : h >= 0 ? (i.push(c), l.slice(0, h) + wa + l.slice(h) + Gt + A) : l + Gt + (h === -2 ? n : A);
+    let c, d, h = -1, A = 0;
+    for (; A < l.length && (a.lastIndex = A, d = a.exec(l), d !== null); ) A = a.lastIndex, a === xe ? d[1] === "!--" ? a = Lr : d[1] !== void 0 ? a = Yr : d[2] !== void 0 ? (ya.test(d[2]) && (r = RegExp("</" + d[2], "g")), a = Vt) : d[3] !== void 0 && (a = Vt) : a === Vt ? d[0] === ">" ? (a = r ?? xe, h = -1) : d[1] === void 0 ? h = -2 : (h = a.lastIndex - d[2].length, c = d[1], a = d[3] === void 0 ? Vt : d[3] === '"' ? Kr : Nr) : a === Kr || a === Nr ? a = Vt : a === Lr || a === Yr ? a = xe : (a = Vt, r = void 0);
+    const p = a === Vt && s[n + 1].startsWith("/>") ? " " : "";
+    o += a === xe ? l + _c : h >= 0 ? (i.push(c), l.slice(0, h) + wa + l.slice(h) + Gt + p) : l + Gt + (h === -2 ? n : p);
   }
   return [Ca(s, o + (s[e] || "<?>") + (t === 2 ? "</svg>" : t === 3 ? "</math>" : "")), i];
 };
@@ -279,15 +279,15 @@ let Ns = class Ba {
     for (; (r = te.nextNode()) !== null && l.length < n; ) {
       if (r.nodeType === 1) {
         if (r.hasAttributes()) for (const h of r.getAttributeNames()) if (h.endsWith(wa)) {
-          const g = d[a++], A = r.getAttribute(h).split(Gt), _ = /([.?@])?(.*)/.exec(g);
-          l.push({ type: 1, index: o, name: _[2], strings: A, ctor: _[1] === "." ? Cc : _[1] === "?" ? Bc : _[1] === "@" ? Ic : qi }), r.removeAttribute(h);
+          const A = d[a++], p = r.getAttribute(h).split(Gt), _ = /([.?@])?(.*)/.exec(A);
+          l.push({ type: 1, index: o, name: _[2], strings: p, ctor: _[1] === "." ? Cc : _[1] === "?" ? Bc : _[1] === "@" ? Ic : qi }), r.removeAttribute(h);
         } else h.startsWith(Gt) && (l.push({ type: 6, index: o }), r.removeAttribute(h));
         if (ya.test(r.tagName)) {
-          const h = r.textContent.split(Gt), g = h.length - 1;
-          if (g > 0) {
+          const h = r.textContent.split(Gt), A = h.length - 1;
+          if (A > 0) {
             r.textContent = Qi ? Qi.emptyScript : "";
-            for (let A = 0; A < g; A++) r.append(h[A], Ze()), te.nextNode(), l.push({ type: 2, index: ++o });
-            r.append(h[g], Ze());
+            for (let p = 0; p < A; p++) r.append(h[p], Ze()), te.nextNode(), l.push({ type: 2, index: ++o });
+            r.append(h[A], Ze());
           }
         }
       } else if (r.nodeType === 8) if (r.data === ba) l.push({ type: 2, index: o });
@@ -555,8 +555,8 @@ function qr(s, t) {
   const n = K(e.evidence, t);
   if (n.length < 1 || n.length > jr.size) throw new Error(`${t} response is invalid`);
   const l = n.map((c) => {
-    const d = H(c, t), h = V(d.source, jr, t), g = $(d.addon_count, t);
-    if (g < 0 || g > 6) throw new Error(`${t} response is invalid`);
+    const d = H(c, t), h = V(d.source, jr, t), A = $(d.addon_count, t);
+    if (A < 0 || A > 6) throw new Error(`${t} response is invalid`);
     return T(d.detail, t), h;
   });
   if (new Set(l).size !== l.length || !l.some((c) => Lc.has(c))) throw new Error(`${t} response is invalid`);
@@ -574,8 +574,8 @@ function jc(s, t) {
   i.forEach((a, n) => {
     const l = H(a, t), c = $(l.channel, t);
     T(l.name, t), $(l.raw_gain_ct, t), rt(l.reporting_multiplier, t), Ks(l.selected_model_id, t), ht(l.selection_verified_against_config, t), Ks(l.display_label, t);
-    const d = H(l.address, t), h = $(d.channel, t), g = $(d.board_index, t), A = $(d.group_index, t), _ = V(d.phase, Hi, t), m = n + 1;
-    if (c !== m || h !== m || g !== Math.floor(n / 6) || A !== Math.floor(n % 6 / 3) || _ !== ["A", "B", "C"][n % 3]) throw new Error(`${t} response is invalid`);
+    const d = H(l.address, t), h = $(d.channel, t), A = $(d.board_index, t), p = $(d.group_index, t), _ = V(d.phase, Hi, t), m = n + 1;
+    if (c !== m || h !== m || A !== Math.floor(n / 6) || p !== Math.floor(n % 6 / 3) || _ !== ["A", "B", "C"][n % 3]) throw new Error(`${t} response is invalid`);
   });
   const r = H(e.catalog, t);
   T(r.source_repository, t), T(r.source_ref, t), $(r.schema_version, t);
@@ -626,8 +626,8 @@ function Zr(s, t, e, i) {
   const l = n.map((c) => {
     const d = H(c, t), h = K(d.samples, t, 1).map((E) => rt(E, t));
     if (h.length !== 1) throw new Error(`${t} response is invalid`);
-    const g = rt(d.mean, t), A = rt(d.standard_deviation, t), _ = rt(d.range_percent, t), m = h.reduce((E, u) => E + u, 0) / h.length, f = Math.sqrt(h.reduce((E, u) => E + (u - m) ** 2, 0) / h.length), b = 100 * (Math.max(...h) - Math.min(...h)) / Math.abs(m);
-    if (!Ti(g, m) || !Ti(A, f) || !Ti(_, b)) throw new Error(`${t} response is invalid`);
+    const A = rt(d.mean, t), p = rt(d.standard_deviation, t), _ = rt(d.range_percent, t), m = h.reduce((E, u) => E + u, 0) / h.length, f = Math.sqrt(h.reduce((E, u) => E + (u - m) ** 2, 0) / h.length), b = 100 * (Math.max(...h) - Math.min(...h)) / Math.abs(m);
+    if (!Ti(A, m) || !Ti(p, f) || !Ti(_, b)) throw new Error(`${t} response is invalid`);
     return _;
   });
   if (a !== l.every((c) => c <= 1)) throw new Error(`${t} response is invalid`);
@@ -638,10 +638,10 @@ function Xr(s, t, e) {
   T(i.group_key, t), i.phase !== null && V(i.phase, Hi, t);
   const o = $(i.iteration, t), a = K(i.changed_channels, t, 3).map((_) => $(_, t)), n = K(i.before_values, t, 3), l = K(i.after_values, t, 3), c = K(i.error_percent_values, t, 3);
   for (const _ of [n, l, c]) _.forEach((m) => rt(m, t));
-  const d = e.target === "voltage" ? e.groupKey : Ar(e.references[0].channel), h = e.target === "voltage" ? Da(e.groupKey) : e.references.map((_) => _.channel), g = e.target === "current" && e.references.length === 1 ? ["A", "B", "C"][(e.references[0].channel - 1) % 3] : null, A = ht(i.retry_allowed, t);
-  if (e.target === "voltage" && (!Number.isFinite(e.reference) || e.reference <= 0) || e.target === "current" && e.references.some((_) => !Number.isFinite(_.reference) || _.reference <= 0 || !Number.isFinite(_.rawReference) || _.rawReference <= 0) || ![1, 2, 3].includes(a.length) || r !== "indeterminate" && n.length !== a.length || new Set(a).size !== a.length || a.some((_) => _ < 1 || _ > 42) || o < 1 || o > 3 || i.group_key !== d || i.phase !== g || a.length !== h.length || a.some((_, m) => _ !== h[m]) || (r === "indeterminate" ? l.length !== 0 || c.length !== 0 : l.length !== a.length || c.length !== a.length)) throw new Error(`${t} response is invalid`);
+  const d = e.target === "voltage" ? e.groupKey : Ar(e.references[0].channel), h = e.target === "voltage" ? Da(e.groupKey) : e.references.map((_) => _.channel), A = e.target === "current" && e.references.length === 1 ? ["A", "B", "C"][(e.references[0].channel - 1) % 3] : null, p = ht(i.retry_allowed, t);
+  if (e.target === "voltage" && (!Number.isFinite(e.reference) || e.reference <= 0) || e.target === "current" && e.references.some((_) => !Number.isFinite(_.reference) || _.reference <= 0 || !Number.isFinite(_.rawReference) || _.rawReference <= 0) || ![1, 2, 3].includes(a.length) || r !== "indeterminate" && n.length !== a.length || new Set(a).size !== a.length || a.some((_) => _ < 1 || _ > 42) || o < 1 || o > 3 || i.group_key !== d || i.phase !== A || a.length !== h.length || a.some((_, m) => _ !== h[m]) || (r === "indeterminate" ? l.length !== 0 || c.length !== 0 : l.length !== a.length || c.length !== a.length)) throw new Error(`${t} response is invalid`);
   if (r === "indeterminate") {
-    if (i.gain_evidence !== null || A) throw new Error(`${t} response is invalid`);
+    if (i.gain_evidence !== null || p) throw new Error(`${t} response is invalid`);
     i.restore_evidence != null && H(i.restore_evidence, t);
   } else {
     if (i.gain_evidence == null || i.restore_evidence !== null) throw new Error(`${t} response is invalid`);
@@ -649,7 +649,7 @@ function Xr(s, t, e) {
     const _ = e.target === "voltage" ? l.map(() => e.reference) : e.references.map((b) => b.reference), m = l.map((b, E) => 100 * Math.abs(rt(b, t) - _[E]) / _[E]);
     if (c.some((b, E) => rt(b, t) < 0 || !Ti(rt(b, t), m[E]))) throw new Error(`${t} response is invalid`);
     const f = Math.max(...m) > 1;
-    if (r === "result_outside_tolerance" !== f || A !== (f && o < 3)) throw new Error(`${t} response is invalid`);
+    if (r === "result_outside_tolerance" !== f || p !== (f && o < 3)) throw new Error(`${t} response is invalid`);
   }
   return s;
 }
@@ -660,11 +660,11 @@ function Ar(s) {
 function Wc(s, t, e) {
   const i = H(s, t), r = $(i.connection_generation, t), o = $(i.operation_sequence, t), a = e.target === "voltage" ? e.groupKey : Ar(e.references[0].channel), n = a.startsWith("main_") ? `meter_main${a.slice(-1)}` : a;
   if (r < 1 || o < 1 || T(i.instance_id, t) !== n) throw new Error(`${t} response is invalid`);
-  const l = e.target === "current" ? new Map(e.references.map((g) => [["A", "B", "C"][(g.channel - 1) % 3], g.rawReference])) : /* @__PURE__ */ new Map(), c = K(i.phases, t, 3);
+  const l = e.target === "current" ? new Map(e.references.map((A) => [["A", "B", "C"][(A.channel - 1) % 3], A.rawReference])) : /* @__PURE__ */ new Map(), c = K(i.phases, t, 3);
   if (c.length !== 3) throw new Error(`${t} response is invalid`);
-  c.forEach((g, A) => {
-    const _ = H(g, t), m = V(_.phase, Hi, t);
-    if (m !== ["A", "B", "C"][A]) throw new Error(`${t} response is invalid`);
+  c.forEach((A, p) => {
+    const _ = H(A, t), m = V(_.phase, Hi, t);
+    if (m !== ["A", "B", "C"][p]) throw new Error(`${t} response is invalid`);
     rt(_.measured_voltage, t), rt(_.measured_current, t);
     const f = rt(_.reference_voltage, t), b = rt(_.reference_current, t), E = $(_.old_voltage_gain, t), u = $(_.new_voltage_gain, t), I = $(_.old_current_gain, t), D = $(_.new_current_gain, t);
     if ([E, u, I, D].some((w) => w < 1 || w > 65535)) throw new Error(`${t} response is invalid`);
@@ -676,9 +676,9 @@ function Wc(s, t, e) {
     }
   });
   const d = K(i.register_mismatch_phases, t, 3);
-  d.forEach((g) => V(g, Hi, t));
+  d.forEach((A) => V(A, Hi, t));
   const h = K(i.matching_lines, t, 100);
-  if (h.length === 0 || h.some((g) => typeof g != "string") || ht(i.flash_saved, t) !== !0 || d.length !== 0 || ht(i.calibration_disabled, t) !== !1) throw new Error(`${t} response is invalid`);
+  if (h.length === 0 || h.some((A) => typeof A != "string") || ht(i.flash_saved, t) !== !0 || d.length !== 0 || ht(i.calibration_disabled, t) !== !1) throw new Error(`${t} response is invalid`);
 }
 function Da(s) {
   const t = /^(?:main_([12])|addon([1-6])_([12]))$/.exec(s);
@@ -688,7 +688,7 @@ function Da(s) {
 }
 function zs(s, t, e) {
   const i = H(s, t);
-  for (const A of ["mac", "topology_project_name", "topology_voltage_layout", "verification_id"]) T(i[A], t);
+  for (const p of ["mac", "topology_project_name", "topology_voltage_layout", "verification_id"]) T(i[p], t);
   const r = $(i.topology_addon_count, t);
   V(i.topology_connection_type, hr, t);
   const o = $(i.connection_generation, t), a = V(i.source_authority, /* @__PURE__ */ new Set(["saved_flash", "configuration"]), t), n = ht(i.source_handoff_available, t), l = ht(i.source_handoff_firmware_installed, t);
@@ -698,12 +698,12 @@ function zs(s, t, e) {
     throw new Error(`${t} response is invalid`);
   if (i.config_filename === null != (i.config_sha256 === null) || n && (!c || l || i.source_handoff_transaction_id !== null || a !== "saved_flash") || !n && c && i.source_handoff_transaction_id === null || l && (!c || i.source_handoff_transaction_id === null) || a === "configuration" && (!l || n)) throw new Error(`${t} response is invalid`);
   if (!Nc.test(i.mac) || !Wr.test(i.verification_id) || o < 1 || i.source_handoff_transaction_id !== null && !Wr.test(i.source_handoff_transaction_id) || r !== e.addon_count || i.topology_project_name !== e.project_name || i.topology_connection_type !== e.connection_type || i.topology_voltage_layout !== e.voltage_layout) throw new Error(`${t} response is invalid`);
-  const d = K(i.groups, t, 14), h = /* @__PURE__ */ new Set(["meter_main1", "meter_main2", ...Array.from({ length: r }, (A, _) => [`addon${_ + 1}_1`, `addon${_ + 1}_2`]).flat()]), g = /* @__PURE__ */ new Set();
+  const d = K(i.groups, t, 14), h = /* @__PURE__ */ new Set(["meter_main1", "meter_main2", ...Array.from({ length: r }, (p, _) => [`addon${_ + 1}_1`, `addon${_ + 1}_2`]).flat()]), A = /* @__PURE__ */ new Set();
   if (d.length < 1) throw new Error(`${t} response is invalid`);
-  return d.forEach((A) => {
-    const _ = H(A, t), m = T(_.instance_id, t);
-    if (!h.has(m) || g.has(m)) throw new Error(`${t} response is invalid`);
-    g.add(m);
+  return d.forEach((p) => {
+    const _ = H(p, t), m = T(_.instance_id, t);
+    if (!h.has(m) || A.has(m)) throw new Error(`${t} response is invalid`);
+    A.add(m);
     const f = K(_.phase_gains, t, 3);
     if (f.length !== 3) throw new Error(`${t} response is invalid`);
     f.forEach((b) => {
@@ -878,11 +878,11 @@ function Xc(s, t, e, i, r, o, a, n = !1, l = !1) {
   return B`
     <section class="step-content ct-step" aria-labelledby="step-heading">
       <div class="board-tabs" role="tablist" aria-label="Meter boards" aria-orientation="horizontal">
-        ${Array.from({ length: c }, (h, g) => B`
-          <button role="tab" id=${`board-tab-${g}`} data-board-tab=${g} aria-selected=${g === t}
-            aria-controls="board-panel" tabindex=${g === t ? "0" : "-1"}
-            @keydown=${(A) => pr(A, g)}
-            @click=${() => i(g)}>${g === 0 ? "Main Board" : `Add-on ${g}`}</button>
+        ${Array.from({ length: c }, (h, A) => B`
+          <button role="tab" id=${`board-tab-${A}`} data-board-tab=${A} aria-selected=${A === t}
+            aria-controls="board-panel" tabindex=${A === t ? "0" : "-1"}
+            @keydown=${(p) => pr(p, A)}
+            @click=${() => i(A)}>${A === 0 ? "Main Board" : `Add-on ${A}`}</button>
         `)}
       </div>
       <p>Configure each CT on this board. Select its model, adjust the multiplier, and review the resulting gain.</p>
@@ -894,17 +894,17 @@ function Xc(s, t, e, i, r, o, a, n = !1, l = !1) {
         </div>
         <div class="ct-window" aria-label="Current transformers">
           ${d.map((h) => {
-    const g = e.get(h.channel) ?? {
+    const A = e.get(h.channel) ?? {
       name: h.name,
       modelId: h.selected_model_id ?? "",
       multiplier: h.reporting_multiplier,
       burdenAcknowledged: !1,
       expanded: !1
-    }, A = s.catalog.presets.find((f) => f.model_id === g.modelId), _ = Ma(A, g.multiplier, g.modelId === "custom" ? g.customGainCt : void 0), m = gr(h, g);
+    }, p = s.catalog.presets.find((f) => f.model_id === A.modelId), _ = Ma(p, A.multiplier, A.modelId === "custom" ? A.customGainCt : void 0), m = gr(h, A);
     return B`
               <div class="ct-row" data-ct-row data-ct-group=${h.address.group_index} role="row" aria-rowindex=${h.channel + 1} aria-label=${`CT${h.channel}`}>
                 <strong class="ct-index" role="cell">CT${h.channel}</strong>
-                <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${h.channel} name`} .value=${g.name}
+                <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${h.channel} name`} .value=${A.name}
                   @input=${(f) => r(h.channel, { name: f.target.value })} /></label>
                 <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${h.channel} model`} ?disabled=${n}
                   @change=${(f) => {
@@ -915,41 +915,41 @@ function Xc(s, t, e, i, r, o, a, n = !1, l = !1) {
         expanded: !0
       });
     }}>
-                  <option value="" ?selected=${g.modelId === ""}>Choose model</option>
-                  ${s.catalog.presets.map((f) => B`<option value=${f.model_id} ?selected=${g.modelId === f.model_id}>${f.label}</option>`)}
-                  <option value="custom" ?selected=${g.modelId === "custom"}>Custom</option>
+                  <option value="" ?selected=${A.modelId === ""}>Choose model</option>
+                  ${s.catalog.presets.map((f) => B`<option value=${f.model_id} ?selected=${A.modelId === f.model_id}>${f.label}</option>`)}
+                  <option value="custom" ?selected=${A.modelId === "custom"}>Custom</option>
                 </select></label>
                 <span role="cell"><span class="mobile-label">Current gain</span>${h.raw_gain_ct}</span>
                 <label role="cell"><span class="mobile-label">Multiplier</span><input type="number" min="0.001" step="0.001" aria-label=${`CT${h.channel} multiplier`} ?disabled=${n}
-                  .value=${String(g.multiplier)} @input=${(f) => r(h.channel, { multiplier: Number(f.target.value) })} /></label>
+                  .value=${String(A.multiplier)} @input=${(f) => r(h.channel, { multiplier: Number(f.target.value) })} /></label>
                 <span role="cell"><span class="mobile-label">Resulting gain</span>${_ ?? "—"}</span>
-                <span role="cell"><span class="mobile-label">Burden</span>${A?.requires_burden_jumper_cut ? "Check jumper" : "—"}</span>
-                <button role="cell" class="row-toggle" aria-expanded=${g.expanded} @click=${() => r(h.channel, { expanded: !g.expanded })}>
-                  ${g.modelId ? m ? "Changed" : "OK" : "Choose model"}
+                <span role="cell"><span class="mobile-label">Burden</span>${p?.requires_burden_jumper_cut ? "Check jumper" : "—"}</span>
+                <button role="cell" class="row-toggle" aria-expanded=${A.expanded} @click=${() => r(h.channel, { expanded: !A.expanded })}>
+                  ${A.modelId ? m ? "Changed" : "OK" : "Choose model"}
                 </button>
               </div>
-              ${g.modelId === "custom" ? B`<div class="ct-detail custom-fields">
+              ${A.modelId === "custom" ? B`<div class="ct-detail custom-fields">
                 <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${h.channel} custom gain`}
                   ?disabled=${n}
-                  .value=${g.customGainCt === void 0 ? "" : String(g.customGainCt)}
+                  .value=${A.customGainCt === void 0 ? "" : String(A.customGainCt)}
                   @input=${(f) => r(h.channel, { customGainCt: Number(f.target.value) })} /></label>
-                <label>Custom label <input maxlength="64" aria-label=${`CT${h.channel} custom label`} ?disabled=${n} .value=${g.customLabel ?? ""}
+                <label>Custom label <input maxlength="64" aria-label=${`CT${h.channel} custom label`} ?disabled=${n} .value=${A.customLabel ?? ""}
                   @input=${(f) => r(h.channel, { customLabel: f.target.value })} /></label>
               </div>` : O}
-              ${g.modelId === "custom" || A?.requires_burden_jumper_cut ? B`<div class="warning-band">
+              ${A.modelId === "custom" || p?.requires_burden_jumper_cut ? B`<div class="warning-band">
                 <label class="check-row"><input type="checkbox" aria-label=${`CT${h.channel} burden output acknowledgement`}
                   ?disabled=${n}
-                  .checked=${g.burdenAcknowledged}
+                  .checked=${A.burdenAcknowledged}
                   @change=${(f) => r(h.channel, { burdenAcknowledged: f.target.checked })} />
                   I checked the burden-output requirement for CT${h.channel}</label>
               </div>` : O}
-              ${A && A.rated_current_a > 65.535 && g.multiplier === 1 ? B`<div class="warning-band" role="status">CT${h.channel}: rated current exceeds the unscaled 65.535 A register range.</div>` : O}
-              ${g.expanded && A ? B`
+              ${p && p.rated_current_a > 65.535 && A.multiplier === 1 ? B`<div class="warning-band" role="status">CT${h.channel}: rated current exceeds the unscaled 65.535 A register range.</div>` : O}
+              ${A.expanded && p ? B`
                 <dl class="ct-detail">
-                  <div><dt>Rated current</dt><dd>${A.rated_current_a} A</dd></div>
-                  <div><dt>Output</dt><dd>${A.secondary}</dd></div>
-                  <div><dt>Official default gain</dt><dd>${A.default_gain_ct ?? "Custom"}</dd></div>
-                  <div><dt>Burden note</dt><dd>${A.notes || (A.requires_burden_jumper_cut ? "Review burden jumper." : "No special burden change.")}</dd></div>
+                  <div><dt>Rated current</dt><dd>${p.rated_current_a} A</dd></div>
+                  <div><dt>Output</dt><dd>${p.secondary}</dd></div>
+                  <div><dt>Official default gain</dt><dd>${p.default_gain_ct ?? "Custom"}</dd></div>
+                  <div><dt>Burden note</dt><dd>${p.notes || (p.requires_burden_jumper_cut ? "Review burden jumper." : "No special burden change.")}</dd></div>
                 </dl>
               ` : O}
             `;
@@ -1038,7 +1038,7 @@ function fr(s) {
       </tbody></table><p>Saved in flash: ${s.gain_evidence.flash_saved ? "Yes" : "No"}</p>` : B`<p>Gain evidence unavailable.</p>`}
   </section>` : O;
 }
-function id(s, t, e, i, r, o, a, n, l, c, d, h, g, A, _) {
+function id(s, t, e, i, r, o, a, n, l, c, d, h, A, p, _) {
   const m = s?.ct_count ?? t?.channels.length ?? 6, f = Math.floor((i - 1) / 6), E = Math.floor((i - 1) / 3) * 3 + 1, u = Array.from({ length: 3 }, (x, S) => E + S).filter((x) => x <= m), I = u.filter((x) => (r.get(x) ?? 0) > 0), D = f === 0 ? ["meter_main1", "meter_main2"] : [`addon${f}_1`, `addon${f}_2`], w = t === null, M = o !== null && Number.isFinite(o) && o >= 1e-3 && o <= 1e3, R = I.length > 0 && (!w || M);
   return B`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
@@ -1072,13 +1072,13 @@ function id(s, t, e, i, r, o, a, n, l, c, d, h, g, A, _) {
     const S = Number(x.target.value);
     d(Number.isFinite(S) && S >= 1e-3 && S <= 1e3 ? S : null);
   }} /></label><p>Confirm the meter's reporting multiplier before runtime-only current calibration.</p>` : ""}
-        <button class="primary" @click=${g} ?disabled=${!R || !a?.stable || (n?.iteration ?? 0) >= 3 || !!(n && !n.retry_allowed && n.iteration > 0)}>${n?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button>
+        <button class="primary" @click=${A} ?disabled=${!R || !a?.stable || (n?.iteration ?? 0) >= 3 || !!(n && !n.retry_allowed && n.iteration > 0)}>${n?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button>
       </div>
       <div class="stability-line"><button class="secondary" @click=${h} ?disabled=${!R}>Check stability</button></div>
       ${a ? B`<div class=${a.stable ? "success-band" : "warning-band"} role="status">${a.stable ? "Live data loaded" : "Live data is unavailable"}</div>` : ""}
       ${ur(a, I.map((x) => `CT${x}`))}
       ${fr(n)}
-      ${n?.state.includes("indeterminate") ? B`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${A}>Reconnect and inspect</button><button class="danger" @click=${_}>Cancel session</button></aside>` : ""}
+      ${n?.state.includes("indeterminate") ? B`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${p}>Reconnect and inspect</button><button class="danger" @click=${_}>Cancel session</button></aside>` : ""}
       </div>
     </section>
   `;
@@ -1256,6 +1256,7 @@ function fd(s) {
   try {
     const t = ud(s.productId, s.version);
     return B`
+      <p class="firmware-summary">${s.productId} · ESPHome ${s.version}</p>
       <esp-web-install-button class="esp-web-installer" .manifest=${t}>
         <button slot="activate" aria-label="Install firmware">Install firmware</button>
         <p slot="unsupported">Use a supported Chromium browser with Web Serial to install firmware.</p>
@@ -1312,28 +1313,27 @@ const eo = [
   ["ethernet_lilygo", "LilyGO Ethernet"],
   ["ethernet_waveshare", "Waveshare Ethernet"]
 ], Ed = ["(0, 16)", "(27, 17)", "(2, 21)", "(13, 22)", "(14, 25)", "(15, 26)"];
-function io(s, t, e, i, r, o, a, n, l = "", c = !1) {
+function io(s, t, e, i, r, o, a, n, l = "", c = !1, d = B``) {
   return B`
     <section class="step-content setup-step" aria-labelledby="step-heading">
       <section aria-labelledby="existing-device-heading">
         <h2 id="existing-device-heading">Configure an existing device</h2>
         <p>Select a compatible meter already connected to Home Assistant.</p>
         ${s?.devices.length ? B`<div class="meter-list">
-          ${s.devices.map((d) => B`
+          ${s.devices.map((h) => B`
             <div class="meter-row">
-              <span><strong>${d.title}</strong><small>${d.project_name} · ${d.project_version ?? "version unavailable"}</small></span>
-              <span>Device Builder: ${d.configuration ? "Yes" : d.importable ? "Yes — import available" : "No"}</span>
-              ${d.importable && !d.configuration ? B`<button class="secondary" ?disabled=${!!l}
-                @click=${() => n(d.entry_id)}>Import</button>` : ""}
+              <span><strong>${h.title}</strong><small>${h.project_name} · ${h.project_version ?? "version unavailable"}</small></span>
+              <span>Device Builder: ${h.configuration ? "Yes" : h.importable ? "Yes — import available" : "No"}</span>
+              ${h.importable && !h.configuration ? B`<button class="secondary" ?disabled=${!!l}
+                @click=${() => n(h.entry_id)}>Import</button>` : ""}
               <button class="primary" data-action="configure-device" ?disabled=${!!l}
-                @click=${() => a(d.entry_id)}>${l === `topology:${d.entry_id}` ? "Loading topology…" : "Configure"}</button>
+                @click=${() => a(h.entry_id)}>${l === `topology:${h.entry_id}` ? "Loading topology…" : "Configure"}</button>
             </div>
           `)}
         </div>` : B`<div class="error-panel passive" role="status">
           <strong>No compatible device found</strong>
           <span>Check power and connection, then try again.</span>
         </div>`}
-        <button class="rescan" data-action="rescan" ?disabled=${!!l} @click=${o}>${l === "rescan" ? "Rescanning…" : "Rescan for device"}</button>
       </section>
       ${c ? "" : B`<hr />
       <h2>Set up a new device</h2>
@@ -1341,11 +1341,11 @@ function io(s, t, e, i, r, o, a, n, l = "", c = !1) {
         <legend>Add-on boards</legend>
         <p>Select how many add-on boards are attached to your energy meter.</p>
         <div class="addon-options">
-          ${Array.from({ length: 7 }, (d, h) => B`
-            <label class=${h === t ? "selected" : ""}>
-              <input name="addon-count" type="radio" .value=${String(h)}
-                .checked=${h === t} @change=${() => i(h)} />
-              <span>${h}</span>
+          ${Array.from({ length: 7 }, (h, A) => B`
+            <label class=${A === t ? "selected" : ""}>
+              <input name="addon-count" type="radio" .value=${String(A)}
+                .checked=${A === t} @change=${() => i(A)} />
+              <span>${A}</span>
             </label>
           `)}
         </div>
@@ -1354,11 +1354,11 @@ function io(s, t, e, i, r, o, a, n, l = "", c = !1) {
         <legend>Connection</legend>
         <p>Choose how your device will connect to your network.</p>
         <div class="connection-options">
-          ${eo.map(([d, h]) => B`
-            <label class=${d === e ? "selected" : ""}>
-              <input name="connection-type" type="radio" .value=${d}
-                .checked=${d === e} @change=${() => r(d)} />
-              <span>${h}</span>
+          ${eo.map(([h, A]) => B`
+            <label class=${h === e ? "selected" : ""}>
+              <input name="connection-type" type="radio" .value=${h}
+                .checked=${h === e} @change=${() => r(h)} />
+              <span>${A}</span>
             </label>
           `)}
         </div>
@@ -1367,13 +1367,14 @@ function io(s, t, e, i, r, o, a, n, l = "", c = !1) {
         <h2 id="jumper-heading">Jumper summary</h2>
         <dl class="summary-band">
           <div><dt>Add-on boards</dt><dd>${t}</dd></div>
-          <div><dt>Connection</dt><dd>${eo.find(([d]) => d === e)?.[1]}</dd></div>
-          ${Ed.slice(0, t).map((d, h) => B`<div><dt>Add-on ${h + 1}</dt><dd>${d}</dd></div>`)}
+          <div><dt>Connection</dt><dd>${eo.find(([h]) => h === e)?.[1]}</dd></div>
+          ${Ed.slice(0, t).map((h, A) => B`<div><dt>Add-on ${A + 1}</dt><dd>${h}</dd></div>`)}
         </dl>
       </section>
-      <p class="info-band">Use Web Serial in a supported Chromium browser and a USB data cable to install firmware.</p>
-      <p class="info-band">${e === "wifi" ? "ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter over USB. This helper does not store or send those credentials to Home Assistant. Complete the ESP Web Tools network setup and Add to Home Assistant when offered." : "Install firmware over USB, connect Ethernet and power, wait for an address, complete Add to Home Assistant, then return here. This helper continues when discovery reports your meter."}</p>
+      ${d}
+      <p class="info-band">${e === "wifi" ? "Use a USB data cable. ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter. This helper does not store or send those credentials to Home Assistant. Complete the ESP Web Tools network setup and Add to Home Assistant when offered." : "Use a USB data cable to install firmware, connect Ethernet and power, wait for an address, complete Add to Home Assistant, then return here. This helper continues when discovery reports your meter."}</p>
       `}
+      <button class="rescan" data-action="rescan" ?disabled=${!!l} @click=${o}>${l === "rescan" ? "Rescanning…" : "Rescan for device"}</button>
     </section>
   `;
 }
@@ -1442,8 +1443,8 @@ function bd(s, t, e, i, r = !1, o = !1) {
     </section>
   `;
 }
-function yd(s, t, e, i, r, o, a, n, l, c, d, h, g) {
-  const A = s?.voltage_layout === "two_voltages" ? 2 : 1, _ = i.slice(0, A).every((f) => Number.isFinite(f) && f > 0), m = e === 0 ? ["meter_main1", "meter_main2"] : [`addon${e}_1`, `addon${e}_2`];
+function yd(s, t, e, i, r, o, a, n, l, c, d, h, A) {
+  const p = s?.voltage_layout === "two_voltages" ? 2 : 1, _ = i.slice(0, p).every((f) => Number.isFinite(f) && f > 0), m = e === 0 ? ["meter_main1", "meter_main2"] : [`addon${e}_1`, `addon${e}_2`];
   return B`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       ${Ta(_, r, o)}
@@ -1458,7 +1459,7 @@ function yd(s, t, e, i, r, o, a, n, l, c, d, h, g) {
       <h2>Calibrate Voltage</h2>
       ${ka(t, m)}
       <div class="reference-block">
-        ${Array.from({ length: A }, (f, b) => B`<label>${A === 1 ? "Trusted instrument reference" : `Voltage ${b + 1} trusted reference`}
+        ${Array.from({ length: p }, (f, b) => B`<label>${p === 1 ? "Trusted instrument reference" : `Voltage ${b + 1} trusted reference`}
           <input type="number" min="0.01" step="0.01" .value=${i[b] ? String(i[b]) : ""}
             @input=${(E) => l(b, Number(E.target.value))} /></label>`)}
         <button class="primary" @click=${d} ?disabled=${a || !_ || !r?.stable || !!(o && !o.retry_allowed && o.iteration > 0)}>${o?.retry_allowed ? "Retry voltage calibration" : "Calibrate voltage"}</button>
@@ -1467,7 +1468,7 @@ function yd(s, t, e, i, r, o, a, n, l, c, d, h, g) {
       ${r ? B`<div class=${r.stable ? "success-band" : "warning-band"} role="status">${r.stable ? "Live data loaded" : "Live data is unavailable"}</div>` : ""}
       ${ur(r)}
       ${fr(o)}
-      ${o?.state === "indeterminate" ? B`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${h}>Reconnect and inspect</button><button class="danger" @click=${g}>Cancel session</button></aside>` : ""}
+      ${o?.state === "indeterminate" ? B`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${h}>Reconnect and inspect</button><button class="danger" @click=${A}>Cancel session</button></aside>` : ""}
       </div>
     </section>
   `;
@@ -2094,13 +2095,13 @@ class Bd extends Ge {
       await this.run(
         async () => {
           if (t === "voltage") {
-            const d = await e.calibrateVoltage(r, a.map((g, A) => ({
-              group_key: g,
-              reference: this.voltageReferences[this.topology?.voltage_layout === "two_voltages" ? A : 0]
+            const d = await e.calibrateVoltage(r, a.map((A, p) => ({
+              group_key: A,
+              reference: this.voltageReferences[this.topology?.voltage_layout === "two_voltages" ? p : 0]
             })), !0);
             if (!this.ownsOperation(o, e, i) || this.session?.session_id !== r) return;
             const h = new Map(this.calibrationByTarget);
-            d.forEach((g) => h.set(`voltage:${g.group_key}`, g)), this.calibrationByTarget = h, this.announcement = "Calibrated both voltage chips on this board.";
+            d.forEach((A) => h.set(`voltage:${A.group_key}`, A)), this.calibrationByTarget = h, this.announcement = "Calibrated both voltage chips on this board.";
             return;
           }
           const l = await e.calibrateCurrent(
@@ -2220,7 +2221,7 @@ class Bd extends Ge {
     this.error = e, this.announcement = e, this.requestUpdate();
   }
   stepBody() {
-    return this.step === "setup" ? B`${io(
+    return this.step === "setup" ? io(
       this.setup,
       this.addonCount,
       this.connection,
@@ -2239,9 +2240,10 @@ class Bd extends Ge {
       (t) => {
         this.adopt(t);
       },
-      this.pendingAction
-    )}
-      ${this.firmwareCatalog()}` : this.step === "discover" ? io(
+      this.pendingAction,
+      !1,
+      this.firmwareCatalog()
+    ) : this.step === "discover" ? io(
       this.setup,
       this.addonCount,
       this.connection,
@@ -2451,7 +2453,7 @@ class Bd extends Ge {
   }
 }
 customElements.get("circuitsetup-energy-meter-helper-panel") || customElements.define("circuitsetup-energy-meter-helper-panel", Bd);
-function p(s, t, e, i) {
+function g(s, t, e, i) {
   var r, o = arguments.length, a = o < 3 ? t : i === null ? i = Object.getOwnPropertyDescriptor(t, e) : i;
   if (typeof Reflect == "object" && typeof Reflect.decorate == "function") a = Reflect.decorate(s, t, e, i);
   else for (var n = s.length - 1; n >= 0; n--) (r = s[n]) && (a = (o < 3 ? r(a) : o > 3 ? r(t, e, a) : r(t, e)) || a);
@@ -2737,10 +2739,10 @@ const Fd = (s, t) => {
   let r, o = t === 2 ? "<svg>" : t === 3 ? "<math>" : "", a = De;
   for (let n = 0; n < e; n++) {
     const l = s[n];
-    let c, d, h = -1, g = 0;
-    for (; g < l.length && (a.lastIndex = g, d = a.exec(l), d !== null); ) g = a.lastIndex, a === De ? d[1] === "!--" ? a = co : d[1] !== void 0 ? a = ho : d[2] !== void 0 ? (Ja.test(d[2]) && (r = RegExp("</" + d[2], "g")), a = qt) : d[3] !== void 0 && (a = qt) : a === qt ? d[0] === ">" ? (a = r ?? De, h = -1) : d[1] === void 0 ? h = -2 : (h = a.lastIndex - d[2].length, c = d[1], a = d[3] === void 0 ? qt : d[3] === '"' ? po : Ao) : a === po || a === Ao ? a = qt : a === co || a === ho ? a = De : (a = qt, r = void 0);
-    const A = a === qt && s[n + 1].startsWith("/>") ? " " : "";
-    o += a === De ? l + kd : h >= 0 ? (i.push(c), l.slice(0, h) + Ka + l.slice(h) + $t + A) : l + $t + (h === -2 ? n : A);
+    let c, d, h = -1, A = 0;
+    for (; A < l.length && (a.lastIndex = A, d = a.exec(l), d !== null); ) A = a.lastIndex, a === De ? d[1] === "!--" ? a = co : d[1] !== void 0 ? a = ho : d[2] !== void 0 ? (Ja.test(d[2]) && (r = RegExp("</" + d[2], "g")), a = qt) : d[3] !== void 0 && (a = qt) : a === qt ? d[0] === ">" ? (a = r ?? De, h = -1) : d[1] === void 0 ? h = -2 : (h = a.lastIndex - d[2].length, c = d[1], a = d[3] === void 0 ? qt : d[3] === '"' ? po : Ao) : a === po || a === Ao ? a = qt : a === co || a === ho ? a = De : (a = qt, r = void 0);
+    const p = a === qt && s[n + 1].startsWith("/>") ? " " : "";
+    o += a === De ? l + kd : h >= 0 ? (i.push(c), l.slice(0, h) + Ka + l.slice(h) + $t + p) : l + $t + (h === -2 ? n : p);
   }
   return [Wa(s, o + (s[e] || "<?>") + (t === 2 ? "</svg>" : t === 3 ? "</math>" : "")), i];
 };
@@ -2757,15 +2759,15 @@ let js = class Va {
     for (; (r = ee.nextNode()) !== null && l.length < n; ) {
       if (r.nodeType === 1) {
         if (r.hasAttributes()) for (const h of r.getAttributeNames()) if (h.endsWith(Ka)) {
-          const g = d[a++], A = r.getAttribute(h).split($t), _ = /([.?@])?(.*)/.exec(g);
-          l.push({ type: 1, index: o, name: _[2], strings: A, ctor: _[1] === "." ? Pd : _[1] === "?" ? Ud : _[1] === "@" ? Qd : Zi }), r.removeAttribute(h);
+          const A = d[a++], p = r.getAttribute(h).split($t), _ = /([.?@])?(.*)/.exec(A);
+          l.push({ type: 1, index: o, name: _[2], strings: p, ctor: _[1] === "." ? Pd : _[1] === "?" ? Ud : _[1] === "@" ? Qd : Zi }), r.removeAttribute(h);
         } else h.startsWith($t) && (l.push({ type: 6, index: o }), r.removeAttribute(h));
         if (Ja.test(r.tagName)) {
-          const h = r.textContent.split($t), g = h.length - 1;
-          if (g > 0) {
+          const h = r.textContent.split($t), A = h.length - 1;
+          if (A > 0) {
             r.textContent = Yi ? Yi.emptyScript : "";
-            for (let A = 0; A < g; A++) r.append(h[A], ti()), ee.nextNode(), l.push({ type: 2, index: ++o });
-            r.append(h[g], ti());
+            for (let p = 0; p < A; p++) r.append(h[p], ti()), ee.nextNode(), l.push({ type: 2, index: ++o });
+            r.append(h[A], ti());
           }
         }
       } else if (r.nodeType === 8) if (r.data === za) l.push({ type: 2, index: o });
@@ -3126,12 +3128,12 @@ let Ws = class extends G {
     t.has("visible") && this.dispatchEvent(new Event("visibility-changed")), super.update(t);
   }
 };
-p([v({ type: Boolean, reflect: !0 })], Ws.prototype, "visible", void 0), p([v({ type: Boolean, reflect: !0 })], Ws.prototype, "inward", void 0);
+g([v({ type: Boolean, reflect: !0 })], Ws.prototype, "visible", void 0), g([v({ type: Boolean, reflect: !0 })], Ws.prototype, "inward", void 0);
 const mo = /* @__PURE__ */ Symbol("handledByFocusRing"), Nd = L`:host{animation-delay:0s,calc(var(--md-focus-ring-duration, 600ms)*.25);animation-duration:calc(var(--md-focus-ring-duration, 600ms)*.25),calc(var(--md-focus-ring-duration, 600ms)*.75);animation-timing-function:cubic-bezier(0.2, 0, 0, 1);box-sizing:border-box;color:var(--md-focus-ring-color, var(--md-sys-color-secondary, #625b71));display:none;pointer-events:none;position:absolute}:host([visible]){display:flex}:host(:not([inward])){animation-name:outward-grow,outward-shrink;border-end-end-radius:calc(var(--md-focus-ring-shape-end-end, var(--md-focus-ring-shape, var(--md-sys-shape-corner-full, 9999px))) + var(--md-focus-ring-outward-offset, 2px));border-end-start-radius:calc(var(--md-focus-ring-shape-end-start, var(--md-focus-ring-shape, var(--md-sys-shape-corner-full, 9999px))) + var(--md-focus-ring-outward-offset, 2px));border-start-end-radius:calc(var(--md-focus-ring-shape-start-end, var(--md-focus-ring-shape, var(--md-sys-shape-corner-full, 9999px))) + var(--md-focus-ring-outward-offset, 2px));border-start-start-radius:calc(var(--md-focus-ring-shape-start-start, var(--md-focus-ring-shape, var(--md-sys-shape-corner-full, 9999px))) + var(--md-focus-ring-outward-offset, 2px));inset:calc(-1*var(--md-focus-ring-outward-offset, 2px));outline:var(--md-focus-ring-width, 3px) solid currentColor}:host([inward]){animation-name:inward-grow,inward-shrink;border-end-end-radius:calc(var(--md-focus-ring-shape-end-end, var(--md-focus-ring-shape, var(--md-sys-shape-corner-full, 9999px))) - var(--md-focus-ring-inward-offset, 0px));border-end-start-radius:calc(var(--md-focus-ring-shape-end-start, var(--md-focus-ring-shape, var(--md-sys-shape-corner-full, 9999px))) - var(--md-focus-ring-inward-offset, 0px));border-start-end-radius:calc(var(--md-focus-ring-shape-start-end, var(--md-focus-ring-shape, var(--md-sys-shape-corner-full, 9999px))) - var(--md-focus-ring-inward-offset, 0px));border-start-start-radius:calc(var(--md-focus-ring-shape-start-start, var(--md-focus-ring-shape, var(--md-sys-shape-corner-full, 9999px))) - var(--md-focus-ring-inward-offset, 0px));border:var(--md-focus-ring-width, 3px) solid currentColor;inset:var(--md-focus-ring-inward-offset, 0px)}@keyframes outward-grow{from{outline-width:0}to{outline-width:var(--md-focus-ring-active-width, 8px)}}@keyframes outward-shrink{from{outline-width:var(--md-focus-ring-active-width, 8px)}}@keyframes inward-grow{from{border-width:0}to{border-width:var(--md-focus-ring-active-width, 8px)}}@keyframes inward-shrink{from{border-width:var(--md-focus-ring-active-width, 8px)}}@media(prefers-reduced-motion){:host{animation:none}}
 `;
 let ps = class extends Ws {
 };
-ps.styles = [Nd], ps = p([Jt("md-focus-ring")], ps);
+ps.styles = [Nd], ps = g([Jt("md-focus-ring")], ps);
 const Ht = { ATTRIBUTE: 1, PROPERTY: 3, BOOLEAN_ATTRIBUTE: 4 }, br = (s) => (...t) => ({ _$litDirective$: s, values: t });
 let yr = class {
   constructor(t) {
@@ -3318,12 +3320,12 @@ let Oe = class extends G {
     for (const i of zd) t?.removeEventListener(i, this), e?.addEventListener(i, this);
   }
 };
-p([v({ type: Boolean, reflect: !0 })], Oe.prototype, "disabled", void 0), p([F()], Oe.prototype, "hovered", void 0), p([F()], Oe.prototype, "pressed", void 0), p([N(".surface")], Oe.prototype, "mdRoot", void 0);
+g([v({ type: Boolean, reflect: !0 })], Oe.prototype, "disabled", void 0), g([F()], Oe.prototype, "hovered", void 0), g([F()], Oe.prototype, "pressed", void 0), g([N(".surface")], Oe.prototype, "mdRoot", void 0);
 const Jd = L`:host{display:flex;margin:auto;pointer-events:none}:host([disabled]){display:none}@media(forced-colors: active){:host{display:none}}:host,.surface{border-radius:inherit;position:absolute;inset:0;overflow:hidden}.surface{-webkit-tap-highlight-color:rgba(0,0,0,0)}.surface::before,.surface::after{content:"";opacity:0;position:absolute}.surface::before{background-color:var(--md-ripple-hover-color, var(--md-sys-color-on-surface, #1d1b20));inset:0;transition:opacity 15ms linear,background-color 15ms linear}.surface::after{background:radial-gradient(closest-side, var(--md-ripple-pressed-color, var(--md-sys-color-on-surface, #1d1b20)) max(100% - 70px, 65%), transparent 100%);transform-origin:center center;transition:opacity 375ms linear}.hovered::before{background-color:var(--md-ripple-hover-color, var(--md-sys-color-on-surface, #1d1b20));opacity:var(--md-ripple-hover-opacity, 0.08)}.pressed::after{opacity:var(--md-ripple-pressed-opacity, 0.12);transition-duration:105ms}
 `;
 let gs = class extends Oe {
 };
-gs.styles = [Jd], gs = p([Jt("md-ripple")], gs);
+gs.styles = [Jd], gs = g([Jt("md-ripple")], gs);
 const en = ["role", "ariaAtomic", "ariaAutoComplete", "ariaBusy", "ariaChecked", "ariaColCount", "ariaColIndex", "ariaColSpan", "ariaCurrent", "ariaDisabled", "ariaExpanded", "ariaHasPopup", "ariaHidden", "ariaInvalid", "ariaKeyShortcuts", "ariaLabel", "ariaLevel", "ariaLive", "ariaModal", "ariaMultiLine", "ariaMultiSelectable", "ariaOrientation", "ariaPlaceholder", "ariaPosInSet", "ariaPressed", "ariaReadOnly", "ariaRequired", "ariaRoleDescription", "ariaRowCount", "ariaRowIndex", "ariaRowSpan", "ariaSelected", "ariaSetSize", "ariaSort", "ariaValueMax", "ariaValueMin", "ariaValueNow", "ariaValueText"], jd = en.map(sn);
 function us(s) {
   return jd.includes(s);
@@ -3488,7 +3490,7 @@ let et = class extends Wd {
     this.hasIcon = this.assignedIcons.length > 0;
   }
 };
-rn(et), et.formAssociated = !0, et.shadowRootOptions = { mode: "open", delegatesFocus: !0 }, p([v({ type: Boolean, reflect: !0 })], et.prototype, "disabled", void 0), p([v({ type: Boolean, attribute: "soft-disabled", reflect: !0 })], et.prototype, "softDisabled", void 0), p([v()], et.prototype, "href", void 0), p([v()], et.prototype, "download", void 0), p([v()], et.prototype, "target", void 0), p([v({ type: Boolean, attribute: "trailing-icon", reflect: !0 })], et.prototype, "trailingIcon", void 0), p([v({ type: Boolean, attribute: "has-icon", reflect: !0 })], et.prototype, "hasIcon", void 0), p([v()], et.prototype, "type", void 0), p([v({ reflect: !0 })], et.prototype, "value", void 0), p([N(".button")], et.prototype, "buttonElement", void 0), p([kt({ slot: "icon", flatten: !0 })], et.prototype, "assignedIcons", void 0);
+rn(et), et.formAssociated = !0, et.shadowRootOptions = { mode: "open", delegatesFocus: !0 }, g([v({ type: Boolean, reflect: !0 })], et.prototype, "disabled", void 0), g([v({ type: Boolean, attribute: "soft-disabled", reflect: !0 })], et.prototype, "softDisabled", void 0), g([v()], et.prototype, "href", void 0), g([v()], et.prototype, "download", void 0), g([v()], et.prototype, "target", void 0), g([v({ type: Boolean, attribute: "trailing-icon", reflect: !0 })], et.prototype, "trailingIcon", void 0), g([v({ type: Boolean, attribute: "has-icon", reflect: !0 })], et.prototype, "hasIcon", void 0), g([v()], et.prototype, "type", void 0), g([v({ reflect: !0 })], et.prototype, "value", void 0), g([N(".button")], et.prototype, "buttonElement", void 0), g([kt({ slot: "icon", flatten: !0 })], et.prototype, "assignedIcons", void 0);
 let Vd = class extends et {
 };
 const qd = L`:host{--_container-height: var(--md-text-button-container-height, 40px);--_disabled-label-text-color: var(--md-text-button-disabled-label-text-color, var(--md-sys-color-on-surface, #1d1b20));--_disabled-label-text-opacity: var(--md-text-button-disabled-label-text-opacity, 0.38);--_focus-label-text-color: var(--md-text-button-focus-label-text-color, var(--md-sys-color-primary, #6750a4));--_hover-label-text-color: var(--md-text-button-hover-label-text-color, var(--md-sys-color-primary, #6750a4));--_hover-state-layer-color: var(--md-text-button-hover-state-layer-color, var(--md-sys-color-primary, #6750a4));--_hover-state-layer-opacity: var(--md-text-button-hover-state-layer-opacity, 0.08);--_label-text-color: var(--md-text-button-label-text-color, var(--md-sys-color-primary, #6750a4));--_label-text-font: var(--md-text-button-label-text-font, var(--md-sys-typescale-label-large-font, var(--md-ref-typeface-plain, Roboto)));--_label-text-line-height: var(--md-text-button-label-text-line-height, var(--md-sys-typescale-label-large-line-height, 1.25rem));--_label-text-size: var(--md-text-button-label-text-size, var(--md-sys-typescale-label-large-size, 0.875rem));--_label-text-weight: var(--md-text-button-label-text-weight, var(--md-sys-typescale-label-large-weight, var(--md-ref-typeface-weight-medium, 500)));--_pressed-label-text-color: var(--md-text-button-pressed-label-text-color, var(--md-sys-color-primary, #6750a4));--_pressed-state-layer-color: var(--md-text-button-pressed-state-layer-color, var(--md-sys-color-primary, #6750a4));--_pressed-state-layer-opacity: var(--md-text-button-pressed-state-layer-opacity, 0.12);--_disabled-icon-color: var(--md-text-button-disabled-icon-color, var(--md-sys-color-on-surface, #1d1b20));--_disabled-icon-opacity: var(--md-text-button-disabled-icon-opacity, 0.38);--_focus-icon-color: var(--md-text-button-focus-icon-color, var(--md-sys-color-primary, #6750a4));--_hover-icon-color: var(--md-text-button-hover-icon-color, var(--md-sys-color-primary, #6750a4));--_icon-color: var(--md-text-button-icon-color, var(--md-sys-color-primary, #6750a4));--_icon-size: var(--md-text-button-icon-size, 18px);--_pressed-icon-color: var(--md-text-button-pressed-icon-color, var(--md-sys-color-primary, #6750a4));--_container-shape-start-start: var(--md-text-button-container-shape-start-start, var(--md-text-button-container-shape, var(--md-sys-shape-corner-full, 9999px)));--_container-shape-start-end: var(--md-text-button-container-shape-start-end, var(--md-text-button-container-shape, var(--md-sys-shape-corner-full, 9999px)));--_container-shape-end-end: var(--md-text-button-container-shape-end-end, var(--md-text-button-container-shape, var(--md-sys-shape-corner-full, 9999px)));--_container-shape-end-start: var(--md-text-button-container-shape-end-start, var(--md-text-button-container-shape, var(--md-sys-shape-corner-full, 9999px)));--_leading-space: var(--md-text-button-leading-space, 12px);--_trailing-space: var(--md-text-button-trailing-space, 12px);--_with-leading-icon-leading-space: var(--md-text-button-with-leading-icon-leading-space, 12px);--_with-leading-icon-trailing-space: var(--md-text-button-with-leading-icon-trailing-space, 16px);--_with-trailing-icon-leading-space: var(--md-text-button-with-trailing-icon-leading-space, 16px);--_with-trailing-icon-trailing-space: var(--md-text-button-with-trailing-icon-trailing-space, 12px);--_container-color: none;--_disabled-container-color: none;--_disabled-container-opacity: 0}
@@ -3501,7 +3503,7 @@ let Le = class extends G {
     super(...arguments), this.inset = !1, this.insetStart = !1, this.insetEnd = !1;
   }
 };
-p([v({ type: Boolean, reflect: !0 })], Le.prototype, "inset", void 0), p([v({ type: Boolean, reflect: !0, attribute: "inset-start" })], Le.prototype, "insetStart", void 0), p([v({ type: Boolean, reflect: !0, attribute: "inset-end" })], Le.prototype, "insetEnd", void 0);
+g([v({ type: Boolean, reflect: !0 })], Le.prototype, "inset", void 0), g([v({ type: Boolean, reflect: !0, attribute: "inset-start" })], Le.prototype, "insetStart", void 0), g([v({ type: Boolean, reflect: !0, attribute: "inset-end" })], Le.prototype, "insetEnd", void 0);
 const nn = L`:host{box-sizing:border-box;color:var(--md-divider-color, var(--md-sys-color-outline-variant, #cac4d0));display:flex;height:var(--md-divider-thickness, 1px);width:100%}:host([inset]),:host([inset-start]){padding-inline-start:16px}:host([inset]),:host([inset-end]){padding-inline-end:16px}:host::before{background:currentColor;content:"";height:100%;width:100%}@media(forced-colors: active){:host::before{background:CanvasText}}
 `;
 function ts(s, t) {
@@ -3511,7 +3513,7 @@ function ts(s, t) {
 }
 let Es = class extends Le {
 };
-Es.styles = [nn], Es = p([Jt("md-divider")], Es);
+Es.styles = [nn], Es = g([Jt("md-divider")], Es);
 const Zd = { dialog: [[[{ transform: "translateY(-50px)" }, { transform: "translateY(0)" }], { duration: 500, easing: Bt.EMPHASIZED }]], scrim: [[[{ opacity: 0 }, { opacity: 0.32 }], { duration: 500, easing: "linear" }]], container: [[[{ opacity: 0 }, { opacity: 1 }], { duration: 50, easing: "linear", pseudoElement: "::before" }], [[{ height: "35%" }, { height: "100%" }], { duration: 500, easing: Bt.EMPHASIZED, pseudoElement: "::before" }]], headline: [[[{ opacity: 0 }, { opacity: 0, offset: 0.2 }, { opacity: 1 }], { duration: 250, easing: "linear", fill: "forwards" }]], content: [[[{ opacity: 0 }, { opacity: 0, offset: 0.2 }, { opacity: 1 }], { duration: 250, easing: "linear", fill: "forwards" }]], actions: [[[{ opacity: 0 }, { opacity: 0, offset: 0.5 }, { opacity: 1 }], { duration: 300, easing: "linear", fill: "forwards" }]] }, Xd = { dialog: [[[{ transform: "translateY(0)" }, { transform: "translateY(-50px)" }], { duration: 150, easing: Bt.EMPHASIZED_ACCELERATE }]], scrim: [[[{ opacity: 0.32 }, { opacity: 0 }], { duration: 150, easing: "linear" }]], container: [[[{ height: "100%" }, { height: "35%" }], { duration: 150, easing: Bt.EMPHASIZED_ACCELERATE, pseudoElement: "::before" }], [[{ opacity: "1" }, { opacity: "0" }], { delay: 100, duration: 50, easing: "linear", pseudoElement: "::before" }]], headline: [[[{ opacity: 1 }, { opacity: 0 }], { duration: 100, easing: "linear", fill: "forwards" }]], content: [[[{ opacity: 1 }, { opacity: 0 }], { duration: 100, easing: "linear", fill: "forwards" }]], actions: [[[{ opacity: 1 }, { opacity: 0 }], { duration: 100, easing: "linear", fill: "forwards" }]] }, th = Ot(G);
 let W = class extends th {
   get open() {
@@ -3630,7 +3632,7 @@ let W = class extends th {
     if ((e = this.cancelAnimations) === null || e === void 0 || e.abort(), this.cancelAnimations = new AbortController(), this.quick) return;
     const { dialog: i, scrim: r, container: o, headline: a, content: n, actions: l } = this;
     if (!(i && r && o && a && n && l)) return;
-    const { container: c, dialog: d, scrim: h, headline: g, content: A, actions: _ } = t, m = [[i, d ?? []], [r, h ?? []], [o, c ?? []], [a, g ?? []], [n, A ?? []], [l, _ ?? []]], f = [];
+    const { container: c, dialog: d, scrim: h, headline: A, content: p, actions: _ } = t, m = [[i, d ?? []], [r, h ?? []], [o, c ?? []], [a, A ?? []], [n, p ?? []], [l, _ ?? []]], f = [];
     for (const [b, E] of m) for (const u of E) {
       const I = b.animate(...u);
       this.cancelAnimations.signal.addEventListener("abort", (() => {
@@ -3684,7 +3686,7 @@ function eh(s) {
   const e = ":not(:disabled,[disabled])";
   return s.matches(":is(button,input,select,textarea,object,:is(a,area)[href],[tabindex],[contenteditable=true])" + e + ':not([tabindex^="-"])') ? !0 : !!s.localName.includes("-") && !!s.matches(e) && (((t = s.shadowRoot) === null || t === void 0 ? void 0 : t.delegatesFocus) ?? !1);
 }
-p([v({ type: Boolean })], W.prototype, "open", null), p([v({ type: Boolean })], W.prototype, "quick", void 0), p([v({ attribute: !1 })], W.prototype, "returnValue", void 0), p([v()], W.prototype, "type", void 0), p([v({ type: Boolean, attribute: "no-focus-trap" })], W.prototype, "noFocusTrap", void 0), p([N("dialog")], W.prototype, "dialog", void 0), p([N(".scrim")], W.prototype, "scrim", void 0), p([N(".container")], W.prototype, "container", void 0), p([N(".headline")], W.prototype, "headline", void 0), p([N(".content")], W.prototype, "content", void 0), p([N(".actions")], W.prototype, "actions", void 0), p([F()], W.prototype, "isAtScrollTop", void 0), p([F()], W.prototype, "isAtScrollBottom", void 0), p([N(".scroller")], W.prototype, "scroller", void 0), p([N(".top.anchor")], W.prototype, "topAnchor", void 0), p([N(".bottom.anchor")], W.prototype, "bottomAnchor", void 0), p([N(".focus-trap")], W.prototype, "firstFocusTrap", void 0), p([F()], W.prototype, "hasHeadline", void 0), p([F()], W.prototype, "hasActions", void 0), p([F()], W.prototype, "hasIcon", void 0);
+g([v({ type: Boolean })], W.prototype, "open", null), g([v({ type: Boolean })], W.prototype, "quick", void 0), g([v({ attribute: !1 })], W.prototype, "returnValue", void 0), g([v()], W.prototype, "type", void 0), g([v({ type: Boolean, attribute: "no-focus-trap" })], W.prototype, "noFocusTrap", void 0), g([N("dialog")], W.prototype, "dialog", void 0), g([N(".scrim")], W.prototype, "scrim", void 0), g([N(".container")], W.prototype, "container", void 0), g([N(".headline")], W.prototype, "headline", void 0), g([N(".content")], W.prototype, "content", void 0), g([N(".actions")], W.prototype, "actions", void 0), g([F()], W.prototype, "isAtScrollTop", void 0), g([F()], W.prototype, "isAtScrollBottom", void 0), g([N(".scroller")], W.prototype, "scroller", void 0), g([N(".top.anchor")], W.prototype, "topAnchor", void 0), g([N(".bottom.anchor")], W.prototype, "bottomAnchor", void 0), g([N(".focus-trap")], W.prototype, "firstFocusTrap", void 0), g([F()], W.prototype, "hasHeadline", void 0), g([F()], W.prototype, "hasActions", void 0), g([F()], W.prototype, "hasIcon", void 0);
 const ih = L`:host{border-start-start-radius:var(--md-dialog-container-shape-start-start, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));border-start-end-radius:var(--md-dialog-container-shape-start-end, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));border-end-end-radius:var(--md-dialog-container-shape-end-end, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));border-end-start-radius:var(--md-dialog-container-shape-end-start, var(--md-dialog-container-shape, var(--md-sys-shape-corner-extra-large, 28px)));display:contents;margin:auto;max-height:min(560px,100% - 48px);max-width:min(560px,100% - 48px);min-height:140px;min-width:280px;position:fixed;height:fit-content;width:fit-content}dialog{background:rgba(0,0,0,0);border:none;border-radius:inherit;flex-direction:column;height:inherit;margin:inherit;max-height:inherit;max-width:inherit;min-height:inherit;min-width:inherit;outline:none;overflow:visible;padding:0;width:inherit}dialog[open]{display:flex}::backdrop{background:none}.scrim{background:var(--md-sys-color-scrim, #000);display:none;inset:0;opacity:32%;pointer-events:none;position:fixed;z-index:1}:host([open]) .scrim{display:flex}h2{all:unset;align-self:stretch}.headline{align-items:center;color:var(--md-dialog-headline-color, var(--md-sys-color-on-surface, #1d1b20));display:flex;flex-direction:column;font-family:var(--md-dialog-headline-font, var(--md-sys-typescale-headline-small-font, var(--md-ref-typeface-brand, Roboto)));font-size:var(--md-dialog-headline-size, var(--md-sys-typescale-headline-small-size, 1.5rem));line-height:var(--md-dialog-headline-line-height, var(--md-sys-typescale-headline-small-line-height, 2rem));font-weight:var(--md-dialog-headline-weight, var(--md-sys-typescale-headline-small-weight, var(--md-ref-typeface-weight-regular, 400)));position:relative}slot[name=headline]::slotted(*){align-items:center;align-self:stretch;box-sizing:border-box;display:flex;gap:8px;padding:24px 24px 0}.icon{display:flex}slot[name=icon]::slotted(*){color:var(--md-dialog-icon-color, var(--md-sys-color-secondary, #625b71));fill:currentColor;font-size:var(--md-dialog-icon-size, 24px);margin-top:24px;height:var(--md-dialog-icon-size, 24px);width:var(--md-dialog-icon-size, 24px)}.has-icon slot[name=headline]::slotted(*){justify-content:center;padding-top:16px}.scrollable slot[name=headline]::slotted(*){padding-bottom:16px}.scrollable.has-headline slot[name=content]::slotted(*){padding-top:8px}.container{border-radius:inherit;display:flex;flex-direction:column;flex-grow:1;overflow:hidden;position:relative;transform-origin:top}.container::before{background:var(--md-dialog-container-color, var(--md-sys-color-surface-container-high, #ece6f0));border-radius:inherit;content:"";inset:0;position:absolute}.scroller{display:flex;flex:1;flex-direction:column;overflow:hidden;z-index:1}.scrollable .scroller{overflow-y:scroll}.content{color:var(--md-dialog-supporting-text-color, var(--md-sys-color-on-surface-variant, #49454f));font-family:var(--md-dialog-supporting-text-font, var(--md-sys-typescale-body-medium-font, var(--md-ref-typeface-plain, Roboto)));font-size:var(--md-dialog-supporting-text-size, var(--md-sys-typescale-body-medium-size, 0.875rem));line-height:var(--md-dialog-supporting-text-line-height, var(--md-sys-typescale-body-medium-line-height, 1.25rem));flex:1;font-weight:var(--md-dialog-supporting-text-weight, var(--md-sys-typescale-body-medium-weight, var(--md-ref-typeface-weight-regular, 400)));height:min-content;position:relative}slot[name=content]::slotted(*){box-sizing:border-box;padding:24px}.anchor{position:absolute}.top.anchor{top:0}.bottom.anchor{bottom:0}.actions{position:relative}slot[name=actions]::slotted(*){box-sizing:border-box;display:flex;gap:8px;justify-content:flex-end;padding:16px 24px 24px}.has-actions slot[name=content]::slotted(*){padding-bottom:8px}md-divider{display:none;position:absolute}.has-headline.show-top-divider .headline md-divider,.has-actions.show-bottom-divider .actions md-divider{display:flex}.headline md-divider{bottom:0}.actions md-divider{top:0}@media(forced-colors: active){dialog{outline:2px solid WindowText}}
 `;
 let Eo = class extends W {
@@ -3781,28 +3783,28 @@ class An {
     this.handleKeydown = (d) => {
       const h = d.key;
       if (d.defaultPrevented || !this.isNavigableKey(h)) return;
-      const g = this.items;
-      if (!g.length) return;
-      const A = Ye(g, this.isActivatable);
+      const A = this.items;
+      if (!A.length) return;
+      const p = Ye(A, this.isActivatable);
       d.preventDefault();
       const _ = this.isRtl();
       let m = null;
       switch (h) {
         case X.ArrowDown:
         case (_ ? X.ArrowLeft : X.ArrowRight):
-          m = bo(g, A, this.isActivatable, this.wrapNavigation());
+          m = bo(A, p, this.isActivatable, this.wrapNavigation());
           break;
         case X.ArrowUp:
         case (_ ? X.ArrowRight : X.ArrowLeft):
-          m = yo(g, A, this.isActivatable, this.wrapNavigation());
+          m = yo(A, p, this.isActivatable, this.wrapNavigation());
           break;
         case X.Home:
-          m = cn(g, this.isActivatable);
+          m = cn(A, this.isActivatable);
           break;
         case X.End:
-          m = dn(g, this.isActivatable);
+          m = dn(A, this.isActivatable);
       }
-      m && A && A.item !== m && (A.item.tabIndex = -1);
+      m && p && p.item !== m && (p.item.tabIndex = -1);
     }, this.onDeactivateItems = () => {
       const d = this.items;
       for (const h of d) this.deactivateItem(h);
@@ -3813,11 +3815,11 @@ class An {
     }, this.onSlotchange = () => {
       const d = this.items;
       let h = !1;
-      for (const A of d)
-        !(!A.disabled && A.tabIndex > -1) || h ? A.tabIndex = -1 : (h = !0, A.tabIndex = 0);
+      for (const p of d)
+        !(!p.disabled && p.tabIndex > -1) || h ? p.tabIndex = -1 : (h = !0, p.tabIndex = 0);
       if (h) return;
-      const g = Cr(d, this.isActivatable);
-      g && (g.tabIndex = 0);
+      const A = Cr(d, this.isActivatable);
+      A && (A.tabIndex = 0);
     };
     const { isItem: e, getPossibleItems: i, isRtl: r, deactivateItem: o, activateItem: a, isNavigableKey: n, isActivatable: l, wrapNavigation: c } = t;
     this.isItem = e, this.getPossibleItems = i, this.isRtl = r, this.deactivateItem = o, this.activateItem = a, this.isNavigableKey = n, this.isActivatable = l, this.wrapNavigation = c ?? (() => !0);
@@ -3871,7 +3873,7 @@ class pn extends G {
     return this.listController.activatePreviousItem();
   }
 }
-p([kt({ flatten: !0 })], pn.prototype, "slotItems", void 0);
+g([kt({ flatten: !0 })], pn.prototype, "slotItems", void 0);
 const rh = L`:host{background:var(--md-list-container-color, var(--md-sys-color-surface, #fef7ff));color:unset;display:flex;flex-direction:column;outline:none;padding:8px 0;position:relative}
 `;
 class Co extends pn {
@@ -3916,7 +3918,7 @@ function oh(s) {
   }
   return !1;
 }
-p([v({ type: Boolean, reflect: !0 })], Vs.prototype, "multiline", void 0), p([/* @__PURE__ */ (function(s) {
+g([v({ type: Boolean, reflect: !0 })], Vs.prototype, "multiline", void 0), g([/* @__PURE__ */ (function(s) {
   return (t, e) => Xi(t, e, { get() {
     return (this.renderRoot ?? wo ?? (wo = document.createDocumentFragment())).querySelectorAll(s);
   } });
@@ -3925,7 +3927,7 @@ const ah = L`:host{color:var(--md-sys-color-on-surface, #1d1b20);font-family:var
 `;
 let ws = class extends Vs {
 };
-ws.styles = [ah], ws = p([Jt("md-item")], ws);
+ws.styles = [ah], ws = g([Jt("md-item")], ws);
 const gn = /* @__PURE__ */ Symbol.for(""), nh = (s) => {
   if (s?.r === gn) return s?._$litStatic$;
 }, Yt = (s, ...t) => ({ _$litStatic$: t.reduce(((e, i, r) => e + ((o) => {
@@ -4040,7 +4042,7 @@ class Qt extends lh {
     this.listItemRoot ? this.listItemRoot.click() : super.click();
   }
 }
-Qt.shadowRootOptions = { ...G.shadowRootOptions, delegatesFocus: !0 }, p([v({ type: Boolean, reflect: !0 })], Qt.prototype, "disabled", void 0), p([v({ reflect: !0 })], Qt.prototype, "type", void 0), p([v({ type: Boolean, attribute: "md-list-item", reflect: !0 })], Qt.prototype, "isListItem", void 0), p([v()], Qt.prototype, "href", void 0), p([v()], Qt.prototype, "target", void 0), p([N(".list-item")], Qt.prototype, "listItemRoot", void 0);
+Qt.shadowRootOptions = { ...G.shadowRootOptions, delegatesFocus: !0 }, g([v({ type: Boolean, reflect: !0 })], Qt.prototype, "disabled", void 0), g([v({ reflect: !0 })], Qt.prototype, "type", void 0), g([v({ type: Boolean, attribute: "md-list-item", reflect: !0 })], Qt.prototype, "isListItem", void 0), g([v()], Qt.prototype, "href", void 0), g([v()], Qt.prototype, "target", void 0), g([N(".list-item")], Qt.prototype, "listItemRoot", void 0);
 const ch = L`:host{display:flex;-webkit-tap-highlight-color:rgba(0,0,0,0);--md-ripple-hover-color: var(--md-list-item-hover-state-layer-color, var(--md-sys-color-on-surface, #1d1b20));--md-ripple-hover-opacity: var(--md-list-item-hover-state-layer-opacity, 0.08);--md-ripple-pressed-color: var(--md-list-item-pressed-state-layer-color, var(--md-sys-color-on-surface, #1d1b20));--md-ripple-pressed-opacity: var(--md-list-item-pressed-state-layer-opacity, 0.12)}:host(:is([type=button]:not([disabled]),[type=link])){cursor:pointer}md-focus-ring{z-index:1;--md-focus-ring-shape: 8px}a,button,li{background:none;border:none;cursor:inherit;padding:0;margin:0;text-align:unset;text-decoration:none}.list-item{border-radius:inherit;display:flex;flex:1;max-width:inherit;min-width:inherit;outline:none;-webkit-tap-highlight-color:rgba(0,0,0,0);width:100%}.list-item.interactive{cursor:pointer}.list-item.disabled{opacity:var(--md-list-item-disabled-opacity, 0.3);pointer-events:none}[slot=container]{pointer-events:none}md-ripple{border-radius:inherit}md-item{border-radius:inherit;flex:1;height:100%;color:var(--md-list-item-label-text-color, var(--md-sys-color-on-surface, #1d1b20));font-family:var(--md-list-item-label-text-font, var(--md-sys-typescale-body-large-font, var(--md-ref-typeface-plain, Roboto)));font-size:var(--md-list-item-label-text-size, var(--md-sys-typescale-body-large-size, 1rem));line-height:var(--md-list-item-label-text-line-height, var(--md-sys-typescale-body-large-line-height, 1.5rem));font-weight:var(--md-list-item-label-text-weight, var(--md-sys-typescale-body-large-weight, var(--md-ref-typeface-weight-regular, 400)));min-height:var(--md-list-item-one-line-container-height, 56px);padding-top:var(--md-list-item-top-space, 12px);padding-bottom:var(--md-list-item-bottom-space, 12px);padding-inline-start:var(--md-list-item-leading-space, 16px);padding-inline-end:var(--md-list-item-trailing-space, 16px)}md-item[multiline]{min-height:var(--md-list-item-two-line-container-height, 72px)}[slot=supporting-text]{color:var(--md-list-item-supporting-text-color, var(--md-sys-color-on-surface-variant, #49454f));font-family:var(--md-list-item-supporting-text-font, var(--md-sys-typescale-body-medium-font, var(--md-ref-typeface-plain, Roboto)));font-size:var(--md-list-item-supporting-text-size, var(--md-sys-typescale-body-medium-size, 0.875rem));line-height:var(--md-list-item-supporting-text-line-height, var(--md-sys-typescale-body-medium-line-height, 1.25rem));font-weight:var(--md-list-item-supporting-text-weight, var(--md-sys-typescale-body-medium-weight, var(--md-ref-typeface-weight-regular, 400)))}[slot=trailing-supporting-text]{color:var(--md-list-item-trailing-supporting-text-color, var(--md-sys-color-on-surface-variant, #49454f));font-family:var(--md-list-item-trailing-supporting-text-font, var(--md-sys-typescale-label-small-font, var(--md-ref-typeface-plain, Roboto)));font-size:var(--md-list-item-trailing-supporting-text-size, var(--md-sys-typescale-label-small-size, 0.6875rem));line-height:var(--md-list-item-trailing-supporting-text-line-height, var(--md-sys-typescale-label-small-line-height, 1rem));font-weight:var(--md-list-item-trailing-supporting-text-weight, var(--md-sys-typescale-label-small-weight, var(--md-ref-typeface-weight-medium, 500)))}:is([slot=start],[slot=end])::slotted(*){fill:currentColor}[slot=start]{color:var(--md-list-item-leading-icon-color, var(--md-sys-color-on-surface-variant, #49454f))}[slot=end]{color:var(--md-list-item-trailing-icon-color, var(--md-sys-color-on-surface-variant, #49454f))}@media(forced-colors: active){.disabled slot{color:GrayText}.list-item.disabled{color:GrayText;opacity:1}}
 `;
 class Io extends Qt {
@@ -4135,7 +4137,7 @@ function Ir(s) {
       this.disabled = i;
     }
   }
-  return t.formAssociated = !0, p([v({ noAccessor: !0 })], t.prototype, "name", null), p([v({ type: Boolean, noAccessor: !0 })], t.prototype, "disabled", null), t;
+  return t.formAssociated = !0, g([v({ noAccessor: !0 })], t.prototype, "name", null), g([v({ type: Boolean, noAccessor: !0 })], t.prototype, "disabled", null), t;
 }
 class xr {
   constructor(t) {
@@ -4223,7 +4225,7 @@ class wt extends hh {
     return this.input;
   }
 }
-wt.shadowRootOptions = { ...G.shadowRootOptions, delegatesFocus: !0 }, p([v({ type: Boolean })], wt.prototype, "checked", void 0), p([v({ type: Boolean })], wt.prototype, "indeterminate", void 0), p([v({ type: Boolean })], wt.prototype, "required", void 0), p([v()], wt.prototype, "value", void 0), p([F()], wt.prototype, "prevChecked", void 0), p([F()], wt.prototype, "prevDisabled", void 0), p([F()], wt.prototype, "prevIndeterminate", void 0), p([N("input")], wt.prototype, "input", void 0);
+wt.shadowRootOptions = { ...G.shadowRootOptions, delegatesFocus: !0 }, g([v({ type: Boolean })], wt.prototype, "checked", void 0), g([v({ type: Boolean })], wt.prototype, "indeterminate", void 0), g([v({ type: Boolean })], wt.prototype, "required", void 0), g([v()], wt.prototype, "value", void 0), g([F()], wt.prototype, "prevChecked", void 0), g([F()], wt.prototype, "prevDisabled", void 0), g([F()], wt.prototype, "prevIndeterminate", void 0), g([N("input")], wt.prototype, "input", void 0);
 const Ah = L`:host{border-start-start-radius:var(--md-checkbox-container-shape-start-start, var(--md-checkbox-container-shape, 2px));border-start-end-radius:var(--md-checkbox-container-shape-start-end, var(--md-checkbox-container-shape, 2px));border-end-end-radius:var(--md-checkbox-container-shape-end-end, var(--md-checkbox-container-shape, 2px));border-end-start-radius:var(--md-checkbox-container-shape-end-start, var(--md-checkbox-container-shape, 2px));display:inline-flex;height:var(--md-checkbox-container-size, 18px);position:relative;vertical-align:top;width:var(--md-checkbox-container-size, 18px);-webkit-tap-highlight-color:rgba(0,0,0,0);cursor:pointer}:host([disabled]){cursor:default}:host([touch-target=wrapper]){margin:max(0px,(48px - var(--md-checkbox-container-size, 18px))/2)}md-focus-ring{height:44px;inset:unset;width:44px}input{appearance:none;height:48px;margin:0;opacity:0;outline:none;position:absolute;width:48px;z-index:1;cursor:inherit}:host([touch-target=none]) input{height:100%;width:100%}.container{border-radius:inherit;display:flex;height:100%;place-content:center;place-items:center;position:relative;width:100%}.outline,.background,.icon{inset:0;position:absolute}.outline,.background{border-radius:inherit}.outline{border-color:var(--md-checkbox-outline-color, var(--md-sys-color-on-surface-variant, #49454f));border-style:solid;border-width:var(--md-checkbox-outline-width, 2px);box-sizing:border-box}.background{background-color:var(--md-checkbox-selected-container-color, var(--md-sys-color-primary, #6750a4))}.background,.icon{opacity:0;transition-duration:150ms,50ms;transition-property:transform,opacity;transition-timing-function:cubic-bezier(0.3, 0, 0.8, 0.15),linear;transform:scale(0.6)}:where(.selected) :is(.background,.icon){opacity:1;transition-duration:350ms,50ms;transition-timing-function:cubic-bezier(0.05, 0.7, 0.1, 1),linear;transform:scale(1)}md-ripple{border-radius:var(--md-checkbox-state-layer-shape, var(--md-sys-shape-corner-full, 9999px));height:var(--md-checkbox-state-layer-size, 40px);inset:unset;width:var(--md-checkbox-state-layer-size, 40px);--md-ripple-hover-color: var(--md-checkbox-hover-state-layer-color, var(--md-sys-color-on-surface, #1d1b20));--md-ripple-hover-opacity: var(--md-checkbox-hover-state-layer-opacity, 0.08);--md-ripple-pressed-color: var(--md-checkbox-pressed-state-layer-color, var(--md-sys-color-primary, #6750a4));--md-ripple-pressed-opacity: var(--md-checkbox-pressed-state-layer-opacity, 0.12)}.selected md-ripple{--md-ripple-hover-color: var(--md-checkbox-selected-hover-state-layer-color, var(--md-sys-color-primary, #6750a4));--md-ripple-hover-opacity: var(--md-checkbox-selected-hover-state-layer-opacity, 0.08);--md-ripple-pressed-color: var(--md-checkbox-selected-pressed-state-layer-color, var(--md-sys-color-on-surface, #1d1b20));--md-ripple-pressed-opacity: var(--md-checkbox-selected-pressed-state-layer-opacity, 0.12)}.icon{fill:var(--md-checkbox-selected-icon-color, var(--md-sys-color-on-primary, #fff));height:var(--md-checkbox-icon-size, 18px);width:var(--md-checkbox-icon-size, 18px)}.mark.short{height:2px;transition-property:transform,height;width:2px}.mark.long{height:2px;transition-property:transform,width;width:10px}.mark{animation-duration:150ms;animation-timing-function:cubic-bezier(0.3, 0, 0.8, 0.15);transition-duration:150ms;transition-timing-function:cubic-bezier(0.3, 0, 0.8, 0.15)}.selected .mark{animation-duration:350ms;animation-timing-function:cubic-bezier(0.05, 0.7, 0.1, 1);transition-duration:350ms;transition-timing-function:cubic-bezier(0.05, 0.7, 0.1, 1)}.checked .mark,.prev-checked.unselected .mark{transform:scaleY(-1) translate(7px, -14px) rotate(45deg)}.checked .mark.short,.prev-checked.unselected .mark.short{height:5.6568542495px}.checked .mark.long,.prev-checked.unselected .mark.long{width:11.313708499px}.indeterminate .mark,.prev-indeterminate.unselected .mark{transform:scaleY(-1) translate(4px, -10px) rotate(0deg)}.prev-unselected .mark{transition-property:none}.prev-unselected.checked .mark.long{animation-name:prev-unselected-to-checked}@keyframes prev-unselected-to-checked{from{width:0}}:where(:hover) .outline{border-color:var(--md-checkbox-hover-outline-color, var(--md-sys-color-on-surface, #1d1b20));border-width:var(--md-checkbox-hover-outline-width, 2px)}:where(:hover) .background{background:var(--md-checkbox-selected-hover-container-color, var(--md-sys-color-primary, #6750a4))}:where(:hover) .icon{fill:var(--md-checkbox-selected-hover-icon-color, var(--md-sys-color-on-primary, #fff))}:where(:focus-within) .outline{border-color:var(--md-checkbox-focus-outline-color, var(--md-sys-color-on-surface, #1d1b20));border-width:var(--md-checkbox-focus-outline-width, 2px)}:where(:focus-within) .background{background:var(--md-checkbox-selected-focus-container-color, var(--md-sys-color-primary, #6750a4))}:where(:focus-within) .icon{fill:var(--md-checkbox-selected-focus-icon-color, var(--md-sys-color-on-primary, #fff))}:where(:active) .outline{border-color:var(--md-checkbox-pressed-outline-color, var(--md-sys-color-on-surface, #1d1b20));border-width:var(--md-checkbox-pressed-outline-width, 2px)}:where(:active) .background{background:var(--md-checkbox-selected-pressed-container-color, var(--md-sys-color-primary, #6750a4))}:where(:active) .icon{fill:var(--md-checkbox-selected-pressed-icon-color, var(--md-sys-color-on-primary, #fff))}:where(.disabled,.prev-disabled) :is(.background,.icon,.mark){animation-duration:0s;transition-duration:0s}:where(.disabled) .outline{border-color:var(--md-checkbox-disabled-outline-color, var(--md-sys-color-on-surface, #1d1b20));border-width:var(--md-checkbox-disabled-outline-width, 2px);opacity:var(--md-checkbox-disabled-container-opacity, 0.38)}:where(.selected.disabled) .outline{visibility:hidden}:where(.selected.disabled) .background{background:var(--md-checkbox-selected-disabled-container-color, var(--md-sys-color-on-surface, #1d1b20));opacity:var(--md-checkbox-selected-disabled-container-opacity, 0.38)}:where(.disabled) .icon{fill:var(--md-checkbox-selected-disabled-icon-color, var(--md-sys-color-surface, #fef7ff))}@media(forced-colors: active){.background{background-color:CanvasText}.selected.disabled .background{background-color:GrayText;opacity:1}.outline{border-color:CanvasText}.disabled .outline{border-color:GrayText;opacity:1}.icon{fill:Canvas}}
 `;
 class So extends wt {
@@ -4454,16 +4456,16 @@ const fn = (s) => s < 256 ? oi[s] : oi[256 + (s >>> 7)], ni = (s, t) => {
     a = s.heap[1], s.heap[1] = s.heap[s.heap_len--], Bs(s, e, 1), n = s.heap[1], s.heap[--s.heap_max] = a, s.heap[--s.heap_max] = n, e[2 * l] = e[2 * a] + e[2 * n], s.depth[l] = (s.depth[a] >= s.depth[n] ? s.depth[a] : s.depth[n]) + 1, e[2 * a + 1] = e[2 * n + 1] = l, s.heap[1] = l++, Bs(s, e, 1);
   while (s.heap_len >= 2);
   s.heap[--s.heap_max] = s.heap[1], ((d, h) => {
-    const g = h.dyn_tree, A = h.max_code, _ = h.stat_desc.static_tree, m = h.stat_desc.has_stree, f = h.stat_desc.extra_bits, b = h.stat_desc.extra_base, E = h.stat_desc.max_length;
+    const A = h.dyn_tree, p = h.max_code, _ = h.stat_desc.static_tree, m = h.stat_desc.has_stree, f = h.stat_desc.extra_bits, b = h.stat_desc.extra_base, E = h.stat_desc.max_length;
     let u, I, D, w, M, R, x = 0;
     for (w = 0; w <= Ke; w++) d.bl_count[w] = 0;
-    for (g[2 * d.heap[d.heap_max] + 1] = 0, u = d.heap_max + 1; u < 573; u++) I = d.heap[u], w = g[2 * g[2 * I + 1] + 1] + 1, w > E && (w = E, x++), g[2 * I + 1] = w, I > A || (d.bl_count[w]++, M = 0, I >= b && (M = f[I - b]), R = g[2 * I], d.opt_len += R * (w + M), m && (d.static_len += R * (_[2 * I + 1] + M)));
+    for (A[2 * d.heap[d.heap_max] + 1] = 0, u = d.heap_max + 1; u < 573; u++) I = d.heap[u], w = A[2 * A[2 * I + 1] + 1] + 1, w > E && (w = E, x++), A[2 * I + 1] = w, I > p || (d.bl_count[w]++, M = 0, I >= b && (M = f[I - b]), R = A[2 * I], d.opt_len += R * (w + M), m && (d.static_len += R * (_[2 * I + 1] + M)));
     if (x !== 0) {
       do {
         for (w = E - 1; d.bl_count[w] === 0; ) w--;
         d.bl_count[w]--, d.bl_count[w + 1] += 2, d.bl_count[E]--, x -= 2;
       } while (x > 0);
-      for (w = E; w !== 0; w--) for (I = d.bl_count[w]; I !== 0; ) D = d.heap[--u], D > A || (g[2 * D + 1] !== w && (d.opt_len += (w - g[2 * D + 1]) * g[2 * D], g[2 * D + 1] = w), I--);
+      for (w = E; w !== 0; w--) for (I = d.bl_count[w]; I !== 0; ) D = d.heap[--u], D > p || (A[2 * D + 1] !== w && (d.opt_len += (w - A[2 * D + 1]) * A[2 * D], A[2 * D + 1] = w), I--);
     }
   })(s, t), vn(e, c, s.bl_count);
 }, Oo = (s, t, e) => {
@@ -4584,18 +4586,18 @@ const ne = (s, t) => {
   return r > i && (r = i), r === 0 ? 0 : (s.avail_in -= r, t.set(s.input.subarray(s.next_in, s.next_in + r), e), s.state.wrap === 1 ? s.adler = li(s.adler, t, r, e) : s.state.wrap === 2 && (s.adler = q(s.adler, t, r, e)), s.next_in += r, s.total_in += r, r);
 }, bn = (s, t) => {
   let e, i, r = s.max_chain_length, o = s.strstart, a = s.prev_length, n = s.nice_match;
-  const l = s.strstart > s.w_size - It ? s.strstart - (s.w_size - It) : 0, c = s.window, d = s.w_mask, h = s.prev, g = s.strstart + ie;
-  let A = c[o + a - 1], _ = c[o + a];
+  const l = s.strstart > s.w_size - It ? s.strstart - (s.w_size - It) : 0, c = s.window, d = s.w_mask, h = s.prev, A = s.strstart + ie;
+  let p = c[o + a - 1], _ = c[o + a];
   s.prev_length >= s.good_match && (r >>= 2), n > s.lookahead && (n = s.lookahead);
   do
-    if (e = t, c[e + a] === _ && c[e + a - 1] === A && c[e] === c[o] && c[++e] === c[o + 1]) {
+    if (e = t, c[e + a] === _ && c[e + a - 1] === p && c[e] === c[o] && c[++e] === c[o + 1]) {
       o += 2, e++;
       do
         ;
-      while (c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && o < g);
-      if (i = ie - (g - o), o = g - ie, i > a) {
+      while (c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && c[++o] === c[++e] && o < A);
+      if (i = ie - (A - o), o = A - ie, i > a) {
         if (s.match_start = t, a = i, i >= n) break;
-        A = c[o + a - 1], _ = c[o + a];
+        p = c[o + a - 1], _ = c[o + a];
       }
     }
   while ((t = h[t & d]) > l && --r != 0);
@@ -4910,17 +4912,17 @@ var zh = { deflate: function(s, t) {
 } };
 const _i = 16209;
 var Jh = function(s, t) {
-  let e, i, r, o, a, n, l, c, d, h, g, A, _, m, f, b, E, u, I, D, w, M, R, x;
+  let e, i, r, o, a, n, l, c, d, h, A, p, _, m, f, b, E, u, I, D, w, M, R, x;
   const S = s.state;
-  e = s.next_in, R = s.input, i = e + (s.avail_in - 5), r = s.next_out, x = s.output, o = r - (t - s.avail_out), a = r + (s.avail_out - 257), n = S.dmax, l = S.wsize, c = S.whave, d = S.wnext, h = S.window, g = S.hold, A = S.bits, _ = S.lencode, m = S.distcode, f = (1 << S.lenbits) - 1, b = (1 << S.distbits) - 1;
+  e = s.next_in, R = s.input, i = e + (s.avail_in - 5), r = s.next_out, x = s.output, o = r - (t - s.avail_out), a = r + (s.avail_out - 257), n = S.dmax, l = S.wsize, c = S.whave, d = S.wnext, h = S.window, A = S.hold, p = S.bits, _ = S.lencode, m = S.distcode, f = (1 << S.lenbits) - 1, b = (1 << S.distbits) - 1;
   t: do {
-    A < 15 && (g += R[e++] << A, A += 8, g += R[e++] << A, A += 8), E = _[g & f];
+    p < 15 && (A += R[e++] << p, p += 8, A += R[e++] << p, p += 8), E = _[A & f];
     e: for (; ; ) {
-      if (u = E >>> 24, g >>>= u, A -= u, u = E >>> 16 & 255, u === 0) x[r++] = 65535 & E;
+      if (u = E >>> 24, A >>>= u, p -= u, u = E >>> 16 & 255, u === 0) x[r++] = 65535 & E;
       else {
         if (!(16 & u)) {
           if ((64 & u) == 0) {
-            E = _[(65535 & E) + (g & (1 << u) - 1)];
+            E = _[(65535 & E) + (A & (1 << u) - 1)];
             continue e;
           }
           if (32 & u) {
@@ -4930,21 +4932,21 @@ var Jh = function(s, t) {
           s.msg = "invalid literal/length code", S.mode = _i;
           break t;
         }
-        I = 65535 & E, u &= 15, u && (A < u && (g += R[e++] << A, A += 8), I += g & (1 << u) - 1, g >>>= u, A -= u), A < 15 && (g += R[e++] << A, A += 8, g += R[e++] << A, A += 8), E = m[g & b];
+        I = 65535 & E, u &= 15, u && (p < u && (A += R[e++] << p, p += 8), I += A & (1 << u) - 1, A >>>= u, p -= u), p < 15 && (A += R[e++] << p, p += 8, A += R[e++] << p, p += 8), E = m[A & b];
         i: for (; ; ) {
-          if (u = E >>> 24, g >>>= u, A -= u, u = E >>> 16 & 255, !(16 & u)) {
+          if (u = E >>> 24, A >>>= u, p -= u, u = E >>> 16 & 255, !(16 & u)) {
             if ((64 & u) == 0) {
-              E = m[(65535 & E) + (g & (1 << u) - 1)];
+              E = m[(65535 & E) + (A & (1 << u) - 1)];
               continue i;
             }
             s.msg = "invalid distance code", S.mode = _i;
             break t;
           }
-          if (D = 65535 & E, u &= 15, A < u && (g += R[e++] << A, A += 8, A < u && (g += R[e++] << A, A += 8)), D += g & (1 << u) - 1, D > n) {
+          if (D = 65535 & E, u &= 15, p < u && (A += R[e++] << p, p += 8, p < u && (A += R[e++] << p, p += 8)), D += A & (1 << u) - 1, D > n) {
             s.msg = "invalid distance too far back", S.mode = _i;
             break t;
           }
-          if (g >>>= u, A -= u, u = r - o, D > u) {
+          if (A >>>= u, p -= u, u = r - o, D > u) {
             if (u = D - u, u > c && S.sane) {
               s.msg = "invalid distance too far back", S.mode = _i;
               break t;
@@ -4993,12 +4995,12 @@ var Jh = function(s, t) {
       break;
     }
   } while (e < i && r < a);
-  I = A >> 3, e -= I, A -= I << 3, g &= (1 << A) - 1, s.next_in = e, s.next_out = r, s.avail_in = e < i ? i - e + 5 : 5 - (e - i), s.avail_out = r < a ? a - r + 257 : 257 - (r - a), S.hold = g, S.bits = A;
+  I = p >> 3, e -= I, p -= I << 3, A &= (1 << p) - 1, s.next_in = e, s.next_out = r, s.avail_in = e < i ? i - e + 5 : 5 - (e - i), s.avail_out = r < a ? a - r + 257 : 257 - (r - a), S.hold = A, S.bits = p;
 };
 const Ei = 15, jh = new Uint16Array([3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258, 0, 0]), Wh = new Uint8Array([16, 16, 16, 16, 16, 16, 16, 16, 17, 17, 17, 17, 18, 18, 18, 18, 19, 19, 19, 19, 20, 20, 20, 20, 21, 21, 21, 21, 16, 199, 75]), Vh = new Uint16Array([1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577, 0, 0]), qh = new Uint8Array([16, 16, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 23, 24, 24, 25, 25, 26, 26, 27, 27, 28, 28, 29, 29, 64, 64]);
 var We = (s, t, e, i, r, o, a, n) => {
   const l = n.bits;
-  let c, d, h, g, A, _, m = 0, f = 0, b = 0, E = 0, u = 0, I = 0, D = 0, w = 0, M = 0, R = 0, x = null;
+  let c, d, h, A, p, _, m = 0, f = 0, b = 0, E = 0, u = 0, I = 0, D = 0, w = 0, M = 0, R = 0, x = null;
   const S = new Uint16Array(16), P = new Uint16Array(16);
   let nt, Pt, mt, Wt = null;
   for (m = 0; m <= Ei; m++) S[m] = 0;
@@ -5010,24 +5012,24 @@ var We = (s, t, e, i, r, o, a, n) => {
   if (w > 0 && (s === 0 || E !== 1)) return -1;
   for (P[1] = 0, m = 1; m < Ei; m++) P[m + 1] = P[m] + S[m];
   for (f = 0; f < i; f++) t[e + f] !== 0 && (a[P[t[e + f]]++] = f);
-  if (s === 0 ? (x = Wt = a, _ = 20) : s === 1 ? (x = jh, Wt = Wh, _ = 257) : (x = Vh, Wt = qh, _ = 0), R = 0, f = 0, m = b, A = o, I = u, D = 0, h = -1, M = 1 << u, g = M - 1, s === 1 && M > 852 || s === 2 && M > 592) return 1;
+  if (s === 0 ? (x = Wt = a, _ = 20) : s === 1 ? (x = jh, Wt = Wh, _ = 257) : (x = Vh, Wt = qh, _ = 0), R = 0, f = 0, m = b, p = o, I = u, D = 0, h = -1, M = 1 << u, A = M - 1, s === 1 && M > 852 || s === 2 && M > 592) return 1;
   for (; ; ) {
     nt = m - D, a[f] + 1 < _ ? (Pt = 0, mt = a[f]) : a[f] >= _ ? (Pt = Wt[a[f] - _], mt = x[a[f] - _]) : (Pt = 96, mt = 0), c = 1 << m - D, d = 1 << I, b = d;
     do
-      d -= c, r[A + (R >> D) + d] = nt << 24 | Pt << 16 | mt | 0;
+      d -= c, r[p + (R >> D) + d] = nt << 24 | Pt << 16 | mt | 0;
     while (d !== 0);
     for (c = 1 << m - 1; R & c; ) c >>= 1;
     if (c !== 0 ? (R &= c - 1, R += c) : R = 0, f++, --S[m] == 0) {
       if (m === E) break;
       m = t[e + a[f]];
     }
-    if (m > u && (R & g) !== h) {
-      for (D === 0 && (D = u), A += b, I = m - D, w = 1 << I; I + D < E && (w -= S[I + D], !(w <= 0)); ) I++, w <<= 1;
+    if (m > u && (R & A) !== h) {
+      for (D === 0 && (D = u), p += b, I = m - D, w = 1 << I; I + D < E && (w -= S[I + D], !(w <= 0)); ) I++, w <<= 1;
       if (M += 1 << I, s === 1 && M > 852 || s === 2 && M > 592) return 1;
-      h = R & g, r[h] = u << 24 | I << 16 | A - o | 0;
+      h = R & A, r[h] = u << 24 | I << 16 | p - o | 0;
     }
   }
-  return R !== 0 && (r[A + R] = m - D << 24 | 64 << 16 | 0), n.bits = u, 0;
+  return R !== 0 && (r[p + R] = m - D << 24 | 64 << 16 | 0), n.bits = u, 0;
 };
 const { Z_FINISH: Lo, Z_BLOCK: Zh, Z_TREES: wi, Z_OK: se, Z_STREAM_END: Xh, Z_NEED_DICT: tA, Z_STREAM_ERROR: ut, Z_DATA_ERROR: Rn, Z_MEM_ERROR: Dn, Z_BUF_ERROR: eA, Z_DEFLATED: Yo } = is, rs = 16180, Ji = 16190, Rt = 16191, Rs = 16192, Ds = 16194, bi = 16199, yi = 16200, Ms = 16206, z = 16209, No = (s) => (s >>> 24 & 255) + (s >>> 8 & 65280) + ((65280 & s) << 8) + ((255 & s) << 24);
 function iA() {
@@ -5076,12 +5078,12 @@ const sA = (s) => {
   return o.window === null && (o.window = new Uint8Array(1 << o.wbits)), o.wsize === 0 && (o.wsize = 1 << o.wbits, o.wnext = 0, o.whave = 0), i >= o.wsize ? (o.window.set(t.subarray(e - o.wsize, e), 0), o.wnext = 0, o.whave = o.wsize) : (r = o.wsize - o.wnext, r > i && (r = i), o.window.set(t.subarray(e - i, e - i + r), o.wnext), (i -= r) ? (o.window.set(t.subarray(e - i, e), 0), o.wnext = i, o.whave = o.wsize) : (o.wnext += r, o.wnext === o.wsize && (o.wnext = 0), o.whave < o.wsize && (o.whave += r))), 0;
 };
 var rA = (s, t) => {
-  let e, i, r, o, a, n, l, c, d, h, g, A, _, m, f, b, E, u, I, D, w, M, R = 0;
+  let e, i, r, o, a, n, l, c, d, h, A, p, _, m, f, b, E, u, I, D, w, M, R = 0;
   const x = new Uint8Array(4);
   let S, P;
   const nt = new Uint8Array([16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]);
   if (re(s) || !s.output || !s.input && s.avail_in !== 0) return ut;
-  e = s.state, e.mode === Rt && (e.mode = Rs), a = s.next_out, r = s.output, l = s.avail_out, o = s.next_in, i = s.input, n = s.avail_in, c = e.hold, d = e.bits, h = n, g = l, M = se;
+  e = s.state, e.mode === Rt && (e.mode = Rs), a = s.next_out, r = s.output, l = s.avail_out, o = s.next_in, i = s.input, n = s.avail_in, c = e.hold, d = e.bits, h = n, A = l, M = se;
   t: for (; ; ) switch (e.mode) {
     case rs:
       if (e.wrap === 0) {
@@ -5146,26 +5148,26 @@ var rA = (s, t) => {
       } else e.head && (e.head.extra = null);
       e.mode = 16185;
     case 16185:
-      if (1024 & e.flags && (A = e.length, A > n && (A = n), A && (e.head && (w = e.head.extra_len - e.length, e.head.extra || (e.head.extra = new Uint8Array(e.head.extra_len)), e.head.extra.set(i.subarray(o, o + A), w)), 512 & e.flags && 4 & e.wrap && (e.check = q(e.check, i, A, o)), n -= A, o += A, e.length -= A), e.length)) break t;
+      if (1024 & e.flags && (p = e.length, p > n && (p = n), p && (e.head && (w = e.head.extra_len - e.length, e.head.extra || (e.head.extra = new Uint8Array(e.head.extra_len)), e.head.extra.set(i.subarray(o, o + p), w)), 512 & e.flags && 4 & e.wrap && (e.check = q(e.check, i, p, o)), n -= p, o += p, e.length -= p), e.length)) break t;
       e.length = 0, e.mode = 16186;
     case 16186:
       if (2048 & e.flags) {
         if (n === 0) break t;
-        A = 0;
+        p = 0;
         do
-          w = i[o + A++], e.head && w && e.length < 65536 && (e.head.name += String.fromCharCode(w));
-        while (w && A < n);
-        if (512 & e.flags && 4 & e.wrap && (e.check = q(e.check, i, A, o)), n -= A, o += A, w) break t;
+          w = i[o + p++], e.head && w && e.length < 65536 && (e.head.name += String.fromCharCode(w));
+        while (w && p < n);
+        if (512 & e.flags && 4 & e.wrap && (e.check = q(e.check, i, p, o)), n -= p, o += p, w) break t;
       } else e.head && (e.head.name = null);
       e.length = 0, e.mode = 16187;
     case 16187:
       if (4096 & e.flags) {
         if (n === 0) break t;
-        A = 0;
+        p = 0;
         do
-          w = i[o + A++], e.head && w && e.length < 65536 && (e.head.comment += String.fromCharCode(w));
-        while (w && A < n);
-        if (512 & e.flags && 4 & e.wrap && (e.check = q(e.check, i, A, o)), n -= A, o += A, w) break t;
+          w = i[o + p++], e.head && w && e.length < 65536 && (e.head.comment += String.fromCharCode(w));
+        while (w && p < n);
+        if (512 & e.flags && 4 & e.wrap && (e.check = q(e.check, i, p, o)), n -= p, o += p, w) break t;
       } else e.head && (e.head.comment = null);
       e.mode = 16188;
     case 16188:
@@ -5233,9 +5235,9 @@ var rA = (s, t) => {
     case Ds:
       e.mode = 16195;
     case 16195:
-      if (A = e.length, A) {
-        if (A > n && (A = n), A > l && (A = l), A === 0) break t;
-        r.set(i.subarray(o, o + A), a), n -= A, o += A, l -= A, a += A, e.length -= A;
+      if (p = e.length, p) {
+        if (p > n && (p = n), p > l && (p = l), p === 0) break t;
+        r.set(i.subarray(o, o + p), a), n -= p, o += p, l -= p, a += p, e.length -= p;
         break;
       }
       e.mode = Rt;
@@ -5281,25 +5283,25 @@ var rA = (s, t) => {
               s.msg = "invalid bit length repeat", e.mode = z;
               break;
             }
-            w = e.lens[e.have - 1], A = 3 + (3 & c), c >>>= 2, d -= 2;
+            w = e.lens[e.have - 1], p = 3 + (3 & c), c >>>= 2, d -= 2;
           } else if (E === 17) {
             for (P = f + 3; d < P; ) {
               if (n === 0) break t;
               n--, c += i[o++] << d, d += 8;
             }
-            c >>>= f, d -= f, w = 0, A = 3 + (7 & c), c >>>= 3, d -= 3;
+            c >>>= f, d -= f, w = 0, p = 3 + (7 & c), c >>>= 3, d -= 3;
           } else {
             for (P = f + 7; d < P; ) {
               if (n === 0) break t;
               n--, c += i[o++] << d, d += 8;
             }
-            c >>>= f, d -= f, w = 0, A = 11 + (127 & c), c >>>= 7, d -= 7;
+            c >>>= f, d -= f, w = 0, p = 11 + (127 & c), c >>>= 7, d -= 7;
           }
-          if (e.have + A > e.nlen + e.ndist) {
+          if (e.have + p > e.nlen + e.ndist) {
             s.msg = "invalid bit length repeat", e.mode = z;
             break;
           }
-          for (; A--; ) e.lens[e.have++] = w;
+          for (; p--; ) e.lens[e.have++] = w;
         }
       }
       if (e.mode === z) break;
@@ -5320,7 +5322,7 @@ var rA = (s, t) => {
       e.mode = yi;
     case yi:
       if (n >= 6 && l >= 258) {
-        s.next_out = a, s.avail_out = l, s.next_in = o, s.avail_in = n, e.hold = c, e.bits = d, Jh(s, g), a = s.next_out, r = s.output, l = s.avail_out, o = s.next_in, i = s.input, n = s.avail_in, c = e.hold, d = e.bits, e.mode === Rt && (e.back = -1);
+        s.next_out = a, s.avail_out = l, s.next_in = o, s.avail_in = n, e.hold = c, e.bits = d, Jh(s, A), a = s.next_out, r = s.output, l = s.avail_out, o = s.next_in, i = s.input, n = s.avail_in, c = e.hold, d = e.bits, e.mode === Rt && (e.back = -1);
         break;
       }
       for (e.back = 0; R = e.lencode[c & (1 << e.lenbits) - 1], f = R >>> 24, b = R >>> 16 & 255, E = 65535 & R, !(f <= d); ) {
@@ -5388,17 +5390,17 @@ var rA = (s, t) => {
       e.mode = 16204;
     case 16204:
       if (l === 0) break t;
-      if (A = g - l, e.offset > A) {
-        if (A = e.offset - A, A > e.whave && e.sane) {
+      if (p = A - l, e.offset > p) {
+        if (p = e.offset - p, p > e.whave && e.sane) {
           s.msg = "invalid distance too far back", e.mode = z;
           break;
         }
-        A > e.wnext ? (A -= e.wnext, _ = e.wsize - A) : _ = e.wnext - A, A > e.length && (A = e.length), m = e.window;
-      } else m = r, _ = a - e.offset, A = e.length;
-      A > l && (A = l), l -= A, e.length -= A;
+        p > e.wnext ? (p -= e.wnext, _ = e.wsize - p) : _ = e.wnext - p, p > e.length && (p = e.length), m = e.window;
+      } else m = r, _ = a - e.offset, p = e.length;
+      p > l && (p = l), l -= p, e.length -= p;
       do
         r[a++] = m[_++];
-      while (--A);
+      while (--p);
       e.length === 0 && (e.mode = yi);
       break;
     case 16205:
@@ -5411,7 +5413,7 @@ var rA = (s, t) => {
           if (n === 0) break t;
           n--, c |= i[o++] << d, d += 8;
         }
-        if (g -= l, s.total_out += g, e.total += g, 4 & e.wrap && g && (s.adler = e.check = e.flags ? q(e.check, r, g, a - g) : li(e.check, r, g, a - g)), g = l, 4 & e.wrap && (e.flags ? c : No(c)) !== e.check) {
+        if (A -= l, s.total_out += A, e.total += A, 4 & e.wrap && A && (s.adler = e.check = e.flags ? q(e.check, r, A, a - A) : li(e.check, r, A, a - A)), A = l, 4 & e.wrap && (e.flags ? c : No(c)) !== e.check) {
           s.msg = "incorrect data check", e.mode = z;
           break;
         }
@@ -5442,7 +5444,7 @@ var rA = (s, t) => {
     default:
       return ut;
   }
-  return s.next_out = a, s.avail_out = l, s.next_in = o, s.avail_in = n, e.hold = c, e.bits = d, (e.wsize || g !== s.avail_out && e.mode < z && (e.mode < Ms || t !== Lo)) && Fn(s, s.output, s.next_out, g - s.avail_out), h -= s.avail_in, g -= s.avail_out, s.total_in += h, s.total_out += g, e.total += g, 4 & e.wrap && g && (s.adler = e.check = e.flags ? q(e.check, r, g, s.next_out - g) : li(e.check, r, g, s.next_out - g)), s.data_type = e.bits + (e.last ? 64 : 0) + (e.mode === Rt ? 128 : 0) + (e.mode === bi || e.mode === Ds ? 256 : 0), (h === 0 && g === 0 || t === Lo) && M === se && (M = eA), M;
+  return s.next_out = a, s.avail_out = l, s.next_in = o, s.avail_in = n, e.hold = c, e.bits = d, (e.wsize || A !== s.avail_out && e.mode < z && (e.mode < Ms || t !== Lo)) && Fn(s, s.output, s.next_out, A - s.avail_out), h -= s.avail_in, A -= s.avail_out, s.total_in += h, s.total_out += A, e.total += A, 4 & e.wrap && A && (s.adler = e.check = e.flags ? q(e.check, r, A, s.next_out - A) : li(e.check, r, A, s.next_out - A)), s.data_type = e.bits + (e.last ? 64 : 0) + (e.mode === Rt ? 128 : 0) + (e.mode === bi || e.mode === Ds ? 256 : 0), (h === 0 && A === 0 || t === Lo) && M === se && (M = eA), M;
 }, bt = { inflateReset: Tn, inflateReset2: kn, inflateResetKeep: Mn, inflateInit: (s) => Ko(s, 15), inflateInit2: Ko, inflate: rA, inflateEnd: (s) => {
   if (re(s)) return ut;
   let t = s.state;
@@ -6105,8 +6107,8 @@ class jt extends kr {
       const l = (i + this.SEG_HEADER_LEN) % this.IROM_ALIGN, c = 16;
       let d = 0;
       this.securePad === "1" ? d = 112 : this.securePad === "2" && (d = 32);
-      const h = (this.IROM_ALIGN - l - c - d) % this.IROM_ALIGN, g = new zt(0, new Uint8Array(h).fill(0), i);
-      r = this.saveSegment(e, i, g, r), i += 8 + h, t++;
+      const h = (this.IROM_ALIGN - l - c - d) % this.IROM_ALIGN, A = new zt(0, new Uint8Array(h).fill(0), i);
+      r = this.saveSegment(e, i, A, r), i += 8 + h, t++;
     }
     this.ramOnlyHeader || (this.appendChecksum(e, i, r), i = qe(i, 16));
     const n = i;
@@ -6509,7 +6511,7 @@ class DA {
       const a = r, n = r + t, l = this.chip.getChipRevision ? await this.chip.getChipRevision(this) : void 0, c = await Xo(this.chip.CHIP_NAME, l);
       if (c) {
         const d = [[c.bss_start || c.data_start, c.data_start + c.decodedData.length], [c.text_start, c.text_start + c.decodedText.length]];
-        for (const [h, g] of d) if (a < g && n > h) throw new Q(`Software loader is resident at 0x${h.toString(16).padStart(8, "0")}-0x${g.toString(16).padStart(8, "0")}.
+        for (const [h, A] of d) if (a < A && n > h) throw new Q(`Software loader is resident at 0x${h.toString(16).padStart(8, "0")}-0x${A.toString(16).padStart(8, "0")}.
             Can't load binary at overlapping address range 0x${a.toString(16).padStart(8, "0")}-0x${n.toString(16).padStart(8, "0")}.
             Either change binary loading address, or use the no-stub option to disable the software loader.`);
       }
@@ -6579,7 +6581,7 @@ class DA {
     await this.checkCommand("leave compressed flash mode", this.ESP_FLASH_DEFL_END, r, void 0, void 0, e);
   }
   async runSpiflashCommand(t, e, i, r = null, o = 0, a = 0) {
-    const n = this.chip.SPI_REG_BASE, l = n + 0, c = n + 4, d = n + this.chip.SPI_USR_OFFS, h = n + this.chip.SPI_USR1_OFFS, g = n + this.chip.SPI_USR2_OFFS, A = n + this.chip.SPI_W0_OFFS;
+    const n = this.chip.SPI_REG_BASE, l = n + 0, c = n + 4, d = n + this.chip.SPI_USR_OFFS, h = n + this.chip.SPI_USR1_OFFS, A = n + this.chip.SPI_USR2_OFFS, p = n + this.chip.SPI_W0_OFFS;
     let _;
     _ = this.chip.SPI_MOSI_DLEN_OFFS != null ? async (R, x) => {
       const S = n + this.chip.SPI_MOSI_DLEN_OFFS, P = n + this.chip.SPI_MISO_DLEN_OFFS;
@@ -6594,22 +6596,22 @@ class DA {
     const m = 1 << 18, f = 26;
     if (i > 32) throw new Q("Reading more than 32 bits back from a SPI flash operation is unsupported");
     if (e.length > 64) throw new Q("Writing more than 64 bytes of data with one SPI command is unsupported");
-    const b = 8 * e.length, E = await this.readReg(d), u = await this.readReg(g);
+    const b = 8 * e.length, E = await this.readReg(d), u = await this.readReg(A);
     let I = 1 << 31;
     i > 0 && (I |= 268435456), b > 0 && (I |= 134217728), o > 0 && (I |= 1073741824), a > 0 && (I |= 536870912), await _(b, i), await this.writeReg(d, I);
     let D, w = 7 << 28 | t;
-    if (await this.writeReg(g, w), r && o > 0 && (this.SPI_ADDR_REG_MSB && (r <<= 32 - o), await this.writeReg(c, r)), b == 0) await this.writeReg(A, 0);
+    if (await this.writeReg(A, w), r && o > 0 && (this.SPI_ADDR_REG_MSB && (r <<= 32 - o), await this.writeReg(c, r)), b == 0) await this.writeReg(p, 0);
     else {
       e = er(e, 4, 0);
       const R = [];
       for (let S = 0; S < e.length; S += 4) R.push((e[S] | e[S + 1] << 8 | e[S + 2] << 16 | e[S + 3] << 24) >>> 0);
-      let x = A;
+      let x = p;
       for (const S of R) await this.writeReg(x, S), x += 4;
     }
     for (await this.writeReg(l, m), D = 0; D < 10 && (w = await this.readReg(l) & m, w != 0); D++) ;
     if (D === 10) throw new Q("SPI command did not complete in time");
-    const M = await this.readReg(A);
-    return await this.writeReg(d, E), await this.writeReg(g, u), M;
+    const M = await this.readReg(p);
+    return await this.writeReg(d, E), await this.writeReg(A, u), M;
   }
   async readFlashId() {
     const t = new Uint8Array(0);
@@ -6656,8 +6658,8 @@ class DA {
       const n = a === 0 ? e.text_start : e.data_start, l = i[a].length, c = Math.floor((l + this.ESP_RAM_BLOCK - 1) / this.ESP_RAM_BLOCK);
       await this.memBegin(l, c, this.ESP_RAM_BLOCK, n);
       for (let d = 0; d < c; d++) {
-        const h = d * this.ESP_RAM_BLOCK, g = h + this.ESP_RAM_BLOCK;
-        await this.memBlock(i[a].slice(h, g), d);
+        const h = d * this.ESP_RAM_BLOCK, A = h + this.ESP_RAM_BLOCK;
+        await this.memBlock(i[a].slice(h, A), d);
       }
     }
     this.info("Running stub..."), await this.memFinish(e.entry);
@@ -6719,18 +6721,18 @@ any other hardware connected to IOs.`);
       const _ = await this.detectFlashSize();
       this.info("Detected flash size set to " + _), h = this.parseFlashSizeArg(_);
     } else h = this.parseFlashSizeArg(o);
-    const g = n << 8 | d + h;
-    this.info("Flash params set to " + g.toString(16));
-    const A = new Uint8Array(t);
-    if (t[2] !== n && (A[2] = n), t[3] !== d + h && (A[3] = d + h), c) {
-      const _ = await ia(this.chip, A), m = A.slice(0, _.datalength), f = A.slice(_.datalength + _.SHA256_DIGEST_LEN), b = await crypto.subtle.digest("SHA-256", f), E = new Uint8Array(b), u = new Uint8Array(m.length + E.length + f.length);
+    const A = n << 8 | d + h;
+    this.info("Flash params set to " + A.toString(16));
+    const p = new Uint8Array(t);
+    if (t[2] !== n && (p[2] = n), t[3] !== d + h && (p[3] = d + h), c) {
+      const _ = await ia(this.chip, p), m = p.slice(0, _.datalength), f = p.slice(_.datalength + _.SHA256_DIGEST_LEN), b = await crypto.subtle.digest("SHA-256", f), E = new Uint8Array(b), u = new Uint8Array(m.length + E.length + f.length);
       u.set(m, 0), u.set(E, m.length), u.set(f, m.length + E.length);
       const I = u.slice(_.datalength, _.datalength + _.SHA256_DIGEST_LEN);
       return this.transport.hexify(E) === this.transport.hexify(I) ? this.info("SHA digest in image updated") : this.info(`WARNING: SHA recalculation for binary failed!
 	Expected calculated SHA: ${this.transport.hexify(E)}
 	SHA stored in binary:    ${this.transport.hexify(I)}`), u;
     }
-    return A;
+    return p;
   }
   async writeFlash(t) {
     if (this.debug("EspLoader program"), t.flashSize !== "keep") {
@@ -6754,8 +6756,8 @@ any other hardware connected to IOs.`);
       const d = e.length;
       t.reportProgress && t.reportProgress(r, 0, d);
       let h = /* @__PURE__ */ new Date();
-      const g = h.getTime();
-      let A = 5e3;
+      const A = h.getTime();
+      let p = 5e3;
       const _ = new gA({ chunkSize: 1 });
       let m = 0;
       _.onData = function(E) {
@@ -6771,12 +6773,12 @@ any other hardware connected to IOs.`);
           _.push(u, I);
           const w = m - D;
           let M = 3e3;
-          this.timeoutPerMb(this.ERASE_WRITE_TIMEOUT_PER_MB, w) > 3e3 && (M = this.timeoutPerMb(this.ERASE_WRITE_TIMEOUT_PER_MB, w)), this.IS_STUB === !1 && (A = M), await this.flashDeflBlock(u, l, A), this.IS_STUB && (A = M);
+          this.timeoutPerMb(this.ERASE_WRITE_TIMEOUT_PER_MB, w) > 3e3 && (M = this.timeoutPerMb(this.ERASE_WRITE_TIMEOUT_PER_MB, w)), this.IS_STUB === !1 && (p = M), await this.flashDeflBlock(u, l, p), this.IS_STUB && (p = M);
         }
         c += u.length, f += E, l++, t.reportProgress && t.reportProgress(r, c, d);
       }
-      this.IS_STUB && (t.compress ? await this.flashDeflFinish(!1, A) : await this.flashFinish(!1, A)), h = /* @__PURE__ */ new Date();
-      const b = h.getTime() - g;
+      this.IS_STUB && (t.compress ? await this.flashDeflFinish(!1, p) : await this.flashFinish(!1, p)), h = /* @__PURE__ */ new Date();
+      const b = h.getTime() - A;
       if (t.compress && this.info("Wrote " + a + " bytes (" + c + " compressed) at 0x" + i.toString(16) + " in " + b / 1e3 + " seconds."), o) {
         this.info("File  md5: " + o);
         const E = await this.flashMd5sum(i, a);
@@ -7095,7 +7097,7 @@ class tt extends TA {
     await 0, !this.toggle || this.disabled || this.softDisabled || t.defaultPrevented || (this.selected = !this.selected, this.dispatchEvent(new InputEvent("input", { bubbles: !0, composed: !0 })), this.dispatchEvent(new Event("change", { bubbles: !0 })));
   }
 }
-rn(tt), tt.formAssociated = !0, tt.shadowRootOptions = { mode: "open", delegatesFocus: !0 }, p([v({ type: Boolean, reflect: !0 })], tt.prototype, "disabled", void 0), p([v({ type: Boolean, attribute: "soft-disabled", reflect: !0 })], tt.prototype, "softDisabled", void 0), p([v({ type: Boolean, attribute: "flip-icon-in-rtl" })], tt.prototype, "flipIconInRtl", void 0), p([v()], tt.prototype, "href", void 0), p([v()], tt.prototype, "download", void 0), p([v()], tt.prototype, "target", void 0), p([v({ attribute: "aria-label-selected" })], tt.prototype, "ariaLabelSelected", void 0), p([v({ type: Boolean })], tt.prototype, "toggle", void 0), p([v({ type: Boolean, reflect: !0 })], tt.prototype, "selected", void 0), p([v()], tt.prototype, "type", void 0), p([v({ reflect: !0 })], tt.prototype, "value", void 0), p([F()], tt.prototype, "flipIcon", void 0);
+rn(tt), tt.formAssociated = !0, tt.shadowRootOptions = { mode: "open", delegatesFocus: !0 }, g([v({ type: Boolean, reflect: !0 })], tt.prototype, "disabled", void 0), g([v({ type: Boolean, attribute: "soft-disabled", reflect: !0 })], tt.prototype, "softDisabled", void 0), g([v({ type: Boolean, attribute: "flip-icon-in-rtl" })], tt.prototype, "flipIconInRtl", void 0), g([v()], tt.prototype, "href", void 0), g([v()], tt.prototype, "download", void 0), g([v()], tt.prototype, "target", void 0), g([v({ attribute: "aria-label-selected" })], tt.prototype, "ariaLabelSelected", void 0), g([v({ type: Boolean })], tt.prototype, "toggle", void 0), g([v({ type: Boolean, reflect: !0 })], tt.prototype, "selected", void 0), g([v()], tt.prototype, "type", void 0), g([v({ reflect: !0 })], tt.prototype, "value", void 0), g([F()], tt.prototype, "flipIcon", void 0);
 const kA = L`:host{display:inline-flex;outline:none;-webkit-tap-highlight-color:rgba(0,0,0,0);height:var(--_container-height);width:var(--_container-width);justify-content:center}:host([touch-target=wrapper]){margin:max(0px,(48px - var(--_container-height))/2) max(0px,(48px - var(--_container-width))/2)}md-focus-ring{--md-focus-ring-shape-start-start: var(--_container-shape-start-start);--md-focus-ring-shape-start-end: var(--_container-shape-start-end);--md-focus-ring-shape-end-end: var(--_container-shape-end-end);--md-focus-ring-shape-end-start: var(--_container-shape-end-start)}:host(:is([disabled],[soft-disabled])){pointer-events:none}.icon-button{place-items:center;background:none;border:none;box-sizing:border-box;cursor:pointer;display:flex;place-content:center;outline:none;padding:0;position:relative;text-decoration:none;user-select:none;z-index:0;flex:1;border-start-start-radius:var(--_container-shape-start-start);border-start-end-radius:var(--_container-shape-start-end);border-end-start-radius:var(--_container-shape-end-start);border-end-end-radius:var(--_container-shape-end-end)}.icon ::slotted(*){font-size:var(--_icon-size);height:var(--_icon-size);width:var(--_icon-size);font-weight:inherit}md-ripple{z-index:-1;border-start-start-radius:var(--_container-shape-start-start);border-start-end-radius:var(--_container-shape-start-end);border-end-start-radius:var(--_container-shape-end-start);border-end-end-radius:var(--_container-shape-end-end)}.flip-icon .icon{transform:scaleX(-1)}.icon{display:inline-flex}.link{display:grid;height:100%;outline:none;place-items:center;position:absolute;width:100%}.touch{position:absolute;height:max(48px,100%);width:max(48px,100%)}:host([touch-target=none]) .touch{display:none}@media(forced-colors: active){:host(:is([disabled],[soft-disabled])){--_disabled-icon-color: GrayText;--_disabled-icon-opacity: 1}}
 `, FA = L`:host{--_disabled-icon-color: var(--md-icon-button-disabled-icon-color, var(--md-sys-color-on-surface, #1d1b20));--_disabled-icon-opacity: var(--md-icon-button-disabled-icon-opacity, 0.38);--_icon-size: var(--md-icon-button-icon-size, 24px);--_selected-focus-icon-color: var(--md-icon-button-selected-focus-icon-color, var(--md-sys-color-primary, #6750a4));--_selected-hover-icon-color: var(--md-icon-button-selected-hover-icon-color, var(--md-sys-color-primary, #6750a4));--_selected-hover-state-layer-color: var(--md-icon-button-selected-hover-state-layer-color, var(--md-sys-color-primary, #6750a4));--_selected-hover-state-layer-opacity: var(--md-icon-button-selected-hover-state-layer-opacity, 0.08);--_selected-icon-color: var(--md-icon-button-selected-icon-color, var(--md-sys-color-primary, #6750a4));--_selected-pressed-icon-color: var(--md-icon-button-selected-pressed-icon-color, var(--md-sys-color-primary, #6750a4));--_selected-pressed-state-layer-color: var(--md-icon-button-selected-pressed-state-layer-color, var(--md-sys-color-primary, #6750a4));--_selected-pressed-state-layer-opacity: var(--md-icon-button-selected-pressed-state-layer-opacity, 0.12);--_state-layer-height: var(--md-icon-button-state-layer-height, 40px);--_state-layer-shape: var(--md-icon-button-state-layer-shape, var(--md-sys-shape-corner-full, 9999px));--_state-layer-width: var(--md-icon-button-state-layer-width, 40px);--_focus-icon-color: var(--md-icon-button-focus-icon-color, var(--md-sys-color-on-surface-variant, #49454f));--_hover-icon-color: var(--md-icon-button-hover-icon-color, var(--md-sys-color-on-surface-variant, #49454f));--_hover-state-layer-color: var(--md-icon-button-hover-state-layer-color, var(--md-sys-color-on-surface-variant, #49454f));--_hover-state-layer-opacity: var(--md-icon-button-hover-state-layer-opacity, 0.08);--_icon-color: var(--md-icon-button-icon-color, var(--md-sys-color-on-surface-variant, #49454f));--_pressed-icon-color: var(--md-icon-button-pressed-icon-color, var(--md-sys-color-on-surface-variant, #49454f));--_pressed-state-layer-color: var(--md-icon-button-pressed-state-layer-color, var(--md-sys-color-on-surface-variant, #49454f));--_pressed-state-layer-opacity: var(--md-icon-button-pressed-state-layer-opacity, 0.12);--_container-shape-start-start: 0;--_container-shape-start-end: 0;--_container-shape-end-end: 0;--_container-shape-end-start: 0;--_container-height: 0;--_container-width: 0;height:var(--_state-layer-height);width:var(--_state-layer-width)}:host([touch-target=wrapper]){margin:max(0px,(48px - var(--_state-layer-height))/2) max(0px,(48px - var(--_state-layer-width))/2)}md-focus-ring{--md-focus-ring-shape-start-start: var(--_state-layer-shape);--md-focus-ring-shape-start-end: var(--_state-layer-shape);--md-focus-ring-shape-end-end: var(--_state-layer-shape);--md-focus-ring-shape-end-start: var(--_state-layer-shape)}.standard{background-color:rgba(0,0,0,0);color:var(--_icon-color);--md-ripple-hover-color: var(--_hover-state-layer-color);--md-ripple-hover-opacity: var(--_hover-state-layer-opacity);--md-ripple-pressed-color: var(--_pressed-state-layer-color);--md-ripple-pressed-opacity: var(--_pressed-state-layer-opacity)}.standard:hover{color:var(--_hover-icon-color)}.standard:focus{color:var(--_focus-icon-color)}.standard:active{color:var(--_pressed-icon-color)}.standard:is(:disabled,[aria-disabled=true]){color:var(--_disabled-icon-color)}md-ripple{border-radius:var(--_state-layer-shape)}.standard:is(:disabled,[aria-disabled=true]){opacity:var(--_disabled-icon-opacity)}.selected:not(:disabled,[aria-disabled=true]){color:var(--_selected-icon-color)}.selected:not(:disabled,[aria-disabled=true]):hover{color:var(--_selected-hover-icon-color)}.selected:not(:disabled,[aria-disabled=true]):focus{color:var(--_selected-focus-icon-color)}.selected:not(:disabled,[aria-disabled=true]):active{color:var(--_selected-pressed-icon-color)}.selected{--md-ripple-hover-color: var(--_selected-hover-state-layer-color);--md-ripple-hover-opacity: var(--_selected-hover-state-layer-opacity);--md-ripple-pressed-color: var(--_selected-pressed-state-layer-color);--md-ripple-pressed-opacity: var(--_selected-pressed-state-layer-opacity)}
 `;
@@ -7192,14 +7194,14 @@ class J extends G {
   getLabelKeyframes() {
     const { floatingLabelEl: t, restingLabelEl: e } = this;
     if (!t || !e) return [];
-    const { x: i, y: r, height: o } = t.getBoundingClientRect(), { x: a, y: n, height: l } = e.getBoundingClientRect(), c = t.scrollWidth, d = e.scrollWidth, h = d / c, g = `translateX(${a - i}px) translateY(${n - r + Math.round((l - o * h) / 2)}px) scale(${h})`, A = "translateX(0) translateY(0) scale(1)", _ = e.clientWidth, m = d > _ ? _ / h + "px" : "";
-    return this.focused || this.populated ? [{ transform: g, width: m }, { transform: A, width: m }] : [{ transform: A, width: m }, { transform: g, width: m }];
+    const { x: i, y: r, height: o } = t.getBoundingClientRect(), { x: a, y: n, height: l } = e.getBoundingClientRect(), c = t.scrollWidth, d = e.scrollWidth, h = d / c, A = `translateX(${a - i}px) translateY(${n - r + Math.round((l - o * h) / 2)}px) scale(${h})`, p = "translateX(0) translateY(0) scale(1)", _ = e.clientWidth, m = d > _ ? _ / h + "px" : "";
+    return this.focused || this.populated ? [{ transform: A, width: m }, { transform: p, width: m }] : [{ transform: p, width: m }, { transform: A, width: m }];
   }
   getSurfacePositionClientRect() {
     return this.containerEl.getBoundingClientRect();
   }
 }
-p([v({ type: Boolean })], J.prototype, "disabled", void 0), p([v({ type: Boolean })], J.prototype, "error", void 0), p([v({ type: Boolean })], J.prototype, "focused", void 0), p([v()], J.prototype, "label", void 0), p([v({ type: Boolean, attribute: "no-asterisk" })], J.prototype, "noAsterisk", void 0), p([v({ type: Boolean })], J.prototype, "populated", void 0), p([v({ type: Boolean })], J.prototype, "required", void 0), p([v({ type: Boolean })], J.prototype, "resizable", void 0), p([v({ attribute: "supporting-text" })], J.prototype, "supportingText", void 0), p([v({ attribute: "error-text" })], J.prototype, "errorText", void 0), p([v({ type: Number })], J.prototype, "count", void 0), p([v({ type: Number })], J.prototype, "max", void 0), p([v({ type: Boolean, attribute: "has-start" })], J.prototype, "hasStart", void 0), p([v({ type: Boolean, attribute: "has-end" })], J.prototype, "hasEnd", void 0), p([kt({ slot: "aria-describedby" })], J.prototype, "slottedAriaDescribedBy", void 0), p([F()], J.prototype, "isAnimating", void 0), p([F()], J.prototype, "refreshErrorAlert", void 0), p([F()], J.prototype, "disableTransitions", void 0), p([N(".label.floating")], J.prototype, "floatingLabelEl", void 0), p([N(".label.resting")], J.prototype, "restingLabelEl", void 0), p([N(".container")], J.prototype, "containerEl", void 0);
+g([v({ type: Boolean })], J.prototype, "disabled", void 0), g([v({ type: Boolean })], J.prototype, "error", void 0), g([v({ type: Boolean })], J.prototype, "focused", void 0), g([v()], J.prototype, "label", void 0), g([v({ type: Boolean, attribute: "no-asterisk" })], J.prototype, "noAsterisk", void 0), g([v({ type: Boolean })], J.prototype, "populated", void 0), g([v({ type: Boolean })], J.prototype, "required", void 0), g([v({ type: Boolean })], J.prototype, "resizable", void 0), g([v({ attribute: "supporting-text" })], J.prototype, "supportingText", void 0), g([v({ attribute: "error-text" })], J.prototype, "errorText", void 0), g([v({ type: Number })], J.prototype, "count", void 0), g([v({ type: Number })], J.prototype, "max", void 0), g([v({ type: Boolean, attribute: "has-start" })], J.prototype, "hasStart", void 0), g([v({ type: Boolean, attribute: "has-end" })], J.prototype, "hasEnd", void 0), g([kt({ slot: "aria-describedby" })], J.prototype, "slottedAriaDescribedBy", void 0), g([F()], J.prototype, "isAnimating", void 0), g([F()], J.prototype, "refreshErrorAlert", void 0), g([F()], J.prototype, "disableTransitions", void 0), g([N(".label.floating")], J.prototype, "floatingLabelEl", void 0), g([N(".label.resting")], J.prototype, "restingLabelEl", void 0), g([N(".container")], J.prototype, "containerEl", void 0);
 class PA extends J {
   renderBackground() {
     return y` <div class="background"></div> `;
@@ -7216,7 +7218,7 @@ const UA = L`@layer styles{:host{--_active-indicator-color: var(--md-filled-fiel
 `;
 let Us = class extends PA {
 };
-Us.styles = [QA, UA], Us = p([Jt("md-filled-field")], Us);
+Us.styles = [QA, UA], Us = g([Jt("md-filled-field")], Us);
 const HA = {}, oa = br(class extends yr {
   constructor(s) {
     if (super(s), s.type !== Ht.PROPERTY && s.type !== Ht.ATTRIBUTE && s.type !== Ht.BOOLEAN_ATTRIBUTE) throw Error("The `live` directive is not allowed on child or event bindings");
@@ -7315,14 +7317,14 @@ function Qn(s) {
           }
           return Qs.get(m);
         })(l);
-        let g, A = !1, _ = !1;
+        let A, p = !1, _ = !1;
         h.addEventListener("before", (() => {
-          _ = !0, g = new AbortController(), A = !1, n.addEventListener("invalid", (() => {
-            A = !0;
-          }), { signal: g.signal });
+          _ = !0, A = new AbortController(), p = !1, n.addEventListener("invalid", (() => {
+            p = !0;
+          }), { signal: A.signal });
         }), { signal: d }), h.addEventListener("after", (() => {
           var m;
-          _ = !1, (m = g) === null || m === void 0 || m.abort(), A || c();
+          _ = !1, (m = A) === null || m === void 0 || m.abort(), p || c();
         }), { signal: d }), l.addEventListener("submit", (() => {
           _ || c();
         }), { signal: d });
@@ -7603,7 +7605,7 @@ class k extends YA {
     this.nativeError = !!t, this.nativeErrorText = this.validationMessage, e === this.getErrorText() && ((i = this.field) === null || i === void 0 || i.reannounceError());
   }
 }
-k.shadowRootOptions = { ...G.shadowRootOptions, delegatesFocus: !0 }, p([v({ type: Boolean, reflect: !0 })], k.prototype, "error", void 0), p([v({ attribute: "error-text" })], k.prototype, "errorText", void 0), p([v()], k.prototype, "label", void 0), p([v({ type: Boolean, attribute: "no-asterisk" })], k.prototype, "noAsterisk", void 0), p([v({ type: Boolean, reflect: !0 })], k.prototype, "required", void 0), p([v()], k.prototype, "value", void 0), p([v({ attribute: "prefix-text" })], k.prototype, "prefixText", void 0), p([v({ attribute: "suffix-text" })], k.prototype, "suffixText", void 0), p([v({ type: Boolean, attribute: "has-leading-icon" })], k.prototype, "hasLeadingIcon", void 0), p([v({ type: Boolean, attribute: "has-trailing-icon" })], k.prototype, "hasTrailingIcon", void 0), p([v({ attribute: "supporting-text" })], k.prototype, "supportingText", void 0), p([v({ attribute: "text-direction" })], k.prototype, "textDirection", void 0), p([v({ type: Number })], k.prototype, "rows", void 0), p([v({ type: Number })], k.prototype, "cols", void 0), p([v({ reflect: !0 })], k.prototype, "inputMode", void 0), p([v()], k.prototype, "max", void 0), p([v({ type: Number })], k.prototype, "maxLength", void 0), p([v()], k.prototype, "min", void 0), p([v({ type: Number })], k.prototype, "minLength", void 0), p([v({ type: Boolean, attribute: "no-spinner" })], k.prototype, "noSpinner", void 0), p([v()], k.prototype, "pattern", void 0), p([v({ reflect: !0, converter: $A })], k.prototype, "placeholder", void 0), p([v({ type: Boolean, reflect: !0 })], k.prototype, "readOnly", void 0), p([v({ type: Boolean, reflect: !0 })], k.prototype, "multiple", void 0), p([v()], k.prototype, "step", void 0), p([v({ reflect: !0 })], k.prototype, "type", void 0), p([v({ reflect: !0 })], k.prototype, "autocomplete", void 0), p([F()], k.prototype, "dirty", void 0), p([F()], k.prototype, "focused", void 0), p([F()], k.prototype, "nativeError", void 0), p([F()], k.prototype, "nativeErrorText", void 0), p([N(".input")], k.prototype, "inputOrTextarea", void 0), p([N(".field")], k.prototype, "field", void 0), p([kt({ slot: "leading-icon" })], k.prototype, "leadingIcons", void 0), p([kt({ slot: "trailing-icon" })], k.prototype, "trailingIcons", void 0);
+k.shadowRootOptions = { ...G.shadowRootOptions, delegatesFocus: !0 }, g([v({ type: Boolean, reflect: !0 })], k.prototype, "error", void 0), g([v({ attribute: "error-text" })], k.prototype, "errorText", void 0), g([v()], k.prototype, "label", void 0), g([v({ type: Boolean, attribute: "no-asterisk" })], k.prototype, "noAsterisk", void 0), g([v({ type: Boolean, reflect: !0 })], k.prototype, "required", void 0), g([v()], k.prototype, "value", void 0), g([v({ attribute: "prefix-text" })], k.prototype, "prefixText", void 0), g([v({ attribute: "suffix-text" })], k.prototype, "suffixText", void 0), g([v({ type: Boolean, attribute: "has-leading-icon" })], k.prototype, "hasLeadingIcon", void 0), g([v({ type: Boolean, attribute: "has-trailing-icon" })], k.prototype, "hasTrailingIcon", void 0), g([v({ attribute: "supporting-text" })], k.prototype, "supportingText", void 0), g([v({ attribute: "text-direction" })], k.prototype, "textDirection", void 0), g([v({ type: Number })], k.prototype, "rows", void 0), g([v({ type: Number })], k.prototype, "cols", void 0), g([v({ reflect: !0 })], k.prototype, "inputMode", void 0), g([v()], k.prototype, "max", void 0), g([v({ type: Number })], k.prototype, "maxLength", void 0), g([v()], k.prototype, "min", void 0), g([v({ type: Number })], k.prototype, "minLength", void 0), g([v({ type: Boolean, attribute: "no-spinner" })], k.prototype, "noSpinner", void 0), g([v()], k.prototype, "pattern", void 0), g([v({ reflect: !0, converter: $A })], k.prototype, "placeholder", void 0), g([v({ type: Boolean, reflect: !0 })], k.prototype, "readOnly", void 0), g([v({ type: Boolean, reflect: !0 })], k.prototype, "multiple", void 0), g([v()], k.prototype, "step", void 0), g([v({ reflect: !0 })], k.prototype, "type", void 0), g([v({ reflect: !0 })], k.prototype, "autocomplete", void 0), g([F()], k.prototype, "dirty", void 0), g([F()], k.prototype, "focused", void 0), g([F()], k.prototype, "nativeError", void 0), g([F()], k.prototype, "nativeErrorText", void 0), g([N(".input")], k.prototype, "inputOrTextarea", void 0), g([N(".field")], k.prototype, "field", void 0), g([kt({ slot: "leading-icon" })], k.prototype, "leadingIcons", void 0), g([kt({ slot: "trailing-icon" })], k.prototype, "trailingIcons", void 0);
 class NA extends k {
   constructor() {
     super(...arguments), this.fieldTag = Yt`md-filled-field`;
@@ -7629,7 +7631,7 @@ const JA = L`:host,.shadow,.shadow::before,.shadow::after{border-radius:inherit;
 `;
 let Hs = class extends zA {
 };
-Hs.styles = [JA], Hs = p([Jt("md-elevation")], Hs);
+Hs.styles = [JA], Hs = g([Jt("md-elevation")], Hs);
 const na = function(s, t) {
   return new CustomEvent("close-menu", { bubbles: !0, composed: !0, detail: { initiator: s, reason: t, itemPath: [s] } });
 }, ir = { SPACE: "Space", ENTER: "Enter" }, jA = "click-selection", WA = "keydown", VA = { ESCAPE: "Escape", SPACE: ir.SPACE, ENTER: ir.ENTER };
@@ -7653,35 +7655,35 @@ class tp {
     return this.surfaceStylesInternal;
   }
   async position() {
-    const { surfaceEl: t, anchorEl: e, anchorCorner: i, surfaceCorner: r, positioning: o, xOffset: a, yOffset: n, disableBlockFlip: l, disableInlineFlip: c, repositionStrategy: d } = this.getProperties(), h = i.toLowerCase().trim(), g = r.toLowerCase().trim();
+    const { surfaceEl: t, anchorEl: e, anchorCorner: i, surfaceCorner: r, positioning: o, xOffset: a, yOffset: n, disableBlockFlip: l, disableInlineFlip: c, repositionStrategy: d } = this.getProperties(), h = i.toLowerCase().trim(), A = r.toLowerCase().trim();
     if (!t || !e) return;
-    const A = window.innerWidth, _ = window.innerHeight, m = document.createElement("div");
+    const p = window.innerWidth, _ = window.innerHeight, m = document.createElement("div");
     m.style.opacity = "0", m.style.position = "fixed", m.style.display = "block", m.style.inset = "0", document.body.appendChild(m);
     const f = m.getBoundingClientRect();
     m.remove();
     const b = window.innerHeight - f.bottom, E = window.innerWidth - f.right;
     this.surfaceStylesInternal = { display: "block", opacity: "0" }, this.host.requestUpdate(), await this.host.updateComplete, t.popover && t.isConnected && t.showPopover();
-    const u = t.getSurfacePositionClientRect ? t.getSurfacePositionClientRect() : t.getBoundingClientRect(), I = e.getSurfacePositionClientRect ? e.getSurfacePositionClientRect() : e.getBoundingClientRect(), [D, w] = g.split("-"), [M, R] = h.split("-"), x = getComputedStyle(t).direction === "ltr";
+    const u = t.getSurfacePositionClientRect ? t.getSurfacePositionClientRect() : t.getBoundingClientRect(), I = e.getSurfacePositionClientRect ? e.getSurfacePositionClientRect() : e.getBoundingClientRect(), [D, w] = A.split("-"), [M, R] = h.split("-"), x = getComputedStyle(t).direction === "ltr";
     let { blockInset: S, blockOutOfBoundsCorrection: P, surfaceBlockProperty: nt } = this.calculateBlock({ surfaceRect: u, anchorRect: I, anchorBlock: M, surfaceBlock: D, yOffset: n, positioning: o, windowInnerHeight: _, blockScrollbarHeight: b });
     if (P && !l) {
       const ns = D === "start" ? "end" : "start", ls = M === "start" ? "end" : "start", xt = this.calculateBlock({ surfaceRect: u, anchorRect: I, anchorBlock: ls, surfaceBlock: ns, yOffset: n, positioning: o, windowInnerHeight: _, blockScrollbarHeight: b });
       P > xt.blockOutOfBoundsCorrection && (S = xt.blockInset, P = xt.blockOutOfBoundsCorrection, nt = xt.surfaceBlockProperty);
     }
-    let { inlineInset: Pt, inlineOutOfBoundsCorrection: mt, surfaceInlineProperty: Wt } = this.calculateInline({ surfaceRect: u, anchorRect: I, anchorInline: R, surfaceInline: w, xOffset: a, positioning: o, isLTR: x, windowInnerWidth: A, inlineScrollbarWidth: E });
+    let { inlineInset: Pt, inlineOutOfBoundsCorrection: mt, surfaceInlineProperty: Wt } = this.calculateInline({ surfaceRect: u, anchorRect: I, anchorInline: R, surfaceInline: w, xOffset: a, positioning: o, isLTR: x, windowInnerWidth: p, inlineScrollbarWidth: E });
     if (mt && !c) {
-      const ns = w === "start" ? "end" : "start", ls = R === "start" ? "end" : "start", xt = this.calculateInline({ surfaceRect: u, anchorRect: I, anchorInline: ls, surfaceInline: ns, xOffset: a, positioning: o, isLTR: x, windowInnerWidth: A, inlineScrollbarWidth: E });
+      const ns = w === "start" ? "end" : "start", ls = R === "start" ? "end" : "start", xt = this.calculateInline({ surfaceRect: u, anchorRect: I, anchorInline: ls, surfaceInline: ns, xOffset: a, positioning: o, isLTR: x, windowInnerWidth: p, inlineScrollbarWidth: E });
       Math.abs(mt) > Math.abs(xt.inlineOutOfBoundsCorrection) && (Pt = xt.inlineInset, mt = xt.inlineOutOfBoundsCorrection, Wt = xt.surfaceInlineProperty);
     }
     d === "move" && (S -= P, Pt -= mt), this.surfaceStylesInternal = { display: "block", opacity: "1", [nt]: `${S}px`, [Wt]: `${Pt}px` }, d === "resize" && (P && (this.surfaceStylesInternal.height = u.height - P + "px"), mt && (this.surfaceStylesInternal.width = u.width - mt + "px")), this.host.requestUpdate();
   }
   calculateBlock(t) {
-    const { surfaceRect: e, anchorRect: i, anchorBlock: r, surfaceBlock: o, yOffset: a, positioning: n, windowInnerHeight: l, blockScrollbarHeight: c } = t, d = n === "fixed" || n === "document" ? 1 : 0, h = n === "document" ? 1 : 0, g = o === "start" ? 1 : 0, A = o === "end" ? 1 : 0, _ = (r !== o ? 1 : 0) * i.height + a, m = g * i.top + A * (l - i.bottom - c);
-    return { blockInset: d * m + h * (g * window.scrollY - A * window.scrollY) + _, blockOutOfBoundsCorrection: Math.abs(Math.min(0, l - m - _ - e.height)), surfaceBlockProperty: o === "start" ? "inset-block-start" : "inset-block-end" };
+    const { surfaceRect: e, anchorRect: i, anchorBlock: r, surfaceBlock: o, yOffset: a, positioning: n, windowInnerHeight: l, blockScrollbarHeight: c } = t, d = n === "fixed" || n === "document" ? 1 : 0, h = n === "document" ? 1 : 0, A = o === "start" ? 1 : 0, p = o === "end" ? 1 : 0, _ = (r !== o ? 1 : 0) * i.height + a, m = A * i.top + p * (l - i.bottom - c);
+    return { blockInset: d * m + h * (A * window.scrollY - p * window.scrollY) + _, blockOutOfBoundsCorrection: Math.abs(Math.min(0, l - m - _ - e.height)), surfaceBlockProperty: o === "start" ? "inset-block-start" : "inset-block-end" };
   }
   calculateInline(t) {
-    const { isLTR: e, surfaceInline: i, anchorInline: r, anchorRect: o, surfaceRect: a, xOffset: n, positioning: l, windowInnerWidth: c, inlineScrollbarWidth: d } = t, h = l === "fixed" || l === "document" ? 1 : 0, g = l === "document" ? 1 : 0, A = e ? 1 : 0, _ = e ? 0 : 1, m = i === "start" ? 1 : 0, f = i === "end" ? 1 : 0, b = (r !== i ? 1 : 0) * o.width + n, E = A * (m * o.left + f * (c - o.right - d)) + _ * (m * (c - o.right - d) + f * o.left);
+    const { isLTR: e, surfaceInline: i, anchorInline: r, anchorRect: o, surfaceRect: a, xOffset: n, positioning: l, windowInnerWidth: c, inlineScrollbarWidth: d } = t, h = l === "fixed" || l === "document" ? 1 : 0, A = l === "document" ? 1 : 0, p = e ? 1 : 0, _ = e ? 0 : 1, m = i === "start" ? 1 : 0, f = i === "end" ? 1 : 0, b = (r !== i ? 1 : 0) * o.width + n, E = p * (m * o.left + f * (c - o.right - d)) + _ * (m * (c - o.right - d) + f * o.left);
     let u = i === "start" ? "inset-inline-start" : "inset-inline-end";
-    return l !== "document" && l !== "fixed" || (u = i === "start" && e || i === "end" && !e ? "left" : "right"), { inlineInset: h * E + b + g * (A * (m * window.scrollX - f * window.scrollX) + _ * (f * window.scrollX - m * window.scrollX)), inlineOutOfBoundsCorrection: Math.abs(Math.min(0, c - E - b - a.width)), surfaceInlineProperty: u };
+    return l !== "document" && l !== "fixed" || (u = i === "start" && e || i === "end" && !e ? "left" : "right"), { inlineInset: h * E + b + A * (p * (m * window.scrollX - f * window.scrollX) + _ * (f * window.scrollX - m * window.scrollX)), inlineOutOfBoundsCorrection: Math.abs(Math.min(0, c - E - b - a.width)), surfaceInlineProperty: u };
   }
   hostUpdate() {
     this.onUpdate();
@@ -7857,24 +7859,24 @@ class j extends G {
     if (!t || !e) return !0;
     const i = this.openDirection;
     this.dispatchEvent(new Event("opening")), t.classList.toggle("animating", !0);
-    const r = this.openCloseAnimationSignal.start(), o = t.offsetHeight, a = i === "UP", n = this.items, l = 250 / n.length, c = t.animate([{ height: "0px" }, { height: `${o}px` }], { duration: 500, easing: Bt.EMPHASIZED }), d = e.animate([{ transform: a ? `translateY(-${o}px)` : "" }, { transform: "" }], { duration: 500, easing: Bt.EMPHASIZED }), h = t.animate([{ opacity: 0 }, { opacity: 1 }], 50), g = [];
+    const r = this.openCloseAnimationSignal.start(), o = t.offsetHeight, a = i === "UP", n = this.items, l = 250 / n.length, c = t.animate([{ height: "0px" }, { height: `${o}px` }], { duration: 500, easing: Bt.EMPHASIZED }), d = e.animate([{ transform: a ? `translateY(-${o}px)` : "" }, { transform: "" }], { duration: 500, easing: Bt.EMPHASIZED }), h = t.animate([{ opacity: 0 }, { opacity: 1 }], 50), A = [];
     for (let m = 0; m < n.length; m++) {
       const f = n[a ? n.length - 1 - m : m], b = f.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 250, delay: l * m });
       f.classList.toggle("md-menu-hidden", !0), b.addEventListener("finish", (() => {
         f.classList.toggle("md-menu-hidden", !1);
-      })), g.push([f, b]);
+      })), A.push([f, b]);
     }
-    let A = (m) => {
+    let p = (m) => {
     };
     const _ = new Promise(((m) => {
-      A = m;
+      p = m;
     }));
     return r.addEventListener("abort", (() => {
-      c.cancel(), d.cancel(), h.cancel(), g.forEach((([m, f]) => {
+      c.cancel(), d.cancel(), h.cancel(), A.forEach((([m, f]) => {
         m.classList.toggle("md-menu-hidden", !1), f.cancel();
-      })), A(!0);
+      })), p(!0);
     })), c.addEventListener("finish", (() => {
-      t.classList.toggle("animating", !1), this.openCloseAnimationSignal.finish(), A(!1);
+      t.classList.toggle("animating", !1), this.openCloseAnimationSignal.finish(), p(!1);
     })), await _;
   }
   animateClose() {
@@ -7885,7 +7887,7 @@ class j extends G {
     if (!i || !r) return t(!1), e;
     const o = this.openDirection === "UP";
     this.dispatchEvent(new Event("closing")), i.classList.toggle("animating", !0);
-    const a = this.openCloseAnimationSignal.start(), n = i.offsetHeight, l = this.items, c = 150, d = 50 / l.length, h = i.animate([{ height: `${n}px` }, { height: 0.35 * n + "px" }], { duration: c, easing: Bt.EMPHASIZED_ACCELERATE }), g = r.animate([{ transform: "" }, { transform: o ? `translateY(-${0.65 * n}px)` : "" }], { duration: c, easing: Bt.EMPHASIZED_ACCELERATE }), A = i.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 50, delay: 100 }), _ = [];
+    const a = this.openCloseAnimationSignal.start(), n = i.offsetHeight, l = this.items, c = 150, d = 50 / l.length, h = i.animate([{ height: `${n}px` }, { height: 0.35 * n + "px" }], { duration: c, easing: Bt.EMPHASIZED_ACCELERATE }), A = r.animate([{ transform: "" }, { transform: o ? `translateY(-${0.65 * n}px)` : "" }], { duration: c, easing: Bt.EMPHASIZED_ACCELERATE }), p = i.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 50, delay: 100 }), _ = [];
     for (let m = 0; m < l.length; m++) {
       const f = l[o ? m : l.length - 1 - m], b = f.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 50, delay: 50 + d * m });
       b.addEventListener("finish", (() => {
@@ -7893,7 +7895,7 @@ class j extends G {
       })), _.push([f, b]);
     }
     return a.addEventListener("abort", (() => {
-      h.cancel(), g.cancel(), A.cancel(), _.forEach((([m, f]) => {
+      h.cancel(), A.cancel(), p.cancel(), _.forEach((([m, f]) => {
         f.cancel(), m.classList.toggle("md-menu-hidden", !1);
       })), t(!1);
     })), h.addEventListener("finish", (() => {
@@ -7951,12 +7953,12 @@ class j extends G {
     this.open && this.menuPositionController.position();
   }
 }
-p([N(".menu")], j.prototype, "surfaceEl", void 0), p([N("slot")], j.prototype, "slotEl", void 0), p([v()], j.prototype, "anchor", void 0), p([v()], j.prototype, "positioning", void 0), p([v({ type: Boolean })], j.prototype, "quick", void 0), p([v({ type: Boolean, attribute: "has-overflow" })], j.prototype, "hasOverflow", void 0), p([v({ type: Boolean, reflect: !0 })], j.prototype, "open", void 0), p([v({ type: Number, attribute: "x-offset" })], j.prototype, "xOffset", void 0), p([v({ type: Number, attribute: "y-offset" })], j.prototype, "yOffset", void 0), p([v({ type: Boolean, attribute: "no-horizontal-flip" })], j.prototype, "noHorizontalFlip", void 0), p([v({ type: Boolean, attribute: "no-vertical-flip" })], j.prototype, "noVerticalFlip", void 0), p([v({ type: Number, attribute: "typeahead-delay" })], j.prototype, "typeaheadDelay", void 0), p([v({ attribute: "anchor-corner" })], j.prototype, "anchorCorner", void 0), p([v({ attribute: "menu-corner" })], j.prototype, "menuCorner", void 0), p([v({ type: Boolean, attribute: "stay-open-on-outside-click" })], j.prototype, "stayOpenOnOutsideClick", void 0), p([v({ type: Boolean, attribute: "stay-open-on-focusout" })], j.prototype, "stayOpenOnFocusout", void 0), p([v({ type: Boolean, attribute: "skip-restore-focus" })], j.prototype, "skipRestoreFocus", void 0), p([v({ attribute: "default-focus" })], j.prototype, "defaultFocus", void 0), p([v({ type: Boolean, attribute: "no-navigation-wrap" })], j.prototype, "noNavigationWrap", void 0), p([kt({ flatten: !0 })], j.prototype, "slotItems", void 0), p([F()], j.prototype, "typeaheadActive", void 0);
+g([N(".menu")], j.prototype, "surfaceEl", void 0), g([N("slot")], j.prototype, "slotEl", void 0), g([v()], j.prototype, "anchor", void 0), g([v()], j.prototype, "positioning", void 0), g([v({ type: Boolean })], j.prototype, "quick", void 0), g([v({ type: Boolean, attribute: "has-overflow" })], j.prototype, "hasOverflow", void 0), g([v({ type: Boolean, reflect: !0 })], j.prototype, "open", void 0), g([v({ type: Number, attribute: "x-offset" })], j.prototype, "xOffset", void 0), g([v({ type: Number, attribute: "y-offset" })], j.prototype, "yOffset", void 0), g([v({ type: Boolean, attribute: "no-horizontal-flip" })], j.prototype, "noHorizontalFlip", void 0), g([v({ type: Boolean, attribute: "no-vertical-flip" })], j.prototype, "noVerticalFlip", void 0), g([v({ type: Number, attribute: "typeahead-delay" })], j.prototype, "typeaheadDelay", void 0), g([v({ attribute: "anchor-corner" })], j.prototype, "anchorCorner", void 0), g([v({ attribute: "menu-corner" })], j.prototype, "menuCorner", void 0), g([v({ type: Boolean, attribute: "stay-open-on-outside-click" })], j.prototype, "stayOpenOnOutsideClick", void 0), g([v({ type: Boolean, attribute: "stay-open-on-focusout" })], j.prototype, "stayOpenOnFocusout", void 0), g([v({ type: Boolean, attribute: "skip-restore-focus" })], j.prototype, "skipRestoreFocus", void 0), g([v({ attribute: "default-focus" })], j.prototype, "defaultFocus", void 0), g([v({ type: Boolean, attribute: "no-navigation-wrap" })], j.prototype, "noNavigationWrap", void 0), g([kt({ flatten: !0 })], j.prototype, "slotItems", void 0), g([F()], j.prototype, "typeaheadActive", void 0);
 const rp = L`:host{--md-elevation-level: var(--md-menu-container-elevation, 2);--md-elevation-shadow-color: var(--md-menu-container-shadow-color, var(--md-sys-color-shadow, #000));min-width:112px;color:unset;display:contents}md-focus-ring{--md-focus-ring-shape: var(--md-menu-container-shape, var(--md-sys-shape-corner-extra-small, 4px))}.menu{border-radius:var(--md-menu-container-shape, var(--md-sys-shape-corner-extra-small, 4px));display:none;inset:auto;border:none;padding:0px;overflow:visible;background-color:rgba(0,0,0,0);color:inherit;opacity:0;z-index:20;position:absolute;user-select:none;max-height:inherit;height:inherit;min-width:inherit;max-width:inherit;scrollbar-width:inherit}.menu::backdrop{display:none}.fixed{position:fixed}.items{display:block;list-style-type:none;margin:0;outline:none;box-sizing:border-box;background-color:var(--md-menu-container-color, var(--md-sys-color-surface-container, #f3edf7));height:inherit;max-height:inherit;overflow:auto;min-width:inherit;max-width:inherit;border-radius:inherit;scrollbar-width:inherit}.item-padding{padding-block:var(--md-menu-top-space, 8px) var(--md-menu-bottom-space, 8px)}.has-overflow:not([popover]) .items{overflow:visible}.has-overflow.animating .items,.animating .items{overflow:hidden}.has-overflow.animating .items{pointer-events:none}.animating ::slotted(.md-menu-hidden){opacity:0}slot{display:block;height:inherit;max-height:inherit}::slotted(:is(md-divider,[role=separator])){margin:8px 0}@media(forced-colors: active){.menu{border-style:solid;border-color:CanvasText;border-width:1px}}
 `;
 let Gs = class extends j {
 };
-Gs.styles = [rp], Gs = p([Jt("md-menu")], Gs);
+Gs.styles = [rp], Gs = g([Jt("md-menu")], Gs);
 class op extends xr {
   computeValidity(t) {
     return this.selectControl || (this.selectControl = document.createElement("select")), wr(y`<option value=${t.value}></option>`, this.selectControl), this.selectControl.value = t.value, this.selectControl.required = t.required, { validity: this.selectControl.validity, validationMessage: this.selectControl.validationMessage };
@@ -8271,7 +8273,7 @@ class Y extends ap {
     return this.field;
   }
 }
-Y.shadowRootOptions = { ...G.shadowRootOptions, delegatesFocus: !0 }, p([v({ type: Boolean })], Y.prototype, "quick", void 0), p([v({ type: Boolean })], Y.prototype, "required", void 0), p([v({ type: String, attribute: "error-text" })], Y.prototype, "errorText", void 0), p([v()], Y.prototype, "label", void 0), p([v({ type: Boolean, attribute: "no-asterisk" })], Y.prototype, "noAsterisk", void 0), p([v({ type: String, attribute: "supporting-text" })], Y.prototype, "supportingText", void 0), p([v({ type: Boolean, reflect: !0 })], Y.prototype, "error", void 0), p([v({ attribute: "menu-positioning" })], Y.prototype, "menuPositioning", void 0), p([v({ type: Boolean, attribute: "clamp-menu-width" })], Y.prototype, "clampMenuWidth", void 0), p([v({ type: Number, attribute: "typeahead-delay" })], Y.prototype, "typeaheadDelay", void 0), p([v({ type: Boolean, attribute: "has-leading-icon" })], Y.prototype, "hasLeadingIcon", void 0), p([v({ attribute: "display-text" })], Y.prototype, "displayText", void 0), p([v({ attribute: "menu-align" })], Y.prototype, "menuAlign", void 0), p([v()], Y.prototype, "value", null), p([v({ type: Number, attribute: "selected-index" })], Y.prototype, "selectedIndex", null), p([F()], Y.prototype, "nativeError", void 0), p([F()], Y.prototype, "nativeErrorText", void 0), p([F()], Y.prototype, "focused", void 0), p([F()], Y.prototype, "open", void 0), p([F()], Y.prototype, "defaultFocus", void 0), p([N(".field")], Y.prototype, "field", void 0), p([N("md-menu")], Y.prototype, "menu", void 0), p([N("#label")], Y.prototype, "labelEl", void 0), p([kt({ slot: "leading-icon", flatten: !0 })], Y.prototype, "leadingIcons", void 0);
+Y.shadowRootOptions = { ...G.shadowRootOptions, delegatesFocus: !0 }, g([v({ type: Boolean })], Y.prototype, "quick", void 0), g([v({ type: Boolean })], Y.prototype, "required", void 0), g([v({ type: String, attribute: "error-text" })], Y.prototype, "errorText", void 0), g([v()], Y.prototype, "label", void 0), g([v({ type: Boolean, attribute: "no-asterisk" })], Y.prototype, "noAsterisk", void 0), g([v({ type: String, attribute: "supporting-text" })], Y.prototype, "supportingText", void 0), g([v({ type: Boolean, reflect: !0 })], Y.prototype, "error", void 0), g([v({ attribute: "menu-positioning" })], Y.prototype, "menuPositioning", void 0), g([v({ type: Boolean, attribute: "clamp-menu-width" })], Y.prototype, "clampMenuWidth", void 0), g([v({ type: Number, attribute: "typeahead-delay" })], Y.prototype, "typeaheadDelay", void 0), g([v({ type: Boolean, attribute: "has-leading-icon" })], Y.prototype, "hasLeadingIcon", void 0), g([v({ attribute: "display-text" })], Y.prototype, "displayText", void 0), g([v({ attribute: "menu-align" })], Y.prototype, "menuAlign", void 0), g([v()], Y.prototype, "value", null), g([v({ type: Number, attribute: "selected-index" })], Y.prototype, "selectedIndex", null), g([F()], Y.prototype, "nativeError", void 0), g([F()], Y.prototype, "nativeErrorText", void 0), g([F()], Y.prototype, "focused", void 0), g([F()], Y.prototype, "open", void 0), g([F()], Y.prototype, "defaultFocus", void 0), g([N(".field")], Y.prototype, "field", void 0), g([N("md-menu")], Y.prototype, "menu", void 0), g([N("#label")], Y.prototype, "labelEl", void 0), g([kt({ slot: "leading-icon", flatten: !0 })], Y.prototype, "leadingIcons", void 0);
 class np extends Y {
   constructor() {
     super(...arguments), this.fieldTag = Yt`md-filled-field`;
@@ -8441,7 +8443,7 @@ class pt extends pp {
     (t = this.listItemRoot) === null || t === void 0 || t.focus();
   }
 }
-pt.shadowRootOptions = { ...G.shadowRootOptions, delegatesFocus: !0 }, p([v({ type: Boolean, reflect: !0 })], pt.prototype, "disabled", void 0), p([v({ type: Boolean, attribute: "md-menu-item", reflect: !0 })], pt.prototype, "isMenuItem", void 0), p([v({ type: Boolean })], pt.prototype, "selected", void 0), p([v()], pt.prototype, "value", void 0), p([N(".list-item")], pt.prototype, "listItemRoot", void 0), p([kt({ slot: "headline" })], pt.prototype, "headlineElements", void 0), p([kt({ slot: "supporting-text" })], pt.prototype, "supportingTextElements", void 0), p([/* @__PURE__ */ (function(s) {
+pt.shadowRootOptions = { ...G.shadowRootOptions, delegatesFocus: !0 }, g([v({ type: Boolean, reflect: !0 })], pt.prototype, "disabled", void 0), g([v({ type: Boolean, attribute: "md-menu-item", reflect: !0 })], pt.prototype, "isMenuItem", void 0), g([v({ type: Boolean })], pt.prototype, "selected", void 0), g([v()], pt.prototype, "value", void 0), g([N(".list-item")], pt.prototype, "listItemRoot", void 0), g([kt({ slot: "headline" })], pt.prototype, "headlineElements", void 0), g([kt({ slot: "supporting-text" })], pt.prototype, "supportingTextElements", void 0), g([/* @__PURE__ */ (function(s) {
   return (t, e) => {
     const { slot: i } = s ?? {}, r = "slot" + (i ? `[name=${i}]` : ":not([name])");
     return Xi(t, e, { get() {
@@ -8450,7 +8452,7 @@ pt.shadowRootOptions = { ...G.shadowRootOptions, delegatesFocus: !0 }, p([v({ ty
       return a?.assignedNodes(s) ?? [];
     } });
   };
-})({ slot: "" })], pt.prototype, "defaultElements", void 0), p([v({ attribute: "typeahead-text" })], pt.prototype, "typeaheadText", null), p([v({ attribute: "display-text" })], pt.prototype, "displayText", null);
+})({ slot: "" })], pt.prototype, "defaultElements", void 0), g([v({ attribute: "typeahead-text" })], pt.prototype, "typeaheadText", null), g([v({ attribute: "display-text" })], pt.prototype, "displayText", null);
 class ha extends pt {
 }
 ha.styles = [dp], customElements.define("ew-select-option", ha);
@@ -8477,7 +8479,7 @@ class Qe extends gp {
     return { indeterminate: this.indeterminate, "four-color": this.fourColor };
   }
 }
-p([v({ type: Number })], Qe.prototype, "value", void 0), p([v({ type: Number })], Qe.prototype, "max", void 0), p([v({ type: Boolean })], Qe.prototype, "indeterminate", void 0), p([v({ type: Boolean, attribute: "four-color" })], Qe.prototype, "fourColor", void 0);
+g([v({ type: Number })], Qe.prototype, "value", void 0), g([v({ type: Number })], Qe.prototype, "max", void 0), g([v({ type: Boolean })], Qe.prototype, "indeterminate", void 0), g([v({ type: Boolean, attribute: "four-color" })], Qe.prototype, "fourColor", void 0);
 class up extends Qe {
   renderIndicator() {
     return this.indeterminate ? this.renderIndeterminateContainer() : this.renderDeterminateContainer();
@@ -8534,7 +8536,7 @@ Ri.styles = L`
     ew-circular-progress {
       margin-bottom: 16px;
     }
-  `, p([v()], Ri.prototype, "label", void 0), p([v()], Ri.prototype, "progress", void 0), customElements.define("ewt-page-progress", Ri);
+  `, g([v()], Ri.prototype, "label", void 0), g([v()], Ri.prototype, "progress", void 0), customElements.define("ewt-page-progress", Ri);
 class Di extends G {
   render() {
     return y`
@@ -8554,7 +8556,7 @@ Di.styles = L`
       line-height: 80px;
       color: black;
     }
-  `, p([v()], Di.prototype, "icon", void 0), p([v()], Di.prototype, "label", void 0), customElements.define("ewt-page-message", Di);
+  `, g([v()], Di.prototype, "icon", void 0), g([v()], Di.prototype, "label", void 0), customElements.define("ewt-page-message", Di);
 const mp = ot`
   <svg width="24" height="24" viewBox="0 0 24 24">
     <path
@@ -8825,9 +8827,9 @@ class Mp extends EventTarget {
       if (!this._rpcFeedback) return void this.logger.error("Received result while not waiting for one");
       const c = a[0];
       if (c !== this._rpcFeedback.command) return void this.logger.error(`Received result for command ${c} but expected ${this._rpcFeedback.command}`);
-      const d = [], h = a[1], g = new TextDecoder("utf-8");
-      let A = 2;
-      for (; A < 2 + h; ) d.push(g.decode(new Uint8Array(a.slice(A + 1, A + a[A] + 1)))), A += a[A] + 1;
+      const d = [], h = a[1], A = new TextDecoder("utf-8");
+      let p = 2;
+      for (; p < 2 + h; ) d.push(A.decode(new Uint8Array(a.slice(p + 1, p + a[p] + 1)))), p += a[p] + 1;
       "receivedData" in this._rpcFeedback ? d.length > 0 ? this._rpcFeedback.receivedData.push(d) : this._rpcFeedback.resolve(this._rpcFeedback.receivedData) : this._rpcFeedback.resolve(d);
     } else this.logger.error("Unable to handle packet", e);
     else this.logger.error(`Received invalid checksum ${n}. Expected ${l}`);
@@ -9410,16 +9412,16 @@ class lt extends G {
   async _confirmInstall() {
     this._installConfirmed = !0, this._installState = void 0, this._client && await this._closeClientWithoutEvents(this._client), this._client = void 0, await this.port.close(), (async (t, e, i, r, o) => {
       let a, n;
-      const l = (u) => t({ ...u, manifest: r, build: a, chipFamily: n }), c = new Mr(e), d = e.getInfo(), h = d && d.usbVendorId === 12346 && d.usbProductId !== void 0 && [4097, 4098, 4099, 2, 3].includes(d.usbProductId), g = new DA({ transport: c, baudrate: 115200, enableTracing: !1 });
-      window.esploader = g, l({ state: "initializing", message: "Initializing...", details: { done: !1 } });
+      const l = (u) => t({ ...u, manifest: r, build: a, chipFamily: n }), c = new Mr(e), d = e.getInfo(), h = d && d.usbVendorId === 12346 && d.usbProductId !== void 0 && [4097, 4098, 4099, 2, 3].includes(d.usbProductId), A = new DA({ transport: c, baudrate: 115200, enableTracing: !1 });
+      window.esploader = A, l({ state: "initializing", message: "Initializing...", details: { done: !1 } });
       try {
-        await g.main(), await g.flashId();
+        await A.main(), await A.flashId();
       } catch (u) {
-        return console.error(u), l({ state: "error", message: "Failed to initialize. Try resetting your device or holding the BOOT button while clicking INSTALL.", details: { error: "failed_initialize", details: u } }), await ke(c, g), void await c.disconnect();
+        return console.error(u), l({ state: "error", message: "Failed to initialize. Try resetting your device or holding the BOOT button while clicking INSTALL.", details: { error: "failed_initialize", details: u } }), await ke(c, A), void await c.disconnect();
       }
-      n = g.chip.CHIP_NAME, l({ state: "initializing", message: `Initialized. Found ${n}`, details: { done: !0 } });
-      const A = h ? "cdc" : "uart";
-      if (a = r.builds.find(((u) => u.chipFamily === n && u.serialType === A)) || r.builds.find(((u) => u.chipFamily === n && u.serialType === void 0)), !a) return l({ state: "error", message: `Your ${n} board is not supported.`, details: { error: "not_supported", details: n } }), await ke(c, g), void await c.disconnect();
+      n = A.chip.CHIP_NAME, l({ state: "initializing", message: `Initialized. Found ${n}`, details: { done: !0 } });
+      const p = h ? "cdc" : "uart";
+      if (a = r.builds.find(((u) => u.chipFamily === n && u.serialType === p)) || r.builds.find(((u) => u.chipFamily === n && u.serialType === void 0)), !a) return l({ state: "error", message: `Your ${n} board is not supported.`, details: { error: "not_supported", details: n } }), await ke(c, A), void await c.disconnect();
       l({ state: "preparing", message: "Preparing installation...", details: { done: !1 } });
       const _ = i.startsWith("blob:") || i.startsWith("data:") ? location.toString() : new URL(i, location.toString()).toString(), m = a.parts.map((async (u) => {
         const I = new URL(u.path, _).toString(), D = await fetch(I);
@@ -9434,19 +9436,19 @@ class lt extends G {
         const I = await m[u], D = new Uint8Array(I, 0, I.byteLength);
         f.push({ data: D, address: a.parts[u].offset }), b += D.length;
       } catch (I) {
-        return l({ state: "error", message: I.message, details: { error: "failed_firmware_download", details: I.message } }), await ke(c, g), void await c.disconnect();
+        return l({ state: "error", message: I.message, details: { error: "failed_firmware_download", details: I.message } }), await ke(c, A), void await c.disconnect();
       }
-      l({ state: "preparing", message: "Installation prepared", details: { done: !0 } }), o && (l({ state: "erasing", message: "Erasing device...", details: { done: !1 } }), await g.eraseFlash(), l({ state: "erasing", message: "Device erased", details: { done: !0 } })), l({ state: "writing", message: "Writing progress: 0%", details: { bytesTotal: b, bytesWritten: 0, percentage: 0 } });
+      l({ state: "preparing", message: "Installation prepared", details: { done: !0 } }), o && (l({ state: "erasing", message: "Erasing device...", details: { done: !1 } }), await A.eraseFlash(), l({ state: "erasing", message: "Device erased", details: { done: !0 } })), l({ state: "writing", message: "Writing progress: 0%", details: { bytesTotal: b, bytesWritten: 0, percentage: 0 } });
       let E = 0;
       try {
-        await g.writeFlash({ fileArray: f, flashSize: "keep", flashMode: "keep", flashFreq: "keep", eraseAll: !1, compress: !0, reportProgress: (u, I, D) => {
+        await A.writeFlash({ fileArray: f, flashSize: "keep", flashMode: "keep", flashFreq: "keep", eraseAll: !1, compress: !0, reportProgress: (u, I, D) => {
           const w = I / D * f[u].data.length, M = Math.floor((E + w) / b * 100);
           I !== D ? l({ state: "writing", message: `Writing progress: ${M}%`, details: { bytesTotal: b, bytesWritten: E + I, percentage: M } }) : E += w;
         } });
       } catch (u) {
-        return l({ state: "error", message: u.message, details: { error: "write_failed", details: u } }), await ke(c, g), void await c.disconnect();
+        return l({ state: "error", message: u.message, details: { error: "write_failed", details: u } }), await ke(c, A), void await c.disconnect();
       }
-      l({ state: "writing", message: "Writing complete", details: { bytesTotal: b, bytesWritten: E, percentage: 100 } }), await ke(c, g), console.log("DISCONNECT"), await c.disconnect(), l({ state: "finished", message: "All done!" });
+      l({ state: "writing", message: "Writing complete", details: { bytesTotal: b, bytesWritten: E, percentage: 100 } }), await ke(c, A), console.log("DISCONNECT"), await c.disconnect(), l({ state: "finished", message: "All done!" });
     })(((t) => {
       this._installState = t, t.state === "finished" ? me(100).then((() => this.port.open({ baudRate: 115200, bufferSize: 8192 }))).then((() => this._initialize(!0))).then((() => this.requestUpdate())) : t.state === "error" && me(100).then((() => this.port.open({ baudRate: 115200, bufferSize: 8192 })));
     }), this.port, this.manifestPath, this._manifest, this._installErase);
@@ -9591,7 +9593,7 @@ lt.styles = [ln, L`
         width: calc(80vw - 48px);
         height: calc(90vh - 168px);
       }
-    `], p([F()], lt.prototype, "_client", void 0), p([F()], lt.prototype, "_state", void 0), p([F()], lt.prototype, "_installErase", void 0), p([F()], lt.prototype, "_installConfirmed", void 0), p([F()], lt.prototype, "_installState", void 0), p([F()], lt.prototype, "_provisionForce", void 0), p([F()], lt.prototype, "_error", void 0), p([F()], lt.prototype, "_busy", void 0), p([F()], lt.prototype, "_ssids", void 0), p([F()], lt.prototype, "_selectedSsid", void 0), customElements.define("ewt-install-dialog", lt);
+    `], g([F()], lt.prototype, "_client", void 0), g([F()], lt.prototype, "_state", void 0), g([F()], lt.prototype, "_installErase", void 0), g([F()], lt.prototype, "_installConfirmed", void 0), g([F()], lt.prototype, "_installState", void 0), g([F()], lt.prototype, "_provisionForce", void 0), g([F()], lt.prototype, "_error", void 0), g([F()], lt.prototype, "_busy", void 0), g([F()], lt.prototype, "_ssids", void 0), g([F()], lt.prototype, "_selectedSsid", void 0), customElements.define("ewt-install-dialog", lt);
 var kp = Object.freeze({ __proto__: null, EwtInstallDialog: lt });
 const Fp = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
@@ -9746,7 +9748,7 @@ Ls.styles = [ln, L`
         display: block;
         margin: 0.5em 0;
       }
-    `], Ls = p([Jt("ewt-no-port-picked-dialog")], Ls);
+    `], Ls = g([Jt("ewt-no-port-picked-dialog")], Ls);
 const Op = async (s) => {
   const t = document.createElement("ewt-no-port-picked-dialog");
   return t.doTryAgain = s, document.body.append(t), !0;

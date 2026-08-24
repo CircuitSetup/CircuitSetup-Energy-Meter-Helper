@@ -9,6 +9,7 @@ export function espWebInstaller(option: FirmwareOption | null): TemplateResult |
   try {
     const manifestUrl = manifestUrlFor(option.productId, option.version);
     return html`
+      <p class="firmware-summary">${option.productId} · ESPHome ${option.version}</p>
       <esp-web-install-button class="esp-web-installer" .manifest=${manifestUrl}>
         <button slot="activate" aria-label="Install firmware">Install firmware</button>
         <p slot="unsupported">Use a supported Chromium browser with Web Serial to install firmware.</p>

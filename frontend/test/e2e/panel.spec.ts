@@ -303,6 +303,20 @@ test("inline provisioning resolves selected manifests without popup, navigation,
     `https://circuitsetup.github.io/ESPWebInstaller/manifests/manifest_${productId}-${version}.json`;
   await expect.poll(manifest).toBe(manifestUrl("6chan_energy_meter_main_board", "2026.8.0"));
   expect(firmwareRequests).toEqual([FIRMWARE_INDEX_URL]);
+  await expect(page.getByText("6chan_energy_meter_main_board · ESPHome 2026.8.0", { exact: true })).toBeVisible();
+  expect(await page.locator(".setup-step").evaluate((step) => {
+    const order = [
+      step.querySelector('[name="addon-count"]')?.closest("fieldset"),
+      step.querySelector('[name="connection-type"]')?.closest("fieldset"),
+      step.querySelector('[aria-labelledby="jumper-heading"]'),
+      step.querySelector('[data-action="firmware-version"]'),
+      step.querySelector("esp-web-install-button"),
+      [...step.querySelectorAll(".info-band")].find((element) => element.textContent?.includes("Add to Home Assistant")),
+      step.querySelector('[data-action="rescan"]'),
+    ];
+    return order.slice(1).every((element, index) => Boolean(order[index] && element &&
+      order[index].compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING));
+  })).toBe(true);
   await expect(page.locator('esp-web-install-button [slot="unsupported"]')).toContainText("supported Chromium browser");
   await expect(page.locator('esp-web-install-button [slot="not-allowed"]')).toContainText("HTTPS or localhost");
 

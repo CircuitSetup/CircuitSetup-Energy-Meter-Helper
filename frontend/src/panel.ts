@@ -1016,11 +1016,10 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private stepBody(): TemplateResult {
-    if (this.step === "setup") return html`${setupDeviceStep(this.setup, this.addonCount, this.connection,
+    if (this.step === "setup") return setupDeviceStep(this.setup, this.addonCount, this.connection,
       (value) => { this.addonCount = value; this.refreshFirmwareOptions(); },
       (value) => { this.connection = value; this.refreshFirmwareOptions(); },
-      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction)}
-      ${this.firmwareCatalog()}`;
+      () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, false, this.firmwareCatalog());
     if (this.step === "discover") return setupDeviceStep(this.setup, this.addonCount, this.connection,
       () => undefined, () => undefined,
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, true);

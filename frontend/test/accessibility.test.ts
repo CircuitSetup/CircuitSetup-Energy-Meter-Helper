@@ -37,6 +37,8 @@ it("gives the firmware activation control the panel target size and focus treatm
   render(espWebInstaller({ productId: "6chan_energy_meter_main_board", version: "2026.8.0" }), container);
 
   const activate = container.querySelector<HTMLButtonElement>('[slot="activate"]');
+  expect(container.textContent).toContain("6chan_energy_meter_main_board · ESPHome 2026.8.0");
+  expect(container.textContent).not.toContain("https://");
   expect(activate?.getAttribute("aria-label")).toBe("Install firmware");
   expect(activate?.matches("button")).toBe(true);
   expect(panelStyles.cssText).toContain(".esp-web-installer [slot=\"activate\"]");
