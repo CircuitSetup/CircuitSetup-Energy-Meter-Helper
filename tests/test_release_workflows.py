@@ -40,9 +40,6 @@ def test_release_validation_is_read_only_until_publish() -> None:
         workflow,
     )
     assert workflow.index("  validate:") < workflow.index("  publish:")
-    assert workflow.index("Require recorded physical validation") < workflow.index(
-        "Create GitHub release"
-    )
 
 
 def test_ci_runs_firmware_tests_without_compiling_every_meter() -> None:
@@ -59,6 +56,7 @@ def test_release_runs_firmware_tests_without_compiling_every_meter() -> None:
     assert "firmware/Software/ESPHome/tests" in workflow
     assert "firmware/Software/ESPHome/tests/compile_matrix.py" not in workflow
     assert "esphome\", \"compile" not in workflow
+    assert "Require recorded physical validation" not in workflow
 
 
 def test_hacs_validation_uses_the_event_ref() -> None:
