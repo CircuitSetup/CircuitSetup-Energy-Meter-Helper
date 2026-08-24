@@ -395,7 +395,7 @@ test("inline provisioning resolves selected manifests without popup, navigation,
       step.querySelector('[aria-labelledby="jumper-heading"]'),
       step.querySelector('[data-action="firmware-version"]'),
       step.querySelector("esp-web-install-button"),
-      [...step.querySelectorAll(".info-band")].find((element) => element.textContent?.includes("Add to Home Assistant")),
+      step.querySelector(".next-steps"),
       step.querySelector('[data-action="rescan"]'),
     ];
     return order.slice(1).every((element, index) => Boolean(order[index] && element &&
