@@ -31,10 +31,12 @@ const mount = (template: ReturnType<typeof currentStep>) => {
   return container;
 };
 
-it("gives the firmware activation control the panel target size and focus treatment", () => {
+it("gives the firmware activation control the panel target size and focus treatment", async () => {
   container = document.createElement("div");
   document.body.append(container);
   render(espWebInstaller({ productId: "6chan_energy_meter_main_board", version: "2026.8.0" }), container);
+
+  await vi.waitFor(() => expect(container.querySelector("esp-web-install-button")).not.toBeNull());
 
   const activate = container.querySelector<HTMLButtonElement>('[slot="activate"]');
   expect(container.textContent).toContain("6chan_energy_meter_main_board · ESPHome 2026.8.0");

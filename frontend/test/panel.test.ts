@@ -91,10 +91,22 @@ describe("ESP Web Tools installer", () => {
   };
   const manifest = "https://circuitsetup.github.io/ESPWebInstaller/manifests/manifest_6chan_energy_meter_main_board-2026.8.0.json";
 
-  it("renders one install button for a resolved firmware option", () => {
+  it("loads ESP Web Tools only when the installer is rendered", async () => {
+    expect(customElements.get("esp-web-install-button")).toBeUndefined();
+
     const root = document.createElement("div");
     render(espWebInstaller(option), root);
 
+    expect(root.querySelector('[role="status"]')?.textContent).toContain("Loading installer");
+    expect(root.querySelector("esp-web-install-button")).toBeNull();
+    await vi.waitFor(() => expect(root.querySelector("esp-web-install-button")).not.toBeNull());
+  });
+
+  it("renders one install button for a resolved firmware option", async () => {
+    const root = document.createElement("div");
+    render(espWebInstaller(option), root);
+
+    await vi.waitFor(() => expect(root.querySelector("esp-web-install-button")).not.toBeNull());
     const installer = root.querySelector<HTMLElement & { manifest: string }>("esp-web-install-button");
     expect(root.querySelectorAll("esp-web-install-button")).toHaveLength(1);
     expect(installer?.manifest).toBe(manifest);
@@ -119,9 +131,10 @@ describe("ESP Web Tools installer", () => {
     expect(root.querySelector("esp-web-install-button")).toBeNull();
   });
 
-  it("updates the existing install button manifest when the selected version changes", () => {
+  it("updates the existing install button manifest when the selected version changes", async () => {
     const root = document.createElement("div");
     render(espWebInstaller(option), root);
+    await vi.waitFor(() => expect(root.querySelector("esp-web-install-button")).not.toBeNull());
     const installer = root.querySelector<HTMLElement & { manifest: string }>("esp-web-install-button");
 
     render(espWebInstaller({ ...option, version: "2026.8.1" }), root);
@@ -132,10 +145,11 @@ describe("ESP Web Tools installer", () => {
     );
   });
 
-  it("does not provide an external navigation control", () => {
+  it("does not provide an external navigation control", async () => {
     const root = document.createElement("div");
     render(espWebInstaller(option), root);
 
+    await vi.waitFor(() => expect(root.querySelector("esp-web-install-button")).not.toBeNull());
     expect(root.querySelector("a")).toBeNull();
   });
 });
