@@ -1,6 +1,8 @@
 """Release workflows must be reproducible and least-privileged."""
 
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -40,6 +42,35 @@ def test_release_validation_is_read_only_until_publish() -> None:
         workflow,
     )
     assert workflow.index("  validate:") < workflow.index("  publish:")
+
+
+def test_release_notes_omit_pull_request_usernames() -> None:
+    """Generated PR entries keep their links but omit GitHub usernames."""
+    workflow = (WORKFLOW_DIR / "release.yml").read_text()
+    generated = (
+        "## What's Changed\n"
+        "* Add meter options by @CircuitSetup in https://github.com/CircuitSetup/repo/pull/21\n"
+        "* Bump dependency by @dependabot[bot] in https://github.com/CircuitSetup/repo/pull/22\n"
+        "Thanks @CircuitSetup\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, ROOT / "scripts/strip_release_usernames.py"],
+        input=generated,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "python scripts/strip_release_usernames.py" in workflow
+    assert "--generate-notes" not in workflow
+    assert result.stdout == (
+        "## What's Changed\n"
+        "* Add meter options in https://github.com/CircuitSetup/repo/pull/21\n"
+        "* Bump dependency in https://github.com/CircuitSetup/repo/pull/22\n"
+        "Thanks @CircuitSetup\n"
+    )
 
 
 def test_ci_runs_firmware_tests_without_compiling_every_meter() -> None:
