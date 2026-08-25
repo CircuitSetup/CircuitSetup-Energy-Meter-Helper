@@ -143,9 +143,9 @@ def validate_meter_configuration(
     _text(meter.friendly_name, "friendly_name")
     if not isinstance(meter.electrical_system, ElectricalSystem):
         raise ValueError("invalid electrical_system")  # noqa: TRY004
-    if meter.line_frequency_hz not in (50, 60) or type(meter.line_frequency_hz) is bool:
+    if type(meter.line_frequency_hz) is not int or meter.line_frequency_hz not in (50, 60):
         raise ValueError("line_frequency_hz must be 50 or 60")
-    if meter.update_interval_s not in (1, 2, 5, 10, 30, 60) or type(meter.update_interval_s) is bool:
+    if type(meter.update_interval_s) is not int or meter.update_interval_s not in (1, 2, 5, 10, 30, 60):
         raise ValueError("invalid update_interval_s")
     if not isinstance(meter.voltage_layout, VoltageLayout):
         raise ValueError("invalid voltage_layout")  # noqa: TRY004

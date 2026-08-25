@@ -110,7 +110,7 @@ def test_numeric_and_forbidden_fields_are_rejected() -> None:
     assert math.isfinite(1.0)
 
 
-@pytest.mark.parametrize("interval", [0, 3, 4, 6, 15, 61, True, False])
+@pytest.mark.parametrize("interval", [0, 3, 4, 6, 15, 61, 1.0, 5.0, True, False])
 def test_invalid_update_intervals(interval: object) -> None:
     value = request()
     object.__setattr__(value.meter, "update_interval_s", interval)
@@ -118,7 +118,7 @@ def test_invalid_update_intervals(interval: object) -> None:
         validate_meter_configuration(value, topology())
 
 
-@pytest.mark.parametrize("frequency", [0, 49, 51, 61, True, False])
+@pytest.mark.parametrize("frequency", [0, 49, 51, 61, 50.0, 60.0, True, False])
 def test_invalid_line_frequencies(frequency: object) -> None:
     value = request()
     object.__setattr__(value.meter, "line_frequency_hz", frequency)
