@@ -454,8 +454,10 @@ describe("CircuitSetup panel", () => {
         if (operation === "adopt_device") { adopted = true; return { device_id: device.entry_id, configuration: "meter.yaml" } as T; }
         if (operation === "get_meter_configuration") return {
           plan_id: "plan-1", source_sha256: "a".repeat(64), configuration: {
-            meter: { electrical_system: "single_phase_230", line_frequency_hz: 50 },
+            meter: { electrical_system: "single_phase_230", line_frequency_hz: 50, update_interval_s: 5,
+              voltage_references: [{ reference_id: "main", group_keys: ["main_1", "main_2"] }] },
           },
+          warnings: [],
         } as T;
         if (operation === "get_topology") return { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
           connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
@@ -1277,6 +1279,8 @@ describe("CircuitSetup panel", () => {
     };
     const hass = makeHass({
       setup_status: { state: "device_discovered", devices: [configured], configuration_authoritative: false },
+      get_meter_configuration: { configuration: { meter: { electrical_system: "split_phase_120_240", line_frequency_hz: 60,
+        update_interval_s: 5, voltage_references: [{ reference_id: "main", group_keys: ["main_1", "main_2"] }] } }, warnings: [] },
       get_ct_inventory: inventory,
     });
     const callWS = hass.callWS;
@@ -1526,24 +1530,25 @@ describe("CircuitSetup panel", () => {
       .toBe("cs-ct-200a");
   });
 
-  it("calibrates both chips on only the selected voltage board", async () => {
-    const targets: string[][] = [];
-    const calibrated: string[][] = [];
+  it("calibrates selected voltage references with schema-valid one-reference requests", async () => {
+    const targets: string[] = [];
+    const calibrated: string[] = [];
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
         if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
         if (operation === "check_stability") {
-          const targetIds = message.target_ids as string[];
-          targets.push(targetIds);
-          return targetIds.map((target_id) => ({ target: "voltage", target_id, stable: true,
+          const targetId = message.target_id as string;
+          targets.push(targetId);
+          return { target: "voltage", target_id: targetId, stable: true,
             windows: Array.from({ length: 3 }, () => ({ samples: [120], mean: 120,
-              standard_deviation: 0, range_percent: 0 })) })) as T;
+              standard_deviation: 0, range_percent: 0 })) } as T;
         }
         if (operation === "calibrate_voltage") {
-          const references = message.references as Array<{ group_key: string; reference: number }>;
-          calibrated.push(references.map((item) => item.group_key));
-          return references.map(({ group_key }, index) => ({ state: "indeterminate", group_key, phase: null,
+          const referenceId = message.reference_id as string;
+          calibrated.push(referenceId);
+          const groups = referenceId === "main" ? ["main_1", "main_2"] : ["addon1_1", "addon1_2"];
+          return groups.map((group_key, index) => ({ state: "indeterminate", group_key, phase: null,
             changed_channels: [index * 3 + 1, index * 3 + 2, index * 3 + 3], iteration: 1,
             before_values: [120, 120, 120], after_values: [], error_percent_values: [], gain_evidence: null,
             restore_evidence: null, retry_allowed: false })) as T;
@@ -1569,6 +1574,8 @@ describe("CircuitSetup panel", () => {
 
     expect(text(panel)).toContain("Calibrate Voltage");
     expect(text(panel)).not.toContain("Calibrate shared voltage");
+    state.meterSettingsDraft = { electrical_system: "split_phase_120_240", line_frequency_hz: 60, authoritative: true,
+      voltage_references: [{ reference_id: "main", group_keys: ["main_1", "main_2"] }], warnings: [] };
     expect(state.voltageGroupKeys()).toEqual(["main_1", "main_2"]);
     expect(panel.shadowRoot?.querySelectorAll('[data-voltage-board]')).toHaveLength(2);
     const progress = panel.shadowRoot?.querySelector(".progress-steps");
@@ -1590,10 +1597,10 @@ describe("CircuitSetup panel", () => {
     check?.click();
     check?.click();
     await tick(); await panel.updateComplete;
-    expect(targets).toEqual([["main_1", "main_2"]]);
-    expect(text(panel)).toContain("Live data loaded");
+    expect(targets).toEqual(["main"]);
+    expect(text(panel)).toContain("Loaded voltage data for the selected reference.");
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".calibration-step button.primary")?.click();
-    await expect.poll(() => calibrated).toEqual([["main_1", "main_2"]]);
+    await expect.poll(() => calibrated).toEqual(["main"]);
     await panel.updateComplete;
 
     state.board = 1;
@@ -1640,6 +1647,21 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("Voltage calibration complete for Main Board");
     expect(text(panel)).toContain("Voltage calibrated this session");
     expect(panel.shadowRoot?.querySelector("details")).toBeNull();
+  });
+
+  it("keeps the installed slow-interval calibration warning visible after CT inventory loads", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.meterSettingsDraft = { electrical_system: "split_phase_120_240", line_frequency_hz: 60, authoritative: true,
+      update_interval_s: 30, voltage_references: [{ reference_id: "main", group_keys: ["main_1", "main_2"] }],
+      warnings: ["slow_interval_extends_calibration"] };
+    state.inventory = { plan_id: "plan-1", source_sha256: "a".repeat(64), channels: [], catalog: { presets: [], source_repository: "repo", source_ref: "ref", schema_version: 1 } };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2, connection_type: "wifi",
+      voltage_layout: "two_groups", project_name: device.project_name, evidence: [] };
+    panel.showState("voltage");
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector('[role="status"]')?.textContent).toContain("30-second update interval");
   });
 
   it("separates active flash source from current calibration completion", async () => {
@@ -2254,6 +2276,10 @@ describe("CircuitSetup panel", () => {
       callWS: async <T>(message: Record<string, unknown>) => {
         const operation = String(message.type).split("/").at(-1) ?? "";
         if (operation === "setup_status") return { state: "device_discovered", devices: [device, meter2] } as T;
+        if (operation === "get_meter_configuration") return { configuration: { meter: {
+          electrical_system: "split_phase_120_240", line_frequency_hz: 60, update_interval_s: 5,
+          voltage_references: [{ reference_id: "main", group_keys: ["main_1", "main_2"] }],
+        } }, warnings: [] } as T;
         return await new Promise<T>((resolve) => pending.set(operation, resolve as (value: unknown) => void));
       },
       connection: { subscribeMessage: async (_callback, message) => {

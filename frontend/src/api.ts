@@ -179,12 +179,26 @@ function topologyResponse(value: unknown, label: string): MeterTopology | { topo
   return topology(value, label);
 }
 function meterConfiguration(value: unknown, label: string): MeterSettingsDraft {
-  const configuration = record(record(value, label).configuration, label);
+  const response = record(value, label);
+  const configuration = record(response.configuration, label);
   const meter = record(configuration.meter, label);
   const electricalSystem = enumeration(meter.electrical_system, ELECTRICAL_SYSTEMS, label) as ElectricalSystem;
   const lineFrequency = integer(meter.line_frequency_hz, label);
   if (lineFrequency !== 50 && lineFrequency !== 60) throw new Error(`${label} response is invalid`);
-  return { electrical_system: electricalSystem, line_frequency_hz: lineFrequency as LineFrequencyHz, authoritative: true };
+  const updateInterval = integer(meter.update_interval_s, label);
+  const voltageReferences = array(meter.voltage_references, label, 14).map((entry) => {
+    const reference = record(entry, label);
+    const referenceId = string(reference.reference_id, label)!;
+    const groupKeys = array(reference.group_keys, label, 14).map((key) => string(key, label)!);
+    if (!groupKeys.length) throw new Error(`${label} response is invalid`);
+    return { reference_id: referenceId, group_keys: groupKeys };
+  });
+  if (!voltageReferences.length || new Set(voltageReferences.map((reference) => reference.reference_id)).size !== voltageReferences.length) {
+    throw new Error(`${label} response is invalid`);
+  }
+  const warnings = array(response.warnings, label, 32).map((warning) => string(warning, label)!);
+  return { electrical_system: electricalSystem, line_frequency_hz: lineFrequency as LineFrequencyHz, authoritative: true,
+    update_interval_s: updateInterval, voltage_references: voltageReferences, warnings };
 }
 
 function packageOptions(value: unknown, label: string, boardCount: number): BoardPackageOptions {
@@ -674,33 +688,18 @@ export class HelperApi {
     });
   public skipOffsetCalibration = (sessionId: string) =>
     this.call("skip_offset_calibration", (value) => session(value, "skip_offset_calibration"), { session_id: sessionId });
-  public checkVoltageStability = (sessionId: string, groupKeys: string[]) => {
-    if (groupKeys.length !== 2 || new Set(groupKeys).size !== 2) return Promise.reject(new Error("check_stability board is invalid"));
-    return this.call("check_stability", (value) => {
-      const results = array(value, "check_stability", 2);
-      if (results.length !== 2) throw new Error("check_stability response is invalid");
-      return results.map((item, index) => stability(item, "check_stability", "voltage", groupKeys[index]!));
-    }, { session_id: sessionId, target: "voltage", target_ids: groupKeys });
-  };
   public calibrateVoltage = (
     sessionId: string,
-    references: Array<{ group_key: string; reference: number }>,
+    referenceId: string,
+    referenceVoltage: number,
     confirmIteration: boolean,
   ) => {
-    const channels = references.map((item) => groupChannels(item.group_key));
-    if (references.length !== 2 || new Set(references.map((item) => item.group_key)).size !== 2
-      || channels.some((item) => item.length !== 3)
-      || new Set(channels.map((item) => Math.floor((item[0]! - 1) / 6))).size !== 1
-      || references.some((item) => !Number.isFinite(item.reference) || item.reference <= 0)) {
-      return Promise.reject(new Error("calibrate_voltage board is invalid"));
-    }
+    if (!referenceId || !Number.isFinite(referenceVoltage) || referenceVoltage < 1 || referenceVoltage > 600) return Promise.reject(new Error("calibrate_voltage reference is invalid"));
     return this.call("calibrate_voltage", (value) => {
-      const results = array(value, "calibrate_voltage", 2);
-      if (results.length !== 2) throw new Error("calibrate_voltage response is invalid");
-      return results.map((item, index) => calibration(item, "calibrate_voltage", {
-        target: "voltage", groupKey: references[index]!.group_key, reference: references[index]!.reference,
+      return array(value, "calibrate_voltage", 14).map((item) => calibration(item, "calibrate_voltage", {
+        target: "voltage", groupKey: string(record(item, "calibrate_voltage").group_key, "calibrate_voltage")!, reference: referenceVoltage,
       }));
-    }, { session_id: sessionId, references, confirm_iteration: confirmIteration });
+    }, { session_id: sessionId, reference_id: referenceId, reference_voltage: referenceVoltage, confirm_iteration: confirmIteration });
   };
   public calibrateCurrent = (
     sessionId: string,

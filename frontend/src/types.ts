@@ -56,6 +56,9 @@ export interface MeterSettingsDraft {
   electrical_system: ElectricalSystem;
   line_frequency_hz: LineFrequencyHz;
   authoritative: boolean;
+  update_interval_s: number;
+  voltage_references: Array<{ reference_id: string; group_keys: string[] }>;
+  warnings: string[];
 }
 
 export interface BoardPackageOptions {
