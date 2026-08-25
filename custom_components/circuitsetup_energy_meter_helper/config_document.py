@@ -11,10 +11,37 @@ CT_GAIN_RE = re.compile(r"^current_cal_ct(?P<channel>[1-9]|[1-3][0-9]|4[0-2])$")
 VOLTAGE_GAIN_RE = re.compile(r"^voltage_cal[12]$")
 GROUP_NAME_RE = re.compile(r"^(?:main_meter_name[12]|addon[1-6]_name[12])$")
 METER_ID_RE = re.compile(r"^(?:main_meter_id[12]|addon[1-6]_id[12])$")
+METER_SETTING_RE = re.compile(
+    r"^(?:friendly_name|update_time|electric_freq|csemh_config_contract)$"
+)
 _MAPPING_RE = re.compile(r"^(?P<indent> *)(?P<key>[\w-]+):(?P<rest>.*)$")
 _SEQUENCE_MAPPING_RE = re.compile(r"^(?P<indent> *)-\s+(?P<key>[\w-]+):(?P<rest>.*)$")
 _SEQUENCE_RE = re.compile(r"^(?P<indent> *)-\s+(?P<rest>.+)$")
 _YAML_PATH_RE = re.compile(r"(?i)^(.*?\.ya?ml)(?:@.*)?$")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_MAX_DOCUMENT_BYTES = 1_048_576
+_MAX_DOCUMENT_LINES = 10_000
+_MAX_SETTING_LENGTH = 64
+_MANAGED_MARKERS = {
+    "# CircuitSetup Energy Meter Helper: voltage references v1": (
+        "voltage_references",
+        False,
+    ),
+    "# End CircuitSetup Energy Meter Helper: voltage references v1": (
+        "voltage_references",
+        True,
+    ),
+    "# CircuitSetup Energy Meter Helper: phase overrides v1": (
+        "phase_overrides",
+        False,
+    ),
+    "# End CircuitSetup Energy Meter Helper: phase overrides v1": (
+        "phase_overrides",
+        True,
+    ),
+    "# CircuitSetup Energy Meter Helper: aggregates v1": ("aggregates", False),
+    "# End CircuitSetup Energy Meter Helper: aggregates v1": ("aggregates", True),
+}
 
 
 class ESPHomeConfigParseError(ValueError):
@@ -45,6 +72,14 @@ class ConfigScalar:
 
 
 @dataclass(frozen=True, slots=True)
+class ManagedBlock:
+    """One exact helper-owned source range, including its marker comments."""
+
+    content: str
+    span: SourceSpan
+
+
+@dataclass(frozen=True, slots=True)
 class ESPHomeConfigDocument:
     """Relevant ESPHome values plus the exact source text that supplied them."""
 
@@ -56,6 +91,7 @@ class ESPHomeConfigDocument:
     dashboard_import_span: SourceSpan | None
     substitutions: dict[str, ConfigScalar]
     package_files: tuple[str, ...]
+    managed_blocks: dict[str, ManagedBlock]
 
     @classmethod
     def parse(cls, content: str) -> ESPHomeConfigDocument:
@@ -73,6 +109,13 @@ class _Mapping:
 
 class _DocumentParser:
     def __init__(self, content: str) -> None:
+        if len(content.encode("utf-8")) > _MAX_DOCUMENT_BYTES:
+            raise ESPHomeConfigParseError("configuration exceeds byte limit", 1)
+        line_count = content.count("\n") + content.count("\r") - content.count("\r\n")
+        if content and content[-1] not in "\r\n":
+            line_count += 1
+        if line_count > _MAX_DOCUMENT_LINES:
+            raise ESPHomeConfigParseError("configuration exceeds line limit", 1)
         self.content = content
         self.lines = tuple(content.splitlines(keepends=True))
         self._bodies = tuple(line.rstrip("\r\n") for line in self.lines)
@@ -96,6 +139,7 @@ class _DocumentParser:
             dashboard_import_span=dashboard.span if dashboard else None,
             substitutions=self._substitutions(),
             package_files=self._package_files(),
+            managed_blocks=self._managed_blocks(),
         )
 
     def _sections(self, name: str) -> list[tuple[int, _Mapping]]:
@@ -159,14 +203,62 @@ class _DocumentParser:
                 or VOLTAGE_GAIN_RE.fullmatch(mapping.key)
                 or GROUP_NAME_RE.fullmatch(mapping.key)
                 or METER_ID_RE.fullmatch(mapping.key)
+                or METER_SETTING_RE.fullmatch(mapping.key)
             ):
                 continue
             if mapping.key in substitutions:
                 raise ESPHomeConfigParseError(
                     f"duplicate mutable substitution {mapping.key}", index + 1
                 )
-            substitutions[mapping.key] = self._scalar(index, mapping)
+            scalar = self._scalar(index, mapping)
+            if METER_SETTING_RE.fullmatch(mapping.key):
+                self._validate_meter_setting(mapping.key, scalar.value, index + 1)
+            substitutions[mapping.key] = scalar
         return substitutions
+
+    @staticmethod
+    def _validate_meter_setting(key: str, value: str, line: int) -> None:
+        if not value or len(value) > _MAX_SETTING_LENGTH or _CONTROL_RE.search(value):
+            raise ESPHomeConfigParseError("meter setting is not safely bounded", line)
+        if key == "update_time" and value not in {"1s", "2s", "5s", "10s", "30s", "60s"}:
+            raise ESPHomeConfigParseError("unsupported update_time", line)
+        if key == "electric_freq" and value not in {"50Hz", "60Hz"}:
+            raise ESPHomeConfigParseError("unsupported electric_freq", line)
+        if key == "csemh_config_contract" and value != "2":
+            raise ESPHomeConfigParseError("unsupported csemh_config_contract", line)
+
+    def _managed_blocks(self) -> dict[str, ManagedBlock]:
+        blocks: dict[str, ManagedBlock] = {}
+        open_block: tuple[str, int] | None = None
+        for index, body in enumerate(self._bodies):
+            marker = _MANAGED_MARKERS.get(body)
+            if marker is None:
+                continue
+            name, is_end = marker
+            if not is_end:
+                if open_block is not None:
+                    raise ESPHomeConfigParseError("nested managed block", index + 1)
+                if name in blocks:
+                    raise ESPHomeConfigParseError("duplicate managed block", index + 1)
+                open_block = (name, index)
+                continue
+            if open_block is None:
+                raise ESPHomeConfigParseError("managed block ends before it starts", index + 1)
+            open_name, start = open_block
+            if name != open_name:
+                raise ESPHomeConfigParseError("mismatched managed block marker", index + 1)
+            span = SourceSpan(
+                start=self._offsets[start],
+                end=self._offsets[index] + len(self._bodies[index]),
+                line=start + 1,
+                start_column=0,
+                end_column=len(self._bodies[index]),
+            )
+            blocks[name] = ManagedBlock(self.content[span.start : span.end], span)
+            open_block = None
+        if open_block is not None:
+            raise ESPHomeConfigParseError("unterminated managed block", open_block[1] + 1)
+        return blocks
 
     def _nested_scalar(
         self, section_name: str, parent_key: str, child_key: str

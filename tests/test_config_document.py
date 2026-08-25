@@ -86,6 +86,146 @@ def test_noop_preserves_every_byte() -> None:
     assert "wifi_password" not in repr(doc)
 
 
+def test_extracts_bounded_meter_substitutions_and_managed_blocks() -> None:
+    content = fixture("meter_configuration.yaml").replace("\n", "\r\n")
+    doc = ESPHomeConfigDocument.parse(content)
+
+    assert {
+        key: doc.substitutions[key].value
+        for key in (
+            "friendly_name",
+            "update_time",
+            "electric_freq",
+            "csemh_config_contract",
+        )
+    } == {
+        "friendly_name": "Garage Meter",
+        "update_time": "10s",
+        "electric_freq": "60Hz",
+        "csemh_config_contract": "2",
+    }
+    friendly = doc.substitutions["friendly_name"]
+    assert content[friendly.span.start : friendly.span.end] == '"Garage Meter"'
+    assert tuple(doc.managed_blocks) == (
+        "voltage_references",
+        "phase_overrides",
+        "aggregates",
+    )
+    block = doc.managed_blocks["voltage_references"]
+    assert content[block.span.start : block.span.end] == block.content
+    assert block.content.startswith(
+        "# CircuitSetup Energy Meter Helper: voltage references v1\r\n"
+    )
+    assert block.content.endswith(
+        "# End CircuitSetup Energy Meter Helper: voltage references v1"
+    )
+
+
+def test_friendly_name_only_comes_from_substitutions() -> None:
+    doc = ESPHomeConfigDocument.parse(
+        "esphome:\n  name: unrelated-device-name\nsubstitutions:\n  update_time: 5s\n"
+    )
+
+    assert "friendly_name" not in doc.substitutions
+    assert doc.substitutions["update_time"].value == "5s"
+
+
+@pytest.mark.parametrize("key", ("friendly_name", "update_time", "electric_freq", "csemh_config_contract"))
+def test_rejects_duplicate_meter_substitutions(key: str) -> None:
+    value = {
+        "friendly_name": "Meter",
+        "update_time": "2s",
+        "electric_freq": "60Hz",
+        "csemh_config_contract": "2",
+    }[key]
+    content = f"substitutions:\n  {key}: {value}\n  {key}: {value}\n"
+
+    with pytest.raises(ESPHomeConfigParseError, match="line 3"):
+        ESPHomeConfigDocument.parse(content)
+
+
+@pytest.mark.parametrize("value", ("!secret meter", "&meter value", "*meter"))
+def test_rejects_unsafe_meter_substitution_values(value: str) -> None:
+    content = f"substitutions:\n  friendly_name: {value}\n"
+
+    with pytest.raises(ESPHomeConfigParseError, match="line 2"):
+        ESPHomeConfigDocument.parse(content)
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    (
+        ("friendly_name", "x" * 65),
+        ("friendly_name", '"bad\\u0000name"'),
+        ("update_time", "7s"),
+        ("electric_freq", "55Hz"),
+        ("csemh_config_contract", "3"),
+    ),
+)
+def test_rejects_unbounded_or_unsupported_meter_values(key: str, value: str) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match="line 2"):
+        ESPHomeConfigDocument.parse(f"substitutions:\n  {key}: {value}\n")
+
+
+@pytest.mark.parametrize(
+    "content, line",
+    (
+        (
+            "# End CircuitSetup Energy Meter Helper: aggregates v1\n",
+            1,
+        ),
+        (
+            (
+                "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+                "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+            ),
+            2,
+        ),
+        (
+            (
+                "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+                "# End CircuitSetup Energy Meter Helper: aggregates v1\n"
+                "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+            ),
+            3,
+        ),
+        (
+            (
+                "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+                "# CircuitSetup Energy Meter Helper: phase overrides v1\n"
+            ),
+            2,
+        ),
+        ("# CircuitSetup Energy Meter Helper: aggregates v1\n", 1),
+        (
+            (
+                "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+                "# End CircuitSetup Energy Meter Helper: phase overrides v1\n"
+            ),
+            2,
+        ),
+    ),
+)
+def test_rejects_malformed_managed_blocks(
+    content: str, line: int
+) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match=rf"line {line}"):
+        ESPHomeConfigDocument.parse(content)
+
+
+def test_ignores_marker_like_text_outside_exact_column_zero_comments() -> None:
+    doc = ESPHomeConfigDocument.parse(
+        "substitutions:\n"
+        '  friendly_name: "# CircuitSetup Energy Meter Helper: aggregates v1"\n'
+        "  literal: |\n"
+        "    # CircuitSetup Energy Meter Helper: aggregates v1\n"
+        "  # CircuitSetup Energy Meter Helper: aggregates v1\n"
+        "  note: value # End CircuitSetup Energy Meter Helper: aggregates v1\n"
+    )
+
+    assert doc.managed_blocks == {}
+
+
 @pytest.mark.parametrize(
     "value",
     ("&gain 27518", "*gain", "|", ">-", "!secret ct_gain", "# no value"),
