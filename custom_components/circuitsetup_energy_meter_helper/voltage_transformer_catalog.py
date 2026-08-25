@@ -49,7 +49,10 @@ def _safe_text(value: object, field: str) -> str:
 def _positive_voltage(value: object, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{field} must be finite and positive")  # noqa: TRY004
-    result = float(value)
+    try:
+        result = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{field} must be finite and positive") from error
     if not math.isfinite(result) or result <= 0:
         raise ValueError(f"{field} must be finite and positive")
     return result

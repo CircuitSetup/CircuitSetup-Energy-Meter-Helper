@@ -171,6 +171,19 @@ def test_catalog_rejects_int_subclass_gain_and_control_categories(
             VoltageTransformerCatalog.load()
 
 
+@pytest.mark.parametrize("field", ["primary_nominal_v", "secondary_nominal_v"])
+def test_catalog_rejects_voltage_integer_overflow(
+    monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    data = _valid_data()
+    preset = dict(data["presets"][0])  # type: ignore[index]
+    preset[field] = 10**1000
+    data["presets"] = [preset]
+    _load_data(monkeypatch, data)
+    with pytest.raises(ValueError, match="finite and positive"):
+        VoltageTransformerCatalog.load()
+
+
 def test_catalog_rejects_source_metadata_mutations(monkeypatch: pytest.MonkeyPatch) -> None:
     for field in ("source_repository", "source_ref"):
         data = _valid_data()
