@@ -27,7 +27,7 @@ _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _LINE_BREAK_RE = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
 _LINE_BREAK_FINAL_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 _BLOCK_SCALAR_HEADER_RE = re.compile(
-    r"^(?P<indent> *)(?P<dash>-[ \t]+)?(?:.+?:[ \t]*)?(?:(?:![^\s]+|&[^\s]+)\s+)*"
+    r"^(?P<indent> *)(?P<dash>-[ \t]+)?(?P<mapping>.+?:[ \t]*)?(?:(?:![^\s]+|&[^\s]+)\s+)*"
     r"[|>][1-9+-]*(?:\s+#.*)?$"
 )
 _EXPLICIT_BLOCK_SCALAR_RE = re.compile(
@@ -308,6 +308,7 @@ class _DocumentParser:
 
     def _scan_lexical_document(self) -> None:
         block_indent: int | None = None
+        explicit_key = False
         for index in range(len(self.lines)):
             body = self._bodies[index]
             if block_indent is not None:
@@ -319,16 +320,20 @@ class _DocumentParser:
                     self._block_scalar_lines.add(index)
                     continue
                 block_indent = None
-            self._reject_unsafe_structural_syntax(body, index + 1)
+            structural_body = f"? {body.lstrip()}" if explicit_key else body
+            self._reject_unsafe_structural_syntax(structural_body, index + 1)
             header = _BLOCK_SCALAR_HEADER_RE.fullmatch(body) or _EXPLICIT_BLOCK_SCALAR_RE.fullmatch(body)
             if header is not None:
-                block_indent = len(header.group("indent")) + len(header.groupdict().get("dash") or "")
+                block_indent = len(header.group("indent"))
+                if header.groupdict().get("dash") and header.groupdict().get("mapping"):
+                    block_indent += len(header.group("dash"))
+                explicit_key = False
                 continue
-            self._reject_multiline_quote(body, index + 1)
+            explicit_key = self._scan_lexical_line(
+                body, index + 1, explicit_key=explicit_key
+            )
 
     def _reject_unsafe_structural_syntax(self, body: str, line: int) -> None:
-        if "{" in body and "}" not in body:
-            raise ESPHomeConfigParseError("unsupported multiline flow mapping", line)
         if _ALIAS_KEY_RE.match(body):
             raise ESPHomeConfigParseError("unsupported structural key syntax", line)
         if _MERGE_KEY_RE.match(body):
@@ -364,14 +369,21 @@ class _DocumentParser:
             or METER_SETTING_RE.fullmatch(key) is not None
         )
 
-    def _reject_multiline_quote(self, body: str, line: int) -> None:
+    def _scan_lexical_line(
+        self, body: str, line: int, *, explicit_key: bool = False
+    ) -> bool:
         expects_token = True
         flow_depth = 0
+        flow_mapping_depth = 0
         position = 0
         while position < len(body):
             character = body[position]
             if character == "#" and (position == 0 or body[position - 1].isspace()):
-                return
+                if flow_mapping_depth:
+                    raise ESPHomeConfigParseError(
+                        "unsupported multiline flow mapping", line
+                    )
+                return explicit_key
             if character.isspace():
                 position += 1
                 continue
@@ -384,21 +396,27 @@ class _DocumentParser:
             if character == "?" and expects_token and (
                 position + 1 == len(body) or body[position + 1] in " \t"
             ):
+                explicit_key = True
                 position += 1
                 continue
             if character in "[{":
                 flow_depth += 1
+                flow_mapping_depth += character == "{"
+                explicit_key = False
                 expects_token = True
                 position += 1
                 continue
             if character in "]}":
                 flow_depth = max(0, flow_depth - 1)
+                if character == "}":
+                    flow_mapping_depth = max(0, flow_mapping_depth - 1)
                 expects_token = False
                 position += 1
                 continue
             if character == ":" and (
                 position + 1 == len(body) or body[position + 1] in " \t#[]{}"
             ):
+                explicit_key = False
                 expects_token = True
                 position += 1
                 continue
@@ -415,6 +433,8 @@ class _DocumentParser:
                 while position < len(body) and not body[position].isspace():
                     position += 1
                 continue
+            if expects_token and explicit_key and character == "*":
+                raise ESPHomeConfigParseError("unsupported structural key syntax", line)
             if expects_token and character in "\"'":
                 try:
                     end = (
@@ -427,10 +447,16 @@ class _DocumentParser:
                         "unsupported multiline quoted scalar", line
                     ) from error
                 position += end
+                explicit_key = False
                 expects_token = False
                 continue
+            if expects_token:
+                explicit_key = False
             expects_token = False
             position += 1
+        if flow_mapping_depth:
+            raise ESPHomeConfigParseError("unsupported multiline flow mapping", line)
+        return explicit_key
 
     def _nested_scalar(
         self, section_name: str, parent_key: str, child_key: str

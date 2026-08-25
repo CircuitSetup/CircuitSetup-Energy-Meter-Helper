@@ -446,7 +446,7 @@ def test_requires_yaml_mapping_separation_for_owned_keys() -> None:
 def test_sequence_mapping_block_scalar_does_not_hide_sibling_file() -> None:
     doc = ESPHomeConfigDocument.parse(
         "packages:\n"
-        "  - config: |-\n"
+        "  - note: |-\n"
         '      unmatched " quote\n'
         "    file: Software/ESPHome/meter_sensors/main.yaml\n"
     )
@@ -499,6 +499,111 @@ def test_rejects_multiline_flow_mappings() -> None:
 )
 def test_valid_nested_block_scalars_are_opaque(content: str) -> None:
     assert ESPHomeConfigDocument.parse(content).substitutions == {}
+
+
+def test_rejects_explicit_alias_of_owned_key() -> None:
+    content = (
+        "anchor_holder: &k friendly_name\n"
+        "substitutions:\n"
+        "  friendly_name: Good\n"
+        "  ? *k\n"
+        "  : Evil\n"
+    )
+
+    with pytest.raises(ESPHomeConfigParseError, match="line 4"):
+        ESPHomeConfigDocument.parse(content)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ("*k", "friendly_name", "!!str friendly_name", "&other friendly_name"),
+)
+def test_rejects_multiline_explicit_owned_keys(key: str) -> None:
+    content = (
+        "anchor_holder: &k friendly_name\n"
+        "substitutions:\n"
+        "  friendly_name: Good\n"
+        "  ?\n"
+        f"    {key}\n"
+        "  : Evil\n"
+    )
+
+    with pytest.raises(ESPHomeConfigParseError, match="line 5"):
+        ESPHomeConfigDocument.parse(content)
+
+
+@pytest.mark.parametrize("separator", ("\n", "    # key comment\n"))
+def test_pending_explicit_key_ignores_blank_and_comment_lines(separator: str) -> None:
+    content = (
+        "anchor_holder: &k friendly_name\n"
+        "substitutions:\n"
+        "  friendly_name: Good\n"
+        "  ?\n"
+        f"{separator}"
+        "    *k\n"
+        "  : Evil\n"
+    )
+
+    with pytest.raises(ESPHomeConfigParseError, match="line 6"):
+        ESPHomeConfigDocument.parse(content)
+
+
+def test_comment_cannot_close_multiline_flow_mapping() -> None:
+    content = (
+        "substitutions:\n"
+        "  {other: x, # ignored }\n"
+        "  friendly_name: Evil}\n"
+    )
+
+    with pytest.raises(ESPHomeConfigParseError, match="line 2"):
+        ESPHomeConfigDocument.parse(content)
+
+
+@pytest.mark.parametrize("header", ("|", "|- # comment", "|1+"))
+def test_sequence_block_scalars_are_opaque(header: str) -> None:
+    doc = ESPHomeConfigDocument.parse(
+        f"other:\n  - {header}\n"
+        '    "unmatched\n'
+        "substitutions:\n"
+        "  friendly_name: Meter\n"
+    )
+
+    assert doc.substitutions["friendly_name"].value == "Meter"
+
+
+@pytest.mark.parametrize(
+    ("source", "value"),
+    (
+        ('"Meter {"', "Meter {"),
+        ("'Meter {'", "Meter {"),
+        ('"Meter \\"quoted\\" {"', 'Meter "quoted" {'),
+        ("'Meter ''quoted'' {'", "Meter 'quoted' {"),
+    ),
+)
+def test_braces_inside_quoted_scalars_are_not_flow_syntax(
+    source: str, value: str
+) -> None:
+    content = f"substitutions:\n  friendly_name: {source}\n"
+
+    scalar = ESPHomeConfigDocument.parse(content).substitutions["friendly_name"]
+
+    assert scalar.value == value
+    assert content[scalar.span.start : scalar.span.end] == source
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    (
+        "other: value # {\n",
+        "other: |- # {\n  text\n",
+    ),
+)
+def test_braces_inside_comments_are_not_flow_syntax(prefix: str) -> None:
+    doc = ESPHomeConfigDocument.parse(
+        prefix + "substitutions:\n  friendly_name: Meter\n"
+    )
+
+    assert doc.substitutions["friendly_name"].value == "Meter"
 
 
 @pytest.mark.parametrize(
