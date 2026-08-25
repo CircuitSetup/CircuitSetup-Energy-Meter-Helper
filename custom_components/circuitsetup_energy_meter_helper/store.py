@@ -12,18 +12,34 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .ct_catalog import REPORTING_MULTIPLIERS
+from .meter_configuration import (
+    ChannelSettings,
+    CircuitAggregate,
+    CircuitRole,
+    ElectricalSystem,
+    EnergyMode,
+    MeasurementMethod,
+    MeterConfigurationRequest,
+    MeterSettings,
+    VoltageLayout,
+    VoltageReferenceConfig,
+    validate_meter_configuration,
+)
 from .models import (
+    ConnectionType,
+    MeterTopology,
     PhaseOffsetTable,
     PhasePowerOffsetTable,
     StoredCTSelection,
     StoredInterruptedSession,
     StoredMeterRecord,
     StoredTopology,
+    StoredTopologyEvidence,
     canonical_mac,
 )
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 3
+STORAGE_MINOR_VERSION = 4
 STORAGE_KEY = "circuitsetup_energy_meter_helper"
 
 
@@ -235,6 +251,8 @@ def migrate_storage(
                         and item["reporting_multiplier"] in REPORTING_MULTIPLIERS
                     )
                 ]
+        return data
+    if (version, minor_version) == (1, 3):
         return data
     if (version, minor_version) != (STORAGE_VERSION, STORAGE_MINOR_VERSION):
         raise ValueError(f"Storage version {version} cannot be migrated")
@@ -461,6 +479,7 @@ def serialize_meter_record(record: StoredMeterRecord) -> dict[str, Any]:
         "mac": record.mac,
         "setup_intent": record.setup_intent,
         "config_filename": record.config_filename,
+        "config_sha256": record.config_sha256,
         "topology": (
             _serialize_topology(record.topology)
             if record.topology is not None
@@ -475,6 +494,375 @@ def serialize_meter_record(record: StoredMeterRecord) -> dict[str, Any]:
             else None
         ),
     }
+
+
+@dataclass(frozen=True, slots=True)
+class StoredMeterConfiguration:
+    """Verified configuration semantics bound to one configuration digest."""
+
+    config_sha256: str
+    meter: MeterSettings
+    channels: tuple[ChannelSettings, ...]
+    aggregates: tuple[CircuitAggregate, ...]
+    power_quality: tuple[bool, ...]
+    status_fields: tuple[bool, ...]
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[0-9a-f]{64}", self.config_sha256) is None:
+            raise ValueError("config_sha256 must be a SHA-256 digest")
+        if not isinstance(self.meter, MeterSettings):
+            raise TypeError("meter must be MeterSettings")
+        if type(self.channels) is not tuple or any(
+            not isinstance(item, ChannelSettings) for item in self.channels
+        ):
+            raise TypeError("channels must be a tuple of ChannelSettings")
+        if type(self.aggregates) is not tuple or any(
+            not isinstance(item, CircuitAggregate) for item in self.aggregates
+        ):
+            raise TypeError("aggregates must be a tuple of CircuitAggregate")
+        for field, value in (
+            ("power_quality", self.power_quality),
+            ("status_fields", self.status_fields),
+        ):
+            if type(value) is not tuple or any(
+                type(item) is not bool for item in value
+            ):
+                raise TypeError(f"{field} must be a tuple of booleans")
+
+
+def _exact_mapping(raw: object, keys: set[str], label: str) -> dict[str, Any]:
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != keys
+        or any(not isinstance(key, str) for key in raw)
+    ):
+        raise ValueError(f"stored meter configuration {label} is invalid")
+    return raw
+
+
+def _configuration_hash(raw: object) -> str | None:
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("config_sha256")
+    return (
+        value
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+        else None
+    )
+
+
+def _current_topology(raw_meter: object) -> MeterTopology:
+    if not isinstance(raw_meter, dict):
+        raise TypeError("stored meter configuration meter record is invalid")
+    raw_topology = _exact_mapping(
+        raw_meter.get("topology"),
+        {
+            "addon_count",
+            "board_count",
+            "ct_count",
+            "group_count",
+            "connection_type",
+            "voltage_layout",
+            "project_name",
+            "evidence",
+        },
+        "topology",
+    )
+    try:
+        raw_evidence = raw_topology["evidence"]
+        if not isinstance(raw_evidence, list) or len(raw_evidence) > 5:
+            raise TypeError("stored meter configuration topology is invalid")
+        evidence = tuple(
+            StoredTopologyEvidence(
+                **_exact_mapping(item, {"source", "addon_count", "detail"}, "evidence")
+            )
+            for item in raw_evidence
+        )
+        topology = StoredTopology(
+            addon_count=raw_topology["addon_count"],
+            board_count=raw_topology["board_count"],
+            ct_count=raw_topology["ct_count"],
+            group_count=raw_topology["group_count"],
+            connection_type=raw_topology["connection_type"],
+            voltage_layout=raw_topology["voltage_layout"],
+            project_name=raw_topology["project_name"],
+            evidence=evidence,
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("stored meter configuration topology is invalid") from error
+    return MeterTopology(
+        topology.addon_count,
+        topology.board_count,
+        topology.ct_count,
+        topology.group_count,
+        cast(ConnectionType, topology.connection_type),
+        topology.voltage_layout,
+        topology.project_name,
+        (),
+    )
+
+
+def _topology_identity(
+    topology: MeterTopology,
+) -> tuple[int, int, int, int, str, str, str]:
+    return (
+        topology.addon_count,
+        topology.board_count,
+        topology.ct_count,
+        topology.group_count,
+        topology.connection_type,
+        topology.voltage_layout,
+        topology.project_name,
+    )
+
+
+def _validate_configuration(
+    configuration: StoredMeterConfiguration, topology: MeterTopology
+) -> None:
+    validate_meter_configuration(
+        MeterConfigurationRequest(
+            configuration.meter,
+            configuration.channels,
+            configuration.aggregates,
+            configuration.power_quality,
+            configuration.status_fields,
+            multi_reference_preparation_acknowledged=(
+                len(configuration.meter.voltage_references) > 1
+            ),
+        ),
+        topology,
+    )
+
+
+def _serialize_meter_configuration(
+    configuration: StoredMeterConfiguration, topology: MeterTopology
+) -> dict[str, Any]:
+    _validate_configuration(configuration, topology)
+    return {
+        "config_sha256": configuration.config_sha256,
+        "meter": {
+            "friendly_name": configuration.meter.friendly_name,
+            "electrical_system": configuration.meter.electrical_system.value,
+            "line_frequency_hz": configuration.meter.line_frequency_hz,
+            "update_interval_s": configuration.meter.update_interval_s,
+            "voltage_layout": configuration.meter.voltage_layout.value,
+            "voltage_references": [
+                {
+                    "reference_id": reference.reference_id,
+                    "label": reference.label,
+                    "phase_label": reference.phase_label,
+                    "nominal_voltage_v": reference.nominal_voltage_v,
+                    "transformer_model_id": reference.transformer_model_id,
+                    "gain_voltage": reference.gain_voltage,
+                    "group_keys": list(reference.group_keys),
+                }
+                for reference in configuration.meter.voltage_references
+            ],
+        },
+        "channels": [
+            {
+                "channel": channel.channel,
+                "enabled": channel.enabled,
+                "name": channel.name,
+                "model_id": channel.model_id,
+                "reporting_multiplier": channel.reporting_multiplier,
+                "role": channel.role.value,
+                "voltage_reference_id": channel.voltage_reference_id,
+                "custom_gain_ct": channel.custom_gain_ct,
+                "custom_label": channel.custom_label,
+            }
+            for channel in configuration.channels
+        ],
+        "aggregates": [
+            {
+                "aggregate_id": aggregate.aggregate_id,
+                "name": aggregate.name,
+                "role": aggregate.role.value,
+                "channels": list(aggregate.channels),
+                "measurement_method": aggregate.measurement_method.value,
+                "parent_id": aggregate.parent_id,
+                "energy_mode": aggregate.energy_mode.value,
+                "expose_power": aggregate.expose_power,
+                "expose_current": aggregate.expose_current,
+            }
+            for aggregate in configuration.aggregates
+        ],
+        "power_quality": list(configuration.power_quality),
+        "status_fields": list(configuration.status_fields),
+    }
+
+
+def _deserialize_meter_configuration_payload(
+    raw: object, topology: MeterTopology
+) -> StoredMeterConfiguration:
+    data = _exact_mapping(
+        raw,
+        {
+            "config_sha256",
+            "meter",
+            "channels",
+            "aggregates",
+            "power_quality",
+            "status_fields",
+        },
+        "payload",
+    )
+    raw_meter = _exact_mapping(
+        data["meter"],
+        {
+            "friendly_name",
+            "electrical_system",
+            "line_frequency_hz",
+            "update_interval_s",
+            "voltage_layout",
+            "voltage_references",
+        },
+        "meter",
+    )
+    if not isinstance(raw_meter["voltage_references"], list) or not 1 <= len(
+        raw_meter["voltage_references"]
+    ) <= min(8, topology.group_count):
+        raise TypeError("stored meter configuration meter is invalid")
+    references: list[VoltageReferenceConfig] = []
+    for raw_reference in raw_meter["voltage_references"]:
+        item = _exact_mapping(
+            raw_reference,
+            {
+                "reference_id",
+                "label",
+                "phase_label",
+                "nominal_voltage_v",
+                "transformer_model_id",
+                "gain_voltage",
+                "group_keys",
+            },
+            "voltage reference",
+        )
+        if (
+            not isinstance(item["group_keys"], list)
+            or not 1 <= len(item["group_keys"]) <= topology.group_count
+        ):
+            raise TypeError("stored meter configuration voltage reference is invalid")
+        references.append(
+            VoltageReferenceConfig(
+                item["reference_id"],
+                item["label"],
+                item["phase_label"],
+                item["nominal_voltage_v"],
+                item["transformer_model_id"],
+                item["gain_voltage"],
+                tuple(item["group_keys"]),
+            )
+        )
+    if (
+        not isinstance(data["channels"], list)
+        or len(data["channels"]) != topology.ct_count
+        or not isinstance(data["aggregates"], list)
+        or len(data["aggregates"]) > 32
+    ):
+        raise TypeError("stored meter configuration collections are invalid")
+    channels: list[ChannelSettings] = []
+    for raw_channel in data["channels"]:
+        item = _exact_mapping(
+            raw_channel,
+            {
+                "channel",
+                "enabled",
+                "name",
+                "model_id",
+                "reporting_multiplier",
+                "role",
+                "voltage_reference_id",
+                "custom_gain_ct",
+                "custom_label",
+            },
+            "channel",
+        )
+        channels.append(
+            ChannelSettings(
+                item["channel"],
+                item["enabled"],
+                item["name"],
+                item["model_id"],
+                item["reporting_multiplier"],
+                CircuitRole(item["role"]),
+                item["voltage_reference_id"],
+                item["custom_gain_ct"],
+                item["custom_label"],
+                False,
+            )
+        )
+    aggregates: list[CircuitAggregate] = []
+    for raw_aggregate in data["aggregates"]:
+        item = _exact_mapping(
+            raw_aggregate,
+            {
+                "aggregate_id",
+                "name",
+                "role",
+                "channels",
+                "measurement_method",
+                "parent_id",
+                "energy_mode",
+                "expose_power",
+                "expose_current",
+            },
+            "aggregate",
+        )
+        if (
+            not isinstance(item["channels"], list)
+            or len(item["channels"]) > topology.ct_count
+        ):
+            raise TypeError("stored meter configuration aggregate is invalid")
+        aggregates.append(
+            CircuitAggregate(
+                item["aggregate_id"],
+                item["name"],
+                CircuitRole(item["role"]),
+                tuple(item["channels"]),
+                MeasurementMethod(item["measurement_method"]),
+                item["parent_id"],
+                EnergyMode(item["energy_mode"]),
+                item["expose_power"],
+                item["expose_current"],
+            )
+        )
+    if (
+        not isinstance(data["power_quality"], list)
+        or len(data["power_quality"]) != topology.board_count
+        or not isinstance(data["status_fields"], list)
+        or len(data["status_fields"]) != topology.board_count
+    ):
+        raise TypeError("stored meter configuration options are invalid")
+    try:
+        configuration = StoredMeterConfiguration(
+            data["config_sha256"],
+            MeterSettings(
+                raw_meter["friendly_name"],
+                ElectricalSystem(raw_meter["electrical_system"]),
+                raw_meter["line_frequency_hz"],
+                raw_meter["update_interval_s"],
+                VoltageLayout(raw_meter["voltage_layout"]),
+                tuple(references),
+            ),
+            tuple(channels),
+            tuple(aggregates),
+            tuple(data["power_quality"]),
+            tuple(data["status_fields"]),
+        )
+        _validate_configuration(configuration, topology)
+    except (TypeError, ValueError) as error:
+        raise ValueError("stored meter configuration is invalid") from error
+    return configuration
+
+
+def _deserialize_meter_configuration(
+    raw: object, topology: MeterTopology
+) -> StoredMeterConfiguration:
+    try:
+        return _deserialize_meter_configuration_payload(raw, topology)
+    except (TypeError, ValueError) as error:
+        raise ValueError("stored meter configuration is invalid") from error
 
 
 class HelperStore:
@@ -510,7 +898,28 @@ class HelperStore:
         async with self._update_lock:
             data = await self.async_load()
             meters = data.setdefault("meters", {})
-            meters[record.mac] = serialize_meter_record(record)
+            serialized = serialize_meter_record(record)
+            previous = meters.get(record.mac)
+            if (
+                _configuration_hash(previous) == record.config_sha256
+                and isinstance(previous, dict)
+                and _configuration_hash(previous.get("meter_configuration"))
+                == record.config_sha256
+            ):
+                try:
+                    next_topology = _current_topology(serialized)
+                    if _topology_identity(
+                        _current_topology(previous)
+                    ) != _topology_identity(next_topology):
+                        raise ValueError("meter topology identity changed")
+                    _deserialize_meter_configuration(
+                        previous["meter_configuration"], next_topology
+                    )
+                except KeyError, TypeError, ValueError:
+                    pass
+                else:
+                    serialized["meter_configuration"] = previous["meter_configuration"]
+            meters[record.mac] = serialized
             await self._store.async_save(data)
 
     async def async_save_verified_ct_selections(
@@ -543,6 +952,46 @@ class HelperStore:
             )
         except (TypeError, ValueError) as error:
             raise ValueError("stored CT selections are invalid") from error
+
+    async def async_get_meter_configuration(
+        self, mac: str
+    ) -> StoredMeterConfiguration | None:
+        """Load verified semantics only when their source configuration is current."""
+        mac = canonical_mac(mac)
+        raw_meter = (await self.async_load()).get("meters", {}).get(mac)
+        if not isinstance(raw_meter, dict):
+            return None
+        raw_configuration = raw_meter.get("meter_configuration")
+        current_hash = _configuration_hash(raw_meter)
+        if (
+            current_hash is None
+            or _configuration_hash(raw_configuration) != current_hash
+        ):
+            return None
+        topology = _current_topology(raw_meter)
+        configuration = _deserialize_meter_configuration(raw_configuration, topology)
+        return configuration
+
+    async def async_save_verified_meter_configuration(
+        self, mac: str, configuration: StoredMeterConfiguration
+    ) -> None:
+        """Atomically retain verified semantics only for the current meter record."""
+        mac = canonical_mac(mac)
+        if not isinstance(configuration, StoredMeterConfiguration):
+            raise TypeError("configuration must be StoredMeterConfiguration")
+        async with self._update_lock:
+            data = await self.async_load()
+            raw_meter = data.setdefault("meters", {}).get(mac)
+            if not isinstance(raw_meter, dict):
+                raise ValueError("current meter record is unavailable")  # noqa: TRY004
+            if _configuration_hash(raw_meter) != configuration.config_sha256:
+                raise ValueError(
+                    "configuration does not match the current meter record"
+                )
+            raw_meter["meter_configuration"] = _serialize_meter_configuration(
+                configuration, _current_topology(raw_meter)
+            )
+            await self._store.async_save(data)
 
     async def async_save_interrupted_session(
         self, mac: str, marker: StoredInterruptedSession | None

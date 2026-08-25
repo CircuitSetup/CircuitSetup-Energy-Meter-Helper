@@ -343,6 +343,7 @@ class StoredMeterRecord:
     setup_intent: str
     config_filename: str | None
     topology: StoredTopology | None
+    config_sha256: str | None = None
     ct_selections: tuple[StoredCTSelection, ...] = ()
     interrupted_session: StoredInterruptedSession | None = None
 
@@ -351,3 +352,8 @@ class StoredMeterRecord:
         _safe_line(self.setup_intent, "setup_intent")
         if self.config_filename is not None:
             _safe_line(self.config_filename, "config_filename")
+        if (
+            self.config_sha256 is not None
+            and re.fullmatch(r"[0-9a-f]{64}", self.config_sha256) is None
+        ):
+            raise ValueError("config_sha256 must be a SHA-256 digest")
