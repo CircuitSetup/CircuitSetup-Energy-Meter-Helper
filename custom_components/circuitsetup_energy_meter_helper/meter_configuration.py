@@ -136,7 +136,10 @@ def _bools(values: object, field: str, count: int) -> None:
 
 
 def validate_meter_configuration(
-    request: MeterConfigurationRequest, topology: MeterTopology
+    request: MeterConfigurationRequest,
+    topology: MeterTopology,
+    *,
+    require_multi_reference_acknowledgement: bool = True,
 ) -> None:
     """Validate a request against fixed physical topology without side effects."""
     meter = request.meter
@@ -175,7 +178,11 @@ def validate_meter_configuration(
         raise ValueError("topology groups must be assigned exactly once")
     if type(request.multi_reference_preparation_acknowledged) is not bool:
         raise ValueError("multi-reference acknowledgement must be boolean")
-    if len(refs) > 1 and not request.multi_reference_preparation_acknowledged:
+    if (
+        require_multi_reference_acknowledgement
+        and len(refs) > 1
+        and not request.multi_reference_preparation_acknowledged
+    ):
         raise ValueError("multi-reference preparation acknowledgement required")
     if len(refs) == 1 and request.multi_reference_preparation_acknowledged:
         raise ValueError("multi-reference acknowledgement is only for multiple references")

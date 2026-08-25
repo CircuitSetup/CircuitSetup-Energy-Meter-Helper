@@ -132,11 +132,13 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             await workflow.async_get_meter_configuration("other")
 
         result = await workflow.async_get_meter_configuration("meter")
+        assert workflow._plans[result["plan_id"]].inventory.plan_id == result["plan_id"]
         wrapper = await workflow.async_get_ct_inventory("meter")
 
         assert isinstance(
             workflow._plans[wrapper["plan_id"]].inventory, MeterConfigurationInventory
         )
+        assert workflow._plans[wrapper["plan_id"]].inventory.plan_id == wrapper["plan_id"]
         assert result["source_sha256"] == digest
         assert result["configuration"].meter.friendly_name == "Garage Meter"
         assert wrapper["channels"] == result["channels"]

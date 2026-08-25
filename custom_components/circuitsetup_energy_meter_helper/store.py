@@ -654,11 +654,9 @@ def _validate_configuration(
             configuration.aggregates,
             configuration.power_quality,
             configuration.status_fields,
-            multi_reference_preparation_acknowledged=(
-                len(configuration.meter.voltage_references) > 1
-            ),
         ),
         topology,
+        require_multi_reference_acknowledgement=False,
     )
 
 

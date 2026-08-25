@@ -455,6 +455,111 @@ def test_trusted_managed_voltage_block_accepts_whitespace_around_list_elements()
 
 
 @pytest.mark.parametrize(
+    ("addon_count", "reference_count"),
+    ((1, 3), (3, 8)),
+)
+def test_trusted_managed_voltage_block_accepts_bounded_reference_counts(
+    addon_count: int, reference_count: int
+) -> None:
+    groups = tuple(
+        f"{'main' if board == 0 else f'addon{board}'}_{group}"
+        for board in range(addon_count + 1)
+        for group in (1, 2)
+    )
+    references = tuple(
+        (f"ref{index}", groups[index::reference_count])
+        for index in range(reference_count)
+    )
+    assignments = "".join(
+        f"  {reference_id}: [{', '.join(reference_groups)}]\n"
+        for reference_id, reference_groups in references
+    )
+    document = ESPHomeConfigDocument.parse(
+        "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter"
+        f"-{addon_count}-addons\n"
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "voltage_references:\n"
+        f"{assignments}"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_config(document)
+    trusted = VoltageReferenceTopology(references, "helper")
+
+    voltage = voltage_reference_topology_from_config(
+        document, meter, trusted_fingerprint=trusted.fingerprint
+    )
+
+    assert len(voltage.references) == reference_count
+    assert meter.board_count == addon_count + 1
+
+
+@pytest.mark.parametrize("reference_count", (0, 9), ids=("zero", "nine"))
+def test_trusted_managed_voltage_block_rejects_counts_outside_one_to_eight(
+    reference_count: int,
+) -> None:
+    document = ESPHomeConfigDocument.parse(
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "voltage_references:\n"
+        + "".join(f"  ref{index}: 120\n" for index in range(reference_count))
+        + "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_native("circuitsetup.6c-energy-meter-4-addons")
+
+    with pytest.raises(TopologyParseError, match="invalid managed"):
+        voltage_reference_topology_from_config(
+            document, meter, trusted_fingerprint="v1:" + "0" * 64
+        )
+
+
+def test_trusted_managed_voltage_block_rejects_more_references_than_groups() -> None:
+    document = ESPHomeConfigDocument.parse(
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "voltage_references:\n"
+        "  first: 120\n"
+        "  second: 120\n"
+        "  third: 120\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_native("circuitsetup.6c-energy-meter")
+
+    with pytest.raises(TopologyParseError, match="invalid managed"):
+        voltage_reference_topology_from_config(
+            document, meter, trusted_fingerprint="v1:" + "0" * 64
+        )
+
+
+@pytest.mark.parametrize("profile", ("three_phase", "custom"))
+def test_electrical_profile_does_not_change_managed_topology_board_count(
+    profile: str,
+) -> None:
+    document = ESPHomeConfigDocument.parse(
+        "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter-1-addon\n"
+        f"substitutions:\n  electrical_system: {profile}\n"
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "voltage_references:\n"
+        "  phase_a: [main_1]\n"
+        "  phase_b: [main_2]\n"
+        "  phase_c: [addon1_1, addon1_2]\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_config(document)
+    trusted = VoltageReferenceTopology(
+        (
+            ("phase_a", ("main_1",)),
+            ("phase_b", ("main_2",)),
+            ("phase_c", ("addon1_1", "addon1_2")),
+        ),
+        "helper",
+    )
+
+    voltage_reference_topology_from_config(
+        document, meter, trusted_fingerprint=trusted.fingerprint
+    )
+
+    assert meter.board_count == 2
+
+
+@pytest.mark.parametrize(
     "body",
     (
         "preamble: unsafe\nvoltage_references:\n  main: 120\n",

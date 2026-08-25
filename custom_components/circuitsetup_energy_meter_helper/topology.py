@@ -217,7 +217,7 @@ def _managed_voltage_reference_assignments(
         elif not value:
             raise TopologyParseError("invalid managed voltage-reference mapping")
         entries.append((reference_id, groups))
-    if not entries or len(entries) > 2:
+    if not 1 <= len(entries) <= min(8, topology.group_count):
         raise TopologyParseError("invalid managed voltage-reference mapping")
     expected = _expected_group_keys(topology)
     inferred = tuple(groups is None for _, groups in entries)

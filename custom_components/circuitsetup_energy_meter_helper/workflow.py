@@ -449,7 +449,9 @@ class EntryWorkflow:
             if include_stored_semantics
             else None
         )
+        plan_id = uuid4().hex
         inventory = MeterConfigurationInventory.from_document(
+            plan_id,
             document,
             topology,
             ct_catalog,
@@ -464,7 +466,6 @@ class EntryWorkflow:
             ),
             stored_semantics_stale=(stored_read.stale if stored_read is not None else False),
         )
-        plan_id = uuid4().hex
         self._discard_device_plans(mac)
         while len(self._plans) >= MAX_PLAN_HANDLES:
             oldest = next(iter(self._plans))

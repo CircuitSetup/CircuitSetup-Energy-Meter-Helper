@@ -75,23 +75,21 @@ def meter_configuration_capabilities(
 class MeterConfigurationInventory:
     """One hash-bound meter configuration snapshot, ready for a server plan handle."""
 
+    plan_id: str
     source_sha256: str
     topology: MeterTopology
     configuration: MeterConfigurationRequest
-    ct_inventory: CTInventory
-    voltage_topology: VoltageReferenceTopology
     capabilities: MeterConfigurationCapabilities
     voltage_transformer_catalog: VoltageTransformerCatalog
+    ct_catalog: CTPresetCatalog
     warnings: tuple[str, ...]
-
-    @property
-    def ct_catalog(self) -> CTPresetCatalog:
-        """Expose the existing CT catalog without duplicating it in the handle."""
-        return self.ct_inventory.catalog
+    ct_inventory: CTInventory
+    voltage_topology: VoltageReferenceTopology
 
     @classmethod
     def from_document(
         cls,
+        plan_id: str,
         document: ESPHomeConfigDocument,
         topology: MeterTopology,
         ct_catalog: CTPresetCatalog,
@@ -133,7 +131,11 @@ class MeterConfigurationInventory:
                 configuration = _stored_request(
                     matching, document, topology, ct_inventory
                 )
-                validate_meter_configuration(configuration, topology)
+                validate_meter_configuration(
+                    configuration,
+                    topology,
+                    require_multi_reference_acknowledgement=False,
+                )
                 voltage_topology = voltage_reference_topology_from_configuration(
                     topology, configuration
                 )
@@ -149,14 +151,16 @@ class MeterConfigurationInventory:
         if stale:
             warnings.append("stored_semantics_stale")
         return cls(
-            config_sha256,
-            topology,
-            configuration,
-            ct_inventory,
-            voltage_topology,
-            capabilities,
-            voltage_transformer_catalog,
-            tuple(warnings),
+            plan_id=plan_id,
+            source_sha256=config_sha256,
+            topology=topology,
+            configuration=configuration,
+            capabilities=capabilities,
+            voltage_transformer_catalog=voltage_transformer_catalog,
+            ct_catalog=ct_catalog,
+            warnings=tuple(warnings),
+            ct_inventory=ct_inventory,
+            voltage_topology=voltage_topology,
         )
 
 
@@ -219,9 +223,6 @@ def _stored_request(
         stored.aggregates,
         stored.power_quality,
         stored.status_fields,
-        multi_reference_preparation_acknowledged=(
-            len(stored.meter.voltage_references) > 1
-        ),
     )
 
 
@@ -236,12 +237,16 @@ def _stored_voltage_references(
             for group in reference.group_keys
             if VOLTAGE_REFERENCE_GROUP_RE.fullmatch(group) is not None
         )
-        gain_suffixes = {group[-1] for group in groups}
-        if len(gain_suffixes) != 1 or len(groups) != len(reference.group_keys):
+        if len(groups) != len(reference.group_keys):
             raise ValueError("stored voltage reference has ambiguous calibration")
-        gain_key = f"voltage_cal{gain_suffixes.pop()}"
+        gains = {
+            _gain(document, f"voltage_cal{group[-1]}", reference.gain_voltage)
+            for group in groups
+        }
+        if len(gains) != 1:
+            raise ValueError("stored voltage reference has ambiguous calibration")
         references.append(
-            replace(reference, gain_voltage=_gain(document, gain_key, reference.gain_voltage))
+            replace(reference, gain_voltage=gains.pop())
         )
     return tuple(references)
 
@@ -298,9 +303,10 @@ def _legacy_request(
         (),
         package_options["power_quality"],
         package_options["status_fields"],
-        multi_reference_preparation_acknowledged=len(references) > 1,
     )
-    validate_meter_configuration(request, topology)
+    validate_meter_configuration(
+        request, topology, require_multi_reference_acknowledgement=False
+    )
     return request
 
 

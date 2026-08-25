@@ -230,6 +230,9 @@ def test_board_options_and_multi_reference_acknowledgement() -> None:
     object.__setattr__(value, "multi_reference_preparation_acknowledged", False)
     with pytest.raises(ValueError):
         validate_meter_configuration(value, topology())
+    validate_meter_configuration(
+        value, topology(), require_multi_reference_acknowledgement=False
+    )
     object.__setattr__(value, "multi_reference_preparation_acknowledged", True)
     validate_meter_configuration(value, topology())
     object.__setattr__(value, "multi_reference_preparation_acknowledged", 1)

@@ -133,6 +133,7 @@ def _inventory(
 ) -> MeterConfigurationInventory:
     document = ESPHomeConfigDocument.parse(content)
     return MeterConfigurationInventory.from_document(
+        "a" * 32,
         document,
         topology_from_config(document),
         CTPresetCatalog.load(),
@@ -141,6 +142,24 @@ def _inventory(
         stored_configuration=stored,
         configuration_authoritative=authoritative,
     )
+
+
+def test_inventory_has_server_plan_and_catalog_fields() -> None:
+    inventory = _inventory(_document())
+
+    field_names = tuple(field.name for field in fields(MeterConfigurationInventory))
+    assert field_names[:8] == (
+        "plan_id",
+        "source_sha256",
+        "topology",
+        "configuration",
+        "capabilities",
+        "voltage_transformer_catalog",
+        "ct_catalog",
+        "warnings",
+    )
+    assert inventory.plan_id == "a" * 32
+    assert inventory.ct_catalog is inventory.ct_inventory.catalog
 
 
 def test_legacy_inventory_keeps_yaml_ct_values_and_requires_electrical_confirmation() -> (
@@ -240,6 +259,98 @@ def test_matching_stored_semantics_restore_roles_reference_mapping_and_aggregate
         ("loads", ("main_2",)),
     )
     assert "electrical_profile_requires_confirmation" not in inventory.warnings
+
+
+@pytest.mark.parametrize("addon_count", (0, 1))
+def test_matching_single_reference_restores_semantics_when_physical_gains_agree(
+    addon_count: int,
+) -> None:
+    """One logical reference may losslessly span both physical gain groups."""
+    content = _document(
+        contract=True,
+        addon_count=addon_count,
+        voltage_cal1=7001,
+        voltage_cal2=7001,
+    )
+    baseline = _inventory(content).configuration
+    aggregate = CircuitAggregate(
+        "grid",
+        "Grid",
+        CircuitRole.GRID,
+        (1,),
+        MeasurementMethod.DIRECT,
+        None,
+        EnergyMode.BIDIRECTIONAL,
+    )
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        baseline.meter,
+        tuple(
+            replace(
+                channel,
+                role=CircuitRole.GRID
+                if channel.channel == 1
+                else CircuitRole.BRANCH,
+            )
+            for channel in baseline.channels
+        ),
+        (aggregate,),
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+
+    inventory = _inventory(content, stored=stored)
+
+    assert inventory.configuration.meter.voltage_references[0].gain_voltage == 7001
+    assert inventory.configuration.channels[0].role is CircuitRole.GRID
+    assert inventory.configuration.aggregates == (aggregate,)
+    assert not inventory.configuration.multi_reference_preparation_acknowledged
+    assert "stored_semantics_stale" not in inventory.warnings
+
+
+def test_single_reference_with_divergent_physical_gains_is_stale() -> None:
+    """One gain field cannot preserve two different physical group gains."""
+    content = _document(contract=True, voltage_cal1=7001, voltage_cal2=8002)
+    baseline = _inventory(content).configuration
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        baseline.meter,
+        tuple(replace(channel, role=CircuitRole.GRID) for channel in baseline.channels),
+        (),
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+
+    inventory = _inventory(content, stored=stored)
+
+    assert {channel.role for channel in inventory.configuration.channels} == {
+        CircuitRole.CUSTOM
+    }
+    assert "stored_semantics_stale" in inventory.warnings
+
+
+def test_legacy_and_stored_multi_reference_inventory_never_claims_preparation() -> None:
+    content = _document(
+        contract=True,
+        two_voltages=True,
+        voltage_cal1=7001,
+        voltage_cal2=8002,
+    )
+    legacy = _inventory(content)
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        legacy.configuration.meter,
+        legacy.configuration.channels,
+        (),
+        legacy.configuration.power_quality,
+        legacy.configuration.status_fields,
+    )
+
+    restored = _inventory(content, stored=stored)
+
+    assert not legacy.configuration.multi_reference_preparation_acknowledged
+    assert not restored.configuration.multi_reference_preparation_acknowledged
+    assert "stored_semantics_stale" not in restored.warnings
 
 
 def test_matching_stored_channels_merge_by_channel_identity_not_tuple_order() -> None:
