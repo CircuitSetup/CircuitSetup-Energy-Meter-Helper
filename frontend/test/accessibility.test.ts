@@ -87,7 +87,7 @@ describe("calibration tab semantics", () => {
 
   it("supports arrow keys and a linked voltage-group tabpanel", () => {
     const select = vi.fn();
-    const root = mount(voltageStep({ ...topology, voltage_layout: "two_voltages" }, null, 0, [0, 0], null, [],
+    const root = mount(voltageStep({ ...topology, voltage_layout: "two_voltages" }, null, 0, [0, 0], [], null, [],
       false, select, noop, noop, noop, noop, noop));
     const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
 
@@ -134,7 +134,7 @@ describe("calibration tab semantics", () => {
   });
 
   it("labels selected-board voltage readings V1 through V3 without statistics", () => {
-    const root = mount(voltageStep(topology, null, 1, [120, 0], {
+    const root = mount(voltageStep(topology, null, 1, [120, 0], [], {
       target: "voltage", target_id: "Board 2", stable: true,
       windows: Array.from({ length: 3 }, (_, index) => ({ samples: [120 + index], mean: 120 + index,
         standard_deviation: 0, range_percent: 0 })),

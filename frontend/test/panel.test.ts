@@ -2248,7 +2248,7 @@ describe("CircuitSetup panel", () => {
     state.restartResult = { verification_id: "stale" };
     await state.startSession();
     expect(state.safetyAcknowledged).toBe(false);
-    expect(state.voltageReferences).toEqual([0, 0]);
+    expect(state.voltageReferences).toEqual(new Map());
     expect((state.currentReferences as Map<number, number>).size).toBe(0);
     expect((state.stabilityByTarget as Map<string, unknown>).size).toBe(0);
     expect((state.calibrationByTarget as Map<string, unknown>).size).toBe(0);
@@ -2263,7 +2263,7 @@ describe("CircuitSetup panel", () => {
     expect(state.session).toBeNull();
     expect(state.transaction).toBeNull();
     expect(state.safetyAcknowledged).toBe(false);
-    expect(state.voltageReferences).toEqual([0, 0]);
+    expect(state.voltageReferences).toEqual(new Map());
     expect((state.currentReferences as Map<number, number>).size).toBe(0);
     expect(state.restartResult).toBeNull();
   });

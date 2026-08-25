@@ -189,9 +189,10 @@ function meterConfiguration(value: unknown, label: string): MeterSettingsDraft {
   const voltageReferences = array(meter.voltage_references, label, 14).map((entry) => {
     const reference = record(entry, label);
     const referenceId = string(reference.reference_id, label)!;
+    const referenceLabel = reference.label === undefined ? referenceId : string(reference.label, label)!;
     const groupKeys = array(reference.group_keys, label, 14).map((key) => string(key, label)!);
     if (!groupKeys.length) throw new Error(`${label} response is invalid`);
-    return { reference_id: referenceId, group_keys: groupKeys };
+    return { reference_id: referenceId, label: referenceLabel, group_keys: groupKeys };
   });
   if (!voltageReferences.length || new Set(voltageReferences.map((reference) => reference.reference_id)).size !== voltageReferences.length) {
     throw new Error(`${label} response is invalid`);
@@ -383,8 +384,8 @@ function offsetCalibration(value: unknown, label: string, expectedBoard: number,
 function stability(value: unknown, label: string, expectedTarget: "voltage" | "current", expectedTargetId: string): StabilityResult {
   const item = record(value, label); const target = enumeration(item.target, new Set(["voltage", "current"]), label); string(item.target_id, label); const stable = boolean(item.stable, label);
   if (target !== expectedTarget || item.target_id !== expectedTargetId) throw new Error(`${label} response is invalid`);
-  const windows = array(item.windows, label, target === "voltage" ? 3 : 1);
-  if (windows.length !== (target === "voltage" ? 3 : 1)) throw new Error(`${label} response is invalid`);
+  const windows = array(item.windows, label, target === "voltage" ? 42 : 1);
+  if (target === "voltage" ? windows.length < 3 || windows.length % 3 !== 0 : windows.length !== 1) throw new Error(`${label} response is invalid`);
   const ranges = windows.map((entry) => {
     const window = record(entry, label); const samples = array(window.samples, label, 1).map((sample) => number(sample, label));
     if (samples.length !== 1) throw new Error(`${label} response is invalid`);

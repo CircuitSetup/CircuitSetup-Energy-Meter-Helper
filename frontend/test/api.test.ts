@@ -133,6 +133,23 @@ function validResponse(operation: string): unknown {
 }
 
 describe("HelperApi", () => {
+  it("accepts voltage stability windows for every group assigned to one reference", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    const window = { samples: [120], mean: 120, standard_deviation: 0, range_percent: 0 };
+    hass.responses.check_stability = { target: "voltage", target_id: "main", stable: true,
+      windows: Array.from({ length: 6 }, () => window) };
+    await expect(api.checkStability("session-1", "voltage", "main")).resolves.toMatchObject({ windows: expect.any(Array) });
+    hass.responses.check_stability = { target: "voltage", target_id: "crossboard", stable: true,
+      windows: Array.from({ length: 12 }, () => window) };
+    await expect(api.checkStability("session-1", "voltage", "crossboard")).resolves.toMatchObject({ windows: expect.any(Array) });
+    for (const count of [0, 4, 45]) {
+      hass.responses.check_stability = { target: "voltage", target_id: "main", stable: true,
+        windows: Array.from({ length: count }, () => window) };
+      await expect(api.checkStability("session-1", "voltage", "main")).rejects.toThrow("check_stability");
+    }
+  });
+
   it("keeps the slow-interval warning from the full meter configuration", async () => {
     const hass = new FakeHass();
     hass.responses.get_meter_configuration = { configuration: { meter: {

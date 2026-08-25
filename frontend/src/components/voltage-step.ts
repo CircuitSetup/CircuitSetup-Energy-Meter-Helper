@@ -8,6 +8,7 @@ export function voltageStep(
   session: SessionStatus | null,
   board: number,
   references: number[],
+  referenceLabels: string[] = [],
   stability: StabilityResult | null,
   results: CalibrationResult[],
   busy: boolean,
@@ -18,7 +19,7 @@ export function voltageStep(
   reconnect: () => void,
   cancel: () => void,
 ): TemplateResult {
-  const count = topology?.voltage_layout === "two_voltages" ? 2 : 1;
+  const count = references.length;
   const referenceReady = references.slice(0, count).every((value) => Number.isFinite(value) && value > 0);
   const sourceIds = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
   const completedInstanceIds = new Set(results.flatMap((result) => result.state === "applied_pending_restart_verification"
@@ -40,7 +41,7 @@ export function voltageStep(
       <h2>Calibrate Voltage</h2>
       ${calibrationSourceEvidence(session, sourceIds, "Voltage", completedInstanceIds)}
       <div class="reference-block">
-        ${Array.from({ length: count }, (_, index) => html`<label>${count === 1 ? "Trusted instrument reference" : `Voltage ${index + 1} trusted reference`}
+        ${Array.from({ length: count }, (_, index) => html`<label>${referenceLabels[index] ?? (count === 1 ? "Trusted instrument" : `Voltage ${index + 1}`)} trusted reference
           <input type="number" min="0.01" step="0.01" .value=${references[index] ? String(references[index]) : ""}
             @input=${(event: Event) => setReference(index, Number((event.target as HTMLInputElement).value))} /></label>`)}
       </div>
