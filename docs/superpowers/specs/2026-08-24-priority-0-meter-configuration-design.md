@@ -75,7 +75,6 @@ Add only one new main step, **Meter Settings**, between **Setup Device** and **C
 
 ---
 
-
 ## Public Data Contracts
 
 Define these names exactly unless an existing merged change creates a naming collision.
@@ -234,4 +233,3 @@ def estimate_configuration_impact(
 ```
 
 ---
-
