@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from .config_blocks import render_voltage_references, replace_managed_block
+from .config_blocks import (
+    render_aggregates,
+    render_voltage_references,
+    replace_managed_block,
+)
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import (
     ConfigMutationError,
@@ -16,6 +20,9 @@ from .config_mutator import (
     _canonical_meter_id,
 )
 from .meter_configuration import (
+    CircuitAggregate,
+    EnergyMode,
+    MeasurementMethod,
     MeterConfigurationRequest,
     VoltageReferenceConfig,
     validate_meter_configuration,
@@ -48,11 +55,14 @@ def build_meter_configuration_mutation(
         and not current.capabilities.multi_reference
     ):
         raise ConfigMutationError("multi-reference capability is unavailable")
+    if requested.aggregates and not current.capabilities.managed_totals:
+        raise ConfigMutationError("managed totals capability is unavailable")
     if (
         replace(
             previous,
             meter=requested.meter,
             channels=requested.channels,
+            aggregates=requested.aggregates,
             power_quality=requested.power_quality,
             status_fields=requested.status_fields,
             multi_reference_preparation_acknowledged=(
@@ -124,33 +134,47 @@ def build_meter_configuration_mutation(
             for channel in requested.channels
         },
     )
-    if requested.meter == previous.meter:
+    content = plan.proposed_content
+    changes: list[SubstitutionChange] = []
+    diffs = [plan.redacted_diff]
+    if requested.meter != previous.meter:
+        substitutions = {
+            "friendly_name": requested.meter.friendly_name,
+            "update_time": f"{requested.meter.update_interval_s}s",
+            "electric_freq": f"{requested.meter.line_frequency_hz}Hz",
+        }
+        document = ESPHomeConfigDocument.parse(content)
+        changes = [
+            SubstitutionChange(key, scalar.value if scalar else None, value)
+            for key, value in substitutions.items()
+            if (scalar := document.substitutions.get(key)) is None
+            or scalar.value != value
+        ]
+        content = _apply_changes(document, changes, substitutions)
+        content = replace_managed_block(
+            content,
+            "voltage_references",
+            _render_voltage_references(
+                requested.meter.voltage_references, topology, document
+            ),
+        )
+        diffs.append(_voltage_reference_diff(plan.proposed_content, content))
+    if requested.aggregates != previous.aggregates:
+        content = replace_managed_block(
+            content,
+            "aggregates",
+            _render_aggregates(
+                requested.aggregates, topology
+            ),
+        )
+        diffs.append(_aggregate_diff(plan.proposed_content, content))
+    if content == plan.proposed_content:
         return plan
-    substitutions = {
-        "friendly_name": requested.meter.friendly_name,
-        "update_time": f"{requested.meter.update_interval_s}s",
-        "electric_freq": f"{requested.meter.line_frequency_hz}Hz",
-    }
-    document = ESPHomeConfigDocument.parse(plan.proposed_content)
-    changes = [
-        SubstitutionChange(key, scalar.value if scalar else None, value)
-        for key, value in substitutions.items()
-        if (scalar := document.substitutions.get(key)) is None or scalar.value != value
-    ]
-    content = _apply_changes(document, changes, substitutions)
-    content = replace_managed_block(
-        content,
-        "voltage_references",
-        _render_voltage_references(
-            requested.meter.voltage_references, topology, document
-        ),
-    )
-    voltage_diff = _voltage_reference_diff(plan.proposed_content, content)
     return ConfigMutationPlan(
         plan.configuration,
         plan.source_sha256,
         (*plan.changes, *changes),
-        "\n".join(part for part in (plan.redacted_diff, voltage_diff) if part),
+        "\n".join(part for part in diffs if part),
         content,
     )
 
@@ -239,3 +263,155 @@ def _voltage_reference_diff(before: str, after: str) -> str:
     if old == new:
         return ""
     return "managed voltage-reference overrides updated"
+
+
+def _render_aggregates(
+    aggregates: tuple[CircuitAggregate, ...], topology: MeterTopology
+) -> str:
+    entries = {
+        f"00_{total_id}": _internal_total(total_id)
+        for total_id in _official_total_ids(topology)
+    }
+    for aggregate in aggregates:
+        entries[f"10_{aggregate.aggregate_id}"] = _aggregate_entry(aggregate)
+    return render_aggregates(entries)
+
+
+def _official_total_ids(topology: MeterTopology) -> tuple[str, ...]:
+    return (
+        ("totalEnergyDaily",)
+        if topology.addon_count == 0
+        else ("totalAmps", "totalWatts", "totalEnergyDaily")
+    )
+
+
+def _internal_total(total_id: str) -> str:
+    return f"  - id: !extend {total_id}\n    internal: true\n"
+
+
+def _aggregate_entry(aggregate: CircuitAggregate) -> str:
+    identifier = f"csemh_{aggregate.aggregate_id.replace('-', '_')}"
+    power_id = f"{identifier}_power"
+    power_expression = _power_expression(aggregate)
+    power_internal = not aggregate.expose_power
+    lines = _template_sensor(
+        power_id,
+        f"${{friendly_name}} {aggregate.name} Power",
+        _energy_power_expression(aggregate, power_expression),
+        "W",
+        "power",
+        internal=power_internal,
+    )
+    if aggregate.expose_current:
+        lines += _template_sensor(
+            f"{identifier}_current",
+            f"${{friendly_name}} {aggregate.name} Current",
+            _current_expression(aggregate),
+            "A",
+            "current",
+        )
+    if aggregate.energy_mode is EnergyMode.CONSUMPTION:
+        lines += _daily_energy(
+            f"{identifier}_energy",
+            f"${{friendly_name}} {aggregate.name} Energy",
+            power_id,
+        )
+    elif aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
+        import_power_id, export_power_id = (
+            f"{identifier}_import_power",
+            f"{identifier}_export_power",
+        )
+        lines += _template_sensor(
+            import_power_id,
+            f"${{friendly_name}} {aggregate.name} Import Power",
+            f"std::max(0.0f, id({power_id}).state)",
+            "W",
+            "power",
+        )
+        lines += _template_sensor(
+            export_power_id,
+            f"${{friendly_name}} {aggregate.name} Export Power",
+            f"std::max(0.0f, -id({power_id}).state)",
+            "W",
+            "power",
+        )
+        lines += _daily_energy(
+            f"{identifier}_import_energy",
+            f"${{friendly_name}} {aggregate.name} Import Energy",
+            import_power_id,
+        )
+        lines += _daily_energy(
+            f"{identifier}_export_energy",
+            f"${{friendly_name}} {aggregate.name} Export Energy",
+            export_power_id,
+        )
+    elif aggregate.energy_mode is EnergyMode.GENERATION:
+        lines += _daily_energy(
+            f"{identifier}_energy",
+            f"${{friendly_name}} {aggregate.name} Energy",
+            power_id,
+        )
+    return lines
+
+
+def _power_expression(aggregate: CircuitAggregate) -> str:
+    expression = " + ".join(f"id(ct{channel}Watts).state" for channel in aggregate.channels)
+    return f"{expression} * 2.0" if aggregate.measurement_method is MeasurementMethod.ONE_CT_DOUBLE_POWER else expression
+
+
+def _current_expression(aggregate: CircuitAggregate) -> str:
+    return " + ".join(f"id(ct{channel}Amps).state" for channel in aggregate.channels)
+
+
+def _energy_power_expression(aggregate: CircuitAggregate, expression: str) -> str:
+    if aggregate.energy_mode is EnergyMode.CONSUMPTION:
+        return f"std::max(0.0f, {expression})"
+    if aggregate.energy_mode is EnergyMode.GENERATION:
+        return f"std::max(0.0f, -{expression})"
+    return expression
+
+
+def _template_sensor(
+    entity_id: str,
+    name: str,
+    expression: str,
+    unit: str,
+    device_class: str,
+    *,
+    internal: bool = False,
+) -> str:
+    lines = ["  - platform: template", f"    id: {entity_id}"]
+    if internal:
+        lines.append("    internal: true")
+    else:
+        lines.append(f"    name: {json.dumps(name)}")
+    lines.extend(
+        (
+            f"    lambda: return {expression};",
+            f"    unit_of_measurement: {unit}",
+            f"    device_class: {device_class}",
+            "    update_interval: ${update_time}",
+        )
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _daily_energy(entity_id: str, name: str, power_id: str) -> str:
+    return "\n".join(
+        (
+            "  - platform: total_daily_energy",
+            f"    id: {entity_id}",
+            f"    name: {json.dumps(name)}",
+            f"    power_id: {power_id}",
+            "    filters:",
+            "      - multiply: 0.001",
+            "    unit_of_measurement: kWh",
+            "    device_class: energy",
+            "    state_class: total_increasing",
+        )
+    ) + "\n"
+
+
+def _aggregate_diff(before: str, after: str) -> str:
+    marker = "# CircuitSetup Energy Meter Helper: aggregates v1"
+    return "" if before.count(marker) == after.count(marker) == 0 else "managed aggregate overrides updated"

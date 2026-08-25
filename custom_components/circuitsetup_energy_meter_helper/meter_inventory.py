@@ -151,7 +151,7 @@ class MeterConfigurationInventory:
         warnings = list(capabilities.reason_codes)
         if configuration.meter.electrical_system is ElectricalSystem.CUSTOM:
             warnings.append("electrical_profile_requires_confirmation")
-        if _has_generic_total(document):
+        if _has_generic_total(document) and not capabilities.managed_totals:
             warnings.append("legacy_generic_totals_unmanaged")
         if stale:
             warnings.append("stored_semantics_stale")

@@ -25,8 +25,11 @@ from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator imp
     build_meter_configuration_mutation,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    CircuitAggregate,
     CircuitRole,
     ElectricalSystem,
+    EnergyMode,
+    MeasurementMethod,
     VoltageLayout,
     VoltageReferenceConfig,
 )
@@ -70,6 +73,24 @@ def _snapshot(*, missing: str | None = None, quote: str = '"') -> ESPHomeConfigS
     )
     return ESPHomeConfigSnapshot(
         "meter.yaml", content, sha256(content.encode()).hexdigest()
+    )
+
+
+def _contract_snapshot(*, generic_totals: bool = False) -> ESPHomeConfigSnapshot:
+    """Return the smallest contract-2 source with optional official totals."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace(
+        "substitutions:\n", 'substitutions:\n  csemh_config_contract: "2"\n'
+    )
+    if generic_totals:
+        content = content.replace(
+            "logger:\n",
+            "  - platform: total_daily_energy\n"
+            "    id: totalEnergyDaily\n"
+            "logger:\n",
+        )
+    return ESPHomeConfigSnapshot(
+        snapshot.configuration, content, sha256(content.encode()).hexdigest()
     )
 
 
@@ -1239,6 +1260,192 @@ def test_channel_state_changes_render_runtime_visibility(
     )[0]
     assert "      current:\n        internal: true" in phase
     assert "      power:\n        internal: true" in phase
+
+
+def _aggregate_request(
+    current: MeterConfigurationInventory,
+    aggregate: CircuitAggregate,
+) -> object:
+    return replace(current.configuration, aggregates=(aggregate,))
+
+
+def test_aggregate_preview_renders_bidirectional_grid_and_hides_contract_totals() -> None:
+    """Contract-2 totals are internal before deterministic grid entities appear."""
+    snapshot = _contract_snapshot(generic_totals=True)
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = _aggregate_request(
+        current,
+        CircuitAggregate(
+            "grid",
+            "Grid",
+            CircuitRole.GRID,
+            (1, 2),
+            MeasurementMethod.DIRECT,
+            None,
+            EnergyMode.BIDIRECTIONAL,
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    block = plan.proposed_content.split(
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n", 1
+    )[1].split("# End CircuitSetup", 1)[0]
+    for entity_id in (
+        "csemh_grid_power",
+        "csemh_grid_import_power",
+        "csemh_grid_export_power",
+        "csemh_grid_import_energy",
+        "csemh_grid_export_energy",
+    ):
+        assert f"id: {entity_id}" in block
+    assert "lambda: return id(ct1Watts).state + id(ct2Watts).state;" in block
+    assert "lambda: return std::max(0.0f, id(csemh_grid_power).state);" in block
+    assert "lambda: return std::max(0.0f, -id(csemh_grid_power).state);" in block
+    assert "power_id: csemh_grid_import_power" in block
+    assert "power_id: csemh_grid_export_power" in block
+    for total_id in ("totalEnergyDaily",):
+        assert f"- id: !extend {total_id}\n    internal: true" in block
+    ESPHomeConfigDocument.parse(plan.proposed_content)
+
+
+def test_aggregate_energy_signs_and_one_ct_power_multiplier_are_semantic_only() -> None:
+    """Energy clamps are explicit and doubling never changes aggregate current."""
+    snapshot = _contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        aggregates=(
+            CircuitAggregate(
+                "load", "Load", CircuitRole.BRANCH, (1,),
+                MeasurementMethod.ONE_CT_DOUBLE_POWER, None, EnergyMode.CONSUMPTION,
+                expose_current=True,
+            ),
+            CircuitAggregate(
+                "solar", "Solar", CircuitRole.SOLAR, (2,),
+                MeasurementMethod.DIRECT, None, EnergyMode.GENERATION,
+            ),
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    block = plan.proposed_content.split(
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n", 1
+    )[1].split("# End CircuitSetup", 1)[0]
+
+    assert "lambda: return std::max(0.0f, id(ct1Watts).state * 2.0);" in block
+    assert "lambda: return id(ct1Amps).state;" in block
+    assert "power_id: csemh_load_power" in block
+    assert "lambda: return std::max(0.0f, -id(ct2Watts).state);" in block
+    assert "power_id: csemh_solar_power" in block
+    assert "id(ct1Amps).state * 2.0" not in block
+
+
+def test_aggregate_preview_requires_contract_totals_and_never_invents_default_total() -> None:
+    """Legacy sources refuse replacement totals; an empty request adds no block."""
+    aggregate = CircuitAggregate(
+        "load", "Load", CircuitRole.BRANCH, (1,),
+        MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION,
+    )
+    legacy = _snapshot()
+    with pytest.raises(ConfigMutationError, match="managed totals"):
+        build_meter_configuration_mutation(
+            legacy, _topology(), _inventory(legacy, _topology()),
+            _aggregate_request(_inventory(legacy, _topology()), aggregate),
+        )
+
+    snapshot = _contract_snapshot()
+    current = _inventory(snapshot, _topology())
+    plan = build_meter_configuration_mutation(
+        snapshot, _topology(), current, current.configuration
+    )
+    assert "aggregates v1" not in plan.proposed_content
+
+
+def test_sparse_addon_aggregates_hide_each_effective_official_total_once() -> None:
+    """Add-on channel IDs stay explicit while each stable total gets one override."""
+    snapshot = _package_snapshot()
+    content = snapshot.content.replace(
+        "substitutions:\n", 'substitutions:\n  csemh_config_contract: "2"\n'
+    ).replace(
+        "sensor:\n",
+        "sensor:\n"
+        "  - platform: template\n"
+        "    id: totalAmps\n"
+        "  - platform: template\n"
+        "    id: totalWatts\n"
+        "  - platform: total_daily_energy\n"
+        "    id: totalEnergyDaily\n"
+        ,
+        1,
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+    topology = _two_board_topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        aggregates=(
+            CircuitAggregate("main", "Main", CircuitRole.BRANCH, (1,), MeasurementMethod.DIRECT, None, EnergyMode.NONE),
+            CircuitAggregate("addon", "Addon", CircuitRole.BRANCH, (12,), MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION),
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    block = plan.proposed_content.split("aggregates v1\n", 1)[1].split(
+        "# End CircuitSetup", 1
+    )[0]
+
+    assert "lambda: return id(ct1Watts).state;" in block
+    assert "lambda: return std::max(0.0f, id(ct12Watts).state);" in block
+    for total_id in ("totalAmps", "totalWatts", "totalEnergyDaily"):
+        assert block.count(f"- id: !extend {total_id}\n    internal: true") == 1
+
+
+def test_aggregate_names_are_yaml_scalars_and_repeated_preview_is_identical() -> None:
+    """User labels cannot change generated YAML structure or produce duplicate totals."""
+    snapshot = _contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = _aggregate_request(
+        current,
+        CircuitAggregate(
+            "two-pole",
+            'Dryer: "Main" # 240V',
+            CircuitRole.TWO_POLE,
+            (1, 2),
+            MeasurementMethod.TWO_CT_SUM,
+            None,
+            EnergyMode.CONSUMPTION,
+        ),
+    )
+    first = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    stored = StoredMeterConfiguration(
+        sha256(first.proposed_content.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+    repeated_snapshot = replace(
+        snapshot,
+        content=first.proposed_content,
+        sha256=stored.config_sha256,
+    )
+    repeated = build_meter_configuration_mutation(
+        repeated_snapshot,
+        topology,
+        _inventory(repeated_snapshot, topology, stored=stored),
+        requested,
+    )
+
+    assert 'name: "${friendly_name} Dryer: \\"Main\\" # 240V Power"' in first.proposed_content
+    assert "lambda: return std::max(0.0f, id(ct1Watts).state + id(ct2Watts).state);" in first.proposed_content
+    assert repeated.proposed_content == first.proposed_content
 
 
 def test_phase_overrides_are_board_specific_and_migrate_legacy_scaling() -> None:

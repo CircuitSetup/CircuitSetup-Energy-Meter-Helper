@@ -646,4 +646,4 @@ def test_generic_total_warning_ignores_comments_but_detects_active_ids() -> None
     active = _inventory(_document(contract=True, generic_totals=True))
 
     assert "legacy_generic_totals_unmanaged" not in inactive.warnings
-    assert "legacy_generic_totals_unmanaged" in active.warnings
+    assert "legacy_generic_totals_unmanaged" not in active.warnings
