@@ -2,11 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Expand CircuitSetup Energy Meter Helper from CT selection/calibration into a safe, topology-aware configurator for electrical system type, voltage references, reporting interval, circuit roles, grouped totals, energy reporting, complete range scaling for the supported power-quality values, and configurable ATM90E32 status thresholds.
+**Goal:** Expand CircuitSetup Energy Meter Helper from CT selection/calibration into a safe, topology-aware configurator for electrical system type, voltage references, reporting interval, circuit roles, grouped totals, energy reporting, and complete range scaling for the supported power-quality values.
 
-**Architecture:** Keep the current line-preserving, hash-bound configuration transaction architecture. Add a typed meter-configuration domain model, parse only a bounded official YAML surface, and render deterministic helper-managed override blocks instead of serializing arbitrary YAML. Preserve the existing CT setup and calibration paths as compatibility wrappers while introducing generalized meter-configuration read/preview/apply commands. Implement the ATM90E32 threshold behavior in ESPHome first, then capability-gate the helper controls until that component support is available in a released ESPHome version.
+**Architecture:** Keep the current line-preserving, hash-bound configuration transaction architecture. Add a typed meter-configuration domain model, parse only a bounded official YAML surface, and render deterministic helper-managed override blocks instead of serializing arbitrary YAML. Preserve the existing CT setup and calibration paths as compatibility wrappers while introducing generalized meter-configuration read/preview/apply commands.
 
 **Tech Stack:** Python 3.13, Home Assistant custom integration APIs, Voluptuous, aioesphomeapi, aiohasupervisor, ESPHome Python code generation and C++, Lit 3, TypeScript, Vitest, Playwright, pytest, Ruff, mypy, GitHub Actions.
+
+**Scope amendment (user):** Tasks 2–4 are canceled. The remaining work begins with Task 5.
 
 **Spec:** The “Approved Requirements Baseline” section in this document is the controlling specification. Before implementation, copy it unchanged to `docs/superpowers/specs/2026-08-24-priority-0-meter-configuration-design.md` in `CircuitSetup/CircuitSetup-Energy-Meter-Helper`.
 
@@ -60,15 +62,6 @@
    - Harmonic power and peak current are not part of the helper-managed power-quality feature. When the existing full package is enabled by the helper, remove those two entities in the helper-managed override block.
    - Do not add harmonic-power or peak-current fields to new helper models, schemas, UI, entity estimates, or tests except tests proving they are absent/removed.
 
-7. **Configurable status thresholds**
-   - Absolute sag-voltage threshold per voltage reference.
-   - Absolute overvoltage threshold per voltage reference.
-   - Low- and high-frequency thresholds per voltage reference.
-   - Per-channel overcurrent warning threshold in final reported amperes.
-   - Separate “measurement range exceeded” from user-configured “over current.”
-   - Status entities remain diagnostic and disabled by default.
-   - Helper controls remain unavailable until the selected Device Builder ESPHome version includes the new ATM90E32 schema.
-
 ### Explicit exclusions
 
 - **No board-revision option.** Do not add a `board_revision` type, field, UI control, persisted value, mutation, validation rule, diagnostic field, migration, or test-matrix dimension.
@@ -91,36 +84,17 @@ Add only one new main step, **Meter Settings**, between **Setup Device** and **C
 
 Implement as dependency-ordered pull requests. Do not merge a later PR before all listed predecessors are available.
 
-1. **ESPHome component PR** — `CircuitSetup/esphome`
-   - Configurable ATM90E32 thresholds and correct current-status semantics.
-2. **Meter configuration contract PR** — `CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter`
+1. **Meter configuration contract PR** — `CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter`
    - Stable status metadata, stable legacy-total IDs, and helper contract assertions.
-3. **Helper backend foundation PR** — models, catalog, storage, parser, topology, capabilities.
-4. **Helper mutation and transaction PR** — generalized meter configuration, range scaling, thresholds, aggregates.
-5. **Helper calibration PR** — voltage-reference-aware calibration and interval-aware timing.
-6. **Helper frontend PR** — Meter Settings, Circuits & CTs, review, summaries, accessibility.
-7. **Integration/release PR** — full firmware contract matrix, E2E scenarios, documentation, version bump.
-
-The ESPHome component PR must appear in a released ESPHome tag before the helper status-threshold controls are enabled. Once the release exists, write that literal version into `ATM90E32_STATUS_THRESHOLDS_MIN_VERSION`. If no released tag exists, merge the companion component/config work but keep `status_thresholds` capability false and do not expose editable threshold controls.
+2. **Helper backend foundation PR** — models, catalog, storage, parser, topology, capabilities.
+3. **Helper mutation and transaction PR** — generalized meter configuration, range scaling, aggregates.
+4. **Helper calibration PR** — voltage-reference-aware calibration and interval-aware timing.
+5. **Helper frontend PR** — Meter Settings, Circuits & CTs, review, summaries, accessibility.
+6. **Integration/release PR** — full firmware contract matrix, E2E scenarios, documentation, version bump.
 
 ---
 
 ## Planned File Structure
-
-### `CircuitSetup/esphome`
-
-**Modify**
-- `esphome/components/atm90e32/sensor.py` — schema, validation, and code generation.
-- `esphome/components/atm90e32/atm90e32.h` — threshold fields and setters.
-- `esphome/components/atm90e32/atm90e32.cpp` — register setup and current-status behavior.
-- `tests/components/atm90e32/common.yaml` — compile-valid threshold examples.
-- `tests/components/atm90e32/test.esp32-idf.yaml`
-- `tests/components/atm90e32/test.esp8266-ard.yaml`
-- `tests/components/atm90e32/test.rp2040-ard.yaml`
-- ATM90E32 documentation/changelog files required by that repository’s contribution rules.
-
-**Create if the repository’s native-test harness supports component C++ tests**
-- `tests/unit_tests/components/atm90e32/test_status_thresholds.cpp`
 
 ### `CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter`
 
@@ -242,10 +216,6 @@ class VoltageReferenceConfig:
     transformer_model_id: str
     gain_voltage: int
     group_keys: tuple[str, ...]
-    sag_percent: float
-    overvoltage_percent: float
-    frequency_low_hz: float
-    frequency_high_hz: float
 
 @dataclass(frozen=True, slots=True)
 class MeterSettings:
@@ -265,7 +235,6 @@ class ChannelSettings:
     reporting_multiplier: float
     role: CircuitRole
     voltage_reference_id: str
-    current_warning_a: float | None
     custom_gain_ct: int | None = None
     custom_label: str | None = None
     burden_output_acknowledged: bool = False
@@ -299,7 +268,6 @@ The request’s `multi_reference_preparation_acknowledged` value is operation-sc
 @dataclass(frozen=True, slots=True)
 class MeterConfigurationCapabilities:
     configuration_authoritative: bool
-    status_thresholds: bool
     managed_totals: bool
     multi_reference: bool
     reason_codes: tuple[str, ...]
@@ -411,289 +379,6 @@ git commit -m "docs: specify priority zero meter configuration"
 
 ---
 
-## Task 2: Add configurable ATM90E32 threshold schema
-
-**Repository:** `CircuitSetup/esphome`
-
-**Files:**
-- Modify: `esphome/components/atm90e32/sensor.py`
-- Modify: `tests/components/atm90e32/common.yaml`
-
-**Interfaces:**
-- Consumes: Existing `ATM90E32_PHASE_SCHEMA` and `CONFIG_SCHEMA`.
-- Produces:
-  - Component options `voltage_sag_threshold`, `over_voltage_threshold`, `frequency_low_threshold`, and `frequency_high_threshold`.
-  - Phase option `over_current_threshold`.
-  - Codegen calls to matching C++ setters.
-
-- [ ] **Step 1: Write schema-validation tests/config cases**
-
-Add one valid ATM90E32 example to `tests/components/atm90e32/common.yaml`:
-
-```yaml
-sensor:
-  - platform: atm90e32
-    id: meter_threshold_test
-    cs_pin: 5
-    line_frequency: 60Hz
-    voltage_sag_threshold: 93.6
-    over_voltage_threshold: 146.4
-    frequency_low_threshold: 57.0
-    frequency_high_threshold: 63.0
-    phase_a:
-      current:
-        name: Threshold Test Current
-      over_current_threshold: 100.0
-```
-
-Add invalid validation fixtures using the repository’s established validation-test mechanism for:
-
-```yaml
-voltage_sag_threshold: 150
-over_voltage_threshold: 140
-```
-
-and:
-
-```yaml
-frequency_low_threshold: 63
-frequency_high_threshold: 57
-```
-
-Expected validation errors:
-- `voltage_sag_threshold must be lower than over_voltage_threshold`
-- `frequency_low_threshold must be lower than frequency_high_threshold`
-
-- [ ] **Step 2: Run the ATM90E32 config tests and confirm failure**
-
-Run the repository’s component test command for `tests/components/atm90e32`.
-
-Expected: FAIL because the new keys are not in the schema.
-
-- [ ] **Step 3: Add exact schema constants and validation**
-
-Add:
-
-```python
-CONF_VOLTAGE_SAG_THRESHOLD = "voltage_sag_threshold"
-CONF_OVER_VOLTAGE_THRESHOLD = "over_voltage_threshold"
-CONF_FREQUENCY_LOW_THRESHOLD = "frequency_low_threshold"
-CONF_FREQUENCY_HIGH_THRESHOLD = "frequency_high_threshold"
-CONF_OVER_CURRENT_THRESHOLD = "over_current_threshold"
-```
-
-Use bounded finite floats:
-
-```python
-cv.Optional(CONF_VOLTAGE_SAG_THRESHOLD): cv.float_range(min=1.0, max=600.0)
-cv.Optional(CONF_OVER_VOLTAGE_THRESHOLD): cv.float_range(min=1.0, max=600.0)
-cv.Optional(CONF_FREQUENCY_LOW_THRESHOLD): cv.float_range(min=40.0, max=70.0)
-cv.Optional(CONF_FREQUENCY_HIGH_THRESHOLD): cv.float_range(min=40.0, max=70.0)
-cv.Optional(CONF_OVER_CURRENT_THRESHOLD): cv.float_range(min=0.1, max=10_000.0)
-```
-
-Add a final validator that:
-- Requires sag and overvoltage to be provided together or both omitted.
-- Requires frequency low/high to be provided together or both omitted.
-- Enforces sag `<` overvoltage.
-- Enforces frequency low `<` high.
-- Does not derive nominal voltage in the component schema.
-
-- [ ] **Step 4: Add code generation**
-
-Generate these calls only when configured:
-
-```python
-cg.add(var.set_voltage_sag_threshold(config[CONF_VOLTAGE_SAG_THRESHOLD]))
-cg.add(var.set_over_voltage_threshold(config[CONF_OVER_VOLTAGE_THRESHOLD]))
-cg.add(var.set_frequency_low_threshold(config[CONF_FREQUENCY_LOW_THRESHOLD]))
-cg.add(var.set_frequency_high_threshold(config[CONF_FREQUENCY_HIGH_THRESHOLD]))
-cg.add(var.set_over_current_threshold(i, conf[CONF_OVER_CURRENT_THRESHOLD]))
-```
-
-- [ ] **Step 5: Run config tests**
-
-Expected: valid configuration passes and invalid ordering fails with the exact safe messages.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add esphome/components/atm90e32/sensor.py tests/components/atm90e32
-git commit -m "feat(atm90e32): add configurable status thresholds"
-```
-
----
-
-## Task 3: Implement ATM90E32 threshold registers and current-status semantics
-
-**Repository:** `CircuitSetup/esphome`
-
-**Files:**
-- Modify: `esphome/components/atm90e32/atm90e32.h`
-- Modify: `esphome/components/atm90e32/atm90e32.cpp`
-- Create when supported: `tests/unit_tests/components/atm90e32/test_status_thresholds.cpp`
-
-**Interfaces:**
-- Consumes: setters generated by Task 2.
-- Produces:
-  - Absolute voltage/frequency threshold register configuration.
-  - Per-phase overcurrent thresholds in final reported amperes.
-  - Separate `Measurement Range Exceeded` and `Over Current` status messages.
-
-- [ ] **Step 1: Add failing C++ tests**
-
-Cover:
-
-```cpp
-TEST(ATM90E32StatusThresholds, CalculatesAbsoluteVoltageRegister) {
-  EXPECT_EQ(component.calculate_voltage_threshold_for_test(7305, 93.6f),
-            29689);
-}
-
-TEST(ATM90E32CurrentStatus, SeparatesRangeAndUserThreshold) {
-  component.set_raw_current_for_test(0, 65.535f);
-  component.set_reported_current_for_test(0, 131.07f);
-  component.set_over_current_threshold(0, 150.0f);
-  EXPECT_EQ(component.phase_status_for_test(0), "Measurement Range Exceeded");
-}
-```
-
-If the repository cannot directly compile component unit tests, create a small test seam guarded by `#ifdef USE_TESTS` and validate generated C++ plus representative firmware compiles.
-
-- [ ] **Step 2: Add fields and setters**
-
-Use `NAN` as the “not configured” sentinel:
-
-```cpp
-float voltage_sag_threshold_{NAN};
-float over_voltage_threshold_{NAN};
-float frequency_low_threshold_{NAN};
-float frequency_high_threshold_{NAN};
-std::array<float, 3> over_current_threshold_{{NAN, NAN, NAN}};
-std::array<float, 3> raw_current_{{NAN, NAN, NAN}};
-```
-
-Add public setters with phase bounds.
-
-- [ ] **Step 3: Replace multiplier-based voltage threshold calculation**
-
-Replace:
-
-```cpp
-calculate_voltage_threshold(int line_freq, uint16_t ugain, float multiplier)
-```
-
-with:
-
-```cpp
-uint16_t ATM90E32Component::calculate_voltage_threshold(
-    uint16_t voltage_gain, float rms_voltage)
-```
-
-The calculation must:
-- Convert RMS volts to peak.
-- Round the computed register value with `std::lround`; the 93.6 V/7305 test therefore expects `29689`.
-- Scale using the configured voltage gain.
-- Reject non-finite or non-positive values before register write.
-- Saturate to the register’s valid `uint16_t` range.
-
-- [ ] **Step 4: Preserve legacy defaults only when fields are absent**
-
-In `setup()`:
-- If explicit voltage thresholds exist, use them.
-- Otherwise preserve the existing 78%/122% legacy threshold derivation.
-- If explicit frequency thresholds exist, convert them to the ATM90E32 register’s hundredths-of-Hz format.
-- Otherwise preserve 57/63 Hz for 60 Hz mode and 47/53 Hz for 50 Hz mode.
-
-- [ ] **Step 5: Track unfiltered current separately**
-
-In `get_phase_current_()` and the averaging path, store raw register-derived amperes in `raw_current_[phase]` before sensor filters are applied.
-
-- [ ] **Step 6: Replace `check_over_current()`**
-
-Implement deterministic current status:
-
-```cpp
-const bool range_exceeded =
-    std::isfinite(raw_current_[phase]) && raw_current_[phase] >= 65.50f;
-const bool over_current =
-    std::isfinite(over_current_threshold_[phase]) &&
-    current_sensor != nullptr &&
-    std::isfinite(current_sensor->state) &&
-    current_sensor->state > over_current_threshold_[phase];
-```
-
-Status order:
-1. Existing chip voltage/phase messages.
-2. `Measurement Range Exceeded`.
-3. `Over Current`.
-
-Do not use 65.53 A as a user circuit alarm.
-
-- [ ] **Step 7: Compile all ATM90E32 test platforms**
-
-Run the ESPHome component compile tests for:
-- ESP32 ESP-IDF.
-- ESP8266 Arduino.
-- RP2040 Arduino.
-
-Expected: all pass.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add esphome/components/atm90e32/atm90e32.h \
-        esphome/components/atm90e32/atm90e32.cpp \
-        tests/components/atm90e32 \
-        tests/unit_tests/components/atm90e32 2>/dev/null || true
-git commit -m "feat(atm90e32): apply configurable status limits"
-```
-
----
-
-## Task 4: Document and release the ATM90E32 capability
-
-**Repository:** `CircuitSetup/esphome`, followed by the upstream ESPHome contribution path used by this project.
-
-**Files:**
-- Modify the ATM90E32 documentation.
-- Modify the required changelog file.
-- Later modify helper constant location created in Task 9.
-
-**Interfaces:**
-- Consumes: Tasks 2–3.
-- Produces: A released ESPHome version containing the new schema.
-
-- [ ] **Step 1: Document each field**
-
-Document:
-- Units.
-- Defaults when omitted.
-- Absolute voltage semantics.
-- Per-phase final-reported-current semantics.
-- Difference between `Measurement Range Exceeded` and `Over Current`.
-
-- [ ] **Step 2: Run ESPHome’s complete required checks**
-
-Run the exact lint, codegen validation, and component compile commands required by the repository.
-
-- [ ] **Step 3: Open and merge the component PR**
-
-Do not begin editable helper threshold controls before the change is in a released ESPHome tag.
-
-- [ ] **Step 4: Record the first released version**
-
-After release, set the helper constant created in Task 9 to the exact numeric ESPHome release tag. The committed Python source must contain the literal tag string. Do not commit a symbolic value, wildcard, pre-release guess, or environment lookup.
-
-- [ ] **Step 5: Commit release-floor update in the helper branch**
-
-```bash
-git add custom_components/circuitsetup_energy_meter_helper/device_builder.py
-git commit -m "chore: record atm90e32 threshold version floor"
-```
-
----
-
 ## Task 5: Harden official status packages and legacy total IDs
 
 **Repository:** `CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter`
@@ -704,7 +389,6 @@ git commit -m "chore: record atm90e32 threshold version floor"
 - Modify `Software/ESPHome/README.md`.
 
 **Interfaces:**
-- Consumes: Released ATM90E32 threshold component from Task 4.
 - Produces:
   - Diagnostic, disabled-by-default status text entities.
   - Stable IDs for official generic total power/current/energy entities.
@@ -743,21 +427,17 @@ substitutions:
 
 Do not add any board-revision scalar.
 
-- [ ] **Step 4: Set the released ESPHome minimum**
-
-Set `esphome.min_version` to the literal release recorded in Task 4 for configurations that expose helper-managed thresholds.
-
-- [ ] **Step 5: Preserve the full manual power-quality packages**
+- [ ] **Step 4: Preserve the full manual power-quality packages**
 
 Do not delete harmonic-power or peak-current definitions from the existing manual package files. Update documentation to state:
 - Manual package users still receive the full set.
 - CircuitSetup Energy Meter Helper intentionally removes harmonic power and peak current from its managed configuration.
 
-- [ ] **Step 6: Update documentation**
+- [ ] **Step 5: Update documentation**
 
 Document the stable IDs and helper-managed status behavior.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add Software/ESPHome
@@ -884,10 +564,6 @@ Implement the exact Public Data Contracts. Use finite-number validation and cont
 - Friendly/reference/aggregate names: 1–64 characters.
 - Nominal voltage: 1–600 V.
 - Gain voltage: integer 1–65535.
-- Sag percent: 1–99.9.
-- Overvoltage percent: 100.1–200.
-- Frequency thresholds: 40–70 Hz and low `<` line frequency `<` high.
-- Current warning: `None` or 0.1–10,000 A.
 
 - [ ] **Step 4: Implement topology-wide validation**
 
@@ -899,8 +575,8 @@ Use explicit defaults:
 
 ```python
 PROFILE_DEFAULTS = {
-    ElectricalSystem.SPLIT_PHASE_120_240: (60, 120.0, 57.0, 63.0),
-    ElectricalSystem.SINGLE_PHASE_230: (50, 230.0, 47.0, 53.0),
+    ElectricalSystem.SPLIT_PHASE_120_240: (60, 120.0),
+    ElectricalSystem.SINGLE_PHASE_230: (50, 230.0),
 }
 ```
 
@@ -990,76 +666,48 @@ git commit -m "feat: add voltage transformer presets"
 
 ---
 
-## Task 9: Expose Device Builder version and configuration capabilities
+## Task 9: Derive meter configuration capabilities
 
 **Repository:** `CircuitSetup/CircuitSetup-Energy-Meter-Helper`
 
 **Files:**
-- Modify: `custom_components/circuitsetup_energy_meter_helper/device_builder.py`
-- Create/modify: `tests/test_device_builder.py`
 - Create: `custom_components/circuitsetup_energy_meter_helper/meter_inventory.py`
 - Create: `tests/test_meter_inventory.py`
 
 **Interfaces:**
-- Produces:
-  - `DeviceBuilderClient.server_version: AwesomeVersion | None`.
-  - `ATM90E32_STATUS_THRESHOLDS_MIN_VERSION`.
-  - `MeterConfigurationCapabilities`.
+- Produces: `MeterConfigurationCapabilities`.
 
-- [ ] **Step 1: Write failing Device Builder tests**
+- [ ] **Step 1: Write failing capability tests**
 
-Assert the handshake:
+Cover authoritative and non-authoritative configurations with and without contract 2.
 
-```json
-{"server_version": "2026.9.0", "requires_auth": false}
-```
-
-sets:
-
-```python
-client.server_version == AwesomeVersion("2026.9.0")
-```
-
-and disconnect does not erase the last observed version until a new connection replaces it.
-
-- [ ] **Step 2: Store the parsed server version**
-
-Use Home Assistant’s `AwesomeVersion` dependency already available in the environment. Reject malformed versions with a safe connection error.
-
-- [ ] **Step 3: Add the release-floor constant**
-
-After Task 4’s release, add `ATM90E32_STATUS_THRESHOLDS_MIN_VERSION` with the exact numeric release tag as a literal `AwesomeVersion` argument. If the release does not yet exist, keep capabilities false and do not merge editable threshold UI.
-
-- [ ] **Step 4: Implement capability derivation**
+- [ ] **Step 2: Implement capability derivation**
 
 ```python
 def meter_configuration_capabilities(
     *,
     configuration_authoritative: bool,
     config_contract: int | None,
-    device_builder_version: AwesomeVersion | None,
 ) -> MeterConfigurationCapabilities
 ```
 
 Rules:
 - `configuration_authoritative` gates every YAML write.
-- `status_thresholds` requires authoritative config, contract 2, and Device Builder version at or above the release floor.
 - `managed_totals` requires authoritative config and contract 2.
 - `multi_reference` requires authoritative config; contract 2 is preferred but helper-managed blocks may be parsed on older configs.
 - Return stable reason codes, not provider text.
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 3: Run tests**
 
 ```bash
-uv run pytest -q tests/test_device_builder.py tests/test_meter_inventory.py
+uv run pytest -q tests/test_meter_inventory.py
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add custom_components/circuitsetup_energy_meter_helper/device_builder.py \
-        custom_components/circuitsetup_energy_meter_helper/meter_inventory.py \
-        tests/test_device_builder.py tests/test_meter_inventory.py
+git add custom_components/circuitsetup_energy_meter_helper/meter_inventory.py \
+        tests/test_meter_inventory.py
 git commit -m "feat: detect meter configuration capabilities"
 ```
 
@@ -1085,7 +733,7 @@ git commit -m "feat: detect meter configuration capabilities"
 Store:
 - Config SHA-256.
 - Meter settings.
-- Channel roles/reference assignments/warning thresholds.
+- Channel roles/reference assignments.
 - Aggregates.
 - Package options.
 - Transformer model IDs.
@@ -1299,7 +947,7 @@ Legacy official config defaults:
 - No aggregate is fabricated from generic totals.
 
 Stored verified semantics with matching hash:
-- Restore roles, reference mapping, thresholds, and aggregates exactly.
+- Restore roles, reference mapping, and aggregates exactly.
 
 - [ ] **Step 2: Implement `MeterConfigurationInventory.from_document()`**
 
@@ -1323,7 +971,6 @@ Keep `async_get_ct_inventory()` as a wrapper returning the CT subset.
 Examples:
 - `electrical_profile_requires_confirmation`
 - `legacy_generic_totals_unmanaged`
-- `status_thresholds_require_newer_esphome`
 - `stored_semantics_stale`
 
 - [ ] **Step 5: Run tests**
@@ -1500,7 +1147,7 @@ git commit -m "fix: scale supported power quality measurements"
 
 ---
 
-## Task 16: Render electrical settings, voltage references, and thresholds
+## Task 16: Render electrical settings and voltage references
 
 **Repository:** `CircuitSetup/CircuitSetup-Energy-Meter-Helper`
 
@@ -1513,7 +1160,7 @@ git commit -m "fix: scale supported power quality measurements"
 - Consumes: `MeterSettings`, `VoltageReferenceConfig`, capabilities.
 - Produces:
   - `friendly_name`, `update_time`, and `electric_freq` substitutions.
-  - Per-group gain/reference/threshold overrides.
+  - Per-group gain/reference overrides.
   - Visible voltage/frequency entities for each configured reference.
 
 - [ ] **Step 1: Write failing mutation tests**
@@ -1526,67 +1173,27 @@ Assert:
 - One representative voltage and frequency sensor is exposed per reference.
 - Non-representative calibration voltage sensors remain diagnostic/disabled.
 - Multi-reference request without acknowledgement fails.
-- Status thresholds fail with `capability_unavailable` when capability is false.
 - No board-revision key is generated.
 
-- [ ] **Step 2: Compute absolute voltage thresholds**
-
-```python
-sag_v = nominal_voltage_v * sag_percent / 100.0
-over_v = nominal_voltage_v * overvoltage_percent / 100.0
-```
-
-Validate:
-
-```text
-0 < sag_v < nominal_voltage_v < over_v <= 600
-frequency_low_hz < line_frequency_hz < frequency_high_hz
-```
-
-- [ ] **Step 3: Render component-level thresholds**
-
-For each ATM90E32 group:
-
-```yaml
-- id: !extend ${main_meter_id1}
-  voltage_sag_threshold: 93.6
-  over_voltage_threshold: 146.4
-  frequency_low_threshold: 57.0
-  frequency_high_threshold: 63.0
-```
-
-Use the reference assigned to that group.
-
-- [ ] **Step 4: Render per-phase current warning thresholds**
-
-For each used channel with a warning:
-
-```yaml
-phase_a:
-  over_current_threshold: 100
-```
-
-Omit the field when `None`; do not synthesize a breaker rating.
-
-- [ ] **Step 5: Render reference sensor exposure**
+- [ ] **Step 2: Render reference sensor exposure**
 
 Choose the lowest ordered group key assigned to the reference as its representative. Expose exactly one voltage entity and one frequency entity for that reference, with deterministic names and existing stable IDs where possible.
 
-- [ ] **Step 6: Run tests and ESPHome validation**
+- [ ] **Step 3: Run tests and ESPHome validation**
 
 ```bash
 uv run pytest -q tests/test_meter_config_mutator.py
 ```
 
-Then validate one 60 Hz split-phase, one 50 Hz single-phase, and one three-reference configuration using the released ESPHome version.
+Then validate one 60 Hz split-phase, one 50 Hz single-phase, and one three-reference configuration.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add custom_components/circuitsetup_energy_meter_helper/meter_config_mutator.py \
         custom_components/circuitsetup_energy_meter_helper/config_document.py \
         tests/test_meter_config_mutator.py
-git commit -m "feat: configure electrical and status settings"
+git commit -m "feat: configure electrical settings"
 ```
 
 ---
@@ -1868,7 +1475,6 @@ Never allow browser-supplied change records.
 
 Stable codes:
 - `meter_configuration_invalid`
-- `status_thresholds_unavailable`
 - `legacy_totals_unmanaged`
 - `voltage_reference_mismatch`
 - `aggregate_entity_mismatch`
@@ -2175,8 +1781,6 @@ Required controls:
 - Nominal voltage.
 - Phase label.
 - Group assignment.
-- Sag/overvoltage percentages.
-- Frequency low/high.
 - Generic multi-reference preparation acknowledgement.
 
 Assert there is no board-revision control.
@@ -2189,21 +1793,14 @@ When profile changes, populate suggested values only for untouched fields. Never
 
 Every ATM group appears once across reference cards. Moving a group removes it from its prior reference atomically.
 
-- [ ] **Step 4: Capability-gate thresholds**
-
-When `status_thresholds=false`:
-- Show current values read-only if present.
-- Display the stable reason.
-- Do not include modified threshold values in the preview request.
-
-- [ ] **Step 5: Add impact copy for interval**
+- [ ] **Step 4: Add impact copy for interval**
 
 Display:
 - “1–5 seconds: high traffic.”
 - “10 seconds: standard.”
 - “30–60 seconds: lower traffic; guided calibration takes longer.”
 
-- [ ] **Step 6: Add step navigation**
+- [ ] **Step 5: Add step navigation**
 
 Flow:
 
@@ -2211,14 +1808,14 @@ Flow:
 Setup Device → Meter Settings → Circuits & CTs → Safety → …
 ```
 
-- [ ] **Step 7: Run frontend tests**
+- [ ] **Step 6: Run frontend tests**
 
 ```bash
 npm --prefix frontend test -- meter-settings.test.ts panel.test.ts accessibility.test.ts
 npm --prefix frontend run typecheck
 ```
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add frontend/src frontend/test
@@ -2261,7 +1858,6 @@ Move:
 - Reporting multiplier.
 - Custom gain.
 - Burden acknowledgement.
-- Current warning threshold.
 - Two-pole details.
 
 into the existing expandable row details.
@@ -2298,21 +1894,14 @@ Do not auto-create an all-channel total. Warn when:
 - A one-leg-doubled circuit uses two channels.
 - A channel is assigned to incompatible two-pole aggregates.
 
-- [ ] **Step 6: Add status threshold field**
-
-Per used channel:
-- `current_warning_a`.
-- Label it “Circuit warning current,” not register limit.
-- Explain “Measurement Range Exceeded” is separate.
-
-- [ ] **Step 7: Run tests**
+- [ ] **Step 6: Run tests**
 
 ```bash
 npm --prefix frontend test -- circuit-aggregates.test.ts panel.test.ts accessibility.test.ts
 npm --prefix frontend run typecheck
 ```
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add frontend/src frontend/test
@@ -2373,7 +1962,7 @@ Show:
 - Approximate public entity count.
 - Energy entities.
 - Approximate publications per second.
-- A warning threshold based on a documented constant, not arbitrary color-only UI.
+- A documented warning trigger, not arbitrary color-only UI.
 
 - [ ] **Step 5: Run tests**
 
@@ -2425,7 +2014,6 @@ Show:
 - Aggregate formulas in readable text.
 - Energy modes.
 - PQ/status boards.
-- Threshold values.
 - Reporting interval.
 - Entity impact.
 
@@ -2452,7 +2040,6 @@ Report:
 - Used channel count.
 - Aggregate/energy count.
 - PQ/status scope.
-- Threshold capability/status.
 
 - [ ] **Step 6: Run tests**
 
@@ -2520,14 +2107,7 @@ git commit -m "feat(frontend): review complete meter configuration"
 - One-CT doubled appliance.
 - No double counting in grid aggregate.
 
-- [ ] **Step 5: Add E2E scenario — unsupported threshold capability**
-
-- Device Builder version below the release floor.
-- Threshold controls read-only/disabled.
-- Other configuration remains editable.
-- Preview excludes threshold changes.
-
-- [ ] **Step 6: Add recovery regressions**
+- [ ] **Step 5: Add recovery regressions**
 
 - Source hash changes before preview.
 - Validation failure after write rolls back.
@@ -2535,7 +2115,7 @@ git commit -m "feat(frontend): review complete meter configuration"
 - Cancel during slow-interval calibration releases locks.
 - Legacy generic totals block aggregate creation with a clear upgrade message.
 
-- [ ] **Step 7: Run full frontend checks**
+- [ ] **Step 6: Run full frontend checks**
 
 ```bash
 npm --prefix frontend audit
@@ -2545,7 +2125,7 @@ npm --prefix frontend run build
 npm --prefix frontend run test:e2e
 ```
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add frontend/test tests .github/workflows
@@ -2611,8 +2191,6 @@ Validate/compile at least:
 4. 1 add-on, Waveshare Ethernet, three references.
 5. 3 add-ons, multi-reference.
 6. 6 add-ons, sparse used channels and aggregates.
-7. Threshold controls on the minimum supported ESPHome release.
-8. Legacy ESPHome below the floor with threshold fields omitted.
 
 - [ ] **Step 6: Search prohibited output**
 
@@ -2684,13 +2262,9 @@ Clearly separate:
 - Power factor and phase angle are never multiplied.
 - Harmonic power and peak current are not exposed by helper-managed PQ.
 
-- [ ] **Step 4: Document statuses**
+- [ ] **Step 4: Document status packages**
 
-Explain:
-- Sag/overvoltage/frequency limits.
-- Circuit warning current.
-- Measurement Range Exceeded versus Over Current.
-- Status entities are diagnostic and disabled by default.
+Explain that status entities are diagnostic and disabled by default when their package is enabled.
 
 - [ ] **Step 5: Document totals/double counting**
 
@@ -2730,15 +2304,13 @@ The work is complete only when all of the following are demonstrated:
 6. Register-range multipliers scale current, active power, reactive power, and apparent power consistently.
 7. Power factor and phase angle remain unscaled.
 8. Helper-managed PQ exposes no harmonic-power or peak-current entities.
-9. Status thresholds are editable only on a supported released ESPHome version.
-10. Measurement-range saturation and user overcurrent thresholds produce distinct status messages.
-11. User-defined aggregates do not rely on an automatic sum of all CTs.
-12. Bidirectional grid import/export and generation energy configurations compile and reconnect successfully.
-13. Two-CT and one-CT doubled two-pole methods produce the intended formulas without corrupting CT gain.
-14. All mutations remain hash-bound, reviewed, validated, compiled, confirmed, installed, reconnect-verified, and rollback-capable.
-15. Existing CT-only callers/tests remain supported through wrappers.
-16. Runtime-only devices without Device Builder remain read-only except for existing Home Assistant label behavior.
-17. Full Python, frontend, Home Assistant, firmware-contract, and E2E test matrices pass.
+9. User-defined aggregates do not rely on an automatic sum of all CTs.
+10. Bidirectional grid import/export and generation energy configurations compile and reconnect successfully.
+11. Two-CT and one-CT doubled two-pole methods produce the intended formulas without corrupting CT gain.
+12. All mutations remain hash-bound, reviewed, validated, compiled, confirmed, installed, reconnect-verified, and rollback-capable.
+13. Existing CT-only callers/tests remain supported through wrappers.
+14. Runtime-only devices without Device Builder remain read-only except for existing Home Assistant label behavior.
+15. Full Python, frontend, Home Assistant, firmware-contract, and E2E test matrices pass.
 
 # Codex Execution Notes
 
@@ -2748,4 +2320,3 @@ The work is complete only when all of the following are demonstrated:
 - Commit after every independently reviewable task.
 - Do not opportunistically refactor unrelated calibration, provisioning, or frontend code.
 - When current `main` differs from the paths/signatures in this plan, preserve the plan’s interfaces and adapt only the file placement necessary to match the repository’s established structure.
-- Stop and open a focused design amendment if the ATM90E32 released schema uses materially different field semantics; do not emulate missing component support with extra template sensors.

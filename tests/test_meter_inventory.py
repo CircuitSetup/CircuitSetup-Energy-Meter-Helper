@@ -44,7 +44,6 @@ def test_capability_model_has_exact_frozen_slots_contract() -> None:
     assert not hasattr(
         MeterConfigurationCapabilities(True, True, True, ()), "__dict__"
     )
-    assert not hasattr(MeterConfigurationCapabilities, "status_thresholds")
 
 
 @pytest.mark.parametrize(
@@ -629,15 +628,12 @@ def test_inventory_rejects_malformed_active_ct_configuration() -> None:
         _inventory(content)
 
 
-def test_inventory_exposes_capability_reason_codes_without_threshold_capabilities() -> (
-    None
-):
+def test_inventory_exposes_capability_reason_codes() -> None:
     """Dropping capability reasons would let the UI offer unavailable writes."""
     inventory = _inventory(_document(contract=True), authoritative=False)
 
     assert inventory.capabilities.reason_codes == ("configuration_not_authoritative",)
     assert "configuration_not_authoritative" in inventory.warnings
-    assert not hasattr(inventory, "status_thresholds")
 
 
 def test_generic_total_warning_ignores_comments_but_detects_active_ids() -> None:

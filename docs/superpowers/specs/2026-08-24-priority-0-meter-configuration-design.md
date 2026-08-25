@@ -48,15 +48,6 @@
    - Harmonic power and peak current are not part of the helper-managed power-quality feature. When the existing full package is enabled by the helper, remove those two entities in the helper-managed override block.
    - Do not add harmonic-power or peak-current fields to new helper models, schemas, UI, entity estimates, or tests except tests proving they are absent/removed.
 
-7. **Configurable status thresholds**
-   - Absolute sag-voltage threshold per voltage reference.
-   - Absolute overvoltage threshold per voltage reference.
-   - Low- and high-frequency thresholds per voltage reference.
-   - Per-channel overcurrent warning threshold in final reported amperes.
-   - Separate “measurement range exceeded” from user-configured “over current.”
-   - Status entities remain diagnostic and disabled by default.
-   - Helper controls remain unavailable until the selected Device Builder ESPHome version includes the new ATM90E32 schema.
-
 ### Explicit exclusions
 
 - **No board-revision option.** Do not add a `board_revision` type, field, UI control, persisted value, mutation, validation rule, diagnostic field, migration, or test-matrix dimension.
@@ -130,10 +121,6 @@ class VoltageReferenceConfig:
     transformer_model_id: str
     gain_voltage: int
     group_keys: tuple[str, ...]
-    sag_percent: float
-    overvoltage_percent: float
-    frequency_low_hz: float
-    frequency_high_hz: float
 
 @dataclass(frozen=True, slots=True)
 class MeterSettings:
@@ -153,7 +140,6 @@ class ChannelSettings:
     reporting_multiplier: float
     role: CircuitRole
     voltage_reference_id: str
-    current_warning_a: float | None
     custom_gain_ct: int | None = None
     custom_label: str | None = None
     burden_output_acknowledged: bool = False
@@ -187,7 +173,6 @@ The request’s `multi_reference_preparation_acknowledged` value is operation-sc
 @dataclass(frozen=True, slots=True)
 class MeterConfigurationCapabilities:
     configuration_authoritative: bool
-    status_thresholds: bool
     managed_totals: bool
     multi_reference: bool
     reason_codes: tuple[str, ...]
