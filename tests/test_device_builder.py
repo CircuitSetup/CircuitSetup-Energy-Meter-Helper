@@ -4,6 +4,7 @@ import asyncio
 from hashlib import sha256
 
 import pytest
+from awesomeversion import AwesomeVersion
 
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ConfigChangedError,
@@ -59,6 +60,57 @@ def test_trusted_server_skips_auth() -> None:
         client, ws = await connected_client()
         assert ws.sent == []
         await client.async_disconnect()
+
+    asyncio.run(run())
+
+
+def test_server_version_is_parsed_and_replaced_on_reconnect() -> None:
+    async def run() -> None:
+        websockets = [
+            FakeWebSocket({"server_version": "2026.9.0", "requires_auth": False}),
+            FakeWebSocket({"server_version": "2026.10.1", "requires_auth": False}),
+        ]
+        client = DeviceBuilderClient(
+            "http://builder", connect=lambda _: websockets.pop(0)
+        )
+        await client.async_connect()
+        assert client.server_version == AwesomeVersion("2026.9.0")
+        await client.async_disconnect()
+        await client.async_connect()
+        assert client.server_version == AwesomeVersion("2026.10.1")
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("server_info", ({}, {"server_version": "not-a-version"}))
+def test_malformed_or_missing_server_version_uses_connection_error(
+    server_info: dict[str, object],
+) -> None:
+    async def run() -> None:
+        client = DeviceBuilderClient(
+            "http://builder", connect=lambda _: FakeWebSocket(server_info)
+        )
+        with pytest.raises(ConnectionError):
+            await client.async_connect()
+
+    asyncio.run(run())
+
+
+def test_failed_reconnect_preserves_last_observed_server_version() -> None:
+    async def run() -> None:
+        websockets = [
+            FakeWebSocket({"server_version": "2026.9.0", "requires_auth": False}),
+            FakeWebSocket({"server_version": "not-a-version", "requires_auth": False}),
+        ]
+        client = DeviceBuilderClient(
+            "http://builder", connect=lambda _: websockets.pop(0)
+        )
+        await client.async_connect()
+        await client.async_disconnect()
+        with pytest.raises(ConnectionError):
+            await client.async_connect()
+        assert client.server_version == AwesomeVersion("2026.9.0")
 
     asyncio.run(run())
 

@@ -12,6 +12,8 @@ from hashlib import sha256
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from awesomeversion import AwesomeVersion
+
 
 async def _wait_for_owned_cleanup[T](task: asyncio.Task[T]) -> bool:
     """Finish owned cleanup before reporting repeated caller cancellation."""
@@ -128,6 +130,7 @@ class DeviceBuilderClient:
         self._stream_futures: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._next_message_id = 0
         self._disconnect_task: asyncio.Task[None] | None = None
+        self._server_version: AwesomeVersion | None = None
 
     def __repr__(self) -> str:
         parsed = urlsplit(self._base_url)
@@ -146,6 +149,11 @@ class DeviceBuilderClient:
         """Return whether the authoritative transport is currently attached."""
         return self._ws is not None
 
+    @property
+    def server_version(self) -> AwesomeVersion | None:
+        """Return the last successfully parsed Device Builder version."""
+        return self._server_version
+
     async def async_connect(self) -> None:
         """Connect to `/ws` and perform opaque-token auth only if requested."""
         connection = self._connect(f"{self._base_url}/ws")
@@ -153,6 +161,15 @@ class DeviceBuilderClient:
         server_info = await self._ws.receive_json()
         if not server_info or "server_version" not in server_info:
             raise ConnectionError("Device Builder did not provide server info")
+        try:
+            server_version = AwesomeVersion(server_info["server_version"])
+        except (TypeError, ValueError) as error:
+            raise ConnectionError(
+                "Device Builder returned an invalid server version"
+            ) from error
+        if not server_version.valid:
+            raise ConnectionError("Device Builder returned an invalid server version")
+        self._server_version = server_version
         self._listener = asyncio.create_task(self._listen())
         if server_info.get("requires_auth") is not False:
             if not self._token:
