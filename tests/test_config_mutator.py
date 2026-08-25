@@ -866,6 +866,45 @@ def test_reporting_multiplier_refuses_supported_power_quality_filters(
         )
 
 
+@pytest.mark.parametrize("output", ("reactive_power", "apparent_power"))
+def test_unused_unscaled_phase_refuses_external_power_quality_filters(
+    output: str,
+) -> None:
+    """A PQ removal cannot overwrite a local filter on an unused unscaled phase."""
+    snapshot = _package_snapshot()
+    content = snapshot.content.replace(
+        "sensor:\n",
+        f"""sensor:
+  - id: !extend meter_main1
+    phase_b:
+      {output}:
+        filters:
+          - throttle: 5s
+""",
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+    topology = _two_board_topology()
+    current = _inventory(snapshot, topology)
+    current = replace(
+        current,
+        configuration=replace(
+            current.configuration,
+            channels=tuple(
+                replace(channel, enabled=False, role=CircuitRole.UNUSED)
+                if channel.channel == 2
+                else channel
+                for channel in current.configuration.channels
+            ),
+        ),
+    )
+    requested = replace(current.configuration, power_quality=(True, False))
+
+    with pytest.raises(ConfigMutationError, match="filters"):
+        build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+
 @pytest.mark.parametrize(
     "entry",
     (
@@ -881,11 +920,11 @@ def test_reporting_multiplier_refuses_supported_power_quality_filters(
         !filter "filters":
           - throttle: 5s
 """,
-        """  - {"id": !extend meter_main1, "phase_b": {"reactive_power": {"filters": [{throttle: 5s}]}}}
+        """  - {"id": !extend meter_main1, "phase_b": {"current": {"filters": [{throttle: 5s}]}}}
 """,
         """  - id: !extend meter_main1
     phase_b:
-      - apparent_power:
+      - power:
           filters:
             - throttle: 5s
 """,
@@ -931,6 +970,66 @@ def test_reporting_multiplier_rejects_yaml_equivalent_filter_conflicts(
             _topology(),
             (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
         )
+
+
+@pytest.mark.parametrize(
+    "owner",
+    (
+        """  - id: unrelated
+    id: meter_main1
+""",
+        """  - id: *meter_id
+""",
+        """  - ? id
+    : meter_main1
+""",
+        """  - id: !secret meter_main1
+""",
+    ),
+)
+def test_reporting_multiplier_rejects_ambiguous_meter_ownership(owner: str) -> None:
+    """A relevant filtered phase requires one directly resolvable meter ID."""
+    snapshot = _snapshot()
+    entry = owner + """    phase_b:
+      current:
+        filters:
+          - throttle: 5s
+"""
+    content = snapshot.content.replace("sensor:\n", "sensor:\n" + entry)
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    with pytest.raises((ConfigMutationError, ValueError)):
+        build_ct_mutation(
+            snapshot,
+            _topology(),
+            (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+        )
+
+
+def test_reporting_multiplier_allows_harmless_alias_outside_relevant_item() -> None:
+    """An alias on a known-unrelated sensor item is not an ownership conflict."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace(
+        "sensor:\n",
+        """defaults: &defaults mdi:gauge
+sensor:
+  - id: unrelated
+    icon: *defaults
+""",
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    plan = build_ct_mutation(
+        snapshot,
+        _topology(),
+        (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+    )
+
+    assert plan.proposed_content.count("multiply: 2") == 2
 
 
 def test_reporting_multiplier_ignores_opaque_text_and_unmanaged_pq_filters() -> None:

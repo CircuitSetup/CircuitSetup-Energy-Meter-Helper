@@ -1366,6 +1366,55 @@ def test_final_gain_mutation_keeps_selected_board_packages_in_same_review() -> N
     assert "      #- Software/ESPHome/status_fields/6chan_main_status.yaml" in plan.proposed_content
 
 
+@pytest.mark.parametrize("multiplier", (1, 2))
+def test_final_gain_mutation_preserves_unused_managed_phase_state(
+    multiplier: int,
+) -> None:
+    """A gain write cannot reinterpret or discard an unrelated unused phase."""
+    scaling = (
+        """      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 2
+"""
+        if multiplier == 2
+        else ""
+    )
+    managed = (
+        "# CircuitSetup Energy Meter Helper: phase overrides v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_b: # CT2\n"
+        + scaling
+        + """      reactive_power: !remove
+      apparent_power: !remove
+      harmonic_power: !remove
+      peak_current: !remove
+      power_factor: !remove
+      phase_angle: !remove
+# End CircuitSetup Energy Meter Helper: phase overrides v1
+"""
+    )
+    content = _snapshot().content.replace(
+        "logger:\n",
+        """packages:
+  meter:
+    files:
+      - Software/ESPHome/power_quality/6chan_main_power_quality.yaml
+sensor:
+"""
+        + managed
+        + "logger:\n",
+    )
+    snapshot = _snapshot(content)
+    record = _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003)))
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert managed in plan.proposed_content
+
+
 def test_final_gain_preview_combines_ct_edits_without_overwriting_calibrated_current() -> None:
     content = _snapshot().content.replace(
         "substitutions:\n",

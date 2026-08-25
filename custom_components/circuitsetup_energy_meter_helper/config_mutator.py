@@ -94,6 +94,12 @@ class CTChangeRequest:
     burden_output_acknowledged: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _PhaseChannelState:
+    enabled: bool
+    multiplier: float
+
+
 def build_ct_mutation(
     snapshot: ConfigSnapshot,
     topology: MeterTopology,
@@ -612,33 +618,47 @@ def _apply_reporting_multipliers(
     has_phase_overrides = _PHASE_OVERRIDE_START in content
     document = ESPHomeConfigDocument.parse(content)
     power_quality = package_options_from_document(document, topology)["power_quality"]
-    multipliers = _read_phase_multipliers(
+    parsed_channels = _read_phase_channel_states(
         content, topology, substitutions, power_quality
     )
-    for request in requests:
-        if request.reporting_multiplier == 1:
-            multipliers.pop(request.channel, None)
-        else:
-            multipliers[request.channel] = request.reporting_multiplier
-    channels = dict(phase_channels or {})
-    requested_by_channel = {request.channel: request for request in requests}
-    for channel, multiplier in multipliers.items():
-        if channel not in requested_by_channel:
-            enabled, _ = channels.get(channel, (True, 1.0))
-            channels[channel] = (enabled, multiplier)
+    channels = {
+        channel: (state.enabled, state.multiplier)
+        for channel, state in parsed_channels.items()
+    }
+    for channel, (enabled, multiplier) in (phase_channels or {}).items():
+        channels[channel] = (
+            enabled,
+            parsed_channels.get(
+                channel, _PhaseChannelState(enabled, multiplier)
+            ).multiplier,
+        )
     for request in requests:
         enabled, _ = channels.get(request.channel, (True, 1.0))
         channels[request.channel] = (enabled, request.reporting_multiplier)
     if not channels and not has_phase_overrides:
         return content
-    scaled_channels = {
-        channel: multiplier
-        for channel, (_enabled, multiplier) in channels.items()
-        if multiplier != 1
+    phase_lines = {
+        channel: _phase_override_lines(
+            enabled, multiplier, power_quality[(channel - 1) // 6]
+        )
+        for channel, (enabled, multiplier) in channels.items()
+    }
+    managed_outputs = {
+        channel: frozenset(
+            match.group("output")
+            for line in lines
+            if (
+                match := re.fullmatch(
+                    r"      (?P<output>current|power|reactive_power|apparent_power):(?: !remove)?",
+                    line,
+                )
+            )
+        )
+        for channel, lines in phase_lines.items()
     }
     if has_phase_overrides:
         content = replace_managed_block(content, "phase_overrides", "")
-    _reject_local_output_filters(content, scaled_channels, substitutions)
+    _reject_local_output_filters(content, managed_outputs, substitutions)
     entries: dict[str, str] = {}
     for channel, (enabled, multiplier) in sorted(channels.items()):
         if channel not in range(1, topology.ct_count + 1):
@@ -650,11 +670,7 @@ def _apply_reporting_multipliers(
             else _canonical_meter_id(meter_key)
         )
         body = [f"  - id: !extend {meter_id}", f"    phase_{phase}: # CT{channel}"]
-        body.extend(
-            _phase_override_lines(
-                enabled, multiplier, power_quality[(channel - 1) // 6]
-            )
-        )
+        body.extend(phase_lines[channel])
         if len(body) > 2:
             entries[f"{channel:02d}"] = "\n".join(body) + "\n"
     if not entries and not has_phase_overrides:
@@ -696,13 +712,13 @@ def _phase_override_lines(
     return tuple(lines)
 
 
-def _read_phase_multipliers(
+def _read_phase_channel_states(
     content: str,
     topology: MeterTopology,
     substitutions: Mapping[str, ConfigScalar],
     power_quality: tuple[bool, ...],
-) -> dict[int, float]:
-    """Migrate only the helper's former current/power multiplier entries."""
+) -> dict[int, _PhaseChannelState]:
+    """Read every exact helper-owned phase state needed for safe rewriting."""
     starts = [match.start() for match in re.finditer(re.escape(_PHASE_OVERRIDE_START), content)]
     ends = [match.end() for match in re.finditer(re.escape(_PHASE_OVERRIDE_END), content)]
     if len(starts) != len(ends) or len(starts) > 1 or starts and starts[0] >= ends[0]:
@@ -710,7 +726,7 @@ def _read_phase_multipliers(
     if not starts:
         return {}
     managed = content[starts[0] : ends[0]].splitlines()[1:-1]
-    multipliers: dict[int, float] = {}
+    states: dict[int, _PhaseChannelState] = {}
     seen: set[int] = set()
     index = 0
     while index < len(managed):
@@ -748,24 +764,29 @@ def _read_phase_multipliers(
             ):
                 index += 1
             body = tuple(managed[body_start:index])
-            multiplier = _managed_phase_multiplier(body)
-            board_pq = power_quality[(channel - 1) // 6]
-            allowed = {
-                _phase_override_lines(True, multiplier, False),
-                _phase_override_lines(True, multiplier, board_pq),
-                _phase_override_lines(False, multiplier, board_pq),
-            }
-            if body not in allowed or not body:
+            if not body:
                 raise ConfigMutationError(
                     "reporting multiplier block is not safely writable"
                 )
-            if multiplier != 1:
-                multipliers[channel] = multiplier
+            multiplier = _managed_phase_multiplier(body)
+            board_pq = power_quality[(channel - 1) // 6]
+            legacy = _phase_override_lines(True, multiplier, False)
+            enabled = _phase_override_lines(True, multiplier, board_pq)
+            unused = _phase_override_lines(False, multiplier, board_pq)
+            if body == unused and unused != enabled:
+                state = _PhaseChannelState(False, multiplier)
+            elif body in {legacy, enabled}:
+                state = _PhaseChannelState(True, multiplier)
+            else:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            states[channel] = state
             seen.add(channel)
             owner_entries += 1
         if owner_entries == 0:
             raise ConfigMutationError("reporting multiplier block is not safely writable")
-    return multipliers
+    return states
 
 
 def _managed_phase_multiplier(body: tuple[str, ...]) -> float:
@@ -809,17 +830,19 @@ def _canonical_meter_id(meter_key: str) -> str:
 
 def _reject_local_output_filters(
     content: str,
-    channels: Iterable[int],
+    channels: Mapping[int, frozenset[str]],
     substitutions: Mapping[str, ConfigScalar],
 ) -> None:
-    targets: dict[str, dict[str, int]] = {}
-    for channel in channels:
+    targets: dict[str, dict[str, tuple[int, frozenset[str]]]] = {}
+    for channel, outputs in channels.items():
+        if not outputs:
+            continue
         meter_key, phase = _channel_meter_phase(channel)
         aliases = {meter_key, _canonical_meter_id(meter_key)}
         if meter_key in substitutions:
             aliases.add(substitutions[meter_key].value)
         for alias in aliases:
-            targets.setdefault(alias, {})[phase] = channel
+            targets.setdefault(alias, {})[phase] = (channel, outputs)
     document = ESPHomeConfigDocument.parse(content)
     lines = document.code_lines
     for index, line in enumerate(lines):
@@ -834,55 +857,79 @@ def _reject_local_output_filters(
             if stripped and indent <= item_indent:
                 item_end = candidate
                 break
-        mapping = _yaml_mapping(line)
-        owner_id = (
-            _yaml_identifier(mapping[3])
-            if mapping is not None and mapping[1] and mapping[2] == "id"
-            else None
-        )
-        if owner_id is None:
-            for candidate in range(index + 1, item_end):
-                identifier = _yaml_mapping(lines[candidate])
-                if (
-                    identifier is not None
-                    and not identifier[1]
-                    and identifier[0] > item_indent
-                    and identifier[2] == "id"
-                ):
-                    owner_id = _yaml_identifier(identifier[3])
-                    break
-        if owner_id is None and line.lstrip().startswith("- {"):
-            flow_keys = _yaml_flow_keys(line)
-            owner_id = next(
-                (alias for alias in targets if "id" in flow_keys and alias in line),
-                None,
+        item_keys: set[str] = set()
+        for candidate in range(index, item_end):
+            candidate_mapping = _yaml_mapping(lines[candidate])
+            if candidate_mapping is not None:
+                item_keys.add(candidate_mapping[2])
+            explicit = _yaml_explicit_key(
+                re.sub(r"^( *)-\s+", r"\1", lines[candidate], count=1)
             )
-            if owner_id is not None:
-                for phase, channel in targets[owner_id].items():
+            if explicit is not None:
+                item_keys.add(explicit)
+            item_keys.update(_yaml_flow_keys(lines[candidate]))
+        relevant_channel = next(
+            (
+                channel
+                for phases in targets.values()
+                for phase, (channel, outputs) in phases.items()
+                if f"phase_{phase}" in item_keys and item_keys.intersection(outputs)
+            ),
+            None,
+        )
+        child_indents = [
+            len(lines[candidate]) - len(lines[candidate].lstrip(" "))
+            for candidate in range(index + 1, item_end)
+            if lines[candidate].strip()
+        ]
+        direct_indent = min(child_indents) if child_indents else None
+        direct_ids: list[str] = []
+        first_mapping = _yaml_mapping(line)
+        if (
+            first_mapping is not None
+            and first_mapping[1]
+            and first_mapping[2] == "id"
+        ):
+            direct_ids.append(first_mapping[3])
+        if direct_indent is not None:
+            direct_ids.extend(
+                candidate_mapping[3]
+                for candidate in range(index + 1, item_end)
+                if (candidate_mapping := _yaml_mapping(lines[candidate])) is not None
+                and not candidate_mapping[1]
+                and candidate_mapping[0] == direct_indent
+                and candidate_mapping[2] == "id"
+            )
+        explicit_id = "id" in {
+            _yaml_explicit_key(
+                re.sub(r"^( *)-\s+", r"\1", lines[candidate], count=1)
+            )
+            for candidate in range(index, item_end)
+        }
+        flow_id = line.lstrip().startswith("- {") and "id" in _yaml_flow_keys(line)
+        resolved_ids = [_yaml_identifier(value) for value in direct_ids]
+        if relevant_channel is not None and (
+            explicit_id
+            or flow_id
+            or len(direct_ids) != 1
+            or resolved_ids[0] is None
+        ):
+            _filter_conflict(relevant_channel)
+        owner_id = resolved_ids[0] if len(resolved_ids) == 1 else None
+        if flow_id:
+            flow_keys = _yaml_flow_keys(line)
+            flow_owner = next((alias for alias in targets if alias in line), None)
+            if flow_owner is not None:
+                for phase, (channel, outputs) in targets[flow_owner].items():
                     if (
                         f"phase_{phase}" in flow_keys
-                        and flow_keys.intersection(
-                            {
-                                "current",
-                                "power",
-                                "reactive_power",
-                                "apparent_power",
-                            }
-                        )
+                        and flow_keys.intersection(outputs)
                         and "filters" in flow_keys
                     ):
                         _filter_conflict(channel)
         if owner_id not in targets:
             continue
-        id_count = sum(
-            1
-            for candidate in range(index, item_end)
-            if (candidate_mapping := _yaml_mapping(lines[candidate])) is not None
-            and candidate_mapping[2] == "id"
-        )
-        if id_count > 1:
-            _filter_conflict(next(iter(targets[owner_id].values())))
-        for phase, channel in targets[owner_id].items():
+        for phase, (channel, outputs) in targets[owner_id].items():
             phase_key = f"phase_{phase}"
             phase_lines = [
                 candidate
@@ -907,9 +954,7 @@ def _reject_local_output_filters(
             if phase_rest.strip():
                 if phase_rest.lstrip().startswith("{"):
                     flow_keys = _yaml_flow_keys(phase_rest)
-                    if flow_keys.intersection(
-                        {"current", "power", "reactive_power", "apparent_power"}
-                    ) and "filters" in flow_keys:
+                    if flow_keys.intersection(outputs) and "filters" in flow_keys:
                         _filter_conflict(channel)
                 else:
                     _filter_conflict(channel)
@@ -928,7 +973,7 @@ def _reject_local_output_filters(
             if not direct_indents:
                 continue
             direct_indent = min(direct_indents)
-            outputs: set[str] = set()
+            seen_outputs: set[str] = set()
             for candidate in range(phase_line + 1, phase_end):
                 if not lines[candidate].strip():
                     continue
@@ -936,32 +981,20 @@ def _reject_local_output_filters(
                 if indent != direct_indent:
                     continue
                 explicit = _yaml_explicit_key(lines[candidate])
-                if explicit in {
-                    "current",
-                    "power",
-                    "reactive_power",
-                    "apparent_power",
-                }:
+                if explicit in outputs:
                     _filter_conflict(channel)
                 output = _yaml_mapping(lines[candidate])
                 if output is None:
                     flow_keys = _yaml_flow_keys(lines[candidate])
-                    if flow_keys.intersection(
-                        {"current", "power", "reactive_power", "apparent_power"}
-                    ) and "filters" in flow_keys:
+                    if flow_keys.intersection(outputs) and "filters" in flow_keys:
                         _filter_conflict(channel)
                     continue
                 _, sequence, output_name, output_rest = output
-                if output_name not in {
-                    "current",
-                    "power",
-                    "reactive_power",
-                    "apparent_power",
-                }:
+                if output_name not in outputs:
                     continue
-                if sequence or output_name in outputs:
+                if sequence or output_name in seen_outputs:
                     _filter_conflict(channel)
-                outputs.add(output_name)
+                seen_outputs.add(output_name)
                 output_end = phase_end
                 for nested in range(candidate + 1, phase_end):
                     nested_indent = len(lines[nested]) - len(
@@ -1022,9 +1055,11 @@ def _yaml_key(token: str) -> str:
 
 def _yaml_identifier(rest: str) -> str | None:
     value = rest.strip()
-    while (decorator := re.match(r"^(?:![^\s]+|&[^\s]+)\s+", value)) is not None:
+    while (decorator := re.match(r"^(?P<token>![^\s]+|&[^\s]+)\s+", value)) is not None:
+        if decorator.group("token").startswith("!") and decorator.group("token") != "!extend":
+            return None
         value = value[decorator.end() :]
-    if not value:
+    if not value or value.startswith(("*", "{", "[")):
         return None
     if value.startswith('"'):
         try:
