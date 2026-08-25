@@ -93,6 +93,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
     class Store:
         def __init__(self) -> None:
             self.configuration: StoredMeterConfiguration | None = None
+            self.stale = False
 
         async def async_save_interrupted_session(self, *_args: Any) -> None:
             return None
@@ -108,9 +109,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             self, mac: str
         ) -> MeterConfigurationRead:
             calls.append(mac)
-            return MeterConfigurationRead(
-                self.configuration, self.configuration is None
-            )
+            return MeterConfigurationRead(self.configuration, self.stale)
 
     class Hass:
         def __init__(self) -> None:
@@ -190,7 +189,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert result["source_sha256"] == digest
         assert result["configuration"].meter.friendly_name == "Garage Meter"
         assert wrapper["channels"] == result["channels"]
-        assert "stored_semantics_stale" in result["warnings"]
+        assert "stored_semantics_stale" not in result["warnings"]
         assert calls == ["aabbccddeeff"] * 4
         wrapper_configuration = workflow._plans[wrapper["plan_id"]].inventory.configuration
         assert wrapper_configuration.meter == authoritative.meter
@@ -282,6 +281,13 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             ),
         )
         assert transactions.calls[2][1]["meter_configuration"] == wrapper_configuration
+        plan_ids = set(workflow._plans)
+        store.stale = True
+        with pytest.raises(WorkflowHandleError, match="stored meter configuration"):
+            await workflow.async_get_meter_configuration("meter")
+        with pytest.raises(WorkflowHandleError, match="stored meter configuration"):
+            await workflow.async_get_ct_inventory("meter")
+        assert set(workflow._plans) == plan_ids
         await workflow.async_close()
 
     asyncio.run(run())

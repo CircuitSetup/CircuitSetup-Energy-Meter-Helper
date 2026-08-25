@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, cast
 
@@ -566,6 +566,9 @@ class StoredMeterConfiguration:
                 or selection.display_label != channels[selection.channel].custom_label
                 or selection.reporting_multiplier
                 != channels[selection.channel].reporting_multiplier
+                or channels[selection.channel].model_id == "custom"
+                and selection.raw_gain_ct
+                != channels[selection.channel].custom_gain_ct
                 for selection in self.ct_selections
             )
         ):
@@ -680,6 +683,64 @@ def _validate_configuration(
         topology,
         require_multi_reference_acknowledgement=False,
     )
+
+
+def _verified_meter_record(
+    mac: str,
+    expected_source_sha256: str,
+    configuration: StoredMeterConfiguration,
+    record: StoredMeterRecord | None,
+    raw_meter: object | None,
+) -> dict[str, Any]:
+    """Advance A to B, or create B from the trusted source record exactly once."""
+    if record is None:
+        if raw_meter is None:
+            raise ValueError("current meter record is unavailable")
+        record_topology = _current_topology(raw_meter)
+    else:
+        if (
+            record.mac != mac
+            or record.config_sha256 != expected_source_sha256
+            or record.config_filename is None
+            or record.topology is None
+        ):
+            raise ValueError("trusted meter record does not match the source")
+        record_topology = _current_topology(serialize_meter_record(record))
+    if raw_meter is None:
+        if record is None:  # guarded above; narrow for the type checker
+            raise ValueError("current meter record is unavailable")
+        next_meter = serialize_meter_record(
+            replace(
+                record,
+                config_sha256=configuration.config_sha256,
+                ct_selections=configuration.ct_selections,
+            )
+        )
+    else:
+        if not isinstance(raw_meter, dict):
+            raise ValueError("current meter record is unavailable")
+        if _configuration_hash(raw_meter) != expected_source_sha256:
+            raise ValueError("configuration does not match the current meter record")
+        if _topology_identity(_current_topology(raw_meter)) != _topology_identity(
+            record_topology
+        ):
+            raise ValueError("meter topology does not match the source")
+        if (
+            configuration.config_sha256 == expected_source_sha256
+            and _configuration_hash(raw_meter.get("meter_configuration"))
+            == expected_source_sha256
+        ):
+            raise ValueError("configuration replay is not permitted")
+        next_meter = raw_meter
+        next_meter["config_sha256"] = configuration.config_sha256
+        next_meter["ct_selections"] = [
+            _serialize_ct_selection(selection)
+            for selection in configuration.ct_selections
+        ]
+    next_meter["meter_configuration"] = _serialize_meter_configuration(
+        configuration, record_topology
+    )
+    return next_meter
 
 
 def _serialize_meter_configuration(
@@ -1091,6 +1152,7 @@ class HelperStore:
         mac: str,
         expected_source_sha256: str,
         configuration: StoredMeterConfiguration,
+        record: StoredMeterRecord | None = None,
     ) -> None:
         """Atomically advance one verified meter record and its full metadata."""
         mac = canonical_mac(mac)
@@ -1100,21 +1162,15 @@ class HelperStore:
             raise TypeError("configuration must be StoredMeterConfiguration")
         async with self._update_lock:
             data = await self.async_load()
-            raw_meter = data.setdefault("meters", {}).get(mac)
-            if not isinstance(raw_meter, dict):
-                raise ValueError("current meter record is unavailable")  # noqa: TRY004
-            if _configuration_hash(raw_meter) != expected_source_sha256:
-                raise ValueError(
-                    "configuration does not match the current meter record"
-                )
-            raw_meter["meter_configuration"] = _serialize_meter_configuration(
-                configuration, _current_topology(raw_meter)
+            meters = data.setdefault("meters", {})
+            raw_meter = meters.get(mac)
+            meters[mac] = _verified_meter_record(
+                mac,
+                expected_source_sha256,
+                configuration,
+                record,
+                raw_meter,
             )
-            raw_meter["ct_selections"] = [
-                _serialize_ct_selection(selection)
-                for selection in configuration.ct_selections
-            ]
-            raw_meter["config_sha256"] = configuration.config_sha256
             await self._store.async_save(data)
 
     async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
@@ -1124,6 +1180,7 @@ class HelperStore:
         configuration: StoredMeterConfiguration,
         verification_id: str,
         transaction_id: str,
+        record: StoredMeterRecord | None = None,
     ) -> bool:
         """Commit full metadata and its claimed calibration install in one save."""
         mac = canonical_mac(mac)
@@ -1133,7 +1190,8 @@ class HelperStore:
             raise TypeError("configuration must be StoredMeterConfiguration")
         async with self._update_lock:
             data = await self.async_load()
-            raw_meter = data.setdefault("meters", {}).get(mac)
+            meters = data.setdefault("meters", {})
+            raw_meter = meters.get(mac)
             if (
                 not isinstance(raw_meter, dict)
                 or _configuration_hash(raw_meter) != expected_source_sha256
@@ -1142,22 +1200,83 @@ class HelperStore:
             raw_calibration = raw_meter.get("verified_calibration")
             if raw_calibration is None:
                 return False
-            record = _deserialize_verified_calibration(mac, raw_calibration)
+            calibration = _deserialize_verified_calibration(mac, raw_calibration)
             if (
-                record.verification_id != verification_id
-                or record.source_handoff_available
-                or record.has_offset_calibration
-                or record.source_handoff_transaction_id != transaction_id
+                calibration.verification_id != verification_id
+                or calibration.source_handoff_available
+                or calibration.has_offset_calibration
+                or calibration.source_handoff_transaction_id != transaction_id
             ):
                 return False
-            raw_meter["meter_configuration"] = _serialize_meter_configuration(
-                configuration, _current_topology(raw_meter)
-            )
+            try:
+                raw_meter = _verified_meter_record(
+                    mac,
+                    expected_source_sha256,
+                    configuration,
+                    record,
+                    raw_meter,
+                )
+            except ValueError:
+                return False
+            raw_meter["verified_calibration"][
+                "source_handoff_firmware_installed"
+            ] = True
+            meters[mac] = raw_meter
+            await self._store.async_save(data)
+            return True
+
+    async def async_save_verified_ct_selections_and_mark_verified_calibration_installed(
+        self,
+        mac: str,
+        expected_source_sha256: str,
+        proposed_sha256: str,
+        record: StoredMeterRecord,
+        selections: tuple[StoredCTSelection, ...],
+        verification_id: str,
+        transaction_id: str,
+    ) -> bool:
+        """Atomically advance legacy CT metadata and its exact calibration claim."""
+        mac = canonical_mac(mac)
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256) is None
+            or re.fullmatch(r"[0-9a-f]{64}", proposed_sha256) is None
+            or type(selections) is not tuple
+            or any(not isinstance(selection, StoredCTSelection) for selection in selections)
+            or any(selection.config_sha256 != proposed_sha256 for selection in selections)
+        ):
+            raise ValueError("legacy CT metadata is invalid")
+        async with self._update_lock:
+            data = await self.async_load()
+            raw_meter = data.setdefault("meters", {}).get(mac)
+            if not isinstance(raw_meter, dict) or _configuration_hash(
+                raw_meter
+            ) != expected_source_sha256:
+                return False
+            if (
+                not isinstance(record, StoredMeterRecord)
+                or record.mac != mac
+                or record.config_sha256 != expected_source_sha256
+                or record.topology is None
+                or _topology_identity(_current_topology(raw_meter))
+                != _topology_identity(_current_topology(serialize_meter_record(record)))
+            ):
+                return False
+            raw_calibration = raw_meter.get("verified_calibration")
+            if raw_calibration is None:
+                return False
+            calibration = _deserialize_verified_calibration(mac, raw_calibration)
+            if (
+                calibration.verification_id != verification_id
+                or calibration.source_handoff_available
+                or calibration.has_offset_calibration
+                or calibration.source_handoff_transaction_id != transaction_id
+            ):
+                return False
+            raw_meter["config_sha256"] = proposed_sha256
             raw_meter["ct_selections"] = [
-                _serialize_ct_selection(selection)
-                for selection in configuration.ct_selections
+                _serialize_ct_selection(selection) for selection in selections
             ]
-            raw_meter["config_sha256"] = configuration.config_sha256
+            raw_meter.pop("meter_configuration", None)
             raw_calibration["source_handoff_firmware_installed"] = True
             await self._store.async_save(data)
             return True

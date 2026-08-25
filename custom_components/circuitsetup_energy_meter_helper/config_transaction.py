@@ -36,6 +36,9 @@ from .models import (
     ConfigMutationPlan,
     MeterTopology,
     StoredCTSelection,
+    StoredMeterRecord,
+    StoredTopology,
+    StoredTopologyEvidence,
     SubstitutionChange,
     canonical_mac,
 )
@@ -149,11 +152,23 @@ class VerifiedPersistence(Protocol):
         self, mac: str, selections: tuple[StoredCTSelection, ...]
     ) -> None: ...
 
+    async def async_save_verified_ct_selections_and_mark_verified_calibration_installed(
+        self,
+        mac: str,
+        expected_source_sha256: str,
+        proposed_sha256: str,
+        record: StoredMeterRecord,
+        selections: tuple[StoredCTSelection, ...],
+        verification_id: str,
+        transaction_id: str,
+    ) -> bool: ...
+
     async def async_save_verified_meter_configuration(
         self,
         mac: str,
         expected_source_sha256: str,
         configuration: StoredMeterConfiguration,
+        record: StoredMeterRecord,
     ) -> None: ...
 
     async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
@@ -163,6 +178,7 @@ class VerifiedPersistence(Protocol):
         configuration: StoredMeterConfiguration,
         verification_id: str,
         transaction_id: str,
+        record: StoredMeterRecord,
     ) -> bool: ...
 
     async def async_get_verified_calibration(
@@ -195,6 +211,7 @@ class ReconnectEvidence:
     ct_names: Mapping[int, str]
     current_sensor_count: int
     sensor_entities: frozenset[tuple[str, str]] = frozenset()
+    duplicate_sensor_object_ids: frozenset[str] = frozenset()
 
 
 class ReconnectVerifier(Protocol):
@@ -247,6 +264,7 @@ class _ConfigTransaction:
     expected_sensor_entities: frozenset[tuple[str, str]] = field(
         default_factory=frozenset, repr=False
     )
+    meter_record: StoredMeterRecord | None = field(default=None, repr=False)
     _legacy_ct_selections: tuple[StoredCTSelection, ...] = field(
         default=(), repr=False
     )
@@ -265,6 +283,7 @@ class _ConfigTransaction:
     )
     reservation_claimed: bool = field(default=False, repr=False)
     write_started: bool = field(default=False, repr=False)
+    persistence_commit_started: bool = field(default=False, repr=False)
     expiry_cleanup_started: bool = field(default=False, repr=False)
     closed: bool = field(default=False, repr=False)
 
@@ -296,6 +315,7 @@ class _ConfigTransaction:
         self.prior_content = None
         self.meter_configuration = None
         self.expected_sensor_entities = frozenset()
+        self.meter_record = None
         self._legacy_ct_selections = ()
         self.closed = True
 
@@ -446,7 +466,8 @@ class ConfigTransactionManager:
             source_snapshot.content,
             meter_configuration,
             expected_sensor_entities,
-            selections,
+            _legacy_ct_selections=selections,
+            meter_record=_trusted_meter_record(mac, topology, source_snapshot),
         )
         self.sessions._register_transaction(transaction.transaction_id, transaction)
         return _status(transaction)
@@ -947,6 +968,7 @@ class ConfigTransactionManager:
             self.publish_status(_status(transaction))
             try:
                 installed, cancelled = await self._drain_persistence_commit(
+                    transaction,
                     self._persist_verified_metadata(transaction, plan)
                 )
             except asyncio.CancelledError:
@@ -987,6 +1009,7 @@ class ConfigTransactionManager:
                     transaction.mac,
                     transaction.source_sha256,
                     transaction.meter_configuration,
+                    _meter_record(transaction),
                 )
                 return True
             return await self._persistence.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
@@ -995,6 +1018,7 @@ class ConfigTransactionManager:
                 transaction.meter_configuration,
                 transaction.verification_id,
                 transaction.transaction_id,
+                _meter_record(transaction),
             )
         selections = tuple(
             replace(
@@ -1003,21 +1027,26 @@ class ConfigTransactionManager:
             )
             for selection in transaction.selections
         )
-        await self._persistence.async_save_verified_ct_selections(
-            transaction.mac, selections
-        )
         if transaction.verification_id is None:
+            await self._persistence.async_save_verified_ct_selections(
+                transaction.mac, selections
+            )
             return True
-        return await self._persistence.async_mark_verified_calibration_installed(
+        return await self._persistence.async_save_verified_ct_selections_and_mark_verified_calibration_installed(
             transaction.mac,
+            transaction.source_sha256,
+            sha256(plan.proposed_content.encode()).hexdigest(),
+            _meter_record(transaction),
+            selections,
             transaction.verification_id,
             transaction.transaction_id,
         )
 
     async def _drain_persistence_commit(
-        self, commit: Coroutine[Any, Any, bool]
+        self, transaction: _ConfigTransaction, commit: Coroutine[Any, Any, bool]
     ) -> tuple[bool, bool]:
         """Drain a started durable commit before reconciling caller cancellation."""
+        transaction.persistence_commit_started = True
         task: asyncio.Task[bool] = asyncio.create_task(commit)
         cancelled = False
         while not task.done():
@@ -1129,7 +1158,11 @@ class ConfigTransactionManager:
 
     def _expire(self, transaction: _ConfigTransaction) -> None:
         """Refuse an expired handle and recover any uncompiled remote write."""
-        if transaction.closed or transaction.expiry_cleanup_started:
+        if (
+            transaction.closed
+            or transaction.expiry_cleanup_started
+            or transaction.persistence_commit_started
+        ):
             return
         recover_write = transaction.write_started and transaction.state not in {
             ConfigTransactionState.COMPILED,
@@ -1273,6 +1306,39 @@ def _sensitive(
     if transaction.plan is None or transaction.prior_content is None:
         raise RuntimeError("configuration transaction has been cleaned up")
     return transaction.plan, transaction.prior_content
+
+
+def _trusted_meter_record(
+    mac: str, topology: MeterTopology, snapshot: ESPHomeConfigSnapshot
+) -> StoredMeterRecord:
+    """Bind initial persistence to server-owned source identity and topology."""
+    return StoredMeterRecord(
+        mac,
+        "meter_configuration",
+        snapshot.configuration,
+        StoredTopology(
+            topology.addon_count,
+            topology.board_count,
+            topology.ct_count,
+            topology.group_count,
+            topology.connection_type,
+            topology.voltage_layout,
+            topology.project_name,
+            tuple(
+                StoredTopologyEvidence(
+                    evidence.source.value, evidence.addon_count, evidence.detail
+                )
+                for evidence in topology.evidence
+            ),
+        ),
+        snapshot.sha256,
+    )
+
+
+def _meter_record(transaction: _ConfigTransaction) -> StoredMeterRecord:
+    if transaction.meter_record is None:
+        raise RuntimeError("trusted meter record is absent")
+    return transaction.meter_record
 
 
 def _release(transaction: _ConfigTransaction) -> None:
@@ -1477,6 +1543,15 @@ def _verify_reconnect(
                     return TransactionEvidenceCode.ENTITY_MISMATCH
     if (
         type(evidence.sensor_entities) is not frozenset
+        or type(evidence.duplicate_sensor_object_ids) is not frozenset
+        or any(
+            type(object_id) is not str or not object_id
+            for object_id in evidence.duplicate_sensor_object_ids
+        )
+        or {
+            object_id for object_id, _name in transaction.expected_sensor_entities
+        }
+        & evidence.duplicate_sensor_object_ids
         or not transaction.expected_sensor_entities.issubset(
             evidence.sensor_entities
         )

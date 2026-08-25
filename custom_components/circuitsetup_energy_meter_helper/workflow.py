@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
@@ -432,10 +433,10 @@ class EntryWorkflow:
         return self._mac(device_id)
 
     async def async_get_meter_configuration(self, device_id: str) -> dict[str, Any]:
-        return await self._async_get_meter_configuration(device_id, True)
+        return await self._async_get_meter_configuration(device_id)
 
     async def _async_get_meter_configuration(
-        self, device_id: str, include_stored_semantics: bool
+        self, device_id: str
     ) -> dict[str, Any]:
         device = self._device(device_id)
         mac = self._mac(device_id)
@@ -449,11 +450,9 @@ class EntryWorkflow:
             VoltageTransformerCatalog.load
         )
         selections = await self._store.async_get_ct_selections(mac)
-        stored_read = (
-            await self._store.async_get_meter_configuration_read(mac)
-            if include_stored_semantics
-            else None
-        )
+        stored_read = await self._store.async_get_meter_configuration_read(mac)
+        if stored_read.stale:
+            raise WorkflowHandleError("stored meter configuration is stale")
         plan_id = uuid4().hex
         inventory = MeterConfigurationInventory.from_document(
             plan_id,
@@ -462,14 +461,12 @@ class EntryWorkflow:
             ct_catalog,
             voltage_catalog,
             snapshot.sha256,
-            stored_configuration=(
-                stored_read.configuration if stored_read is not None else None
-            ),
+            stored_configuration=stored_read.configuration,
             stored_ct_selections=selections,
             reporting_multipliers=_stored_reporting_multipliers(
                 selections, snapshot.sha256
             ),
-            stored_semantics_stale=(stored_read.stale if stored_read is not None else False),
+            stored_semantics_stale=False,
         )
         self._discard_device_plans(mac)
         while len(self._plans) >= MAX_PLAN_HANDLES:
@@ -502,7 +499,7 @@ class EntryWorkflow:
 
     async def async_get_ct_inventory(self, device_id: str) -> dict[str, Any]:
         """Return the legacy CT-only response backed by a complete meter plan."""
-        inventory = await self._async_get_meter_configuration(device_id, True)
+        inventory = await self._async_get_meter_configuration(device_id)
         return {
             key: inventory[key]
             for key in ("plan_id", "source_sha256", "channels", "catalog")
@@ -1334,6 +1331,13 @@ class EntryWorkflow:
             catalog = EntityCatalog(api.entities, api.connection_generation)
             binding = handle.binding.rebind(catalog, handle.substitutions)
             handle.binding = binding
+        sensors = catalog.by_kind("sensor")
+        sensor_object_ids = Counter(entity.object_id for entity in sensors)
+        duplicates = frozenset(
+            object_id
+            for object_id, count in sensor_object_ids.items()
+            if count > 1
+        )
         return ReconnectEvidence(
             canonical_mac(mac),
             topology,
@@ -1342,9 +1346,8 @@ class EntryWorkflow:
                 for channel in binding.channels
             },
             len(binding.channels),
-            frozenset(
-                (entity.object_id, entity.name) for entity in catalog.by_kind("sensor")
-            ),
+            frozenset((entity.object_id, entity.name) for entity in sensors),
+            duplicates,
         )
 
     async def async_close(self) -> None:

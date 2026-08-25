@@ -409,6 +409,22 @@ class SessionManager:
             }
         )
         tasks = tuple(task for task in owned_tasks if not task.done())
+        persisting_transaction_ids = {
+            id(transaction)
+            for transaction in transactions
+            if getattr(transaction, "persistence_commit_started", False)
+            and any(
+                not task.done()
+                for task in tuple(getattr(transaction, "active_tasks", ()))
+            )
+        }
+        protected_tasks = {
+            task
+            for transaction in transactions
+            if id(transaction) in persisting_transaction_ids
+            for task in tuple(getattr(transaction, "active_tasks", ()))
+            if not task.done()
+        }
         for task in owned_tasks:
             if not task.done() or task.cancelled():
                 continue
@@ -423,14 +439,18 @@ class SessionManager:
             if lease.task is not None and not lease.task.done()
         )
         for transaction in transactions:
-            if tasks and getattr(transaction, "active_tasks", ()):
+            if (
+                tasks
+                and getattr(transaction, "active_tasks", ())
+                and id(transaction) not in persisting_transaction_ids
+            ):
                 mark_unresolved = getattr(transaction, "mark_unresolved", None)
                 if mark_unresolved:
                     mark_unresolved()
         all_tasks = tuple({*tasks, *calibration_tasks})
         current = asyncio.current_task()
         for task in all_tasks:
-            if task is current:
+            if task is current or task in protected_tasks:
                 continue
             task.cancel()
         waited_tasks = tuple(task for task in all_tasks if task is not current)
@@ -447,8 +467,20 @@ class SessionManager:
                 except BaseException as error:  # noqa: BLE001 - aggregate cleanup
                     cleanup_errors.append(error)
             for task in pending:
-                task.cancel()
+                if task not in protected_tasks:
+                    task.cancel()
+        retained_transaction_ids = {
+            id(transaction)
+            for transaction in transactions
+            if any(
+                task in pending
+                for task in tuple(getattr(transaction, "active_tasks", ()))
+            )
+            and id(transaction) in persisting_transaction_ids
+        }
         for transaction in transactions:
+            if id(transaction) in retained_transaction_ids:
+                continue
             try:
                 release_reservation = getattr(
                     transaction, "async_release_reservation", None
@@ -485,7 +517,11 @@ class SessionManager:
                 task.add_done_callback(release_when_done)
             else:
                 lease.release()
-        self._config_transactions.clear()
+        self._config_transactions = {
+            transaction_id: transaction
+            for transaction_id, transaction in self._config_transactions.items()
+            if id(transaction) in retained_transaction_ids
+        }
         self._calibration_iterations.clear()
         self._pending_calibrations.clear()
         self._calibration_leases = pending_leases

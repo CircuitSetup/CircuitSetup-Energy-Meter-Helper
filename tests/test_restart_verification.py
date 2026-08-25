@@ -1603,6 +1603,20 @@ class CalibrationPersistence(Persistence):
         self.installed.append((mac, verification_id, transaction_id))
         return True
 
+    async def async_save_verified_ct_selections_and_mark_verified_calibration_installed(
+        self,
+        mac: str,
+        _expected_source_sha256: str,
+        _proposed_sha256: str,
+        _record: object,
+        _selections: object,
+        verification_id: str,
+        transaction_id: str,
+    ) -> bool:
+        return await self.async_mark_verified_calibration_installed(
+            mac, verification_id, transaction_id
+        )
+
 
 def test_calibration_preview_handoffs_current_full_metadata_atomically() -> None:
     """A parsed authoritative config carries all CT metadata into one handoff save."""
@@ -1619,6 +1633,7 @@ def test_calibration_preview_handoffs_current_full_metadata_atomically() -> None
             configuration: object,
             verification_id: str,
             transaction_id: str,
+            _record: object,
         ) -> bool:
             if self.claimed.get(verification_id) != transaction_id:
                 return False
