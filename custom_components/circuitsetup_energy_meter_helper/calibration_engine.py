@@ -722,13 +722,11 @@ class CalibrationEngine:
         substitutions: Mapping[str, str] | None = None,
         timing_policy: CalibrationTimingPolicy | None = None,
     ) -> tuple[CalibrationResult, ...]:
-        if not 1 <= len(references) <= 2:
-            raise ValueError("voltage calibration requires one board")
+        if not references:
+            raise ValueError("voltage calibration requires at least one group")
         groups = tuple(self._group(binding, item[0]) for item in references)
-        if len({group.key for group in groups}) != len(groups) or len(
-            {group.voltage_reference.descriptor.device_id for group in groups}
-        ) != 1:
-            raise ValueError("voltage calibration groups must share one meter board")
+        if len({group.key for group in groups}) != len(groups):
+            raise ValueError("voltage calibration groups must be unique")
         attempts = tuple(
             self._prepare_iteration(
                 mac,

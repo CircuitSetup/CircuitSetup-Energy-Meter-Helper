@@ -169,7 +169,8 @@ class _SessionHandle:
     offset_skipped: bool = False
     calibrated_current_channels: set[int] = field(default_factory=set)
     pending_reporting_multipliers: dict[int, float] = field(default_factory=dict)
-    meter_configuration: StoredMeterConfiguration | None = None
+    meter_configuration: MeterConfigurationRequest | None = None
+    configuration_sha256: str | None = None
     timing_policy: CalibrationTimingPolicy = field(
         default_factory=lambda: CalibrationTimingPolicy(5, 3)
     )
@@ -737,6 +738,8 @@ class EntryWorkflow:
             )
         else:
             snapshot = await self._async_snapshot(device)
+            if sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256:
+                raise WorkflowHandleError("configuration snapshot is untrusted")
             document = ESPHomeConfigDocument.parse(snapshot.content)
             topology = topology_from_config(
                 document, native_project_name=device.project_name
@@ -760,7 +763,28 @@ class EntryWorkflow:
             )
         ):
             raise WorkflowHandleError("stored meter configuration is stale")
-        meter_configuration = stored_read.configuration
+        session_id = uuid4().hex
+        meter_configuration: MeterConfigurationRequest | None = None
+        if snapshot is not None:
+            ct_catalog = await self._hass.async_add_executor_job(CTPresetCatalog.load)
+            voltage_catalog = await self._hass.async_add_executor_job(
+                VoltageTransformerCatalog.load
+            )
+            selections = await self._store.async_get_ct_selections(mac)
+            meter_configuration = MeterConfigurationInventory.from_document(
+                session_id,
+                document,
+                topology,
+                ct_catalog,
+                voltage_catalog,
+                snapshot.sha256,
+                stored_configuration=stored_read.configuration,
+                stored_ct_selections=selections,
+                reporting_multipliers=_stored_reporting_multipliers(
+                    selections, snapshot.sha256
+                ),
+                stored_semantics_stale=False,
+            ).configuration
         cleanup = self._cleaning_macs.get(mac)
         if cleanup is not None and await _wait_for_owned_cleanup(cleanup):
             raise asyncio.CancelledError
@@ -800,7 +824,6 @@ class EntryWorkflow:
             )
             for instance_id, source in observed_sources.items()
         }
-        session_id = uuid4().hex
         handle = _SessionHandle(
             session_id,
             device_id,
@@ -814,6 +837,7 @@ class EntryWorkflow:
             self._deadline(),
             state="safety_required" if preflight.ok else "preflight_failed",
             meter_configuration=meter_configuration,
+            configuration_sha256=(snapshot.sha256 if snapshot is not None else None),
             timing_policy=CalibrationTimingPolicy(
                 (
                     meter_configuration.meter.update_interval_s
@@ -1461,7 +1485,13 @@ class EntryWorkflow:
             raise WorkflowCapabilityUnavailable(
                 "calibration source handoff is unavailable"
             )
-        return await self._require_builder().async_get_config(handle.configuration)
+        snapshot = await self._require_builder().async_get_config(handle.configuration)
+        if (
+            handle.configuration_sha256 is not None
+            and snapshot.sha256 != handle.configuration_sha256
+        ):
+            raise WorkflowHandleError("calibration configuration is stale")
+        return snapshot
 
     async def _async_trusted_voltage_fingerprint(
         self,

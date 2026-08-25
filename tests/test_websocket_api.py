@@ -1758,7 +1758,193 @@ def test_native_only_session_starts_without_yaml_identity(
         assert status.state == "safety_required"
         assert handle.configuration is None
         assert handle.substitutions == {}
+        assert handle.meter_configuration is None
+        assert handle.timing_policy == CalibrationTimingPolicy(5, 3)
         await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_builder_session_uses_legacy_snapshot_configuration_for_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.topology import (
+            topology_from_native,
+        )
+
+        project_name = "circuitsetup.6c-energy-meter-1-addon"
+        content = (
+            f"esphome:\n  project:\n    name: {project_name}\nsubstitutions:\n"
+            "  update_time: 60s\n"
+            "  voltage_cal1: 7305\n"
+            + "".join(
+                f"  ct{channel}_name: CT {channel}\n"
+                f"  current_cal_ct{channel}: 27518\n"
+                for channel in range(1, 13)
+            )
+        )
+        digest = sha256(content.encode()).hexdigest()
+        snapshot = ESPHomeConfigSnapshot("meter.yaml", content, digest)
+        topology = topology_from_native(project_name)
+        entry = SimpleNamespace(
+            domain="esphome",
+            entry_id="meter",
+            title="Meter",
+            unique_id="aa:bb:cc:dd:ee:ff",
+            data={"device_name": "meter"},
+            runtime_data=SimpleNamespace(
+                device_info=SimpleNamespace(project_name=project_name)
+            ),
+        )
+        hass = FakeHass((entry,))
+        provisioning = ProvisioningCoordinator(hass)
+        await provisioning.async_rescan()
+
+        class Builder:
+            async def async_list_devices(self) -> dict[str, Any]:
+                return {
+                    "configured": [
+                        {"name": "meter", "configuration": "meter.yaml"}
+                    ]
+                }
+
+            async def async_get_config(
+                self, configuration: str
+            ) -> ESPHomeConfigSnapshot:
+                assert configuration == snapshot.configuration
+                return snapshot
+
+            async def async_close(self) -> None:
+                return None
+
+        class Api:
+            entities: tuple[Any, ...] = ()
+            connection_generation = 1
+
+            async def async_connect(self) -> None:
+                return None
+
+        groups = tuple(
+            SimpleNamespace(
+                key=key,
+                references=(),
+                buttons=(),
+                voltage_sensors=(),
+                current_sensors=(),
+            )
+            for key in ("main_1", "main_2", "addon1_1", "addon1_2")
+        )
+        binding = SimpleNamespace(
+            topology=topology, connection_generation=1, groups=groups, channels=()
+        )
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.workflow.EntityCatalog",
+            lambda *args: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.workflow.bind_meter",
+            lambda *args: binding,
+        )
+        preflight_calls: list[object] = []
+
+        async def preflight(*_args: Any) -> PreflightResult:
+            preflight_calls.append(object())
+            return PreflightResult(())
+
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.workflow.async_preflight",
+            preflight,
+        )
+
+        class Store:
+            async def async_get_meter_configuration_read(self, _mac: str) -> Any:
+                return SimpleNamespace(configuration=None, stale=False)
+
+            async def async_get_ct_selections(self, _mac: str) -> tuple[object, ...]:
+                return ()
+
+            async def async_get_interrupted_session(self, _mac: str) -> None:
+                return None
+
+            async def async_get_verified_calibration(self, _mac: str) -> None:
+                return None
+
+            async def async_save_interrupted_session(self, *_args: Any) -> None:
+                return None
+
+            async def async_finalize_verified_calibration(self, *_args: Any) -> None:
+                return None
+
+        workflow = EntryWorkflow(
+            hass,
+            provisioning,
+            SessionManager(),
+            Store(),  # type: ignore[arg-type]
+            "meter",
+            Api(),  # type: ignore[arg-type]
+            Builder(),  # type: ignore[arg-type]
+        )
+        session = await workflow.async_start_session("meter")
+        handle = workflow._sessions[session.session_id]
+
+        assert handle.meter_configuration is not None
+        assert handle.meter_configuration.meter.update_interval_s == 60
+        assert handle.timing_policy == CalibrationTimingPolicy(60, 3)
+        assert tuple(
+            group.key for group in workflow._voltage_reference_groups(handle, "main")
+        ) == tuple(group.key for group in groups)
+
+        changed = content.replace("update_time: 60s", "update_time: 30s")
+        snapshot = ESPHomeConfigSnapshot(
+            "meter.yaml", changed, sha256(changed.encode()).hexdigest()
+        )
+        with pytest.raises(WorkflowHandleError, match="calibration configuration is stale"):
+            await workflow._async_calibration_snapshot(handle.mac, handle.topology)
+        snapshot = ESPHomeConfigSnapshot("meter.yaml", content, digest)
+
+        captured: list[tuple[Any, ...]] = []
+
+        class Calibration:
+            async def async_calibrate_voltages(
+                self, *args: Any, **kwargs: Any
+            ) -> tuple[object, ...]:
+                captured.append((*args, kwargs))
+                return ()
+
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+        await workflow.async_acknowledge_safety(session.session_id, True)
+        await workflow.async_calibrate_voltage(session.session_id, "main", 120.0, False)
+
+        assert captured[0][3] == (
+            ("main_1", 120.0, 1),
+            ("main_2", 120.0, 1),
+            ("addon1_1", 120.0, 1),
+            ("addon1_2", 120.0, 1),
+        )
+        assert captured[0][-1]["timing_policy"] == CalibrationTimingPolicy(60, 3)
+        await workflow.async_close()
+
+        class MismatchedStore(Store):
+            async def async_get_meter_configuration_read(self, _mac: str) -> Any:
+                return SimpleNamespace(
+                    configuration=SimpleNamespace(config_sha256="0" * 64), stale=False
+                )
+
+        preflight_calls.clear()
+        mismatched = EntryWorkflow(
+            hass,
+            provisioning,
+            SessionManager(),
+            MismatchedStore(),  # type: ignore[arg-type]
+            "meter",
+            Api(),  # type: ignore[arg-type]
+            Builder(),  # type: ignore[arg-type]
+        )
+        with pytest.raises(WorkflowHandleError, match="stored meter configuration is stale"):
+            await mismatched.async_start_session("meter")
+        assert preflight_calls == []
+        await mismatched.async_close()
 
     asyncio.run(run())
 
@@ -2856,7 +3042,15 @@ def test_cancel_revokes_session_before_waiting_calibration_can_mutate(
 
     async def run() -> None:
         topology = topology_from_native("circuitsetup.6c-energy-meter")
-        content = """esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\nsubstitutions:\n  ct1_name: CT 1\n  current_cal_ct1: '27518'\n"""
+        content = (
+            "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
+            "substitutions:\n"
+            + "".join(
+                f"  ct{channel}_name: CT {channel}\n"
+                f"  current_cal_ct{channel}: '27518'\n"
+                for channel in range(1, 7)
+            )
+        )
         digest = sha256(content.encode()).hexdigest()
 
         class Builder:

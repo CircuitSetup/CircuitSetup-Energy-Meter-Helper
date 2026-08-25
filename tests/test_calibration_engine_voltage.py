@@ -538,3 +538,79 @@ def test_additional_iterations_require_explicit_confirmation_and_stop_at_three()
         assert not any(event[0] == "button" for event in session.events)
 
     asyncio.run(run())
+
+
+def test_voltage_calibrates_all_groups_across_boards() -> None:
+    class MultiBoardSession(FakeCalibrationSession):
+        def expect_gain_run(self, **kwargs: Any) -> Awaitable[GainRunEvidence]:
+            self.events.append(("expect_gain", kwargs))
+            future: asyncio.Future[GainRunEvidence] = (
+                asyncio.get_running_loop().create_future()
+            )
+            future.set_result(
+                replace(
+                    gain_evidence(
+                        kwargs["target_instance_id"],
+                        voltage_changes=(True, True, True),
+                        reference_voltages=(120.0, 120.0, 120.0),
+                    ),
+                    operation_sequence=kwargs["operation_sequence"],
+                )
+            )
+            return future
+
+    async def run() -> None:
+        meter = binding(1)
+        session = MultiBoardSession(gain_evidence("meter_main1"))
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        results = await engine.async_calibrate_voltages(
+            "aabbccddeeff",
+            session,
+            meter,
+            (
+                ("main_1", 120.0, 1),
+                ("main_2", 120.0, 1),
+                ("addon1_1", 120.0, 1),
+                ("addon1_2", 120.0, 1),
+            ),
+            1.0,
+        )
+
+        assert [result.group_key for result in results] == [
+            "main_1",
+            "main_2",
+            "addon1_1",
+            "addon1_2",
+        ]
+        assert [event[0] for event in session.events].count("button") == 4
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "references",
+    (
+        (),
+        (("main_1", 120.0, 1), ("main_1", 120.0, 1)),
+        (("missing", 120.0, 1),),
+    ),
+)
+def test_voltage_rejects_empty_duplicate_or_unknown_groups_before_hardware(
+    references: tuple[tuple[str, float, int], ...],
+) -> None:
+    async def run() -> None:
+        meter = binding(1)
+        session = FakeCalibrationSession(gain_evidence("meter_main1"))
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        with pytest.raises(ValueError):
+            await engine.async_calibrate_voltages(
+                "aabbccddeeff", session, meter, references, 1.0
+            )
+
+        assert session.events == []
+
+    asyncio.run(run())
