@@ -1,5 +1,5 @@
 import { html, type TemplateResult } from "lit";
-import type { ConnectionType, SetupSnapshot } from "../types";
+import type { ConnectionType, ElectricalSystem, LineFrequencyHz, SetupSnapshot } from "../types";
 import type { BoardPackageOptions } from "../types";
 import { newInstallPackageOptions, packageOptions } from "./package-options";
 
@@ -9,6 +9,15 @@ const CONNECTIONS: Array<[Exclude<ConnectionType, "unknown">, string]> = [
   ["ethernet_waveshare", "Waveshare Ethernet"],
 ];
 const ADDON_PINS = ["(0, 16)", "(27, 17)", "(2, 21)", "(13, 22)", "(14, 25)", "(15, 26)"];
+const ELECTRICAL_SYSTEMS: Array<[ElectricalSystem, string]> = [
+  ["split_phase_120_240", "Split phase 120/240 V"],
+  ["single_phase_230", "Single phase 230 V"],
+  ["three_phase_120_208", "Three phase 120/208 V"],
+  ["three_phase_230_400", "Three phase 230/400 V"],
+  ["custom", "Custom"],
+];
+const suggestedFrequency = (system: ElectricalSystem): LineFrequencyHz | null =>
+  system === "split_phase_120_240" ? 60 : system === "single_phase_230" ? 50 : null;
 
 export function setupDeviceStep(
   snapshot: SetupSnapshot | null,
@@ -25,6 +34,12 @@ export function setupDeviceStep(
   importFailedDeviceId: string | null = null,
   boardPackages: BoardPackageOptions = newInstallPackageOptions(addonCount),
   setBoardPackages: (options: BoardPackageOptions) => void = () => undefined,
+  electricalSystem: ElectricalSystem = "split_phase_120_240",
+  lineFrequencyHz: LineFrequencyHz = 60,
+  electricalProfileConfirmed = false,
+  setElectricalSystem: (value: ElectricalSystem) => void = () => undefined,
+  setLineFrequency: (value: LineFrequencyHz) => void = () => undefined,
+  confirmElectricalProfile: () => void = () => undefined,
 ): TemplateResult {
   return html`
     <section class="step-content setup-step" aria-labelledby="step-heading">
@@ -61,6 +76,31 @@ export function setupDeviceStep(
             </label>
           `)}
         </div>
+      </fieldset>
+      <fieldset class="choice-field">
+        <legend>Electrical system</legend>
+        <p id="electrical-profile-help">Confirm the line frequency before it is saved with this installation.</p>
+        <div class="connection-options">
+          ${ELECTRICAL_SYSTEMS.map(([value, label]) => html`
+            <label class=${value === electricalSystem ? "selected" : ""}>
+              <input name="electrical-system" type="radio" .value=${value}
+                .checked=${value === electricalSystem} @change=${() => setElectricalSystem(value)} />
+              <span>${label}</span>
+            </label>
+          `)}
+        </div>
+        <div class="connection-options" role="group" aria-describedby="electrical-profile-help">
+          ${([50, 60] as const).map((value) => html`<label class=${value === lineFrequencyHz ? "selected" : ""}>
+            <input name="line-frequency" type="radio" .value=${String(value)} .checked=${value === lineFrequencyHz}
+              @change=${() => setLineFrequency(value)} /> <span>${value} Hz</span>
+          </label>`)}
+        </div>
+        <p>${suggestedFrequency(electricalSystem)
+          ? `${suggestedFrequency(electricalSystem)} Hz is suggested; confirm it after checking your supply.`
+          : "Choose the line frequency for this electrical system."}</p>
+        <button class="secondary" data-action="confirm-electrical-profile" @click=${confirmElectricalProfile}>
+          ${electricalProfileConfirmed ? "Electrical profile confirmed" : "Confirm electrical profile"}
+        </button>
       </fieldset>
       <fieldset class="choice-field">
         <legend>Connection</legend>

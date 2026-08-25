@@ -11,6 +11,7 @@ const VERSION = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$/;
 const CONTROL = /[\u0000-\u001F\u007F-\u009F]/;
 
 export type FirmwareConnectionType = "wifi" | "ethernet_lilygo" | "ethernet_waveshare";
+export type SuggestedElectricalSystem = "split_phase_120_240" | "single_phase_230" | "three_phase_120_208" | "three_phase_230_400" | "custom";
 
 export interface FirmwareVersion {
   version: string;
@@ -116,6 +117,12 @@ export function resolveMeterProductIds(addonCount: number, connectionType: Firmw
   if (connectionType === "ethernet_lilygo") return [`${base}_ethernet`];
   if (addonCount === 0) return [`${base}_ethernet_waveshare`, `${base}_ethernet_ws`];
   return [`${base}_ethernet_waveshare`];
+}
+
+export function suggestedLineFrequency(electricalSystem: SuggestedElectricalSystem): 50 | 60 | null {
+  if (electricalSystem === "split_phase_120_240") return 60;
+  if (electricalSystem === "single_phase_230") return 50;
+  return null;
 }
 
 function compareVersions(a: string, b: string): number {

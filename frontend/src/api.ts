@@ -8,6 +8,9 @@ import type {
   LabelUpdateResult,
   DiscoveredDevice,
   MeterTopology,
+  MeterSettingsDraft,
+  ElectricalSystem,
+  LineFrequencyHz,
   OffsetCalibrationResult,
   OffsetReadinessResult,
   OffsetTable,
@@ -38,6 +41,7 @@ const SETUP_STATES = new Set(["no_device", "installer_guide", "waiting_for_disco
 const TRANSACTION_STATES = new Set(["previewed", "write_confirmed", "written", "validated", "compiled", "install_confirmation_required", "installing", "reconnecting", "verified", "rolled_back", "failed"]);
 const SESSION_STATES = new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "partial", "indeterminate", "verified", "cancelled"]);
 const CONNECTIONS = new Set(["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]);
+const ELECTRICAL_SYSTEMS = new Set(["split_phase_120_240", "single_phase_230", "three_phase_120_208", "three_phase_230_400", "custom"]);
 const EVIDENCE_SOURCES = new Set(["config_project", "config_packages", "dashboard_import", "native_project", "native_entity_counts"]);
 const PHASES = new Set(["A", "B", "C"]);
 const JOB_STAGES = new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
@@ -136,6 +140,11 @@ function setup(value: unknown, label: string): SetupSnapshot {
       || version !== undefined && (typeof version !== "string" || version.length > 160 || !ESPHOME_VERSION.test(version))) {
       throw new Error(`${label} response is invalid`);
     }
+    if ((intent.electrical_system === undefined) !== (intent.line_frequency_hz === undefined)
+      || intent.electrical_system !== undefined && (!ELECTRICAL_SYSTEMS.has(intent.electrical_system as string)
+        || ![50, 60].includes(integer(intent.line_frequency_hz, label)))) {
+      throw new Error(`${label} response is invalid`);
+    }
   }
   return value as SetupSnapshot;
 }
@@ -168,6 +177,14 @@ function topologyResponse(value: unknown, label: string): MeterTopology | { topo
     return value as { topology: MeterTopology };
   }
   return topology(value, label);
+}
+function meterConfiguration(value: unknown, label: string): MeterSettingsDraft {
+  const configuration = record(record(value, label).configuration, label);
+  const meter = record(configuration.meter, label);
+  const electricalSystem = enumeration(meter.electrical_system, ELECTRICAL_SYSTEMS, label) as ElectricalSystem;
+  const lineFrequency = integer(meter.line_frequency_hz, label);
+  if (lineFrequency !== 50 && lineFrequency !== 60) throw new Error(`${label} response is invalid`);
+  return { electrical_system: electricalSystem, line_frequency_hz: lineFrequency as LineFrequencyHz, authoritative: true };
 }
 
 function packageOptions(value: unknown, label: string, boardCount: number): BoardPackageOptions {
@@ -581,6 +598,8 @@ export class HelperApi {
     this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
   public getCtInventory = (deviceId: string) =>
     this.call("get_ct_inventory", (value) => ctInventory(value, "get_ct_inventory"), { device_id: deviceId });
+  public getMeterConfiguration = (deviceId: string) =>
+    this.call("get_meter_configuration", (value) => meterConfiguration(value, "get_meter_configuration"), { device_id: deviceId });
   public getActiveWork = (deviceId: string, expectedTopology: MeterTopology) =>
     this.call("get_active_work", (value) => activeWork(value, "get_active_work", expectedTopology), { device_id: deviceId });
   public getSession = (sessionId: string) =>
@@ -591,6 +610,8 @@ export class HelperApi {
     connectionType: Exclude<ConnectionType, "unknown">,
     firmware: FirmwareOption | null,
     packageOptions?: BoardPackageOptions,
+    electricalSystem?: ElectricalSystem | null,
+    lineFrequencyHz?: LineFrequencyHz | null,
   ) => this.call("set_installer_intent", (value) => setup(value, "set_installer_intent"), {
     addon_count: addonCount,
     connection_type: connectionType,
@@ -598,6 +619,9 @@ export class HelperApi {
     ...(firmware && firmware.productId.length <= 160 && firmware.version.length <= 160
       && FIRMWARE_PRODUCT_ID.test(firmware.productId) && ESPHOME_VERSION.test(firmware.version)
       ? { firmware_product_id: firmware.productId, esphome_version: firmware.version }
+      : {}),
+    ...(electricalSystem !== null && electricalSystem !== undefined && lineFrequencyHz !== null && lineFrequencyHz !== undefined
+      ? { electrical_system: electricalSystem, line_frequency_hz: lineFrequencyHz }
       : {}),
   });
   public rescan = () => this.call("rescan", (value) => setup(value, "rescan"));

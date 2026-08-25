@@ -20,6 +20,9 @@ import type {
   CalibrationResult,
   BoardPackageOptions,
   ConnectionType,
+  ElectricalSystem,
+  LineFrequencyHz,
+  MeterSettingsDraft,
   CtInventory,
   FirmwareCatalogState,
   MeterTopology,
@@ -86,6 +89,10 @@ export class CircuitSetupPanel extends LitElement {
   private packageOptions = newInstallPackageOptions(0);
   private sourcePackageOptions: BoardPackageOptions | null = newInstallPackageOptions(0);
   private connection: Exclude<ConnectionType, "unknown"> = "wifi";
+  private electricalSystem: ElectricalSystem = "split_phase_120_240";
+  private lineFrequencyHz: LineFrequencyHz = 60;
+  private electricalProfileConfirmed = false;
+  private meterSettingsDraft: MeterSettingsDraft | null = null;
   private board = 0;
   private group = 0;
   private channel = 1;
@@ -185,6 +192,13 @@ export class CircuitSetupPanel extends LitElement {
           ? { power_quality: [...intent.power_quality], status_fields: [...intent.status_fields] }
           : newInstallPackageOptions(intent.addon_count);
         this.sourcePackageOptions = newInstallPackageOptions(intent.addon_count);
+        if (intent.electrical_system !== undefined && intent.line_frequency_hz !== undefined) {
+          this.electricalSystem = intent.electrical_system;
+          this.lineFrequencyHz = intent.line_frequency_hz;
+          this.electricalProfileConfirmed = true;
+        } else {
+          this.electricalProfileConfirmed = false;
+        }
         this.refreshFirmwareOptions();
       }
       if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.firstDeviceId(this.setup.devices));
@@ -366,6 +380,7 @@ export class CircuitSetupPanel extends LitElement {
     this.transaction = null;
     this.session = null;
     this.drafts = new Map();
+    this.meterSettingsDraft = null;
     this.board = 0;
     this.resetCalibrationRun();
   }
@@ -409,6 +424,26 @@ export class CircuitSetupPanel extends LitElement {
     this.packageOptions = resizePackageOptions(this.packageOptions, value);
     this.sourcePackageOptions = newInstallPackageOptions(value);
     this.refreshFirmwareOptions();
+  }
+
+  private setElectricalSystem(value: ElectricalSystem): void {
+    this.electricalSystem = value;
+    const suggested = value === "split_phase_120_240" ? 60 : value === "single_phase_230" ? 50 : null;
+    if (suggested !== null) this.lineFrequencyHz = suggested;
+    this.electricalProfileConfirmed = false;
+    this.requestUpdate();
+  }
+
+  private setLineFrequency(value: LineFrequencyHz): void {
+    this.lineFrequencyHz = value;
+    this.electricalProfileConfirmed = false;
+    this.requestUpdate();
+  }
+
+  private confirmElectricalProfile(): void {
+    this.electricalProfileConfirmed = true;
+    this.announcement = `Electrical profile confirmed: ${this.electricalSystem.replaceAll("_", " ")}, ${this.lineFrequencyHz} Hz.`;
+    this.requestUpdate();
   }
 
   public showInventory(inventory: CtInventory): void {
@@ -520,6 +555,8 @@ export class CircuitSetupPanel extends LitElement {
         this.connection,
         this.selectedFirmware(),
         this.packageOptions,
+        this.electricalProfileConfirmed ? this.electricalSystem : null,
+        this.electricalProfileConfirmed ? this.lineFrequencyHz : null,
       );
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
@@ -554,6 +591,16 @@ export class CircuitSetupPanel extends LitElement {
       this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
       await this.subscribeSetup(connectionGeneration, api);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (this.electricalProfileConfirmed) {
+        this.meterSettingsDraft = {
+          electrical_system: this.electricalSystem,
+          line_frequency_hz: this.lineFrequencyHz,
+          authoritative: false,
+        };
+      }
+      const importedConfiguration = await api.getMeterConfiguration(deviceId);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.meterSettingsDraft = importedConfiguration;
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = null;
@@ -1357,7 +1404,10 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.connection = value; this.refreshFirmwareOptions(); },
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, Boolean(this.topology),
       this.firmwareCatalog(), this.importFailedDeviceId, this.packageOptions,
-      (options) => { this.packageOptions = options; this.requestUpdate(); })}
+      (options) => { this.packageOptions = options; this.requestUpdate(); }, this.electricalSystem,
+      this.lineFrequencyHz, this.electricalProfileConfirmed,
+      (value) => this.setElectricalSystem(value), (value) => this.setLineFrequency(value),
+      () => this.confirmElectricalProfile())}
       ${this.topology ? topologyStep(this.topology, this.selectedProjectVersion(),
         () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
           ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session",

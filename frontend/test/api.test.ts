@@ -153,6 +153,18 @@ describe("HelperApi", () => {
     expect(JSON.stringify(hass.messages)).not.toMatch(/manifest|firmware_url|binary_url/i);
   });
 
+  it("sends a confirmed electrical profile independently of firmware selection", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+
+    await api.setInstallerIntent(1, "wifi", null, undefined, "single_phase_230", 50);
+
+    expect(hass.messages.at(-1)).toMatchObject({
+      electrical_system: "single_phase_230",
+      line_frequency_hz: 50,
+    });
+  });
+
   it("omits both firmware identifiers without a catalog selection", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");

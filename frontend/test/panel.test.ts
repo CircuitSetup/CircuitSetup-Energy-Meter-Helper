@@ -318,6 +318,9 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("Set up a new device");
     expect(panel.shadowRoot?.querySelectorAll('[name="addon-count"]')).toHaveLength(7);
     expect(panel.shadowRoot?.querySelectorAll('[name="connection-type"]')).toHaveLength(3);
+    expect(panel.shadowRoot?.querySelectorAll('[name="electrical-system"]')).toHaveLength(5);
+    expect(panel.shadowRoot?.querySelector('[name="line-frequency"]')).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector('[data-action="confirm-electrical-profile"]')).not.toBeNull();
     expect(text(panel)).toContain("Install firmware");
     expect(Array.from(panel.shadowRoot?.querySelectorAll(".next-steps li") ?? [], (item) => item.textContent?.trim())).toEqual([
       "Install the selected firmware and select Next in ESP Web Tools.",
@@ -335,6 +338,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("details")).toBeNull();
     const setupOrder = [
       panel.shadowRoot?.querySelector('[name="addon-count"]')?.closest("fieldset"),
+      panel.shadowRoot?.querySelector('[name="electrical-system"]')?.closest("fieldset"),
       panel.shadowRoot?.querySelector('[name="connection-type"]')?.closest("fieldset"),
       panel.shadowRoot?.querySelector('[aria-labelledby="jumper-heading"]'),
       panel.shadowRoot?.querySelector('[data-action="firmware-version"]'),
@@ -352,6 +356,71 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(text(panel)).toContain("Add-on 6");
     expect(text(panel)).toContain("(15, 26)");
+  });
+
+  it("does not send suggested electrical values until the user confirms them", async () => {
+    const messages: Record<string, unknown>[] = [];
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        messages.push(message);
+        const operation = String(message.type).split("/").at(-1);
+        return (operation === "rescan"
+          ? { state: "no_device", devices: [] }
+          : { state: "installer_guide", devices: [] }) as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+    const initial = messages.find((message) => String(message.type).endsWith("set_installer_intent"));
+    expect(initial).not.toHaveProperty("electrical_system");
+    expect(initial).not.toHaveProperty("line_frequency_hz");
+
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="electrical-system"][value="single_phase_230"]')?.click();
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="line-frequency"][value="50"]')?.click();
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[data-action="confirm-electrical-profile"]')?.click();
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+    expect(messages.filter((message) => String(message.type).endsWith("set_installer_intent")).at(-1)).toMatchObject({
+      electrical_system: "single_phase_230",
+      line_frequency_hz: 50,
+    });
+  });
+
+  it("loads imported meter configuration before topology after adoption", async () => {
+    const operations: string[] = [];
+    let adopted = false;
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1)!;
+        operations.push(operation);
+        if (operation === "setup_status") return (adopted
+          ? { state: "device_discovered", devices: [{ ...device, configuration: "meter.yaml" }], bound_device_id: device.entry_id }
+          : { state: "no_device", devices: [] }) as T;
+        if (operation === "adopt_device") { adopted = true; return { device_id: device.entry_id, configuration: "meter.yaml" } as T; }
+        if (operation === "get_meter_configuration") return {
+          plan_id: "plan-1", source_sha256: "a".repeat(64), configuration: {
+            meter: { electrical_system: "single_phase_230", line_frequency_hz: 50 },
+          },
+        } as T;
+        if (operation === "get_topology") return { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+          connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
+          evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] } as T;
+        return { state: "installer_guide", devices: [] } as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    (panel as unknown as { adopt: (id: string) => Promise<void> }).adopt(device.entry_id);
+    await tick(); await tick(); await panel.updateComplete;
+
+    expect(operations.indexOf("get_meter_configuration")).toBeGreaterThan(operations.indexOf("adopt_device"));
+    expect(operations.indexOf("get_topology")).toBeGreaterThan(operations.indexOf("get_meter_configuration"));
+    expect((panel as unknown as { meterSettingsDraft: { electrical_system: string; line_frequency_hz: number; authoritative: boolean } }).meterSettingsDraft)
+      .toMatchObject({ electrical_system: "single_phase_230", line_frequency_hz: 50, authoritative: true });
   });
 
   it("shows ordered setup guidance with Ethernet-only details", async () => {

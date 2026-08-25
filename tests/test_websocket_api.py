@@ -691,6 +691,8 @@ def test_installer_intent_schema_requires_a_valid_paired_firmware_selection() ->
         "esphome_version": "2026.8.0",
         "power_quality": [True, False],
         "status_fields": [False, True],
+        "electrical_system": "single_phase_230",
+        "line_frequency_hz": 50,
     }
 
     assert schema(valid) == valid
@@ -702,6 +704,10 @@ def test_installer_intent_schema_requires_a_valid_paired_firmware_selection() ->
         {**valid, "firmware_product_id": "a" * 129},
         {**valid, "esphome_version": "https://2026.8.0"},
         {**valid, "esphome_version": "2026.8.0-" + "a" * 152},
+        {**valid, "line_frequency_hz": True},
+        {**valid, "line_frequency_hz": "50"},
+        {**valid, "line_frequency_hz": 55},
+        {**valid, "electrical_system": "split_phase"},
     ):
         with pytest.raises(vol.Invalid):
             schema(partial)
@@ -745,6 +751,8 @@ def test_setup_status_exposes_only_safe_installer_firmware_identifiers() -> None
             "esphome_version": "2026.8.0",
             "power_quality": [True, False],
             "status_fields": [False, True],
+            "electrical_system": "split_phase_120_240",
+            "line_frequency_hz": 60,
         }
         await _invoke(hass, connection, intent)
         await _invoke(hass, connection, _message(f"{DOMAIN}/setup_status", 2))
@@ -757,6 +765,8 @@ def test_setup_status_exposes_only_safe_installer_firmware_identifiers() -> None
             "esphome_version": "2026.8.0",
             "power_quality": [True, False],
             "status_fields": [False, True],
+            "electrical_system": "split_phase_120_240",
+            "line_frequency_hz": 60,
         }
         assert "url" not in repr(snapshot).casefold()
 

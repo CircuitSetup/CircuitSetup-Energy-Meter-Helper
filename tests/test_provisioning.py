@@ -95,6 +95,63 @@ def test_installer_intent_uses_new_install_package_defaults() -> None:
     assert intent.status_fields == (True, False, False)
 
 
+@pytest.mark.parametrize(
+    ("electrical_system", "line_frequency_hz"),
+    [
+        ("split_phase_120_240", 60),
+        ("single_phase_230", 50),
+        ("three_phase_120_208", 60),
+        ("three_phase_230_400", 50),
+        ("custom", 50),
+    ],
+)
+def test_installer_intent_carries_supported_electrical_profile(
+    electrical_system: str, line_frequency_hz: int
+) -> None:
+    """Confirmed electrical profile data is retained without firmware variants."""
+    intent = InstallerIntent(
+        addon_count=0,
+        connection_type="wifi",
+        electrical_system=electrical_system,
+        line_frequency_hz=line_frequency_hz,
+    )
+
+    assert intent.electrical_system == electrical_system
+    assert intent.line_frequency_hz == line_frequency_hz
+
+
+@pytest.mark.parametrize(
+    ("electrical_system", "line_frequency_hz"),
+    [
+        ("unsupported", 60),
+        ("split_phase_120_240", 55),
+        ("split_phase_120_240", True),
+        ("split_phase_120_240", "60"),
+        (None, 60),
+        ("split_phase_120_240", None),
+    ],
+)
+def test_installer_intent_rejects_invalid_or_partial_electrical_profile(
+    electrical_system: object, line_frequency_hz: object
+) -> None:
+    """Profile and frequency are a strict pair at the backend trust boundary."""
+    with pytest.raises(ValueError):
+        InstallerIntent(
+            addon_count=0,
+            connection_type="wifi",
+            electrical_system=electrical_system,
+            line_frequency_hz=line_frequency_hz,
+        )
+
+
+def test_legacy_installer_intent_has_no_authoritative_electrical_defaults() -> None:
+    """Old in-memory/persisted intents remain explicitly unprofiled."""
+    intent = InstallerIntent(addon_count=0, connection_type="wifi")
+
+    assert intent.electrical_system is None
+    assert intent.line_frequency_hz is None
+
+
 def test_installer_intent_validates_one_package_choice_per_board() -> None:
     """Incomplete per-board choices must not survive a page reload."""
     with pytest.raises(ValueError, match="installed board"):

@@ -395,6 +395,8 @@ class EntryWebsocketController:
                     tuple(msg["status_fields"])
                     if "status_fields" in msg
                     else None,
+                    msg.get("electrical_system"),
+                    msg.get("line_frequency_hz"),
                 )
             )
             return await self.async_call(f"{_PREFIX}setup_status", msg, user_id)
@@ -990,6 +992,16 @@ def _schema(command: str) -> Any:
             vol.Optional("status_fields"): vol.All(
                 [bool], vol.Length(min=1, max=7)
             ),
+            vol.Optional("electrical_system"): vol.In(
+                (
+                    "split_phase_120_240",
+                    "single_phase_230",
+                    "three_phase_120_208",
+                    "three_phase_230_400",
+                    "custom",
+                )
+            ),
+            vol.Optional("line_frequency_hz"): vol.All(_strict_integer, vol.In((50, 60))),
         }
         return vol.All(vol.Schema(schema), _validate_installer_firmware_schema)
     elif operation in {
@@ -1200,6 +1212,8 @@ def _validate_installer_firmware_schema(value: dict[str, Any]) -> dict[str, Any]
             value.get("esphome_version"),
             tuple(value["power_quality"]) if "power_quality" in value else None,
             tuple(value["status_fields"]) if "status_fields" in value else None,
+            value.get("electrical_system"),
+            value.get("line_frequency_hz"),
         )
     except ValueError as error:
         raise vol.Invalid(str(error)) from error
