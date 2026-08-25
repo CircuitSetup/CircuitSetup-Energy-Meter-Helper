@@ -33,6 +33,7 @@ from .models import (
 )
 from .store import StoredMeterConfiguration
 from .topology import (
+    TopologyFingerprintMismatch,
     channel_address,
     voltage_reference_topology_from_config,
     voltage_reference_topology_from_configuration,
@@ -43,6 +44,10 @@ from .voltage_transformer_catalog import VoltageTransformerCatalog
 _GENERIC_TOTAL_ID = re.compile(
     r"^\s*(?:-\s*)?id:\s*[\"']?(?:totalAmps|totalWatts|totalEnergyDaily)[\"']?\s*$"
 )
+
+
+class VoltageReferenceMismatchError(ValueError):
+    """Hash-bound stored voltage references disagree with owned YAML evidence."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +149,8 @@ class MeterConfigurationInventory:
                 voltage_topology = voltage_reference_topology_from_configuration(
                     topology, configuration
                 )
+            except VoltageReferenceMismatchError:
+                raise
             except (TypeError, ValueError):
                 configuration = _legacy_request(document, topology, ct_inventory)
                 voltage_topology = voltage_reference_topology_from_legacy(topology)
@@ -273,9 +280,14 @@ def _validate_managed_voltage_reference_gains(
     ):
         raise ValueError("managed voltage references are not safely owned")
     expected = voltage_reference_topology_from_configuration(topology, stored)
-    actual = voltage_reference_topology_from_config(
-        document, topology, trusted_fingerprint=expected.fingerprint
-    )
+    try:
+        actual = voltage_reference_topology_from_config(
+            document, topology, trusted_fingerprint=expected.fingerprint
+        )
+    except TopologyFingerprintMismatch as error:
+        raise VoltageReferenceMismatchError(
+            "managed voltage references disagree with stored configuration"
+        ) from error
     if actual.fingerprint != expected.fingerprint:
         raise ValueError("managed voltage references are not verified")
     lines = block.content.replace("\r\n", "\n").splitlines()

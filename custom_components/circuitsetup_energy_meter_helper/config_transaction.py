@@ -243,6 +243,7 @@ class TransactionStatus:
     progress: tuple[TransactionProgress, ...] = ()
     validation_detail: ValidationDetail | None = None
     upload_progress: tuple[JobProgress, ...] = ()
+    aggregate_entity_mismatch: bool = False
 
 
 @dataclass(slots=True)
@@ -264,6 +265,9 @@ class _ConfigTransaction:
     expected_sensor_entities: frozenset[tuple[str, str]] = field(
         default_factory=frozenset, repr=False
     )
+    expected_aggregate_sensor_entities: frozenset[tuple[str, str]] = field(
+        default_factory=frozenset, repr=False
+    )
     meter_record: StoredMeterRecord | None = field(default=None, repr=False)
     _legacy_ct_selections: tuple[StoredCTSelection, ...] = field(
         default=(), repr=False
@@ -275,6 +279,7 @@ class _ConfigTransaction:
     progress: list[TransactionProgress] = field(default_factory=list)
     validation_detail: ValidationDetail | None = None
     upload_progress: list[JobProgress] = field(default_factory=list)
+    aggregate_entity_mismatch: bool = False
     lease: ConfigLease | None = field(default=None, repr=False)
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     active_tasks: set[asyncio.Task[object]] = field(default_factory=set, repr=False)
@@ -315,6 +320,7 @@ class _ConfigTransaction:
         self.prior_content = None
         self.meter_configuration = None
         self.expected_sensor_entities = frozenset()
+        self.expected_aggregate_sensor_entities = frozenset()
         self.meter_record = None
         self._legacy_ct_selections = ()
         self.closed = True
@@ -427,6 +433,7 @@ class ConfigTransactionManager:
         *,
         meter_configuration: StoredMeterConfiguration | None = None,
         expected_sensor_entities: frozenset[tuple[str, str]] = frozenset(),
+        expected_aggregate_sensor_entities: frozenset[tuple[str, str]] = frozenset(),
     ) -> TransactionStatus:
         """Retain full content only in memory and return a safe review surface."""
         if (
@@ -438,6 +445,9 @@ class ConfigTransactionManager:
             raise ValueError("source snapshot does not match mutation plan")
         _validate_changes(plan.changes)
         _validate_expected_sensor_entities(expected_sensor_entities)
+        _validate_expected_sensor_entities(expected_aggregate_sensor_entities)
+        if not expected_aggregate_sensor_entities <= expected_sensor_entities:
+            raise ValueError("aggregate sensor entities are invalid")
         mac = canonical_mac(mac)
         if meter_configuration is not None:
             if not isinstance(meter_configuration, StoredMeterConfiguration):
@@ -466,6 +476,7 @@ class ConfigTransactionManager:
             source_snapshot.content,
             meter_configuration,
             expected_sensor_entities,
+            expected_aggregate_sensor_entities,
             _legacy_ct_selections=selections,
             meter_record=_trusted_meter_record(mac, topology, source_snapshot),
         )
@@ -555,6 +566,9 @@ class ConfigTransactionManager:
             selections: tuple[StoredCTSelection, ...] = ()
             meter_configuration: StoredMeterConfiguration | None = None
             expected_sensor_entities: frozenset[tuple[str, str]] = frozenset()
+            expected_aggregate_sensor_entities: frozenset[tuple[str, str]] = (
+                frozenset()
+            )
             has_stored_configuration = (
                 stored_configuration is not None
                 and stored_configuration.config_sha256 == snapshot.sha256
@@ -603,6 +617,9 @@ class ConfigTransactionManager:
                         )
                         expected = expected_meter_entity_evidence(request, topology)
                         expected_sensor_entities = expected.sensor_entities
+                        expected_aggregate_sensor_entities = (
+                            expected.aggregate_sensor_entities
+                        )
             status = await self.async_preview(
                 mac,
                 topology,
@@ -611,6 +628,7 @@ class ConfigTransactionManager:
                 selections,
                 meter_configuration=meter_configuration,
                 expected_sensor_entities=expected_sensor_entities,
+                expected_aggregate_sensor_entities=expected_aggregate_sensor_entities,
             )
             transaction = self._transaction(status.transaction_id)
             transaction.verification_id = verification_id
@@ -1365,6 +1383,7 @@ def _status(transaction: _ConfigTransaction) -> TransactionStatus:
         progress,
         transaction.validation_detail,
         tuple(transaction.upload_progress),
+        transaction.aggregate_entity_mismatch,
     )
 
 
@@ -1541,7 +1560,7 @@ def _verify_reconnect(
                 channel = int(change.key.removeprefix("ct").removesuffix("_name"))
                 if evidence.ct_names.get(channel) != change.new_value:
                     return TransactionEvidenceCode.ENTITY_MISMATCH
-    if (
+    sensor_evidence_invalid = (
         type(evidence.sensor_entities) is not frozenset
         or type(evidence.duplicate_sensor_object_ids) is not frozenset
         or any(
@@ -1555,8 +1574,31 @@ def _verify_reconnect(
         or not transaction.expected_sensor_entities.issubset(
             evidence.sensor_entities
         )
-    ):
+    )
+    if sensor_evidence_invalid:
+        transaction.aggregate_entity_mismatch = _aggregate_entity_evidence_missing(
+            transaction, evidence
+        )
         return TransactionEvidenceCode.ENTITY_MISMATCH
     if evidence.current_sensor_count != transaction.topology.ct_count:
         return TransactionEvidenceCode.SENSOR_COUNT_MISMATCH
     return None
+
+
+def _aggregate_entity_evidence_missing(
+    transaction: _ConfigTransaction, evidence: ReconnectEvidence
+) -> bool:
+    """Mark only a missing or duplicate aggregate entity from verified inventory."""
+    expected = transaction.expected_aggregate_sensor_entities
+    if (
+        type(evidence.sensor_entities) is not frozenset
+        or type(evidence.duplicate_sensor_object_ids) is not frozenset
+    ):
+        return False
+    return bool(expected) and (
+        not expected.issubset(evidence.sensor_entities)
+        or bool(
+            {object_id for object_id, _name in expected}
+            & evidence.duplicate_sensor_object_ids
+        )
+    )

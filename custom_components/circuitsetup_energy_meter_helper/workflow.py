@@ -661,6 +661,7 @@ class EntryWorkflow:
             plan.snapshot,
             meter_configuration=configuration,
             expected_sensor_entities=expected.sensor_entities,
+            expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
         )
         self._plans.pop(plan.plan_id, None)
         plan.scrub()

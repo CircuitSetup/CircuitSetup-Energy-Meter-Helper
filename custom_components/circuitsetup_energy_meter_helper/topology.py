@@ -49,6 +49,10 @@ class TopologyParseError(ValueError):
     """Topology metadata is absent, unknown, or structurally invalid."""
 
 
+class TopologyFingerprintMismatch(TopologyParseError):
+    """The owned YAML topology differs from the hash-bound stored topology."""
+
+
 class TopologyMismatchError(ValueError):
     """Independent topology evidence disagrees."""
 
@@ -292,7 +296,9 @@ def voltage_reference_topology_from_config(
         return voltage_reference_topology_from_legacy(topology)
     voltage_topology = _validated_voltage_reference_topology(topology, managed)
     if voltage_topology.fingerprint != trusted_fingerprint:
-        raise TopologyParseError("managed voltage-reference topology is not verified")
+        raise TopologyFingerprintMismatch(
+            "managed voltage-reference topology is not verified"
+        )
     return voltage_topology
 
 

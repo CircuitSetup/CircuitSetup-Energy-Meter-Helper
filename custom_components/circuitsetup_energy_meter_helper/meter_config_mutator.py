@@ -38,6 +38,7 @@ class ExpectedMeterEntityEvidence:
     """Visible meter entities derived from validated server-side semantics."""
 
     sensor_entities: frozenset[tuple[str, str]]
+    aggregate_sensor_entities: frozenset[tuple[str, str]]
 
 
 def expected_meter_entity_evidence(
@@ -46,21 +47,22 @@ def expected_meter_entity_evidence(
     """Derive reconnect evidence from rendered non-internal ESPHome entity names."""
     validate_meter_configuration(requested, topology)
     friendly_name = requested.meter.friendly_name
-    names = [
+    voltage_names = [
         f"{friendly_name} {reference.label} {suffix}"
         for reference in requested.meter.voltage_references
         for suffix in ("Voltage", "Frequency")
     ]
+    aggregate_names: list[str] = []
     for aggregate in requested.aggregates:
         prefix = f"{friendly_name} {aggregate.name}"
         if aggregate.expose_power:
-            names.append(f"{prefix} Power")
+            aggregate_names.append(f"{prefix} Power")
         if aggregate.expose_current:
-            names.append(f"{prefix} Current")
+            aggregate_names.append(f"{prefix} Current")
         if aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
-            names.append(f"{prefix} Energy")
+            aggregate_names.append(f"{prefix} Energy")
         elif aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
-            names.extend(
+            aggregate_names.extend(
                 (
                     f"{prefix} Import Power",
                     f"{prefix} Export Power",
@@ -68,10 +70,16 @@ def expected_meter_entity_evidence(
                     f"{prefix} Export Energy",
                 )
             )
+    names = (*voltage_names, *aggregate_names)
     object_ids = tuple(_esphome_object_id(name) for name in names)
     if len(set(object_ids)) != len(object_ids):
         raise ValueError("ESPHome object-ID collision for meter entities")
-    return ExpectedMeterEntityEvidence(frozenset(zip(object_ids, names, strict=True)))
+    return ExpectedMeterEntityEvidence(
+        frozenset(zip(object_ids, names, strict=True)),
+        frozenset(
+            (_esphome_object_id(name), name) for name in aggregate_names
+        ),
+    )
 
 
 def build_meter_configuration_mutation(

@@ -616,11 +616,61 @@ def test_missing_full_reconnect_entity_drops_private_configuration_without_persi
 
         assert status.state is ConfigTransactionState.FAILED
         assert TransactionEvidenceCode.ENTITY_MISMATCH in status.evidence
+        assert not status.aggregate_entity_mismatch
         assert persistence.meter_configuration is None
         assert internal.plan is None and internal.prior_content is None
         assert internal.meter_configuration is None
         assert not internal.expected_sensor_entities
         assert "top-secret" not in repr(status) and "top-secret" not in repr(internal)
+
+    asyncio.run(run())
+
+
+def test_verified_reconnect_marks_only_missing_aggregate_entities() -> None:
+    """Aggregate repair evidence comes from the verified post-install entity inventory."""
+
+    async def run() -> None:
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        assert expected.aggregate_sensor_entities
+        observed = expected.sensor_entities - expected.aggregate_sensor_entities
+        manager = _manager(
+            Builder(),
+            Persistence(),
+            evidence=ReconnectEvidence(
+                "aabbccddeeff",
+                _topology(),
+                {channel.channel: channel.name for channel in configuration.channels},
+                6,
+                observed,
+            ),
+        )
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+            expected_sensor_entities=expected.sensor_entities,
+            expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.FAILED
+        assert TransactionEvidenceCode.ENTITY_MISMATCH in status.evidence
+        assert status.aggregate_entity_mismatch
 
     asyncio.run(run())
 

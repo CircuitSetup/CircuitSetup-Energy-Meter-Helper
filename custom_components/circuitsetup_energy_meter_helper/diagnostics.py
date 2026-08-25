@@ -33,6 +33,7 @@ _PUBLIC_ERROR_CODES = {
     "device_not_adopted",
     "device_not_found",
     "invalid_request",
+    "legacy_totals_unmanaged",
     "meter_configuration_invalid",
     "not_found",
     "operation_failed",
@@ -42,6 +43,8 @@ _PUBLIC_ERROR_CODES = {
     "topology_project_package_mismatch",
     "topology_runtime_mismatch",
     "upload_failed",
+    "voltage_reference_mismatch",
+    "aggregate_entity_mismatch",
 }
 
 
@@ -84,6 +87,7 @@ def _error_code(error: object) -> str:
         "RestartVerificationError": "restore_gain_mismatch",
         "RollbackFailedError": "config_rollback_failed",
         "TopologyMismatchError": "topology_project_package_mismatch",
+        "VoltageReferenceMismatchError": "voltage_reference_mismatch",
     }.get(type(error).__name__, "operation_failed")
 
 
@@ -149,6 +153,11 @@ class DiagnosticsTracker:
 
     def record_result(self, operation: str, result: object) -> None:
         del operation
+        for warning in _safe_strings(_value(result, "warnings", ())):
+            if warning in _PUBLIC_ERROR_CODES:
+                self.errors.append(warning)
+        if _value(result, "aggregate_entity_mismatch") is True:
+            self.errors.append("aggregate_entity_mismatch")
         if topology := _topology(result):
             self.topology = topology
         if inventory := _inventory(result):

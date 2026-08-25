@@ -35,6 +35,7 @@ from custom_components.circuitsetup_energy_meter_helper.meter_configuration impo
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
     MeterConfigurationInventory,
+    VoltageReferenceMismatchError,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
 from custom_components.circuitsetup_energy_meter_helper.store import (
@@ -540,6 +541,46 @@ def test_managed_voltage_reference_gains_fail_closed_but_ignore_outside_spoofs()
     )
     assert spoofed_inventory.configuration.meter.voltage_references == requested.meter.voltage_references
     assert "stored_semantics_stale" not in spoofed_inventory.warnings
+
+
+def test_authoritative_inventory_emits_voltage_reference_mismatch_for_owned_yaml() -> None:
+    """A matching stored record and changed owned reference mapping are actionable."""
+
+    snapshot = _snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(current.configuration.meter.voltage_references[0], gain_voltage=7305),
+            ),
+        ),
+    )
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    mismatched = plan.proposed_content.replace(
+        "main=[main_1,main_2]", "other=[main_1,main_2]", 1
+    )
+    stored = StoredMeterConfiguration(
+        sha256(mismatched.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+
+    with pytest.raises(VoltageReferenceMismatchError):
+        _inventory(
+            replace(
+                snapshot,
+                content=mismatched,
+                sha256=stored.config_sha256,
+            ),
+            topology,
+            stored=stored,
+        )
 
 
 @pytest.mark.parametrize(

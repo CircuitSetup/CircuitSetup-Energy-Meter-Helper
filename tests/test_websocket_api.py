@@ -32,6 +32,7 @@ from custom_components.circuitsetup_energy_meter_helper import (
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
     ConfigTransactionManager,
     ConfigTransactionState,
+    TransactionStatus,
 )
 from custom_components.circuitsetup_energy_meter_helper.const import (
     CONF_ESPHOME_ENTRY_ID,
@@ -2441,6 +2442,23 @@ def test_meter_configuration_commands_use_a_strict_full_request_schema() -> None
         target[path[-1]] = value  # type: ignore[index]
         with pytest.raises(vol.Invalid):
             schema(invalid)
+    for path, value in (
+        (("meter", "voltage_references", 0, "nominal_voltage_v"), True),
+        (("meter", "voltage_references", 0, "nominal_voltage_v"), "120"),
+        (("meter", "voltage_references", 0, "nominal_voltage_v"), float("nan")),
+        (("meter", "voltage_references", 0, "nominal_voltage_v"), float("inf")),
+        (("channels", 0, "reporting_multiplier"), True),
+        (("channels", 0, "reporting_multiplier"), "1"),
+        (("channels", 0, "reporting_multiplier"), float("nan")),
+        (("channels", 0, "reporting_multiplier"), float("inf")),
+    ):
+        invalid = deepcopy(message)
+        target = invalid["configuration"]
+        for key in path[:-1]:
+            target = target[key]  # type: ignore[index]
+        target[path[-1]] = value  # type: ignore[index]
+        with pytest.raises(vol.Invalid):
+            schema(invalid)
     aggregate = {
         "aggregate_id": "mains", "name": "Mains", "role": "branch",
         "channels": [1], "measurement_method": "direct", "parent_id": None,
@@ -2468,6 +2486,32 @@ def test_meter_configuration_commands_use_a_strict_full_request_schema() -> None
     too_large["configuration"]["channels"][0]["name"] = "x" * (64 * 1024)
     with pytest.raises(vol.Invalid):
         schema(too_large)
+
+
+def test_preview_meter_configuration_checks_size_then_admin_before_nested_schema() -> None:
+    """The raw preview payload stays bounded before validating nested browser data."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        command = f"{DOMAIN}/preview_meter_configuration"
+        handler, schema = hass.data["websocket_api"][command]
+
+        oversized = _message(command)
+        oversized["configuration"] = {
+            "channels": [{"untrusted": "x" * 440}] * 1000,
+        }
+        validated = schema(oversized)
+        assert len(json.dumps(validated, separators=(",", ":")).encode()) > 64 * 1024
+        with pytest.raises(vol.Invalid, match="payload is too large"):
+            handler(hass, FakeConnection(), validated)
+
+        malformed = _message(command)
+        malformed["configuration"] = {"untrusted": True}
+        with pytest.raises(Unauthorized):
+            handler(hass, FakeConnection(admin=False), schema(malformed))
+
+    asyncio.run(run())
 
 
 def test_controller_routes_full_meter_configuration_without_browser_changes() -> None:
@@ -3796,6 +3840,45 @@ def test_recursive_sanitizer_preserves_only_approved_change_keys_in_context() ->
         {"changes": [{"nested": {"key": "current_cal_ct42"}}]},
         allow_transaction_change_keys=True,
     ) == {"changes": [{"nested": {}}]}
+
+
+def test_transaction_serializer_normalizes_only_known_server_change_dtos() -> None:
+    """Legacy server substitutions get canonical paths without trusting raw mappings."""
+
+    status = TransactionStatus(
+        "transaction",
+        ConfigTransactionState.PREVIEWED,
+        "a" * 64,
+        (
+            SubstitutionChange("ct1_name", "CT 1", "Kitchen"),
+            SubstitutionChange("current_cal_ct1", "27518", "5500"),
+            SubstitutionChange("voltage_cal1", "7305", "7306"),
+            SubstitutionChange("friendly_name", "Meter", "Garage Meter"),
+            SubstitutionChange("update_time", "5s", "10s"),
+            SubstitutionChange("electric_freq", "60Hz", "50Hz"),
+            SubstitutionChange("power_quality_main", "disabled", "enabled"),
+            SubstitutionChange("status_fields_addon1", "disabled", "enabled"),
+            SubstitutionChange("not_a_server_key", "old", "new"),
+        ),
+        "",
+    )
+
+    payload = sanitize_payload(status, allow_transaction_change_keys=True)
+
+    assert [change["key"] for change in payload["changes"]] == [
+        "channel.1.name",
+        "channel.1.current_gain",
+        "voltage_reference.1.gain_voltage",
+        "meter.friendly_name",
+        "meter.update_interval_s",
+        "meter.line_frequency_hz",
+        "package.main.power_quality",
+        "package.addon1.status_fields",
+    ]
+    assert sanitize_payload(
+        {"changes": [{"key": "ct1_name", "new_value": "Kitchen"}]},
+        allow_transaction_change_keys=True,
+    ) == {"changes": [{"new_value": "Kitchen"}]}
     assert sanitize_payload(
         {"changes": [{"key": "logger", "new_value": "x"}]},
         allow_transaction_change_keys=True,

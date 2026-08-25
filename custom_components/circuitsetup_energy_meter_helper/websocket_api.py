@@ -11,6 +11,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import fields, is_dataclass
 from enum import Enum
+from functools import wraps
 from typing import Any, Protocol
 
 import voluptuous as vol
@@ -37,7 +38,7 @@ from .meter_configuration import (
     VoltageLayout,
     VoltageReferenceConfig,
 )
-from .models import InstallerIntent
+from .models import InstallerIntent, SubstitutionChange
 from .offset_readiness import OffsetReadinessStage
 from .provisioning import ProvisioningCoordinator
 from .repairs import async_reconcile_issues, signals_from_result
@@ -124,6 +125,25 @@ _FORBIDDEN_KEY = re.compile(
 )
 _ALLOWED_CHANGE_PATH = re.compile(
     r"(?:meter|voltage_reference|channel|aggregate|package)\.[a-z0-9_.-]+"
+)
+_LEGACY_CHANGE_PATHS = {
+    "friendly_name": "meter.friendly_name",
+    "update_time": "meter.update_interval_s",
+    "electric_freq": "meter.line_frequency_hz",
+}
+_LEGACY_CHANGE_PATTERNS = (
+    (re.compile(r"ct([1-9]|[1-3][0-9]|4[0-2])_name"), "channel", "name"),
+    (
+        re.compile(r"current_cal_ct([1-9]|[1-3][0-9]|4[0-2])"),
+        "channel",
+        "current_gain",
+    ),
+    (re.compile(r"voltage_cal([12])"), "voltage_reference", "gain_voltage"),
+    (
+        re.compile(r"(power_quality|status_fields)_(main|addon[1-6])"),
+        "package",
+        None,
+    ),
 )
 _FORBIDDEN_VALUE = re.compile(
     r"(?:api[_ -]?key|credential|encryption[_ -]?key|noise[_ -]?psk|password|"
@@ -901,11 +921,16 @@ def async_unregister_entry(hass: HomeAssistant, entry_id: str) -> None:
 
 
 def _handler(command: str) -> websocket_api.WebSocketCommandHandler:
-    schema = _schema(command)
+    preview_configuration = command == f"{_PREFIX}preview_meter_configuration"
+    schema = _preview_meter_configuration_envelope(command) if preview_configuration else _schema(command)
 
     async def handle(
         hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
     ) -> None:
+        if preview_configuration:
+            nested = dict(msg)
+            nested.pop("id", None)
+            msg = {**_schema(command)(nested), "id": msg["id"]}
         router = hass.data[DOMAIN][_ROUTER]
         if command in SUBSCRIPTION_COMMANDS:
             await router.subscribe(connection, msg)
@@ -913,9 +938,36 @@ def _handler(command: str) -> websocket_api.WebSocketCommandHandler:
             await router.call(connection, msg)
 
     decorated = websocket_api.async_response(handle)
-    if command in MUTATION_COMMANDS:
+    if preview_configuration:
+        admin_decorated = websocket_api.require_admin(decorated)
+
+        @wraps(admin_decorated)
+        def size_checked(
+            hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+        ) -> None:
+            try:
+                _check_payload_size(msg)
+            except ValueError as error:
+                raise vol.Invalid(str(error)) from error
+            admin_decorated(hass, connection, msg)
+
+        decorated = size_checked
+    elif command in MUTATION_COMMANDS:
         decorated = websocket_api.require_admin(decorated)
     return websocket_api.websocket_command(schema)(decorated)
+
+
+def _preview_meter_configuration_envelope(command: str) -> Any:
+    """Accept only the preview envelope before bounded, post-auth nested validation."""
+    return vol.All(
+        vol.Schema(
+            {
+                vol.Required("type"): command,
+                vol.Required("entry_id"): _ID,
+            },
+            extra=vol.ALLOW_EXTRA,
+        )
+    )
 
 
 def _schema(command: str) -> Any:
@@ -1161,12 +1213,7 @@ def _validate_config_preview_schema(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def _reporting_multiplier(value: Any) -> float:
-    if isinstance(value, bool):
-        raise vol.Invalid("reporting_multiplier must be numeric")
-    try:
-        multiplier = float(value)
-    except (TypeError, ValueError) as error:
-        raise vol.Invalid("reporting_multiplier must be numeric") from error
+    multiplier = _finite_float(value)
     if multiplier not in REPORTING_MULTIPLIERS:
         raise vol.Invalid("reporting_multiplier must be 1, 2, 4, or 8")
     return multiplier
@@ -1185,12 +1232,9 @@ def _literal_true(value: Any) -> bool:
 
 
 def _finite_float(value: Any) -> float:
-    if isinstance(value, bool):
+    if type(value) not in (int, float):
         raise vol.Invalid("value must be numeric")
-    try:
-        value = float(value)
-    except (TypeError, ValueError) as error:
-        raise vol.Invalid("value must be numeric") from error
+    value = float(value)
     if not math.isfinite(value):
         raise vol.Invalid("value must be finite")
     return value
@@ -1417,12 +1461,7 @@ def sanitize_payload(
                 key == "key"
                 and _allow_change_key
                 and isinstance(item, str)
-                and any(
-                    pattern.fullmatch(item) is not None
-                    for pattern in (
-                        _ALLOWED_CHANGE_PATH,
-                    )
-                )
+                and _ALLOWED_CHANGE_PATH.fullmatch(item) is not None
             )
             if (
                 not isinstance(key, str)
@@ -1441,14 +1480,15 @@ def sanitize_payload(
                 and key == "changes"
                 and isinstance(item, tuple | list)
             ):
-                result[key] = [
-                    sanitize_payload(
-                        change,
-                        _depth=_depth + 2,
-                        _allow_change_key=True,
+                changes = [
+                    change
+                    for item in list(item)[:_MAX_ITEMS]
+                    if (
+                        change := _sanitize_transaction_change(item, _depth + 2)
                     )
-                    for change in list(item)[:_MAX_ITEMS]
+                    is not None
                 ]
+                result[key] = changes
             else:
                 result[key] = sanitize_payload(
                     item,
@@ -1465,6 +1505,35 @@ def sanitize_payload(
         _check_payload_size(list_result)
         return list_result
     return "<redacted>"
+
+
+def _sanitize_transaction_change(value: Any, depth: int) -> Any | None:
+    """Normalize only server-created substitutions before exposing their key."""
+    if isinstance(value, SubstitutionChange):
+        path = _canonical_server_change_path(value.key)
+        if path is None:
+            return None
+        return sanitize_payload(
+            {"key": path, "old_value": value.old_value, "new_value": value.new_value},
+            _depth=depth,
+            _allow_change_key=True,
+        )
+    return sanitize_payload(value, _depth=depth, _allow_change_key=True)
+
+
+def _canonical_server_change_path(key: str) -> str | None:
+    """Map the finite legacy substitution vocabulary to safe public paths."""
+    if key in _LEGACY_CHANGE_PATHS:
+        return _LEGACY_CHANGE_PATHS[key]
+    for pattern, namespace, field in _LEGACY_CHANGE_PATTERNS:
+        match = pattern.fullmatch(key)
+        if match is None:
+            continue
+        if namespace == "package":
+            feature, board = match.groups()
+            return f"package.{board}.{feature}"
+        return f"{namespace}.{match.group(1)}.{field}"
+    return key if _ALLOWED_CHANGE_PATH.fullmatch(key) is not None else None
 
 
 def _dataclass_mapping(value: Any) -> dict[str, Any]:

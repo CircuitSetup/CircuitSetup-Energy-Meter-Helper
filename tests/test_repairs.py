@@ -76,6 +76,37 @@ def test_unrelated_success_does_not_clear_scoped_issue(monkeypatch) -> None:
     assert "compile_install_interrupted_entry" in deleted
 
 
+def test_preview_never_clears_a_persistent_meter_configuration_issue(monkeypatch) -> None:
+    """A proposed request is not authoritative evidence that an issue is resolved."""
+
+    created: list[str] = []
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        repairs.issue_registry,
+        "async_create_issue",
+        lambda _h, _d, issue_id, **_k: created.append(issue_id),
+    )
+    monkeypatch.setattr(
+        repairs.issue_registry,
+        "async_delete_issue",
+        lambda _h, _d, issue_id: deleted.append(issue_id),
+    )
+
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(), "entry", "get_meter_configuration", {"LEGACY_TOTALS_UNMANAGED"}
+        )
+    )
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(), "entry", "preview_meter_configuration", set()
+        )
+    )
+
+    assert created == ["legacy_totals_unmanaged_entry"]
+    assert "legacy_totals_unmanaged_entry" not in deleted
+
+
 def test_unmapped_error_never_clears_operation_owned_issue(monkeypatch) -> None:
     deleted: list[str] = []
     monkeypatch.setattr(repairs.issue_registry, "async_create_issue", lambda *_a, **_k: None)
@@ -184,6 +215,16 @@ def test_meter_configuration_signals_are_scoped_without_threshold_statuses(
         "VOLTAGE_REFERENCE_MISMATCH",
         "AGGREGATE_ENTITY_MISMATCH",
     }
+    assert repairs.signals_from_result(
+        TransactionStatus(
+            "transaction",
+            ConfigTransactionState.FAILED,
+            "a" * 64,
+            (),
+            "",
+            aggregate_entity_mismatch=True,
+        )
+    ) == {"AGGREGATE_ENTITY_MISMATCH"}
     created: list[str] = []
     monkeypatch.setattr(
         repairs.issue_registry,
@@ -210,6 +251,37 @@ def test_meter_configuration_signals_are_scoped_without_threshold_statuses(
         "voltage_reference_mismatch_entry",
         "aggregate_entity_mismatch_entry",
     }
+
+
+def test_aggregate_repair_clears_only_after_verified_install(monkeypatch) -> None:
+    created: list[str] = []
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        repairs.issue_registry,
+        "async_create_issue",
+        lambda _h, _d, issue_id, **_k: created.append(issue_id),
+    )
+    monkeypatch.setattr(
+        repairs.issue_registry,
+        "async_delete_issue",
+        lambda _h, _d, issue_id: deleted.append(issue_id),
+    )
+
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(), "entry", "install_ct_config", {"AGGREGATE_ENTITY_MISMATCH"}
+        )
+    )
+    asyncio.run(repairs.async_reconcile_issues(object(), "entry", "install_ct_config", set()))
+    assert "aggregate_entity_mismatch_entry" not in deleted
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(), "entry", "install_ct_config", {"VERIFIED"}
+        )
+    )
+
+    assert created == ["aggregate_entity_mismatch_entry"]
+    assert deleted.count("aggregate_entity_mismatch_entry") == 1
 
 
 def test_every_builder_dependent_operation_evaluates_builder_repair() -> None:

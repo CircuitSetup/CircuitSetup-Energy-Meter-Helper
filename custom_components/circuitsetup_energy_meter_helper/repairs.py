@@ -48,7 +48,11 @@ _OPERATION_ISSUES = {
     "calibrate_voltage": {"reference_zero_not_supported"},
     "calibrate_current": {"reference_zero_not_supported"},
     "compile_ct_config": {"device_builder_unavailable", "compile_install_interrupted"},
-    "install_ct_config": {"device_builder_unavailable", "compile_install_interrupted"},
+    "install_ct_config": {
+        "device_builder_unavailable",
+        "compile_install_interrupted",
+        "aggregate_entity_mismatch",
+    },
     "rollback_ct_config": {"device_builder_unavailable", "restore_verification_failed"},
     "restart_and_verify": {"restore_verification_failed"},
 }
@@ -89,7 +93,9 @@ async def async_reconcile_issues(
         scoped_id = scoped_issue_id(issue_id, entry_id)
         if active.intersection(ISSUES[issue_id]):
             issue_registry.async_create_issue(hass, DOMAIN, scoped_id, is_fixable=True, severity=issue_registry.IssueSeverity.WARNING, translation_key=issue_id)
-        elif authoritative:
+        elif authoritative and (
+            issue_id != "aggregate_entity_mismatch" or "VERIFIED" in active
+        ) and operation != "preview_meter_configuration":
             issue_registry.async_delete_issue(hass, DOMAIN, scoped_id)
 
 
@@ -106,6 +112,8 @@ def signals_from_result(result: object) -> set[str]:
             return {"CONFIG_ROLLBACK_FAILED"}
         if code == "meter_configuration_invalid" or type(result).__name__ == "ConfigMutationError":
             return {"METER_CONFIGURATION_INVALID"}
+        if "VoltageReferenceMismatchError" in names:
+            return {"VOLTAGE_REFERENCE_MISMATCH"}
         if names & {"WorkflowCapabilityUnavailable", "CapabilityUnavailable"}:
             return {"DEVICE_BUILDER_UNAVAILABLE"}
         if "TopologyMismatchError" in names:
@@ -135,6 +143,13 @@ def signals_from_result(result: object) -> set[str]:
     if not isinstance(result, Mapping):
         return set()
     values: set[str] = set()
+    state = result.get("state")
+    if isinstance(state, Enum):
+        state = state.value
+    if state == "verified":
+        values.add("VERIFIED")
+    if result.get("aggregate_entity_mismatch") is True:
+        values.add("aggregate_entity_mismatch")
     for key in ("evidence", "issues", "warnings"):
         raw = result.get(key, ())
         if isinstance(raw, tuple | list):

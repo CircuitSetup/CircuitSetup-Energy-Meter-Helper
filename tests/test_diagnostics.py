@@ -10,6 +10,9 @@ from custom_components.circuitsetup_energy_meter_helper.diagnostics import (
     build_diagnostics_snapshot,
     capture_diagnostics_snapshot,
 )
+from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
+    VoltageReferenceMismatchError,
+)
 from custom_components.circuitsetup_energy_meter_helper.websocket_api import ApiFailure
 
 
@@ -165,3 +168,28 @@ def test_tracker_accepts_the_meter_configuration_invalid_public_code() -> None:
     assert capture_diagnostics_snapshot(
         entry=SimpleNamespace(version=1), runtime={"diagnostics": tracker}, integration_version="0.1.0"
     ).public()["error_codes"] == ["meter_configuration_invalid"]
+
+
+def test_tracker_records_only_supported_meter_configuration_diagnostics() -> None:
+    tracker = DiagnosticsTracker()
+    tracker.record_result(
+        "get_meter_configuration",
+        {
+            "warnings": (
+                "legacy_totals_unmanaged",
+                "voltage_reference_mismatch",
+                "unsupported_warning",
+            ),
+            "aggregate_entity_mismatch": True,
+        },
+    )
+    tracker.record_error(VoltageReferenceMismatchError("private YAML detail"))
+
+    assert capture_diagnostics_snapshot(
+        entry=SimpleNamespace(version=1), runtime={"diagnostics": tracker}, integration_version="0.1.0"
+    ).public()["error_codes"] == [
+        "legacy_totals_unmanaged",
+        "voltage_reference_mismatch",
+        "aggregate_entity_mismatch",
+        "voltage_reference_mismatch",
+    ]

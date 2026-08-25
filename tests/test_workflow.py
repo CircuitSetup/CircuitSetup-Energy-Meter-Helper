@@ -218,6 +218,10 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             transactions.calls[0][1]["expected_sensor_entities"]
             == expected.sensor_entities
         )
+        assert (
+            transactions.calls[0][1]["expected_aggregate_sensor_entities"]
+            == expected.aggregate_sensor_entities
+        )
         assert full_plan.snapshot.content == "" and full["plan_id"] not in workflow._plans
         with pytest.raises(WorkflowHandleError, match="stale"):
             await workflow.async_preview_meter_configuration(

@@ -12,6 +12,10 @@
     }
   },
   "issues": {
+    "meter_configuration_invalid": {"title": "Meter configuration is invalid", "fix_flow": {"abort": {"see_panel": "Review the meter configuration and correct the invalid values before trying again. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
+    "legacy_totals_unmanaged": {"title": "Legacy meter totals are unmanaged", "fix_flow": {"abort": {"see_panel": "Review the meter configuration and migrate legacy totals before relying on aggregate readings. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
+    "voltage_reference_mismatch": {"title": "Voltage reference configuration differs", "fix_flow": {"abort": {"see_panel": "Review the saved voltage references and the meter configuration before applying changes. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
+    "aggregate_entity_mismatch": {"title": "Aggregate meter entities are missing", "fix_flow": {"abort": {"see_panel": "Reconnect the meter and verify the configured aggregate entities after installation. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
     "device_builder_unavailable": {"title": "Device Builder is unavailable", "fix_flow": {"abort": {"see_panel": "Reconnect Device Builder before saving CT changes. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
     "topology_project_package_mismatch": {"title": "Meter topology sources disagree", "fix_flow": {"abort": {"see_panel": "Review the project name and configured package list before writing configuration. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
     "runtime_entity_count_mismatch": {"title": "Runtime meter entity count is unexpected", "fix_flow": {"abort": {"see_panel": "Reconnect the configured meter and confirm its discovered entity count. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
