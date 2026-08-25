@@ -13,6 +13,15 @@ from typing import Any
 CATALOG_SOURCE_REPOSITORY = "CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter"
 CATALOG_SOURCE_REF = "b94637a4f084a3a4a35e3e5f48eb1586bbd972c3"
 CATALOG_SCHEMA_VERSION = 1
+_CATALOG_KEYS = {"schema_version", "source_repository", "source_ref", "presets"}
+_PRESET_KEYS = {
+    "model_id",
+    "label",
+    "primary_nominal_v",
+    "secondary_nominal_v",
+    "default_gain_voltage",
+    "notes",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +88,8 @@ class VoltageTransformerCatalog:
         data: Any = json.loads(raw)
         if type(data) is not dict:
             raise ValueError("invalid voltage-transformer catalog data")
+        if set(data) != _CATALOG_KEYS:
+            raise ValueError("invalid voltage-transformer catalog keys")
         if type(data.get("schema_version")) is not int or data.get(
             "schema_version"
         ) != CATALOG_SCHEMA_VERSION:
@@ -88,8 +99,10 @@ class VoltageTransformerCatalog:
         ) != CATALOG_SOURCE_REF:
             raise ValueError("invalid voltage-transformer catalog source metadata")
         rows = data.get("presets")
-        if type(rows) is not list or not rows or any(type(entry) is not dict for entry in rows):
-            raise ValueError("invalid voltage-transformer presets")
+        if type(rows) is not list or not rows or any(
+            type(entry) is not dict or set(entry) != _PRESET_KEYS for entry in rows
+        ):
+            raise ValueError("invalid voltage-transformer preset keys")
         presets = tuple(
             VoltageTransformerPreset(
                 _safe_text(entry.get("model_id"), "model_id"),

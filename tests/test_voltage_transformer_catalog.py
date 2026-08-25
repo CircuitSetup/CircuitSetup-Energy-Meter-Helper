@@ -180,6 +180,42 @@ def test_catalog_rejects_source_metadata_mutations(monkeypatch: pytest.MonkeyPat
             VoltageTransformerCatalog.load()
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda data: data.update(extra=True),
+        lambda data: data.pop("source_ref"),
+    ],
+)
+def test_catalog_rejects_top_level_key_drift(
+    monkeypatch: pytest.MonkeyPatch, mutation: object
+) -> None:
+    data = _valid_data()
+    mutation(data)  # type: ignore[operator]
+    _load_data(monkeypatch, data)
+    with pytest.raises(ValueError, match="keys"):
+        VoltageTransformerCatalog.load()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda preset: preset.update(extra=True),
+        lambda preset: preset.pop("notes"),
+    ],
+)
+def test_catalog_rejects_preset_key_drift(
+    monkeypatch: pytest.MonkeyPatch, mutation: object
+) -> None:
+    data = _valid_data()
+    preset = dict(data["presets"][0])  # type: ignore[index]
+    mutation(preset)  # type: ignore[operator]
+    data["presets"] = [preset]
+    _load_data(monkeypatch, data)
+    with pytest.raises(ValueError, match="keys"):
+        VoltageTransformerCatalog.load()
+
+
 def test_custom_requires_explicit_valid_gain() -> None:
     assert custom("Custom transformer", 123).default_gain_voltage == 123
     for gain in (None, 0, 65536, True, 1.5, GainIntEnum.VALID):
