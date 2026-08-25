@@ -33,6 +33,7 @@ _PUBLIC_ERROR_CODES = {
     "device_not_adopted",
     "device_not_found",
     "invalid_request",
+    "meter_configuration_invalid",
     "not_found",
     "operation_failed",
     "reference_zero_not_supported",

@@ -10,6 +10,7 @@ from custom_components.circuitsetup_energy_meter_helper.diagnostics import (
     build_diagnostics_snapshot,
     capture_diagnostics_snapshot,
 )
+from custom_components.circuitsetup_energy_meter_helper.websocket_api import ApiFailure
 
 
 def test_snapshot_is_allowlisted_and_deeply_immutable() -> None:
@@ -155,3 +156,12 @@ def test_tracker_records_only_stable_bounded_error_codes() -> None:
         integration_version="0.1.0",
     ).public()
     assert snapshot["error_codes"] == ["config_rollback_failed", "operation_failed"]
+
+
+def test_tracker_accepts_the_meter_configuration_invalid_public_code() -> None:
+    tracker = DiagnosticsTracker()
+    tracker.record_error(ApiFailure("meter_configuration_invalid", "safe"))
+
+    assert capture_diagnostics_snapshot(
+        entry=SimpleNamespace(version=1), runtime={"diagnostics": tracker}, integration_version="0.1.0"
+    ).public()["error_codes"] == ["meter_configuration_invalid"]

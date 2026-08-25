@@ -18,13 +18,25 @@ from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant
 
-from .config_document import CT_GAIN_RE, CT_NAME_RE, VOLTAGE_GAIN_RE
+from .config_mutator import ConfigMutationError
 from .config_transaction import RollbackFailedError
 from .const import CONF_ESPHOME_ENTRY_ID, DOMAIN
 from .ct_catalog import REPORTING_MULTIPLIERS
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
+from .meter_configuration import (
+    ChannelSettings,
+    CircuitAggregate,
+    CircuitRole,
+    ElectricalSystem,
+    EnergyMode,
+    MeasurementMethod,
+    MeterConfigurationRequest,
+    MeterSettings,
+    VoltageLayout,
+    VoltageReferenceConfig,
+)
 from .models import InstallerIntent
 from .offset_readiness import OffsetReadinessStage
 from .provisioning import ProvisioningCoordinator
@@ -40,6 +52,7 @@ READ_COMMANDS = (
     f"{_PREFIX}list_meters",
     f"{_PREFIX}get_topology",
     f"{_PREFIX}get_ct_inventory",
+    f"{_PREFIX}get_meter_configuration",
     f"{_PREFIX}get_active_work",
     f"{_PREFIX}get_session",
     f"{_PREFIX}get_diagnostics_summary",
@@ -49,6 +62,7 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}rescan",
     f"{_PREFIX}adopt_device",
     f"{_PREFIX}preview_ct_config",
+    f"{_PREFIX}preview_meter_configuration",
     f"{_PREFIX}set_ha_labels",
     f"{_PREFIX}apply_ct_config",
     f"{_PREFIX}compile_ct_config",
@@ -78,6 +92,7 @@ _TRANSACTION_STATUS_COMMANDS = frozenset(
     f"{_PREFIX}{operation}"
     for operation in (
         "preview_ct_config",
+        "preview_meter_configuration",
         "preview_calibrated_gains",
         "apply_ct_config",
         "compile_ct_config",
@@ -107,8 +122,8 @@ _FORBIDDEN_KEY = re.compile(
     r"secret|ssid|summary|token|yaml)(?:$|_)",
     re.IGNORECASE,
 )
-_PACKAGE_CHANGE_RE = re.compile(
-    r"(?:power_quality|status_fields)_(?:main|addon[1-6])"
+_ALLOWED_CHANGE_PATH = re.compile(
+    r"(?:meter|voltage_reference|channel|aggregate|package)\.[a-z0-9_.-]+"
 )
 _FORBIDDEN_VALUE = re.compile(
     r"(?:api[_ -]?key|credential|encryption[_ -]?key|noise[_ -]?psk|password|"
@@ -180,6 +195,16 @@ class WorkflowOwner(Protocol):
         source_sha256: str,
         changes: tuple[Mapping[str, Any], ...],
         package_options: Mapping[str, Any] | None = None,
+    ) -> Any: ...
+
+    async def async_get_meter_configuration(self, device_id: str) -> Any: ...
+
+    async def async_preview_meter_configuration(
+        self,
+        device_id: str,
+        plan_id: str,
+        source_sha256: str,
+        requested: MeterConfigurationRequest,
     ) -> Any: ...
 
     async def async_set_ha_labels(
@@ -331,6 +356,8 @@ class EntryWebsocketController:
             }
         if operation == "get_ct_inventory" and workflow is not None:
             return await workflow.async_get_ct_inventory(msg["device_id"])
+        if operation == "get_meter_configuration" and workflow is not None:
+            return await workflow.async_get_meter_configuration(msg["device_id"])
         if operation == "get_active_work" and workflow is not None:
             return await workflow.async_get_active_work(msg["device_id"])
         if operation == "get_session" and workflow is not None:
@@ -372,6 +399,18 @@ class EntryWebsocketController:
                 tuple(msg["changes"]),
                 msg.get("package_options"),
             )
+        if operation == "preview_meter_configuration" and workflow is not None:
+            try:
+                return await workflow.async_preview_meter_configuration(
+                    msg["device_id"],
+                    msg["plan_id"],
+                    msg["source_sha256"],
+                    _meter_configuration_request(msg["configuration"]),
+                )
+            except ConfigMutationError as error:
+                raise ApiFailure(
+                    "meter_configuration_invalid", "The meter configuration is invalid"
+                ) from error
         if operation == "set_ha_labels" and workflow is not None:
             return await workflow.async_set_ha_labels(
                 msg["device_id"], msg["plan_id"], msg["source_sha256"], tuple(msg["changes"])
@@ -901,7 +940,12 @@ def _schema(command: str) -> Any:
             ),
         }
         return vol.All(vol.Schema(schema), _validate_installer_firmware_schema)
-    elif operation in {"get_topology", "get_ct_inventory", "adopt_device"}:
+    elif operation in {
+        "get_topology",
+        "get_ct_inventory",
+        "get_meter_configuration",
+        "adopt_device",
+    }:
         schema[vol.Required("device_id")] = _ID
     elif operation == "preview_ct_config":
         schema |= {
@@ -938,6 +982,17 @@ def _schema(command: str) -> Any:
             },
         }
         return vol.All(vol.Schema(schema), _validate_config_preview_schema)
+    elif operation == "preview_meter_configuration":
+        schema |= {
+            vol.Required("device_id"): _ID,
+            vol.Required("plan_id"): _ID,
+            vol.Required("source_sha256"): _SHA256,
+            vol.Required("configuration"): _METER_CONFIGURATION_SCHEMA,
+        }
+        return vol.All(
+            vol.Schema(schema, extra=vol.PREVENT_EXTRA),
+            _validate_meter_configuration_payload,
+        )
     elif operation == "set_ha_labels":
         schema |= {
             vol.Required("device_id"): _ID,
@@ -1129,6 +1184,195 @@ def _literal_true(value: Any) -> bool:
     return True
 
 
+def _finite_float(value: Any) -> float:
+    if isinstance(value, bool):
+        raise vol.Invalid("value must be numeric")
+    try:
+        value = float(value)
+    except (TypeError, ValueError) as error:
+        raise vol.Invalid("value must be numeric") from error
+    if not math.isfinite(value):
+        raise vol.Invalid("value must be finite")
+    return value
+
+
+_METER_CONFIGURATION_SCHEMA = vol.Schema(
+    {
+        vol.Required("meter"): vol.Schema(
+            {
+                vol.Required("friendly_name"): vol.All(str, vol.Length(min=1, max=64)),
+                vol.Required("electrical_system"): vol.In(
+                    tuple(item.value for item in ElectricalSystem)
+                ),
+                vol.Required("line_frequency_hz"): vol.All(
+                    _strict_integer, vol.In((50, 60))
+                ),
+                vol.Required("update_interval_s"): vol.All(
+                    _strict_integer, vol.In((1, 2, 5, 10, 30, 60))
+                ),
+                vol.Required("voltage_layout"): vol.In(
+                    tuple(item.value for item in VoltageLayout)
+                ),
+                vol.Required("voltage_references"): vol.All(
+                    [
+                        vol.Schema(
+                            {
+                                vol.Required("reference_id"): _ID,
+                                vol.Required("label"): vol.All(
+                                    str, vol.Length(min=1, max=64)
+                                ),
+                                vol.Required("phase_label"): vol.All(
+                                    str, vol.Length(min=1, max=64)
+                                ),
+                                vol.Required("nominal_voltage_v"): vol.All(
+                                    _finite_float, vol.Range(min=1, max=600)
+                                ),
+                                vol.Required("transformer_model_id"): _ID,
+                                vol.Required("gain_voltage"): vol.All(
+                                    _strict_integer, vol.Range(min=1, max=65535)
+                                ),
+                                vol.Required("group_keys"): vol.All(
+                                    [_ID], vol.Length(min=1, max=14)
+                                ),
+                            },
+                            extra=vol.PREVENT_EXTRA,
+                        )
+                    ],
+                    vol.Length(min=1, max=8),
+                ),
+            },
+            extra=vol.PREVENT_EXTRA,
+        ),
+        vol.Required("channels"): vol.All(
+            [
+                vol.Schema(
+                    {
+                        vol.Required("channel"): vol.All(
+                            _strict_integer, vol.Range(min=1, max=42)
+                        ),
+                        vol.Required("enabled"): bool,
+                        vol.Required("name"): vol.All(str, vol.Length(min=1, max=64)),
+                        vol.Required("model_id"): _ID,
+                        vol.Required("reporting_multiplier"): _reporting_multiplier,
+                        vol.Required("role"): vol.In(
+                            tuple(item.value for item in CircuitRole)
+                        ),
+                        vol.Required("voltage_reference_id"): _ID,
+                        vol.Optional("custom_gain_ct"): vol.Any(
+                            None,
+                            vol.All(_strict_integer, vol.Range(min=1, max=65535)),
+                        ),
+                        vol.Optional("custom_label"): vol.Any(
+                            None, vol.All(str, vol.Length(min=1, max=64))
+                        ),
+                        vol.Optional("burden_output_acknowledged"): bool,
+                    },
+                    extra=vol.PREVENT_EXTRA,
+                )
+            ],
+            vol.Length(min=1, max=42),
+        ),
+        vol.Required("aggregates"): vol.All(
+            [
+                vol.Schema(
+                    {
+                        vol.Required("aggregate_id"): _ID,
+                        vol.Required("name"): vol.All(str, vol.Length(min=1, max=64)),
+                        vol.Required("role"): vol.In(
+                            tuple(item.value for item in CircuitRole)
+                        ),
+                        vol.Required("channels"): vol.All(
+                            [vol.All(_strict_integer, vol.Range(min=1, max=42))],
+                            vol.Length(min=1, max=42),
+                        ),
+                        vol.Required("measurement_method"): vol.In(
+                            tuple(item.value for item in MeasurementMethod)
+                        ),
+                        vol.Required("parent_id"): vol.Any(None, _ID),
+                        vol.Required("energy_mode"): vol.In(
+                            tuple(item.value for item in EnergyMode)
+                        ),
+                        vol.Optional("expose_power", default=True): bool,
+                        vol.Optional("expose_current", default=False): bool,
+                    },
+                    extra=vol.PREVENT_EXTRA,
+                )
+            ],
+            vol.Length(max=32),
+        ),
+        vol.Required("power_quality"): vol.All([bool], vol.Length(min=1, max=7)),
+        vol.Required("status_fields"): vol.All([bool], vol.Length(min=1, max=7)),
+        vol.Optional("multi_reference_preparation_acknowledged"): bool,
+    },
+    extra=vol.PREVENT_EXTRA,
+)
+
+
+def _validate_meter_configuration_payload(value: dict[str, Any]) -> dict[str, Any]:
+    _check_payload_size(value)
+    return value
+
+
+def _meter_configuration_request(
+    configuration: Mapping[str, Any],
+) -> MeterConfigurationRequest:
+    """Convert only the strict public schema to the existing workflow DTO."""
+    meter = configuration["meter"]
+    return MeterConfigurationRequest(
+        MeterSettings(
+            meter["friendly_name"],
+            ElectricalSystem(meter["electrical_system"]),
+            meter["line_frequency_hz"],
+            meter["update_interval_s"],
+            VoltageLayout(meter["voltage_layout"]),
+            tuple(
+                VoltageReferenceConfig(
+                    reference["reference_id"],
+                    reference["label"],
+                    reference["phase_label"],
+                    reference["nominal_voltage_v"],
+                    reference["transformer_model_id"],
+                    reference["gain_voltage"],
+                    tuple(reference["group_keys"]),
+                )
+                for reference in meter["voltage_references"]
+            ),
+        ),
+        tuple(
+            ChannelSettings(
+                channel["channel"],
+                channel["enabled"],
+                channel["name"],
+                channel["model_id"],
+                channel["reporting_multiplier"],
+                CircuitRole(channel["role"]),
+                channel["voltage_reference_id"],
+                channel.get("custom_gain_ct"),
+                channel.get("custom_label"),
+                channel.get("burden_output_acknowledged", False),
+            )
+            for channel in configuration["channels"]
+        ),
+        tuple(
+            CircuitAggregate(
+                aggregate["aggregate_id"],
+                aggregate["name"],
+                CircuitRole(aggregate["role"]),
+                tuple(aggregate["channels"]),
+                MeasurementMethod(aggregate["measurement_method"]),
+                aggregate["parent_id"],
+                EnergyMode(aggregate["energy_mode"]),
+                aggregate["expose_power"],
+                aggregate["expose_current"],
+            )
+            for aggregate in configuration["aggregates"]
+        ),
+        tuple(configuration["power_quality"]),
+        tuple(configuration["status_fields"]),
+        configuration.get("multi_reference_preparation_acknowledged", False),
+    )
+
+
 def sanitize_payload(
     value: Any,
     *,
@@ -1176,10 +1420,7 @@ def sanitize_payload(
                 and any(
                     pattern.fullmatch(item) is not None
                     for pattern in (
-                        CT_NAME_RE,
-                        CT_GAIN_RE,
-                        VOLTAGE_GAIN_RE,
-                        _PACKAGE_CHANGE_RE,
+                        _ALLOWED_CHANGE_PATH,
                     )
                 )
             )
@@ -1232,7 +1473,11 @@ def _dataclass_mapping(value: Any) -> dict[str, Any]:
 
 def _check_payload_size(value: Any) -> None:
     if (
-        len(json.dumps(value, separators=(",", ":"), default=str).encode())
+        len(
+            json.dumps(
+                value, separators=(",", ":"), sort_keys=True, default=str
+            ).encode()
+        )
         > _MAX_PAYLOAD_BYTES
     ):
         raise ValueError("payload is too large")

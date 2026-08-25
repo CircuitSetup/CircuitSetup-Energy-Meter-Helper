@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -521,7 +522,12 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
     suffix = command.rsplit("/", 1)[-1]
     if suffix == "set_installer_intent":
         base |= {"addon_count": 1, "connection_type": "wifi"}
-    elif suffix in {"get_topology", "get_ct_inventory", "adopt_device"}:
+    elif suffix in {
+        "get_topology",
+        "get_ct_inventory",
+        "get_meter_configuration",
+        "adopt_device",
+    }:
         base["device_id"] = "meter"
     elif suffix == "preview_ct_config":
         base |= {
@@ -535,6 +541,32 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
                     "model_id": "sct_013_000_100a_50ma",
                 }
             ],
+        }
+    elif suffix == "preview_meter_configuration":
+        base |= {
+            "device_id": "meter",
+            "plan_id": "plan",
+            "source_sha256": "a" * 64,
+            "configuration": {
+                "meter": {
+                    "friendly_name": "Garage Meter",
+                    "electrical_system": "split_phase_120_240",
+                    "line_frequency_hz": 60,
+                    "update_interval_s": 5,
+                    "voltage_layout": "standard",
+                    "voltage_references": [{
+                        "reference_id": "main", "label": "Main", "phase_label": "A",
+                        "nominal_voltage_v": 120.0, "transformer_model_id": "default",
+                        "gain_voltage": 7305, "group_keys": ["main_1", "main_2"],
+                    }],
+                },
+                "channels": [{
+                    "channel": 1, "enabled": True, "name": "Mains", "model_id": "custom",
+                    "reporting_multiplier": 1, "role": "branch", "voltage_reference_id": "main",
+                    "custom_gain_ct": 27518, "custom_label": "Mains CT",
+                }],
+                "aggregates": [], "power_quality": [True], "status_fields": [False],
+            },
         }
     elif suffix == "set_ha_labels":
         base |= {
@@ -2331,6 +2363,170 @@ def test_ct_preview_schemas_restrict_reporting_multipliers() -> None:
     asyncio.run(run())
 
 
+def test_meter_configuration_commands_use_a_strict_full_request_schema() -> None:
+    """The public full-configuration request is bounded before it reaches a plan."""
+
+    command = f"{DOMAIN}/preview_meter_configuration"
+    schema = vol.Schema(_schema(command))
+    message = {
+        "type": command,
+        "entry_id": "helper",
+        "device_id": "meter",
+        "plan_id": "plan",
+        "source_sha256": "a" * 64,
+        "configuration": {
+            "meter": {
+                "friendly_name": "Garage Meter",
+                "electrical_system": "split_phase_120_240",
+                "line_frequency_hz": 60,
+                "update_interval_s": 5,
+                "voltage_layout": "standard",
+                "voltage_references": [
+                    {
+                        "reference_id": "main",
+                        "label": "Main",
+                        "phase_label": "A",
+                        "nominal_voltage_v": 120.0,
+                        "transformer_model_id": "default",
+                        "gain_voltage": 7305,
+                        "group_keys": ["main_1", "main_2"],
+                    }
+                ],
+            },
+            "channels": [
+                {
+                    "channel": 1,
+                    "enabled": True,
+                    "name": "Mains",
+                    "model_id": "custom",
+                    "reporting_multiplier": 1,
+                    "role": "branch",
+                    "voltage_reference_id": "main",
+                    "custom_gain_ct": 27518,
+                    "custom_label": "Mains CT",
+                    "burden_output_acknowledged": False,
+                }
+            ],
+            "aggregates": [],
+            "power_quality": [True],
+            "status_fields": [False],
+        },
+    }
+
+    assert schema(message) == message
+    for extra in (
+        "board_revision",
+        "harmonic_power",
+        "peak_current",
+        "yaml",
+        "credential",
+        "changes",
+    ):
+        invalid = deepcopy(message)
+        invalid["configuration"]["channels"][0][extra] = "unsafe"
+        with pytest.raises(vol.Invalid):
+            schema(invalid)
+    for path, value in (
+        (("meter", "electrical_system"), "unsupported"),
+        (("meter", "line_frequency_hz"), 55),
+        (("meter", "update_interval_s"), 3),
+        (("meter", "voltage_references", 0, "nominal_voltage_v"), 601),
+        (("channels", 0, "channel"), 43),
+        (("channels", 0, "role"), "unsupported"),
+    ):
+        invalid = deepcopy(message)
+        target: Any = invalid["configuration"]
+        for key in path[:-1]:
+            target = target[key]  # type: ignore[index]
+        target[path[-1]] = value  # type: ignore[index]
+        with pytest.raises(vol.Invalid):
+            schema(invalid)
+    aggregate = {
+        "aggregate_id": "mains", "name": "Mains", "role": "branch",
+        "channels": [1], "measurement_method": "direct", "parent_id": None,
+        "energy_mode": "none",
+    }
+    for field, values in (
+        ("channels", [message["configuration"]["channels"][0]] * 43),
+        ("aggregates", [aggregate] * 33),
+        (
+            "meter",
+            {
+                **message["configuration"]["meter"],
+                "voltage_references": [
+                    message["configuration"]["meter"]["voltage_references"][0]
+                ]
+                * 9,
+            },
+        ),
+    ):
+        invalid = deepcopy(message)
+        invalid["configuration"][field] = values
+        with pytest.raises(vol.Invalid):
+            schema(invalid)
+    too_large = deepcopy(message)
+    too_large["configuration"]["channels"][0]["name"] = "x" * (64 * 1024)
+    with pytest.raises(vol.Invalid):
+        schema(too_large)
+
+
+def test_controller_routes_full_meter_configuration_without_browser_changes() -> None:
+    """The browser supplies a schema-validated request, never a change record."""
+
+    async def run() -> None:
+        controller = EntryWebsocketController(
+            ProvisioningCoordinator(FakeHass()), SessionManager(), HelperStore(FakeHass())
+        )
+        received: list[object] = []
+
+        class Workflow:
+            async def async_get_meter_configuration(self, device_id: str) -> dict[str, str]:
+                return {"device_id": device_id}
+
+            async def async_preview_meter_configuration(
+                self, device_id: str, plan_id: str, source_sha256: str, request: object
+            ) -> str:
+                received.append((device_id, plan_id, source_sha256, request))
+                return "previewed"
+
+        controller.workflow = Workflow()  # type: ignore[assignment]
+        request = {
+            "meter": {
+                "friendly_name": "Garage Meter",
+                "electrical_system": "split_phase_120_240",
+                "line_frequency_hz": 60,
+                "update_interval_s": 5,
+                "voltage_layout": "standard",
+                "voltage_references": [
+                    {
+                        "reference_id": "main", "label": "Main", "phase_label": "A",
+                        "nominal_voltage_v": 120.0, "transformer_model_id": "default",
+                        "gain_voltage": 7305, "group_keys": ["main_1", "main_2"],
+                    }
+                ],
+            },
+            "channels": [
+                {"channel": 1, "enabled": True, "name": "Mains", "model_id": "custom",
+                 "reporting_multiplier": 1.0, "role": "branch", "voltage_reference_id": "main",
+                 "custom_gain_ct": 27518, "custom_label": "Mains CT", "burden_output_acknowledged": False}
+            ],
+            "aggregates": [], "power_quality": [True], "status_fields": [False],
+        }
+        assert await controller.async_call(
+            f"{DOMAIN}/get_meter_configuration", {"device_id": "meter"}, "user"
+        ) == {"device_id": "meter"}
+        assert await controller.async_call(
+            f"{DOMAIN}/preview_meter_configuration",
+            {"device_id": "meter", "plan_id": "plan", "source_sha256": "a" * 64,
+             "configuration": request},
+            "admin",
+        ) == "previewed"
+        assert received and received[0][:3] == ("meter", "plan", "a" * 64)
+        assert type(received[0][3]).__name__ == "MeterConfigurationRequest"
+
+    asyncio.run(run())
+
+
 def test_new_session_waits_for_same_meter_cancellation_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3605,13 +3801,24 @@ def test_recursive_sanitizer_preserves_only_approved_change_keys_in_context() ->
         allow_transaction_change_keys=True,
     ) == {"changes": [{"new_value": "x"}]}
     assert sanitize_payload(
-        {"changes": [{"key": "power_quality_main", "new_value": "enabled"}]},
+        {"changes": [{"key": "package.power_quality.main", "new_value": "enabled"}]},
         allow_transaction_change_keys=True,
-    ) == {"changes": [{"key": "power_quality_main", "new_value": "enabled"}]}
+    ) == {"changes": [{"key": "package.power_quality.main", "new_value": "enabled"}]}
     assert sanitize_payload(
-        {"changes": [{"key": "status_fields_addon7", "new_value": "enabled"}]},
+        {
+            "changes": [
+                {
+                    "key": "channel.1.current_gain",
+                    "new_value": "password=hidden",
+                }
+            ]
+        },
         allow_transaction_change_keys=True,
-    ) == {"changes": [{"new_value": "enabled"}]}
+    ) == {
+        "changes": [
+            {"key": "channel.1.current_gain", "new_value": "<redacted>"}
+        ]
+    }
 
 
 def test_router_scopes_change_keys_to_transaction_results_and_events() -> None:
@@ -3667,7 +3874,7 @@ def test_router_scopes_change_keys_to_transaction_results_and_events() -> None:
         ]
         assert len(transaction_events) == 2
         assert all(
-            event["changes"][0]["key"] == "current_cal_ct42"
+            event["changes"][0]["key"] == "channel.42.current_gain"
             for event in transaction_events
         )
 

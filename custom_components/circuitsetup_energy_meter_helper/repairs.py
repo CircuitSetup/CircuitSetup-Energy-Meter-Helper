@@ -15,6 +15,10 @@ from homeassistant.helpers import issue_registry
 from .const import DOMAIN
 
 ISSUES = {
+    "meter_configuration_invalid": {"METER_CONFIGURATION_INVALID"},
+    "legacy_totals_unmanaged": {"LEGACY_TOTALS_UNMANAGED"},
+    "voltage_reference_mismatch": {"VOLTAGE_REFERENCE_MISMATCH"},
+    "aggregate_entity_mismatch": {"AGGREGATE_ENTITY_MISMATCH"},
     "device_builder_unavailable": {"DEVICE_BUILDER_UNAVAILABLE"},
     "topology_project_package_mismatch": {"TOPOLOGY_PROJECT_PACKAGE_MISMATCH"},
     "runtime_entity_count_mismatch": {"TOPOLOGY_RUNTIME_MISMATCH"},
@@ -25,6 +29,16 @@ ISSUES = {
     "restore_verification_failed": {"CONFIG_ROLLBACK_FAILED", "RESTORE_GAIN_MISMATCH"},
 }
 _OPERATION_ISSUES = {
+    "get_meter_configuration": {
+        "legacy_totals_unmanaged",
+        "voltage_reference_mismatch",
+    },
+    "preview_meter_configuration": {
+        "meter_configuration_invalid",
+        "legacy_totals_unmanaged",
+        "voltage_reference_mismatch",
+        "aggregate_entity_mismatch",
+    },
     "adopt_device": {"device_builder_unavailable"},
     "get_topology": {"topology_project_package_mismatch"},
     "get_ct_inventory": {"device_builder_unavailable", "topology_project_package_mismatch", "ct_preset_metadata_diverged"},
@@ -90,6 +104,8 @@ def signals_from_result(result: object) -> set[str]:
         code = getattr(result, "code", None)
         if code == "config_rollback_failed":
             return {"CONFIG_ROLLBACK_FAILED"}
+        if code == "meter_configuration_invalid" or type(result).__name__ == "ConfigMutationError":
+            return {"METER_CONFIGURATION_INVALID"}
         if names & {"WorkflowCapabilityUnavailable", "CapabilityUnavailable"}:
             return {"DEVICE_BUILDER_UNAVAILABLE"}
         if "TopologyMismatchError" in names:
@@ -119,7 +135,7 @@ def signals_from_result(result: object) -> set[str]:
     if not isinstance(result, Mapping):
         return set()
     values: set[str] = set()
-    for key in ("evidence", "issues"):
+    for key in ("evidence", "issues", "warnings"):
         raw = result.get(key, ())
         if isinstance(raw, tuple | list):
             for item in raw:
@@ -153,6 +169,16 @@ def signals_from_result(result: object) -> set[str]:
         values.add("REFERENCE_ZERO_NOT_SUPPORTED")
     if "rollback_failed" in values:
         values.add("CONFIG_ROLLBACK_FAILED")
+    values = {
+        {
+            "legacy_generic_totals_unmanaged": "LEGACY_TOTALS_UNMANAGED",
+            "legacy_totals_unmanaged": "LEGACY_TOTALS_UNMANAGED",
+            "voltage_reference_mismatch": "VOLTAGE_REFERENCE_MISMATCH",
+            "aggregate_entity_mismatch": "AGGREGATE_ENTITY_MISMATCH",
+            "meter_configuration_invalid": "METER_CONFIGURATION_INVALID",
+        }.get(value, value)
+        for value in values
+    }
     channels = result.get("channels", ())
     if isinstance(channels, tuple | list) and any(
         bool(getattr(channel, "stored_selection_present", False))
