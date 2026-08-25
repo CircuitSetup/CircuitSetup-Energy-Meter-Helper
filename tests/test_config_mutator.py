@@ -1022,8 +1022,10 @@ def test_unused_channel_hides_its_supported_status_phase_text() -> None:
 
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
+@pytest.mark.parametrize("owned_comment", (False, True))
 def test_removing_last_status_override_removes_its_text_sensor_section(
     newline: str,
+    owned_comment: bool,
 ) -> None:
     snapshot = _package_snapshot()
     topology = _two_board_topology()
@@ -1039,6 +1041,14 @@ def test_removing_last_status_override_removes_its_text_sensor_section(
     )
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
     content = plan.proposed_content.replace("\n", newline)
+    if owned_comment:
+        content = content.replace(
+            "# CircuitSetup Energy Meter Helper: status overrides v1" + newline,
+            "# CircuitSetup Energy Meter Helper: status overrides v1"
+            + newline
+            + "  # Owned helper block comment"
+            + newline,
+        )
     document = ESPHomeConfigDocument.parse(content)
 
     restored = config_mutator._apply_status_overrides(
@@ -1051,6 +1061,71 @@ def test_removing_last_status_override_removes_its_text_sensor_section(
     assert "status overrides v1" not in restored
     assert f"{newline}text_sensor:{newline}" not in restored
     assert "\r\n" in restored if newline == "\r\n" else "\r\n" not in restored
+
+
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+@pytest.mark.parametrize(
+    ("header_suffix", "before", "after"),
+    (
+        ("", "  # keep-before\n", ""),
+        ("", "", "  # keep-after\n"),
+        ("", "  # keep-before\n", "  # keep-after\n"),
+        (" # keep-inline", "", ""),
+        ("", "  # inline comment\n", "# logger: this remains a comment\n"),
+    ),
+)
+def test_status_override_removal_preserves_user_section_comments(
+    newline: str,
+    header_suffix: str,
+    before: str,
+    after: str,
+) -> None:
+    snapshot = _package_snapshot()
+    topology = _two_board_topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        channels=tuple(
+            replace(channel, enabled=False, role=CircuitRole.UNUSED)
+            if channel.channel == 3
+            else channel
+            for channel in current.configuration.channels
+        ),
+    )
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    content = plan.proposed_content.replace("\n", newline)
+    before = before.replace("\n", newline)
+    after = after.replace("\n", newline)
+    content = content.replace(
+        "text_sensor:" + newline,
+        "text_sensor:" + header_suffix + newline + before,
+    )
+    content = content.replace(
+        "# End CircuitSetup Energy Meter Helper: status overrides v1" + newline,
+        "# End CircuitSetup Energy Meter Helper: status overrides v1" + newline + after,
+    )
+
+    restored = config_mutator._apply_status_overrides(
+        content,
+        {3: (True, 1.0)},
+        (True, False),
+        ESPHomeConfigDocument.parse(content).substitutions,
+    )
+
+    assert "text_sensor:" in restored
+    assert "text_sensor:" + header_suffix + newline in restored
+    assert before in restored
+    assert after in restored
+    readded = config_mutator._apply_status_overrides(
+        restored,
+        {3: (False, 1.0)},
+        (True, False),
+        ESPHomeConfigDocument.parse(restored).substitutions,
+    )
+    assert "text_sensor:" + header_suffix + newline in readded
+    assert before in readded
+    assert after in readded
+    ESPHomeConfigDocument.parse(readded)
 
 
 @pytest.mark.parametrize(

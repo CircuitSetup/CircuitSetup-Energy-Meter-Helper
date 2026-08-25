@@ -836,16 +836,25 @@ def _status_section(
         if line and not line.startswith(" "):
             section_end = index
             break
-    if block_index >= section_end:
-        return None
-    has_user_content = any(
-        line.strip()
-        and not block_start <= offsets[index] <= block_end
-        for index, line in enumerate(
-            document.code_lines[header_index + 1 : section_end], header_index + 1
-        )
+    section_start = offsets[header_index]
+    section_content_start = section_start + len(document.lines[header_index])
+    section_content_end = (
+        offsets[section_end] if section_end < len(document.lines) else len(document.content)
     )
-    return offsets[header_index], has_user_content
+    if (
+        block_index >= section_end
+        or block_start < section_content_start
+        or block_end > section_content_end
+    ):
+        return None
+    has_user_content = bool(
+        (
+            document.content[section_content_start:block_start]
+            + document.content[section_start + len("text_sensor:") : section_content_start]
+            + document.content[block_end:section_content_end]
+        ).strip()
+    )
+    return section_start, has_user_content
 
 
 def _read_phase_channel_states(
