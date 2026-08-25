@@ -1488,6 +1488,94 @@ def test_partial_voltage_gain_handoff_preserves_existing_uncalibrated_overrides(
     assert merged.rstrip() in plan.redacted_diff
 
 
+def test_partial_uniform_voltage_gain_removes_only_its_stale_override() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7301\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7302\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7303\n"
+        "  - id: !extend meter_main2\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7401\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7402\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7403\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+    )
+    snapshot = _snapshot(_snapshot().content + "sensor:\n" + block)
+    record = _record(snapshot, ((7501, 28001),) * 3)
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert "!extend meter_main1" not in plan.proposed_content
+    assert block[block.index("  - id: !extend meter_main2") :] in plan.proposed_content
+
+
+def test_mixed_voltage_gain_handoff_replaces_only_divergent_instances() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7301\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7302\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7303\n"
+        "  - id: !extend meter_main2\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7401\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7402\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7403\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+    )
+    snapshot = _snapshot(_snapshot().content + "sensor:\n" + block)
+    record = replace(
+        _record(snapshot, ((7501, 28001),) * 3),
+        groups=(
+            VerifiedGainGroup("meter_main1", ((7501, 28001),) * 3),
+            VerifiedGainGroup(
+                "meter_main2", ((7601, 28004), (7602, 28005), (7603, 28006))
+            ),
+        ),
+    )
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert "!extend meter_main1" not in plan.proposed_content
+    assert "!extend meter_main2" in plan.proposed_content
+    assert all(f"gain_voltage: {gain}" in plan.proposed_content for gain in (7601, 7602, 7603))
+
+
+def test_final_uniform_voltage_gain_removal_is_explicit_in_review() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7301\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7302\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7303\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+    )
+    snapshot = _snapshot(_snapshot().content + "sensor:\n" + block)
+    plan = build_calibrated_gain_mutation(
+        snapshot, topology(0), _record(snapshot, ((7501, 28001),) * 3)
+    )
+
+    assert "calibrated voltage gains v1" not in plan.proposed_content
+    assert any(change.key == "calibrated_voltage_gains" for change in plan.changes)
+    assert "calibrated_voltage_gains" in plan.redacted_diff
+    assert _review_diff((), block, block) == ""
+
+
 def test_uniform_gain_handoff_refuses_unwritable_stale_voltage_block() -> None:
     content = _snapshot().content.replace(
         "logger:\n",
@@ -1501,7 +1589,7 @@ def test_uniform_gain_handoff_refuses_unwritable_stale_voltage_block() -> None:
     snapshot = _snapshot(content)
     record = _record(snapshot, ((7310, 28001), (7310, 28002), (7310, 28003)))
 
-    with pytest.raises(ConfigMutationError, match="writable"):
+    with pytest.raises(ConfigMutationError, match="invalid|writable"):
         build_calibrated_gain_mutation(snapshot, topology(0), record)
 
 

@@ -455,7 +455,17 @@ def build_calibrated_gain_mutation(
             for instance_id, _, group, gains in addressed
             if group in overridden
         },
+        frozenset(instance_id for instance_id, _, _, _ in addressed),
     )
+    if (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1"
+        in snapshot.content
+        and "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1"
+        not in proposed_content
+    ):
+        changes.append(
+            SubstitutionChange("calibrated_voltage_gains", "managed", "removed")
+        )
     return ConfigMutationPlan(
         snapshot.configuration,
         snapshot.sha256,
@@ -700,17 +710,21 @@ def _apply_reporting_multipliers(
 
 
 def _apply_calibrated_voltage_gains(
-    content: str, gains_by_instance: Mapping[str, tuple[int, int, int]]
+    content: str,
+    gains_by_instance: Mapping[str, tuple[int, int, int]],
+    calibrated_instance_ids: frozenset[str],
 ) -> str:
     from .config_blocks import render_phase_overrides, replace_managed_block
 
-    if not gains_by_instance:
-        if "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1" not in content:
-            return content
-        return replace_managed_block(content, "calibrated_voltage_gains", "")
+    if not calibrated_instance_ids:
+        return content
+    if not set(gains_by_instance).issubset(calibrated_instance_ids):
+        raise ConfigMutationError("verified voltage gains are invalid")
     document = ESPHomeConfigDocument.parse(content)
     entries: dict[str, str] = {}
     block = document.managed_blocks.get("calibrated_voltage_gains")
+    if block is None and not gains_by_instance:
+        return content
     if block is not None:
         lines = block.content.splitlines()[1:-1]
         indent = document.sensor_item_indent
@@ -737,6 +751,8 @@ def _apply_calibrated_voltage_gains(
             entries[match["id"]] = "\n".join(
                 f"  {line}" if indent == 0 else line for line in item
             ) + "\n"
+    for instance_id in calibrated_instance_ids:
+        entries.pop(instance_id, None)
     for instance_id, gains in sorted(gains_by_instance.items()):
         if len(gains) != 3:
             raise ConfigMutationError("verified voltage gains are invalid")
@@ -1416,11 +1432,10 @@ def _calibrated_voltage_gain_diff(prior_content: str, proposed_content: str) -> 
         finish = content.find(end, offset)
         return content[offset : finish + len(end)] if finish >= 0 else content[offset:]
 
-    return (
-        block(proposed_content)
-        if block(prior_content) != block(proposed_content)
-        else ""
-    )
+    prior, proposed = block(prior_content), block(proposed_content)
+    if prior == proposed:
+        return ""
+    return proposed or "managed calibrated voltage gains removed"
 
 
 def _reporting_multiplier_diff(prior_content: str, proposed_content: str) -> str:
