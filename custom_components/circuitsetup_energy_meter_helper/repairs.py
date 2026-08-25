@@ -51,6 +51,7 @@ _OPERATION_ISSUES = {
     "install_ct_config": {
         "device_builder_unavailable",
         "compile_install_interrupted",
+        "meter_configuration_invalid",
         "aggregate_entity_mismatch",
     },
     "rollback_ct_config": {"device_builder_unavailable", "restore_verification_failed"},
@@ -93,9 +94,15 @@ async def async_reconcile_issues(
         scoped_id = scoped_issue_id(issue_id, entry_id)
         if active.intersection(ISSUES[issue_id]):
             issue_registry.async_create_issue(hass, DOMAIN, scoped_id, is_fixable=True, severity=issue_registry.IssueSeverity.WARNING, translation_key=issue_id)
-        elif authoritative and (
-            issue_id != "aggregate_entity_mismatch" or "VERIFIED" in active
-        ) and operation != "preview_meter_configuration":
+        elif (
+            authoritative
+            and operation != "preview_meter_configuration"
+            and (
+                issue_id
+                not in {"meter_configuration_invalid", "aggregate_entity_mismatch"}
+                or "FULL_METER_CONFIGURATION_VERIFIED" in active
+            )
+        ):
             issue_registry.async_delete_issue(hass, DOMAIN, scoped_id)
 
 
@@ -146,8 +153,8 @@ def signals_from_result(result: object) -> set[str]:
     state = result.get("state")
     if isinstance(state, Enum):
         state = state.value
-    if state == "verified":
-        values.add("VERIFIED")
+    if state == "verified" and result.get("full_meter_configuration_verified") is True:
+        values.add("FULL_METER_CONFIGURATION_VERIFIED")
     if result.get("aggregate_entity_mismatch") is True:
         values.add("aggregate_entity_mismatch")
     for key in ("evidence", "issues", "warnings"):

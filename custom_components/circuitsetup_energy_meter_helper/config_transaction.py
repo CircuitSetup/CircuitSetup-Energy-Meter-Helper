@@ -244,6 +244,7 @@ class TransactionStatus:
     validation_detail: ValidationDetail | None = None
     upload_progress: tuple[JobProgress, ...] = ()
     aggregate_entity_mismatch: bool = False
+    full_meter_configuration_verified: bool = False
 
 
 @dataclass(slots=True)
@@ -455,6 +456,19 @@ class ConfigTransactionManager:
             proposed_sha256 = sha256(plan.proposed_content.encode()).hexdigest()
             if meter_configuration.config_sha256 != proposed_sha256:
                 raise ValueError("meter configuration does not match mutation plan")
+            expected = expected_meter_entity_evidence(
+                MeterConfigurationRequest(
+                    meter_configuration.meter,
+                    meter_configuration.channels,
+                    meter_configuration.aggregates,
+                    meter_configuration.power_quality,
+                    meter_configuration.status_fields,
+                    meter_configuration.multi_reference_preparation_acknowledged,
+                ),
+                topology,
+            )
+            expected_sensor_entities = expected.sensor_entities
+            expected_aggregate_sensor_entities = expected.aggregate_sensor_entities
             selections = ()
         else:
             merged = {
@@ -1384,6 +1398,8 @@ def _status(transaction: _ConfigTransaction) -> TransactionStatus:
         transaction.validation_detail,
         tuple(transaction.upload_progress),
         transaction.aggregate_entity_mismatch,
+        transaction.meter_configuration is not None
+        and transaction.state is ConfigTransactionState.VERIFIED,
     )
 
 

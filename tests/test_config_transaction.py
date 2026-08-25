@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 
 import pytest
@@ -447,12 +447,17 @@ def test_write_and_compile_are_distinct_confirmed_phases() -> None:
     asyncio.run(run())
 
 
-def test_full_meter_configuration_persists_only_after_verified_reconnect() -> None:
+@pytest.mark.parametrize("with_aggregate", (True, False))
+def test_full_meter_configuration_persists_only_after_verified_reconnect(
+    with_aggregate: bool,
+) -> None:
     """Full meter metadata is not durable until the flashed device proves it."""
 
     async def run() -> None:
         plan = _plan()
         configuration = _meter_configuration(plan)
+        if not with_aggregate:
+            configuration = replace(configuration, aggregates=())
         expected = expected_meter_entity_evidence(
             MeterConfigurationRequest(
                 configuration.meter,
@@ -478,15 +483,16 @@ def test_full_meter_configuration_persists_only_after_verified_reconnect() -> No
             plan,
             _source(),
             meter_configuration=configuration,
-            expected_sensor_entities=expected.sensor_entities,
+            expected_sensor_entities=frozenset(),
+            expected_aggregate_sensor_entities=frozenset(),
         )
 
         assert persistence.meter_configuration is None
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
-        assert (
-            await manager.async_confirm_install(preview.transaction_id, "admin")
-        ).state is ConfigTransactionState.VERIFIED
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert status.full_meter_configuration_verified
         assert persistence.meter_configuration == configuration
         assert persistence.selections == configuration.ct_selections
 
@@ -590,6 +596,9 @@ def test_missing_full_reconnect_entity_drops_private_configuration_without_persi
             _topology(),
         )
         persistence = Persistence()
+        non_aggregate = next(
+            iter(expected.sensor_entities - expected.aggregate_sensor_entities)
+        )
         manager = _manager(
             Builder(),
             persistence,
@@ -598,6 +607,7 @@ def test_missing_full_reconnect_entity_drops_private_configuration_without_persi
                 _topology(),
                 {channel.channel: channel.name for channel in configuration.channels},
                 6,
+                expected.sensor_entities - {non_aggregate},
             ),
         )
         preview = await manager.async_preview(
@@ -661,8 +671,8 @@ def test_verified_reconnect_marks_only_missing_aggregate_entities() -> None:
             plan,
             _source(),
             meter_configuration=configuration,
-            expected_sensor_entities=expected.sensor_entities,
-            expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
+            expected_sensor_entities=frozenset(),
+            expected_aggregate_sensor_entities=frozenset(),
         )
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
@@ -671,6 +681,7 @@ def test_verified_reconnect_marks_only_missing_aggregate_entities() -> None:
         assert status.state is ConfigTransactionState.FAILED
         assert TransactionEvidenceCode.ENTITY_MISMATCH in status.evidence
         assert status.aggregate_entity_mismatch
+        assert not status.full_meter_configuration_verified
 
     asyncio.run(run())
 
@@ -1540,6 +1551,7 @@ def test_confirmations_and_verified_persistence_are_separate() -> None:
             await manager.async_confirm_install(preview.transaction_id, "")
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
         assert status.state is ConfigTransactionState.VERIFIED
+        assert not status.full_meter_configuration_verified
         assert builder.calls == ["write", "validate", "compile", "upload"]
         saved = persistence.saved[0][1][0]  # type: ignore[index]
         assert (

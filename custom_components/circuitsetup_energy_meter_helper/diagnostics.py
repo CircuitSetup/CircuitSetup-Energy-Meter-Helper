@@ -46,6 +46,9 @@ _PUBLIC_ERROR_CODES = {
     "voltage_reference_mismatch",
     "aggregate_entity_mismatch",
 }
+_PUBLIC_WARNING_CODES = {
+    "legacy_generic_totals_unmanaged": "legacy_totals_unmanaged",
+}
 
 
 def _value(item: object, key: str, default: Any = None) -> Any:
@@ -154,6 +157,7 @@ class DiagnosticsTracker:
     def record_result(self, operation: str, result: object) -> None:
         del operation
         for warning in _safe_strings(_value(result, "warnings", ())):
+            warning = _PUBLIC_WARNING_CODES.get(warning, warning)
             if warning in _PUBLIC_ERROR_CODES:
                 self.errors.append(warning)
         if _value(result, "aggregate_entity_mismatch") is True:

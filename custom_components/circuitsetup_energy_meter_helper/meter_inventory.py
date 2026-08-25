@@ -136,6 +136,19 @@ class MeterConfigurationInventory:
         stale = stored_semantics_stale or (
             stored_configuration is not None and matching is None
         )
+        if (
+            stored_configuration is not None
+            and matching is None
+            and "voltage_references" in document.managed_blocks
+        ):
+            try:
+                _validate_managed_voltage_reference_gains(
+                    stored_configuration, document, topology, report_gain_mismatch=True
+                )
+            except VoltageReferenceMismatchError:
+                raise
+            except (TypeError, ValueError):
+                pass
         if matching is not None:
             try:
                 configuration = _stored_request(
@@ -271,6 +284,8 @@ def _validate_managed_voltage_reference_gains(
     stored: StoredMeterConfiguration,
     document: ESPHomeConfigDocument,
     topology: MeterTopology,
+    *,
+    report_gain_mismatch: bool = False,
 ) -> None:
     """Accept stored gains only when their hash-bound owned block still has them."""
     block = document.managed_blocks["voltage_references"]
@@ -300,7 +315,7 @@ def _validate_managed_voltage_reference_gains(
             if item is None:
                 raise ValueError("managed voltage reference gains are ambiguous")
             _validate_managed_voltage_item(
-                item, reference, group == representative
+                item, reference, group == representative, report_gain_mismatch
             )
     if items:
         raise ValueError("managed voltage reference gains are ambiguous")
@@ -336,7 +351,10 @@ def _managed_voltage_items(
 
 
 def _validate_managed_voltage_item(
-    lines: list[str], reference: VoltageReferenceConfig, representative: bool
+    lines: list[str],
+    reference: VoltageReferenceConfig,
+    representative: bool,
+    report_gain_mismatch: bool,
 ) -> None:
     expected_keys = {"phase_a", "phase_b", "phase_c"}
     if representative:
@@ -350,6 +368,7 @@ def _validate_managed_voltage_item(
             reference,
             not representative or phase == "a",
             representative and phase == "a",
+            report_gain_mismatch,
         )
     if representative:
         _validate_managed_fields(
@@ -369,14 +388,22 @@ def _validate_managed_voltage_phase(
     reference: VoltageReferenceConfig,
     voltage_expected: bool,
     visible_voltage: bool,
+    report_gain_mismatch: bool,
 ) -> None:
     expected_keys = {"gain_voltage"}
     if voltage_expected:
         expected_keys.add("voltage")
     entries = _managed_mappings(lines, 6)
-    if set(entries) != expected_keys or entries["gain_voltage"][0] != str(
-        reference.gain_voltage
-    ) or not _managed_body_is_empty(entries["gain_voltage"][1]):
+    if (
+        set(entries) != expected_keys
+        or not _managed_body_is_empty(entries["gain_voltage"][1])
+    ):
+        raise ValueError("managed voltage reference gain is invalid")
+    if entries["gain_voltage"][0] != str(reference.gain_voltage):
+        if report_gain_mismatch:
+            raise VoltageReferenceMismatchError(
+                "managed voltage references disagree with stored configuration"
+            )
         raise ValueError("managed voltage reference gain is invalid")
     if voltage_expected:
         expected_fields = (

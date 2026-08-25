@@ -544,7 +544,7 @@ def test_managed_voltage_reference_gains_fail_closed_but_ignore_outside_spoofs()
 
 
 def test_authoritative_inventory_emits_voltage_reference_mismatch_for_owned_yaml() -> None:
-    """A matching stored record and changed owned reference mapping are actionable."""
+    """An external owned reference mapping drift is actionable without a fake hash."""
 
     snapshot = _snapshot()
     topology = _topology()
@@ -563,7 +563,7 @@ def test_authoritative_inventory_emits_voltage_reference_mismatch_for_owned_yaml
         "main=[main_1,main_2]", "other=[main_1,main_2]", 1
     )
     stored = StoredMeterConfiguration(
-        sha256(mismatched.encode()).hexdigest(),
+        sha256(plan.proposed_content.encode()).hexdigest(),
         requested.meter,
         requested.channels,
         requested.aggregates,
@@ -576,11 +576,88 @@ def test_authoritative_inventory_emits_voltage_reference_mismatch_for_owned_yaml
             replace(
                 snapshot,
                 content=mismatched,
-                sha256=stored.config_sha256,
+                sha256=sha256(mismatched.encode()).hexdigest(),
             ),
             topology,
             stored=stored,
         )
+
+
+def test_authoritative_inventory_emits_voltage_reference_mismatch_for_external_gain_drift() -> None:
+    """A changed owned gain cannot be hidden behind the normal stale hash path."""
+
+    snapshot = _snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(current.configuration.meter.voltage_references[0], gain_voltage=7305),
+            ),
+        ),
+    )
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    changed = plan.proposed_content.replace("gain_voltage: 7305", "gain_voltage: 7306", 1)
+    stored = StoredMeterConfiguration(
+        sha256(plan.proposed_content.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+
+    with pytest.raises(VoltageReferenceMismatchError):
+        _inventory(
+            replace(
+                snapshot,
+                content=changed,
+                sha256=sha256(changed.encode()).hexdigest(),
+            ),
+            topology,
+            stored=stored,
+        )
+
+
+def test_unrelated_external_drift_only_marks_stored_semantics_stale() -> None:
+    """Hash drift outside owned voltage references does not fabricate a mismatch."""
+
+    snapshot = _snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(current.configuration.meter.voltage_references[0], gain_voltage=7305),
+            ),
+        ),
+    )
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    changed = plan.proposed_content.replace("logger:\n  level: DEBUG", "logger:\n  level: INFO")
+    stored = StoredMeterConfiguration(
+        sha256(plan.proposed_content.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+
+    inventory = _inventory(
+        replace(
+            snapshot,
+            content=changed,
+            sha256=sha256(changed.encode()).hexdigest(),
+        ),
+        topology,
+        stored=stored,
+    )
+
+    assert "stored_semantics_stale" in inventory.warnings
 
 
 @pytest.mark.parametrize(
