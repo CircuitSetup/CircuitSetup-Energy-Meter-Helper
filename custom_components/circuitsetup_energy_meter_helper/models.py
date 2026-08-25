@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from enum import StrEnum
+from hashlib import sha256
 from typing import Literal
 
 from .ct_catalog import REPORTING_MULTIPLIERS
@@ -34,6 +36,8 @@ _MAC = re.compile(
     r"[0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})"
 )
 _FIRMWARE_PRODUCT_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
+VOLTAGE_REFERENCE_ID_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}")
+VOLTAGE_REFERENCE_GROUP_RE = re.compile(r"(?:main|addon[1-6])_[12]")
 _ESPHOME_VERSION = re.compile(
     r"^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$"
 )
@@ -218,6 +222,55 @@ class MeterTopology:
 
 
 @dataclass(slots=True, frozen=True)
+class VoltageReferenceTopology:
+    """Validated voltage-reference assignments independent of board counts."""
+
+    references: tuple[tuple[str, tuple[str, ...]], ...]
+    source: Literal["helper", "legacy"]
+
+    def __post_init__(self) -> None:
+        if not self.references or self.source not in {"helper", "legacy"}:
+            raise ValueError("voltage-reference topology is invalid")
+        reference_ids: set[str] = set()
+        groups: list[str] = []
+        for reference_id, group_keys in self.references:
+            if (
+                not isinstance(reference_id, str)
+                or VOLTAGE_REFERENCE_ID_RE.fullmatch(reference_id) is None
+                or reference_id in reference_ids
+                or not isinstance(group_keys, tuple)
+                or not group_keys
+            ):
+                raise ValueError("voltage-reference topology is invalid")
+            reference_ids.add(reference_id)
+            for group_key_value in group_keys:
+                if (
+                    not isinstance(group_key_value, str)
+                    or VOLTAGE_REFERENCE_GROUP_RE.fullmatch(group_key_value) is None
+                ):
+                    raise ValueError("voltage-reference topology is invalid")
+                groups.append(group_key_value)
+        if len(groups) != len(set(groups)):
+            raise ValueError("voltage-reference groups must be unique")
+
+    @property
+    def reference_ids(self) -> tuple[str, ...]:
+        return tuple(reference_id for reference_id, _ in self.references)
+
+    def groups_for(self, reference_id: str) -> tuple[str, ...]:
+        for current_id, groups in self.references:
+            if current_id == reference_id:
+                return groups
+        raise KeyError(reference_id)
+
+    @property
+    def fingerprint(self) -> str:
+        """Return a deterministic identity for ordered IDs and assignments."""
+        canonical = json.dumps(self.references, separators=(",", ":"))
+        return f"v1:{sha256(canonical.encode()).hexdigest()}"
+
+
+@dataclass(slots=True, frozen=True)
 class ChannelAddress:
     """Board, local group, and phase for one global CT channel."""
 
@@ -343,6 +396,7 @@ class StoredMeterRecord:
     setup_intent: str
     config_filename: str | None
     topology: StoredTopology | None
+    config_sha256: str | None = None
     ct_selections: tuple[StoredCTSelection, ...] = ()
     interrupted_session: StoredInterruptedSession | None = None
 
@@ -351,3 +405,8 @@ class StoredMeterRecord:
         _safe_line(self.setup_intent, "setup_intent")
         if self.config_filename is not None:
             _safe_line(self.config_filename, "config_filename")
+        if (
+            self.config_sha256 is not None
+            and re.fullmatch(r"[0-9a-f]{64}", self.config_sha256) is None
+        ):
+            raise ValueError("config_sha256 must be a SHA-256 digest")

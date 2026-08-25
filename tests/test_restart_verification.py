@@ -19,6 +19,9 @@ from custom_components.circuitsetup_energy_meter_helper.calibration_engine impor
     RestartDisconnectTimeoutError,
     RestartVerificationError,
 )
+from custom_components.circuitsetup_energy_meter_helper.config_document import (
+    ESPHomeConfigDocument,
+)
 from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
     ConfigMutationError,
     CTChangeRequest,
@@ -51,6 +54,11 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
     VerifiedGainGroup,
     VerifiedOffsetGroup,
 )
+from custom_components.circuitsetup_energy_meter_helper.topology import (
+    voltage_reference_fingerprint_for_meter,
+    voltage_reference_topology_from_config,
+    voltage_reference_topology_from_configuration,
+)
 from tests.test_calibration_engine_current import native_meter
 from tests.test_calibration_engine_voltage import (
     FakeCalibrationSession,
@@ -64,6 +72,7 @@ from tests.test_entity_binding import (
     synthetic_entities,
     topology,
 )
+from tests.test_store import _configuration as stored_configuration
 
 GainTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
 
@@ -1279,6 +1288,59 @@ def test_uniform_gains_build_surgical_hash_bound_source_mutation() -> None:
     assert record.source_authority is CalibrationSourceAuthority.SAVED_FLASH
 
 
+def test_calibrated_gain_handoff_uses_verified_helper_voltage_fingerprint() -> None:
+    content = _snapshot().content.replace(
+        "name: circuitsetup.6c-energy-meter\n",
+        "name: circuitsetup.6c-energy-meter-2-voltages\n",
+    ).replace(
+        "logger:\n",
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "voltage_references:\n"
+        "  main: 120\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "logger:\n",
+    )
+    snapshot = _snapshot(content)
+    target = replace(
+        topology(0),
+        voltage_layout="two_voltages",
+        project_name="circuitsetup.6c-energy-meter-2-voltages",
+    )
+    trusted = replace(stored_configuration(), config_sha256=snapshot.sha256)
+    helper_fingerprint = voltage_reference_topology_from_config(
+        ESPHomeConfigDocument.parse(content),
+        target,
+        trusted_fingerprint=voltage_reference_topology_from_configuration(
+            target, trusted
+        ).fingerprint,
+    ).fingerprint
+    record = replace(
+        _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003))),
+        topology_voltage_layout="two_voltages",
+        topology_project_name=target.project_name,
+        topology_voltage_fingerprint=helper_fingerprint,
+    )
+
+    build_calibrated_gain_mutation(
+        snapshot,
+        target,
+        record,
+        trusted_voltage_fingerprint=helper_fingerprint,
+    )
+    with pytest.raises(ConfigMutationError, match="topology"):
+        build_calibrated_gain_mutation(snapshot, target, record)
+    build_calibrated_gain_mutation(
+        snapshot,
+        target,
+        replace(
+            record,
+            topology_voltage_fingerprint=voltage_reference_fingerprint_for_meter(
+                target
+            ),
+        ),
+    )
+
+
 def test_final_gain_mutation_keeps_selected_board_packages_in_same_review() -> None:
     """A calibrated handoff must not drop package choices made during setup."""
     content = _snapshot().content + """packages:
@@ -1527,6 +1589,109 @@ def test_gain_preview_rejects_verified_offset_calibration() -> None:
 
         assert builder.calls == []
         assert persistence.claimed == {}
+
+    asyncio.run(run())
+
+
+def test_gain_preview_ignores_unverified_helper_marker() -> None:
+    async def run() -> None:
+        content = _snapshot().content.replace(
+            "name: circuitsetup.6c-energy-meter\n",
+            "name: circuitsetup.6c-energy-meter-2-voltages\n",
+        ).replace(
+            "logger:\n",
+            "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+            "voltage_references:\n"
+            "  main: 120\n"
+            "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+            "logger:\n",
+        )
+        source = _snapshot(content)
+        target = replace(
+            topology(0),
+            voltage_layout="two_voltages",
+            project_name="circuitsetup.6c-energy-meter-2-voltages",
+        )
+        record = replace(
+            _record(source, ((7301, 1),) * 3),
+            topology_voltage_layout="two_voltages",
+            topology_project_name=target.project_name,
+            topology_voltage_fingerprint=voltage_reference_fingerprint_for_meter(target),
+        )
+        persistence = CalibrationPersistence((record,))
+        manager = ConfigTransactionManager(
+            Builder(remote_content=source.content),
+            Verifier(RuntimeError()),
+            persistence,
+            SessionManager(),
+        )
+
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac, target, record.verification_id
+        )
+        assert preview.state is ConfigTransactionState.PREVIEWED
+        assert persistence.claimed == {record.verification_id: preview.transaction_id}
+
+    asyncio.run(run())
+
+
+def test_gain_preview_trusts_helper_marker_only_for_matching_stored_hash() -> None:
+    async def run() -> None:
+        content = _snapshot().content.replace(
+            "name: circuitsetup.6c-energy-meter\n",
+            "name: circuitsetup.6c-energy-meter-2-voltages\n",
+        ).replace(
+            "logger:\n",
+            "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+            "voltage_references:\n"
+            "  main: 120\n"
+            "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+            "logger:\n",
+        )
+        source = _snapshot(content)
+        target = replace(
+            topology(0),
+            voltage_layout="two_voltages",
+            project_name="circuitsetup.6c-energy-meter-2-voltages",
+        )
+        trusted = replace(stored_configuration(), config_sha256=source.sha256)
+        helper_fingerprint = voltage_reference_topology_from_configuration(
+            target, trusted
+        ).fingerprint
+        record = replace(
+            _record(source, ((7301, 1),) * 3),
+            topology_voltage_layout="two_voltages",
+            topology_project_name=target.project_name,
+            topology_voltage_fingerprint=helper_fingerprint,
+        )
+        persistence = CalibrationPersistence((record,))
+        persistence.meter_configuration = trusted
+        manager = ConfigTransactionManager(
+            Builder(remote_content=source.content),
+            Verifier(RuntimeError()),
+            persistence,
+            SessionManager(),
+        )
+
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac, target, record.verification_id
+        )
+        assert preview.state is ConfigTransactionState.PREVIEWED
+
+        stale_persistence = CalibrationPersistence((record,))
+        stale_persistence.meter_configuration = replace(
+            trusted, config_sha256="0" * 64
+        )
+        stale_manager = ConfigTransactionManager(
+            Builder(remote_content=source.content),
+            Verifier(RuntimeError()),
+            stale_persistence,
+            SessionManager(),
+        )
+        with pytest.raises(ConfigMutationError, match="topology"):
+            await stale_manager.async_preview_calibrated_gains(
+                record.mac, target, record.verification_id
+            )
 
     asyncio.run(run())
 

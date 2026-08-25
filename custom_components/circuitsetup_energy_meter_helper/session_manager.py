@@ -76,6 +76,7 @@ class PendingCalibrationOrigin:
     offset_groups: tuple[tuple[str, PhaseOffsetTable], ...] = ()
     power_offset_groups: tuple[tuple[str, PhasePowerOffsetTable], ...] = ()
     claimed_revision: int | None = None
+    voltage_topology_fingerprint: str | None = None
 
     @property
     def expected_phase_gains(self) -> dict[str, PhaseGainTable]:
@@ -194,6 +195,7 @@ class SessionManager:
         session: Any,
         binding: MeterBinding,
         snapshot: ESPHomeConfigSnapshot | None,
+        voltage_topology_fingerprint: str | None = None,
     ) -> PendingCalibrationOrigin:
         """Freeze an internally fetched configuration under its active lease."""
         self._require_active_calibration_lease(lease)
@@ -207,6 +209,7 @@ class SessionManager:
             topology=binding.topology,
             config_filename=(snapshot.configuration if snapshot is not None else None),
             config_sha256=(snapshot.sha256 if snapshot is not None else None),
+            voltage_topology_fingerprint=voltage_topology_fingerprint,
             gain_groups=(),
         )
         self._pending_calibrations[lease.mac] = pending

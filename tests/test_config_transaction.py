@@ -176,6 +176,10 @@ class Persistence:
         self.saved: list[object] = []
         self.error = error
         self.selections = selections
+        self.meter_configuration: object | None = None
+
+    async def async_get_meter_configuration(self, _mac: str) -> object | None:
+        return self.meter_configuration
 
     async def async_get_ct_selections(self, _mac: str) -> tuple[StoredCTSelection, ...]:
         return self.selections

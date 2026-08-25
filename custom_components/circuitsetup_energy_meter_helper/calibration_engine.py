@@ -60,7 +60,11 @@ from .store import (
     VerifiedOffsetGroup,
     VerifiedPowerOffsetGroup,
 )
-from .topology import topology_from_config
+from .topology import (
+    topology_from_config,
+    voltage_reference_fingerprint_for_meter,
+    voltage_reference_topology_from_config,
+)
 
 DEFAULT_EVIDENCE_TIMEOUT = 35.0
 
@@ -68,6 +72,9 @@ type MarkerWriter = Callable[[str, StoredInterruptedSession | None], Awaitable[N
 type VerifiedWriter = Callable[[VerifiedCalibrationRecord], Awaitable[None]]
 type CalibrationSnapshotReader = Callable[
     [str, MeterTopology], Awaitable[ESPHomeConfigSnapshot]
+]
+type TrustedVoltageFingerprintReader = Callable[
+    [str, ESPHomeConfigDocument, MeterTopology], Awaitable[str | None]
 ]
 
 _CONFIGURATION_ID = re.compile(r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml")
@@ -182,6 +189,8 @@ class CalibrationEngine:
         restart_restore_timeout: float = 120.0,
         restart_backoff_initial: float = 0.25,
         calibration_snapshot_reader: CalibrationSnapshotReader | None = None,
+        trusted_voltage_fingerprint_reader: TrustedVoltageFingerprintReader
+        | None = None,
     ) -> None:
         if sample_count < 1 or zero_concurrency < 1:
             raise ValueError("sample count and zero concurrency must be positive")
@@ -204,6 +213,7 @@ class CalibrationEngine:
         self._restart_restore_timeout = restart_restore_timeout
         self._restart_backoff_initial = restart_backoff_initial
         self._calibration_snapshot_reader = calibration_snapshot_reader
+        self._trusted_voltage_fingerprint_reader = trusted_voltage_fingerprint_reader
         self._operation_sequences: dict[str, int] = {}
 
     async def async_verify_after_restart(
@@ -348,6 +358,7 @@ class CalibrationEngine:
                 topology_project_name=pending.topology.project_name,
                 topology_connection_type=pending.topology.connection_type,
                 topology_voltage_layout=pending.topology.voltage_layout,
+                topology_voltage_fingerprint=pending.voltage_topology_fingerprint,
                 connection_generation=generation,
                 groups=groups,
                 verification_id=uuid4().hex,
@@ -438,15 +449,28 @@ class CalibrationEngine:
             raise ValueError("authoritative configuration hash is invalid")
         if _CONFIGURATION_ID.fullmatch(snapshot.configuration) is None:
             raise ValueError("authoritative configuration filename is invalid")
+        document = ESPHomeConfigDocument.parse(snapshot.content)
         try:
             source_topology = topology_from_config(
-                ESPHomeConfigDocument.parse(snapshot.content),
+                document,
                 native_project_name=binding.topology.project_name,
             )
         except ValueError as error:
             raise ValueError(
                 "authoritative configuration topology is invalid"
             ) from error
+        trusted_voltage_fingerprint = (
+            await self._trusted_voltage_fingerprint_reader(
+                lease.mac, document, source_topology
+            )
+            if self._trusted_voltage_fingerprint_reader is not None
+            else None
+        )
+        source_voltage_fingerprint = voltage_reference_topology_from_config(
+            document,
+            source_topology,
+            trusted_fingerprint=trusted_voltage_fingerprint,
+        ).fingerprint
         if not _same_topology_identity(source_topology, binding.topology):
             raise ValueError(
                 "authoritative configuration topology does not match the session"
@@ -456,13 +480,18 @@ class CalibrationEngine:
                 snapshot.configuration != pending.config_filename
                 or snapshot.sha256 != pending.config_sha256
                 or not _same_topology_identity(source_topology, pending.topology)
+                or (
+                    pending.voltage_topology_fingerprint
+                    or voltage_reference_fingerprint_for_meter(source_topology)
+                )
+                != source_voltage_fingerprint
             ):
                 raise ValueError(
                     "authoritative configuration changed since calibration began"
                 )
             return pending
         return self.sessions._begin_calibration_origin(
-            lease, session, binding, snapshot
+            lease, session, binding, snapshot, source_voltage_fingerprint
         )
 
     async def async_zero_all_references(
