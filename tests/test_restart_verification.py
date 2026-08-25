@@ -25,6 +25,7 @@ from custom_components.circuitsetup_energy_meter_helper.config_document import (
 from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
     ConfigMutationError,
     CTChangeRequest,
+    _review_diff,
     build_calibrated_gain_mutation,
 )
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
@@ -1454,6 +1455,35 @@ def test_divergent_voltage_gains_render_exact_extend_block() -> None:
     assert "gain_voltage: 7302" in plan.proposed_content
     assert "gain_voltage: 7303" in plan.proposed_content
     assert "voltage_cal1: '7301'" not in plan.proposed_content
+
+
+def test_uniform_gain_handoff_refuses_unwritable_stale_voltage_block() -> None:
+    content = _snapshot().content.replace(
+        "logger:\n",
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7301\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "logger:\n",
+    )
+    snapshot = _snapshot(content)
+    record = _record(snapshot, ((7310, 28001), (7310, 28002), (7310, 28003)))
+
+    with pytest.raises(ConfigMutationError, match="writable"):
+        build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+
+def test_review_diff_ignores_trailing_unrelated_changes_after_voltage_block() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7301\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+    )
+
+    assert _review_diff((), block + "packages: []\n", block + "packages: [x]\n") == ""
 
 
 def test_shared_voltage_substitution_requires_every_mapped_gain_to_match() -> None:

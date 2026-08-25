@@ -705,10 +705,9 @@ def _apply_calibrated_voltage_gains(
     from .config_blocks import render_phase_overrides, replace_managed_block
 
     if not gains_by_instance:
-        try:
-            return replace_managed_block(content, "calibrated_voltage_gains", "")
-        except ConfigMutationError:
+        if "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1" not in content:
             return content
+        return replace_managed_block(content, "calibrated_voltage_gains", "")
     entries: dict[str, str] = {}
     for instance_id, gains in sorted(gains_by_instance.items()):
         if len(gains) != 3:
@@ -1379,11 +1378,19 @@ def _review_diff(
 
 
 def _calibrated_voltage_gain_diff(prior_content: str, proposed_content: str) -> str:
-    marker = "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1"
+    start = "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1"
+    end = "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1"
+
+    def block(content: str) -> str:
+        offset = content.find(start)
+        if offset < 0:
+            return ""
+        finish = content.find(end, offset)
+        return content[offset : finish + len(end)] if finish >= 0 else content[offset:]
+
     return (
         "managed calibrated voltage gains updated"
-        if (marker in prior_content) != (marker in proposed_content)
-        or prior_content.split(marker, 1)[-1] != proposed_content.split(marker, 1)[-1]
+        if block(prior_content) != block(proposed_content)
         else ""
     )
 
