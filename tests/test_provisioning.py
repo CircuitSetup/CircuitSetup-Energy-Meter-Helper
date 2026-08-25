@@ -87,6 +87,25 @@ def test_installer_intent_accepts_supported_counts(addon_count: int) -> None:
     assert intent.ct_count == 6 * (addon_count + 1)
 
 
+def test_installer_intent_uses_new_install_package_defaults() -> None:
+    """New installs must not inherit stale optional-package choices."""
+    intent = InstallerIntent(addon_count=2, connection_type="wifi")
+
+    assert intent.power_quality == (False, False, False)
+    assert intent.status_fields == (True, False, False)
+
+
+def test_installer_intent_validates_one_package_choice_per_board() -> None:
+    """Incomplete per-board choices must not survive a page reload."""
+    with pytest.raises(ValueError, match="installed board"):
+        InstallerIntent(
+            addon_count=1,
+            connection_type="wifi",
+            power_quality=(True,),
+            status_fields=(True, False),
+        )
+
+
 @pytest.mark.parametrize("addon_count", (-1, 7))
 def test_installer_intent_rejects_unsupported_count(addon_count: int) -> None:
     """The installer only supports the documented add-on range."""

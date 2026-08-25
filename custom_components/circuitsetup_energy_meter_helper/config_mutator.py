@@ -35,6 +35,10 @@ _MULTIPLIER_ENTRY_RE = re.compile(
 )
 _PLAIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]*$")
 _YAML_RESERVED = {"null", "true", "false", "yes", "no", "on", "off", "~"}
+_PACKAGE_FEATURES = {
+    "power_quality": ("power_quality", "power_quality"),
+    "status_fields": ("status_fields", "status"),
+}
 
 
 class ConfigSnapshot(Protocol):
@@ -75,8 +79,10 @@ def build_ct_mutation(
     snapshot: ConfigSnapshot,
     topology: MeterTopology,
     requested_channels: Iterable[CTChangeRequest],
+    *,
+    package_options: Mapping[str, Iterable[bool]] | None = None,
 ) -> ConfigMutationPlan:
-    """Build a safe CT-only edit plan without serializing the YAML document."""
+    """Build a safe config edit plan without serializing the YAML document."""
     if getattr(snapshot, "configuration_authoritative", True) is not True:
         raise ConfigMutationError("configuration snapshot is not authoritative")
     if sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256:
@@ -96,6 +102,11 @@ def build_ct_mutation(
     proposed_content = _apply_reporting_multipliers(
         _apply_changes(document, changes, values), requests, document.substitutions
     )
+    if package_options is not None:
+        proposed_content, package_changes = _apply_package_options(
+            proposed_content, topology, package_options
+        )
+        changes.extend(package_changes)
     if proposed_content == snapshot.content:
         return ConfigMutationPlan(
             snapshot.configuration, snapshot.sha256, (), "", snapshot.content
@@ -111,12 +122,84 @@ def build_ct_mutation(
     )
 
 
+def _apply_package_options(
+    content: str,
+    topology: MeterTopology,
+    package_options: Mapping[str, Iterable[bool]],
+) -> tuple[str, list[SubstitutionChange]]:
+    if set(package_options) != set(_PACKAGE_FEATURES):
+        raise ConfigMutationError("package options are invalid")
+    desired = {name: tuple(values) for name, values in package_options.items()}
+    if any(
+        len(values) != topology.board_count
+        or any(type(value) is not bool for value in values)
+        for values in desired.values()
+    ):
+        raise ConfigMutationError("package options require one state per installed board")
+
+    lines = content.splitlines(keepends=True)
+    changes: list[SubstitutionChange] = []
+    for feature, (directory, suffix) in _PACKAGE_FEATURES.items():
+        for board_index, enabled in enumerate(desired[feature]):
+            board = "main" if board_index == 0 else f"addon{board_index}"
+            path = f"Software/ESPHome/{directory}/6chan_{board}_{suffix}.yaml"
+            pattern = re.compile(
+                rf"^(?P<indent> *)(?P<comment>#\s*)?(?P<entry>-\s+{re.escape(path)}"
+                rf"(?P<tail>\s*(?:#.*)?))(?P<newline>\r?\n)?$"
+            )
+            matches = [
+                (index, match)
+                for index, line in enumerate(lines)
+                if (match := pattern.fullmatch(line)) is not None
+            ]
+            if len(matches) > 1:
+                raise ConfigMutationError(f"{feature} package line is duplicated")
+            current = bool(matches and matches[0][1].group("comment") is None)
+            if current == enabled:
+                continue
+            if not matches:
+                raise ConfigMutationError(f"{feature} package line is unavailable")
+            index, match = matches[0]
+            lines[index] = (
+                match.group("indent")
+                + ("" if enabled else "#")
+                + match.group("entry")
+                + (match.group("newline") or "")
+            )
+            changes.append(
+                SubstitutionChange(
+                    f"{feature}_{board}",
+                    "enabled" if current else "disabled",
+                    "enabled" if enabled else "disabled",
+                )
+            )
+    return "".join(lines), changes
+
+
+def package_options_from_document(
+    document: ESPHomeConfigDocument, topology: MeterTopology
+) -> dict[str, tuple[bool, ...]]:
+    """Return the active optional packages for each installed board."""
+    active = set(document.package_files)
+    return {
+        feature: tuple(
+            f"Software/ESPHome/{directory}/6chan_"
+            f"{'main' if board_index == 0 else f'addon{board_index}'}_{suffix}.yaml"
+            in active
+            for board_index in range(topology.board_count)
+        )
+        for feature, (directory, suffix) in _PACKAGE_FEATURES.items()
+    }
+
+
 def build_calibrated_gain_mutation(
     snapshot: ConfigSnapshot,
     topology: MeterTopology,
     verified: VerifiedCalibrationRecord,
     requested_channels: Iterable[CTChangeRequest] = (),
     calibrated_current_channels: frozenset[int] = frozenset(),
+    *,
+    package_options: Mapping[str, Iterable[bool]] | None = None,
 ) -> ConfigMutationPlan:
     """Build a reviewed final-gain plan bound to the calibration source hash."""
     if getattr(snapshot, "configuration_authoritative", True) is not True:
@@ -238,6 +321,11 @@ def build_calibrated_gain_mutation(
     proposed_content = _apply_reporting_multipliers(
         _apply_changes(document, changes, values), requests, document.substitutions
     )
+    if package_options is not None:
+        proposed_content, package_changes = _apply_package_options(
+            proposed_content, topology, package_options
+        )
+        changes.extend(package_changes)
     return ConfigMutationPlan(
         snapshot.configuration,
         snapshot.sha256,

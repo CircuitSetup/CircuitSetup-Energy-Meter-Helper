@@ -1,5 +1,6 @@
 import type {
   ActiveWork,
+  BoardPackageOptions,
   CalibrationResult,
   ConnectionType,
   CtChange,
@@ -44,7 +45,7 @@ const TRANSACTION_EVIDENCE = new Set(["write_failed", "write_not_applied", "writ
 const TRANSACTION_PROGRESS = new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
 const PREFLIGHT_CODES = new Set(["count_mismatch", "invalid_kind", "invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
 const AUTHORITATIVE_EVIDENCE = new Set(["config_project", "config_packages", "native_project"]);
-const CHANGE_KEY = /^(?:ct(?:[1-9]|[1-3][0-9]|4[0-2])_name|current_cal_ct(?:[1-9]|[1-3][0-9]|4[0-2])|voltage_cal[12])$/;
+const CHANGE_KEY = /^(?:ct(?:[1-9]|[1-3][0-9]|4[0-2])_name|current_cal_ct(?:[1-9]|[1-3][0-9]|4[0-2])|voltage_cal[12]|(?:power_quality|status_fields)_(?:main|addon[1-6]))$/;
 const MAC = /^[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SERVER_ID = /^[0-9a-f]{32}$/;
@@ -124,6 +125,10 @@ function setup(value: unknown, label: string): SetupSnapshot {
     if (count < 0 || count > 6) throw new Error(`${label} response is invalid`);
     const connection = enumeration(intent.connection_type, CONNECTIONS, label);
     if (connection === "unknown") throw new Error(`${label} response is invalid`);
+    if ((intent.power_quality === undefined) !== (intent.status_fields === undefined)) {
+      throw new Error(`${label} response is invalid`);
+    }
+    if (intent.power_quality !== undefined) packageOptions(intent, label, count + 1);
     const productId = intent.firmware_product_id;
     const version = intent.esphome_version;
     if ((productId === undefined) !== (version === undefined)
@@ -156,8 +161,23 @@ function topology(value: unknown, label: string): MeterTopology {
 }
 function topologyResponse(value: unknown, label: string): MeterTopology | { topology: MeterTopology } {
   const item = record(value, label);
-  if ("topology" in item) { topology(item.topology, label); if (item.configuration_authoritative !== undefined) boolean(item.configuration_authoritative, label); return value as { topology: MeterTopology }; }
+  if ("topology" in item) {
+    const parsed = topology(item.topology, label);
+    if (item.configuration_authoritative !== undefined) boolean(item.configuration_authoritative, label);
+    if (item.package_options !== undefined) packageOptions(item.package_options, label, parsed.board_count);
+    return value as { topology: MeterTopology };
+  }
   return topology(value, label);
+}
+
+function packageOptions(value: unknown, label: string, boardCount: number): BoardPackageOptions {
+  const item = record(value, label);
+  for (const key of ["power_quality", "status_fields"] as const) {
+    const states = array(item[key], label, 7);
+    if (states.length !== boardCount) throw new Error(`${label} response is invalid`);
+    states.forEach((state) => boolean(state, label));
+  }
+  return value as BoardPackageOptions;
 }
 function ctInventory(value: unknown, label: string): CtInventory {
   const item = record(value, label); string(item.plan_id, label); string(item.source_sha256, label);
@@ -570,9 +590,11 @@ export class HelperApi {
     addonCount: number,
     connectionType: Exclude<ConnectionType, "unknown">,
     firmware: FirmwareOption | null,
+    packageOptions?: BoardPackageOptions,
   ) => this.call("set_installer_intent", (value) => setup(value, "set_installer_intent"), {
     addon_count: addonCount,
     connection_type: connectionType,
+    ...(packageOptions ?? {}),
     ...(firmware && firmware.productId.length <= 160 && firmware.version.length <= 160
       && FIRMWARE_PRODUCT_ID.test(firmware.productId) && ESPHOME_VERSION.test(firmware.version)
       ? { firmware_product_id: firmware.productId, esphome_version: firmware.version }
@@ -586,11 +608,13 @@ export class HelperApi {
     planId: string,
     sourceSha256: string,
     changes: CtChange[],
+    packageOptions?: BoardPackageOptions,
   ) => this.call("preview_ct_config", (value) => transaction(value, "preview_ct_config"), {
     device_id: deviceId,
     plan_id: planId,
     source_sha256: sourceSha256,
     changes,
+    ...(packageOptions ? { package_options: packageOptions } : {}),
   });
   public setHaLabels = (deviceId: string, planId: string, sourceSha256: string, changes: Array<{ channel: number; name: string }>) =>
     this.call("set_ha_labels", (value) => value as LabelUpdateResult, {
@@ -687,11 +711,12 @@ export class HelperApi {
       }
       return result;
     }, { session_id: sessionId });
-  public previewCalibratedGains = (sessionId: string, verificationId: string, changes: CtChange[] = []) =>
+  public previewCalibratedGains = (sessionId: string, verificationId: string, changes: CtChange[] = [], packageOptions?: BoardPackageOptions) =>
     this.call("preview_calibrated_gains", (value) => transaction(value, "preview_calibrated_gains"), {
       session_id: sessionId,
       verification_id: verificationId,
       changes,
+      ...(packageOptions ? { package_options: packageOptions } : {}),
     });
   public clearCalibrationFlash = (
     sessionId: string,

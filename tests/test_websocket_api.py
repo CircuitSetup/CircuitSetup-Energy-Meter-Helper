@@ -656,6 +656,8 @@ def test_installer_intent_schema_requires_a_valid_paired_firmware_selection() ->
         "connection_type": "wifi",
         "firmware_product_id": "6chan_energy_meter_1-addon",
         "esphome_version": "2026.8.0",
+        "power_quality": [True, False],
+        "status_fields": [False, True],
     }
 
     assert schema(valid) == valid
@@ -672,6 +674,30 @@ def test_installer_intent_schema_requires_a_valid_paired_firmware_selection() ->
             schema(partial)
 
 
+def test_preview_ct_schema_requires_a_ct_or_package_change() -> None:
+    schema = vol.Schema(_schema(f"{DOMAIN}/preview_ct_config"))
+    message = {
+        "type": f"{DOMAIN}/preview_ct_config",
+        "entry_id": "helper",
+        "device_id": "meter",
+        "plan_id": "plan",
+        "source_sha256": "a" * 64,
+        "changes": [],
+    }
+
+    with pytest.raises(vol.Invalid, match="configuration change"):
+        schema(message)
+    schema(
+        message
+        | {
+            "package_options": {
+                "power_quality": [True],
+                "status_fields": [False],
+            }
+        }
+    )
+
+
 def test_setup_status_exposes_only_safe_installer_firmware_identifiers() -> None:
     """Public setup status retains selection IDs without a manifest or binary URL."""
 
@@ -684,6 +710,8 @@ def test_setup_status_exposes_only_safe_installer_firmware_identifiers() -> None
         intent |= {
             "firmware_product_id": "6chan_energy_meter_1-addon",
             "esphome_version": "2026.8.0",
+            "power_quality": [True, False],
+            "status_fields": [False, True],
         }
         await _invoke(hass, connection, intent)
         await _invoke(hass, connection, _message(f"{DOMAIN}/setup_status", 2))
@@ -694,6 +722,8 @@ def test_setup_status_exposes_only_safe_installer_firmware_identifiers() -> None
             "connection_type": "wifi",
             "firmware_product_id": "6chan_energy_meter_1-addon",
             "esphome_version": "2026.8.0",
+            "power_quality": [True, False],
+            "status_fields": [False, True],
         }
         assert "url" not in repr(snapshot).casefold()
 
@@ -1148,6 +1178,11 @@ substitutions:
   current_cal_ct5: '27518'
   ct6_name: CT 6
   current_cal_ct6: '27518'
+packages:
+  circuitsetup_meter:
+    files:
+      #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
+      - Software/ESPHome/status_fields/6chan_main_status.yaml
 """
     digest = sha256(content.encode()).hexdigest()
 
@@ -1182,6 +1217,14 @@ substitutions:
         assert isinstance(runtime["esphome_api"], ESPHomeApiSession)
         assert runtime["esphome_api"].esphome_entry_id == "meter"
 
+        topology_result = await controller.async_call(
+            f"{DOMAIN}/get_topology", {"device_id": "meter"}, None
+        )
+        assert topology_result["package_options"] == {
+            "power_quality": (False,),
+            "status_fields": (True,),
+        }
+
         inventory = await controller.async_call(
             f"{DOMAIN}/get_ct_inventory", {"device_id": "meter"}, None
         )
@@ -1199,6 +1242,10 @@ substitutions:
                         "model_id": "sct_013_000_100a_50ma",
                     },
                 ),
+                "package_options": {
+                    "power_quality": (True,),
+                    "status_fields": (False,),
+                },
             },
             "admin",
         )
@@ -1212,6 +1259,8 @@ substitutions:
             "admin",
         )
         assert applied.state is ConfigTransactionState.VALIDATED
+        assert "      - Software/ESPHome/power_quality/6chan_main_power_quality.yaml" in websocket.content
+        assert "      #- Software/ESPHome/status_fields/6chan_main_status.yaml" in websocket.content
         compiled = await controller.async_call(
             f"{DOMAIN}/compile_ct_config",
             {
@@ -1224,6 +1273,7 @@ substitutions:
         assert compiled.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert websocket.calls == [
             "devices/list",
+            "devices/get_config",
             "devices/get_config",
             "devices/get_config",
             "devices/update_config",
@@ -1958,9 +2008,15 @@ def test_controller_routes_calibration_handoff_identity_without_browser_yaml() -
 
         class Workflow:
             async def async_preview_calibrated_gains(
-                self, session_id: str, verification_id: str
+                self,
+                session_id: str,
+                verification_id: str,
+                changes: tuple[Mapping[str, Any], ...] = (),
+                package_options: Mapping[str, Any] | None = None,
             ) -> str:
-                calls.append(("preview", session_id, verification_id))
+                calls.append(
+                    ("preview", session_id, verification_id, changes, package_options)
+                )
                 return "previewed"
 
             async def async_clear_calibration_flash(
@@ -1972,7 +2028,14 @@ def test_controller_routes_calibration_handoff_identity_without_browser_yaml() -
         controller.workflow = Workflow()  # type: ignore[assignment]
         assert await controller.async_call(
             f"{DOMAIN}/preview_calibrated_gains",
-            {"session_id": "session", "verification_id": "1" * 32},
+            {
+                "session_id": "session",
+                "verification_id": "1" * 32,
+                "package_options": {
+                    "power_quality": [True],
+                    "status_fields": [False],
+                },
+            },
             "admin",
         ) == "previewed"
         assert await controller.async_call(
@@ -1985,7 +2048,13 @@ def test_controller_routes_calibration_handoff_identity_without_browser_yaml() -
             "admin",
         ) == "configuration"
         assert calls == [
-            ("preview", "session", "1" * 32),
+            (
+                "preview",
+                "session",
+                "1" * 32,
+                (),
+                {"power_quality": [True], "status_fields": [False]},
+            ),
             ("clear", "session", "1" * 32, "2" * 32),
         ]
 
@@ -2641,7 +2710,7 @@ def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> N
         assert connection.results[-1] == (
             1,
             {
-                "integration_version": "0.2.0",
+                "integration_version": "0.2.1",
                 "home_assistant_version": HA_VERSION,
                 "config_entry_version": 1,
                 "setup_state": "no_device",
@@ -3535,6 +3604,14 @@ def test_recursive_sanitizer_preserves_only_approved_change_keys_in_context() ->
         {"changes": [{"key": "logger", "new_value": "x"}]},
         allow_transaction_change_keys=True,
     ) == {"changes": [{"new_value": "x"}]}
+    assert sanitize_payload(
+        {"changes": [{"key": "power_quality_main", "new_value": "enabled"}]},
+        allow_transaction_change_keys=True,
+    ) == {"changes": [{"key": "power_quality_main", "new_value": "enabled"}]}
+    assert sanitize_payload(
+        {"changes": [{"key": "status_fields_addon7", "new_value": "enabled"}]},
+        allow_transaction_change_keys=True,
+    ) == {"changes": [{"new_value": "enabled"}]}
 
 
 def test_router_scopes_change_keys_to_transaction_results_and_events() -> None:

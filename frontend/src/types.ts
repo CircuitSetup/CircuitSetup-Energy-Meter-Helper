@@ -39,6 +39,13 @@ export interface InstallerIntent {
   connection_type: Exclude<ConnectionType, "unknown">;
   firmware_product_id?: string;
   esphome_version?: string;
+  power_quality?: boolean[];
+  status_fields?: boolean[];
+}
+
+export interface BoardPackageOptions {
+  power_quality: boolean[];
+  status_fields: boolean[];
 }
 
 export interface SetupSnapshot {
@@ -74,6 +81,7 @@ export interface MeterTopology {
 export interface TopologyResult {
   configuration_authoritative?: boolean;
   topology?: MeterTopology;
+  package_options?: BoardPackageOptions;
 }
 
 export interface ChannelAddress {

@@ -78,6 +78,8 @@ class InstallerIntent:
     connection_type: ConnectionType
     firmware_product_id: str | None = None
     esphome_version: str | None = None
+    power_quality: tuple[bool, ...] | None = None
+    status_fields: tuple[bool, ...] | None = None
 
     def __post_init__(self) -> None:
         if not 0 <= self.addon_count <= 6:
@@ -88,6 +90,21 @@ class InstallerIntent:
             self.firmware_product_id,
             self.esphome_version,
         )
+        board_count = self.addon_count + 1
+        defaults = {
+            "power_quality": (False,) * board_count,
+            "status_fields": (True,) + (False,) * self.addon_count,
+        }
+        for field_name, default in defaults.items():
+            values = getattr(self, field_name)
+            if values is None:
+                object.__setattr__(self, field_name, default)
+            elif len(values) != board_count or any(
+                type(value) is not bool for value in values
+            ):
+                raise ValueError(
+                    "package options require one state per installed board"
+                )
 
     @property
     def ct_count(self) -> int:

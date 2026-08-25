@@ -167,6 +167,44 @@ describe("HelperApi", () => {
     });
   });
 
+  it("sends per-board package choices through installer and review requests", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    const packageOptions = {
+      power_quality: [true, false],
+      status_fields: [false, true],
+    };
+
+    await api.setInstallerIntent(1, "wifi", null, packageOptions);
+    await api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [], packageOptions);
+    await api.previewCalibratedGains("session-1", "1".repeat(32), [], packageOptions);
+
+    expect(hass.messages).toEqual([
+      expect.objectContaining({ type: "circuitsetup_energy_meter_helper/set_installer_intent", ...packageOptions }),
+      expect.objectContaining({ type: "circuitsetup_energy_meter_helper/preview_ct_config", package_options: packageOptions }),
+      expect.objectContaining({ type: "circuitsetup_energy_meter_helper/preview_calibrated_gains", package_options: packageOptions }),
+    ]);
+  });
+
+  it("accepts current per-board package state only when it matches topology", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    hass.responses.get_topology = {
+      topology,
+      package_options: { power_quality: [false], status_fields: [true] },
+    };
+
+    await expect(api.getTopology("meter-1")).resolves.toMatchObject({
+      package_options: { power_quality: [false], status_fields: [true] },
+    });
+
+    hass.responses.get_topology = {
+      topology,
+      package_options: { power_quality: [false, true], status_fields: [true] },
+    };
+    await expect(api.getTopology("meter-1")).rejects.toThrow("get_topology");
+  });
+
   it("loads the authoritative active work for one device", async () => {
     const hass = new FakeHass();
     hass.responses.get_active_work = {
@@ -592,6 +630,27 @@ describe("HelperApi", () => {
     hass.responses.get_diagnostics_summary = { changes: { key: "current_cal_ct42" } };
     await expect(api.getDiagnosticsSummary()).rejects.toThrow("private field");
     hass.responses.preview_ct_config = { ...transaction, changes: [{ key: "logger", old_value: null, new_value: "x" }] };
+    await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
+  });
+
+  it("accepts only bounded optional-package change keys in config review", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    hass.responses.preview_ct_config = {
+      ...transaction,
+      changes: [
+        { key: "power_quality_main", old_value: "disabled", new_value: "enabled" },
+        { key: "status_fields_addon6", old_value: "enabled", new_value: "disabled" },
+      ],
+    };
+
+    await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({
+      changes: [{ key: "power_quality_main" }, { key: "status_fields_addon6" }],
+    });
+    hass.responses.preview_ct_config = {
+      ...transaction,
+      changes: [{ key: "power_quality_addon7", old_value: "disabled", new_value: "enabled" }],
+    };
     await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
   });
 

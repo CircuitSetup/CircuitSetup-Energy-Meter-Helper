@@ -6,6 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from custom_components.circuitsetup_energy_meter_helper import config_mutator
+from custom_components.circuitsetup_energy_meter_helper.config_document import (
+    ESPHomeConfigDocument,
+)
 from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
     ConfigMutationError,
     CTChangeRequest,
@@ -44,6 +48,58 @@ def _snapshot(*, missing: str | None = None, quote: str = '"') -> ESPHomeConfigS
     )
 
 
+def _package_snapshot() -> ESPHomeConfigSnapshot:
+    content = """substitutions:
+  ct1_name: CT 1
+  current_cal_ct1: 11143
+  ct2_name: CT 2
+  current_cal_ct2: 11143
+  ct3_name: CT 3
+  current_cal_ct3: 11143
+  ct4_name: CT 4
+  current_cal_ct4: 11143
+  ct5_name: CT 5
+  current_cal_ct5: 11143
+  ct6_name: CT 6
+  current_cal_ct6: 11143
+  ct7_name: CT 7
+  current_cal_ct7: 11143
+  ct8_name: CT 8
+  current_cal_ct8: 11143
+  ct9_name: CT 9
+  current_cal_ct9: 11143
+  ct10_name: CT 10
+  current_cal_ct10: 11143
+  ct11_name: CT 11
+  current_cal_ct11: 11143
+  ct12_name: CT 12
+  current_cal_ct12: 11143
+packages:
+  circuitsetup_meter:
+    files:
+      #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml # keep this note
+      #- Software/ESPHome/power_quality/6chan_addon1_power_quality.yaml
+      - Software/ESPHome/status_fields/6chan_main_status.yaml
+      #- Software/ESPHome/status_fields/6chan_addon1_status.yaml
+api:
+  encryption:
+    key: top-secret
+"""
+    return ESPHomeConfigSnapshot(
+        "meter.yaml", content, sha256(content.encode()).hexdigest()
+    )
+
+
+def _two_board_topology() -> MeterTopology:
+    return MeterTopology.from_addon_count(
+        1,
+        connection_type="wifi",
+        voltage_layout="standard",
+        project_name="circuitsetup.6c-energy-meter-1-addon",
+        evidence=(),
+    )
+
+
 def test_noop_is_byte_identical_and_surgical_edit_only_changes_requested_keys() -> None:
     """Existing source spans, quotes, and unrelated content are left untouched."""
     snapshot = _snapshot()
@@ -70,6 +126,57 @@ def test_noop_is_byte_identical_and_surgical_edit_only_changes_requested_keys() 
     assert "top-secret" not in plan.redacted_diff
     assert "top-secret" not in repr(plan)
     assert plan.source_sha256 == snapshot.sha256
+
+
+def test_board_package_options_toggle_only_requested_meter_boards() -> None:
+    """A wrong board index or direction would enable the wrong firmware package."""
+    plan = build_ct_mutation(
+        _package_snapshot(),
+        _two_board_topology(),
+        (),
+        package_options={
+            "power_quality": (True, False),
+            "status_fields": (False, True),
+        },
+    )
+
+    assert "      - Software/ESPHome/power_quality/6chan_main_power_quality.yaml # keep this note\n" in plan.proposed_content
+    assert "      #- Software/ESPHome/power_quality/6chan_addon1_power_quality.yaml\n" in plan.proposed_content
+    assert "      #- Software/ESPHome/status_fields/6chan_main_status.yaml\n" in plan.proposed_content
+    assert "      - Software/ESPHome/status_fields/6chan_addon1_status.yaml\n" in plan.proposed_content
+    assert [change.key for change in plan.changes] == [
+        "power_quality_main",
+        "status_fields_main",
+        "status_fields_addon1",
+    ]
+    assert "top-secret" not in plan.redacted_diff
+
+
+def test_board_package_options_reflect_active_lines_in_the_current_config() -> None:
+    """Ignoring active package lines would show stale defaults for existing meters."""
+    options = config_mutator.package_options_from_document(
+        ESPHomeConfigDocument.parse(_package_snapshot().content),
+        _two_board_topology(),
+    )
+
+    assert options == {
+        "power_quality": (False, False),
+        "status_fields": (True, False),
+    }
+
+
+def test_board_package_options_require_one_state_per_installed_board() -> None:
+    """A short selection must not silently leave an installed board unchanged."""
+    with pytest.raises(ConfigMutationError, match="installed board"):
+        build_ct_mutation(
+            _package_snapshot(),
+            _two_board_topology(),
+            (),
+            package_options={
+                "power_quality": (True,),
+                "status_fields": (True, False),
+            },
+        )
 
 
 def test_reporting_multiplier_divides_gain_and_multiplies_current_and_power() -> None:
