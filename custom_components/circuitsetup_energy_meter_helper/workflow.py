@@ -6,6 +6,7 @@ import asyncio
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from hashlib import sha256
 from http.cookies import SimpleCookie
 from statistics import pstdev
 from threading import RLock
@@ -35,7 +36,6 @@ from .calibration_engine import (
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import (
     CTChangeRequest,
-    build_ct_mutation,
     package_options_from_document,
 )
 from .config_transaction import ConfigTransactionManager, ReconnectEvidence
@@ -54,6 +54,11 @@ from .entity_binding import (
 )
 from .entity_catalog import EntityCatalog
 from .esphome_api import ESPHomeApiSession
+from .meter_config_mutator import (
+    build_meter_configuration_mutation,
+    expected_meter_entity_evidence,
+)
+from .meter_configuration import MeterConfigurationRequest
 from .meter_inventory import MeterConfigurationInventory
 from .models import MeterTopology, StoredCTSelection, canonical_mac
 from .offset_readiness import (
@@ -69,7 +74,7 @@ from .provisioning import (
 )
 from .session_manager import CalibrationBusyError, SessionManager
 from .state_tracker import SensorSampleWindow
-from .store import CalibrationSourceAuthority, HelperStore
+from .store import CalibrationSourceAuthority, HelperStore, StoredMeterConfiguration
 from .topology import (
     topology_from_config,
     topology_from_native,
@@ -559,41 +564,108 @@ class EntryWorkflow:
         package_options: Mapping[str, Any] | None = None,
     ) -> Any:
         plan = self._plan(plan_id, device_id, source_sha256)
+        requests = _ct_change_requests(changes)
+        by_channel = {request.channel: request for request in requests}
+        requested = replace(
+            plan.inventory.configuration,
+            channels=tuple(
+                replace(
+                    channel,
+                    name=change.name,
+                    model_id=change.model_id,
+                    reporting_multiplier=change.reporting_multiplier,
+                    custom_gain_ct=change.custom_gain_ct,
+                    custom_label=change.custom_label,
+                    burden_output_acknowledged=change.burden_output_acknowledged,
+                )
+                if (change := by_channel.get(channel.channel)) is not None
+                else channel
+                for channel in plan.inventory.configuration.channels
+            ),
+        )
+        if package_options is not None:
+            if set(package_options) != {"power_quality", "status_fields"}:
+                raise ValueError("package options are invalid")
+            options = {name: tuple(values) for name, values in package_options.items()}
+            if any(
+                len(values) != plan.topology.board_count
+                or any(type(value) is not bool for value in values)
+                for values in options.values()
+            ):
+                raise ValueError(
+                    "package options require one state per installed board"
+                )
+            requested = replace(
+                requested,
+                power_quality=options["power_quality"],
+                status_fields=options["status_fields"],
+            )
+        return await self._async_preview_meter_configuration(plan, requested)
+
+    async def async_preview_meter_configuration(
+        self,
+        device_id: str,
+        plan_id: str,
+        source_sha256: str,
+        requested: MeterConfigurationRequest,
+    ) -> Any:
+        """Preview one complete server-validated meter configuration transaction."""
+        return await self._async_preview_meter_configuration(
+            self._plan(plan_id, device_id, source_sha256), requested
+        )
+
+    async def _async_preview_meter_configuration(
+        self, plan: _PlanHandle, requested: MeterConfigurationRequest
+    ) -> Any:
         manager = self.transactions
         if manager is None:
             raise WorkflowCapabilityUnavailable("configuration writes are unavailable")
-        requests = _ct_change_requests(changes)
-        mutation = build_ct_mutation(
-            plan.snapshot,
-            plan.topology,
-            requests,
-            package_options=package_options,
+        mutation = build_meter_configuration_mutation(
+            plan.snapshot, plan.topology, plan.inventory, requested
         )
+        proposed_sha256 = sha256(mutation.proposed_content.encode()).hexdigest()
         updated_inventory = CTInventory.from_document(
             ESPHomeConfigDocument.parse(mutation.proposed_content),
             plan.topology,
             plan.inventory.ct_catalog,
-            plan.snapshot.sha256,
+            proposed_sha256,
             reporting_multipliers={
-                request.channel: request.reporting_multiplier for request in requests
+                channel.channel: channel.reporting_multiplier
+                for channel in requested.channels
             },
         )
         by_channel = {item.channel: item for item in updated_inventory.channels}
         selections = tuple(
             StoredCTSelection(
-                request.channel,
-                request.model_id,
-                request.custom_label,
-                by_channel[request.channel].raw_gain_ct,
-                request.reporting_multiplier,
-                plan.snapshot.sha256,
+                channel.channel,
+                channel.model_id,
+                channel.custom_label,
+                by_channel[channel.channel].raw_gain_ct,
+                channel.reporting_multiplier,
+                proposed_sha256,
             )
-            for request in requests
+            for channel in requested.channels
         )
+        configuration = StoredMeterConfiguration(
+            proposed_sha256,
+            requested.meter,
+            requested.channels,
+            requested.aggregates,
+            requested.power_quality,
+            requested.status_fields,
+            selections,
+        )
+        expected = expected_meter_entity_evidence(requested, plan.topology)
         status = await manager.async_preview(
-            plan.mac, plan.topology, mutation, plan.snapshot, selections
+            plan.mac,
+            plan.topology,
+            mutation,
+            plan.snapshot,
+            meter_configuration=configuration,
+            expected_entity_ids=expected.object_ids,
+            expected_sensor_names=expected.sensor_names,
         )
-        self._plans.pop(plan_id, None)
+        self._plans.pop(plan.plan_id, None)
         plan.scrub()
         return status
 
@@ -1255,17 +1327,12 @@ class EntryWorkflow:
             substitutions = {
                 key: scalar.value for key, scalar in document.substitutions.items()
             }
-            binding = bind_meter(
-                EntityCatalog(api.entities, api.connection_generation),
-                topology,
-                substitutions,
-            )
+            catalog = EntityCatalog(api.entities, api.connection_generation)
+            binding = bind_meter(catalog, topology, substitutions)
         else:
             topology = handle.topology
-            binding = handle.binding.rebind(
-                EntityCatalog(api.entities, api.connection_generation),
-                handle.substitutions,
-            )
+            catalog = EntityCatalog(api.entities, api.connection_generation)
+            binding = handle.binding.rebind(catalog, handle.substitutions)
             handle.binding = binding
         return ReconnectEvidence(
             canonical_mac(mac),
@@ -1275,6 +1342,8 @@ class EntryWorkflow:
                 for channel in binding.channels
             },
             len(binding.channels),
+            frozenset(entity.object_id for entity in catalog.entities),
+            frozenset(entity.name for entity in catalog.by_kind("sensor")),
         )
 
     async def async_close(self) -> None:

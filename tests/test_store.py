@@ -430,8 +430,103 @@ def test_verified_meter_configuration_round_trips_without_operation_acknowledgem
             "aggregates",
             "power_quality",
             "status_fields",
+            "ct_selections",
         }
         assert "multi_reference_preparation_acknowledged" not in str(raw)
+
+    asyncio.run(run())
+
+
+def test_calibrated_install_persists_full_meter_metadata_atomically() -> None:
+    """A failed handoff must not leave CT/configuration metadata half persisted."""
+
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        configuration = _configuration()
+        calibration = VerifiedCalibrationRecord(
+            MAC,
+            "meter.yaml",
+            CONFIG_HASH,
+            0,
+            "circuitsetup.6c-energy-meter",
+            "wifi",
+            "standard",
+            1,
+            (VerifiedGainGroup("meter_main1", ((7305, 27518),) * 3),),
+            "b" * 32,
+        )
+        transaction_id = "c" * 32
+
+        await store.async_save_meter(_record())
+        await store.async_save_verified_calibration(calibration)
+        assert not await store.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+            MAC, configuration, calibration.verification_id, transaction_id
+        )
+        assert await store.async_get_meter_configuration(MAC) is None
+        assert await store.async_claim_verified_calibration(
+            MAC, calibration.verification_id, transaction_id
+        )
+
+        assert await store.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+            MAC, configuration, calibration.verification_id, transaction_id
+        )
+        installed = await store.async_get_verified_calibration(MAC)
+        assert await store.async_get_meter_configuration(MAC) == configuration
+        assert installed is not None and installed.source_handoff_firmware_installed
+
+    asyncio.run(run())
+
+
+def test_old_meter_configuration_payload_without_nested_ct_selections_loads() -> None:
+    """Nested CT metadata is additive, so existing verified records remain readable."""
+
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+        await store.async_save_verified_meter_configuration(MAC, _configuration())
+        raw = backend.data["meters"][MAC]["meter_configuration"]  # type: ignore[index]
+        del raw["ct_selections"]  # type: ignore[index]
+
+        loaded = await store.async_get_meter_configuration(MAC)
+        assert loaded == _configuration() and loaded.ct_selections == ()
+
+    asyncio.run(run())
+
+
+def test_verified_meter_configuration_owns_its_ct_selections_atomically() -> None:
+    """A verified full configuration is the single source for CT metadata."""
+
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        selections = tuple(
+            StoredCTSelection(
+                channel,
+                "ct",
+                f"CT {channel}",
+                27_518,
+                1.0,
+                CONFIG_HASH,
+            )
+            for channel in range(1, 7)
+        )
+        configuration = replace(_configuration(), ct_selections=selections)
+
+        await store.async_save_meter(_record())
+        await store.async_save_verified_meter_configuration(MAC, configuration)
+
+        assert await store.async_get_meter_configuration(MAC) == configuration
+        assert await store.async_get_ct_selections(MAC) == selections
+        raw = backend.data["meters"][MAC]["meter_configuration"]  # type: ignore[index]
+        assert raw["ct_selections"][0]["raw_gain_ct"] == 27_518  # type: ignore[index]
 
     asyncio.run(run())
 

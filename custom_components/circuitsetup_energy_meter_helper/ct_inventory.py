@@ -157,21 +157,19 @@ def _reject_object_id_collisions(channels: Iterable[CTChannelConfig]) -> None:
 
 
 def _esphome_object_id(value: str) -> str:
-    """Match ESPHome's helpers.slugify for pre-write collision detection."""
-    normalized = "".join(
-        character
-        for character in unicodedata.normalize("NFD", value)
-        if unicodedata.category(character) != "Mn"
-    )
-    normalized = (
-        normalized.lower()
-        .replace(" ", "_")
-        .replace("-", "_")
-        .replace("__", "_")
-        .strip("_")
-    )
-    return "".join(
-        character
-        for character in normalized
-        if character in "abcdefghijklmnopqrstuvwxyz0123456789-_"
-    )
+    """Match ESPHome's native entity-name object-ID sanitizer exactly."""
+    result = bytearray()
+    for byte in value.encode("utf-8"):
+        if byte == 0x20:
+            result.append(0x5F)
+        elif 0x41 <= byte <= 0x5A:
+            result.append(byte + 0x20)
+        elif (
+            0x61 <= byte <= 0x7A
+            or 0x30 <= byte <= 0x39
+            or byte in (0x2D, 0x5F)
+        ):
+            result.append(byte)
+        else:
+            result.append(0x5F)
+    return result.decode("ascii")

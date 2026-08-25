@@ -4,6 +4,9 @@ from dataclasses import replace
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.entity_binding import group_key
+from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+    expected_meter_entity_evidence,
+)
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     ChannelSettings,
     CircuitAggregate,
@@ -78,6 +81,77 @@ def test_default_addon_groups_use_canonical_keys() -> None:
         "main_1", "main_2", "addon1_1", "addon1_2"
     )
     validate_meter_configuration(value, topology(1))
+
+
+def test_expected_reconnect_entities_use_rendered_names_and_skip_internal_power() -> None:
+    value = request()
+    object.__setattr__(
+        value,
+        "aggregates",
+        (
+            CircuitAggregate(
+                "grid",
+                "Grid feed",
+                CircuitRole.GRID,
+                (1, 2),
+                MeasurementMethod.DIRECT,
+                None,
+                EnergyMode.CONSUMPTION,
+                expose_power=False,
+                expose_current=True,
+            ),
+        ),
+    )
+
+    evidence = expected_meter_entity_evidence(value, topology())
+
+    assert evidence.sensor_names == frozenset(
+        {
+            "Kitchen meter Main Voltage",
+            "Kitchen meter Main Frequency",
+            "Kitchen meter Grid feed Current",
+            "Kitchen meter Grid feed Energy",
+        }
+    )
+    assert evidence.object_ids == frozenset(
+        {
+            "kitchen_meter_main_voltage",
+            "kitchen_meter_main_frequency",
+            "kitchen_meter_grid_feed_current",
+            "kitchen_meter_grid_feed_energy",
+        }
+    )
+
+
+def test_expected_reconnect_entities_reject_native_object_id_collision() -> None:
+    value = request()
+    object.__setattr__(
+        value,
+        "aggregates",
+        (
+            CircuitAggregate(
+                "first",
+                "Grid!",
+                CircuitRole.GRID,
+                (1, 2),
+                MeasurementMethod.DIRECT,
+                None,
+                EnergyMode.NONE,
+            ),
+            CircuitAggregate(
+                "second",
+                "Grid?",
+                CircuitRole.SOLAR,
+                (3, 4),
+                MeasurementMethod.DIRECT,
+                None,
+                EnergyMode.NONE,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="object-ID collision"):
+        expected_meter_entity_evidence(value, topology())
 
 
 def test_direct_accepts_multiple_enabled_channels() -> None:

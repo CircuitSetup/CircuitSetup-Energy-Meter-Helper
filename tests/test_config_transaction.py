@@ -21,6 +21,21 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     JobProgress,
     JobProgressStage,
 )
+from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+    expected_meter_entity_evidence,
+)
+from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    ChannelSettings,
+    CircuitAggregate,
+    CircuitRole,
+    ElectricalSystem,
+    EnergyMode,
+    MeasurementMethod,
+    MeterConfigurationRequest,
+    MeterSettings,
+    VoltageLayout,
+    VoltageReferenceConfig,
+)
 from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
     MeterTopology,
@@ -29,6 +44,9 @@ from custom_components.circuitsetup_energy_meter_helper.models import (
 )
 from custom_components.circuitsetup_energy_meter_helper.session_manager import (
     SessionManager,
+)
+from custom_components.circuitsetup_energy_meter_helper.store import (
+    StoredMeterConfiguration,
 )
 
 
@@ -192,6 +210,29 @@ class Persistence:
         self.selections = selections
         self.saved.append((mac, selections))
 
+    async def async_save_verified_meter_configuration(
+        self, mac: str, configuration: StoredMeterConfiguration
+    ) -> None:
+        if self.error is not None:
+            raise self.error
+        self.meter_configuration = configuration
+        self.selections = configuration.ct_selections
+        self.saved.append((mac, configuration))
+
+    async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+        self,
+        mac: str,
+        configuration: StoredMeterConfiguration,
+        verification_id: str,
+        transaction_id: str,
+    ) -> bool:
+        if self.error is not None:
+            raise self.error
+        self.meter_configuration = configuration
+        self.selections = configuration.ct_selections
+        self.saved.append((mac, configuration, verification_id, transaction_id))
+        return True
+
 
 class Verifier:
     def __init__(self, evidence: ReconnectEvidence | BaseException) -> None:
@@ -238,6 +279,45 @@ def _plan(
 
 def _selection() -> StoredCTSelection:
     return StoredCTSelection(1, "split-core-100a", "Kitchen", 27518, 1.0, "0" * 64)
+
+
+def _meter_configuration(plan: ConfigMutationPlan) -> StoredMeterConfiguration:
+    config_sha256 = sha256(plan.proposed_content.encode()).hexdigest()
+    meter = MeterSettings(
+        "Energy meter",
+        ElectricalSystem.SPLIT_PHASE_120_240,
+        60,
+        5,
+        VoltageLayout.STANDARD,
+        (VoltageReferenceConfig("main", "Main", "A", 120.0, "vt", 1, ("main_1", "main_2")),),
+    )
+    channels = tuple(
+        ChannelSettings(
+            channel, True, f"CT {channel}", "ct", 1.0, CircuitRole.BRANCH, "main"
+        )
+        for channel in range(1, 7)
+    )
+    aggregate = CircuitAggregate(
+        "grid",
+        "Grid",
+        CircuitRole.GRID,
+        (1, 2),
+        MeasurementMethod.TWO_CT_SUM,
+        None,
+        EnergyMode.CONSUMPTION,
+    )
+    return StoredMeterConfiguration(
+        config_sha256,
+        meter,
+        channels,
+        (aggregate,),
+        (False,),
+        (False,),
+        tuple(
+            StoredCTSelection(channel, "ct", f"CT {channel}", 27518, 1.0, config_sha256)
+            for channel in range(1, 7)
+        ),
+    )
 
 
 def _evidence(mac: str = "aabbccddeeff") -> ReconnectEvidence:
@@ -341,6 +421,187 @@ def test_write_and_compile_are_distinct_confirmed_phases() -> None:
         compiled = await manager.async_compile(preview.transaction_id)
         assert compiled.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert builder.calls == ["write", "validate", "compile"]
+
+    asyncio.run(run())
+
+
+def test_full_meter_configuration_persists_only_after_verified_reconnect() -> None:
+    """Full meter metadata is not durable until the flashed device proves it."""
+
+    async def run() -> None:
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        evidence = ReconnectEvidence(
+            "aabbccddeeff",
+            _topology(),
+            {channel.channel: channel.name for channel in configuration.channels},
+            6,
+            expected.object_ids,
+            expected.sensor_names,
+        )
+        persistence = Persistence()
+        manager = _manager(Builder(), persistence, evidence=evidence)
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+            expected_entity_ids=expected.object_ids,
+            expected_sensor_names=expected.sensor_names,
+        )
+
+        assert persistence.meter_configuration is None
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        assert (
+            await manager.async_confirm_install(preview.transaction_id, "admin")
+        ).state is ConfigTransactionState.VERIFIED
+        assert persistence.meter_configuration == configuration
+        assert persistence.selections == configuration.ct_selections
+
+    asyncio.run(run())
+
+
+def test_calibration_handoff_saves_full_metadata_and_install_marker_together() -> None:
+    """A full transaction cannot persist config first and calibration second."""
+
+    class AtomicPersistence(Persistence):
+        def __init__(self) -> None:
+            super().__init__()
+            self.combined: list[tuple[str, StoredMeterConfiguration, str, str]] = []
+
+        async def async_revalidate_verified_calibration(
+            self, _mac: str, _verification_id: str, _transaction_id: str
+        ) -> bool:
+            return True
+
+        async def async_get_verified_calibration(self, _mac: str) -> None:
+            return None
+
+        async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+            self,
+            mac: str,
+            configuration: StoredMeterConfiguration,
+            verification_id: str,
+            transaction_id: str,
+        ) -> bool:
+            self.combined.append((mac, configuration, verification_id, transaction_id))
+            return True
+
+        async def async_mark_verified_calibration_installed(
+            self, *_args: object
+        ) -> bool:
+            raise AssertionError("full handoff must use the combined persistence call")
+
+    async def run() -> None:
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        persistence = AtomicPersistence()
+        manager = _manager(
+            Builder(),
+            persistence,
+            evidence=ReconnectEvidence(
+                "aabbccddeeff",
+                _topology(),
+                {channel.channel: channel.name for channel in configuration.channels},
+                6,
+                expected.object_ids,
+                expected.sensor_names,
+            ),
+        )
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+            expected_entity_ids=expected.object_ids,
+            expected_sensor_names=expected.sensor_names,
+        )
+        manager._transaction(preview.transaction_id).verification_id = "a" * 32
+
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert len(persistence.combined) == 1 and not persistence.saved
+
+    asyncio.run(run())
+
+
+def test_missing_full_reconnect_entity_drops_private_configuration_without_persisting() -> (
+    None
+):
+    """Reconnect failure cannot retain requested YAML or full meter semantics."""
+
+    async def run() -> None:
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        persistence = Persistence()
+        manager = _manager(
+            Builder(),
+            persistence,
+            evidence=ReconnectEvidence(
+                "aabbccddeeff",
+                _topology(),
+                {channel.channel: channel.name for channel in configuration.channels},
+                6,
+            ),
+        )
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+            expected_entity_ids=expected.object_ids,
+            expected_sensor_names=expected.sensor_names,
+        )
+        internal = manager._transaction(preview.transaction_id)
+
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.FAILED
+        assert TransactionEvidenceCode.ENTITY_MISMATCH in status.evidence
+        assert persistence.meter_configuration is None
+        assert internal.plan is None and internal.prior_content is None
+        assert internal.meter_configuration is None
+        assert not internal.expected_entity_ids and not internal.expected_sensor_names
+        assert "top-secret" not in repr(status) and "top-secret" not in repr(internal)
 
     asyncio.run(run())
 

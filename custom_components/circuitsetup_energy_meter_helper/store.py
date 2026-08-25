@@ -526,6 +526,7 @@ class StoredMeterConfiguration:
     aggregates: tuple[CircuitAggregate, ...]
     power_quality: tuple[bool, ...]
     status_fields: tuple[bool, ...]
+    ct_selections: tuple[StoredCTSelection, ...] = ()
 
     def __post_init__(self) -> None:
         if re.fullmatch(r"[0-9a-f]{64}", self.config_sha256) is None:
@@ -548,6 +549,21 @@ class StoredMeterConfiguration:
                 type(item) is not bool for item in value
             ):
                 raise TypeError(f"{field} must be a tuple of booleans")
+        if type(self.ct_selections) is not tuple or any(
+            not isinstance(item, StoredCTSelection) for item in self.ct_selections
+        ):
+            raise TypeError("ct_selections must be a tuple of StoredCTSelection")
+        channels = {channel.channel: channel for channel in self.channels}
+        if self.ct_selections and (
+            {selection.channel for selection in self.ct_selections} != set(channels)
+            or any(
+                selection.config_sha256 != self.config_sha256
+                or selection.reporting_multiplier
+                != channels[selection.channel].reporting_multiplier
+                for selection in self.ct_selections
+            )
+        ):
+            raise ValueError("ct_selections do not match meter configuration")
 
 
 @dataclass(frozen=True, slots=True)
@@ -715,24 +731,31 @@ def _serialize_meter_configuration(
         ],
         "power_quality": list(configuration.power_quality),
         "status_fields": list(configuration.status_fields),
+        "ct_selections": [
+            _serialize_ct_selection(selection)
+            for selection in configuration.ct_selections
+        ],
     }
 
 
 def _deserialize_meter_configuration_payload(
     raw: object, topology: MeterTopology
 ) -> StoredMeterConfiguration:
-    data = _exact_mapping(
-        raw,
-        {
-            "config_sha256",
-            "meter",
-            "channels",
-            "aggregates",
-            "power_quality",
-            "status_fields",
-        },
-        "payload",
-    )
+    required = {
+        "config_sha256",
+        "meter",
+        "channels",
+        "aggregates",
+        "power_quality",
+        "status_fields",
+    }
+    if (
+        not isinstance(raw, dict)
+        or set(raw) not in (required, {*required, "ct_selections"})
+        or any(not isinstance(key, str) for key in raw)
+    ):
+        raise ValueError("stored meter configuration payload is invalid")
+    data = raw
     raw_meter = _exact_mapping(
         data["meter"],
         {
@@ -860,6 +883,26 @@ def _deserialize_meter_configuration_payload(
         or len(data["status_fields"]) != topology.board_count
     ):
         raise TypeError("stored meter configuration options are invalid")
+    raw_selections = data.get("ct_selections", [])
+    if not isinstance(raw_selections, list):
+        raise TypeError("stored meter configuration selections are invalid")
+    selections = tuple(
+        StoredCTSelection(
+            **_exact_mapping(
+                item,
+                {
+                    "channel",
+                    "model_id",
+                    "display_label",
+                    "raw_gain_ct",
+                    "reporting_multiplier",
+                    "config_sha256",
+                },
+                "ct selection",
+            )
+        )
+        for item in raw_selections
+    )
     try:
         configuration = StoredMeterConfiguration(
             data["config_sha256"],
@@ -875,6 +918,7 @@ def _deserialize_meter_configuration_payload(
             tuple(aggregates),
             tuple(data["power_quality"]),
             tuple(data["status_fields"]),
+            selections,
         )
         _validate_configuration(configuration, topology)
     except (TypeError, ValueError) as error:
@@ -1042,7 +1086,52 @@ class HelperStore:
             raw_meter["meter_configuration"] = _serialize_meter_configuration(
                 configuration, _current_topology(raw_meter)
             )
+            raw_meter["ct_selections"] = [
+                _serialize_ct_selection(selection)
+                for selection in configuration.ct_selections
+            ]
             await self._store.async_save(data)
+
+    async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+        self,
+        mac: str,
+        configuration: StoredMeterConfiguration,
+        verification_id: str,
+        transaction_id: str,
+    ) -> bool:
+        """Commit full metadata and its claimed calibration install in one save."""
+        mac = canonical_mac(mac)
+        if not isinstance(configuration, StoredMeterConfiguration):
+            raise TypeError("configuration must be StoredMeterConfiguration")
+        async with self._update_lock:
+            data = await self.async_load()
+            raw_meter = data.setdefault("meters", {}).get(mac)
+            if (
+                not isinstance(raw_meter, dict)
+                or _configuration_hash(raw_meter) != configuration.config_sha256
+            ):
+                return False
+            raw_calibration = raw_meter.get("verified_calibration")
+            if raw_calibration is None:
+                return False
+            record = _deserialize_verified_calibration(mac, raw_calibration)
+            if (
+                record.verification_id != verification_id
+                or record.source_handoff_available
+                or record.has_offset_calibration
+                or record.source_handoff_transaction_id != transaction_id
+            ):
+                return False
+            raw_meter["meter_configuration"] = _serialize_meter_configuration(
+                configuration, _current_topology(raw_meter)
+            )
+            raw_meter["ct_selections"] = [
+                _serialize_ct_selection(selection)
+                for selection in configuration.ct_selections
+            ]
+            raw_calibration["source_handoff_firmware_installed"] = True
+            await self._store.async_save(data)
+            return True
 
     async def async_save_interrupted_session(
         self, mac: str, marker: StoredInterruptedSession | None

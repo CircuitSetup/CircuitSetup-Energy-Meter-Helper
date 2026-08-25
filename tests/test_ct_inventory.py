@@ -8,7 +8,10 @@ from custom_components.circuitsetup_energy_meter_helper.config_document import (
 from custom_components.circuitsetup_energy_meter_helper.ct_catalog import (
     CTPresetCatalog,
 )
-from custom_components.circuitsetup_energy_meter_helper.ct_inventory import CTInventory
+from custom_components.circuitsetup_energy_meter_helper.ct_inventory import (
+    CTInventory,
+    _esphome_object_id,
+)
 from custom_components.circuitsetup_energy_meter_helper.models import (
     MeterTopology,
     StoredCTSelection,
@@ -94,14 +97,14 @@ def test_inventory_rejects_esphome_object_id_collisions_and_warns_for_unscaled_r
     """Names only normalize for collision checks and high-range presets only warn."""
     with pytest.raises(ValueError, match="object-ID collision"):
         CTInventory.from_document(
-            _document(first_name="Main--feed", second_name="Main feed"),
+            _document(first_name="Main!feed", second_name="Main?feed"),
             _topology(),
             CTPresetCatalog.load(),
             "a" * 64,
         )
     with pytest.raises(ValueError, match="object-ID collision"):
         CTInventory.from_document(
-            _document(first_name="Mø", second_name="M"),
+            _document(first_name="Mø", second_name="MØ"),
             _topology(),
             CTPresetCatalog.load(),
             "a" * 64,
@@ -112,3 +115,19 @@ def test_inventory_rejects_esphome_object_id_collisions_and_warns_for_unscaled_r
     )
     warnings = inventory.warnings_for("sct_024_200a_50ma", 1)
     assert len(warnings) == 1 and "65.535" in warnings[0]
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    (
+        ("Kitchen Meter", "kitchen_meter"),
+        ("Main-Meter!", "main-meter_"),
+        ("Mø", "m__"),
+        ("  CT  1  ", "__ct__1__"),
+    ),
+)
+def test_object_id_matches_esphome_native_bytewise_sanitizer(
+    name: str, expected: str
+) -> None:
+    """Use the native entity-name sanitizer, including UTF-8 byte replacement."""
+    assert _esphome_object_id(name) == expected

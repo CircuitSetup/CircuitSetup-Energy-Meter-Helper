@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from .config_blocks import (
     render_aggregates,
@@ -19,6 +19,7 @@ from .config_mutator import (
     _build_ct_mutation,
     _canonical_meter_id,
 )
+from .ct_inventory import _esphome_object_id
 from .meter_configuration import (
     CircuitAggregate,
     EnergyMode,
@@ -30,6 +31,48 @@ from .meter_configuration import (
 from .meter_inventory import MeterConfigurationInventory
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import VerifiedCalibrationRecord
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectedMeterEntityEvidence:
+    """Visible meter entities derived from validated server-side semantics."""
+
+    object_ids: frozenset[str]
+    sensor_names: frozenset[str]
+
+
+def expected_meter_entity_evidence(
+    requested: MeterConfigurationRequest, topology: MeterTopology
+) -> ExpectedMeterEntityEvidence:
+    """Derive reconnect evidence from rendered non-internal ESPHome entity names."""
+    validate_meter_configuration(requested, topology)
+    friendly_name = requested.meter.friendly_name
+    names = [
+        f"{friendly_name} {reference.label} {suffix}"
+        for reference in requested.meter.voltage_references
+        for suffix in ("Voltage", "Frequency")
+    ]
+    for aggregate in requested.aggregates:
+        prefix = f"{friendly_name} {aggregate.name}"
+        if aggregate.expose_power:
+            names.append(f"{prefix} Power")
+        if aggregate.expose_current:
+            names.append(f"{prefix} Current")
+        if aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
+            names.append(f"{prefix} Energy")
+        elif aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
+            names.extend(
+                (
+                    f"{prefix} Import Power",
+                    f"{prefix} Export Power",
+                    f"{prefix} Import Energy",
+                    f"{prefix} Export Energy",
+                )
+            )
+    object_ids = tuple(_esphome_object_id(name) for name in names)
+    if len(set(object_ids)) != len(object_ids):
+        raise ValueError("ESPHome object-ID collision for meter entities")
+    return ExpectedMeterEntityEvidence(frozenset(object_ids), frozenset(names))
 
 
 def build_meter_configuration_mutation(
@@ -47,6 +90,7 @@ def build_meter_configuration_mutation(
         raise ConfigMutationError("meter configuration inventory does not match snapshot")
     try:
         validate_meter_configuration(requested, topology)
+        expected_meter_entity_evidence(requested, topology)
     except ValueError as error:
         raise ConfigMutationError(str(error)) from error
     previous = current.configuration
