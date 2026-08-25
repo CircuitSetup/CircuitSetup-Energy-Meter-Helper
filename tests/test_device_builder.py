@@ -235,6 +235,77 @@ def test_cancelled_connect_owns_repeatedly_cancelled_failed_cleanup() -> None:
     asyncio.run(run())
 
 
+def test_disconnect_invalidates_connect_blocked_in_factory() -> None:
+    async def run() -> None:
+        factory_started = asyncio.Event()
+        factory_release = asyncio.Event()
+        ws = FakeWebSocket({"server_version": "2026.9.0", "requires_auth": False})
+
+        async def connect(_url: str) -> FakeWebSocket:
+            factory_started.set()
+            await factory_release.wait()
+            return ws
+
+        client = DeviceBuilderClient("http://builder", connect=connect)
+        connecting = asyncio.create_task(client.async_connect())
+        await factory_started.wait()
+        await client.async_disconnect()
+        factory_release.set()
+        with pytest.raises(ConnectionError, match="invalidated"):
+            await connecting
+        assert not client.connected
+        assert ws.closed
+
+    asyncio.run(run())
+
+
+def test_disconnect_invalidates_connect_blocked_in_server_info_receive() -> None:
+    async def run() -> None:
+        receive_started = asyncio.Event()
+        receive_release = asyncio.Event()
+
+        class GatedReceiveWebSocket(FakeWebSocket):
+            async def receive_json(self) -> dict | None:
+                receive_started.set()
+                await receive_release.wait()
+                return await super().receive_json()
+
+        ws = GatedReceiveWebSocket(
+            {"server_version": "2026.9.0", "requires_auth": False}
+        )
+        client = DeviceBuilderClient("http://builder", connect=lambda _: ws)
+        connecting = asyncio.create_task(client.async_connect())
+        await receive_started.wait()
+        await client.async_disconnect()
+        receive_release.set()
+        with pytest.raises(ConnectionError, match="invalidated"):
+            await connecting
+        assert not client.connected
+        assert ws.closed
+
+    asyncio.run(run())
+
+
+def test_handshake_error_survives_cleanup_failure() -> None:
+    async def run() -> None:
+        class FailingCloseWebSocket(FakeWebSocket):
+            async def close(self) -> None:
+                self.closed = True
+                raise RuntimeError("close failed")
+
+        ws = FailingCloseWebSocket(
+            {"server_version": 2026, "requires_auth": False}
+        )
+        client = DeviceBuilderClient("http://builder", connect=lambda _: ws)
+        with pytest.raises(ConnectionError, match="invalid server version") as caught:
+            await client.async_connect()
+        assert not client.connected
+        assert ws.closed
+        assert any("close failed" in note for note in caught.value.__notes__)
+
+    asyncio.run(run())
+
+
 def test_missing_auth_flag_requires_opaque_token() -> None:
     """Only an explicit false ServerInfo flag permits trusted ingress."""
 

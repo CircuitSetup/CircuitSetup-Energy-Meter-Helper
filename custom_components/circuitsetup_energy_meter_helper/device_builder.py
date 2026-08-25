@@ -133,6 +133,7 @@ class DeviceBuilderClient:
         self._server_version: AwesomeVersion | None = None
         self._connect_lock = asyncio.Lock()
         self._ready = False
+        self._lifecycle_generation = 0
 
     def __repr__(self) -> str:
         parsed = urlsplit(self._base_url)
@@ -161,14 +162,16 @@ class DeviceBuilderClient:
         async with self._connect_lock:
             if self._ws is not None or self._listener is not None:
                 raise ConnectionError("Device Builder is already connected")
-            await self._async_connect()
+            await self._async_connect(self._lifecycle_generation)
 
-    async def _async_connect(self) -> None:
+    async def _async_connect(self, generation: int) -> None:
         connection = self._connect(f"{self._base_url}/ws")
         websocket = await connection if inspect.isawaitable(connection) else connection
         listener: asyncio.Task[None] | None = None
         try:
+            self._ensure_connect_owner(generation)
             server_info = await websocket.receive_json()
+            self._ensure_connect_owner(generation)
             if not isinstance(server_info, Mapping) or "server_version" not in server_info:
                 raise ConnectionError("Device Builder did not provide server info")
             version_value = server_info["server_version"]
@@ -197,16 +200,30 @@ class DeviceBuilderClient:
                     await future
                 finally:
                     self._pending.pop("0", None)
+            self._ensure_connect_owner(generation)
             self._server_version = server_version
             self._ready = True
-        except BaseException:
+        except BaseException as error:
             cleanup = asyncio.create_task(
                 self._async_connect_cleanup(websocket, listener)
             )
-            caller_cancelled = await _wait_for_owned_cleanup(cleanup)
+            try:
+                caller_cancelled = await _wait_for_owned_cleanup(cleanup)
+            except BaseException as cleanup_error:
+                if isinstance(error, asyncio.CancelledError):
+                    raise BaseExceptionGroup(
+                        "connection cleanup failed after cancellation",
+                        [error, cleanup_error],
+                    ) from cleanup_error
+                error.add_note(f"connection cleanup failed: {cleanup_error}")
+                raise error from cleanup_error
             if caller_cancelled:
                 raise asyncio.CancelledError
             raise
+
+    def _ensure_connect_owner(self, generation: int) -> None:
+        if generation != self._lifecycle_generation:
+            raise ConnectionError("Device Builder connection was invalidated")
 
     async def _async_connect_cleanup(
         self, websocket: WebSocket, listener: asyncio.Task[None] | None
@@ -224,6 +241,7 @@ class DeviceBuilderClient:
 
     async def async_disconnect(self) -> None:
         """Close the websocket and fail all outstanding callers."""
+        self._lifecycle_generation += 1
         task = self._disconnect_task
         if task is None or (
             task.done() and (task.cancelled() or task.exception() is not None)
