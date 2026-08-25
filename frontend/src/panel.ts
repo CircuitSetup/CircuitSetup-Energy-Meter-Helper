@@ -835,10 +835,10 @@ export class CircuitSetupPanel extends LitElement {
           status_fields: [...this.sourcePackageOptions.status_fields],
         };
         for (const change of transaction.changes) {
-          const match = /^(power_quality|status_fields)_(main|addon([1-6]))$/.exec(change.key);
+          const match = /^package\.(main|addon([1-6]))\.(power_quality|status_fields)$/.exec(change.key);
           if (!match || !["enabled", "disabled"].includes(change.old_value ?? "")) continue;
-          const feature = match[1] as keyof BoardPackageOptions;
-          const board = match[2] === "main" ? 0 : Number(match[3]);
+          const board = match[1] === "main" ? 0 : Number(match[2]);
+          const feature = match[3] as keyof BoardPackageOptions;
           restored[feature][board] = change.old_value === "enabled";
         }
         this.sourcePackageOptions = restored;

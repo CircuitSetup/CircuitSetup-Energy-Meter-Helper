@@ -65,7 +65,7 @@ function inventory(addons: number) {
 function transaction(state: string, channel: number, options: { evidence?: string[]; progress?: string[];
   rollback?: boolean; validation?: boolean } = {}) {
   return { ...sanitizerContract.sanitized, transaction_id: "tx-1", state, source_sha256: hash,
-    changes: [{ key: `ct${channel}_name`, old_value: `CT${channel}`, new_value: `Load ${channel}` }],
+    changes: [{ key: `channel.${channel}.name`, old_value: `CT${channel}`, new_value: `Load ${channel}` }],
     redacted_diff: `- ct${channel}_name: <redacted>\n+ ct${channel}_name: <redacted>`,
     rollback_available: options.rollback ?? false, evidence: options.evidence ?? [], progress: options.progress ?? [],
     ...(options.validation ? { validation_detail: { code: 1, reported_error_count: 1,

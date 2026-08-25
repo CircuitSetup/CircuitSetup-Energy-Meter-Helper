@@ -610,12 +610,12 @@ describe("HelperApi", () => {
     )).rejects.toThrow("references");
   });
 
-  it("accepts the exact sanitized substitution change DTO without allowing generic keys", async () => {
+  it("accepts the exact canonical change DTO without allowing legacy or generic keys", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
     hass.responses.preview_ct_config = sanitizerContract.sanitized;
     await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({
-      changes: [{ key: "current_cal_ct42" }],
+      changes: [{ key: "channel.42.current_gain" }],
     });
     expect(() => HelperApi.assertPublicPayload({ key: "generic-provider-key" })).toThrow("private field");
     expect(() => HelperApi.assertPublicPayload({ changes: [{ key: "current_cal_ct42", new_value: "x" }] })).toThrow("private field");
@@ -633,19 +633,19 @@ describe("HelperApi", () => {
     await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
   });
 
-  it("accepts only bounded optional-package change keys in config review", async () => {
+  it("accepts canonical optional-package change keys and rejects legacy shapes", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
     hass.responses.preview_ct_config = {
       ...transaction,
       changes: [
-        { key: "power_quality_main", old_value: "disabled", new_value: "enabled" },
-        { key: "status_fields_addon6", old_value: "enabled", new_value: "disabled" },
+        { key: "package.main.power_quality", old_value: "disabled", new_value: "enabled" },
+        { key: "package.addon6.status_fields", old_value: "enabled", new_value: "disabled" },
       ],
     };
 
     await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({
-      changes: [{ key: "power_quality_main" }, { key: "status_fields_addon6" }],
+      changes: [{ key: "package.main.power_quality" }, { key: "package.addon6.status_fields" }],
     });
     hass.responses.preview_ct_config = {
       ...transaction,

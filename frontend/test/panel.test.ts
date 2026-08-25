@@ -910,7 +910,10 @@ describe("CircuitSetup panel", () => {
         if (["preview_ct_config", "apply_ct_config", "rollback_ct_config"].includes(operation ?? "")) return { transaction_id: "tx",
           state: operation === "preview_ct_config" ? "previewed" : operation === "apply_ct_config" ? "validated" : "rolled_back",
           source_sha256: inventory.source_sha256,
-          changes: [{ key: "power_quality_main", old_value: "disabled", new_value: "enabled" }],
+          changes: [
+            { key: "package.main.power_quality", old_value: "disabled", new_value: "enabled" },
+            { key: "package.addon7.power_quality", old_value: "enabled", new_value: "disabled" },
+          ],
           redacted_diff: "+ power quality", rollback_available: true, evidence: [],
           progress: operation === "apply_ct_config" ? ["config_validated"] : [], upload_progress: [] } as T;
         return {} as T;
@@ -940,6 +943,7 @@ describe("CircuitSetup panel", () => {
       package_options: { power_quality: [true], status_fields: [true] },
     });
     await state.transactionAction("rollback");
+    expect(state.sourcePackageOptions).toEqual({ power_quality: [false], status_fields: [true] });
     await state.reviewChanges();
     expect(messages.filter((message) => String(message.type).endsWith("preview_ct_config"))).toHaveLength(2);
   });
