@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
-from hashlib import sha256
 
 from .config_document import (
     MANAGED_BLOCK_MARKERS,
@@ -15,9 +13,6 @@ from .config_document import (
 from .config_mutator import ConfigMutationError
 
 _ORDER = tuple(MANAGED_BLOCK_MARKERS)
-_EOF_SEPARATOR_HINT = "# csemh-owned-eof-separator:"
-_EOF_SEPARATOR_PREFIX = "# csemh-owned-eof-separator: aggregates-v1:"
-_EOF_SEPARATOR_RE = re.compile(rf"^{re.escape(_EOF_SEPARATOR_PREFIX)}[0-9a-f]{{64}}$")
 
 
 def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
@@ -30,46 +25,24 @@ def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
     except ESPHomeConfigParseError as error:
         raise ConfigMutationError("managed block is not safely writable") from error
     _validate_managed_layout(document)
-    trailer = _eof_separator_start(document, "aggregates")
     newline = "\r\n" if "\r\n" in content else "\n"
     block = document.managed_blocks.get(block_name)
     if block is not None:
         _sensor_bounds(document, block_name, block.span.start, block.span.end)
         end = _line_end(content, block.span.end)
         if not rendered:
-            separator = _eof_separator_start(document, block_name)
-            if separator is not None and end == len(content):
-                return content[:separator] + content[end:]
-            result = content[: block.span.start] + content[end:]
-        else:
-            result = content[: block.span.start] + _block(markers, rendered, newline) + content[end:]
-        return _rebind_eof_separator(result) if trailer is not None else result
+            return content[: block.span.start] + content[end:]
+        return content[: block.span.start] + _block(markers, rendered, newline) + content[end:]
     if not rendered:
         return content
-    _, end = _sensor_bounds(document, block_name, rendered=rendered)
-    existing = document.managed_blocks
-    position = end
-    for name in _ORDER[_ORDER.index(block_name) + 1 :]:
-        if name == "status_overrides":
-            continue
-        candidate = existing.get(name)
-        if candidate is not None:
-            position = _managed_block_start(document, name)
-            break
-    prefix = "" if position == 0 or content[position - 1] in "\r\n" else newline
-    metadata = (
-        _eof_separator(content[:position]) + newline
-        if block_name == "aggregates" and position == len(content) and prefix
-        else ""
-    )
-    result = (
-        content[:position]
-        + prefix
-        + metadata
-        + _block(markers, rendered, newline)
-        + content[position:]
-    )
-    return _rebind_eof_separator(result) if trailer is not None else result
+    start, end = _sensor_bounds(document, block_name, rendered=rendered)
+    if start == end == len(content) and content and content[-1] not in "\r\n":
+        raise ConfigMutationError(
+            "no unambiguous writable sensor block; add snippet at document root",
+            snippet=_snippet(block_name, rendered),
+        )
+    position = end if block_name == "status_overrides" else _insertion_position(document, block_name, start)
+    return content[:position] + _block(markers, rendered, newline) + content[position:]
 
 
 def render_voltage_references(entries: Mapping[str, str]) -> str:
@@ -171,74 +144,20 @@ def _validate_managed_layout(document: ESPHomeConfigDocument) -> None:
         raise ConfigMutationError("managed blocks are out of canonical order")
 
 
-def _managed_block_start(document: ESPHomeConfigDocument, block_name: str) -> int:
-    separator = _eof_separator_start(document, block_name)
-    return separator if separator is not None else document.managed_blocks[block_name].span.start
-
-
-def _eof_separator(content: str) -> str:
-    return _EOF_SEPARATOR_PREFIX + sha256(content.encode()).hexdigest()
-
-
-def _eof_separator_start(
-    document: ESPHomeConfigDocument, block_name: str
-) -> int | None:
-    found: int | None = None
-    offset = 0
-    for line in document.lines:
-        body = line.rstrip("\r\n")
-        if body.lstrip().startswith(_EOF_SEPARATOR_HINT):
-            block = document.managed_blocks.get("aggregates")
-            end = _line_end(document.content, block.span.end) if block else -1
-            separator_length = 2 if document.content[offset - 2 : offset] == "\r\n" else 1
-            separator = offset - separator_length
-            if (
-                _EOF_SEPARATOR_RE.fullmatch(body) is None
-                or block is None
-                or offset + len(line) != block.span.start
-                or end != len(document.content)
-                or separator < 0
-                or document.content[separator:offset] not in {"\n", "\r\n"}
-                or document.content[block.span.end : end]
-                != document.content[separator:offset]
-                or sha256(document.content[:separator].encode()).hexdigest()
-                != body.removeprefix(_EOF_SEPARATOR_PREFIX)
-                or found is not None
-            ):
-                raise ConfigMutationError("managed EOF separator is not safely writable")
-            found = separator
-        offset += len(line)
-    return found if block_name == "aggregates" else None
-
-
-def _rebind_eof_separator(content: str) -> str:
-    document = ESPHomeConfigDocument.parse(content)
-    offset = 0
-    for line in document.lines:
-        body = line.rstrip("\r\n")
-        if body.startswith(_EOF_SEPARATOR_PREFIX):
-            block = document.managed_blocks.get("aggregates")
-            end = _line_end(content, block.span.end) if block else -1
-            separator_length = 2 if content[offset - 2 : offset] == "\r\n" else 1
-            separator = offset - separator_length
-            if (
-                _EOF_SEPARATOR_RE.fullmatch(body) is None
-                or block is None
-                or offset + len(line) != block.span.start
-                or end != len(content)
-                or separator < 0
-                or content[separator:offset] not in {"\n", "\r\n"}
-                or content[block.span.end : end] != content[separator:offset]
-            ):
-                raise ConfigMutationError("managed EOF separator is not safely writable")
-            digest = sha256(content[:separator].encode()).hexdigest()
-            return (
-                content[: offset + len(_EOF_SEPARATOR_PREFIX)]
-                + digest
-                + content[offset + len(body) :]
-            )
-        offset += len(line)
-    raise ConfigMutationError("managed EOF separator is not safely writable")
+def _insertion_position(
+    document: ESPHomeConfigDocument, block_name: str, start: int
+) -> int:
+    names = [name for name in _ORDER if name != "status_overrides"]
+    index = names.index(block_name)
+    for name in names[index + 1 :]:
+        block = document.managed_blocks.get(name)
+        if block is not None:
+            return block.span.start
+    for name in reversed(names[:index]):
+        block = document.managed_blocks.get(name)
+        if block is not None:
+            return _line_end(document.content, block.span.end)
+    return start
 
 
 def _line_end(content: str, position: int) -> int:

@@ -1,5 +1,7 @@
 """Tests for exact helper-managed meter configuration blocks."""
 
+from itertools import permutations
+
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.config_blocks import (
@@ -29,8 +31,8 @@ def _content(newline: str = "\n") -> str:
     )
 
 
-def test_inserts_absent_block_at_end_of_sensor_section() -> None:
-    """A missing block must not be appended after an unrelated top-level section."""
+def test_inserts_absent_block_at_start_of_sensor_section() -> None:
+    """A missing block stays ahead of user-owned sensor content."""
     content = _content()
 
     actual = replace_managed_block(
@@ -38,10 +40,25 @@ def test_inserts_absent_block_at_end_of_sensor_section() -> None:
     )
 
     assert actual == content.replace(
-        "logger:\n",
+        "  # retain this comment exactly\n",
         "# CircuitSetup Energy Meter Helper: voltage references v1\n"
         "  - id: !extend meter_main1\n"
         "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "  # retain this comment exactly\n",
+    )
+
+
+def test_status_blocks_keep_their_existing_sensor_end_placement() -> None:
+    """The separate status path is not folded into the helper cluster."""
+    content = _content()
+
+    actual = replace_managed_block(content, "status_overrides", "  - id: status\n")
+
+    assert actual == content.replace(
+        "logger:\n",
+        "# CircuitSetup Energy Meter Helper: status overrides v1\n"
+        "  - id: status\n"
+        "# End CircuitSetup Energy Meter Helper: status overrides v1\n"
         "logger:\n",
     )
 
@@ -66,133 +83,87 @@ def test_insertion_uses_parser_owned_sensor_bounds(sensor_key: str) -> None:
     assert "\n\n# retain this root comment\n" in actual
 
 
-def test_insertion_adds_missing_newline_at_sensor_eof() -> None:
-    """The marker must never be joined to a final sensor body line."""
-    content = "sensor:\n  - platform: uptime"
-
-    actual = replace_managed_block(
-        content, "aggregates", "  - id: total\n"
-    )
-
-    assert "uptime\n# csemh-owned-eof-separator: aggregates-v1:" in actual
-
-
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
-@pytest.mark.parametrize("suffix", ("", "{newline}", "{newline}{newline}"))
-def test_aggregate_eof_round_trip_preserves_terminal_newlines(
-    newline: str, suffix: str
-) -> None:
-    """Only an aggregate's owned EOF separator is removed on the way back."""
-    suffix = suffix.format(newline=newline)
-    content = "sensor:" + newline + "  - platform: uptime" + suffix
+def test_no_final_newline_aggregate_round_trip_is_exact(newline: str) -> None:
+    """Header insertion leaves newline-less Contract-2 sources byte-exact on removal."""
+    content = "sensor:" + newline + "  - platform: uptime"
 
     added = replace_managed_block(content, "aggregates", "  - id: total\n")
-    restored = replace_managed_block(added, "aggregates", "")
 
-    assert restored == content
-    assert (
-        "# csemh-owned-eof-separator: aggregates-v1:" in added
-    ) is (suffix == "")
+    assert "csemh-owned-eof-separator" not in added
+    assert added.index("aggregates v1") < added.index("- platform: uptime")
+    assert replace_managed_block(added, "aggregates", "") == content
 
 
-def test_aggregate_eof_separator_rejects_malformed_metadata() -> None:
-    """A copied or malformed ownership marker must not choose bytes to delete."""
+def test_former_eof_separator_is_an_ordinary_user_comment() -> None:
+    """Old ownership-looking comments have no mutation semantics."""
     content = (
         "sensor:\n"
+        "  # csemh-owned-eof-separator: aggregates-v1: copied\n"
         "  - platform: uptime\n"
-        "# csemh-owned-eof-separator: wrong\n"
-        "# CircuitSetup Energy Meter Helper: aggregates v1\n"
-        "  - id: total\n"
-        "# End CircuitSetup Energy Meter Helper: aggregates v1\n"
     )
 
-    with pytest.raises(ConfigMutationError, match="EOF separator"):
-        replace_managed_block(content, "aggregates", "")
+    added = replace_managed_block(content, "aggregates", "  - id: total\n")
+
+    assert replace_managed_block(added, "aggregates", "") == content
 
 
-def test_aggregate_eof_separator_rejects_copied_or_nonterminal_trailers() -> None:
-    """A bound terminal trailer cannot be transplanted or followed by a root key."""
-    source = "sensor:\n  - platform: uptime"
-    added = replace_managed_block(source, "aggregates", "  - id: total\n")
+def test_empty_newline_less_sensor_fails_with_a_manual_snippet() -> None:
+    """An empty final sensor header cannot be changed reversibly without metadata."""
+    with pytest.raises(ConfigMutationError, match="document root") as error:
+        replace_managed_block("sensor:", "aggregates", "  - id: total\n")
 
-    with pytest.raises(ConfigMutationError, match="EOF separator"):
-        replace_managed_block(
-            added.replace(source + "\n", source + "\n\n", 1), "aggregates", ""
-        )
-    with pytest.raises(ConfigMutationError, match="EOF separator"):
-        replace_managed_block(added + "logger:\n  level: DEBUG\n", "aggregates", "")
+    assert error.value.snippet is not None
 
 
-def test_aggregate_eof_separator_rejects_tampered_prefix_or_digest() -> None:
-    """Only the exact pre-trailer bytes authorize restoration without a newline."""
-    source = "sensor:\n  - platform: uptime"
-    added = replace_managed_block(source, "aggregates", "  - id: total\n")
-    digest_start = added.index("aggregates-v1:") + len("aggregates-v1:")
-    tampered_digest = (
-        added[:digest_start]
-        + ("0" if added[digest_start] != "0" else "1")
-        + added[digest_start + 1 :]
-    )
+@pytest.mark.parametrize(
+    "order",
+    tuple(permutations(("voltage_references", "phase_overrides", "aggregates"))),
+)
+def test_new_managed_blocks_cluster_before_user_sensor_content(order: tuple[str, ...]) -> None:
+    """Any insertion order creates one canonical helper cluster at the section start."""
+    content = "sensor:\n  # user comment\n  - platform: uptime\n"
+    rendered = {
+        "voltage_references": "  - id: voltage\n",
+        "phase_overrides": "  - id: phase\n",
+        "aggregates": "  - id: total\n",
+    }
+    actual = content
+    for name in order:
+        actual = replace_managed_block(actual, name, rendered[name])
 
-    for content in (added.replace("uptime", "changed", 1), tampered_digest):
-        with pytest.raises(ConfigMutationError, match="EOF separator"):
-            replace_managed_block(content, "aggregates", "")
-
-
-def test_aggregate_eof_separator_requires_its_terminal_newline() -> None:
-    """A metadata-backed trailer is writable only in the exact generated form."""
-    added = replace_managed_block(
-        "sensor:\n  - platform: uptime", "aggregates", "  - id: total\n"
-    )
-
-    with pytest.raises(ConfigMutationError, match="EOF separator"):
-        replace_managed_block(added.rstrip("\n"), "aggregates", "")
+    assert actual.index("voltage references v1") < actual.index("phase overrides v1")
+    assert actual.index("phase overrides v1") < actual.index("aggregates v1")
+    assert actual.index("aggregates v1") < actual.index("# user comment")
+    for name in reversed(order):
+        actual = replace_managed_block(actual, name, "")
+    assert actual == content
 
 
-def test_other_managed_blocks_stay_before_an_aggregate_eof_trailer() -> None:
-    """Later insertions never split the aggregate's inseparable EOF ownership."""
-    source = "sensor:\n  - platform: uptime"
-    aggregates = replace_managed_block(source, "aggregates", "  - id: total\n")
-    voltage = replace_managed_block(
-        aggregates, "voltage_references", "  - id: voltage\n"
-    )
-    phase = replace_managed_block(voltage, "phase_overrides", "  - id: phase\n")
-    updated = replace_managed_block(
-        phase, "voltage_references", "  - id: voltage_updated\n"
-    )
-
-    assert updated.index("voltage references v1") < updated.index("phase overrides v1")
-    assert updated.index("phase overrides v1") < updated.index(
-        "csemh-owned-eof-separator"
-    )
-    assert updated.index("csemh-owned-eof-separator") < updated.index("aggregates v1")
-    removed = replace_managed_block(updated, "aggregates", "")
-    expected = replace_managed_block(source, "voltage_references", "  - id: voltage_updated\n")
-    expected = replace_managed_block(expected, "phase_overrides", "  - id: phase\n")
-    assert removed == expected
-    assert "aggregates v1" not in removed
-    assert "csemh-owned-eof-separator" not in removed
-    assert "voltage_updated" in removed and "phase overrides v1" in removed
-    replace_managed_block(removed, "phase_overrides", "")
-
-
-def test_aggregate_mid_file_and_legacy_blocks_keep_existing_separator_behavior() -> None:
-    """Root boundaries and older aggregate markers are never reinterpreted as EOF data."""
+def test_aggregate_mid_file_and_legacy_blocks_remain_usable() -> None:
+    """Existing end-of-section helper blocks are replaced and removed in place."""
     content = _content()
     added = replace_managed_block(content, "aggregates", "  - id: total\n")
     assert replace_managed_block(added, "aggregates", "") == content
 
-    legacy = "sensor:\n  - platform: uptime\n" + (
-        "# CircuitSetup Energy Meter Helper: aggregates v1\n"
-        "  - id: total\n"
-        "# End CircuitSetup Energy Meter Helper: aggregates v1\n"
+    source = "sensor:\n  - platform: uptime\n"
+    legacy = source + (
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "  - id: voltage\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
     )
-    assert replace_managed_block(legacy, "aggregates", "") == "sensor:\n  - platform: uptime\n"
+    updated = replace_managed_block(
+        legacy, "voltage_references", "  - id: voltage_updated\n"
+    )
+    added = replace_managed_block(updated, "aggregates", "  - id: total\n")
+    assert added.index("voltage references v1") < added.index("aggregates v1")
+    assert replace_managed_block(added, "aggregates", "") == updated
+    assert replace_managed_block(updated, "voltage_references", "") == source
 
 
 @pytest.mark.parametrize("block_name", ("voltage_references", "phase_overrides"))
 def test_nonaggregate_blocks_remain_idempotent(block_name: str) -> None:
-    """The EOF ownership protocol is intentionally aggregate-only."""
+    """Nonaggregate blocks use the same structural insertion rule."""
     content = _content()
     first = replace_managed_block(content, block_name, "  - id: total\n")
 
