@@ -167,6 +167,74 @@ def test_overlapping_connect_is_rejected_without_disturbing_owner() -> None:
     asyncio.run(run())
 
 
+def test_pending_auth_is_not_publicly_ready_or_commandable() -> None:
+    async def run() -> None:
+        auth_sent = asyncio.Event()
+
+        class AuthWebSocket(FakeWebSocket):
+            async def send_json(self, message: dict) -> None:
+                await super().send_json(message)
+                auth_sent.set()
+
+        ws = AuthWebSocket({"server_version": "2026.9.0", "requires_auth": True})
+        client = DeviceBuilderClient("http://builder", token="token", connect=lambda _: ws)
+        connecting = asyncio.create_task(client.async_connect())
+        await auth_sent.wait()
+        assert not client.connected
+        assert "connected=False" in repr(client)
+        with pytest.raises(ConnectionError):
+            await client.async_command("devices/list", {})
+        assert [message["command"] for message in ws.sent] == ["auth"]
+        await ws.send_result("0", {})
+        await connecting
+        assert client.connected
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
+def test_cancelled_connect_owns_repeatedly_cancelled_failed_cleanup() -> None:
+    async def run() -> None:
+        auth_sent = asyncio.Event()
+        close_started = asyncio.Event()
+        close_release = asyncio.Event()
+        close_cancellations = 0
+
+        class GatedAuthWebSocket(FakeWebSocket):
+            async def send_json(self, message: dict) -> None:
+                await super().send_json(message)
+                auth_sent.set()
+
+            async def close(self) -> None:
+                nonlocal close_cancellations
+                close_started.set()
+                try:
+                    await close_release.wait()
+                except asyncio.CancelledError:
+                    close_cancellations += 1
+                    raise
+                await super().close()
+
+        ws = GatedAuthWebSocket({"server_version": "2026.9.0", "requires_auth": True})
+        client = DeviceBuilderClient("http://builder", token="token", connect=lambda _: ws)
+        connecting = asyncio.create_task(client.async_connect())
+        await auth_sent.wait()
+        connecting.cancel()
+        await close_started.wait()
+        connecting.cancel()
+        await asyncio.sleep(0)
+        assert not connecting.done()
+        close_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await connecting
+        assert close_cancellations == 0
+        assert ws.closed
+        assert not client.connected
+        assert not client._pending
+
+    asyncio.run(run())
+
+
 def test_missing_auth_flag_requires_opaque_token() -> None:
     """Only an explicit false ServerInfo flag permits trusted ingress."""
 
