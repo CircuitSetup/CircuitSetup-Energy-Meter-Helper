@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
+from .entity_binding import group_key
 from .models import MeterTopology
 
 LineFrequencyHz = Literal[50, 60]
@@ -82,7 +83,7 @@ class ChannelSettings:
     model_id: str
     reporting_multiplier: float
     role: CircuitRole
-    voltage_reference_id: str | None
+    voltage_reference_id: str
     custom_gain_ct: int | None = None
     custom_label: str | None = None
     burden_output_acknowledged: bool = False
@@ -163,7 +164,11 @@ def validate_meter_configuration(
         if not ref.group_keys or any(not isinstance(g, str) for g in ref.group_keys):
             raise ValueError("group_keys must be non-empty strings")
         all_groups.extend(ref.group_keys)
-    expected_groups = {f"g{i}" for i in range(1, topology.group_count + 1)}
+    expected_groups = {
+        group_key(board, group)
+        for board in range(topology.board_count)
+        for group in range(2)
+    }
     if set(all_groups) != expected_groups or len(all_groups) != len(expected_groups):
         raise ValueError("topology groups must be assigned exactly once")
     if len(refs) > 1 and not request.multi_reference_preparation_acknowledged:
@@ -192,11 +197,8 @@ def validate_meter_configuration(
             raise ValueError("used channels cannot be UNUSED")
         if not channel.enabled and channel.role is not CircuitRole.UNUSED:
             raise ValueError("unused channels must be UNUSED")
-        valid_reference = (
-            channel.voltage_reference_id in ref_ids
-            if channel.enabled
-            else channel.voltage_reference_id is None
-        )
+        _text(channel.voltage_reference_id, "voltage_reference_id")
+        valid_reference = channel.voltage_reference_id in ref_ids
         if not valid_reference:
             raise ValueError("channel has invalid voltage reference")
         if channel.custom_gain_ct is not None and (type(channel.custom_gain_ct) is not int or not 1 <= channel.custom_gain_ct <= 65535):
@@ -226,8 +228,15 @@ def validate_meter_configuration(
         aggregate_channels.update(aggregate.channels)
         if not isinstance(aggregate.measurement_method, MeasurementMethod) or not isinstance(aggregate.energy_mode, EnergyMode):
             raise ValueError("invalid aggregate method or energy mode")  # noqa: TRY004
-        expected = {MeasurementMethod.DIRECT: 1, MeasurementMethod.TWO_CT_SUM: 2, MeasurementMethod.ONE_CT_DOUBLE_POWER: 1, MeasurementMethod.BOTH_CONDUCTORS_ONE_CT: 1}[aggregate.measurement_method]
-        if len(aggregate.channels) != expected or any(not by_channel[c].enabled for c in aggregate.channels):
+        expected = {
+            MeasurementMethod.TWO_CT_SUM: 2,
+            MeasurementMethod.ONE_CT_DOUBLE_POWER: 1,
+            MeasurementMethod.BOTH_CONDUCTORS_ONE_CT: 1,
+        }.get(aggregate.measurement_method)
+        if (
+            (expected is not None and len(aggregate.channels) != expected)
+            or any(not by_channel[c].enabled for c in aggregate.channels)
+        ):
             raise ValueError("measurement method cardinality does not match enabled channels")
         if aggregate.parent_id is not None and aggregate.parent_id not in aggregate_ids:
             raise ValueError("aggregate parent does not exist")
@@ -254,7 +263,21 @@ def default_meter_configuration(
     options = {key: tuple(value) for key, value in package_options.items()}
     _bools(options["power_quality"], "power_quality", topology.board_count)
     _bools(options["status_fields"], "status_fields", topology.board_count)
-    refs = (VoltageReferenceConfig("main", "Main", "A", 120.0, "default", 1, tuple(f"g{i}" for i in range(1, topology.group_count + 1))),)
+    refs = (
+        VoltageReferenceConfig(
+            "main",
+            "Main",
+            "A",
+            120.0,
+            "default",
+            1,
+            tuple(
+                group_key(board, group)
+                for board in range(topology.board_count)
+                for group in range(2)
+            ),
+        ),
+    )
     channels = tuple(ChannelSettings(i, True, f"CT {i}", "default", 1.0, CircuitRole.BRANCH, "main") for i in range(1, topology.ct_count + 1))
     result = MeterConfigurationRequest(MeterSettings("Energy meter", ElectricalSystem.SPLIT_PHASE_120_240, 60, 5, VoltageLayout.STANDARD, refs), channels, (), options["power_quality"], options["status_fields"])
     validate_meter_configuration(result, topology)

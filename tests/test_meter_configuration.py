@@ -2,10 +2,14 @@ import math
 
 import pytest
 
+from custom_components.circuitsetup_energy_meter_helper.entity_binding import group_key
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     ChannelSettings,
+    CircuitAggregate,
     CircuitRole,
     ElectricalSystem,
+    EnergyMode,
+    MeasurementMethod,
     MeterConfigurationRequest,
     MeterSettings,
     UpdateIntervalSeconds,
@@ -31,7 +35,11 @@ def request(*, addons: int = 0, interval: int = 5) -> MeterConfigurationRequest:
     meter = MeterSettings(
         "Kitchen meter", ElectricalSystem.SPLIT_PHASE_120_240, 60, interval,
         VoltageLayout.STANDARD,
-        (VoltageReferenceConfig("main", "Main", "A", 120.0, "v", 1, ("g1", "g2")),),
+        (VoltageReferenceConfig("main", "Main", "A", 120.0, "v", 1, tuple(
+            group_key(board, group)
+            for board in range(addons + 1)
+            for group in range(2)
+        )),),
     )
     channels = tuple(
         ChannelSettings(i, True, f"CT {i}", "ct", 1.0, CircuitRole.BRANCH, "main")
@@ -57,7 +65,27 @@ def test_frequency_is_exactly_50_or_60(frequency: int) -> None:
 def test_default_profiles_and_topology_group_assignment() -> None:
     value = default_meter_configuration(topology(), {"power_quality": (False,), "status_fields": (True,)})
     assert value.meter.line_frequency_hz == 60
-    assert value.meter.voltage_references[0].group_keys == ("g1", "g2")
+    assert value.meter.voltage_references[0].group_keys == (group_key(0, 0), group_key(0, 1))
+    validate_meter_configuration(value, topology())
+
+
+def test_default_addon_groups_use_canonical_keys() -> None:
+    value = default_meter_configuration(
+        topology(1), {"power_quality": (False, False), "status_fields": (True, False)}
+    )
+    assert value.meter.voltage_references[0].group_keys == (
+        "main_1", "main_2", "addon1_1", "addon1_2"
+    )
+    validate_meter_configuration(value, topology(1))
+
+
+def test_direct_accepts_multiple_enabled_channels() -> None:
+    value = request()
+    aggregate = CircuitAggregate(
+        "grid", "Grid", CircuitRole.GRID, (1, 2), MeasurementMethod.DIRECT,
+        None, EnergyMode.CONSUMPTION,
+    )
+    object.__setattr__(value, "aggregates", (aggregate,))
     validate_meter_configuration(value, topology())
 
 
