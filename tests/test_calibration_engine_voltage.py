@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
+    CalibrationTimingPolicy,
     CalibrationEngine as ProductionCalibrationEngine,
 )
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
@@ -55,6 +56,40 @@ class CalibrationEngine(ProductionCalibrationEngine):
     def __init__(self, sessions: SessionManager, persist: Any, **kwargs: Any) -> None:
         kwargs.setdefault("calibration_snapshot_reader", _authoritative_snapshot)
         super().__init__(sessions, persist, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("interval", "sensor_timeout", "evidence_timeout"),
+    (
+        (1, 35.0, 35.0),
+        (2, 35.0, 35.0),
+        (5, 35.0, 35.0),
+        (10, 35.0, 35.0),
+        (30, 125.0, 75.0),
+        (60, 245.0, 135.0),
+    ),
+)
+def test_calibration_timing_policy_uses_supported_interval_formulas(
+    interval: int, sensor_timeout: float, evidence_timeout: float
+) -> None:
+    policy = CalibrationTimingPolicy(interval, sample_count=3)
+
+    assert policy.sensor_window_timeout_s == sensor_timeout
+    assert policy.evidence_timeout_s == evidence_timeout
+
+
+@pytest.mark.parametrize("interval", (0, 3, 61, True, "30"))
+def test_calibration_timing_policy_rejects_unsupported_intervals(interval: object) -> None:
+    with pytest.raises(ValueError):
+        CalibrationTimingPolicy(interval, sample_count=3)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("sample_count", (0, -1, True))
+def test_calibration_timing_policy_requires_positive_integer_samples(
+    sample_count: object,
+) -> None:
+    with pytest.raises(ValueError):
+        CalibrationTimingPolicy(5, sample_count=sample_count)  # type: ignore[arg-type]
 
 
 def sample_window(*values: float) -> SensorSampleWindow:

@@ -166,6 +166,28 @@ def test_inventory_has_server_plan_and_catalog_fields() -> None:
     assert inventory.ct_catalog is inventory.ct_inventory.catalog
 
 
+@pytest.mark.parametrize("interval", (1, 2, 5, 10, 30, 60))
+def test_inventory_warns_only_for_installed_slow_calibration_intervals(
+    interval: int,
+) -> None:
+    content = _document(contract=True)
+    baseline = _inventory(content).configuration
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        replace(baseline.meter, update_interval_s=interval),
+        baseline.channels,
+        baseline.aggregates,
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+
+    inventory = _inventory(content, stored=stored)
+
+    assert ("slow_interval_extends_calibration" in inventory.warnings) is (
+        interval in (30, 60)
+    )
+
+
 def test_legacy_inventory_keeps_yaml_ct_values_and_requires_electrical_confirmation() -> (
     None
 ):

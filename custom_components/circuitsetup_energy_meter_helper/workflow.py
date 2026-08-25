@@ -29,7 +29,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
 from .calibration_engine import (
-    DEFAULT_EVIDENCE_TIMEOUT,
+    CalibrationTimingPolicy,
     CalibrationEngine,
     OffsetCalibrationResult,
     OffsetCalibrationState,
@@ -170,6 +170,9 @@ class _SessionHandle:
     calibrated_current_channels: set[int] = field(default_factory=set)
     pending_reporting_multipliers: dict[int, float] = field(default_factory=dict)
     meter_configuration: StoredMeterConfiguration | None = None
+    timing_policy: CalibrationTimingPolicy = field(
+        default_factory=lambda: CalibrationTimingPolicy(5, 3)
+    )
 
     def status(self) -> SessionStatus:
         capability = getattr(self.binding, "offset_capability", None)
@@ -811,6 +814,14 @@ class EntryWorkflow:
             self._deadline(),
             state="safety_required" if preflight.ok else "preflight_failed",
             meter_configuration=meter_configuration,
+            timing_policy=CalibrationTimingPolicy(
+                (
+                    meter_configuration.meter.update_interval_s
+                    if meter_configuration is not None
+                    else 5
+                ),
+                3,
+            ),
         )
         with self._guard(mac):
             self._prune_device_sessions_locked(mac)
@@ -875,7 +886,9 @@ class EntryWorkflow:
                             device_id=entity.descriptor.device_id,
                             sample_count=1,
                             after=boundary,
-                            timeout=DEFAULT_EVIDENCE_TIMEOUT,
+                            timeout=CalibrationTimingPolicy(
+                                handle.timing_policy.update_interval_s, 1
+                            ).sensor_window_timeout_s,
                         )
                         for entity in entities
                     )
@@ -915,7 +928,11 @@ class EntryWorkflow:
             self._validate_offset_target(handle, board_index, stage)
             api = self._require_api()
             result = await async_check_offset_readiness(
-                api, handle.binding, board_index, stage
+                api,
+                handle.binding,
+                board_index,
+                stage,
+                timeout=handle.timing_policy.sensor_window_timeout_s,
             )
             self._assert_claim(handle, revision)
             if (
@@ -955,6 +972,7 @@ class EntryWorkflow:
                 board_index,
                 stage,
                 confirm_retry=confirm_retry,
+                timing_policy=handle.timing_policy,
             )
             self._assert_claim(handle, revision)
             handle.offset_results[(board_index, stage)] = result
@@ -1023,6 +1041,7 @@ class EntryWorkflow:
                 1.0,
                 confirm_iteration=confirm_iteration,
                 substitutions=handle.substitutions,
+                timing_policy=handle.timing_policy,
             )
             self._assert_claim(handle, revision)
             for result in results:
@@ -1123,6 +1142,7 @@ class EntryWorkflow:
                 iteration=iteration,
                 confirm_iteration=confirm_iteration,
                 substitutions=handle.substitutions,
+                timing_policy=handle.timing_policy,
             )
             self._assert_claim(handle, revision)
             if result.gain_evidence is not None and result.gain_evidence.flash_saved:

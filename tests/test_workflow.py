@@ -710,9 +710,9 @@ def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
         calls: list[tuple[Any, ...]] = []
 
         async def readiness(
-            session: Any, binding: Any, board_index: int, stage: int
+            session: Any, binding: Any, board_index: int, stage: int, **kwargs: Any
         ) -> OffsetReadinessResult:
-            calls.append((session, binding, board_index, stage))
+            calls.append((session, binding, board_index, stage, kwargs))
             return OffsetReadinessResult(
                 stage, True, 1, (), (), DEFAULT_OFFSET_READINESS_THRESHOLDS
             )
@@ -723,9 +723,17 @@ def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
         )
         result = await workflow.async_check_offset_readiness(handle.session_id, 0, 1)
         assert result.ready
-        assert calls == [(api, handle.binding, 0, 1)]
+        assert calls == [
+            (
+                api,
+                handle.binding,
+                0,
+                1,
+                {"timeout": handle.timing_policy.sensor_window_timeout_s},
+            )
+        ]
 
-        async def stale(*_args: Any) -> OffsetReadinessResult:
+        async def stale(*_args: Any, **_kwargs: Any) -> OffsetReadinessResult:
             return OffsetReadinessResult(
                 1, True, 0, (), (), DEFAULT_OFFSET_READINESS_THRESHOLDS
             )
@@ -769,7 +777,19 @@ def test_one_offset_call_maps_one_board_stage_and_status_retains_result() -> Non
         status = await workflow.async_get_session(handle.session_id)
 
         assert result.expected_tables == (("meter_main1", OFFSET_TABLE),)
-        assert calls == [(MAC, api, handle.binding, 0, 1, {"confirm_retry": False})]
+        assert calls == [
+            (
+                MAC,
+                api,
+                handle.binding,
+                0,
+                1,
+                {
+                    "confirm_retry": False,
+                    "timing_policy": handle.timing_policy,
+                },
+            )
+        ]
         assert status.offset_disposition == "in_progress"
         assert status.offset_boards[0]["stages"] == (
             {"stage": 1, "state": "completed"},
@@ -796,7 +816,9 @@ def test_noncanonical_offset_targets_cannot_bypass_partial_retry_confirmation() 
                 stage: int,
                 *,
                 confirm_retry: bool,
+                timing_policy: Any,
             ) -> OffsetCalibrationResult:
+                del timing_policy
                 calls.append((board_index, stage, confirm_retry))
                 return OffsetCalibrationResult(
                     OffsetCalibrationState.PARTIAL,
