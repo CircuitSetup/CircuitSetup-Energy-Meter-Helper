@@ -158,18 +158,18 @@ def _reject_object_id_collisions(channels: Iterable[CTChannelConfig]) -> None:
 
 def _esphome_object_id(value: str) -> str:
     """Match ESPHome's native entity-name object-ID sanitizer exactly."""
-    result = bytearray()
-    for byte in value.encode("utf-8"):
-        if byte == 0x20:
-            result.append(0x5F)
-        elif 0x41 <= byte <= 0x5A:
-            result.append(byte + 0x20)
+    result: list[str] = []
+    for character in value:
+        if character == " ":
+            result.append("_")
+        elif "A" <= character <= "Z":
+            result.append(character.lower())
         elif (
-            0x61 <= byte <= 0x7A
-            or 0x30 <= byte <= 0x39
-            or byte in (0x2D, 0x5F)
+            "a" <= character <= "z"
+            or "0" <= character <= "9"
+            or character in "-_"
         ):
-            result.append(byte)
+            result.append(character)
         else:
-            result.append(0x5F)
-    return result.decode("ascii")
+            result.append("_")
+    return "".join(result)

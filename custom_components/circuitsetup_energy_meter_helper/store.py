@@ -527,6 +527,7 @@ class StoredMeterConfiguration:
     power_quality: tuple[bool, ...]
     status_fields: tuple[bool, ...]
     ct_selections: tuple[StoredCTSelection, ...] = ()
+    multi_reference_preparation_acknowledged: bool = False
 
     def __post_init__(self) -> None:
         if re.fullmatch(r"[0-9a-f]{64}", self.config_sha256) is None:
@@ -553,11 +554,16 @@ class StoredMeterConfiguration:
             not isinstance(item, StoredCTSelection) for item in self.ct_selections
         ):
             raise TypeError("ct_selections must be a tuple of StoredCTSelection")
+        if type(self.multi_reference_preparation_acknowledged) is not bool:
+            raise TypeError("multi-reference acknowledgement must be boolean")
         channels = {channel.channel: channel for channel in self.channels}
         if self.ct_selections and (
-            {selection.channel for selection in self.ct_selections} != set(channels)
+            len(self.ct_selections) != len(channels)
+            or {selection.channel for selection in self.ct_selections} != set(channels)
             or any(
                 selection.config_sha256 != self.config_sha256
+                or selection.model_id != channels[selection.channel].model_id
+                or selection.display_label != channels[selection.channel].custom_label
                 or selection.reporting_multiplier
                 != channels[selection.channel].reporting_multiplier
                 for selection in self.ct_selections
@@ -712,6 +718,7 @@ def _serialize_meter_configuration(
                 "voltage_reference_id": channel.voltage_reference_id,
                 "custom_gain_ct": channel.custom_gain_ct,
                 "custom_label": channel.custom_label,
+                "burden_output_acknowledged": channel.burden_output_acknowledged,
             }
             for channel in configuration.channels
         ],
@@ -735,6 +742,9 @@ def _serialize_meter_configuration(
             _serialize_ct_selection(selection)
             for selection in configuration.ct_selections
         ],
+        "multi_reference_preparation_acknowledged": (
+            configuration.multi_reference_preparation_acknowledged
+        ),
     }
 
 
@@ -751,7 +761,11 @@ def _deserialize_meter_configuration_payload(
     }
     if (
         not isinstance(raw, dict)
-        or set(raw) not in (required, {*required, "ct_selections"})
+        or not required <= set(raw) <= {
+            *required,
+            "ct_selections",
+            "multi_reference_preparation_acknowledged",
+        }
         or any(not isinstance(key, str) for key in raw)
     ):
         raise ValueError("stored meter configuration payload is invalid")
@@ -812,21 +826,25 @@ def _deserialize_meter_configuration_payload(
         raise TypeError("stored meter configuration collections are invalid")
     channels: list[ChannelSettings] = []
     for raw_channel in data["channels"]:
-        item = _exact_mapping(
-            raw_channel,
-            {
-                "channel",
-                "enabled",
-                "name",
-                "model_id",
-                "reporting_multiplier",
-                "role",
-                "voltage_reference_id",
-                "custom_gain_ct",
-                "custom_label",
-            },
+        channel_keys = {
             "channel",
-        )
+            "enabled",
+            "name",
+            "model_id",
+            "reporting_multiplier",
+            "role",
+            "voltage_reference_id",
+            "custom_gain_ct",
+            "custom_label",
+        }
+        if (
+            not isinstance(raw_channel, dict)
+            or set(raw_channel)
+            not in (channel_keys, {*channel_keys, "burden_output_acknowledged"})
+            or any(not isinstance(key, str) for key in raw_channel)
+        ):
+            raise ValueError("stored meter configuration channel is invalid")
+        item = raw_channel
         channels.append(
             ChannelSettings(
                 item["channel"],
@@ -838,7 +856,7 @@ def _deserialize_meter_configuration_payload(
                 item["voltage_reference_id"],
                 item["custom_gain_ct"],
                 item["custom_label"],
-                False,
+                item.get("burden_output_acknowledged", False),
             )
         )
     aggregates: list[CircuitAggregate] = []
@@ -917,8 +935,9 @@ def _deserialize_meter_configuration_payload(
             tuple(channels),
             tuple(aggregates),
             tuple(data["power_quality"]),
-            tuple(data["status_fields"]),
-            selections,
+        tuple(data["status_fields"]),
+        selections,
+        data.get("multi_reference_preparation_acknowledged", False),
         )
         _validate_configuration(configuration, topology)
     except (TypeError, ValueError) as error:
@@ -1068,10 +1087,15 @@ class HelperStore:
         return MeterConfigurationRead(configuration, False)
 
     async def async_save_verified_meter_configuration(
-        self, mac: str, configuration: StoredMeterConfiguration
+        self,
+        mac: str,
+        expected_source_sha256: str,
+        configuration: StoredMeterConfiguration,
     ) -> None:
-        """Atomically retain verified semantics only for the current meter record."""
+        """Atomically advance one verified meter record and its full metadata."""
         mac = canonical_mac(mac)
+        if re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256) is None:
+            raise ValueError("expected source hash must be SHA-256")
         if not isinstance(configuration, StoredMeterConfiguration):
             raise TypeError("configuration must be StoredMeterConfiguration")
         async with self._update_lock:
@@ -1079,7 +1103,7 @@ class HelperStore:
             raw_meter = data.setdefault("meters", {}).get(mac)
             if not isinstance(raw_meter, dict):
                 raise ValueError("current meter record is unavailable")  # noqa: TRY004
-            if _configuration_hash(raw_meter) != configuration.config_sha256:
+            if _configuration_hash(raw_meter) != expected_source_sha256:
                 raise ValueError(
                     "configuration does not match the current meter record"
                 )
@@ -1090,17 +1114,21 @@ class HelperStore:
                 _serialize_ct_selection(selection)
                 for selection in configuration.ct_selections
             ]
+            raw_meter["config_sha256"] = configuration.config_sha256
             await self._store.async_save(data)
 
     async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
         self,
         mac: str,
+        expected_source_sha256: str,
         configuration: StoredMeterConfiguration,
         verification_id: str,
         transaction_id: str,
     ) -> bool:
         """Commit full metadata and its claimed calibration install in one save."""
         mac = canonical_mac(mac)
+        if re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256) is None:
+            raise ValueError("expected source hash must be SHA-256")
         if not isinstance(configuration, StoredMeterConfiguration):
             raise TypeError("configuration must be StoredMeterConfiguration")
         async with self._update_lock:
@@ -1108,7 +1136,7 @@ class HelperStore:
             raw_meter = data.setdefault("meters", {}).get(mac)
             if (
                 not isinstance(raw_meter, dict)
-                or _configuration_hash(raw_meter) != configuration.config_sha256
+                or _configuration_hash(raw_meter) != expected_source_sha256
             ):
                 return False
             raw_calibration = raw_meter.get("verified_calibration")
@@ -1129,6 +1157,7 @@ class HelperStore:
                 _serialize_ct_selection(selection)
                 for selection in configuration.ct_selections
             ]
+            raw_meter["config_sha256"] = configuration.config_sha256
             raw_calibration["source_handoff_firmware_installed"] = True
             await self._store.async_save(data)
             return True

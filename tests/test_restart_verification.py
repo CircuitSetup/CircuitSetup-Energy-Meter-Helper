@@ -1615,6 +1615,7 @@ def test_calibration_preview_handoffs_current_full_metadata_atomically() -> None
         async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
             self,
             mac: str,
+            expected_source_sha256: str,
             configuration: object,
             verification_id: str,
             transaction_id: str,
@@ -1681,8 +1682,7 @@ def test_calibration_preview_handoffs_current_full_metadata_atomically() -> None
                 target,
                 {channel.channel: channel.name for channel in configuration.channels},
                 6,
-                expected.object_ids,
-                expected.sensor_names,
+                expected.sensor_entities,
             )
         )
 

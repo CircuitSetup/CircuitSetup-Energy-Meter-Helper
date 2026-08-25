@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -54,6 +55,7 @@ MAX_UPLOAD_PROGRESS_BYTES = 2_048
 MAX_UPLOAD_PROGRESS_LINES = 32
 DEFAULT_CONFIRMATION_TTL = 15 * 60.0
 MAX_CONFIRMATION_TTL = 60 * 60.0
+_LOGGER = logging.getLogger(__name__)
 
 
 class ConfigTransactionState(StrEnum):
@@ -148,12 +150,16 @@ class VerifiedPersistence(Protocol):
     ) -> None: ...
 
     async def async_save_verified_meter_configuration(
-        self, mac: str, configuration: StoredMeterConfiguration
+        self,
+        mac: str,
+        expected_source_sha256: str,
+        configuration: StoredMeterConfiguration,
     ) -> None: ...
 
     async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
         self,
         mac: str,
+        expected_source_sha256: str,
         configuration: StoredMeterConfiguration,
         verification_id: str,
         transaction_id: str,
@@ -188,8 +194,7 @@ class ReconnectEvidence:
     topology: MeterTopology
     ct_names: Mapping[int, str]
     current_sensor_count: int
-    object_ids: frozenset[str] = frozenset()
-    sensor_names: frozenset[str] = frozenset()
+    sensor_entities: frozenset[tuple[str, str]] = frozenset()
 
 
 class ReconnectVerifier(Protocol):
@@ -239,8 +244,9 @@ class _ConfigTransaction:
     meter_configuration: StoredMeterConfiguration | None = field(
         default=None, repr=False
     )
-    expected_entity_ids: frozenset[str] = field(default_factory=frozenset, repr=False)
-    expected_sensor_names: frozenset[str] = field(default_factory=frozenset, repr=False)
+    expected_sensor_entities: frozenset[tuple[str, str]] = field(
+        default_factory=frozenset, repr=False
+    )
     _legacy_ct_selections: tuple[StoredCTSelection, ...] = field(
         default=(), repr=False
     )
@@ -259,6 +265,7 @@ class _ConfigTransaction:
     )
     reservation_claimed: bool = field(default=False, repr=False)
     write_started: bool = field(default=False, repr=False)
+    expiry_cleanup_started: bool = field(default=False, repr=False)
     closed: bool = field(default=False, repr=False)
 
     async def async_release_reservation(self) -> None:
@@ -288,8 +295,7 @@ class _ConfigTransaction:
         self.plan = None
         self.prior_content = None
         self.meter_configuration = None
-        self.expected_entity_ids = frozenset()
-        self.expected_sensor_names = frozenset()
+        self.expected_sensor_entities = frozenset()
         self._legacy_ct_selections = ()
         self.closed = True
 
@@ -400,8 +406,7 @@ class ConfigTransactionManager:
         selections: tuple[StoredCTSelection, ...] = (),
         *,
         meter_configuration: StoredMeterConfiguration | None = None,
-        expected_entity_ids: frozenset[str] = frozenset(),
-        expected_sensor_names: frozenset[str] = frozenset(),
+        expected_sensor_entities: frozenset[tuple[str, str]] = frozenset(),
     ) -> TransactionStatus:
         """Retain full content only in memory and return a safe review surface."""
         if (
@@ -412,7 +417,7 @@ class ConfigTransactionManager:
         ):
             raise ValueError("source snapshot does not match mutation plan")
         _validate_changes(plan.changes)
-        _validate_expected_entities(expected_entity_ids, expected_sensor_names)
+        _validate_expected_sensor_entities(expected_sensor_entities)
         mac = canonical_mac(mac)
         if meter_configuration is not None:
             if not isinstance(meter_configuration, StoredMeterConfiguration):
@@ -440,8 +445,7 @@ class ConfigTransactionManager:
             plan,
             source_snapshot.content,
             meter_configuration,
-            expected_entity_ids,
-            expected_sensor_names,
+            expected_sensor_entities,
             selections,
         )
         self.sessions._register_transaction(transaction.transaction_id, transaction)
@@ -529,8 +533,7 @@ class ConfigTransactionManager:
             )
             selections: tuple[StoredCTSelection, ...] = ()
             meter_configuration: StoredMeterConfiguration | None = None
-            expected_entity_ids: frozenset[str] = frozenset()
-            expected_sensor_names: frozenset[str] = frozenset()
+            expected_sensor_entities: frozenset[tuple[str, str]] = frozenset()
             has_stored_configuration = (
                 stored_configuration is not None
                 and stored_configuration.config_sha256 == snapshot.sha256
@@ -575,10 +578,10 @@ class ConfigTransactionManager:
                             request.power_quality,
                             request.status_fields,
                             selections,
+                            request.multi_reference_preparation_acknowledged,
                         )
                         expected = expected_meter_entity_evidence(request, topology)
-                        expected_entity_ids = expected.object_ids
-                        expected_sensor_names = expected.sensor_names
+                        expected_sensor_entities = expected.sensor_entities
             status = await self.async_preview(
                 mac,
                 topology,
@@ -586,8 +589,7 @@ class ConfigTransactionManager:
                 snapshot,
                 selections,
                 meter_configuration=meter_configuration,
-                expected_entity_ids=expected_entity_ids,
-                expected_sensor_names=expected_sensor_names,
+                expected_sensor_entities=expected_sensor_entities,
             )
             transaction = self._transaction(status.transaction_id)
             transaction.verification_id = verification_id
@@ -944,37 +946,9 @@ class ConfigTransactionManager:
             _progress(transaction, TransactionProgress.DEVICE_VERIFIED)
             self.publish_status(_status(transaction))
             try:
-                if transaction.meter_configuration is not None:
-                    if transaction.verification_id is None:
-                        await self._persistence.async_save_verified_meter_configuration(
-                            transaction.mac, transaction.meter_configuration
-                        )
-                    else:
-                        installed = await self._persistence.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
-                            transaction.mac,
-                            transaction.meter_configuration,
-                            transaction.verification_id,
-                            transaction.transaction_id,
-                        )
-                        if not installed:
-                            return self._finish(
-                                transaction,
-                                ConfigTransactionState.FAILED,
-                                TransactionEvidenceCode.PERSISTENCE_FAILED,
-                            )
-                else:
-                    selections = tuple(
-                        replace(
-                            selection,
-                            config_sha256=sha256(
-                                plan.proposed_content.encode()
-                            ).hexdigest(),
-                        )
-                        for selection in transaction.selections
-                    )
-                    await self._persistence.async_save_verified_ct_selections(
-                        transaction.mac, selections
-                    )
+                installed, cancelled = await self._drain_persistence_commit(
+                    self._persist_verified_metadata(transaction, plan)
+                )
             except asyncio.CancelledError:
                 self._finish(
                     transaction,
@@ -988,33 +962,80 @@ class ConfigTransactionManager:
                     ConfigTransactionState.FAILED,
                     TransactionEvidenceCode.PERSISTENCE_FAILED,
                 )
-            if (
-                transaction.verification_id is not None
-                and transaction.meter_configuration is None
-            ):
-                try:
-                    installed = await self._persistence.async_mark_verified_calibration_installed(
-                        transaction.mac,
-                        transaction.verification_id,
-                        transaction.transaction_id,
-                    )
-                except asyncio.CancelledError:
-                    self._finish(
-                        transaction,
-                        ConfigTransactionState.FAILED,
-                        TransactionEvidenceCode.CANCELLED,
-                    )
-                    raise
-                except Exception:  # noqa: BLE001 - external storage boundary
-                    installed = False
-                if not installed:
-                    return self._finish(
-                        transaction,
-                        ConfigTransactionState.FAILED,
-                        TransactionEvidenceCode.PERSISTENCE_FAILED,
-                    )
+            if not installed:
+                status = self._finish(
+                    transaction,
+                    ConfigTransactionState.FAILED,
+                    TransactionEvidenceCode.PERSISTENCE_FAILED,
+                )
+                if cancelled:
+                    raise asyncio.CancelledError
+                return status
             _progress(transaction, TransactionProgress.METADATA_PERSISTED)
-            return self._finish(transaction, ConfigTransactionState.VERIFIED)
+            status = self._finish(transaction, ConfigTransactionState.VERIFIED)
+            if cancelled:
+                raise asyncio.CancelledError
+            return status
+
+    async def _persist_verified_metadata(
+        self, transaction: _ConfigTransaction, plan: ConfigMutationPlan
+    ) -> bool:
+        """Commit only post-reconnect metadata, including its exact source CAS."""
+        if transaction.meter_configuration is not None:
+            if transaction.verification_id is None:
+                await self._persistence.async_save_verified_meter_configuration(
+                    transaction.mac,
+                    transaction.source_sha256,
+                    transaction.meter_configuration,
+                )
+                return True
+            return await self._persistence.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+                transaction.mac,
+                transaction.source_sha256,
+                transaction.meter_configuration,
+                transaction.verification_id,
+                transaction.transaction_id,
+            )
+        selections = tuple(
+            replace(
+                selection,
+                config_sha256=sha256(plan.proposed_content.encode()).hexdigest(),
+            )
+            for selection in transaction.selections
+        )
+        await self._persistence.async_save_verified_ct_selections(
+            transaction.mac, selections
+        )
+        if transaction.verification_id is None:
+            return True
+        return await self._persistence.async_mark_verified_calibration_installed(
+            transaction.mac,
+            transaction.verification_id,
+            transaction.transaction_id,
+        )
+
+    async def _drain_persistence_commit(
+        self, commit: Coroutine[Any, Any, bool]
+    ) -> tuple[bool, bool]:
+        """Drain a started durable commit before reconciling caller cancellation."""
+        task: asyncio.Task[bool] = asyncio.create_task(commit)
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        try:
+            return task.result(), cancelled
+        except BaseException as error:
+            if cancelled:
+                cancellation = asyncio.CancelledError()
+                cancellation.add_note(
+                    "persistence completion also failed with "
+                    f"{type(error).__name__}"
+                )
+                raise cancellation from error
+            raise
 
     def _publish_upload_progress(
         self, transaction: _ConfigTransaction, progress: JobProgress
@@ -1108,7 +1129,7 @@ class ConfigTransactionManager:
 
     def _expire(self, transaction: _ConfigTransaction) -> None:
         """Refuse an expired handle and recover any uncompiled remote write."""
-        if transaction.closed:
+        if transaction.closed or transaction.expiry_cleanup_started:
             return
         recover_write = transaction.write_started and transaction.state not in {
             ConfigTransactionState.COMPILED,
@@ -1130,6 +1151,7 @@ class ConfigTransactionManager:
                 except RollbackFailedError, asyncio.CancelledError:
                     pass
 
+            transaction.expiry_cleanup_started = True
             cleanup = asyncio.create_task(recover_then_settle())
             transaction.active_tasks.add(cleanup)
             cleanup.add_done_callback(transaction.active_tasks.discard)
@@ -1139,11 +1161,17 @@ class ConfigTransactionManager:
             _release(transaction)
 
             async def release_then_scrub() -> None:
-                await transaction.async_release_reservation()
-                transaction.scrub()
-                self.sessions._remove_transaction(transaction.transaction_id)
-                self._subscribers.pop(transaction.transaction_id, None)
+                try:
+                    await transaction.async_release_reservation()
+                except BaseException:
+                    _LOGGER.exception("configuration reservation release failed")
+                    raise
+                finally:
+                    transaction.scrub()
+                    self.sessions._remove_transaction(transaction.transaction_id)
+                    self._subscribers.pop(transaction.transaction_id, None)
 
+            transaction.expiry_cleanup_started = True
             cleanup = asyncio.create_task(release_then_scrub())
             transaction.active_tasks.add(cleanup)
             return
@@ -1368,22 +1396,29 @@ def _validate_changes(changes: tuple[SubstitutionChange, ...]) -> None:
         raise ValueError("configuration change is not safe for display")
 
 
-def _validate_expected_entities(
-    object_ids: frozenset[str], sensor_names: frozenset[str]
+def _validate_expected_sensor_entities(
+    sensor_entities: frozenset[tuple[str, str]],
 ) -> None:
-    for label, values in (("object IDs", object_ids), ("sensor names", sensor_names)):
+    """Require bounded, one-to-one native sensor object-ID/name evidence."""
+    if type(sensor_entities) is not frozenset or len(sensor_entities) > 128:
+        raise ValueError("expected sensor entities are invalid")
+    object_ids: set[str] = set()
+    for pair in sensor_entities:
+        if type(pair) is not tuple or len(pair) != 2:
+            raise ValueError("expected sensor entities are invalid")
+        object_id, _name = pair
         if (
-            type(values) is not frozenset
-            or len(values) > 128
+            object_id in object_ids
             or any(
-                not isinstance(value, str)
+                type(value) is not str
                 or not value
                 or len(value.encode()) > 120
                 or any(ord(character) < 32 for character in value)
-                for value in values
+                for value in pair
             )
         ):
-            raise ValueError(f"expected {label} are invalid")
+            raise ValueError("expected sensor entities are invalid")
+        object_ids.add(object_id)
 
 
 def _safe_diff(diff: str) -> str:
@@ -1441,10 +1476,10 @@ def _verify_reconnect(
                 if evidence.ct_names.get(channel) != change.new_value:
                     return TransactionEvidenceCode.ENTITY_MISMATCH
     if (
-        not isinstance(evidence.object_ids, frozenset)
-        or not transaction.expected_entity_ids.issubset(evidence.object_ids)
-        or not isinstance(evidence.sensor_names, frozenset)
-        or not transaction.expected_sensor_names.issubset(evidence.sensor_names)
+        type(evidence.sensor_entities) is not frozenset
+        or not transaction.expected_sensor_entities.issubset(
+            evidence.sensor_entities
+        )
     ):
         return TransactionEvidenceCode.ENTITY_MISMATCH
     if evidence.current_sensor_count != transaction.topology.ct_count:

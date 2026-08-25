@@ -193,9 +193,7 @@ def _stored_request(
                 custom_gain_ct=(
                     channel.raw_gain_ct if stored_channel.model_id == "custom" else None
                 ),
-                custom_label=(
-                    channel.name if stored_channel.model_id == "custom" else None
-                ),
+                custom_label=stored_channel.custom_label,
             )
         )
     return MeterConfigurationRequest(
@@ -228,6 +226,7 @@ def _stored_request(
         stored.aggregates,
         stored.power_quality,
         stored.status_fields,
+        stored.multi_reference_preparation_acknowledged,
     )
 
 

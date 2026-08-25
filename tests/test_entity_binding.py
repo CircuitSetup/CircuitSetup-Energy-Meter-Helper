@@ -733,7 +733,14 @@ def _label_workflow(monkeypatch: pytest.MonkeyPatch) -> tuple[EntryWorkflow, _La
     digest = sha256(content.encode()).hexdigest()
     async def no_stored_selections(_store: HelperStore, _mac: str) -> tuple[Any, ...]:
         return ()
+
+    async def no_stored_configuration(_store: HelperStore, _mac: str) -> Any:
+        return SimpleNamespace(configuration=None, stale=False)
+
     monkeypatch.setattr(HelperStore, "async_get_ct_selections", no_stored_selections)
+    monkeypatch.setattr(
+        HelperStore, "async_get_meter_configuration_read", no_stored_configuration
+    )
     calls = {name: 0 for name in ("list", "get", "update", "validate", "compile", "upload", "restart")}
 
     class Builder:

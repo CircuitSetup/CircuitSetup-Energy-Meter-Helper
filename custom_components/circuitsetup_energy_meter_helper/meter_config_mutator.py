@@ -37,8 +37,7 @@ from .store import VerifiedCalibrationRecord
 class ExpectedMeterEntityEvidence:
     """Visible meter entities derived from validated server-side semantics."""
 
-    object_ids: frozenset[str]
-    sensor_names: frozenset[str]
+    sensor_entities: frozenset[tuple[str, str]]
 
 
 def expected_meter_entity_evidence(
@@ -72,7 +71,7 @@ def expected_meter_entity_evidence(
     object_ids = tuple(_esphome_object_id(name) for name in names)
     if len(set(object_ids)) != len(object_ids):
         raise ValueError("ESPHome object-ID collision for meter entities")
-    return ExpectedMeterEntityEvidence(frozenset(object_ids), frozenset(names))
+    return ExpectedMeterEntityEvidence(frozenset(zip(object_ids, names, strict=True)))
 
 
 def build_meter_configuration_mutation(

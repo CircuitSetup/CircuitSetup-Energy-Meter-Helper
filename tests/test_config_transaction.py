@@ -211,7 +211,10 @@ class Persistence:
         self.saved.append((mac, selections))
 
     async def async_save_verified_meter_configuration(
-        self, mac: str, configuration: StoredMeterConfiguration
+        self,
+        mac: str,
+        expected_source_sha256: str,
+        configuration: StoredMeterConfiguration,
     ) -> None:
         if self.error is not None:
             raise self.error
@@ -222,6 +225,7 @@ class Persistence:
     async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
         self,
         mac: str,
+        expected_source_sha256: str,
         configuration: StoredMeterConfiguration,
         verification_id: str,
         transaction_id: str,
@@ -314,7 +318,7 @@ def _meter_configuration(plan: ConfigMutationPlan) -> StoredMeterConfiguration:
         (False,),
         (False,),
         tuple(
-            StoredCTSelection(channel, "ct", f"CT {channel}", 27518, 1.0, config_sha256)
+            StoredCTSelection(channel, "ct", None, 27518, 1.0, config_sha256)
             for channel in range(1, 7)
         ),
     )
@@ -446,8 +450,7 @@ def test_full_meter_configuration_persists_only_after_verified_reconnect() -> No
             _topology(),
             {channel.channel: channel.name for channel in configuration.channels},
             6,
-            expected.object_ids,
-            expected.sensor_names,
+            expected.sensor_entities,
         )
         persistence = Persistence()
         manager = _manager(Builder(), persistence, evidence=evidence)
@@ -457,8 +460,7 @@ def test_full_meter_configuration_persists_only_after_verified_reconnect() -> No
             plan,
             _source(),
             meter_configuration=configuration,
-            expected_entity_ids=expected.object_ids,
-            expected_sensor_names=expected.sensor_names,
+            expected_sensor_entities=expected.sensor_entities,
         )
 
         assert persistence.meter_configuration is None
@@ -492,6 +494,7 @@ def test_calibration_handoff_saves_full_metadata_and_install_marker_together() -
         async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
             self,
             mac: str,
+            expected_source_sha256: str,
             configuration: StoredMeterConfiguration,
             verification_id: str,
             transaction_id: str,
@@ -526,8 +529,7 @@ def test_calibration_handoff_saves_full_metadata_and_install_marker_together() -
                 _topology(),
                 {channel.channel: channel.name for channel in configuration.channels},
                 6,
-                expected.object_ids,
-                expected.sensor_names,
+                expected.sensor_entities,
             ),
         )
         preview = await manager.async_preview(
@@ -536,8 +538,7 @@ def test_calibration_handoff_saves_full_metadata_and_install_marker_together() -
             plan,
             _source(),
             meter_configuration=configuration,
-            expected_entity_ids=expected.object_ids,
-            expected_sensor_names=expected.sensor_names,
+            expected_sensor_entities=expected.sensor_entities,
         )
         manager._transaction(preview.transaction_id).verification_id = "a" * 32
 
@@ -586,8 +587,7 @@ def test_missing_full_reconnect_entity_drops_private_configuration_without_persi
             plan,
             _source(),
             meter_configuration=configuration,
-            expected_entity_ids=expected.object_ids,
-            expected_sensor_names=expected.sensor_names,
+            expected_sensor_entities=expected.sensor_entities,
         )
         internal = manager._transaction(preview.transaction_id)
 
@@ -600,8 +600,237 @@ def test_missing_full_reconnect_entity_drops_private_configuration_without_persi
         assert persistence.meter_configuration is None
         assert internal.plan is None and internal.prior_content is None
         assert internal.meter_configuration is None
-        assert not internal.expected_entity_ids and not internal.expected_sensor_names
+        assert not internal.expected_sensor_entities
         assert "top-secret" not in repr(status) and "top-secret" not in repr(internal)
+
+    asyncio.run(run())
+
+
+def test_full_reconnect_requires_exact_sensor_object_id_name_pairs() -> None:
+    """A different sensor or a non-sensor cannot satisfy a required object ID."""
+
+    async def run() -> None:
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        pairs = tuple(expected.sensor_entities)
+        swapped = frozenset(
+            (object_id, pairs[(index + 1) % len(pairs)][1])
+            for index, (object_id, _name) in enumerate(pairs)
+        )
+        manager = _manager(
+            Builder(),
+            Persistence(),
+            evidence=ReconnectEvidence(
+                "aabbccddeeff",
+                _topology(),
+                {channel.channel: channel.name for channel in configuration.channels},
+                6,
+                swapped,
+            ),
+        )
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+            expected_sensor_entities=expected.sensor_entities,
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+
+        assert (
+            await manager.async_confirm_install(preview.transaction_id, "admin")
+        ).state is ConfigTransactionState.FAILED
+
+    asyncio.run(run())
+
+
+def test_cancellation_during_verified_commit_finishes_durable_metadata() -> None:
+    """A cancelled waiter cannot turn a completed metadata CAS into a failure."""
+
+    class BlockingPersistence(Persistence):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.finish = asyncio.Event()
+
+        async def async_save_verified_meter_configuration(
+            self,
+            mac: str,
+            expected_source_sha256: str,
+            configuration: StoredMeterConfiguration,
+        ) -> None:
+            self.started.set()
+            await self.finish.wait()
+            await super().async_save_verified_meter_configuration(
+                mac, expected_source_sha256, configuration
+            )
+
+    async def run() -> None:
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        persistence = BlockingPersistence()
+        manager = _manager(
+            Builder(),
+            persistence,
+            evidence=ReconnectEvidence(
+                "aabbccddeeff",
+                _topology(),
+                {channel.channel: channel.name for channel in configuration.channels},
+                6,
+                expected.sensor_entities,
+            ),
+        )
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+            expected_sensor_entities=expected.sensor_entities,
+        )
+        states: list[ConfigTransactionState] = []
+        manager.subscribe(preview.transaction_id, lambda status: states.append(status.state))
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        install = asyncio.create_task(
+            manager.async_confirm_install(preview.transaction_id, "admin")
+        )
+        await persistence.started.wait()
+        install.cancel()
+        persistence.finish.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await install
+        assert persistence.meter_configuration == configuration
+        assert states[-1] is ConfigTransactionState.VERIFIED
+        with pytest.raises(KeyError):
+            manager.status(preview.transaction_id)
+
+        before_commit_builder = Builder()
+        before_commit_builder.pause("upload")
+        before_commit = Persistence()
+        before_commit_manager = _manager(
+            before_commit_builder,
+            before_commit,
+            evidence=ReconnectEvidence(
+                "aabbccddeeff",
+                _topology(),
+                {channel.channel: channel.name for channel in configuration.channels},
+                6,
+                expected.sensor_entities,
+            ),
+        )
+        before_preview = await before_commit_manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+            expected_sensor_entities=expected.sensor_entities,
+        )
+        await before_commit_manager.async_confirm_write(
+            before_preview.transaction_id, "admin"
+        )
+        await before_commit_manager.async_compile(before_preview.transaction_id)
+        before_install = asyncio.create_task(
+            before_commit_manager.async_confirm_install(
+                before_preview.transaction_id, "admin"
+            )
+        )
+        await before_commit_builder.started["upload"].wait()
+        before_install.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await before_install
+        assert before_commit.meter_configuration is None
+
+    asyncio.run(run())
+
+
+def test_expiry_release_failure_or_cancellation_always_scrubs_transaction() -> None:
+    """Expiry never leaves private YAML, requested metadata, or evidence retained."""
+
+    async def run() -> None:
+        now = 0.0
+        manager = ConfigTransactionManager(
+            Builder(),
+            Verifier(_evidence()),
+            Persistence(),
+            SessionManager(),
+            confirmation_ttl=1.0,
+            clock=lambda: now,
+        )
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+            expected_sensor_entities=expected.sensor_entities,
+        )
+        transaction = manager._transaction(preview.transaction_id)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def release_reservation() -> bool:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            raise OSError("release failed")
+
+        transaction.reservation_claimed = True
+        transaction.reservation_release = release_reservation
+        now = 2.0
+        with pytest.raises(KeyError, match="expired"):
+            manager.status(preview.transaction_id)
+        await started.wait()
+        cleanup = next(iter(transaction.active_tasks))
+        cleanup.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(OSError, match="release failed"):
+            await cleanup
+
+        assert calls == 1
+        assert transaction.plan is None and transaction.prior_content is None
+        assert transaction.meter_configuration is None
+        assert not transaction.expected_sensor_entities
+        assert manager.sessions._get_transaction(preview.transaction_id) is None
 
     asyncio.run(run())
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
@@ -23,6 +24,7 @@ from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator imp
     expected_meter_entity_evidence,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    CircuitRole,
     MeterConfigurationRequest,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
@@ -43,6 +45,7 @@ from custom_components.circuitsetup_energy_meter_helper.session_manager import (
 )
 from custom_components.circuitsetup_energy_meter_helper.store import (
     MeterConfigurationRead,
+    StoredMeterConfiguration,
 )
 from custom_components.circuitsetup_energy_meter_helper.topology import (
     topology_from_native,
@@ -88,6 +91,9 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             return None
 
     class Store:
+        def __init__(self) -> None:
+            self.configuration: StoredMeterConfiguration | None = None
+
         async def async_save_interrupted_session(self, *_args: Any) -> None:
             return None
 
@@ -102,7 +108,9 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             self, mac: str
         ) -> MeterConfigurationRead:
             calls.append(mac)
-            return MeterConfigurationRead(None, True)
+            return MeterConfigurationRead(
+                self.configuration, self.configuration is None
+            )
 
     class Hass:
         def __init__(self) -> None:
@@ -140,8 +148,9 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
                 )
             )
         )
+        store = Store()
         workflow = EntryWorkflow(
-            Hass(), provisioning, SessionManager(), Store(), "meter", None, Builder()
+            Hass(), provisioning, SessionManager(), store, "meter", None, Builder()
         )
 
         with pytest.raises(WorkflowHandleError, match="owned"):
@@ -149,6 +158,29 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
 
         result = await workflow.async_get_meter_configuration("meter")
         assert workflow._plans[result["plan_id"]].inventory.plan_id == result["plan_id"]
+        authoritative = replace(
+            result["configuration"],
+            channels=(
+                replace(
+                    result["configuration"].channels[0],
+                    role=CircuitRole.GRID,
+                    burden_output_acknowledged=True,
+                ),
+                *result["configuration"].channels[1:],
+            ),
+            power_quality=(True,),
+            status_fields=(True,),
+        )
+        store.configuration = StoredMeterConfiguration(
+            digest,
+            authoritative.meter,
+            authoritative.channels,
+            authoritative.aggregates,
+            authoritative.power_quality,
+            authoritative.status_fields,
+            (),
+            authoritative.multi_reference_preparation_acknowledged,
+        )
         wrapper = await workflow.async_get_ct_inventory("meter")
 
         assert isinstance(
@@ -159,7 +191,14 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert result["configuration"].meter.friendly_name == "Garage Meter"
         assert wrapper["channels"] == result["channels"]
         assert "stored_semantics_stale" in result["warnings"]
-        assert calls == ["aabbccddeeff"] * 3
+        assert calls == ["aabbccddeeff"] * 4
+        wrapper_configuration = workflow._plans[wrapper["plan_id"]].inventory.configuration
+        assert wrapper_configuration.meter == authoritative.meter
+        assert wrapper_configuration.aggregates == authoritative.aggregates
+        assert wrapper_configuration.power_quality == (True,)
+        assert wrapper_configuration.status_fields == (True,)
+        assert wrapper_configuration.channels[0].role is CircuitRole.GRID
+        assert wrapper_configuration.channels[0].burden_output_acknowledged
 
         transactions = Transactions()
         workflow.transactions = transactions  # type: ignore[assignment]
@@ -176,8 +215,10 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         )
         assert preview == {"transaction_id": "1"}
         assert transactions.calls[0][1]["meter_configuration"].ct_selections
-        assert transactions.calls[0][1]["expected_entity_ids"] == expected.object_ids
-        assert transactions.calls[0][1]["expected_sensor_names"] == expected.sensor_names
+        assert (
+            transactions.calls[0][1]["expected_sensor_entities"]
+            == expected.sensor_entities
+        )
         assert full_plan.snapshot.content == "" and full["plan_id"] not in workflow._plans
         with pytest.raises(WorkflowHandleError, match="stale"):
             await workflow.async_preview_meter_configuration(

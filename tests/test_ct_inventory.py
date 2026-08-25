@@ -122,12 +122,14 @@ def test_inventory_rejects_esphome_object_id_collisions_and_warns_for_unscaled_r
     (
         ("Kitchen Meter", "kitchen_meter"),
         ("Main-Meter!", "main-meter_"),
-        ("Mø", "m__"),
+        ("Mø", "m_"),
+        ("Meter 😀", "meter__"),
+        ("MÆ! 2", "m___2"),
         ("  CT  1  ", "__ct__1__"),
     ),
 )
-def test_object_id_matches_esphome_native_bytewise_sanitizer(
+def test_object_id_matches_esphome_native_codepoint_sanitizer(
     name: str, expected: str
 ) -> None:
-    """Use the native entity-name sanitizer, including UTF-8 byte replacement."""
+    """Use the native entity-name sanitizer, one replacement per codepoint."""
     assert _esphome_object_id(name) == expected

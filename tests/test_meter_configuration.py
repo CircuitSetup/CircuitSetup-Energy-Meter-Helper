@@ -105,20 +105,12 @@ def test_expected_reconnect_entities_use_rendered_names_and_skip_internal_power(
 
     evidence = expected_meter_entity_evidence(value, topology())
 
-    assert evidence.sensor_names == frozenset(
+    assert evidence.sensor_entities == frozenset(
         {
-            "Kitchen meter Main Voltage",
-            "Kitchen meter Main Frequency",
-            "Kitchen meter Grid feed Current",
-            "Kitchen meter Grid feed Energy",
-        }
-    )
-    assert evidence.object_ids == frozenset(
-        {
-            "kitchen_meter_main_voltage",
-            "kitchen_meter_main_frequency",
-            "kitchen_meter_grid_feed_current",
-            "kitchen_meter_grid_feed_energy",
+            ("kitchen_meter_main_voltage", "Kitchen meter Main Voltage"),
+            ("kitchen_meter_main_frequency", "Kitchen meter Main Frequency"),
+            ("kitchen_meter_grid_feed_current", "Kitchen meter Grid feed Current"),
+            ("kitchen_meter_grid_feed_energy", "Kitchen meter Grid feed Energy"),
         }
     )
 

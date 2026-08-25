@@ -502,7 +502,7 @@ class EntryWorkflow:
 
     async def async_get_ct_inventory(self, device_id: str) -> dict[str, Any]:
         """Return the legacy CT-only response backed by a complete meter plan."""
-        inventory = await self._async_get_meter_configuration(device_id, False)
+        inventory = await self._async_get_meter_configuration(device_id, True)
         return {
             key: inventory[key]
             for key in ("plan_id", "source_sha256", "channels", "catalog")
@@ -654,6 +654,7 @@ class EntryWorkflow:
             requested.power_quality,
             requested.status_fields,
             selections,
+            requested.multi_reference_preparation_acknowledged,
         )
         expected = expected_meter_entity_evidence(requested, plan.topology)
         status = await manager.async_preview(
@@ -662,8 +663,7 @@ class EntryWorkflow:
             mutation,
             plan.snapshot,
             meter_configuration=configuration,
-            expected_entity_ids=expected.object_ids,
-            expected_sensor_names=expected.sensor_names,
+            expected_sensor_entities=expected.sensor_entities,
         )
         self._plans.pop(plan.plan_id, None)
         plan.scrub()
@@ -1342,8 +1342,9 @@ class EntryWorkflow:
                 for channel in binding.channels
             },
             len(binding.channels),
-            frozenset(entity.object_id for entity in catalog.entities),
-            frozenset(entity.name for entity in catalog.by_kind("sensor")),
+            frozenset(
+                (entity.object_id, entity.name) for entity in catalog.by_kind("sensor")
+            ),
         )
 
     async def async_close(self) -> None:
