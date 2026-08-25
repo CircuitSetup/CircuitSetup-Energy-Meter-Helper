@@ -1,5 +1,7 @@
 """Tests for authoritative and provisional meter topology detection."""
 
+from dataclasses import replace
+
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.config_document import (
@@ -403,6 +405,75 @@ def test_trusted_managed_voltage_block_rejects_noncanonical_coverage(
         voltage_reference_topology_from_config(
             document, meter, trusted_fingerprint="v1:" + "0" * 64
         )
+
+
+@pytest.mark.parametrize(
+    "groups",
+    (
+        "main_1,,main_2",
+        ",main_1,main_2",
+        "main_1,main_2,",
+        "main_1,   ,main_2",
+    ),
+    ids=("double-comma", "leading-comma", "trailing-comma", "blank-element"),
+)
+def test_trusted_managed_voltage_block_rejects_empty_list_elements(
+    groups: str,
+) -> None:
+    document = ESPHomeConfigDocument.parse(
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "voltage_references:\n"
+        f"  main: [{groups}]\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_native("circuitsetup.6c-energy-meter")
+    trusted = VoltageReferenceTopology(
+        (("main", ("main_1", "main_2")),), "helper"
+    )
+
+    with pytest.raises(TopologyParseError):
+        voltage_reference_topology_from_config(
+            document, meter, trusted_fingerprint=trusted.fingerprint
+        )
+
+
+def test_trusted_managed_voltage_block_accepts_whitespace_around_list_elements() -> None:
+    document = ESPHomeConfigDocument.parse(
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "voltage_references:\n"
+        "  main: [ main_1 , main_2 ]\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_native("circuitsetup.6c-energy-meter")
+    trusted = VoltageReferenceTopology(
+        (("main", ("main_1", "main_2")),), "helper"
+    )
+
+    assert voltage_reference_topology_from_config(
+        document, meter, trusted_fingerprint=trusted.fingerprint
+    ).fingerprint == trusted.fingerprint
+
+
+@pytest.mark.parametrize(
+    "reference_id",
+    ("bad id", "1bad", "_bad", "bad.id", "x" * 65),
+)
+def test_helper_configuration_rejects_noncanonical_reference_id(
+    reference_id: str,
+) -> None:
+    meter = topology_from_native("circuitsetup.6c-energy-meter")
+    request = default_meter_configuration(
+        meter, {"power_quality": (False,), "status_fields": (True,)}
+    )
+    reference = request.meter.voltage_references[0]
+    object.__setattr__(
+        request.meter,
+        "voltage_references",
+        (replace(reference, reference_id=reference_id),),
+    )
+
+    with pytest.raises(TopologyParseError, match="invalid helper"):
+        voltage_reference_topology_from_configuration(meter, request)
 
 
 def test_helper_configuration_must_cover_each_group_once() -> None:

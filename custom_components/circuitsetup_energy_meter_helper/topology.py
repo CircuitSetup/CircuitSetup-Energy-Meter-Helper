@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 from .config_document import ESPHomeConfigDocument
 from .models import (
+    VOLTAGE_REFERENCE_GROUP_RE,
+    VOLTAGE_REFERENCE_ID_RE,
     ChannelAddress,
     ConnectionType,
     MeterTopology,
@@ -195,21 +197,20 @@ def _managed_voltage_reference_assignments(
             continue
         if not in_section or not line.strip():
             continue
-        match = re.fullmatch(r"\s{2}([A-Za-z][A-Za-z0-9_-]{0,63}):\s*(.*)", line)
+        match = re.fullmatch(r"\s{2}([^:]+):\s*(.*)", line)
         if match is None:
             raise TopologyParseError("invalid managed voltage-reference mapping")
         reference_id, value = match.groups()
+        if VOLTAGE_REFERENCE_ID_RE.fullmatch(reference_id) is None:
+            raise TopologyParseError("invalid managed voltage-reference mapping")
         groups: tuple[str, ...] | None = None
         if value.startswith("[") or value.endswith("]"):
             if not value.startswith("[") or not value.endswith("]"):
                 raise TopologyParseError("invalid managed voltage-reference mapping")
-            groups = tuple(
-                item.strip().strip("'\"")
-                for item in value[1:-1].split(",")
-                if item.strip()
-            )
-            if not groups:
+            items = tuple(item.strip() for item in value[1:-1].split(","))
+            if not items or any(not item for item in items):
                 raise TopologyParseError("invalid managed voltage-reference mapping")
+            groups = tuple(_managed_group_key(item) for item in items)
         elif not value:
             raise TopologyParseError("invalid managed voltage-reference mapping")
         entries.append((reference_id, groups))
@@ -227,6 +228,18 @@ def _managed_voltage_reference_assignments(
             for index, (reference_id, _) in enumerate(entries)
         )
     return tuple((reference_id, groups or ()) for reference_id, groups in entries)
+
+
+def _managed_group_key(value: str) -> str:
+    if value[:1] in {"'", '"'}:
+        if len(value) < 2 or value[-1] != value[0]:
+            raise TopologyParseError("invalid managed voltage-reference mapping")
+        value = value[1:-1]
+    elif value[-1:] in {"'", '"'}:
+        raise TopologyParseError("invalid managed voltage-reference mapping")
+    if VOLTAGE_REFERENCE_GROUP_RE.fullmatch(value) is None:
+        raise TopologyParseError("invalid managed voltage-reference mapping")
+    return value
 
 
 def voltage_reference_topology_from_config(
@@ -266,10 +279,6 @@ def verified_voltage_reference_fingerprint(
     return voltage_reference_topology_from_configuration(
         topology, configuration
     ).fingerprint
-
-
-# Short alias for callers that treat board and voltage topology uniformly.
-voltage_topology_from_config = voltage_reference_topology_from_config
 
 
 def addon_count_from_packages(package_files: Iterable[str]) -> int | None:

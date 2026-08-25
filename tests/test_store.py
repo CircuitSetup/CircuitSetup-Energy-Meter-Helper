@@ -729,6 +729,33 @@ def test_meter_configuration_bounds_and_evidence_errors_are_normalized() -> None
     asyncio.run(run())
 
 
+def test_meter_configuration_rejects_noncanonical_voltage_reference_id() -> None:
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+        configuration = _configuration()
+        reference = configuration.meter.voltage_references[0]
+        invalid = replace(
+            configuration,
+            meter=replace(
+                configuration.meter,
+                voltage_references=(replace(reference, reference_id="bad id"),),
+            ),
+            channels=tuple(
+                replace(channel, voltage_reference_id="bad id")
+                for channel in configuration.channels
+            ),
+        )
+
+        with pytest.raises(ValueError, match="reference_id"):
+            await store.async_save_verified_meter_configuration(MAC, invalid)
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (

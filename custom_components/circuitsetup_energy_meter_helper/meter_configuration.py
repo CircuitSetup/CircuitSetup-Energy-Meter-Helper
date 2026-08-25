@@ -10,7 +10,7 @@ from enum import StrEnum
 from typing import Literal
 
 from .entity_binding import group_key
-from .models import MeterTopology
+from .models import VOLTAGE_REFERENCE_ID_RE, MeterTopology
 
 LineFrequencyHz = Literal[50, 60]
 UpdateIntervalSeconds = Literal[1, 2, 5, 10, 30, 60]
@@ -154,6 +154,8 @@ def validate_meter_configuration(
         raise ValueError("voltage references must be uniquely identified")
     all_groups: list[str] = []
     for ref in refs:
+        if VOLTAGE_REFERENCE_ID_RE.fullmatch(ref.reference_id) is None:
+            raise ValueError("reference_id is invalid")
         for field, value in (("reference_id", ref.reference_id), ("label", ref.label), ("phase_label", ref.phase_label), ("transformer_model_id", ref.transformer_model_id)):
             _text(value, field)
         _finite(ref.nominal_voltage_v, "nominal_voltage_v")

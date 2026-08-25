@@ -36,6 +36,8 @@ _MAC = re.compile(
     r"[0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})"
 )
 _FIRMWARE_PRODUCT_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
+VOLTAGE_REFERENCE_ID_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}")
+VOLTAGE_REFERENCE_GROUP_RE = re.compile(r"(?:main|addon[1-6])_[12]")
 _ESPHOME_VERSION = re.compile(
     r"^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$"
 )
@@ -234,7 +236,7 @@ class VoltageReferenceTopology:
         for reference_id, group_keys in self.references:
             if (
                 not isinstance(reference_id, str)
-                or not reference_id
+                or VOLTAGE_REFERENCE_ID_RE.fullmatch(reference_id) is None
                 or reference_id in reference_ids
                 or not isinstance(group_keys, tuple)
                 or not group_keys
@@ -242,9 +244,10 @@ class VoltageReferenceTopology:
                 raise ValueError("voltage-reference topology is invalid")
             reference_ids.add(reference_id)
             for group_key_value in group_keys:
-                if not isinstance(group_key_value, str) or re.fullmatch(
-                    r"(?:main|addon[1-6])_[12]", group_key_value
-                ) is None:
+                if (
+                    not isinstance(group_key_value, str)
+                    or VOLTAGE_REFERENCE_GROUP_RE.fullmatch(group_key_value) is None
+                ):
                     raise ValueError("voltage-reference topology is invalid")
                 groups.append(group_key_value)
         if len(groups) != len(set(groups)):
