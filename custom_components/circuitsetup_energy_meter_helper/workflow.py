@@ -756,6 +756,7 @@ class EntryWorkflow:
         api = self._require_api()
         await api.async_connect()
         configuration: str | None = None
+        snapshot: ESPHomeConfigSnapshot | None = None
         substitutions: dict[str, str] = {}
         if self._builder is None:
             topology = topology_from_native(device.project_name)
@@ -778,7 +779,16 @@ class EntryWorkflow:
                 substitutions,
             )
         mac = self._mac(device_id)
-        meter_configuration = await self._store.async_get_meter_configuration(mac)
+        stored_read = await self._store.async_get_meter_configuration_read(mac)
+        if stored_read.stale or (
+            stored_read.configuration is not None
+            and (
+                snapshot is None
+                or stored_read.configuration.config_sha256 != snapshot.sha256
+            )
+        ):
+            raise WorkflowHandleError("stored meter configuration is stale")
+        meter_configuration = stored_read.configuration
         cleanup = self._cleaning_macs.get(mac)
         if cleanup is not None and await _wait_for_owned_cleanup(cleanup):
             raise asyncio.CancelledError

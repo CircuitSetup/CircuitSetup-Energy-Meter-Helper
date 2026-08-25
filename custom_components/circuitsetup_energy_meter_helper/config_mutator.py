@@ -430,10 +430,6 @@ def build_calibrated_gain_mutation(
             len(values_for_group) > 1
             or covered_instances[index] != required_instances[index]
         )
-        and not (
-            "voltage_references" in document.managed_blocks
-            and document.writable_sensor_span is None
-        )
     }
     for index, values_for_group in voltage_values.items():
         if values_for_group and index not in overridden:
@@ -720,7 +716,10 @@ def _apply_calibrated_voltage_gains(
     from .config_blocks import render_phase_overrides, replace_managed_block
 
     if not gains_by_instance:
-        return content
+        try:
+            return replace_managed_block(content, "calibrated_voltage_gains", "")
+        except ConfigMutationError:
+            return content
     entries: dict[str, str] = {}
     for instance_id, gains in sorted(gains_by_instance.items()):
         if len(gains) != 3:
@@ -1414,7 +1413,20 @@ def _review_diff(
 ) -> str:
     substitution_diff = _redacted_diff(changes)
     multiplier_diff = _reporting_multiplier_diff(prior_content, proposed_content)
-    return "\n".join(part for part in (substitution_diff, multiplier_diff) if part)
+    voltage_diff = _calibrated_voltage_gain_diff(prior_content, proposed_content)
+    return "\n".join(
+        part for part in (substitution_diff, multiplier_diff, voltage_diff) if part
+    )
+
+
+def _calibrated_voltage_gain_diff(prior_content: str, proposed_content: str) -> str:
+    marker = "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1"
+    return (
+        "managed calibrated voltage gains updated"
+        if (marker in prior_content) != (marker in proposed_content)
+        or prior_content.split(marker, 1)[-1] != proposed_content.split(marker, 1)[-1]
+        else ""
+    )
 
 
 def _reporting_multiplier_diff(prior_content: str, proposed_content: str) -> str:
