@@ -1457,6 +1457,37 @@ def test_divergent_voltage_gains_render_exact_extend_block() -> None:
     assert "voltage_cal1: '7301'" not in plan.proposed_content
 
 
+def test_partial_voltage_gain_handoff_preserves_existing_uncalibrated_overrides() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7301\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7302\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7303\n"
+        "  - id: !extend meter_main2\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7401\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7402\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7403\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+    )
+    snapshot = _snapshot(_snapshot().content + "sensor:\n" + block)
+    record = _record(snapshot, ((7501, 28001), (7502, 28002), (7503, 28003)))
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    merged = block.replace("7301", "7501").replace("7302", "7502").replace(
+        "7303", "7503"
+    )
+    assert merged in plan.proposed_content
+    assert merged.rstrip() in plan.redacted_diff
+
+
 def test_uniform_gain_handoff_refuses_unwritable_stale_voltage_block() -> None:
     content = _snapshot().content.replace(
         "logger:\n",

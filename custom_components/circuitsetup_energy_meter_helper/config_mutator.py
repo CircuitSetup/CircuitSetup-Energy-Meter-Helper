@@ -708,7 +708,35 @@ def _apply_calibrated_voltage_gains(
         if "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1" not in content:
             return content
         return replace_managed_block(content, "calibrated_voltage_gains", "")
+    document = ESPHomeConfigDocument.parse(content)
     entries: dict[str, str] = {}
+    block = document.managed_blocks.get("calibrated_voltage_gains")
+    if block is not None:
+        lines = block.content.splitlines()[1:-1]
+        indent = document.sensor_item_indent
+        if indent is None or len(lines) % 7:
+            raise ConfigMutationError("managed voltage gains are invalid")
+        header = re.compile(rf"^ {{{indent}}}- id: !extend (?P<id>[\w${{}}-]+)$")
+        for index in range(0, len(lines), 7):
+            item = lines[index : index + 7]
+            match = header.fullmatch(item[0])
+            if match is None or item[1::2] != [
+                f"{' ' * (indent + 2)}phase_a:",
+                f"{' ' * (indent + 2)}phase_b:",
+                f"{' ' * (indent + 2)}phase_c:",
+            ]:
+                raise ConfigMutationError("managed voltage gains are invalid")
+            gain_lines = item[2::2]
+            if any(
+                re.fullmatch(rf" {{{indent + 4}}}gain_voltage: [1-9]\d*", gain)
+                is None
+                or not 1 <= int(gain.rsplit(" ", 1)[1]) <= 65535
+                for gain in gain_lines
+            ) or match["id"] in entries:
+                raise ConfigMutationError("managed voltage gains are invalid")
+            entries[match["id"]] = "\n".join(
+                f"  {line}" if indent == 0 else line for line in item
+            ) + "\n"
     for instance_id, gains in sorted(gains_by_instance.items()):
         if len(gains) != 3:
             raise ConfigMutationError("verified voltage gains are invalid")
@@ -718,7 +746,7 @@ def _apply_calibrated_voltage_gains(
         entries[instance_id] = "\n".join(body) + "\n"
     if (
         entries
-        and ESPHomeConfigDocument.parse(content).writable_sensor_span is None
+        and document.writable_sensor_span is None
         and not any(_ROOT_SENSOR_RE.match(line) for line in content.splitlines())
     ):
         newline = "\r\n" if "\r\n" in content else "\n"
@@ -1389,7 +1417,7 @@ def _calibrated_voltage_gain_diff(prior_content: str, proposed_content: str) -> 
         return content[offset : finish + len(end)] if finish >= 0 else content[offset:]
 
     return (
-        "managed calibrated voltage gains updated"
+        block(proposed_content)
         if block(prior_content) != block(proposed_content)
         else ""
     )

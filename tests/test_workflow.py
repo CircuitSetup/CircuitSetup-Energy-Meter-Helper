@@ -70,7 +70,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
         "substitutions:\n"
         "  friendly_name: Garage Meter\n"
-        "  update_time: 10s\n"
+        "  update_time: 60s\n"
         "  electric_freq: 60Hz\n"
         "  csemh_config_contract: 2\n"
         "  voltage_cal1: 7305\n"
@@ -188,6 +188,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert workflow._plans[wrapper["plan_id"]].inventory.plan_id == wrapper["plan_id"]
         assert result["source_sha256"] == digest
         assert result["configuration"].meter.friendly_name == "Garage Meter"
+        assert "slow_interval_extends_calibration" in result["warnings"]
         assert wrapper["channels"] == result["channels"]
         assert "stored_semantics_stale" not in result["warnings"]
         assert calls == ["aabbccddeeff"] * 4

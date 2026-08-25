@@ -170,7 +170,9 @@ def test_inventory_has_server_plan_and_catalog_fields() -> None:
 def test_inventory_warns_only_for_installed_slow_calibration_intervals(
     interval: int,
 ) -> None:
-    content = _document(contract=True)
+    content = _document(contract=True).replace(
+        "  update_time: 10s\n", f"  update_time: {interval}s\n"
+    )
     baseline = _inventory(content).configuration
     stored = StoredMeterConfiguration(
         sha256(content.encode()).hexdigest(),
@@ -182,6 +184,19 @@ def test_inventory_warns_only_for_installed_slow_calibration_intervals(
     )
 
     inventory = _inventory(content, stored=stored)
+
+    assert ("slow_interval_extends_calibration" in inventory.warnings) is (
+        interval in (30, 60)
+    )
+
+
+@pytest.mark.parametrize("interval", (1, 10, 30, 60))
+def test_legacy_inventory_warns_from_installed_snapshot_interval(
+    interval: int,
+) -> None:
+    inventory = _inventory(
+        _document().replace("  update_time: 10s\n", f"  update_time: {interval}s\n")
+    )
 
     assert ("slow_interval_extends_calibration" in inventory.warnings) is (
         interval in (30, 60)
