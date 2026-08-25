@@ -227,6 +227,88 @@ def test_ignores_marker_like_text_outside_exact_column_zero_comments() -> None:
 
 
 @pytest.mark.parametrize(
+    "content",
+    (
+        'opaque: "unterminated\nsubstitutions:\n  friendly_name: Spoofed\n',
+        "opaque: 'unterminated\nsubstitutions:\n  friendly_name: Spoofed\n",
+        'opaque: "escaped \\"\nsubstitutions:\n  friendly_name: Spoofed\n',
+        (
+            'opaque: "unterminated\n'
+            "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+        ),
+    ),
+)
+def test_rejects_multiline_quoted_scalars_before_structural_scanning(
+    content: str,
+) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match="line 1"):
+        ESPHomeConfigDocument.parse(content)
+
+
+def test_normalizes_quoted_structural_keys() -> None:
+    doc = ESPHomeConfigDocument.parse(
+        '"substitutions":\n'
+        '  "friendly_name": Meter\n'
+        '  "update_time": 10s\n'
+        '  "electric\\u005ffreq": 60Hz\n'
+        '  \'csemh_config_contract\': 2\n'
+        '  "ct\\u0031_name": Main CT\n'
+    )
+
+    assert {
+        key: doc.substitutions[key].value
+        for key in (
+            "friendly_name",
+            "update_time",
+            "electric_freq",
+            "csemh_config_contract",
+            "ct1_name",
+        )
+    } == {
+        "friendly_name": "Meter",
+        "update_time": "10s",
+        "electric_freq": "60Hz",
+        "csemh_config_contract": "2",
+        "ct1_name": "Main CT",
+    }
+
+
+@pytest.mark.parametrize(
+    "content, line",
+    (
+        (
+            'substitutions:\n  friendly_name: Meter\n  "friendly_name": Meter\n',
+            3,
+        ),
+        ('"substitutions":\nsubstitutions:\n', 2),
+    ),
+)
+def test_rejects_mixed_quoted_structural_key_duplicates(
+    content: str, line: int
+) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match=rf"line {line}"):
+        ESPHomeConfigDocument.parse(content)
+
+
+@pytest.mark.parametrize("separator", ("\x85", "\u2028"))
+def test_rejects_all_python_splitline_separators_before_materializing(
+    separator: str,
+) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match="line 1"):
+        ESPHomeConfigDocument.parse(separator * 10_001)
+
+
+def test_rejects_raw_unpaired_surrogates() -> None:
+    with pytest.raises(ESPHomeConfigParseError, match="line 1"):
+        ESPHomeConfigDocument.parse("substitutions:\n  friendly_name: \ud800\n")
+
+
+def test_rejects_decoded_unpaired_surrogates() -> None:
+    with pytest.raises(ESPHomeConfigParseError, match="line 2"):
+        ESPHomeConfigDocument.parse('substitutions:\n  friendly_name: "\\ud800"\n')
+
+
+@pytest.mark.parametrize(
     "value",
     ("&gain 27518", "*gain", "|", ">-", "!secret ct_gain", "# no value"),
 )

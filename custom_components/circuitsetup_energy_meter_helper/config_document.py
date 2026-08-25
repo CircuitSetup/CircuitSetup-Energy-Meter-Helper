@@ -14,11 +14,16 @@ METER_ID_RE = re.compile(r"^(?:main_meter_id[12]|addon[1-6]_id[12])$")
 METER_SETTING_RE = re.compile(
     r"^(?:friendly_name|update_time|electric_freq|csemh_config_contract)$"
 )
-_MAPPING_RE = re.compile(r"^(?P<indent> *)(?P<key>[\w-]+):(?P<rest>.*)$")
-_SEQUENCE_MAPPING_RE = re.compile(r"^(?P<indent> *)-\s+(?P<key>[\w-]+):(?P<rest>.*)$")
+_KEY_TOKEN_RE = r'''(?:[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
+_MAPPING_RE = re.compile(rf"^(?P<indent> *)(?P<key>{_KEY_TOKEN_RE}):(?P<rest>.*)$")
+_SEQUENCE_MAPPING_RE = re.compile(
+    rf"^(?P<indent> *)-\s+(?P<key>{_KEY_TOKEN_RE}):(?P<rest>.*)$"
+)
 _SEQUENCE_RE = re.compile(r"^(?P<indent> *)-\s+(?P<rest>.+)$")
 _YAML_PATH_RE = re.compile(r"(?i)^(.*?\.ya?ml)(?:@.*)?$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_LINE_BREAK_RE = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
+_LINE_BREAK_FINAL_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 _MAX_DOCUMENT_BYTES = 1_048_576
 _MAX_DOCUMENT_LINES = 10_000
 _MAX_SETTING_LENGTH = 64
@@ -109,21 +114,30 @@ class _Mapping:
 
 class _DocumentParser:
     def __init__(self, content: str) -> None:
-        if len(content.encode("utf-8")) > _MAX_DOCUMENT_BYTES:
+        try:
+            content_size = len(content.encode("utf-8"))
+        except UnicodeEncodeError as error:
+            raise ESPHomeConfigParseError("configuration is not valid UTF-8", 1) from error
+        if content_size > _MAX_DOCUMENT_BYTES:
             raise ESPHomeConfigParseError("configuration exceeds byte limit", 1)
-        line_count = content.count("\n") + content.count("\r") - content.count("\r\n")
-        if content and content[-1] not in "\r\n":
+        line_count = 0
+        for _ in _LINE_BREAK_RE.finditer(content):
+            line_count += 1
+            if line_count > _MAX_DOCUMENT_LINES:
+                raise ESPHomeConfigParseError("configuration exceeds line limit", 1)
+        if content and content[-1] not in _LINE_BREAK_FINAL_CHARS:
             line_count += 1
         if line_count > _MAX_DOCUMENT_LINES:
             raise ESPHomeConfigParseError("configuration exceeds line limit", 1)
         self.content = content
         self.lines = tuple(content.splitlines(keepends=True))
-        self._bodies = tuple(line.rstrip("\r\n") for line in self.lines)
+        self._bodies = tuple(self._line_body(line) for line in self.lines)
         offset = 0
         self._offsets: list[int] = []
         for line in self.lines:
             self._offsets.append(offset)
             offset += len(line)
+        self._reject_multiline_quoted_scalars()
 
     def parse(
         self, document_type: type[ESPHomeConfigDocument]
@@ -218,6 +232,10 @@ class _DocumentParser:
 
     @staticmethod
     def _validate_meter_setting(key: str, value: str, line: int) -> None:
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ESPHomeConfigParseError("meter setting is not valid UTF-8", line) from error
         if not value or len(value) > _MAX_SETTING_LENGTH or _CONTROL_RE.search(value):
             raise ESPHomeConfigParseError("meter setting is not safely bounded", line)
         if key == "update_time" and value not in {"1s", "2s", "5s", "10s", "30s", "60s"}:
@@ -259,6 +277,32 @@ class _DocumentParser:
         if open_block is not None:
             raise ESPHomeConfigParseError("unterminated managed block", open_block[1] + 1)
         return blocks
+
+    @staticmethod
+    def _line_body(line: str) -> str:
+        if line.endswith("\r\n"):
+            return line[:-2]
+        if line and line[-1] in _LINE_BREAK_FINAL_CHARS:
+            return line[:-1]
+        return line
+
+    def _reject_multiline_quoted_scalars(self) -> None:
+        for index in range(len(self.lines)):
+            mapping = self._mapping(index)
+            if mapping is None:
+                continue
+            text = mapping.rest.lstrip(" ")
+            if not text or text[0] not in "\"'":
+                continue
+            try:
+                if text[0] == "\"":
+                    self._double_quote_end(text, index + 1)
+                else:
+                    self._single_quote_end(text, index + 1)
+            except ESPHomeConfigParseError as error:
+                raise ESPHomeConfigParseError(
+                    "unsupported multiline quoted scalar", index + 1
+                ) from error
 
     def _nested_scalar(
         self, section_name: str, parent_key: str, child_key: str
@@ -416,7 +460,7 @@ class _DocumentParser:
             return None
         return _Mapping(
             indent=len(match.group("indent")),
-            key=match.group("key"),
+            key=self._mapping_key(match.group("key"), index + 1),
             rest=match.group("rest"),
             rest_column=match.start("rest"),
         )
@@ -427,10 +471,29 @@ class _DocumentParser:
             return None
         return _Mapping(
             indent=len(match.group("indent")),
-            key=match.group("key"),
+            key=self._mapping_key(match.group("key"), index + 1),
             rest=match.group("rest"),
             rest_column=match.start("rest"),
         )
+
+    @staticmethod
+    def _mapping_key(token: str, line: int) -> str:
+        if token[0] == "'":
+            value = token[1:-1].replace("''", "'")
+        elif token[0] == "\"":
+            try:
+                value = json.loads(token)
+            except json.JSONDecodeError as error:
+                raise ESPHomeConfigParseError("invalid quoted mapping key", line) from error
+        else:
+            value = token
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ESPHomeConfigParseError("mapping key is not valid UTF-8", line) from error
+        if _CONTROL_RE.search(value):
+            raise ESPHomeConfigParseError("mapping key is not safely bounded", line)
+        return value
 
     def _scalar(self, index: int, mapping: _Mapping) -> ConfigScalar:
         return self._scalar_parts(index, mapping.rest, mapping.rest_column)
