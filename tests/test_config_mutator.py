@@ -973,6 +973,44 @@ def test_reporting_multiplier_rejects_yaml_equivalent_filter_conflicts(
 
 
 @pytest.mark.parametrize(
+    "entry",
+    (
+        """  - phase_b:
+      current:
+        filters:
+          - throttle: 5s
+    id: meter_main1
+""",
+        """  - phase_b: {current: {filters: [{throttle: 5s}]}}
+    id: meter_main1
+""",
+        """  - "phase_b": # phase before owner
+      "current": # managed output
+        "filters": # local filter
+          - throttle: 5s
+    "id": !extend "meter_main1" # quoted owner
+""",
+    ),
+)
+def test_reporting_multiplier_rejects_filter_when_phase_precedes_id(
+    entry: str,
+) -> None:
+    """The sequence item's first mapping remains part of its sensor item."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace("sensor:\n", "sensor:\n" + entry)
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    with pytest.raises(ConfigMutationError, match="filters"):
+        build_ct_mutation(
+            snapshot,
+            _topology(),
+            (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+        )
+
+
+@pytest.mark.parametrize(
     "owner",
     (
         """  - id: unrelated
@@ -985,15 +1023,20 @@ def test_reporting_multiplier_rejects_yaml_equivalent_filter_conflicts(
 """,
         """  - id: !secret meter_main1
 """,
+        """  - !secret id: meter_main1
+""",
+        """  - &key_anchor id: meter_main1
+""",
+        """  - *id: meter_main1
+""",
     ),
 )
 def test_reporting_multiplier_rejects_ambiguous_meter_ownership(owner: str) -> None:
-    """A relevant filtered phase requires one directly resolvable meter ID."""
+    """A relevant managed phase requires one directly resolvable meter ID."""
     snapshot = _snapshot()
     entry = owner + """    phase_b:
       current:
-        filters:
-          - throttle: 5s
+        name: CT2 Current
 """
     content = snapshot.content.replace("sensor:\n", "sensor:\n" + entry)
     snapshot = replace(
@@ -1017,6 +1060,31 @@ def test_reporting_multiplier_allows_harmless_alias_outside_relevant_item() -> N
 sensor:
   - id: unrelated
     icon: *defaults
+""",
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    plan = build_ct_mutation(
+        snapshot,
+        _topology(),
+        (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+    )
+
+    assert plan.proposed_content.count("multiply: 2") == 2
+
+
+def test_reporting_multiplier_allows_quoted_owner_after_unfiltered_first_phase() -> None:
+    """Quoted ordinary keys and comments remain safe without a local filter."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace(
+        "sensor:\n",
+        """sensor:
+  - "phase_b": # phase before owner
+      "current": # no local filter
+        name: CT2 Current
+    "id": !extend "meter_main1" # quoted owner
 """,
     )
     snapshot = replace(

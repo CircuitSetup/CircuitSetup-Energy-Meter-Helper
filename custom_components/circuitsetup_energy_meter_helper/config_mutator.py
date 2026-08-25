@@ -43,7 +43,8 @@ _YAML_RESERVED = {"null", "true", "false", "yes", "no", "on", "off", "~"}
 _YAML_KEY_TOKEN = r'''(?:[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
 _YAML_MAPPING_RE = re.compile(
     rf"^(?P<indent> *)(?P<dash>-[ \t]+)?"
-    rf"(?:(?:![^\s]+|&[^\s]+)[ \t]+)*(?P<key>{_YAML_KEY_TOKEN})[ \t]*:"
+    rf"(?P<decorators>(?:(?:![^\s]+|&[^\s]+)[ \t]+)*)"
+    rf"(?P<key>{_YAML_KEY_TOKEN})[ \t]*:"
     r"(?P<rest>.*)$"
 )
 _YAML_EXPLICIT_KEY_RE = re.compile(
@@ -883,17 +884,17 @@ def _reject_local_output_filters(
             if lines[candidate].strip()
         ]
         direct_indent = min(child_indents) if child_indents else None
-        direct_ids: list[str] = []
+        direct_ids: list[tuple[str, bool]] = []
         first_mapping = _yaml_mapping(line)
         if (
             first_mapping is not None
             and first_mapping[1]
             and first_mapping[2] == "id"
         ):
-            direct_ids.append(first_mapping[3])
+            direct_ids.append((first_mapping[3], first_mapping[4]))
         if direct_indent is not None:
             direct_ids.extend(
-                candidate_mapping[3]
+                (candidate_mapping[3], candidate_mapping[4])
                 for candidate in range(index + 1, item_end)
                 if (candidate_mapping := _yaml_mapping(lines[candidate])) is not None
                 and not candidate_mapping[1]
@@ -907,11 +908,12 @@ def _reject_local_output_filters(
             for candidate in range(index, item_end)
         }
         flow_id = line.lstrip().startswith("- {") and "id" in _yaml_flow_keys(line)
-        resolved_ids = [_yaml_identifier(value) for value in direct_ids]
+        resolved_ids = [_yaml_identifier(value) for value, _ in direct_ids]
         if relevant_channel is not None and (
             explicit_id
             or flow_id
             or len(direct_ids) != 1
+            or direct_ids[0][1]
             or resolved_ids[0] is None
         ):
             _filter_conflict(relevant_channel)
@@ -933,9 +935,9 @@ def _reject_local_output_filters(
             phase_key = f"phase_{phase}"
             phase_lines = [
                 candidate
-                for candidate in range(index + 1, item_end)
+                for candidate in range(index, item_end)
                 if (candidate_mapping := _yaml_mapping(lines[candidate])) is not None
-                and not candidate_mapping[1]
+                and (not candidate_mapping[1] or candidate == index)
                 and candidate_mapping[2] == phase_key
             ]
             if any(
@@ -950,7 +952,7 @@ def _reject_local_output_filters(
             phase_line = phase_lines[0]
             phase_mapping = _yaml_mapping(lines[phase_line])
             assert phase_mapping is not None
-            phase_indent, _, _, phase_rest = phase_mapping
+            phase_indent, _, _, phase_rest, _ = phase_mapping
             if phase_rest.strip():
                 if phase_rest.lstrip().startswith("{"):
                     flow_keys = _yaml_flow_keys(phase_rest)
@@ -989,7 +991,7 @@ def _reject_local_output_filters(
                     if flow_keys.intersection(outputs) and "filters" in flow_keys:
                         _filter_conflict(channel)
                     continue
-                _, sequence, output_name, output_rest = output
+                _, sequence, output_name, output_rest, _ = output
                 if output_name not in outputs:
                     continue
                 if sequence or output_name in seen_outputs:
@@ -1024,15 +1026,17 @@ def _reject_local_output_filters(
                         _filter_conflict(channel)
 
 
-def _yaml_mapping(line: str) -> tuple[int, bool, str, str] | None:
+def _yaml_mapping(line: str) -> tuple[int, bool, str, str, bool] | None:
     match = _YAML_MAPPING_RE.fullmatch(line)
     if match is None:
         return None
+    dash = match.group("dash")
     return (
-        len(match.group("indent")),
-        match.group("dash") is not None,
+        len(match.group("indent")) + (len(dash) if dash is not None else 0),
+        dash is not None,
         _yaml_key(match.group("key")),
         match.group("rest"),
+        bool(match.group("decorators")),
     )
 
 
