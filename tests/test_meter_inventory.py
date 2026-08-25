@@ -248,9 +248,27 @@ def test_matching_stored_channels_merge_by_channel_identity_not_tuple_order() ->
     baseline = _inventory(content).configuration
     stored = StoredMeterConfiguration(
         sha256(content.encode()).hexdigest(),
-        baseline.meter,
+        replace(
+            baseline.meter,
+            voltage_references=(
+                replace(
+                    baseline.meter.voltage_references[0],
+                    reference_id="first",
+                    group_keys=("main_1",),
+                ),
+                replace(
+                    baseline.meter.voltage_references[0],
+                    reference_id="second",
+                    group_keys=("main_2",),
+                ),
+            ),
+        ),
         tuple(
-            replace(channel, role=CircuitRole.GRID if channel.channel == 1 else CircuitRole.BRANCH)
+            replace(
+                channel,
+                role=CircuitRole.GRID if channel.channel == 1 else CircuitRole.BRANCH,
+                voltage_reference_id="first" if channel.channel <= 3 else "second",
+            )
             for channel in reversed(baseline.channels)
         ),
         (),
@@ -299,6 +317,58 @@ def test_matching_stored_voltage_references_merge_gains_by_groups_not_tuple_orde
         (reference.reference_id, reference.gain_voltage)
         for reference in inventory.configuration.meter.voltage_references
     ] == [("secondary", 8002), ("main", 7001)]
+    assert "stored_semantics_stale" not in inventory.warnings
+
+
+def test_standard_helper_references_map_gains_by_group_suffix_across_addons() -> None:
+    """Standard projects still use distinct physical calibrations for _1 and _2."""
+    content = _document(
+        contract=True,
+        addon_count=1,
+        voltage_cal1=7001,
+        voltage_cal2=8002,
+    )
+    baseline = _inventory(content).configuration
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        replace(
+            baseline.meter,
+            voltage_references=(
+                replace(
+                    baseline.meter.voltage_references[0],
+                    reference_id="first",
+                    group_keys=("main_1", "addon1_1"),
+                ),
+                replace(
+                    baseline.meter.voltage_references[0],
+                    reference_id="second",
+                    group_keys=("main_2", "addon1_2"),
+                ),
+            ),
+        ),
+        tuple(
+            replace(
+                channel,
+                voltage_reference_id=(
+                    "first" if (channel.channel - 1) % 6 < 3 else "second"
+                ),
+            )
+            for channel in baseline.channels
+        ),
+        (),
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+
+    inventory = _inventory(content, stored=stored)
+
+    assert [
+        (reference.reference_id, reference.gain_voltage, reference.group_keys)
+        for reference in inventory.configuration.meter.voltage_references
+    ] == [
+        ("first", 7001, ("main_1", "addon1_1")),
+        ("second", 8002, ("main_2", "addon1_2")),
+    ]
     assert "stored_semantics_stale" not in inventory.warnings
 
 
