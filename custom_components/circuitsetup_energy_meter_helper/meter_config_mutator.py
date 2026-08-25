@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .config_mutator import (
     ConfigMutationError,
     ConfigSnapshot,
@@ -35,10 +37,24 @@ def build_meter_configuration_mutation(
         raise ConfigMutationError(str(error)) from error
     previous = current.configuration
     if (
-        requested.meter != previous.meter
-        or requested.aggregates != previous.aggregates
+        replace(
+            previous,
+            channels=requested.channels,
+            power_quality=requested.power_quality,
+            status_fields=requested.status_fields,
+        )
+        != requested
         or any(
-            new.voltage_reference_id != old.voltage_reference_id
+            replace(
+                old,
+                name=new.name,
+                model_id=new.model_id,
+                reporting_multiplier=new.reporting_multiplier,
+                custom_gain_ct=new.custom_gain_ct,
+                custom_label=new.custom_label,
+                burden_output_acknowledged=new.burden_output_acknowledged,
+            )
+            != new
             for old, new in zip(previous.channels, requested.channels, strict=True)
         )
     ):

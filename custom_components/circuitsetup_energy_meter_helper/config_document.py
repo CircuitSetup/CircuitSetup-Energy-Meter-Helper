@@ -127,6 +127,7 @@ class ESPHomeConfigDocument:
     package_files: tuple[str, ...]
     managed_blocks: dict[str, ManagedBlock]
     writable_sensor_span: SourceSpan | None
+    code_lines: tuple[str, ...] = field(repr=False)
 
     @classmethod
     def parse(cls, content: str) -> ESPHomeConfigDocument:
@@ -188,6 +189,10 @@ class _DocumentParser:
             package_files=self._package_files(),
             managed_blocks=self._managed_blocks(),
             writable_sensor_span=self._writable_section_span("sensor"),
+            code_lines=tuple(
+                "" if index in self._block_scalar_lines else self._without_comment(body)
+                for index, body in enumerate(self._bodies)
+            ),
         )
 
     def _writable_section_span(self, name: str) -> SourceSpan | None:
@@ -344,6 +349,34 @@ class _DocumentParser:
         if line and line[-1] in _LINE_BREAK_FINAL_CHARS:
             return line[:-1]
         return line
+
+    @staticmethod
+    def _without_comment(body: str) -> str:
+        """Return YAML code only; quoted hashes remain data."""
+        quote: str | None = None
+        escaped = False
+        position = 0
+        while position < len(body):
+            character = body[position]
+            if quote == '"':
+                if character == '"' and not escaped:
+                    quote = None
+                escaped = character == "\\" and not escaped
+            elif quote == "'":
+                if character == "'":
+                    if position + 1 < len(body) and body[position + 1] == "'":
+                        position += 1
+                    else:
+                        quote = None
+            elif character in "\"'":
+                quote = character
+                escaped = False
+            elif character == "#" and (
+                position == 0 or body[position - 1].isspace()
+            ):
+                return body[:position].rstrip()
+            position += 1
+        return body.rstrip()
 
     def _scan_lexical_document(self) -> None:
         block_indent: int | None = None

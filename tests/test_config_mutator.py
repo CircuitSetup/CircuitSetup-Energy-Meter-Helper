@@ -118,6 +118,19 @@ def _two_board_topology() -> MeterTopology:
     )
 
 
+def _inventory(
+    snapshot: ESPHomeConfigSnapshot, topology: MeterTopology
+) -> MeterConfigurationInventory:
+    return MeterConfigurationInventory.from_document(
+        snapshot.configuration,
+        ESPHomeConfigDocument.parse(snapshot.content),
+        topology,
+        CTPresetCatalog.load(),
+        VoltageTransformerCatalog.load(),
+        snapshot.sha256,
+    )
+
+
 def test_noop_is_byte_identical_and_surgical_edit_only_changes_requested_keys() -> None:
     """Existing source spans, quotes, and unrelated content are left untouched."""
     snapshot = _snapshot()
@@ -396,22 +409,28 @@ def test_power_quality_scaling_uses_managed_phase_overrides() -> None:
     assert "phase_angle:\n        filters:" not in plan.proposed_content
 
 
-def test_unused_channel_removes_all_power_quality_outputs() -> None:
+@pytest.mark.parametrize("multiplier", (1, 2))
+def test_unused_channel_removes_all_power_quality_outputs(multiplier: int) -> None:
     """Unused phases retain calibration outputs but remove every PQ output."""
     snapshot = _package_snapshot()
     topology = _two_board_topology()
-    current = MeterConfigurationInventory.from_document(
-        snapshot.configuration,
-        ESPHomeConfigDocument.parse(snapshot.content),
-        topology,
-        CTPresetCatalog.load(),
-        VoltageTransformerCatalog.load(),
-        snapshot.sha256,
+    current = _inventory(snapshot, topology)
+    current = replace(
+        current,
+        configuration=replace(
+            current.configuration,
+            channels=tuple(
+                replace(channel, enabled=False, role=CircuitRole.UNUSED)
+                if channel.channel == 2
+                else channel
+                for channel in current.configuration.channels
+            ),
+        ),
     )
     requested = replace(
         current.configuration,
         channels=tuple(
-            replace(channel, enabled=False, role=CircuitRole.UNUSED)
+            replace(channel, reporting_multiplier=multiplier)
             if channel.channel == 2
             else channel
             for channel in current.configuration.channels
@@ -421,19 +440,47 @@ def test_unused_channel_removes_all_power_quality_outputs() -> None:
 
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
 
+    phase = plan.proposed_content.split("phase_b: # CT2", 1)[1].split(
+        "# End CircuitSetup", 1
+    )[0]
     assert (
-        """    phase_b: # CT2
-      reactive_power: !remove
+        """      reactive_power: !remove
       apparent_power: !remove
       harmonic_power: !remove
       peak_current: !remove
       power_factor: !remove
       phase_angle: !remove
 """
-        in plan.proposed_content
+        in phase
     )
-    assert "phase_b: # CT2\n      current: !remove" not in plan.proposed_content
-    assert "phase_b: # CT2\n      power: !remove" not in plan.proposed_content
+    assert "\n      current: !remove" not in phase
+    assert "\n      power: !remove" not in phase
+    assert phase.count("multiply: 2") == (2 if multiplier == 2 else 0)
+
+
+@pytest.mark.parametrize("power_quality", ((False, False), (True, False)))
+def test_generalized_task15_rejects_unsupported_channel_state_changes(
+    power_quality: tuple[bool, bool],
+) -> None:
+    """An unsupported semantic request must fail even if its YAML would be a no-op."""
+    snapshot = _package_snapshot()
+    topology = _two_board_topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        channels=(
+            replace(
+                current.configuration.channels[0],
+                enabled=False,
+                role=CircuitRole.UNUSED,
+            ),
+            *current.configuration.channels[1:],
+        ),
+        power_quality=power_quality,
+    )
+
+    with pytest.raises(ConfigMutationError, match="semantic"):
+        build_meter_configuration_mutation(snapshot, topology, current, requested)
 
 
 def test_phase_overrides_are_board_specific_and_migrate_legacy_scaling() -> None:
@@ -478,6 +525,138 @@ api:
     assert "harmonic_power: !remove" not in addon
     assert "-       power:" in plan.redacted_diff
     assert "+       reactive_power:" in plan.redacted_diff
+
+
+def test_valid_official_legacy_multiplier_block_migrates_without_value_changes() -> None:
+    """Migration keeps every official current/power multiplier on its original CT."""
+    snapshot = _snapshot()
+    legacy = snapshot.content.replace(
+        "logger:\n",
+        """# CircuitSetup Energy Meter Helper: phase overrides v1
+  - id: !extend meter_main1
+    phase_a: # CT1
+      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 2
+    phase_b: # CT2
+      current:
+        filters:
+          - multiply: 4
+      power:
+        filters:
+          - multiply: 4
+# End CircuitSetup Energy Meter Helper: phase overrides v1
+logger:
+""",
+    )
+    snapshot = replace(
+        snapshot, content=legacy, sha256=sha256(legacy.encode()).hexdigest()
+    )
+
+    plan = build_ct_mutation(
+        snapshot,
+        _topology(),
+        (CTChangeRequest(3, "CT 3", "sct_006_20a_25ma", 2),),
+    )
+
+    for channel, multiplier in ((1, 2), (2, 4), (3, 2)):
+        phase = plan.proposed_content.split(f"# CT{channel}", 1)[1].split(
+            "# CT", 1
+        )[0]
+        assert phase.count(f"multiply: {multiplier}") == 2
+    assert "-     phase_b: # CT2" in plan.redacted_diff
+    assert "+   - id: !extend meter_main1" in plan.redacted_diff
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        """  - id: !extend meter_main2
+    phase_a: # CT1
+      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 2
+""",
+        """  - id: !extend meter_main1
+    phase_b: # CT1
+      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 2
+""",
+        """  - id: !extend meter_main1
+    phase_a: # CT2
+      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 2
+""",
+        """  - id: !extend meter_main1
+    phase_a: # CT1
+      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 2
+      reactive_power: !remove
+""",
+        """  - id: !extend meter_main1
+    phase_a: # CT1
+      current:
+        filters:
+          - multiply: 2
+""",
+        """  - id: !extend meter_main1
+    phase_a: # CT1
+      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 4
+""",
+        """  - id: !extend meter_main1
+    phase_a: # CT1
+      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 2
+      frequency: !remove
+""",
+    ),
+)
+def test_legacy_multiplier_migration_rejects_malformed_entries(entry: str) -> None:
+    """Legacy ownership, phase comments, values, and output shape are exact."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace(
+        "logger:\n",
+        "# CircuitSetup Energy Meter Helper: phase overrides v1\n"
+        + entry
+        + "# End CircuitSetup Energy Meter Helper: phase overrides v1\nlogger:\n",
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    with pytest.raises(ConfigMutationError, match="safely writable"):
+        build_ct_mutation(
+            snapshot,
+            _topology(),
+            (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+        )
 
 
 def test_multiplier_one_omits_scaling_filters_but_removes_active_pq_outputs() -> None:
@@ -685,6 +864,109 @@ def test_reporting_multiplier_refuses_supported_power_quality_filters(
                 "status_fields": (True, False),
             },
         )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        """  - id: !extend meter_main1
+    phase_b:
+      current: # local calibration
+        filters: # keep local
+          - throttle: 5s
+""",
+        """  - "id": !extend &meter "meter_main1"
+    !phase "phase_b":
+      &measurement "power":
+        !filter "filters":
+          - throttle: 5s
+""",
+        """  - {"id": !extend meter_main1, "phase_b": {"reactive_power": {"filters": [{throttle: 5s}]}}}
+""",
+        """  - id: !extend meter_main1
+    phase_b:
+      - apparent_power:
+          filters:
+            - throttle: 5s
+""",
+        """  - id: !extend meter_main1
+    phase_b:
+      harmonic_power:
+        filters:
+          - throttle: 5s
+    phase_b:
+      current:
+        filters:
+          - throttle: 5s
+""",
+        """  - id: !extend meter_main1
+    phase_b: *shared_phase
+""",
+        """  - id: !extend meter_main1
+    phase_b:
+      <<: *shared_phase
+""",
+        """  - id: !extend meter_main1
+    ? phase_b
+    :
+      power:
+        filters:
+          - throttle: 5s
+""",
+    ),
+)
+def test_reporting_multiplier_rejects_yaml_equivalent_filter_conflicts(
+    entry: str,
+) -> None:
+    """Alternate valid YAML spellings cannot hide a managed-output filter."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace("sensor:\n", "sensor:\n" + entry)
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    with pytest.raises((ConfigMutationError, ValueError)):
+        build_ct_mutation(
+            snapshot,
+            _topology(),
+            (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+        )
+
+
+def test_reporting_multiplier_ignores_opaque_text_and_unmanaged_pq_filters() -> None:
+    """Comments, block scalars, and harmonic/peak filters are outside this conflict."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace(
+        "sensor:\n",
+        """sensor:
+  # meter_main1 phase_b current filters
+  - platform: template
+    lambda: |-
+      meter_main1:
+        phase_b:
+          current:
+            filters:
+  - id: !extend meter_main1
+    phase_b:
+      harmonic_power:
+        filters:
+          - throttle: 5s
+      peak_current:
+        filters:
+          - throttle: 5s
+""",
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    plan = build_ct_mutation(
+        snapshot,
+        _topology(),
+        (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+    )
+
+    assert plan.proposed_content.count("multiply: 2") == 2
 
 
 def test_missing_keys_insert_only_in_writable_substitutions_or_refuse_with_snippet() -> (

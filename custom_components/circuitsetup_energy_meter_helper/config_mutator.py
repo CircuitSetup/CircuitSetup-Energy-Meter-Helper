@@ -34,17 +34,26 @@ _SENSOR_RE = re.compile(r"^sensor:\s*(?:#.*)?(?:\r?\n)?$")
 _ROOT_SENSOR_RE = re.compile(r"^(?:sensor|['\"]sensor['\"])\s*:")
 _TOP_LEVEL_RE = re.compile(r"^[\w-]+:")
 _PHASE_OVERRIDE_START, _PHASE_OVERRIDE_END = MANAGED_BLOCK_MARKERS["phase_overrides"]
+_PHASE_OWNER_RE = re.compile(r"^  - id: !extend (?P<id>[\w${}-]+)$")
 _PHASE_HEADER_RE = re.compile(
-    r"^    phase_[abc]: # CT(?P<channel>[1-9]|[1-3][0-9]|4[0-2])\r?$",
-    re.MULTILINE,
-)
-_PHASE_MULTIPLIER_RE = re.compile(
-    r"    phase_[abc]: # CT(?P<channel>[1-9]|[1-3][0-9]|4[0-2])\r?\n"
-    r"(?P<body>.*?)(?=^    phase_[abc]: # CT|\Z)",
-    re.MULTILINE | re.DOTALL,
+    r"^    phase_(?P<phase>[abc]): # CT(?P<channel>[1-9]|[1-3][0-9]|4[0-2])$"
 )
 _PLAIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]*$")
 _YAML_RESERVED = {"null", "true", "false", "yes", "no", "on", "off", "~"}
+_YAML_KEY_TOKEN = r'''(?:[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
+_YAML_MAPPING_RE = re.compile(
+    rf"^(?P<indent> *)(?P<dash>-[ \t]+)?"
+    rf"(?:(?:![^\s]+|&[^\s]+)[ \t]+)*(?P<key>{_YAML_KEY_TOKEN})[ \t]*:"
+    r"(?P<rest>.*)$"
+)
+_YAML_EXPLICIT_KEY_RE = re.compile(
+    rf"^(?P<indent> *)\?[ \t]+(?:(?:![^\s]+|&[^\s]+)[ \t]+)*"
+    rf"(?P<key>{_YAML_KEY_TOKEN})[ \t]*:?$"
+)
+_YAML_FLOW_KEY_RE = re.compile(
+    rf"[{{,][ \t]*(?:(?:![^\s]+|&[^\s]+)[ \t]+)*"
+    rf"(?P<key>{_YAML_KEY_TOKEN})[ \t]*:"
+)
 _PACKAGE_FEATURES = {
     "power_quality": ("power_quality", "power_quality"),
     "status_fields": ("status_fields", "status"),
@@ -600,8 +609,12 @@ def _apply_reporting_multipliers(
 ) -> str:
     from .config_blocks import render_phase_overrides, replace_managed_block
 
-    multipliers = _read_phase_multipliers(content)
     has_phase_overrides = _PHASE_OVERRIDE_START in content
+    document = ESPHomeConfigDocument.parse(content)
+    power_quality = package_options_from_document(document, topology)["power_quality"]
+    multipliers = _read_phase_multipliers(
+        content, topology, substitutions, power_quality
+    )
     for request in requests:
         if request.reporting_multiplier == 1:
             multipliers.pop(request.channel, None)
@@ -614,12 +627,10 @@ def _apply_reporting_multipliers(
             enabled, _ = channels.get(channel, (True, 1.0))
             channels[channel] = (enabled, multiplier)
     for request in requests:
-        channels[request.channel] = (True, request.reporting_multiplier)
+        enabled, _ = channels.get(request.channel, (True, 1.0))
+        channels[request.channel] = (enabled, request.reporting_multiplier)
     if not channels and not has_phase_overrides:
         return content
-    power_quality = package_options_from_document(
-        ESPHomeConfigDocument.parse(content), topology
-    )["power_quality"]
     scaled_channels = {
         channel: multiplier
         for channel, (_enabled, multiplier) in channels.items()
@@ -639,23 +650,11 @@ def _apply_reporting_multipliers(
             else _canonical_meter_id(meter_key)
         )
         body = [f"  - id: !extend {meter_id}", f"    phase_{phase}: # CT{channel}"]
-        if multiplier != 1:
-            value = f"{multiplier:g}"
-            for output in ("current", "power"):
-                body.extend((f"      {output}:", "        filters:", f"          - multiply: {value}"))
-            if power_quality[(channel - 1) // 6]:
-                for output in ("reactive_power", "apparent_power"):
-                    body.extend((f"      {output}:", "        filters:", f"          - multiply: {value}"))
-        if power_quality[(channel - 1) // 6]:
-            removals = ("harmonic_power", "peak_current") if enabled else (
-                "reactive_power",
-                "apparent_power",
-                "harmonic_power",
-                "peak_current",
-                "power_factor",
-                "phase_angle",
+        body.extend(
+            _phase_override_lines(
+                enabled, multiplier, power_quality[(channel - 1) // 6]
             )
-            body.extend(f"      {output}: !remove" for output in removals)
+        )
         if len(body) > 2:
             entries[f"{channel:02d}"] = "\n".join(body) + "\n"
     if not entries and not has_phase_overrides:
@@ -671,7 +670,38 @@ def _apply_reporting_multipliers(
     return replace_managed_block(content, "phase_overrides", rendered)
 
 
-def _read_phase_multipliers(content: str) -> dict[int, float]:
+def _phase_override_lines(
+    enabled: bool, multiplier: float, power_quality: bool
+) -> tuple[str, ...]:
+    lines: list[str] = []
+    if multiplier != 1:
+        value = f"{multiplier:g}"
+        outputs = ["current", "power"]
+        if enabled and power_quality:
+            outputs.extend(("reactive_power", "apparent_power"))
+        for output in outputs:
+            lines.extend(
+                (f"      {output}:", "        filters:", f"          - multiply: {value}")
+            )
+    if power_quality:
+        removals = ("harmonic_power", "peak_current") if enabled else (
+            "reactive_power",
+            "apparent_power",
+            "harmonic_power",
+            "peak_current",
+            "power_factor",
+            "phase_angle",
+        )
+        lines.extend(f"      {output}: !remove" for output in removals)
+    return tuple(lines)
+
+
+def _read_phase_multipliers(
+    content: str,
+    topology: MeterTopology,
+    substitutions: Mapping[str, ConfigScalar],
+    power_quality: tuple[bool, ...],
+) -> dict[int, float]:
     """Migrate only the helper's former current/power multiplier entries."""
     starts = [match.start() for match in re.finditer(re.escape(_PHASE_OVERRIDE_START), content)]
     ends = [match.end() for match in re.finditer(re.escape(_PHASE_OVERRIDE_END), content)]
@@ -679,44 +709,85 @@ def _read_phase_multipliers(content: str) -> dict[int, float]:
         raise ConfigMutationError("reporting multiplier block is not safely writable")
     if not starts:
         return {}
-    managed = content[starts[0] : ends[0]]
-    headers = tuple(_PHASE_HEADER_RE.finditer(managed))
-    entries = tuple(_PHASE_MULTIPLIER_RE.finditer(managed))
-    if len(entries) != len(headers) or len(
-        {header.group("channel") for header in headers}
-    ) != len(headers):
-        raise ConfigMutationError("reporting multiplier block is not safely writable")
+    managed = content[starts[0] : ends[0]].splitlines()[1:-1]
     multipliers: dict[int, float] = {}
-    for entry in entries:
-        body = entry.group("body")
-        current = _phase_output_multiplier(body, "current")
-        power = _phase_output_multiplier(body, "power")
-        if current is None and power is None:
-            continue
-        if current != power or current not in REPORTING_MULTIPLIERS:
+    seen: set[int] = set()
+    index = 0
+    while index < len(managed):
+        owner = _PHASE_OWNER_RE.fullmatch(managed[index])
+        if owner is None:
             raise ConfigMutationError("reporting multiplier block is not safely writable")
-        channel = int(entry.group("channel"))
-        if channel in multipliers:
+        owner_id = owner.group("id")
+        index += 1
+        owner_entries = 0
+        while index < len(managed) and not managed[index].startswith("  - id:"):
+            header = _PHASE_HEADER_RE.fullmatch(managed[index])
+            if header is None:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            channel = int(header.group("channel"))
+            if channel in seen or not 1 <= channel <= topology.ct_count:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            meter_key, expected_phase = _channel_meter_phase(channel)
+            expected_id = (
+                f"${{{meter_key}}}"
+                if meter_key in substitutions
+                else _canonical_meter_id(meter_key)
+            )
+            if owner_id != expected_id or header.group("phase") != expected_phase:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            index += 1
+            body_start = index
+            while index < len(managed) and not managed[index].startswith(
+                ("  - id:", "    phase_")
+            ):
+                index += 1
+            body = tuple(managed[body_start:index])
+            multiplier = _managed_phase_multiplier(body)
+            board_pq = power_quality[(channel - 1) // 6]
+            allowed = {
+                _phase_override_lines(True, multiplier, False),
+                _phase_override_lines(True, multiplier, board_pq),
+                _phase_override_lines(False, multiplier, board_pq),
+            }
+            if body not in allowed or not body:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            if multiplier != 1:
+                multipliers[channel] = multiplier
+            seen.add(channel)
+            owner_entries += 1
+        if owner_entries == 0:
             raise ConfigMutationError("reporting multiplier block is not safely writable")
-        multipliers[channel] = current
     return multipliers
 
 
-def _phase_output_multiplier(body: str, output: str) -> float | None:
-    if re.search(rf"^      {output}:\r?$", body, re.MULTILINE) is None:
-        return None
-    match = re.search(
-        rf"^      {output}:\r?\n        filters:\r?\n"
-        r"          - multiply: (?P<value>[^\r\n]+)\r?$",
-        body,
-        re.MULTILINE,
-    )
-    if match is None:
+def _managed_phase_multiplier(body: tuple[str, ...]) -> float:
+    if not body or body[0] != "      current:":
+        return 1
+    if len(body) < 6 or body[1] != "        filters:" or body[3:5] != (
+        "      power:",
+        "        filters:",
+    ):
+        raise ConfigMutationError("reporting multiplier block is not safely writable")
+    current = re.fullmatch(r"          - multiply: (?P<value>[^\s]+)", body[2])
+    power = re.fullmatch(r"          - multiply: (?P<value>[^\s]+)", body[5])
+    if current is None or power is None:
         raise ConfigMutationError("reporting multiplier block is not safely writable")
     try:
-        return float(match.group("value"))
+        current_value = float(current.group("value"))
+        power_value = float(power.group("value"))
     except ValueError as error:
         raise ConfigMutationError("reporting multiplier block is not safely writable") from error
+    if current_value != power_value or current_value not in REPORTING_MULTIPLIERS:
+        raise ConfigMutationError("reporting multiplier block is not safely writable")
+    return current_value
 
 
 def _channel_meter_phase(channel: int) -> tuple[str, str]:
@@ -741,14 +812,16 @@ def _reject_local_output_filters(
     channels: Iterable[int],
     substitutions: Mapping[str, ConfigScalar],
 ) -> None:
-    targets: dict[tuple[str, str], int] = {}
+    targets: dict[str, dict[str, int]] = {}
     for channel in channels:
         meter_key, phase = _channel_meter_phase(channel)
         aliases = {meter_key, _canonical_meter_id(meter_key)}
         if meter_key in substitutions:
             aliases.add(substitutions[meter_key].value)
-        targets.update({(alias, phase): channel for alias in aliases})
-    lines = content.splitlines()
+        for alias in aliases:
+            targets.setdefault(alias, {})[phase] = channel
+    document = ESPHomeConfigDocument.parse(content)
+    lines = document.code_lines
     for index, line in enumerate(lines):
         item = re.match(r"(?P<indent> *)-\s+", line)
         if item is None:
@@ -758,66 +831,221 @@ def _reject_local_output_filters(
         for candidate in range(index + 1, len(lines)):
             stripped = lines[candidate].strip()
             indent = len(lines[candidate]) - len(lines[candidate].lstrip(" "))
-            if stripped and not stripped.startswith("#") and indent <= item_indent:
+            if stripped and indent <= item_indent:
                 item_end = candidate
                 break
-        extend = re.fullmatch(
-            r" *-\s+id:\s*!extend\s+(?:\$\{)?(?P<id>[\w-]+)(?:\})?\s*(?:#.*)?",
-            line,
+        mapping = _yaml_mapping(line)
+        owner_id = (
+            _yaml_identifier(mapping[3])
+            if mapping is not None and mapping[1] and mapping[2] == "id"
+            else None
         )
-        owner_id = extend.group("id") if extend is not None else None
         if owner_id is None:
             for candidate in range(index + 1, item_end):
-                identifier = re.fullmatch(
-                    rf" {{{item_indent + 2}}}id:\s*(?:\$\{{)?(?P<id>[\w-]+)(?:\}})?\s*(?:#.*)?",
-                    lines[candidate],
-                )
-                if identifier is not None:
-                    owner_id = identifier.group("id")
+                identifier = _yaml_mapping(lines[candidate])
+                if (
+                    identifier is not None
+                    and not identifier[1]
+                    and identifier[0] > item_indent
+                    and identifier[2] == "id"
+                ):
+                    owner_id = _yaml_identifier(identifier[3])
                     break
-        if owner_id is None or not any(owner_id == target[0] for target in targets):
-            continue
-        for (target_meter_id, phase), channel in targets.items():
-            if target_meter_id != owner_id:
-                continue
-            phase_line = next(
-                (
-                    candidate
-                    for candidate in range(index + 1, item_end)
-                    if lines[candidate].strip().split(" #", 1)[0] == f"phase_{phase}:"
-                ),
+        if owner_id is None and line.lstrip().startswith("- {"):
+            flow_keys = _yaml_flow_keys(line)
+            owner_id = next(
+                (alias for alias in targets if "id" in flow_keys and alias in line),
                 None,
             )
-            if phase_line is None:
-                continue
-            phase_indent = len(lines[phase_line]) - len(lines[phase_line].lstrip(" "))
-            for candidate in range(phase_line + 1, item_end):
-                stripped = lines[candidate].strip()
-                indent = len(lines[candidate]) - len(lines[candidate].lstrip(" "))
-                if stripped and not stripped.startswith("#") and indent <= phase_indent:
-                    break
-                if stripped in {
-                    "current:",
-                    "power:",
-                    "reactive_power:",
-                    "apparent_power:",
-                }:
-                    output_indent = indent
-                    for nested in range(candidate + 1, item_end):
-                        nested_value = lines[nested].strip()
-                        nested_indent = len(lines[nested]) - len(
-                            lines[nested].lstrip(" ")
+            if owner_id is not None:
+                for phase, channel in targets[owner_id].items():
+                    if (
+                        f"phase_{phase}" in flow_keys
+                        and flow_keys.intersection(
+                            {
+                                "current",
+                                "power",
+                                "reactive_power",
+                                "apparent_power",
+                            }
                         )
-                        if (
-                            nested_value
-                            and not nested_value.startswith("#")
-                            and nested_indent <= output_indent
-                        ):
-                            break
-                        if nested_value == "filters:":
-                            raise ConfigMutationError(
-                                f"existing CT{channel} output filters are not safely writable"
-                            )
+                        and "filters" in flow_keys
+                    ):
+                        _filter_conflict(channel)
+        if owner_id not in targets:
+            continue
+        id_count = sum(
+            1
+            for candidate in range(index, item_end)
+            if (candidate_mapping := _yaml_mapping(lines[candidate])) is not None
+            and candidate_mapping[2] == "id"
+        )
+        if id_count > 1:
+            _filter_conflict(next(iter(targets[owner_id].values())))
+        for phase, channel in targets[owner_id].items():
+            phase_key = f"phase_{phase}"
+            phase_lines = [
+                candidate
+                for candidate in range(index + 1, item_end)
+                if (candidate_mapping := _yaml_mapping(lines[candidate])) is not None
+                and not candidate_mapping[1]
+                and candidate_mapping[2] == phase_key
+            ]
+            if any(
+                _yaml_explicit_key(lines[candidate]) == phase_key
+                for candidate in range(index + 1, item_end)
+            ):
+                _filter_conflict(channel)
+            if len(phase_lines) > 1:
+                _filter_conflict(channel)
+            if not phase_lines:
+                continue
+            phase_line = phase_lines[0]
+            phase_mapping = _yaml_mapping(lines[phase_line])
+            assert phase_mapping is not None
+            phase_indent, _, _, phase_rest = phase_mapping
+            if phase_rest.strip():
+                if phase_rest.lstrip().startswith("{"):
+                    flow_keys = _yaml_flow_keys(phase_rest)
+                    if flow_keys.intersection(
+                        {"current", "power", "reactive_power", "apparent_power"}
+                    ) and "filters" in flow_keys:
+                        _filter_conflict(channel)
+                else:
+                    _filter_conflict(channel)
+                continue
+            phase_end = item_end
+            for candidate in range(phase_line + 1, item_end):
+                indent = len(lines[candidate]) - len(lines[candidate].lstrip(" "))
+                if lines[candidate].strip() and indent <= phase_indent:
+                    phase_end = candidate
+                    break
+            direct_indents = [
+                len(lines[candidate]) - len(lines[candidate].lstrip(" "))
+                for candidate in range(phase_line + 1, phase_end)
+                if lines[candidate].strip()
+            ]
+            if not direct_indents:
+                continue
+            direct_indent = min(direct_indents)
+            outputs: set[str] = set()
+            for candidate in range(phase_line + 1, phase_end):
+                if not lines[candidate].strip():
+                    continue
+                indent = len(lines[candidate]) - len(lines[candidate].lstrip(" "))
+                if indent != direct_indent:
+                    continue
+                explicit = _yaml_explicit_key(lines[candidate])
+                if explicit in {
+                    "current",
+                    "power",
+                    "reactive_power",
+                    "apparent_power",
+                }:
+                    _filter_conflict(channel)
+                output = _yaml_mapping(lines[candidate])
+                if output is None:
+                    flow_keys = _yaml_flow_keys(lines[candidate])
+                    if flow_keys.intersection(
+                        {"current", "power", "reactive_power", "apparent_power"}
+                    ) and "filters" in flow_keys:
+                        _filter_conflict(channel)
+                    continue
+                _, sequence, output_name, output_rest = output
+                if output_name not in {
+                    "current",
+                    "power",
+                    "reactive_power",
+                    "apparent_power",
+                }:
+                    continue
+                if sequence or output_name in outputs:
+                    _filter_conflict(channel)
+                outputs.add(output_name)
+                output_end = phase_end
+                for nested in range(candidate + 1, phase_end):
+                    nested_indent = len(lines[nested]) - len(
+                        lines[nested].lstrip(" ")
+                    )
+                    if lines[nested].strip() and nested_indent <= direct_indent:
+                        output_end = nested
+                        break
+                if output_rest.strip():
+                    if not (
+                        output_rest.lstrip().startswith("{")
+                        and "filters" not in _yaml_flow_keys(output_rest)
+                    ):
+                        _filter_conflict(channel)
+                    continue
+                for nested in range(candidate + 1, output_end):
+                    nested_mapping = _yaml_mapping(lines[nested])
+                    if (
+                        nested_mapping is not None
+                        and nested_mapping[2] in {"filters", "<<"}
+                    ) or _yaml_explicit_key(lines[nested]) in {"filters", "<<"}:
+                        _filter_conflict(channel)
+                    nested_keys = _yaml_flow_keys(lines[nested])
+                    if "filters" in nested_keys or re.search(
+                        r"(?:^|\s)[*-][^\s]+", lines[nested].strip()
+                    ):
+                        _filter_conflict(channel)
+
+
+def _yaml_mapping(line: str) -> tuple[int, bool, str, str] | None:
+    match = _YAML_MAPPING_RE.fullmatch(line)
+    if match is None:
+        return None
+    return (
+        len(match.group("indent")),
+        match.group("dash") is not None,
+        _yaml_key(match.group("key")),
+        match.group("rest"),
+    )
+
+
+def _yaml_explicit_key(line: str) -> str | None:
+    match = _YAML_EXPLICIT_KEY_RE.fullmatch(line)
+    return _yaml_key(match.group("key")) if match is not None else None
+
+
+def _yaml_flow_keys(line: str) -> set[str]:
+    return {_yaml_key(match.group("key")) for match in _YAML_FLOW_KEY_RE.finditer(line)}
+
+
+def _yaml_key(token: str) -> str:
+    if token.startswith('"'):
+        return str(json.loads(token))
+    if token.startswith("'"):
+        return token[1:-1].replace("''", "'")
+    return token
+
+
+def _yaml_identifier(rest: str) -> str | None:
+    value = rest.strip()
+    while (decorator := re.match(r"^(?:![^\s]+|&[^\s]+)\s+", value)) is not None:
+        value = value[decorator.end() :]
+    if not value:
+        return None
+    if value.startswith('"'):
+        try:
+            identifier = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    elif value.startswith("'") and value.endswith("'"):
+        identifier = value[1:-1].replace("''", "'")
+    else:
+        identifier = value
+    if not isinstance(identifier, str) or any(character.isspace() for character in identifier):
+        return None
+    if identifier.startswith("${") and identifier.endswith("}"):
+        identifier = identifier[2:-1]
+    return identifier
+
+
+def _filter_conflict(channel: int) -> None:
+    raise ConfigMutationError(
+        f"existing CT{channel} output filters are not safely writable"
+    )
 
 
 def _substitution_block(
