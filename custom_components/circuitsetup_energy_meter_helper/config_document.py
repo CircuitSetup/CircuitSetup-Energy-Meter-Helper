@@ -14,16 +14,30 @@ METER_ID_RE = re.compile(r"^(?:main_meter_id[12]|addon[1-6]_id[12])$")
 METER_SETTING_RE = re.compile(
     r"^(?:friendly_name|update_time|electric_freq|csemh_config_contract)$"
 )
-_KEY_TOKEN_RE = r'''(?:[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
-_MAPPING_RE = re.compile(rf"^(?P<indent> *)(?P<key>{_KEY_TOKEN_RE}):(?P<rest>.*)$")
+_KEY_TOKEN_RE = r'''(?:<<|[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
+_MAPPING_RE = re.compile(
+    rf"^(?P<indent> *)(?P<key>{_KEY_TOKEN_RE})\s*:(?P<rest>.*)$"
+)
 _SEQUENCE_MAPPING_RE = re.compile(
-    rf"^(?P<indent> *)-\s+(?P<key>{_KEY_TOKEN_RE}):(?P<rest>.*)$"
+    rf"^(?P<indent> *)-\s+(?P<key>{_KEY_TOKEN_RE})\s*:(?P<rest>.*)$"
 )
 _SEQUENCE_RE = re.compile(r"^(?P<indent> *)-\s+(?P<rest>.+)$")
 _YAML_PATH_RE = re.compile(r"(?i)^(.*?\.ya?ml)(?:@.*)?$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _LINE_BREAK_RE = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
 _LINE_BREAK_FINAL_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+_BLOCK_SCALAR_HEADER_RE = re.compile(
+    r"^(?P<indent> *)(?:-\s+)?(?:[^:#][^:]*:\s*)?(?:(?:![^\s]+|&[^\s]+)\s+)*"
+    r"[|>][1-9+-]*(?:\s+#.*)?$"
+)
+_EXPLICIT_KEY_RE = re.compile(
+    rf"^\s*\?\s+(?P<key>{_KEY_TOKEN_RE})(?:\s*(?::|$))"
+)
+_PREFIXED_KEY_RE = re.compile(
+    rf"^\s*(?:[!&][^\s]+\s+)+(?P<key>{_KEY_TOKEN_RE})\s*:"
+)
+_FLOW_KEY_RE = re.compile(rf"^\s*[{{[]\s*(?P<key>{_KEY_TOKEN_RE})\s*:")
+_MERGE_KEY_RE = re.compile(r"^\s*(?:<<\s*:|!!merge\s+['\"]<<['\"]\s*:)")
 _MAX_DOCUMENT_BYTES = 1_048_576
 _MAX_DOCUMENT_LINES = 10_000
 _MAX_SETTING_LENGTH = 64
@@ -132,12 +146,13 @@ class _DocumentParser:
         self.content = content
         self.lines = tuple(content.splitlines(keepends=True))
         self._bodies = tuple(self._line_body(line) for line in self.lines)
+        self._block_scalar_lines: set[int] = set()
         offset = 0
         self._offsets: list[int] = []
         for line in self.lines:
             self._offsets.append(offset)
             offset += len(line)
-        self._reject_multiline_quoted_scalars()
+        self._scan_lexical_document()
 
     def parse(
         self, document_type: type[ESPHomeConfigDocument]
@@ -204,13 +219,13 @@ class _DocumentParser:
             indent = len(body) - len(body.lstrip(" "))
             if child_indent is None or indent != child_indent:
                 continue
-            if re.match(r"<<\s*:", body.lstrip()):
-                raise ESPHomeConfigParseError(
-                    "substitution merges are not locally authoritative", index + 1
-                )
             mapping = self._mapping(index)
             if mapping is None:
                 continue
+            if mapping.key == "<<":
+                raise ESPHomeConfigParseError(
+                    "substitution merges are not locally authoritative", index + 1
+                )
             if not (
                 CT_NAME_RE.fullmatch(mapping.key)
                 or CT_GAIN_RE.fullmatch(mapping.key)
@@ -232,10 +247,6 @@ class _DocumentParser:
 
     @staticmethod
     def _validate_meter_setting(key: str, value: str, line: int) -> None:
-        try:
-            value.encode("utf-8")
-        except UnicodeEncodeError as error:
-            raise ESPHomeConfigParseError("meter setting is not valid UTF-8", line) from error
         if not value or len(value) > _MAX_SETTING_LENGTH or _CONTROL_RE.search(value):
             raise ESPHomeConfigParseError("meter setting is not safely bounded", line)
         if key == "update_time" and value not in {"1s", "2s", "5s", "10s", "30s", "60s"}:
@@ -286,23 +297,109 @@ class _DocumentParser:
             return line[:-1]
         return line
 
-    def _reject_multiline_quoted_scalars(self) -> None:
+    def _scan_lexical_document(self) -> None:
+        block_indent: int | None = None
         for index in range(len(self.lines)):
-            mapping = self._mapping(index)
-            if mapping is None:
+            body = self._bodies[index]
+            if block_indent is not None:
+                if not body.strip():
+                    self._block_scalar_lines.add(index)
+                    continue
+                indent = len(body) - len(body.lstrip(" "))
+                if indent > block_indent:
+                    self._block_scalar_lines.add(index)
+                    continue
+                block_indent = None
+            header = _BLOCK_SCALAR_HEADER_RE.fullmatch(body)
+            if header is not None:
+                block_indent = len(header.group("indent"))
                 continue
-            text = mapping.rest.lstrip(" ")
-            if not text or text[0] not in "\"'":
+            self._reject_unsafe_structural_syntax(body, index + 1)
+            self._reject_multiline_quote(body, index + 1)
+
+    def _reject_unsafe_structural_syntax(self, body: str, line: int) -> None:
+        if _MERGE_KEY_RE.match(body):
+            raise ESPHomeConfigParseError(
+                "substitution merges are not locally authoritative", line
+            )
+        for pattern in (_EXPLICIT_KEY_RE, _PREFIXED_KEY_RE, _FLOW_KEY_RE):
+            match = pattern.match(body)
+            if match is None:
                 continue
-            try:
-                if text[0] == "\"":
-                    self._double_quote_end(text, index + 1)
-                else:
-                    self._single_quote_end(text, index + 1)
-            except ESPHomeConfigParseError as error:
-                raise ESPHomeConfigParseError(
-                    "unsupported multiline quoted scalar", index + 1
-                ) from error
+            if self._is_structural_key(self._mapping_key(match.group("key"), line)):
+                raise ESPHomeConfigParseError("unsupported structural key syntax", line)
+
+    @staticmethod
+    def _is_structural_key(key: str) -> bool:
+        return (
+            key
+            in {
+                "substitutions",
+                "esphome",
+                "dashboard_import",
+                "packages",
+                "project",
+                "name",
+                "package_import_url",
+                "files",
+                "file",
+                "<<",
+            }
+            or CT_NAME_RE.fullmatch(key) is not None
+            or CT_GAIN_RE.fullmatch(key) is not None
+            or VOLTAGE_GAIN_RE.fullmatch(key) is not None
+            or GROUP_NAME_RE.fullmatch(key) is not None
+            or METER_ID_RE.fullmatch(key) is not None
+            or METER_SETTING_RE.fullmatch(key) is not None
+        )
+
+    def _reject_multiline_quote(self, body: str, line: int) -> None:
+        expects_token = True
+        position = 0
+        while position < len(body):
+            character = body[position]
+            if character == "#" and (position == 0 or body[position - 1].isspace()):
+                return
+            if character.isspace():
+                position += 1
+                continue
+            if character in "[{,":
+                expects_token = True
+                position += 1
+                continue
+            if character in "]}":
+                expects_token = False
+                position += 1
+                continue
+            if character == ":":
+                expects_token = True
+                position += 1
+                continue
+            if character == "-" and expects_token and (
+                position + 1 == len(body) or body[position + 1].isspace()
+            ):
+                position += 1
+                continue
+            if expects_token and character in "!&":
+                while position < len(body) and not body[position].isspace():
+                    position += 1
+                continue
+            if expects_token and character in "\"'":
+                try:
+                    end = (
+                        self._double_quote_end(body[position:], line)
+                        if character == "\""
+                        else self._single_quote_end(body[position:], line)
+                    )
+                except ESPHomeConfigParseError as error:
+                    raise ESPHomeConfigParseError(
+                        "unsupported multiline quoted scalar", line
+                    ) from error
+                position += end
+                expects_token = False
+                continue
+            expects_token = False
+            position += 1
 
     def _nested_scalar(
         self, section_name: str, parent_key: str, child_key: str
@@ -455,6 +552,8 @@ class _DocumentParser:
         return tuple(paths)
 
     def _mapping(self, index: int) -> _Mapping | None:
+        if index in self._block_scalar_lines:
+            return None
         match = _MAPPING_RE.match(self._bodies[index])
         if match is None:
             return None
@@ -466,6 +565,8 @@ class _DocumentParser:
         )
 
     def _sequence_mapping(self, index: int) -> _Mapping | None:
+        if index in self._block_scalar_lines:
+            return None
         match = _SEQUENCE_MAPPING_RE.match(self._bodies[index])
         if match is None:
             return None
@@ -533,6 +634,10 @@ class _DocumentParser:
         tail = text[end:].lstrip(" ")
         if tail and not tail.startswith("#"):
             raise ESPHomeConfigParseError("unsupported multiline scalar", line)
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ESPHomeConfigParseError("scalar is not valid UTF-8", line) from error
         start_column = raw_column + leading
         end_column = start_column + len(token)
         return ConfigScalar(

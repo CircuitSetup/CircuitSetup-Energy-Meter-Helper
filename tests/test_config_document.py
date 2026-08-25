@@ -309,6 +309,95 @@ def test_rejects_decoded_unpaired_surrogates() -> None:
 
 
 @pytest.mark.parametrize(
+    "prefix",
+    (
+        "{quote}unterminated",
+        "- {quote}unterminated",
+        "opaque: [{quote}unterminated",
+        "opaque: !str {quote}unterminated",
+        "opaque: &opaque {quote}unterminated",
+    ),
+)
+@pytest.mark.parametrize("quote", ("\"", "'"))
+@pytest.mark.parametrize(
+    "suffix",
+    (
+        "substitutions:\n  friendly_name: Spoofed\n",
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n",
+    ),
+)
+def test_rejects_multiline_quotes_from_all_scalar_contexts(
+    prefix: str, quote: str, suffix: str
+) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match="line 1"):
+        ESPHomeConfigDocument.parse(prefix.format(quote=quote) + "\n" + suffix)
+
+
+def test_ignores_quotes_and_markers_inside_valid_block_scalars() -> None:
+    doc = ESPHomeConfigDocument.parse(
+        "notes: |-\n"
+        '  an unmatched " quote\n'
+        "  substitutions:\n"
+        "  # CircuitSetup Energy Meter Helper: aggregates v1\n"
+        "substitutions:\n"
+        "  friendly_name: Meter\n"
+    )
+
+    assert doc.substitutions["friendly_name"].value == "Meter"
+    assert doc.managed_blocks == {}
+
+
+@pytest.mark.parametrize(
+    "content, line",
+    (
+        ("substitutions :\n  friendly_name : Meter\n  \"friendly_name\" : Meter\n", 3),
+        ("? substitutions\n: {}\n", 1),
+        ("!str substitutions: {}\n", 1),
+        ("&saved substitutions: {}\n", 1),
+        ("substitutions:\n  ? friendly_name\n  : Meter\n", 2),
+        ("substitutions:\n  !str friendly_name: Meter\n", 2),
+        ("substitutions:\n  &saved friendly_name: Meter\n", 2),
+        ("<<: *defaults\n", 1),
+        ("substitutions:\n  <<: *defaults\n", 2),
+        ("substitutions:\n  !!merge '<<': *defaults\n", 2),
+        ("{substitutions: {friendly_name: Meter}}\n", 1),
+    ),
+)
+def test_rejects_yaml_equivalent_structural_key_syntax(
+    content: str, line: int
+) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match=rf"line {line}"):
+        ESPHomeConfigDocument.parse(content)
+
+
+def test_allows_unrelated_value_tags_outside_managed_surface() -> None:
+    doc = ESPHomeConfigDocument.parse(
+        "other: !include other.yaml\nsubstitutions:\n  friendly_name: Meter\n"
+    )
+
+    assert doc.substitutions["friendly_name"].value == "Meter"
+
+
+@pytest.mark.parametrize(
+    "content, line",
+    (
+        ('substitutions:\n  ct1_name: "\\ud800"\n', 2),
+        ('substitutions:\n  current_cal_ct1: "\\ud800"\n', 2),
+        ('substitutions:\n  main_meter_name1: "\\ud800"\n', 2),
+        ('substitutions:\n  main_meter_id1: "\\ud800"\n', 2),
+        ('esphome:\n  project:\n    name: "\\ud800"\n', 3),
+        ('dashboard_import:\n  package_import_url: "\\ud800"\n', 2),
+        ('packages:\n  - file: "\\ud800"\n', 2),
+    ),
+)
+def test_rejects_decoded_surrogates_from_all_scalar_consumers(
+    content: str, line: int
+) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match=rf"line {line}"):
+        ESPHomeConfigDocument.parse(content)
+
+
+@pytest.mark.parametrize(
     "value",
     ("&gain 27518", "*gain", "|", ">-", "!secret ct_gain", "# no value"),
 )
