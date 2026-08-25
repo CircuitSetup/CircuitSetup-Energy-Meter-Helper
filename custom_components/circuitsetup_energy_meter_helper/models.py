@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from enum import StrEnum
+from hashlib import sha256
 from typing import Literal
 
 from .ct_catalog import REPORTING_MULTIPLIERS
@@ -215,6 +217,72 @@ class MeterTopology:
             project_name,
             evidence,
         )
+
+
+@dataclass(slots=True, frozen=True)
+class VoltageReferenceTopology:
+    """Validated voltage-reference assignments independent of board counts."""
+
+    references: tuple[tuple[str, tuple[str, ...]], ...]
+    source: Literal["helper", "legacy"]
+
+    @classmethod
+    def from_legacy(cls, board_count: int, voltage_layout: str) -> VoltageReferenceTopology:
+        """Build the compatibility topology encoded by old project suffixes."""
+        if not 1 <= board_count <= 7:
+            raise ValueError("board_count must be between 1 and 7")
+        groups = tuple(
+            f"{('main' if board == 0 else f'addon{board}')}_{group}"
+            for board in range(board_count)
+            for group in (1, 2)
+        )
+        if voltage_layout == "standard":
+            references: tuple[tuple[str, tuple[str, ...]], ...] = (("main", groups),)
+        elif voltage_layout == "two_voltages":
+            references = (("main", groups[::2]), ("secondary", groups[1::2]))
+        else:
+            raise ValueError(f"unknown legacy voltage layout: {voltage_layout!r}")
+        return cls(references, "legacy")
+
+    def __post_init__(self) -> None:
+        if not self.references or self.source not in {"helper", "legacy"}:
+            raise ValueError("voltage-reference topology is invalid")
+        reference_ids: set[str] = set()
+        groups: list[str] = []
+        for reference_id, group_keys in self.references:
+            if (
+                not isinstance(reference_id, str)
+                or not reference_id
+                or reference_id in reference_ids
+                or not isinstance(group_keys, tuple)
+                or not group_keys
+            ):
+                raise ValueError("voltage-reference topology is invalid")
+            reference_ids.add(reference_id)
+            for group_key_value in group_keys:
+                if not isinstance(group_key_value, str) or re.fullmatch(
+                    r"(?:main|addon[1-6])_[12]", group_key_value
+                ) is None:
+                    raise ValueError("voltage-reference topology is invalid")
+                groups.append(group_key_value)
+        if len(groups) != len(set(groups)):
+            raise ValueError("voltage-reference groups must be unique")
+
+    @property
+    def reference_ids(self) -> tuple[str, ...]:
+        return tuple(reference_id for reference_id, _ in self.references)
+
+    def groups_for(self, reference_id: str) -> tuple[str, ...]:
+        for current_id, groups in self.references:
+            if current_id == reference_id:
+                return groups
+        raise KeyError(reference_id)
+
+    @property
+    def fingerprint(self) -> str:
+        """Return a deterministic identity for ordered IDs and assignments."""
+        canonical = json.dumps(self.references, separators=(",", ":"))
+        return f"v1:{sha256(canonical.encode()).hexdigest()}"
 
 
 @dataclass(slots=True, frozen=True)

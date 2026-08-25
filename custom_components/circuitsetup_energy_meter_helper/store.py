@@ -35,6 +35,7 @@ from .models import (
     StoredMeterRecord,
     StoredTopology,
     StoredTopologyEvidence,
+    VoltageReferenceTopology,
     canonical_mac,
 )
 
@@ -136,6 +137,7 @@ class VerifiedCalibrationRecord:
     connection_generation: int
     groups: tuple[VerifiedGainGroup, ...]
     verification_id: str
+    topology_voltage_fingerprint: str | None = None
     offset_groups: tuple[VerifiedOffsetGroup, ...] = ()
     power_offset_groups: tuple[VerifiedPowerOffsetGroup, ...] = ()
     source_authority: CalibrationSourceAuthority = (
@@ -170,6 +172,19 @@ class VerifiedCalibrationRecord:
             raise ValueError("topology project name must be a non-empty single line")
         if not self.topology_connection_type or not self.topology_voltage_layout:
             raise ValueError("topology connection and voltage layout are required")
+        if self.topology_voltage_fingerprint is None:
+            try:
+                fingerprint = VoltageReferenceTopology.from_legacy(
+                    self.topology_addon_count + 1, self.topology_voltage_layout
+                ).fingerprint
+            except ValueError:
+                fingerprint = f"legacy:{self.topology_voltage_layout}"
+            object.__setattr__(self, "topology_voltage_fingerprint", fingerprint)
+        elif re.fullmatch(
+            r"(?:v1:[0-9a-f]{64}|legacy:[a-z0-9_-]{1,64})",
+            self.topology_voltage_fingerprint,
+        ) is None:
+            raise ValueError("topology voltage fingerprint is invalid")
         if self.connection_generation < 1 or not (
             self.groups or self.offset_groups or self.power_offset_groups
         ):
@@ -349,6 +364,10 @@ def _serialize_verified_calibration(
             record.source_handoff_firmware_installed
         ),
     }
+    if record.topology_voltage_fingerprint is not None and not record.topology_voltage_fingerprint.startswith(
+        "legacy:"
+    ):
+        serialized["topology_voltage_fingerprint"] = record.topology_voltage_fingerprint
     if record.offset_groups:
         serialized["offset_groups"] = [
             {
@@ -426,6 +445,7 @@ def _deserialize_verified_calibration(
             connection_generation=raw["connection_generation"],
             groups=tuple(groups),
             verification_id=raw["verification_id"],
+            topology_voltage_fingerprint=raw.get("topology_voltage_fingerprint"),
             offset_groups=tuple(offset_groups),
             power_offset_groups=tuple(power_offset_groups),
             source_authority=authority,

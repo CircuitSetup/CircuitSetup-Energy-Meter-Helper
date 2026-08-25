@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from .config_document import ESPHomeConfigDocument
 from .models import (
@@ -14,7 +15,11 @@ from .models import (
     Phase,
     TopologyEvidence,
     TopologyEvidenceSource,
+    VoltageReferenceTopology,
 )
+
+if TYPE_CHECKING:
+    from .meter_configuration import MeterConfigurationRequest
 
 BASE_PROJECT = "circuitsetup.6c-energy-meter"
 _ADDON_SEGMENT_RE = re.compile(r"-(?P<count>[1-6])-addons?(?=-|$)")
@@ -85,6 +90,139 @@ def connection_type_from_project(name: str) -> ConnectionType:
 def voltage_layout_from_project(name: str) -> str:
     """Return the standard or special two-voltage layout."""
     return _project_metadata(name)[2]
+
+
+def _expected_group_keys(topology: MeterTopology) -> tuple[str, ...]:
+    from .entity_binding import group_key
+
+    return tuple(
+        group_key(board, group)
+        for board in range(topology.board_count)
+        for group in range(2)
+    )
+
+
+def voltage_reference_topology_from_legacy(
+    topology: MeterTopology,
+) -> VoltageReferenceTopology:
+    """Infer references from legacy project metadata only."""
+    groups = _expected_group_keys(topology)
+    if topology.voltage_layout == "standard":
+        references: tuple[tuple[str, tuple[str, ...]], ...] = (("main", groups),)
+    elif topology.voltage_layout == "two_voltages":
+        references = (
+            ("main", groups[::2]),
+            ("secondary", groups[1::2]),
+        )
+    else:
+        raise TopologyParseError(
+            f"unknown legacy voltage layout: {topology.voltage_layout!r}"
+        )
+    return VoltageReferenceTopology(references, "legacy")
+
+
+def voltage_reference_fingerprint_for_meter(topology: MeterTopology) -> str:
+    """Return the normalized identity for a legacy-only meter topology."""
+    try:
+        return voltage_reference_topology_from_legacy(topology).fingerprint
+    except TopologyParseError:
+        return f"legacy:{topology.voltage_layout}"
+
+
+def _validated_voltage_reference_topology(
+    topology: MeterTopology,
+    references: tuple[tuple[str, tuple[str, ...]], ...],
+) -> VoltageReferenceTopology:
+    expected = set(_expected_group_keys(topology))
+    assigned = [group for _, groups in references for group in groups]
+    if (
+        not references
+        or len(assigned) != len(expected)
+        or len(set(assigned)) != len(assigned)
+        or set(assigned) != expected
+    ):
+        raise TopologyParseError("voltage-reference groups must be assigned exactly once")
+    try:
+        return VoltageReferenceTopology(references, "helper")
+    except ValueError as error:
+        raise TopologyParseError("invalid helper voltage-reference topology") from error
+
+
+def voltage_reference_topology_from_configuration(
+    topology: MeterTopology,
+    configuration: MeterConfigurationRequest,
+) -> VoltageReferenceTopology:
+    """Use helper-managed reference assignments after structural validation."""
+    return _validated_voltage_reference_topology(
+        topology,
+        tuple(
+            (reference.reference_id, tuple(reference.group_keys))
+            for reference in configuration.meter.voltage_references
+        ),
+    )
+
+
+def _managed_voltage_reference_assignments(
+    document: ESPHomeConfigDocument, topology: MeterTopology
+) -> tuple[tuple[str, tuple[str, ...]], ...] | None:
+    block = document.managed_blocks.get("voltage_references")
+    if block is None:
+        return None
+    entries: list[tuple[str, tuple[str, ...] | None]] = []
+    in_section = False
+    for raw_line in block.content.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if line.strip() == "voltage_references:":
+            in_section = True
+            continue
+        if not in_section or not line.strip():
+            continue
+        match = re.fullmatch(r"\s{2}([A-Za-z][A-Za-z0-9_-]{0,63}):\s*(.*)", line)
+        if match is None:
+            if line and not line.startswith(" "):
+                break
+            continue
+        reference_id, value = match.groups()
+        groups: tuple[str, ...] | None = None
+        if value.startswith("[") and value.endswith("]"):
+            values = tuple(item.strip().strip("'\"") for item in value[1:-1].split(",") if item.strip())
+            groups = values or None
+        entries.append((reference_id, groups))
+    if not entries or len(entries) > 2:
+        return None
+    expected = _expected_group_keys(topology)
+    if any(groups is None for _, groups in entries):
+        if len(entries) == 1:
+            return ((entries[0][0], expected),)
+        return tuple(
+            (reference_id, expected[index::2])
+            for index, (reference_id, _) in enumerate(entries)
+        )
+    return tuple((reference_id, groups or ()) for reference_id, groups in entries)
+
+
+def voltage_reference_topology_from_config(
+    document: ESPHomeConfigDocument,
+    topology: MeterTopology,
+    configuration: MeterConfigurationRequest | None = None,
+) -> VoltageReferenceTopology:
+    """Prefer verified helper semantics; otherwise use legacy project evidence."""
+    if configuration is not None:
+        try:
+            return voltage_reference_topology_from_configuration(topology, configuration)
+        except TopologyParseError:
+            pass
+    managed = _managed_voltage_reference_assignments(document, topology)
+    if managed is not None:
+        try:
+            return _validated_voltage_reference_topology(topology, managed)
+        except TopologyParseError:
+            pass
+    return voltage_reference_topology_from_legacy(topology)
+
+
+# Short alias for callers that treat board and voltage topology uniformly.
+voltage_topology_from_config = voltage_reference_topology_from_config
 
 
 def addon_count_from_packages(package_files: Iterable[str]) -> int | None:

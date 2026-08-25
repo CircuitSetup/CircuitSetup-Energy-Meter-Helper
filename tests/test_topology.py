@@ -5,11 +5,15 @@ import pytest
 from custom_components.circuitsetup_energy_meter_helper.config_document import (
     ESPHomeConfigDocument,
 )
+from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    default_meter_configuration,
+)
 from custom_components.circuitsetup_energy_meter_helper.models import (
     ChannelAddress,
     MeterTopology,
     SetupState,
     TopologyEvidenceSource,
+    VoltageReferenceTopology,
 )
 from custom_components.circuitsetup_energy_meter_helper.provisioning import (
     ProvisioningSnapshot,
@@ -26,6 +30,9 @@ from custom_components.circuitsetup_energy_meter_helper.topology import (
     topology_from_config,
     topology_from_native,
     voltage_layout_from_project,
+    voltage_reference_topology_from_config,
+    voltage_reference_topology_from_configuration,
+    voltage_reference_topology_from_legacy,
 )
 
 
@@ -303,3 +310,90 @@ def test_native_only_topology_remains_provisional() -> None:
     assert topology.evidence[0].source is TopologyEvidenceSource.NATIVE_PROJECT
     assert not hasattr(topology, "configuration_authoritative")
     assert not snapshot.configuration_authoritative
+
+
+def test_standard_legacy_project_maps_every_group_to_one_reference() -> None:
+    meter = topology_from_native("circuitsetup.6c-energy-meter-1-addon")
+    voltage = voltage_reference_topology_from_legacy(meter)
+
+    assert isinstance(voltage, VoltageReferenceTopology)
+    assert voltage.reference_ids == ("main",)
+    assert voltage.groups_for("main") == (
+        "main_1", "main_2", "addon1_1", "addon1_2"
+    )
+
+
+def test_two_voltage_legacy_project_is_multi_reference_evidence() -> None:
+    meter = topology_from_native("circuitsetup.6c-energy-meter-1-addon-2-voltages")
+    voltage = voltage_reference_topology_from_legacy(meter)
+
+    assert voltage.reference_ids == ("main", "secondary")
+    assert set(voltage.groups_for("main")) | set(voltage.groups_for("secondary")) == {
+        "main_1", "main_2", "addon1_1", "addon1_2"
+    }
+
+
+def test_helper_configuration_overrides_legacy_layout_when_structurally_valid() -> None:
+    meter = topology_from_native("circuitsetup.6c-energy-meter-1-addon-2-voltages")
+    request = default_meter_configuration(
+        meter, {"power_quality": (False, False), "status_fields": (True, False)}
+    )
+
+    voltage = voltage_reference_topology_from_configuration(meter, request)
+
+    assert voltage.reference_ids == ("main",)
+    assert voltage.source == "helper"
+
+
+def test_managed_voltage_block_overrides_legacy_layout() -> None:
+    document = ESPHomeConfigDocument.parse(
+        "esphome:\n"
+        "  project:\n"
+        "    name: circuitsetup.6c-energy-meter-2-voltages\n"
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "voltage_references:\n"
+        "  main: 120\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_config(document)
+
+    voltage = voltage_reference_topology_from_config(document, meter)
+
+    assert voltage.source == "helper"
+    assert voltage.reference_ids == ("main",)
+
+
+def test_helper_configuration_must_cover_each_group_once() -> None:
+    meter = topology_from_native("circuitsetup.6c-energy-meter")
+    request = default_meter_configuration(
+        meter, {"power_quality": (False,), "status_fields": (True,)}
+    )
+    reference = request.meter.voltage_references[0]
+    object.__setattr__(request.meter, "voltage_references", (reference.__class__(
+        reference.reference_id,
+        reference.label,
+        reference.phase_label,
+        reference.nominal_voltage_v,
+        reference.transformer_model_id,
+        reference.gain_voltage,
+        ("main_1", "main_1"),
+    ),))
+
+    with pytest.raises(ValueError, match="assigned exactly once"):
+        voltage_reference_topology_from_configuration(meter, request)
+
+
+def test_unknown_project_suffix_still_fails_closed_for_board_count() -> None:
+    with pytest.raises(TopologyParseError):
+        topology_from_native("circuitsetup.6c-energy-meter-1-addons-custom")
+
+
+def test_voltage_reference_fingerprint_is_ordered_and_has_no_board_revision() -> None:
+    meter = topology_from_native("circuitsetup.6c-energy-meter")
+    request = default_meter_configuration(
+        meter, {"power_quality": (False,), "status_fields": (True,)}
+    )
+    voltage = voltage_reference_topology_from_configuration(meter, request)
+
+    assert voltage.fingerprint == voltage.fingerprint
+    assert "board_revision" not in VoltageReferenceTopology.__slots__

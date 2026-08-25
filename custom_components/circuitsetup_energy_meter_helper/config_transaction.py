@@ -37,6 +37,7 @@ from .models import (
 )
 from .session_manager import ConfigLease, SessionManager
 from .store import VerifiedCalibrationRecord
+from .topology import voltage_reference_fingerprint_for_meter
 
 MAX_VISIBLE_DIFF_BYTES = 32_768
 MAX_VISIBLE_DIFF_LINES = 512
@@ -421,7 +422,8 @@ class ConfigTransactionManager:
                 verified.topology_addon_count != topology.addon_count
                 or verified.topology_project_name != topology.project_name
                 or verified.topology_connection_type != topology.connection_type
-                or verified.topology_voltage_layout != topology.voltage_layout
+                or verified.topology_voltage_fingerprint
+                != voltage_reference_fingerprint_for_meter(topology)
             ):
                 raise ConfigMutationError(
                     "verified calibration topology does not match target"

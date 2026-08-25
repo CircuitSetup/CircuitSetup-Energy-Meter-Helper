@@ -20,6 +20,7 @@ from .ct_catalog import (
 from .ct_inventory import CTInventory
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import VerifiedCalibrationRecord
+from .topology import voltage_reference_fingerprint_for_meter
 
 _SUBSTITUTIONS_RE = re.compile(r"^substitutions:\s*(?:#.*)?(?:\r?\n)?$")
 _SENSOR_RE = re.compile(r"^sensor:\s*(?:#.*)?(?:\r?\n)?$")
@@ -218,7 +219,8 @@ def build_calibrated_gain_mutation(
         verified.topology_addon_count != topology.addon_count
         or verified.topology_project_name != topology.project_name
         or verified.topology_connection_type != topology.connection_type
-        or verified.topology_voltage_layout != topology.voltage_layout
+        or verified.topology_voltage_fingerprint
+        != voltage_reference_fingerprint_for_meter(topology)
     ):
         raise ConfigMutationError("verified calibration topology does not match target")
     document = ESPHomeConfigDocument.parse(snapshot.content)
