@@ -1088,8 +1088,7 @@ class CalibrationEngine:
             await asyncio.gather(*(_discard_waiter(waiter) for waiter in waiters))
             raise
         try:
-            async with asyncio.timeout(self._evidence_timeout_for(timing_policy)):
-                evidence_items = tuple(await asyncio.gather(*waiters))
+            evidence_items = tuple(await asyncio.gather(*waiters))
         except ESPHomeSessionDisconnectedError:
             await asyncio.gather(*(_discard_waiter(waiter) for waiter in waiters))
             restore_started = monotonic()
@@ -1166,8 +1165,7 @@ class CalibrationEngine:
             await _discard_waiter(waiter)
             raise
         try:
-            async with asyncio.timeout(self._evidence_timeout_for(timing_policy)):
-                evidence = await waiter
+            evidence = await waiter
         except asyncio.CancelledError:
             await _discard_waiter(waiter)
             raise
@@ -1209,16 +1207,32 @@ class CalibrationEngine:
         factory_name = "expect_offset_run" if stage == 1 else "expect_power_offset_run"
         expect = getattr(session, factory_name, None)
         if expect is not None:
-            return cast(
-                Awaitable[OffsetRunEvidence | PowerOffsetRunEvidence],
-                expect(
-                    connection_generation=generation,
-                    operation_sequence=sequence,
-                    target_instance_id=instance_id,
-                    button_name=button_name,
-                    dispatched_after=dispatched_after,
-                ),
+            evidence = expect(
+                connection_generation=generation,
+                operation_sequence=sequence,
+                target_instance_id=instance_id,
+                button_name=button_name,
+                dispatched_after=dispatched_after,
             )
+
+            async def wait_for_evidence() -> OffsetRunEvidence | PowerOffsetRunEvidence:
+                try:
+                    async with asyncio.timeout(
+                        self._evidence_timeout if timeout is None else timeout
+                    ):
+                        return await evidence
+                finally:
+                    if isinstance(evidence, asyncio.Future) and not evidence.done():
+                        evidence.cancel()
+
+            waiter = asyncio.create_task(wait_for_evidence())
+            if isinstance(evidence, asyncio.Future):
+                waiter.add_done_callback(
+                    lambda _task: evidence.cancel()
+                    if _task.cancelled() and not evidence.done()
+                    else None
+                )
+            return waiter
         baseline = tuple(getattr(session, "log_lines", ()))
         return asyncio.create_task(
             self._poll_offset(
@@ -1293,16 +1307,32 @@ class CalibrationEngine:
     ) -> Awaitable[GainRunEvidence]:
         expect = getattr(session, "expect_gain_run", None)
         if expect is not None:
-            return cast(
-                Awaitable[GainRunEvidence],
-                expect(
-                    connection_generation=generation,
-                    operation_sequence=sequence,
-                    target_instance_id=instance_id,
-                    button_name=button_name,
-                    dispatched_after=dispatched_after,
-                ),
+            evidence = expect(
+                connection_generation=generation,
+                operation_sequence=sequence,
+                target_instance_id=instance_id,
+                button_name=button_name,
+                dispatched_after=dispatched_after,
             )
+
+            async def wait_for_evidence() -> GainRunEvidence:
+                try:
+                    async with asyncio.timeout(
+                        self._evidence_timeout if timeout is None else timeout
+                    ):
+                        return await evidence
+                finally:
+                    if isinstance(evidence, asyncio.Future) and not evidence.done():
+                        evidence.cancel()
+
+            waiter = asyncio.create_task(wait_for_evidence())
+            if isinstance(evidence, asyncio.Future):
+                waiter.add_done_callback(
+                    lambda _task: evidence.cancel()
+                    if _task.cancelled() and not evidence.done()
+                    else None
+                )
+            return waiter
         baseline = tuple(getattr(session, "log_lines", ()))
         return asyncio.create_task(
             self._poll_gain(
@@ -1431,11 +1461,19 @@ class CalibrationEngine:
         return evidence
 
     async def _windows(
-        self, session: Any, entities: Sequence[BoundEntity]
+        self,
+        session: Any,
+        entities: Sequence[BoundEntity],
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> tuple[SensorSampleWindow, ...]:
         boundary = monotonic()
         windows = await asyncio.gather(
-            *(self._window(session, entity, boundary=boundary) for entity in entities)
+            *(
+                self._window(
+                    session, entity, boundary=boundary, timing_policy=timing_policy
+                )
+                for entity in entities
+            )
         )
         return tuple(windows)
 
@@ -1445,6 +1483,7 @@ class CalibrationEngine:
         entity: BoundEntity,
         *,
         boundary: float | None = None,
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> SensorSampleWindow:
         descriptor = entity.descriptor
         raw = await session.async_wait_for_sensor_window(
@@ -1452,7 +1491,7 @@ class CalibrationEngine:
             device_id=descriptor.device_id,
             sample_count=self._sample_count,
             after=monotonic() if boundary is None else boundary,
-            timeout=self._sensor_timeout(None),
+            timeout=self._sensor_timeout(timing_policy),
         )
         window = _sample_window(raw)
         if len(window.values) != self._sample_count:

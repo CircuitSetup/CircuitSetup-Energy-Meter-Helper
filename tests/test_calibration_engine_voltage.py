@@ -12,12 +12,12 @@ from typing import Any
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
-    CalibrationTimingPolicy,
     CalibrationEngine as ProductionCalibrationEngine,
 )
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
     CalibrationInvariantError,
     CalibrationState,
+    CalibrationTimingPolicy,
     IterationConfirmationRequired,
 )
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
@@ -64,7 +64,7 @@ class CalibrationEngine(ProductionCalibrationEngine):
         (1, 35.0, 35.0),
         (2, 35.0, 35.0),
         (5, 35.0, 35.0),
-        (10, 35.0, 35.0),
+        (10, 45.0, 35.0),
         (30, 125.0, 75.0),
         (60, 245.0, 135.0),
     ),
@@ -90,6 +90,30 @@ def test_calibration_timing_policy_requires_positive_integer_samples(
 ) -> None:
     with pytest.raises(ValueError):
         CalibrationTimingPolicy(5, sample_count=sample_count)  # type: ignore[arg-type]
+
+
+def test_sensor_window_uses_installed_timing_policy() -> None:
+    async def run() -> None:
+        meter = binding(0)
+        session = FakeCalibrationSession(gain_evidence("meter_main1"))
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        await engine._window(
+            session,
+            meter.groups[0].voltage_sensors[0],
+            timing_policy=CalibrationTimingPolicy(30, 3),
+        )
+
+        assert session.events[-1] == (
+            "window",
+            meter.groups[0].voltage_sensors[0].descriptor.key,
+            meter.groups[0].voltage_sensors[0].descriptor.device_id,
+            3,
+            125.0,
+        )
+
+    asyncio.run(run())
 
 
 def sample_window(*values: float) -> SensorSampleWindow:

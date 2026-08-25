@@ -29,6 +29,9 @@ from custom_components.circuitsetup_energy_meter_helper import (
     async_unload_entry,
     repairs,
 )
+from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
+    CalibrationTimingPolicy,
+)
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
     ConfigTransactionManager,
     ConfigTransactionState,
@@ -2026,7 +2029,13 @@ def test_native_only_board_voltage_calibration_needs_no_builder_snapshot(
             False,
         )
 
-        assert calls == [{"confirm_iteration": False, "substitutions": {}}]
+        assert calls == [
+            {
+                "confirm_iteration": False,
+                "substitutions": {},
+                "timing_policy": CalibrationTimingPolicy(5, 3),
+            }
+        ]
         await workflow.async_close()
 
     asyncio.run(run())
@@ -2083,7 +2092,11 @@ def test_voltage_calibration_resolves_all_groups_from_one_reference(
                     ("addon1_1", 120.0, 1),
                     ("addon1_2", 120.0, 1),
                 ),
-                {"confirm_iteration": False, "substitutions": {}},
+                {
+                    "confirm_iteration": False,
+                    "substitutions": {},
+                    "timing_policy": CalibrationTimingPolicy(5, 3),
+                },
             )
         ]
         await workflow.async_close()
