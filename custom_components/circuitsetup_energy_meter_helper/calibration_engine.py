@@ -60,7 +60,11 @@ from .store import (
     VerifiedOffsetGroup,
     VerifiedPowerOffsetGroup,
 )
-from .topology import topology_from_config
+from .topology import (
+    topology_from_config,
+    voltage_reference_fingerprint_for_meter,
+    voltage_reference_topology_from_config,
+)
 
 DEFAULT_EVIDENCE_TIMEOUT = 35.0
 
@@ -348,6 +352,7 @@ class CalibrationEngine:
                 topology_project_name=pending.topology.project_name,
                 topology_connection_type=pending.topology.connection_type,
                 topology_voltage_layout=pending.topology.voltage_layout,
+                topology_voltage_fingerprint=pending.voltage_topology_fingerprint,
                 connection_generation=generation,
                 groups=groups,
                 verification_id=uuid4().hex,
@@ -438,15 +443,19 @@ class CalibrationEngine:
             raise ValueError("authoritative configuration hash is invalid")
         if _CONFIGURATION_ID.fullmatch(snapshot.configuration) is None:
             raise ValueError("authoritative configuration filename is invalid")
+        document = ESPHomeConfigDocument.parse(snapshot.content)
         try:
             source_topology = topology_from_config(
-                ESPHomeConfigDocument.parse(snapshot.content),
+                document,
                 native_project_name=binding.topology.project_name,
             )
         except ValueError as error:
             raise ValueError(
                 "authoritative configuration topology is invalid"
             ) from error
+        source_voltage_fingerprint = voltage_reference_topology_from_config(
+            document, source_topology
+        ).fingerprint
         if not _same_topology_identity(source_topology, binding.topology):
             raise ValueError(
                 "authoritative configuration topology does not match the session"
@@ -456,13 +465,18 @@ class CalibrationEngine:
                 snapshot.configuration != pending.config_filename
                 or snapshot.sha256 != pending.config_sha256
                 or not _same_topology_identity(source_topology, pending.topology)
+                or (
+                    pending.voltage_topology_fingerprint
+                    or voltage_reference_fingerprint_for_meter(source_topology)
+                )
+                != source_voltage_fingerprint
             ):
                 raise ValueError(
                     "authoritative configuration changed since calibration began"
                 )
             return pending
         return self.sessions._begin_calibration_origin(
-            lease, session, binding, snapshot
+            lease, session, binding, snapshot, source_voltage_fingerprint
         )
 
     async def async_zero_all_references(

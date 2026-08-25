@@ -226,24 +226,6 @@ class VoltageReferenceTopology:
     references: tuple[tuple[str, tuple[str, ...]], ...]
     source: Literal["helper", "legacy"]
 
-    @classmethod
-    def from_legacy(cls, board_count: int, voltage_layout: str) -> VoltageReferenceTopology:
-        """Build the compatibility topology encoded by old project suffixes."""
-        if not 1 <= board_count <= 7:
-            raise ValueError("board_count must be between 1 and 7")
-        groups = tuple(
-            f"{('main' if board == 0 else f'addon{board}')}_{group}"
-            for board in range(board_count)
-            for group in (1, 2)
-        )
-        if voltage_layout == "standard":
-            references: tuple[tuple[str, tuple[str, ...]], ...] = (("main", groups),)
-        elif voltage_layout == "two_voltages":
-            references = (("main", groups[::2]), ("secondary", groups[1::2]))
-        else:
-            raise ValueError(f"unknown legacy voltage layout: {voltage_layout!r}")
-        return cls(references, "legacy")
-
     def __post_init__(self) -> None:
         if not self.references or self.source not in {"helper", "legacy"}:
             raise ValueError("voltage-reference topology is invalid")

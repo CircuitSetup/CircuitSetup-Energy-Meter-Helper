@@ -35,6 +35,9 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
     migrate_storage,
     serialize_meter_record,
 )
+from custom_components.circuitsetup_energy_meter_helper.topology import (
+    legacy_voltage_reference_topology,
+)
 
 MAC = "aabbccddeeff"
 CONFIG_HASH = "a" * 64
@@ -252,6 +255,46 @@ def test_gain_only_1_1_record_deserializes_with_absent_offset_fields() -> None:
 
     assert record.offset_groups == ()
     assert record.power_offset_groups == ()
+
+
+@pytest.mark.parametrize("layout", ["standard", "two_voltages"])
+def test_legacy_voltage_identity_is_normalized_and_reserialized(
+    layout: str,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        _deserialize_verified_calibration,
+        _serialize_verified_calibration,
+    )
+
+    raw = {
+        "verification_id": "a" * 32,
+        "config_filename": "meter.yaml",
+        "config_sha256": "b" * 64,
+        "topology_addon_count": 1,
+        "topology_project_name": "circuitsetup.6c-energy-meter-1-addon",
+        "topology_connection_type": "wifi",
+        "topology_voltage_layout": layout,
+        "connection_generation": 2,
+        "groups": [
+            {
+                "instance_id": "meter_main1",
+                "phase_gains": [[7305, 27518], [7305, 28312], [7305, 27518]],
+            }
+        ],
+        "source_authority": "saved_flash",
+        "source_handoff_available": True,
+        "source_handoff_transaction_id": None,
+        "source_handoff_firmware_installed": False,
+    }
+
+    record = _deserialize_verified_calibration("aabbccddeeff", raw)
+    expected = legacy_voltage_reference_topology(2, layout).fingerprint
+
+    assert record.topology_voltage_fingerprint == expected
+    assert _serialize_verified_calibration(record)["topology_voltage_fingerprint"] == expected
+    assert _deserialize_verified_calibration(
+        record.mac, _serialize_verified_calibration(record)
+    ) == record
 
 
 def test_store_rejects_untyped_topology_payload() -> None:

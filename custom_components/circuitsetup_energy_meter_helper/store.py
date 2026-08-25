@@ -35,9 +35,9 @@ from .models import (
     StoredMeterRecord,
     StoredTopology,
     StoredTopologyEvidence,
-    VoltageReferenceTopology,
     canonical_mac,
 )
+from .topology import legacy_voltage_reference_topology
 
 STORAGE_VERSION = 1
 STORAGE_MINOR_VERSION = 4
@@ -174,7 +174,7 @@ class VerifiedCalibrationRecord:
             raise ValueError("topology connection and voltage layout are required")
         if self.topology_voltage_fingerprint is None:
             try:
-                fingerprint = VoltageReferenceTopology.from_legacy(
+                fingerprint = legacy_voltage_reference_topology(
                     self.topology_addon_count + 1, self.topology_voltage_layout
                 ).fingerprint
             except ValueError:

@@ -102,23 +102,39 @@ def _expected_group_keys(topology: MeterTopology) -> tuple[str, ...]:
     )
 
 
+def legacy_voltage_reference_topology(
+    board_count: int, voltage_layout: str
+) -> VoltageReferenceTopology:
+    """Build the compatibility topology encoded by old project suffixes."""
+    if not 1 <= board_count <= 7:
+        raise TopologyParseError("board_count must be between 1 and 7")
+    groups = _expected_group_keys(
+        MeterTopology.from_addon_count(
+            board_count - 1,
+            connection_type="unknown",
+            voltage_layout=voltage_layout,
+            project_name="legacy",
+            evidence=(),
+        )
+    )
+    if voltage_layout == "standard":
+        references: tuple[tuple[str, tuple[str, ...]], ...] = (("main", groups),)
+    elif voltage_layout == "two_voltages":
+        references = (("main", groups[::2]), ("secondary", groups[1::2]))
+    else:
+        raise TopologyParseError(
+            f"unknown legacy voltage layout: {voltage_layout!r}"
+        )
+    return VoltageReferenceTopology(references, "legacy")
+
+
 def voltage_reference_topology_from_legacy(
     topology: MeterTopology,
 ) -> VoltageReferenceTopology:
     """Infer references from legacy project metadata only."""
-    groups = _expected_group_keys(topology)
-    if topology.voltage_layout == "standard":
-        references: tuple[tuple[str, tuple[str, ...]], ...] = (("main", groups),)
-    elif topology.voltage_layout == "two_voltages":
-        references = (
-            ("main", groups[::2]),
-            ("secondary", groups[1::2]),
-        )
-    else:
-        raise TopologyParseError(
-            f"unknown legacy voltage layout: {topology.voltage_layout!r}"
-        )
-    return VoltageReferenceTopology(references, "legacy")
+    return legacy_voltage_reference_topology(
+        topology.board_count, topology.voltage_layout
+    )
 
 
 def voltage_reference_fingerprint_for_meter(topology: MeterTopology) -> str:

@@ -20,7 +20,10 @@ from .ct_catalog import (
 from .ct_inventory import CTInventory
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import VerifiedCalibrationRecord
-from .topology import voltage_reference_fingerprint_for_meter
+from .topology import (
+    voltage_reference_fingerprint_for_meter,
+    voltage_reference_topology_from_config,
+)
 
 _SUBSTITUTIONS_RE = re.compile(r"^substitutions:\s*(?:#.*)?(?:\r?\n)?$")
 _SENSOR_RE = re.compile(r"^sensor:\s*(?:#.*)?(?:\r?\n)?$")
@@ -208,6 +211,13 @@ def build_calibrated_gain_mutation(
     current_hash = sha256(snapshot.content.encode()).hexdigest()
     if current_hash != snapshot.sha256:
         raise ConfigMutationError("configuration snapshot hash does not match content")
+    document = ESPHomeConfigDocument.parse(snapshot.content)
+    try:
+        current_voltage_fingerprint = voltage_reference_topology_from_config(
+            document, topology
+        ).fingerprint
+    except ValueError:
+        current_voltage_fingerprint = voltage_reference_fingerprint_for_meter(topology)
     if (
         snapshot.configuration != verified.config_filename
         or snapshot.sha256 != verified.config_sha256
@@ -220,10 +230,9 @@ def build_calibrated_gain_mutation(
         or verified.topology_project_name != topology.project_name
         or verified.topology_connection_type != topology.connection_type
         or verified.topology_voltage_fingerprint
-        != voltage_reference_fingerprint_for_meter(topology)
+        != current_voltage_fingerprint
     ):
         raise ConfigMutationError("verified calibration topology does not match target")
-    document = ESPHomeConfigDocument.parse(snapshot.content)
     requests = tuple(requested_channels)
     _validate_requests(requests, topology)
     catalog = CTPresetCatalog.load()

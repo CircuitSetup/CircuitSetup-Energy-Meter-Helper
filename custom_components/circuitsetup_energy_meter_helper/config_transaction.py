@@ -37,7 +37,10 @@ from .models import (
 )
 from .session_manager import ConfigLease, SessionManager
 from .store import VerifiedCalibrationRecord
-from .topology import voltage_reference_fingerprint_for_meter
+from .topology import (
+    voltage_reference_fingerprint_for_meter,
+    voltage_reference_topology_from_config,
+)
 
 MAX_VISIBLE_DIFF_BYTES = 32_768
 MAX_VISIBLE_DIFF_LINES = 512
@@ -419,16 +422,6 @@ class ConfigTransactionManager:
                     "in flash"
                 )
             if (
-                verified.topology_addon_count != topology.addon_count
-                or verified.topology_project_name != topology.project_name
-                or verified.topology_connection_type != topology.connection_type
-                or verified.topology_voltage_fingerprint
-                != voltage_reference_fingerprint_for_meter(topology)
-            ):
-                raise ConfigMutationError(
-                    "verified calibration topology does not match target"
-                )
-            if (
                 not verified.source_handoff_available
                 or verified.config_filename is None
                 or verified.config_sha256 is None
@@ -437,6 +430,24 @@ class ConfigTransactionManager:
             snapshot = await self._device_builder.async_get_config(
                 verified.config_filename
             )
+            try:
+                current_voltage_fingerprint = voltage_reference_topology_from_config(
+                    ESPHomeConfigDocument.parse(snapshot.content), topology
+                ).fingerprint
+            except ValueError:
+                current_voltage_fingerprint = voltage_reference_fingerprint_for_meter(
+                    topology
+                )
+            if (
+                verified.topology_addon_count != topology.addon_count
+                or verified.topology_project_name != topology.project_name
+                or verified.topology_connection_type != topology.connection_type
+                or verified.topology_voltage_fingerprint
+                != current_voltage_fingerprint
+            ):
+                raise ConfigMutationError(
+                    "verified calibration topology does not match target"
+                )
             plan = build_calibrated_gain_mutation(
                 snapshot,
                 topology,
