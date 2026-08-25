@@ -149,6 +149,32 @@ def _two_board_topology() -> MeterTopology:
     )
 
 
+def _topology_for_addons(addon_count: int) -> MeterTopology:
+    return MeterTopology.from_addon_count(
+        addon_count,
+        connection_type="wifi",
+        voltage_layout="standard",
+        project_name=(
+            "circuitsetup.6c-energy-meter"
+            if addon_count == 0
+            else f"circuitsetup.6c-energy-meter-{addon_count}-addon"
+            f"{'s' if addon_count != 1 else ''}"
+        ),
+        evidence=(),
+    )
+
+
+def _contract_snapshot_for(topology: MeterTopology) -> ESPHomeConfigSnapshot:
+    snapshot = _contract_snapshot()
+    extra = "".join(
+        f"  ct{channel}_name: CT {channel}\n"
+        f"  current_cal_ct{channel}: 11143\n"
+        for channel in range(7, topology.ct_count + 1)
+    )
+    content = snapshot.content.replace("sensor:\n", extra + "sensor:\n", 1)
+    return replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+
+
 def _inventory(
     snapshot: ESPHomeConfigSnapshot,
     topology: MeterTopology,
@@ -1362,6 +1388,131 @@ def test_aggregate_preview_requires_contract_totals_and_never_invents_default_to
         snapshot, _topology(), current, current.configuration
     )
     assert "aggregates v1" not in plan.proposed_content
+    assert plan.proposed_content == snapshot.content
+
+    legacy_current = _inventory(legacy, _topology())
+    assert build_meter_configuration_mutation(
+        legacy, _topology(), legacy_current, legacy_current.configuration
+    ).proposed_content == legacy.content
+
+
+@pytest.mark.parametrize(
+    ("addon_count", "hidden_totals"),
+    (
+        (0, ("totalEnergyDaily",)),
+        (1, ("totalAmps", "totalWatts", "totalEnergyDaily")),
+        (2, ("totalAmps", "totalWatts", "totalEnergyDaily")),
+    ),
+)
+def test_removing_last_aggregate_restores_official_totals(
+    addon_count: int, hidden_totals: tuple[str, ...]
+) -> None:
+    """An empty request removes the owned block rather than retaining its extends."""
+    topology = _topology_for_addons(addon_count)
+    snapshot = _contract_snapshot_for(topology)
+    current = _inventory(snapshot, topology)
+    aggregate = CircuitAggregate(
+        "load", "Load", CircuitRole.BRANCH, (topology.ct_count,),
+        MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION,
+    )
+    requested = _aggregate_request(current, aggregate)
+    first = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    for total_id in hidden_totals:
+        assert f"- id: !extend {total_id}\n    internal: true" in first.proposed_content
+    stored = StoredMeterConfiguration(
+        sha256(first.proposed_content.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+    configured_snapshot = replace(
+        snapshot,
+        content=first.proposed_content,
+        sha256=stored.config_sha256,
+    )
+    configured = _inventory(configured_snapshot, topology, stored=stored)
+    empty = replace(configured.configuration, aggregates=())
+    removed = build_meter_configuration_mutation(
+        configured_snapshot, topology, configured, empty
+    )
+
+    assert "aggregates v1" not in removed.proposed_content
+    assert "internal: true" not in removed.proposed_content
+    assert removed.proposed_content == snapshot.content
+    assert removed.redacted_diff == "managed aggregate overrides updated"
+
+    empty_stored = StoredMeterConfiguration(
+        sha256(removed.proposed_content.encode()).hexdigest(),
+        empty.meter,
+        empty.channels,
+        empty.aggregates,
+        empty.power_quality,
+        empty.status_fields,
+    )
+    empty_snapshot = replace(
+        snapshot,
+        content=removed.proposed_content,
+        sha256=empty_stored.config_sha256,
+    )
+    empty_current = _inventory(empty_snapshot, topology, stored=empty_stored)
+    assert build_meter_configuration_mutation(
+        empty_snapshot, topology, empty_current, empty_current.configuration
+    ).proposed_content == empty_snapshot.content
+    assert "csemh_load_energy" in build_meter_configuration_mutation(
+        empty_snapshot, topology, empty_current, requested
+    ).proposed_content
+
+
+def test_removing_last_aggregate_preserves_user_sensor_siblings() -> None:
+    """Only the exact owned span disappears; nearby user energy remains byte-stable."""
+    snapshot = _contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = _aggregate_request(
+        current,
+        CircuitAggregate(
+            "load", "Load", CircuitRole.BRANCH, (1,),
+            MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION,
+        ),
+    )
+    first = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    marker = "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+    end = "# End CircuitSetup Energy Meter Helper: aggregates v1\n"
+    decorated = first.proposed_content.replace(
+        marker, "  # user comment before managed totals\n" + marker
+    ).replace(
+        end,
+        end
+        + "  # user total-daily-energy sibling\n"
+        + "  - platform: total_daily_energy\n"
+        + "    id: user_energy\n",
+    )
+    stored = StoredMeterConfiguration(
+        sha256(decorated.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+    configured_snapshot = replace(
+        snapshot, content=decorated, sha256=stored.config_sha256
+    )
+    configured = _inventory(configured_snapshot, topology, stored=stored)
+    removed = build_meter_configuration_mutation(
+        configured_snapshot,
+        topology,
+        configured,
+        replace(configured.configuration, aggregates=()),
+    )
+
+    assert "aggregates v1" not in removed.proposed_content
+    assert "  # user comment before managed totals\n" in removed.proposed_content
+    assert "  # user total-daily-energy sibling\n" in removed.proposed_content
+    assert "    id: user_energy\n" in removed.proposed_content
+    ESPHomeConfigDocument.parse(removed.proposed_content)
 
 
 def test_sparse_addon_aggregates_hide_each_effective_official_total_once() -> None:

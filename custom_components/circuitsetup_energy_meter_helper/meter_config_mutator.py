@@ -163,9 +163,9 @@ def build_meter_configuration_mutation(
         content = replace_managed_block(
             content,
             "aggregates",
-            _render_aggregates(
-                requested.aggregates, topology
-            ),
+            _render_aggregates(requested.aggregates, topology)
+            if requested.aggregates
+            else "",
         )
         diffs.append(_aggregate_diff(plan.proposed_content, content))
     if content == plan.proposed_content:
