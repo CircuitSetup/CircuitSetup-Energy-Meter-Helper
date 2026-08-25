@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import unicodedata
 from dataclasses import dataclass
 from functools import cache
 from importlib import resources
@@ -27,8 +28,10 @@ class VoltageTransformerPreset:
 
 
 def _safe_text(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value or any(
-        ord(character) < 0x20 or ord(character) == 0x7F for character in value
+    if (
+        type(value) is not str
+        or not value.strip()
+        or any(unicodedata.category(character) == "Cc" for character in value)
     ):
         raise ValueError(f"{field} must be safe text")
     return value
@@ -44,7 +47,7 @@ def _positive_voltage(value: object, field: str) -> float:
 
 
 def _gain(value: object) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 65535:
+    if type(value) is not int or not 1 <= value <= 65535:
         raise ValueError("gain must be an ATM90E32 uint16 value")
     return value
 
@@ -73,13 +76,20 @@ class VoltageTransformerCatalog:
             .joinpath("data", "voltage_transformers.json")
             .read_text(encoding="utf-8")
         )
-        data: dict[str, Any] = json.loads(raw)
-        if data.get("schema_version") != CATALOG_SCHEMA_VERSION:
+        data: Any = json.loads(raw)
+        if type(data) is not dict:
+            raise ValueError("invalid voltage-transformer catalog data")
+        if type(data.get("schema_version")) is not int or data.get(
+            "schema_version"
+        ) != CATALOG_SCHEMA_VERSION:
             raise ValueError("unsupported voltage-transformer catalog schema")
         if data.get("source_repository") != CATALOG_SOURCE_REPOSITORY or data.get(
             "source_ref"
         ) != CATALOG_SOURCE_REF:
             raise ValueError("invalid voltage-transformer catalog source metadata")
+        rows = data.get("presets")
+        if type(rows) is not list or not rows or any(type(entry) is not dict for entry in rows):
+            raise ValueError("invalid voltage-transformer presets")
         presets = tuple(
             VoltageTransformerPreset(
                 _safe_text(entry.get("model_id"), "model_id"),

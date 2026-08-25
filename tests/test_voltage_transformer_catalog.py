@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import FrozenInstanceError
+from enum import IntEnum
 
 import pytest
 
@@ -46,7 +47,7 @@ def test_preset_is_immutable() -> None:
         preset.model_id = "changed"  # type: ignore[misc]
 
 
-def _load_data(monkeypatch: pytest.MonkeyPatch, data: dict[str, object]) -> None:
+def _load_data(monkeypatch: pytest.MonkeyPatch, data: object) -> None:
     class Resource:
         def joinpath(self, *_parts: str) -> Resource:
             return self
@@ -117,10 +118,78 @@ def test_catalog_rejects_schema_and_duplicate_ids(monkeypatch: pytest.MonkeyPatc
         VoltageTransformerCatalog.load()
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        [],
+        {"schema_version": 1, "presets": None},
+        {"schema_version": 1, "presets": {}},
+        {"schema_version": 1, "presets": []},
+        {"schema_version": 1, "presets": [None]},
+    ],
+)
+def test_catalog_rejects_malformed_top_level_and_rows(
+    monkeypatch: pytest.MonkeyPatch, data: object
+) -> None:
+    _load_data(monkeypatch, data)
+    with pytest.raises(ValueError):
+        VoltageTransformerCatalog.load()
+
+
+@pytest.mark.parametrize("schema_version", [True, 1.0, "1"])
+def test_catalog_requires_exact_schema_integer(
+    monkeypatch: pytest.MonkeyPatch, schema_version: object
+) -> None:
+    data = _valid_data()
+    data["schema_version"] = schema_version
+    _load_data(monkeypatch, data)
+    with pytest.raises(ValueError, match="schema"):
+        VoltageTransformerCatalog.load()
+
+
+class GainIntEnum(IntEnum):
+    VALID = 7305
+
+
+def test_catalog_rejects_int_subclass_gain_and_control_categories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="gain"):
+        module._gain(GainIntEnum.VALID)
+
+    for field, value in (
+        ("model_id", "  "),
+        ("label", "\u0085"),
+        ("notes", "note\u0085"),
+    ):
+        data = _valid_data()
+        preset = dict(data["presets"][0])  # type: ignore[index]
+        preset[field] = value
+        data["presets"] = [preset]
+        _load_data(monkeypatch, data)
+        with pytest.raises(ValueError):
+            VoltageTransformerCatalog.load()
+
+
+def test_catalog_rejects_source_metadata_mutations(monkeypatch: pytest.MonkeyPatch) -> None:
+    for field in ("source_repository", "source_ref"):
+        data = _valid_data()
+        data[field] = "unexpected"
+        _load_data(monkeypatch, data)
+        with pytest.raises(ValueError, match="source"):
+            VoltageTransformerCatalog.load()
+
+
 def test_custom_requires_explicit_valid_gain() -> None:
     assert custom("Custom transformer", 123).default_gain_voltage == 123
-    for gain in (None, 0, 65536, True, 1.5):
+    for gain in (None, 0, 65536, True, 1.5, GainIntEnum.VALID):
         with pytest.raises(ValueError, match="gain"):
-            custom("Custom transformer", gain)  # type: ignore[arg-type]
+            custom("Custom transformer", gain)
     with pytest.raises(ValueError, match="label"):
         custom("", 123)
+    with pytest.raises(ValueError, match="label"):
+        custom("  ", 123)
+    with pytest.raises(ValueError, match="label"):
+        custom("\u0085", 123)
+    with pytest.raises(ValueError, match="gain"):
+        custom("Custom transformer")
