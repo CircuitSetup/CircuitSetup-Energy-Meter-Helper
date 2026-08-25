@@ -1515,6 +1515,48 @@ def test_removing_last_aggregate_preserves_user_sensor_siblings() -> None:
     ESPHomeConfigDocument.parse(removed.proposed_content)
 
 
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+def test_aggregate_removal_restores_contract_source_without_eof_newline(
+    newline: str,
+) -> None:
+    """A contract-2 aggregate round trip preserves an EOF sensor byte-for-byte."""
+    source = _contract_snapshot()
+    prefix = source.content.split("sensor:\n", 1)[0].replace("\n", newline)
+    content = prefix + "sensor:" + newline + "  - platform: uptime"
+    snapshot = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = _aggregate_request(
+        current,
+        CircuitAggregate(
+            "load", "Load", CircuitRole.BRANCH, (1,),
+            MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION,
+        ),
+    )
+    added = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    stored = StoredMeterConfiguration(
+        sha256(added.proposed_content.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+    configured_snapshot = replace(
+        snapshot, content=added.proposed_content, sha256=stored.config_sha256
+    )
+    configured = _inventory(configured_snapshot, topology, stored=stored)
+
+    removed = build_meter_configuration_mutation(
+        configured_snapshot,
+        topology,
+        configured,
+        replace(configured.configuration, aggregates=()),
+    )
+
+    assert removed.proposed_content == content
+
+
 def test_sparse_addon_aggregates_hide_each_effective_official_total_once() -> None:
     """Add-on channel IDs stay explicit while each stable total gets one override."""
     snapshot = _package_snapshot()

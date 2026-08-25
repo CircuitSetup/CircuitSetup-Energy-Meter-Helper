@@ -13,6 +13,8 @@ from .config_document import (
 from .config_mutator import ConfigMutationError
 
 _ORDER = tuple(MANAGED_BLOCK_MARKERS)
+_EOF_SEPARATOR = "# csemh-owned-eof-separator: aggregates-v1"
+_EOF_SEPARATOR_HINT = "# csemh-owned-eof-separator:"
 
 
 def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
@@ -25,12 +27,16 @@ def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
     except ESPHomeConfigParseError as error:
         raise ConfigMutationError("managed block is not safely writable") from error
     _validate_managed_layout(document)
+    _validate_eof_separators(document)
     newline = "\r\n" if "\r\n" in content else "\n"
     block = document.managed_blocks.get(block_name)
     if block is not None:
         _sensor_bounds(document, block_name, block.span.start, block.span.end)
         end = _line_end(content, block.span.end)
         if not rendered:
+            separator = _eof_separator_start(document, block_name)
+            if separator is not None and end == len(content):
+                return content[:separator] + content[end:]
             return content[: block.span.start] + content[end:]
         return content[: block.span.start] + _block(markers, rendered, newline) + content[end:]
     if not rendered:
@@ -46,9 +52,15 @@ def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
             position = candidate.span.start
             break
     prefix = "" if position == 0 or content[position - 1] in "\r\n" else newline
+    metadata = (
+        _EOF_SEPARATOR + newline
+        if block_name == "aggregates" and position == len(content) and prefix
+        else ""
+    )
     return (
         content[:position]
         + prefix
+        + metadata
         + _block(markers, rendered, newline)
         + content[position:]
     )
@@ -151,6 +163,38 @@ def _validate_managed_layout(document: ESPHomeConfigDocument) -> None:
     ]
     if actual != expected:
         raise ConfigMutationError("managed blocks are out of canonical order")
+
+
+def _validate_eof_separators(document: ESPHomeConfigDocument) -> None:
+    offset = 0
+    for line in document.lines:
+        body = line.rstrip("\r\n")
+        if body.lstrip().startswith(_EOF_SEPARATOR_HINT):
+            block = document.managed_blocks.get("aggregates")
+            if (
+                body != _EOF_SEPARATOR
+                or block is None
+                or offset + len(line) != block.span.start
+            ):
+                raise ConfigMutationError("managed EOF separator is not safely writable")
+        offset += len(line)
+
+
+def _eof_separator_start(
+    document: ESPHomeConfigDocument, block_name: str
+) -> int | None:
+    if block_name != "aggregates":
+        return None
+    block = document.managed_blocks[block_name]
+    prefix = _EOF_SEPARATOR + ("\r\n" if "\r\n" in document.content else "\n")
+    start = block.span.start - len(prefix)
+    if start < 2 or document.content[start : block.span.start] != prefix:
+        return None
+    if document.content[start - 2 : start] == "\r\n":
+        return start - 2
+    if document.content[start - 1 : start] == "\n":
+        return start - 1
+    return None
 
 
 def _line_end(content: str, position: int) -> int:

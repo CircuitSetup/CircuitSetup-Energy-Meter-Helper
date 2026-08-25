@@ -74,7 +74,64 @@ def test_insertion_adds_missing_newline_at_sensor_eof() -> None:
         content, "aggregates", "  - id: total\n"
     )
 
-    assert "uptime\n# CircuitSetup" in actual
+    assert "uptime\n# csemh-owned-eof-separator: aggregates-v1\n# CircuitSetup" in actual
+
+
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+@pytest.mark.parametrize("suffix", ("", "{newline}", "{newline}{newline}"))
+def test_aggregate_eof_round_trip_preserves_terminal_newlines(
+    newline: str, suffix: str
+) -> None:
+    """Only an aggregate's owned EOF separator is removed on the way back."""
+    suffix = suffix.format(newline=newline)
+    content = "sensor:" + newline + "  - platform: uptime" + suffix
+
+    added = replace_managed_block(content, "aggregates", "  - id: total\n")
+    restored = replace_managed_block(added, "aggregates", "")
+
+    assert restored == content
+    assert (
+        "# csemh-owned-eof-separator: aggregates-v1" in added
+    ) is (suffix == "")
+
+
+def test_aggregate_eof_separator_rejects_malformed_metadata() -> None:
+    """A copied or malformed ownership marker must not choose bytes to delete."""
+    content = (
+        "sensor:\n"
+        "  - platform: uptime\n"
+        "# csemh-owned-eof-separator: wrong\n"
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+        "  - id: total\n"
+        "# End CircuitSetup Energy Meter Helper: aggregates v1\n"
+    )
+
+    with pytest.raises(ConfigMutationError, match="EOF separator"):
+        replace_managed_block(content, "aggregates", "")
+
+
+def test_aggregate_mid_file_and_legacy_blocks_keep_existing_separator_behavior() -> None:
+    """Root boundaries and older aggregate markers are never reinterpreted as EOF data."""
+    content = _content()
+    added = replace_managed_block(content, "aggregates", "  - id: total\n")
+    assert replace_managed_block(added, "aggregates", "") == content
+
+    legacy = "sensor:\n  - platform: uptime\n" + (
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+        "  - id: total\n"
+        "# End CircuitSetup Energy Meter Helper: aggregates v1\n"
+    )
+    assert replace_managed_block(legacy, "aggregates", "") == "sensor:\n  - platform: uptime\n"
+
+
+@pytest.mark.parametrize("block_name", ("voltage_references", "phase_overrides"))
+def test_nonaggregate_blocks_remain_idempotent(block_name: str) -> None:
+    """The EOF ownership protocol is intentionally aggregate-only."""
+    content = _content()
+    first = replace_managed_block(content, block_name, "  - id: total\n")
+
+    assert replace_managed_block(first, block_name, "  - id: total\n") == first
+    assert "csemh-owned-eof-separator" not in first
 
 
 @pytest.mark.parametrize(
