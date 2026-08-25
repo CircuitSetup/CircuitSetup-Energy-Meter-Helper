@@ -882,7 +882,7 @@ describe("CircuitSetup panel", () => {
       .map((input) => input.checked)).toEqual([true, true]);
   });
 
-  it("opens config review for a package-only change in label mode", async () => {
+  it("keeps package review state synchronized across apply and rollback", async () => {
     const messages: Record<string, unknown>[] = [];
     const inventory: CtInventory = {
       plan_id: "plan-1",
@@ -907,9 +907,12 @@ describe("CircuitSetup panel", () => {
         const operation = String(message.type).split("/").at(-1);
         if (operation === "setup_status") return { state: "device_discovered", devices: [{ ...device, configuration: "meter.yaml" }] } as T;
         if (operation === "get_ct_inventory") return inventory as T;
-        if (operation === "preview_ct_config") return { transaction_id: "tx", state: "previewed",
-          source_sha256: inventory.source_sha256, changes: [], redacted_diff: "+ power quality",
-          rollback_available: false, evidence: [], progress: [], upload_progress: [] } as T;
+        if (["preview_ct_config", "apply_ct_config", "rollback_ct_config"].includes(operation ?? "")) return { transaction_id: "tx",
+          state: operation === "preview_ct_config" ? "previewed" : operation === "apply_ct_config" ? "validated" : "rolled_back",
+          source_sha256: inventory.source_sha256,
+          changes: [{ key: "power_quality_main", old_value: "disabled", new_value: "enabled" }],
+          redacted_diff: "+ power quality", rollback_available: true, evidence: [],
+          progress: operation === "apply_ct_config" ? ["config_validated"] : [], upload_progress: [] } as T;
         return {} as T;
       },
       connection: { subscribeMessage: async () => () => undefined },
@@ -921,17 +924,24 @@ describe("CircuitSetup panel", () => {
       sourcePackageOptions: { power_quality: boolean[]; status_fields: boolean[] };
       labelOnly: boolean;
       reviewChanges(): Promise<void>;
+      transactionAction(action: "apply" | "rollback"): Promise<void>;
     };
     state.sourcePackageOptions = { power_quality: [false], status_fields: [true] };
     state.packageOptions = { power_quality: [true], status_fields: [true] };
     state.labelOnly = true;
 
     await state.reviewChanges();
+    await state.transactionAction("apply");
+    await state.reviewChanges();
 
+    expect(messages.filter((message) => String(message.type).endsWith("preview_ct_config"))).toHaveLength(1);
     expect(messages.find((message) => String(message.type).endsWith("preview_ct_config"))).toMatchObject({
       changes: [],
       package_options: { power_quality: [true], status_fields: [true] },
     });
+    await state.transactionAction("rollback");
+    await state.reviewChanges();
+    expect(messages.filter((message) => String(message.type).endsWith("preview_ct_config"))).toHaveLength(2);
   });
 
   it("keeps Rescan on Setup Device and reports no compatible meter without claiming completion", async () => {

@@ -824,6 +824,25 @@ export class CircuitSetupPanel extends LitElement {
         || this.transaction.source_sha256 !== current.source_sha256) return;
       this.transaction = transaction;
       this.announcement = `Configuration ${this.transaction.state}.`;
+      if (action === "apply" && transaction.state === "validated" && this.sourcePackageOptions) {
+        this.sourcePackageOptions = {
+          power_quality: [...this.packageOptions.power_quality],
+          status_fields: [...this.packageOptions.status_fields],
+        };
+      } else if (action === "rollback" && transaction.state === "rolled_back" && this.sourcePackageOptions) {
+        const restored = {
+          power_quality: [...this.sourcePackageOptions.power_quality],
+          status_fields: [...this.sourcePackageOptions.status_fields],
+        };
+        for (const change of transaction.changes) {
+          const match = /^(power_quality|status_fields)_(main|addon([1-6]))$/.exec(change.key);
+          if (!match || !["enabled", "disabled"].includes(change.old_value ?? "")) continue;
+          const feature = match[1] as keyof BoardPackageOptions;
+          const board = match[2] === "main" ? 0 : Number(match[3]);
+          restored[feature][board] = change.old_value === "enabled";
+        }
+        this.sourcePackageOptions = restored;
+      }
       if (action === "install" && this.calibrationHandoff
         && transaction.state === "verified" && this.session && this.topology && this.restartResult) {
         this.restartResult = {
