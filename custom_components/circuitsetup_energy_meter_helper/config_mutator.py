@@ -1128,6 +1128,8 @@ def _render_value(key: str, value: str, content: str, current: ConfigScalar) -> 
     old_token = content[current.span.start : current.span.end]
     if _is_gain_key(key):
         return _render_gain(value, old_token)
+    if key == "electric_freq":
+        return _render_frequency(value, old_token)
     return _render_name(value, old_token)
 
 
@@ -1135,6 +1137,8 @@ def _render_missing(change: SubstitutionChange, document: ESPHomeConfigDocument)
     quote = _prevailing_quote(document, change.key)
     if _is_gain_key(change.key):
         return _render_gain(change.new_value, quote)
+    if change.key == "electric_freq":
+        return _render_frequency(change.new_value, quote)
     return _render_name(change.new_value, quote)
 
 
@@ -1156,6 +1160,12 @@ def _render_gain(value: str, old_token: str) -> str:
     if old_token.startswith('"'):
         return json.dumps(value)
     return value
+
+
+def _render_frequency(value: str, old_token: str) -> str:
+    if old_token.startswith("'"):
+        return "'" + value.replace("'", "''") + "'"
+    return json.dumps(value)
 
 
 def _is_gain_key(key: str) -> bool:

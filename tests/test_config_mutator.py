@@ -26,11 +26,18 @@ from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator imp
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     CircuitRole,
+    ElectricalSystem,
+    VoltageLayout,
+    VoltageReferenceConfig,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
     MeterConfigurationInventory,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
+from custom_components.circuitsetup_energy_meter_helper.topology import (
+    voltage_reference_topology_from_config,
+    voltage_reference_topology_from_configuration,
+)
 from custom_components.circuitsetup_energy_meter_helper.voltage_transformer_catalog import (
     VoltageTransformerCatalog,
 )
@@ -202,6 +209,153 @@ def test_generalized_mutation_requires_authoritative_inventory_capability() -> N
     with pytest.raises(ConfigMutationError, match="authoritative"):
         build_meter_configuration_mutation(
             snapshot, topology, current, current.configuration
+        )
+
+
+@pytest.mark.parametrize(
+    ("old_frequency", "expected_frequency"),
+    (("'60Hz'", "'50Hz'"), ("60Hz", '"50Hz"')),
+)
+def test_generalized_mutation_renders_electrical_settings_and_references(
+    old_frequency: str, expected_frequency: str
+) -> None:
+    """Electrical edits remain in the owned block and preserve scalar quoting."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace(
+        "substitutions:\n",
+        "substitutions:\n"
+        "  friendly_name: Old Meter\n"
+        "  update_time: 10s\n"
+        f"  electric_freq: {old_frequency}\n",
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+    current = _inventory(snapshot, _topology())
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            friendly_name="Kitchen: meter",
+            electrical_system=ElectricalSystem.SINGLE_PHASE_230,
+            line_frequency_hz=50,
+            update_interval_s=5,
+            voltage_layout=VoltageLayout.STANDARD,
+            voltage_references=(
+                replace(current.configuration.meter.voltage_references[0], gain_voltage=7305),
+            ),
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(
+        snapshot, _topology(), current, requested
+    )
+
+    assert 'friendly_name: "Kitchen: meter"' in plan.proposed_content
+    assert "update_time: 5s" in plan.proposed_content
+    assert f"electric_freq: {expected_frequency}" in plan.proposed_content
+    block = plan.proposed_content.split(
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n", 1
+    )[1].split("# End CircuitSetup Energy Meter Helper", 1)[0]
+    assert block.count("gain_voltage: 7305") == 6
+    assert block.count("\n    frequency:") == 1
+    assert block.count("disabled_by_default: false") == 2
+    assert 'name: "${friendly_name} Main Voltage"' in block
+    assert 'name: "${friendly_name} Main Frequency"' in block
+    assert block.count("entity_category: diagnostic") == 3
+    assert block.count("disabled_by_default: true") == 3
+    assert "board_revision" not in plan.proposed_content
+
+
+def test_generalized_mutation_uses_one_representative_per_reference() -> None:
+    """Each reference exposes its canonical lowest group only."""
+    snapshot = _package_snapshot()
+    topology = _two_board_topology()
+    current = _inventory(snapshot, topology)
+    first = current.configuration.meter.voltage_references[0]
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_layout=VoltageLayout.MULTI_REFERENCE,
+            voltage_references=(
+                replace(
+                    first,
+                    reference_id="main",
+                    gain_voltage=7305,
+                    group_keys=("main_1", "addon1_2"),
+                ),
+                VoltageReferenceConfig(
+                    "secondary", "Secondary", "B", 230.0, "custom", 8002,
+                    ("main_2", "addon1_1"),
+                ),
+            ),
+        ),
+        multi_reference_preparation_acknowledged=True,
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    block = plan.proposed_content.split(
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n", 1
+    )[1].split("# End CircuitSetup Energy Meter Helper", 1)[0]
+    for meter_id, gain in (
+        ("meter_main1", 7305),
+        ("meter_main2", 8002),
+        ("addon1_1", 8002),
+        ("addon1_2", 7305),
+    ):
+        group = block.split(f"id: !extend {meter_id}\n", 1)[1].split(
+            "\n  - id:", 1
+        )[0]
+        assert group.count(f"gain_voltage: {gain}") == 3
+    for meter_id in ("meter_main1", "meter_main2"):
+        group = block.split(f"id: !extend {meter_id}\n", 1)[1].split(
+            "\n  - id:", 1
+        )[0]
+        assert "voltage:\n        name:" in group
+        assert "frequency:\n      name:" in group
+        assert group.count("disabled_by_default: false") == 2
+    assert 'name: "${friendly_name} Main Voltage"' in block
+    assert 'name: "${friendly_name} Secondary Frequency"' in block
+    expected = voltage_reference_topology_from_configuration(topology, requested)
+    assert voltage_reference_topology_from_config(
+        ESPHomeConfigDocument.parse(plan.proposed_content),
+        topology,
+        trusted_fingerprint=expected.fingerprint,
+    ).fingerprint == expected.fingerprint
+    assert block.count("\n    frequency:") == 2
+
+
+def test_generalized_mutation_requires_multi_reference_acknowledgement() -> None:
+    """A multi-reference edit is never treated as proof of physical preparation."""
+    snapshot = _package_snapshot()
+    topology = _two_board_topology()
+    current = _inventory(snapshot, topology)
+    first = current.configuration.meter.voltage_references[0]
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_layout=VoltageLayout.MULTI_REFERENCE,
+            voltage_references=(
+                replace(first, group_keys=("main_1", "main_2")),
+                VoltageReferenceConfig(
+                    "secondary", "Secondary", "B", 230.0, "custom", 8002,
+                    ("addon1_1", "addon1_2"),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(ConfigMutationError, match="acknowledgement"):
+        build_meter_configuration_mutation(snapshot, topology, current, requested)
+    with pytest.raises(ConfigMutationError, match="capability"):
+        build_meter_configuration_mutation(
+            snapshot,
+            topology,
+            replace(current, capabilities=replace(current.capabilities, multi_reference=False)),
+            replace(requested, multi_reference_preparation_acknowledged=True),
         )
 
 

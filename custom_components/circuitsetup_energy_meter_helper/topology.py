@@ -188,6 +188,24 @@ def _managed_voltage_reference_assignments(
     block = document.managed_blocks.get("voltage_references")
     if block is None:
         return None
+    metadata = [
+        line.removeprefix("  # csemh-voltage-references: ")
+        for line in block.content.splitlines()
+        if line.startswith("  # csemh-voltage-references: ")
+    ]
+    if metadata:
+        sensor = document.writable_sensor_span
+        if len(metadata) != 1 or sensor is None or not (
+            sensor.start <= block.span.start and block.span.end <= sensor.end
+        ):
+            raise TopologyParseError("invalid managed voltage-reference mapping")
+        assignments = tuple(
+            _sensor_voltage_reference_assignment(value)
+            for value in metadata[0].split(";")
+        )
+        if len({reference_id for reference_id, _ in assignments}) != len(assignments):
+            raise TopologyParseError("invalid managed voltage-reference mapping")
+        return assignments
     entries: list[tuple[str, tuple[str, ...] | None]] = []
     in_section = False
     for raw_line in block.content.splitlines():
@@ -229,6 +247,16 @@ def _managed_voltage_reference_assignments(
             for index, (reference_id, _) in enumerate(entries)
         )
     return tuple((reference_id, groups or ()) for reference_id, groups in entries)
+
+
+def _sensor_voltage_reference_assignment(value: str) -> tuple[str, tuple[str, ...]]:
+    match = re.fullmatch(r"(?P<id>[a-z][a-z0-9_-]*)=\[(?P<groups>[^]]+)\]", value)
+    if match is None or VOLTAGE_REFERENCE_ID_RE.fullmatch(match["id"]) is None:
+        raise TopologyParseError("invalid managed voltage-reference mapping")
+    groups = tuple(match["groups"].split(","))
+    if not groups or any(VOLTAGE_REFERENCE_GROUP_RE.fullmatch(group) is None for group in groups):
+        raise TopologyParseError("invalid managed voltage-reference mapping")
+    return match["id"], groups
 
 
 def _managed_group_key(value: str) -> str:
