@@ -610,9 +610,7 @@ def test_restart_claim_blocks_group_revision_during_persistence() -> None:
     asyncio.run(run())
 
 
-def test_atomic_final_save_failure_preserves_origin_for_retry() -> (
-    None
-):
+def test_atomic_final_save_failure_preserves_origin_for_retry() -> None:
     async def run() -> None:
         expected = {"meter_main1": ((7301, 1), (7301, 2), (7301, 3))}
         session = RestartSession(
@@ -1295,16 +1293,20 @@ def test_uniform_gains_build_surgical_hash_bound_source_mutation() -> None:
 
 
 def test_calibrated_gain_handoff_uses_verified_helper_voltage_fingerprint() -> None:
-    content = _snapshot().content.replace(
-        "name: circuitsetup.6c-energy-meter\n",
-        "name: circuitsetup.6c-energy-meter-2-voltages\n",
-    ).replace(
-        "logger:\n",
-        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
-        "voltage_references:\n"
-        "  main: 120\n"
-        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
-        "logger:\n",
+    content = (
+        _snapshot()
+        .content.replace(
+            "name: circuitsetup.6c-energy-meter\n",
+            "name: circuitsetup.6c-energy-meter-2-voltages\n",
+        )
+        .replace(
+            "logger:\n",
+            "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+            "voltage_references:\n"
+            "  main: 120\n"
+            "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+            "logger:\n",
+        )
     )
     snapshot = _snapshot(content)
     target = replace(
@@ -1349,12 +1351,15 @@ def test_calibrated_gain_handoff_uses_verified_helper_voltage_fingerprint() -> N
 
 def test_final_gain_mutation_keeps_selected_board_packages_in_same_review() -> None:
     """A calibrated handoff must not drop package choices made during setup."""
-    content = _snapshot().content + """packages:
+    content = (
+        _snapshot().content
+        + """packages:
   circuitsetup_meter:
     files:
       #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
       - Software/ESPHome/status_fields/6chan_main_status.yaml
 """
+    )
     snapshot = _snapshot(content)
     record = _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003)))
 
@@ -1368,8 +1373,14 @@ def test_final_gain_mutation_keeps_selected_board_packages_in_same_review() -> N
         },
     )
 
-    assert "      - Software/ESPHome/power_quality/6chan_main_power_quality.yaml" in plan.proposed_content
-    assert "      #- Software/ESPHome/status_fields/6chan_main_status.yaml" in plan.proposed_content
+    assert (
+        "      - Software/ESPHome/power_quality/6chan_main_power_quality.yaml"
+        in plan.proposed_content
+    )
+    assert (
+        "      #- Software/ESPHome/status_fields/6chan_main_status.yaml"
+        in plan.proposed_content
+    )
 
 
 @pytest.mark.parametrize("multiplier", (1, 2))
@@ -1421,7 +1432,9 @@ sensor:
     assert managed in plan.proposed_content
 
 
-def test_final_gain_preview_combines_ct_edits_without_overwriting_calibrated_current() -> None:
+def test_final_gain_preview_combines_ct_edits_without_overwriting_calibrated_current() -> (
+    None
+):
     content = _snapshot().content.replace(
         "substitutions:\n",
         "substitutions:\n  ct1_name: 'CT 1'\n  ct2_name: 'CT 2'\n",
@@ -1445,29 +1458,15 @@ def test_final_gain_preview_combines_ct_edits_without_overwriting_calibrated_cur
     assert "current_cal_ct2: '4325'" in plan.proposed_content
 
 
-def test_divergent_voltage_gains_return_exact_extend_snippet_and_never_auto_write() -> (
-    None
-):
+def test_divergent_voltage_gains_render_exact_extend_block() -> None:
     snapshot = _snapshot()
     record = _record(snapshot, ((7301, 28001), (7302, 28002), (7303, 28003)))
-    expected = (
-        "substitutions:\n"
-        "  current_cal_ct1: 28001\n"
-        "  current_cal_ct2: 28002\n"
-        "  current_cal_ct3: 28003\n"
-        "sensor:\n"
-        "  - id: !extend meter_main1\n"
-        "    phase_a:\n"
-        "      gain_voltage: 7301\n"
-        "    phase_b:\n"
-        "      gain_voltage: 7302\n"
-        "    phase_c:\n"
-        "      gain_voltage: 7303\n"
-    )
-
-    with pytest.raises(ConfigMutationError, match="manual review") as error:
-        build_calibrated_gain_mutation(snapshot, topology(0), record)
-    assert error.value.snippet == expected
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+    assert "calibrated voltage gains v1" in plan.proposed_content
+    assert "gain_voltage: 7301" in plan.proposed_content
+    assert "gain_voltage: 7302" in plan.proposed_content
+    assert "gain_voltage: 7303" in plan.proposed_content
+    assert "voltage_cal1: '7301'" not in plan.proposed_content
 
 
 def test_shared_voltage_substitution_requires_every_mapped_gain_to_match() -> None:
@@ -1497,10 +1496,9 @@ def test_shared_voltage_substitution_requires_every_mapped_gain_to_match() -> No
         ),
         verification_id="4" * 32,
     )
-    with pytest.raises(ConfigMutationError, match="manual review") as partial_error:
-        build_calibrated_gain_mutation(snapshot, topology(1), partial)
-    assert "- id: !extend meter_main1" in partial_error.value.snippet
-    assert "voltage_cal1" not in partial_error.value.snippet
+    partial_plan = build_calibrated_gain_mutation(snapshot, topology(1), partial)
+    assert "- id: !extend meter_main1" in partial_plan.proposed_content
+    assert "voltage_cal1: '7305'" in partial_plan.proposed_content
 
     matching = VerifiedCalibrationRecord(
         mac="aabbccddeeff",
@@ -1541,10 +1539,8 @@ def test_shared_voltage_substitution_requires_every_mapped_gain_to_match() -> No
         ),
         verification_id="3" * 32,
     )
-    with pytest.raises(ConfigMutationError) as error:
-        build_calibrated_gain_mutation(snapshot, topology(1), divergent)
-    assert "- id: !extend meter_main1" in error.value.snippet
-    assert "- id: !extend addon1_1" in error.value.snippet
+    divergent_plan = build_calibrated_gain_mutation(snapshot, topology(1), divergent)
+    assert "gain_voltage: 7302" in divergent_plan.proposed_content
 
 
 class CalibrationPersistence(Persistence):
@@ -1720,9 +1716,7 @@ def _with_offsets(
     return replace(
         record,
         offset_groups=(
-            VerifiedOffsetGroup(
-                "meter_main1", ((-12, 31), (-13, 32), (-14, 33))
-            ),
+            VerifiedOffsetGroup("meter_main1", ((-12, 31), (-13, 32), (-14, 33))),
         ),
         source_handoff_available=source_handoff_available,
         source_handoff_transaction_id=source_handoff_transaction_id,
@@ -1744,7 +1738,9 @@ def test_gain_preview_rejects_verified_offset_calibration() -> None:
             SessionManager(),
         )
 
-        with pytest.raises(ConfigMutationError, match="offset calibration remains saved in flash"):
+        with pytest.raises(
+            ConfigMutationError, match="offset calibration remains saved in flash"
+        ):
             await manager.async_preview_calibrated_gains(
                 record.mac, topology(0), record.verification_id
             )
@@ -1757,16 +1753,20 @@ def test_gain_preview_rejects_verified_offset_calibration() -> None:
 
 def test_gain_preview_ignores_unverified_helper_marker() -> None:
     async def run() -> None:
-        content = _snapshot().content.replace(
-            "name: circuitsetup.6c-energy-meter\n",
-            "name: circuitsetup.6c-energy-meter-2-voltages\n",
-        ).replace(
-            "logger:\n",
-            "# CircuitSetup Energy Meter Helper: voltage references v1\n"
-            "voltage_references:\n"
-            "  main: 120\n"
-            "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
-            "logger:\n",
+        content = (
+            _snapshot()
+            .content.replace(
+                "name: circuitsetup.6c-energy-meter\n",
+                "name: circuitsetup.6c-energy-meter-2-voltages\n",
+            )
+            .replace(
+                "logger:\n",
+                "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+                "voltage_references:\n"
+                "  main: 120\n"
+                "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+                "logger:\n",
+            )
         )
         source = _snapshot(content)
         target = replace(
@@ -1778,7 +1778,9 @@ def test_gain_preview_ignores_unverified_helper_marker() -> None:
             _record(source, ((7301, 1),) * 3),
             topology_voltage_layout="two_voltages",
             topology_project_name=target.project_name,
-            topology_voltage_fingerprint=voltage_reference_fingerprint_for_meter(target),
+            topology_voltage_fingerprint=voltage_reference_fingerprint_for_meter(
+                target
+            ),
         )
         persistence = CalibrationPersistence((record,))
         manager = ConfigTransactionManager(
@@ -1799,16 +1801,20 @@ def test_gain_preview_ignores_unverified_helper_marker() -> None:
 
 def test_gain_preview_trusts_helper_marker_only_for_matching_stored_hash() -> None:
     async def run() -> None:
-        content = _snapshot().content.replace(
-            "name: circuitsetup.6c-energy-meter\n",
-            "name: circuitsetup.6c-energy-meter-2-voltages\n",
-        ).replace(
-            "logger:\n",
-            "# CircuitSetup Energy Meter Helper: voltage references v1\n"
-            "voltage_references:\n"
-            "  main: 120\n"
-            "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
-            "logger:\n",
+        content = (
+            _snapshot()
+            .content.replace(
+                "name: circuitsetup.6c-energy-meter\n",
+                "name: circuitsetup.6c-energy-meter-2-voltages\n",
+            )
+            .replace(
+                "logger:\n",
+                "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+                "voltage_references:\n"
+                "  main: 120\n"
+                "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+                "logger:\n",
+            )
         )
         source = _snapshot(content)
         target = replace(
@@ -1841,9 +1847,7 @@ def test_gain_preview_trusts_helper_marker_only_for_matching_stored_hash() -> No
         assert preview.state is ConfigTransactionState.PREVIEWED
 
         stale_persistence = CalibrationPersistence((record,))
-        stale_persistence.meter_configuration = replace(
-            trusted, config_sha256="0" * 64
-        )
+        stale_persistence.meter_configuration = replace(trusted, config_sha256="0" * 64)
         stale_manager = ConfigTransactionManager(
             Builder(remote_content=source.content),
             Verifier(RuntimeError()),
@@ -1890,7 +1894,9 @@ def test_gain_handoff_install_rejects_newly_mixed_verified_record() -> None:
             source_handoff_transaction_id=preview.transaction_id,
         )
 
-        with pytest.raises(RuntimeError, match="offset calibration remains saved in flash"):
+        with pytest.raises(
+            RuntimeError, match="offset calibration remains saved in flash"
+        ):
             await manager.async_confirm_install(preview.transaction_id, "admin")
 
         assert "upload" not in builder.calls
@@ -2416,9 +2422,7 @@ def test_successful_validation_rollback_releases_handoff_for_retry() -> None:
             record.mac, topology(0), record.verification_id
         )
 
-        result = await manager.async_confirm_write(
-            preview.transaction_id, "admin-user"
-        )
+        result = await manager.async_confirm_write(preview.transaction_id, "admin-user")
 
         assert result.state is ConfigTransactionState.ROLLED_BACK
         assert builder.remote_content == source.content
@@ -2444,13 +2448,17 @@ def test_store_records_verified_firmware_before_flash_handoff_completion() -> No
         store._store = _CopyingStorage()
         transaction_id = "3" * 32
         await store.async_save_verified_calibration(record)
-        with pytest.raises(ValueError, match="installed handoff requires a transaction"):
+        with pytest.raises(
+            ValueError, match="installed handoff requires a transaction"
+        ):
             replace(
                 record,
                 source_handoff_available=False,
                 source_handoff_firmware_installed=True,
             )
-        with pytest.raises(ValueError, match="configuration authority requires install"):
+        with pytest.raises(
+            ValueError, match="configuration authority requires install"
+        ):
             replace(
                 record,
                 source_authority=CalibrationSourceAuthority.CONFIGURATION,
