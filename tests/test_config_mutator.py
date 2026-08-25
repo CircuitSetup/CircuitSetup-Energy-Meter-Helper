@@ -1021,7 +1021,10 @@ def test_unused_channel_hides_its_supported_status_phase_text() -> None:
     ) in plan.proposed_content
 
 
-def test_removing_last_status_override_removes_its_text_sensor_section() -> None:
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+def test_removing_last_status_override_removes_its_text_sensor_section(
+    newline: str,
+) -> None:
     snapshot = _package_snapshot()
     topology = _two_board_topology()
     current = _inventory(snapshot, topology)
@@ -1035,17 +1038,102 @@ def test_removing_last_status_override_removes_its_text_sensor_section() -> None
         ),
     )
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
-    document = ESPHomeConfigDocument.parse(plan.proposed_content)
+    content = plan.proposed_content.replace("\n", newline)
+    document = ESPHomeConfigDocument.parse(content)
 
     restored = config_mutator._apply_status_overrides(
-        plan.proposed_content,
+        content,
         {3: (True, 1.0)},
         (True, False),
         document.substitutions,
     )
 
     assert "status overrides v1" not in restored
-    assert "\ntext_sensor:\n" not in restored
+    assert f"{newline}text_sensor:{newline}" not in restored
+    assert "\r\n" in restored if newline == "\r\n" else "\r\n" not in restored
+
+
+@pytest.mark.parametrize(
+    ("content_change", "sibling"),
+    (
+        (
+            lambda content: content.replace(
+                "text_sensor:\n",
+                "text_sensor:\n  - platform: template\n    name: Keep before\n",
+            ),
+            "  - platform: template\n    name: Keep before\n",
+        ),
+        (
+            lambda content: content.replace(
+                "# End CircuitSetup Energy Meter Helper: status overrides v1\n",
+                "# End CircuitSetup Energy Meter Helper: status overrides v1\n"
+                "\n  # Keep this comment\n"
+                "  - platform: template\n"
+                "    name: Keep after\n"
+                "  - platform: template\n"
+                "    name: Keep another\n"
+                "logger:\n"
+                "  level: DEBUG\n",
+            ),
+            (
+                "\n  # Keep this comment\n"
+                "  - platform: template\n"
+                "    name: Keep after\n"
+                "  - platform: template\n"
+                "    name: Keep another\n"
+                "logger:\n"
+                "  level: DEBUG\n"
+            ),
+        ),
+    ),
+)
+def test_status_override_removal_preserves_user_text_sensor_siblings(
+    content_change: object,
+    sibling: str,
+) -> None:
+    snapshot = _package_snapshot()
+    topology = _two_board_topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        channels=tuple(
+            replace(channel, enabled=False, role=CircuitRole.UNUSED)
+            if channel.channel == 3
+            else channel
+            for channel in current.configuration.channels
+        ),
+    )
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    assert callable(content_change)
+    content = content_change(plan.proposed_content)
+    document = ESPHomeConfigDocument.parse(content)
+
+    restored = config_mutator._apply_status_overrides(
+        content,
+        {3: (True, 1.0)},
+        (True, False),
+        document.substitutions,
+    )
+
+    assert "text_sensor:" in restored
+    assert sibling in restored
+    assert "status overrides v1" in restored
+    status = restored.split("status overrides v1", 1)[1].split(
+        "# End CircuitSetup", 1
+    )[0]
+    assert "internal: true" not in status
+    readded = config_mutator._apply_status_overrides(
+        restored,
+        {3: (False, 1.0)},
+        (True, False),
+        ESPHomeConfigDocument.parse(restored).substitutions,
+    )
+    status = readded.split("status overrides v1", 1)[1].split(
+        "# End CircuitSetup", 1
+    )[0]
+    assert status.count("internal: true") == 1
+    assert sibling in readded
+    ESPHomeConfigDocument.parse(readded)
 
 
 @pytest.mark.parametrize("power_quality", ((False, False), (True, False)))

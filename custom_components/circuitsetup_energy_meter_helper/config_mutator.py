@@ -789,16 +789,19 @@ def _apply_status_overrides(
         + newline
     )
     if block is not None:
-        section_start = _status_section_start(content, block.span.start)
-        if section_start is None:
+        section = _status_section(document, block.span.start, block.span.end)
+        if section is None:
             raise ConfigMutationError("status override block is not safely writable")
+        section_start, has_user_content = section
         end = block.span.end
         if content[end : end + 2] == "\r\n":
             end += 2
         elif content[end : end + 1] in {"\r", "\n"}:
             end += 1
         if not rendered:
-            return content[:section_start] + content[end:]
+            if not has_user_content:
+                return content[:section_start] + content[end:]
+            return content[: block.span.start] + replacement + content[end:]
         return content[: block.span.start] + replacement + content[end:]
     if not rendered:
         return content
@@ -807,12 +810,42 @@ def _apply_status_overrides(
     return content + ("" if content.endswith(("\n", "\r")) else newline) + "text_sensor:" + newline + replacement
 
 
-def _status_section_start(content: str, start: int) -> int | None:
-    preceding = content[:start]
-    header = re.search(r"(?m)^text_sensor:[ \t]*(?:#.*)?\r?\n$", preceding)
-    if header is None or preceding[header.end() :].strip():
+def _status_section(
+    document: ESPHomeConfigDocument, block_start: int, block_end: int
+) -> tuple[int, bool] | None:
+    offsets: list[int] = []
+    offset = 0
+    for line in document.lines:
+        offsets.append(offset)
+        offset += len(line)
+    try:
+        block_index = offsets.index(block_start)
+    except ValueError:
         return None
-    return header.start()
+    headers = [
+        index
+        for index, line in enumerate(document.code_lines[:block_index])
+        if line == "text_sensor:"
+    ]
+    if not headers:
+        return None
+    header_index = headers[-1]
+    section_end = len(document.lines)
+    for index in range(header_index + 1, len(document.lines)):
+        line = document.code_lines[index]
+        if line and not line.startswith(" "):
+            section_end = index
+            break
+    if block_index >= section_end:
+        return None
+    has_user_content = any(
+        line.strip()
+        and not block_start <= offsets[index] <= block_end
+        for index, line in enumerate(
+            document.code_lines[header_index + 1 : section_end], header_index + 1
+        )
+    )
+    return offsets[header_index], has_user_content
 
 
 def _read_phase_channel_states(
