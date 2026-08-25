@@ -74,7 +74,7 @@ def test_insertion_adds_missing_newline_at_sensor_eof() -> None:
         content, "aggregates", "  - id: total\n"
     )
 
-    assert "uptime\n# csemh-owned-eof-separator: aggregates-v1\n# CircuitSetup" in actual
+    assert "uptime\n# csemh-owned-eof-separator: aggregates-v1:" in actual
 
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
@@ -91,7 +91,7 @@ def test_aggregate_eof_round_trip_preserves_terminal_newlines(
 
     assert restored == content
     assert (
-        "# csemh-owned-eof-separator: aggregates-v1" in added
+        "# csemh-owned-eof-separator: aggregates-v1:" in added
     ) is (suffix == "")
 
 
@@ -108,6 +108,72 @@ def test_aggregate_eof_separator_rejects_malformed_metadata() -> None:
 
     with pytest.raises(ConfigMutationError, match="EOF separator"):
         replace_managed_block(content, "aggregates", "")
+
+
+def test_aggregate_eof_separator_rejects_copied_or_nonterminal_trailers() -> None:
+    """A bound terminal trailer cannot be transplanted or followed by a root key."""
+    source = "sensor:\n  - platform: uptime"
+    added = replace_managed_block(source, "aggregates", "  - id: total\n")
+
+    with pytest.raises(ConfigMutationError, match="EOF separator"):
+        replace_managed_block(
+            added.replace(source + "\n", source + "\n\n", 1), "aggregates", ""
+        )
+    with pytest.raises(ConfigMutationError, match="EOF separator"):
+        replace_managed_block(added + "logger:\n  level: DEBUG\n", "aggregates", "")
+
+
+def test_aggregate_eof_separator_rejects_tampered_prefix_or_digest() -> None:
+    """Only the exact pre-trailer bytes authorize restoration without a newline."""
+    source = "sensor:\n  - platform: uptime"
+    added = replace_managed_block(source, "aggregates", "  - id: total\n")
+    digest_start = added.index("aggregates-v1:") + len("aggregates-v1:")
+    tampered_digest = (
+        added[:digest_start]
+        + ("0" if added[digest_start] != "0" else "1")
+        + added[digest_start + 1 :]
+    )
+
+    for content in (added.replace("uptime", "changed", 1), tampered_digest):
+        with pytest.raises(ConfigMutationError, match="EOF separator"):
+            replace_managed_block(content, "aggregates", "")
+
+
+def test_aggregate_eof_separator_requires_its_terminal_newline() -> None:
+    """A metadata-backed trailer is writable only in the exact generated form."""
+    added = replace_managed_block(
+        "sensor:\n  - platform: uptime", "aggregates", "  - id: total\n"
+    )
+
+    with pytest.raises(ConfigMutationError, match="EOF separator"):
+        replace_managed_block(added.rstrip("\n"), "aggregates", "")
+
+
+def test_other_managed_blocks_stay_before_an_aggregate_eof_trailer() -> None:
+    """Later insertions never split the aggregate's inseparable EOF ownership."""
+    source = "sensor:\n  - platform: uptime"
+    aggregates = replace_managed_block(source, "aggregates", "  - id: total\n")
+    voltage = replace_managed_block(
+        aggregates, "voltage_references", "  - id: voltage\n"
+    )
+    phase = replace_managed_block(voltage, "phase_overrides", "  - id: phase\n")
+    updated = replace_managed_block(
+        phase, "voltage_references", "  - id: voltage_updated\n"
+    )
+
+    assert updated.index("voltage references v1") < updated.index("phase overrides v1")
+    assert updated.index("phase overrides v1") < updated.index(
+        "csemh-owned-eof-separator"
+    )
+    assert updated.index("csemh-owned-eof-separator") < updated.index("aggregates v1")
+    removed = replace_managed_block(updated, "aggregates", "")
+    expected = replace_managed_block(source, "voltage_references", "  - id: voltage_updated\n")
+    expected = replace_managed_block(expected, "phase_overrides", "  - id: phase\n")
+    assert removed == expected
+    assert "aggregates v1" not in removed
+    assert "csemh-owned-eof-separator" not in removed
+    assert "voltage_updated" in removed and "phase overrides v1" in removed
+    replace_managed_block(removed, "phase_overrides", "")
 
 
 def test_aggregate_mid_file_and_legacy_blocks_keep_existing_separator_behavior() -> None:
