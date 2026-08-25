@@ -23,6 +23,8 @@ def build_meter_configuration_mutation(
     calibrated: VerifiedCalibrationRecord | None = None,
 ) -> ConfigMutationPlan:
     """Build the supported CT/package subset of a generalized configuration edit."""
+    if not current.capabilities.configuration_authoritative:
+        raise ConfigMutationError("meter configuration inventory is not authoritative")
     if current.source_sha256 != snapshot.sha256 or current.topology != topology:
         raise ConfigMutationError("meter configuration inventory does not match snapshot")
     try:

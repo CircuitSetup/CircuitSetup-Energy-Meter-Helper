@@ -166,6 +166,66 @@ def test_generalized_mutation_keeps_ct_wrapper_output_compatible() -> None:
     assert generalized == legacy
 
 
+def test_generalized_mutation_requires_authoritative_inventory_capability() -> None:
+    """A real provisional inventory cannot mutate even when the snapshot looks final."""
+    snapshot = _snapshot()
+    topology = _topology()
+    current = MeterConfigurationInventory.from_document(
+        "plan",
+        ESPHomeConfigDocument.parse(snapshot.content),
+        topology,
+        CTPresetCatalog.load(),
+        VoltageTransformerCatalog.load(),
+        snapshot.sha256,
+        configuration_authoritative=False,
+    )
+
+    with pytest.raises(ConfigMutationError, match="authoritative"):
+        build_meter_configuration_mutation(
+            snapshot, topology, current, current.configuration
+        )
+
+
+def test_legacy_wrapper_repairs_invalid_inventory_with_multiplier_and_packages() -> None:
+    """Current collisions must not prevent the requested CT repair from being applied."""
+    snapshot = _package_snapshot()
+    content = snapshot.content.replace("ct2_name: CT 2", "ct2_name: CT 1")
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    plan = build_ct_mutation(
+        snapshot,
+        _two_board_topology(),
+        (CTChangeRequest(2, "Kitchen", "sct_006_20a_25ma", 2),),
+        package_options={
+            "power_quality": (True, False),
+            "status_fields": (False, True),
+        },
+    )
+
+    assert "ct2_name: Kitchen" in plan.proposed_content
+    assert "multiply: 2" in plan.proposed_content
+    assert "      - Software/ESPHome/power_quality/6chan_main_power_quality.yaml" in plan.proposed_content
+    assert "      - Software/ESPHome/status_fields/6chan_addon1_status.yaml" in plan.proposed_content
+
+
+@pytest.mark.parametrize(
+    "requests",
+    ((), (CTChangeRequest(2, "Kitchen", "sct_006_20a_25ma"),)),
+)
+def test_legacy_wrapper_rejects_invalid_untouched_inventory(
+    requests: tuple[CTChangeRequest, ...],
+) -> None:
+    """Repair mode does not bless an invalid channel omitted by the request."""
+    with pytest.raises(ValueError, match="missing active substitution"):
+        build_ct_mutation(
+            _snapshot(missing="current_cal_ct3"),
+            _topology(),
+            requests,
+        )
+
+
 def test_board_package_options_toggle_only_requested_meter_boards() -> None:
     """A wrong board index or direction would enable the wrong firmware package."""
     plan = build_ct_mutation(
@@ -303,9 +363,9 @@ def test_reporting_multiplier_updates_and_removes_its_managed_filters() -> None:
 
     assert (
         updated.proposed_content.count(
-            "CircuitSetup Energy Meter Helper reporting multipliers"
+            "CircuitSetup Energy Meter Helper: phase overrides v1"
         )
-        == 1
+        == 2
     )
     assert (
         """    phase_a: # CT1

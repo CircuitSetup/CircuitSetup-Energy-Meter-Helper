@@ -213,17 +213,33 @@ def test_rejects_malformed_managed_blocks(
         ESPHomeConfigDocument.parse(content)
 
 
-def test_ignores_marker_like_text_outside_exact_column_zero_comments() -> None:
+def test_ignores_marker_like_text_that_is_not_a_yaml_comment() -> None:
     doc = ESPHomeConfigDocument.parse(
         "substitutions:\n"
         '  friendly_name: "# CircuitSetup Energy Meter Helper: aggregates v1"\n'
         "  literal: |\n"
         "    # CircuitSetup Energy Meter Helper: aggregates v1\n"
-        "  # CircuitSetup Energy Meter Helper: aggregates v1\n"
-        "  note: value # End CircuitSetup Energy Meter Helper: aggregates v1\n"
     )
 
     assert doc.managed_blocks == {}
+
+
+@pytest.mark.parametrize(
+    "comment",
+    (
+        "  # CircuitSetup Energy Meter Helper: aggregates v1",
+        "note: value # End CircuitSetup Energy Meter Helper: aggregates v1",
+        "# CircuitSetup Energy Meter Helper: aggregate v1",
+        "# CircuitSetup Energy Meter Helper aggregates v1",
+        "# circuitsetup energy meter helper: aggregates v1",
+        "# CircuitSetup Energy Meter Helpr: aggregates v1",
+        "# CircuitSetup Energy Meter Helper: unknown v1",
+    ),
+)
+def test_rejects_every_unowned_helper_marker_comment(comment: str) -> None:
+    """Marker lookalikes cannot create ambiguous ownership."""
+    with pytest.raises(ESPHomeConfigParseError, match="managed block marker"):
+        ESPHomeConfigDocument.parse(comment + "\n")
 
 
 @pytest.mark.parametrize(

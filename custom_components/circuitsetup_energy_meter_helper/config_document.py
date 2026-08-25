@@ -48,26 +48,33 @@ _ALIAS_KEY_RE = re.compile(r"^[ \t]*\*[^\s:]+[ \t]*:")
 _MAX_DOCUMENT_BYTES = 1_048_576
 _MAX_DOCUMENT_LINES = 10_000
 _MAX_SETTING_LENGTH = 64
-_MANAGED_MARKERS = {
-    "# CircuitSetup Energy Meter Helper: voltage references v1": (
-        "voltage_references",
-        False,
+MANAGED_BLOCK_MARKERS = {
+    "voltage_references": (
+        "# CircuitSetup Energy Meter Helper: voltage references v1",
+        "# End CircuitSetup Energy Meter Helper: voltage references v1",
     ),
-    "# End CircuitSetup Energy Meter Helper: voltage references v1": (
-        "voltage_references",
-        True,
+    "phase_overrides": (
+        "# CircuitSetup Energy Meter Helper: phase overrides v1",
+        "# End CircuitSetup Energy Meter Helper: phase overrides v1",
     ),
-    "# CircuitSetup Energy Meter Helper: phase overrides v1": (
-        "phase_overrides",
-        False,
+    "aggregates": (
+        "# CircuitSetup Energy Meter Helper: aggregates v1",
+        "# End CircuitSetup Energy Meter Helper: aggregates v1",
     ),
-    "# End CircuitSetup Energy Meter Helper: phase overrides v1": (
-        "phase_overrides",
-        True,
-    ),
-    "# CircuitSetup Energy Meter Helper: aggregates v1": ("aggregates", False),
-    "# End CircuitSetup Energy Meter Helper: aggregates v1": ("aggregates", True),
 }
+_MANAGED_MARKERS = {
+    marker: (name, is_end)
+    for name, pair in MANAGED_BLOCK_MARKERS.items()
+    for is_end, marker in enumerate(pair)
+}
+_HELPER_MARKER_HINT_RE = re.compile(
+    r"circuitsetup\s+energy\s+meter", re.IGNORECASE
+)
+
+
+def resembles_managed_block_marker(value: str) -> bool:
+    """Return whether text looks like helper-owned marker syntax."""
+    return _HELPER_MARKER_HINT_RE.search(value) is not None
 
 
 class ESPHomeConfigParseError(ValueError):
@@ -118,6 +125,7 @@ class ESPHomeConfigDocument:
     substitutions: dict[str, ConfigScalar]
     package_files: tuple[str, ...]
     managed_blocks: dict[str, ManagedBlock]
+    writable_sensor_span: SourceSpan | None
 
     @classmethod
     def parse(cls, content: str) -> ESPHomeConfigDocument:
@@ -178,7 +186,37 @@ class _DocumentParser:
             substitutions=self._substitutions(),
             package_files=self._package_files(),
             managed_blocks=self._managed_blocks(),
+            writable_sensor_span=self._writable_section_span("sensor"),
         )
+
+    def _writable_section_span(self, name: str) -> SourceSpan | None:
+        roots: list[tuple[int, _Mapping]] = []
+        for index, body in enumerate(self._bodies):
+            if (
+                index in self._block_scalar_lines
+                or not body.strip()
+                or body.lstrip().startswith("#")
+            ):
+                continue
+            mapping = self._mapping(index)
+            if mapping is None:
+                if not body.startswith(" "):
+                    return None
+                continue
+            if mapping.indent == 0:
+                roots.append((index, mapping))
+        matches = [(index, mapping) for index, mapping in roots if mapping.key == name]
+        if len(matches) != 1:
+            return None
+        start_index, mapping = matches[0]
+        if self._has_value(mapping.rest):
+            return None
+        end_index = next(
+            (index for index, _ in roots if index > start_index), len(self.lines)
+        )
+        start = self._offsets[start_index] + len(self.lines[start_index])
+        end = self._offsets[end_index] if end_index < len(self.lines) else len(self.content)
+        return SourceSpan(start, end, start_index + 2, 0, 0)
 
     def _sections(self, name: str) -> list[tuple[int, _Mapping]]:
         sections: list[tuple[int, _Mapping]] = []
@@ -382,6 +420,13 @@ class _DocumentParser:
                 if flow_mapping_depth:
                     raise ESPHomeConfigParseError(
                         "unsupported multiline flow mapping", line
+                    )
+                comment = body[position:]
+                if _HELPER_MARKER_HINT_RE.search(comment) and not (
+                    position == 0 and comment in _MANAGED_MARKERS
+                ):
+                    raise ESPHomeConfigParseError(
+                        "unrecognized managed block marker", line
                     )
                 return explicit_key
             if character.isspace():

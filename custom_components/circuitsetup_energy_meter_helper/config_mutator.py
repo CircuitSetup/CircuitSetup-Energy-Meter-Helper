@@ -9,7 +9,11 @@ from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import Protocol
 
-from .config_document import ConfigScalar, ESPHomeConfigDocument
+from .config_document import (
+    MANAGED_BLOCK_MARKERS,
+    ConfigScalar,
+    ESPHomeConfigDocument,
+)
 from .ct_catalog import (
     REPORTING_MULTIPLIERS,
     CTPresetCatalog,
@@ -28,8 +32,7 @@ from .topology import (
 _SUBSTITUTIONS_RE = re.compile(r"^substitutions:\s*(?:#.*)?(?:\r?\n)?$")
 _SENSOR_RE = re.compile(r"^sensor:\s*(?:#.*)?(?:\r?\n)?$")
 _TOP_LEVEL_RE = re.compile(r"^[\w-]+:")
-_MULTIPLIER_START = "  # CircuitSetup Energy Meter Helper reporting multipliers"
-_MULTIPLIER_END = "  # End reporting multipliers"
+_MULTIPLIER_START, _MULTIPLIER_END = MANAGED_BLOCK_MARKERS["phase_overrides"]
 _MULTIPLIER_ENTRY_RE = re.compile(
     r"    phase_[abc]: # CT(?P<channel>[1-9]|[1-3][0-9]|4[0-2])\r?\n"
     r"      current:\r?\n        filters:\r?\n"
@@ -117,9 +120,7 @@ def build_ct_mutation(
             snapshot.sha256,
             configuration_authoritative=getattr(snapshot, "configuration_authoritative", True),
         )
-    except ValueError as error:
-        if "missing active substitution" not in str(error):
-            raise
+    except ValueError:
         return _build_ct_mutation(
             snapshot, topology, requests, package_options=options
         )
@@ -182,12 +183,12 @@ def _build_ct_mutation(
             proposed_content, topology, package_options
         )
         changes.extend(package_changes)
+    proposed_document = ESPHomeConfigDocument.parse(proposed_content)
+    CTInventory.from_document(proposed_document, topology, catalog, snapshot.sha256)
     if proposed_content == snapshot.content:
         return ConfigMutationPlan(
             snapshot.configuration, snapshot.sha256, (), "", snapshot.content
         )
-    proposed_document = ESPHomeConfigDocument.parse(proposed_content)
-    CTInventory.from_document(proposed_document, topology, catalog, snapshot.sha256)
     return ConfigMutationPlan(
         snapshot.configuration,
         snapshot.sha256,
