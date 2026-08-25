@@ -171,6 +171,8 @@ def validate_meter_configuration(
     }
     if set(all_groups) != expected_groups or len(all_groups) != len(expected_groups):
         raise ValueError("topology groups must be assigned exactly once")
+    if type(request.multi_reference_preparation_acknowledged) is not bool:
+        raise ValueError("multi-reference acknowledgement must be boolean")
     if len(refs) > 1 and not request.multi_reference_preparation_acknowledged:
         raise ValueError("multi-reference preparation acknowledgement required")
     if len(refs) == 1 and request.multi_reference_preparation_acknowledged:
@@ -228,6 +230,8 @@ def validate_meter_configuration(
         aggregate_channels.update(aggregate.channels)
         if not isinstance(aggregate.measurement_method, MeasurementMethod) or not isinstance(aggregate.energy_mode, EnergyMode):
             raise ValueError("invalid aggregate method or energy mode")  # noqa: TRY004
+        if not isinstance(aggregate.role, CircuitRole):
+            raise ValueError("invalid aggregate role")  # noqa: TRY004
         expected = {
             MeasurementMethod.TWO_CT_SUM: 2,
             MeasurementMethod.ONE_CT_DOUBLE_POWER: 1,

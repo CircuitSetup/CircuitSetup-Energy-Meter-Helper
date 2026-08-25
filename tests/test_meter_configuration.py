@@ -1,4 +1,5 @@
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -43,7 +44,7 @@ def request(*, addons: int = 0, interval: int = 5) -> MeterConfigurationRequest:
     )
     channels = tuple(
         ChannelSettings(i, True, f"CT {i}", "ct", 1.0, CircuitRole.BRANCH, "main")
-        for i in range(1, 7 * (addons + 1))
+        for i in range(1, 6 * (addons + 1) + 1)
     )
     return MeterConfigurationRequest(
         meter, channels, (), (False,) * (addons + 1), (True,) + (False,) * addons
@@ -102,6 +103,172 @@ def test_numeric_and_forbidden_fields_are_rejected() -> None:
     object.__setattr__(value.meter, "friendly_name", "bad\nname")
     with pytest.raises(ValueError):
         validate_meter_configuration(value, topology())
-    assert not hasattr(value.meter, "board_revision")
-    assert not any("harmonic" in field or "peak_current" in field for field in value.meter.__slots__)
+    for model in (VoltageReferenceConfig, MeterSettings, ChannelSettings, CircuitAggregate, MeterConfigurationRequest):
+        fields = model.__slots__
+        assert "board_revision" not in fields
+        assert not any("harmonic" in field or "peak_current" in field for field in fields)
     assert math.isfinite(1.0)
+
+
+@pytest.mark.parametrize("interval", [0, 3, 4, 6, 15, 61, True, False])
+def test_invalid_update_intervals(interval: object) -> None:
+    value = request()
+    object.__setattr__(value.meter, "update_interval_s", interval)
+    with pytest.raises(ValueError):
+        validate_meter_configuration(value, topology())
+
+
+@pytest.mark.parametrize("frequency", [0, 49, 51, 61, True, False])
+def test_invalid_line_frequencies(frequency: object) -> None:
+    value = request()
+    object.__setattr__(value.meter, "line_frequency_hz", frequency)
+    with pytest.raises(ValueError):
+        validate_meter_configuration(value, topology())
+
+
+@pytest.mark.parametrize("groups", [("main_1",), ("main_1", "main_1"), ("g1", "g2")])
+def test_group_assignment_must_be_exact_and_canonical(groups: tuple[str, ...]) -> None:
+    value = request()
+    object.__setattr__(value.meter, "voltage_references", (replace(value.meter.voltage_references[0], group_keys=groups),))
+    with pytest.raises(ValueError):
+        validate_meter_configuration(value, topology())
+
+
+def test_reference_and_role_rules() -> None:
+    value = request()
+    object.__setattr__(value, "channels", (replace(value.channels[0], voltage_reference_id="missing"),) + value.channels[1:])
+    with pytest.raises(ValueError):
+        validate_meter_configuration(value, topology())
+    disabled = replace(value.channels[0], enabled=False, role=CircuitRole.UNUSED, voltage_reference_id="main")
+    object.__setattr__(value, "channels", (disabled,) + value.channels[1:])
+    validate_meter_configuration(value, topology())
+    object.__setattr__(value, "channels", (replace(disabled, role=CircuitRole.BRANCH),) + value.channels[1:])
+    with pytest.raises(ValueError):
+        validate_meter_configuration(value, topology())
+    object.__setattr__(value, "channels", (replace(value.channels[0], enabled=True, role=CircuitRole.UNUSED),) + value.channels[1:])
+    with pytest.raises(ValueError):
+        validate_meter_configuration(value, topology())
+
+
+def _with_aggregate(value: MeterConfigurationRequest, aggregate: CircuitAggregate) -> MeterConfigurationRequest:
+    object.__setattr__(value, "aggregates", (aggregate,))
+    return value
+
+
+@pytest.mark.parametrize("method,channels", [
+    (MeasurementMethod.TWO_CT_SUM, (1,)),
+    (MeasurementMethod.TWO_CT_SUM, (1, 2, 3)),
+    (MeasurementMethod.ONE_CT_DOUBLE_POWER, (1, 2)),
+    (MeasurementMethod.BOTH_CONDUCTORS_ONE_CT, (1, 2)),
+])
+def test_special_aggregate_cardinalities(method: MeasurementMethod, channels: tuple[int, ...]) -> None:
+    value = request()
+    aggregate = CircuitAggregate("grid", "Grid", CircuitRole.GRID, channels, method, None, EnergyMode.CONSUMPTION)
+    with pytest.raises(ValueError):
+        validate_meter_configuration(_with_aggregate(value, aggregate), topology())
+
+
+def test_aggregate_invariants_and_direct_multi() -> None:
+    value = request()
+    valid = CircuitAggregate("grid", "Grid", CircuitRole.GRID, (1, 2), MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION)
+    validate_meter_configuration(_with_aggregate(value, valid), topology())
+    for bad_id in ("Grid", "grid_value", "grid--x", ""):
+        with pytest.raises(ValueError):
+            validate_meter_configuration(_with_aggregate(request(), replace(valid, aggregate_id=bad_id)), topology())
+    with pytest.raises(ValueError):
+        validate_meter_configuration(_with_aggregate(request(), replace(valid, role="grid")), topology())
+    with pytest.raises(ValueError):
+        validate_meter_configuration(_with_aggregate(request(), replace(valid, channels=(1, 1))), topology())
+    with pytest.raises(ValueError):
+        validate_meter_configuration(_with_aggregate(request(), replace(valid, channels=(99,))), topology())
+    disabled = replace(request().channels[0], enabled=False, role=CircuitRole.UNUSED)
+    broken = request()
+    object.__setattr__(broken, "channels", (disabled,) + broken.channels[1:])
+    with pytest.raises(ValueError):
+        validate_meter_configuration(_with_aggregate(broken, replace(valid, channels=(1,))), topology())
+    duplicate = request()
+    object.__setattr__(duplicate, "aggregates", (valid, replace(valid, name="Other")))
+    with pytest.raises(ValueError):
+        validate_meter_configuration(duplicate, topology())
+
+
+@pytest.mark.parametrize("method,channels", [
+    (MeasurementMethod.TWO_CT_SUM, (1, 2)),
+    (MeasurementMethod.ONE_CT_DOUBLE_POWER, (1,)),
+    (MeasurementMethod.BOTH_CONDUCTORS_ONE_CT, (1,)),
+])
+def test_special_aggregate_cardinalities_accept_valid_enabled_channels(
+    method: MeasurementMethod, channels: tuple[int, ...]
+) -> None:
+    aggregate = CircuitAggregate("grid", "Grid", CircuitRole.GRID, channels, method, None, EnergyMode.CONSUMPTION)
+    validate_meter_configuration(_with_aggregate(request(), aggregate), topology())
+
+
+def test_parent_existence_and_cycles() -> None:
+    child = CircuitAggregate("child", "Child", CircuitRole.BRANCH, (1,), MeasurementMethod.DIRECT, "missing", EnergyMode.CONSUMPTION)
+    with pytest.raises(ValueError):
+        validate_meter_configuration(_with_aggregate(request(), child), topology())
+    cycle = replace(child, parent_id="child")
+    with pytest.raises(ValueError):
+        validate_meter_configuration(_with_aggregate(request(), cycle), topology())
+
+
+def test_board_options_and_multi_reference_acknowledgement() -> None:
+    value = request(addons=1)
+    for field in ("power_quality", "status_fields"):
+        object.__setattr__(value, field, (True,))
+        with pytest.raises(ValueError):
+            validate_meter_configuration(value, topology(1))
+        object.__setattr__(value, field, (True, "yes"))
+        with pytest.raises(ValueError):
+            validate_meter_configuration(value, topology(1))
+        object.__setattr__(value, field, (False, False))
+    value = request()
+    first = value.meter.voltage_references[0]
+    refs = (replace(first, group_keys=("main_1",)), replace(first, reference_id="alt", group_keys=("main_2",)))
+    object.__setattr__(value.meter, "voltage_references", refs)
+    object.__setattr__(value, "multi_reference_preparation_acknowledged", False)
+    with pytest.raises(ValueError):
+        validate_meter_configuration(value, topology())
+    object.__setattr__(value, "multi_reference_preparation_acknowledged", True)
+    validate_meter_configuration(value, topology())
+    object.__setattr__(value, "multi_reference_preparation_acknowledged", 1)
+    with pytest.raises(ValueError):
+        validate_meter_configuration(value, topology())
+
+
+@pytest.mark.parametrize("field,value", [
+    ("friendly_name", "x" * 65),
+    ("friendly_name", "x\x00"),
+    ("nominal_voltage_v", math.nan),
+    ("nominal_voltage_v", 0),
+    ("nominal_voltage_v", 601),
+    ("gain_voltage", True),
+    ("gain_voltage", 0),
+    ("gain_voltage", 65536),
+])
+def test_numeric_name_and_control_bounds(field: str, value: object) -> None:
+    request_value = request()
+    if field == "friendly_name":
+        object.__setattr__(request_value.meter, field, value)
+    else:
+        reference = replace(request_value.meter.voltage_references[0], **{field: value})
+        object.__setattr__(request_value.meter, "voltage_references", (reference,))
+    with pytest.raises(ValueError):
+        validate_meter_configuration(request_value, topology())
+
+
+@pytest.mark.parametrize("multiplier", [math.nan, 0, 3, True])
+def test_reporting_multiplier_must_be_finite_and_allowed(multiplier: object) -> None:
+    value = request()
+    object.__setattr__(value, "channels", (replace(value.channels[0], reporting_multiplier=multiplier),) + value.channels[1:])
+    with pytest.raises(ValueError):
+        validate_meter_configuration(value, topology())
+
+
+@pytest.mark.parametrize("gain", [0, 65536, True])
+def test_custom_gain_bounds(gain: object) -> None:
+    value = request()
+    object.__setattr__(value, "channels", (replace(value.channels[0], custom_gain_ct=gain),) + value.channels[1:])
+    with pytest.raises(ValueError):
+        validate_meter_configuration(value, topology())
