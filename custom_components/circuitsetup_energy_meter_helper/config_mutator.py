@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import Protocol
 
@@ -80,6 +80,77 @@ class CTChangeRequest:
 
 
 def build_ct_mutation(
+    snapshot: ConfigSnapshot,
+    topology: MeterTopology,
+    requested_channels: Iterable[CTChangeRequest],
+    *,
+    package_options: Mapping[str, Iterable[bool]] | None = None,
+) -> ConfigMutationPlan:
+    """Build a CT mutation through the generalized configuration entry point."""
+    from .meter_config_mutator import build_meter_configuration_mutation
+    from .meter_inventory import MeterConfigurationInventory
+    from .voltage_transformer_catalog import VoltageTransformerCatalog
+
+    requests = tuple(requested_channels)
+    _validate_requests(requests, topology)
+    options: dict[str, tuple[bool, ...]] | None = None
+    if package_options is not None:
+        if set(package_options) != set(_PACKAGE_FEATURES):
+            raise ConfigMutationError("package options are invalid")
+        options = {name: tuple(values) for name, values in package_options.items()}
+        if any(
+            len(values) != topology.board_count
+            or any(type(value) is not bool for value in values)
+            for values in options.values()
+        ):
+            raise ConfigMutationError(
+                "package options require one state per installed board"
+            )
+    document = ESPHomeConfigDocument.parse(snapshot.content)
+    try:
+        current = MeterConfigurationInventory.from_document(
+            snapshot.configuration,
+            document,
+            topology,
+            CTPresetCatalog.load(),
+            VoltageTransformerCatalog.load(),
+            snapshot.sha256,
+            configuration_authoritative=getattr(snapshot, "configuration_authoritative", True),
+        )
+    except ValueError as error:
+        if "missing active substitution" not in str(error):
+            raise
+        return _build_ct_mutation(
+            snapshot, topology, requests, package_options=options
+        )
+    requested = replace(
+        current.configuration,
+        channels=tuple(
+            replace(
+                channel,
+                name=request.name,
+                model_id=request.model_id,
+                reporting_multiplier=request.reporting_multiplier,
+                custom_gain_ct=request.custom_gain_ct,
+                custom_label=request.custom_label,
+                burden_output_acknowledged=request.burden_output_acknowledged,
+            )
+            if (request := next((item for item in requests if item.channel == channel.channel), None))
+            is not None
+            else channel
+            for channel in current.configuration.channels
+        ),
+    )
+    if options is not None:
+        requested = replace(
+            requested,
+            power_quality=options["power_quality"],
+            status_fields=options["status_fields"],
+        )
+    return build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+
+def _build_ct_mutation(
     snapshot: ConfigSnapshot,
     topology: MeterTopology,
     requested_channels: Iterable[CTChangeRequest],

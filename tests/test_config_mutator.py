@@ -15,10 +15,22 @@ from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
     CTChangeRequest,
     build_ct_mutation,
 )
+from custom_components.circuitsetup_energy_meter_helper.ct_catalog import (
+    CTPresetCatalog,
+)
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ESPHomeConfigSnapshot,
 )
+from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+    build_meter_configuration_mutation,
+)
+from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
+    MeterConfigurationInventory,
+)
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
+from custom_components.circuitsetup_energy_meter_helper.voltage_transformer_catalog import (
+    VoltageTransformerCatalog,
+)
 
 
 def _topology() -> MeterTopology:
@@ -126,6 +138,32 @@ def test_noop_is_byte_identical_and_surgical_edit_only_changes_requested_keys() 
     assert "top-secret" not in plan.redacted_diff
     assert "top-secret" not in repr(plan)
     assert plan.source_sha256 == snapshot.sha256
+
+
+def test_generalized_mutation_keeps_ct_wrapper_output_compatible() -> None:
+    """The legacy CT entry point and generalized request produce the same mutation."""
+    snapshot = _snapshot()
+    topology = _topology()
+    document = ESPHomeConfigDocument.parse(snapshot.content)
+    current = MeterConfigurationInventory.from_document(
+        "plan", document, topology, CTPresetCatalog.load(), VoltageTransformerCatalog.load(), snapshot.sha256
+    )
+    requested = replace(
+        current.configuration,
+        channels=tuple(
+            replace(channel, name="Kitchen") if channel.channel == 2 else channel
+            for channel in current.configuration.channels
+        ),
+    )
+
+    generalized = build_meter_configuration_mutation(
+        snapshot, topology, current, requested
+    )
+    legacy = build_ct_mutation(
+        snapshot, topology, (CTChangeRequest(2, "Kitchen", "sct_006_20a_25ma"),)
+    )
+
+    assert generalized == legacy
 
 
 def test_board_package_options_toggle_only_requested_meter_boards() -> None:
