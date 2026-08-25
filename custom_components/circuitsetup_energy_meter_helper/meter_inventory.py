@@ -166,15 +166,7 @@ def _stored_request(
     topology: MeterTopology,
     ct_inventory: CTInventory,
 ) -> MeterConfigurationRequest:
-    references = tuple(
-        replace(
-            reference,
-            gain_voltage=_gain(
-                document, f"voltage_cal{index + 1}", reference.gain_voltage
-            ),
-        )
-        for index, reference in enumerate(stored.meter.voltage_references)
-    )
+    references = _stored_voltage_references(stored, document, topology)
     stored_by_channel = _stored_channels_by_number(stored.channels, topology)
     channels: list[ChannelSettings] = []
     for channel in ct_inventory.channels:
@@ -226,6 +218,32 @@ def _stored_request(
             len(stored.meter.voltage_references) > 1
         ),
     )
+
+
+def _stored_voltage_references(
+    stored: StoredMeterConfiguration,
+    document: ESPHomeConfigDocument,
+    topology: MeterTopology,
+) -> tuple[VoltageReferenceConfig, ...]:
+    gain_key_by_group = {
+        group: f"voltage_cal{index + 1}"
+        for index, (_, groups) in enumerate(
+            voltage_reference_topology_from_legacy(topology).references
+        )
+        for group in groups
+    }
+    references: list[VoltageReferenceConfig] = []
+    for reference in stored.meter.voltage_references:
+        gain_keys = {gain_key_by_group.get(group) for group in reference.group_keys}
+        if len(gain_keys) != 1:
+            raise ValueError("stored voltage reference has ambiguous calibration")
+        gain_key = next(iter(gain_keys))
+        if gain_key is None:
+            raise ValueError("stored voltage reference has ambiguous calibration")
+        references.append(
+            replace(reference, gain_voltage=_gain(document, gain_key, reference.gain_voltage))
+        )
+    return tuple(references)
 
 
 def _legacy_request(

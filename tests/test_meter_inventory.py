@@ -82,19 +82,35 @@ def test_capability_inputs_require_exact_bool_and_int_types(
         )
 
 
-def _document(*, contract: bool = False, generic_totals: bool = False) -> str:
+def _document(
+    *,
+    contract: bool = False,
+    generic_totals: bool = False,
+    addon_count: int = 0,
+    two_voltages: bool = False,
+    voltage_cal1: int = 7305,
+    voltage_cal2: int | None = None,
+) -> str:
+    addon_suffix = f"-{addon_count}-addon{'s' if addon_count != 1 else ''}" if addon_count else ""
+    voltage_suffix = "-2-voltages" if two_voltages else ""
     packages = (
         "  files:\n"
+        "    - Software/ESPHome/meter_sensors/6chan_main_sensor.yaml\n"
         "    - Software/ESPHome/power_quality/6chan_main_power_quality.yaml\n"
         "    - Software/ESPHome/status_fields/6chan_main_status.yaml\n"
+        + "".join(
+            f"    - Software/ESPHome/meter_sensors/6chan_addon{index}.yaml\n"
+            for index in range(1, addon_count + 1)
+        )
     )
     substitutions = "".join(
         f"  ct{channel}_name: {'Grid' if channel == 1 else f'Load {channel}'}\n"
         f"  current_cal_ct{channel}: {27518 + channel}\n"
-        for channel in range(1, 7)
+        for channel in range(1, 6 * (addon_count + 1) + 1)
     )
     return (
-        "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
+        "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter"
+        f"{addon_suffix}{voltage_suffix}\n"
         "packages:\n"
         f"{packages}"
         "substitutions:\n"
@@ -102,7 +118,8 @@ def _document(*, contract: bool = False, generic_totals: bool = False) -> str:
         "  update_time: 10s\n"
         "  electric_freq: 60Hz\n"
         + ("  csemh_config_contract: '2'\n" if contract else "")
-        + "  voltage_cal1: 7305\n"
+        + f"  voltage_cal1: {voltage_cal1}\n"
+        + (f"  voltage_cal2: {voltage_cal2}\n" if voltage_cal2 else "")
         + substitutions
         + ("sensor:\n  - id: totalWatts\n" if generic_totals else "")
     )
@@ -250,6 +267,114 @@ def test_matching_stored_channels_merge_by_channel_identity_not_tuple_order() ->
         for channel in inventory.configuration.channels[1:]
     )
     assert "stored_semantics_stale" not in inventory.warnings
+
+
+def test_matching_stored_voltage_references_merge_gains_by_groups_not_tuple_order() -> (
+    None
+):
+    """Reversing stored references must not swap physical voltage calibrations."""
+    content = _document(
+        contract=True,
+        addon_count=1,
+        two_voltages=True,
+        voltage_cal1=7001,
+        voltage_cal2=8002,
+    )
+    baseline = _inventory(content).configuration
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        replace(
+            baseline.meter,
+            voltage_references=tuple(reversed(baseline.meter.voltage_references)),
+        ),
+        baseline.channels,
+        (),
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+
+    inventory = _inventory(content, stored=stored)
+
+    assert [
+        (reference.reference_id, reference.gain_voltage)
+        for reference in inventory.configuration.meter.voltage_references
+    ] == [("secondary", 8002), ("main", 7001)]
+    assert "stored_semantics_stale" not in inventory.warnings
+
+
+def test_matching_stored_voltage_references_allow_scrambled_group_order() -> None:
+    """Reordering groups within each physical reference must keep its calibration."""
+    content = _document(
+        contract=True,
+        addon_count=1,
+        two_voltages=True,
+        voltage_cal1=7001,
+        voltage_cal2=8002,
+    )
+    baseline = _inventory(content).configuration
+    secondary, main = reversed(baseline.meter.voltage_references)
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        replace(
+            baseline.meter,
+            voltage_references=(
+                replace(secondary, group_keys=("addon1_2", "main_2")),
+                replace(main, group_keys=("addon1_1", "main_1")),
+            ),
+        ),
+        baseline.channels,
+        (),
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+
+    inventory = _inventory(content, stored=stored)
+
+    assert [
+        (reference.reference_id, reference.gain_voltage, reference.group_keys)
+        for reference in inventory.configuration.meter.voltage_references
+    ] == [
+        ("secondary", 8002, ("addon1_2", "main_2")),
+        ("main", 7001, ("addon1_1", "main_1")),
+    ]
+    assert "stored_semantics_stale" not in inventory.warnings
+
+
+def test_ambiguous_stored_voltage_reference_groups_fall_back_to_legacy_defaults() -> (
+    None
+):
+    """A valid helper grouping without physical calibration provenance is stale."""
+    content = _document(
+        contract=True,
+        addon_count=1,
+        two_voltages=True,
+        voltage_cal1=7001,
+        voltage_cal2=8002,
+    )
+    baseline = _inventory(content).configuration
+    main, secondary = baseline.meter.voltage_references
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        replace(
+            baseline.meter,
+            voltage_references=(
+                replace(main, group_keys=("main_1", "main_2")),
+                replace(secondary, group_keys=("addon1_1", "addon1_2")),
+            ),
+        ),
+        baseline.channels,
+        (),
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+
+    inventory = _inventory(content, stored=stored)
+
+    assert inventory.voltage_topology.references == (
+        ("main", ("main_1", "addon1_1")),
+        ("secondary", ("main_2", "addon1_2")),
+    )
+    assert "stored_semantics_stale" in inventory.warnings
 
 
 def test_invalid_matching_stored_semantics_fall_back_to_legacy_defaults() -> None:
