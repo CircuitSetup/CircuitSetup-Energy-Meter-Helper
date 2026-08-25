@@ -69,7 +69,11 @@ from .provisioning import (
 from .session_manager import CalibrationBusyError, SessionManager
 from .state_tracker import SensorSampleWindow
 from .store import CalibrationSourceAuthority, HelperStore
-from .topology import topology_from_config, topology_from_native
+from .topology import (
+    topology_from_config,
+    topology_from_native,
+    verified_voltage_reference_fingerprint,
+)
 
 DEFAULT_HANDLE_TTL = 15 * 60.0
 MAX_HANDLE_TTL = 60 * 60.0
@@ -389,6 +393,11 @@ class EntryWorkflow:
             persist_verified=store.async_finalize_verified_calibration,
             calibration_snapshot_reader=(
                 self._async_calibration_snapshot if device_builder is not None else None
+            ),
+            trusted_voltage_fingerprint_reader=(
+                self._async_trusted_voltage_fingerprint
+                if device_builder is not None
+                else None
             ),
         )
 
@@ -1306,6 +1315,18 @@ class EntryWorkflow:
                 "calibration source handoff is unavailable"
             )
         return await self._require_builder().async_get_config(handle.configuration)
+
+    async def _async_trusted_voltage_fingerprint(
+        self,
+        mac: str,
+        document: ESPHomeConfigDocument,
+        topology: MeterTopology,
+    ) -> str | None:
+        return verified_voltage_reference_fingerprint(
+            document,
+            topology,
+            await self._store.async_get_meter_configuration(mac),
+        )
 
     async def _reporting_multiplier(
         self,

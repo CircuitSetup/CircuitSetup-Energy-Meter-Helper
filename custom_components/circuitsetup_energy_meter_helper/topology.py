@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import replace
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 from .config_document import ESPHomeConfigDocument
@@ -20,6 +21,7 @@ from .models import (
 
 if TYPE_CHECKING:
     from .meter_configuration import MeterConfigurationRequest
+    from .store import StoredMeterConfiguration
 
 BASE_PROJECT = "circuitsetup.6c-energy-meter"
 _ADDON_SEGMENT_RE = re.compile(r"-(?P<count>[1-6])-addons?(?=-|$)")
@@ -166,7 +168,7 @@ def _validated_voltage_reference_topology(
 
 def voltage_reference_topology_from_configuration(
     topology: MeterTopology,
-    configuration: MeterConfigurationRequest,
+    configuration: MeterConfigurationRequest | StoredMeterConfiguration,
 ) -> VoltageReferenceTopology:
     """Use helper-managed reference assignments after structural validation."""
     return _validated_voltage_reference_topology(
@@ -195,19 +197,29 @@ def _managed_voltage_reference_assignments(
             continue
         match = re.fullmatch(r"\s{2}([A-Za-z][A-Za-z0-9_-]{0,63}):\s*(.*)", line)
         if match is None:
-            if line and not line.startswith(" "):
-                break
-            continue
+            raise TopologyParseError("invalid managed voltage-reference mapping")
         reference_id, value = match.groups()
         groups: tuple[str, ...] | None = None
-        if value.startswith("[") and value.endswith("]"):
-            values = tuple(item.strip().strip("'\"") for item in value[1:-1].split(",") if item.strip())
-            groups = values or None
+        if value.startswith("[") or value.endswith("]"):
+            if not value.startswith("[") or not value.endswith("]"):
+                raise TopologyParseError("invalid managed voltage-reference mapping")
+            groups = tuple(
+                item.strip().strip("'\"")
+                for item in value[1:-1].split(",")
+                if item.strip()
+            )
+            if not groups:
+                raise TopologyParseError("invalid managed voltage-reference mapping")
+        elif not value:
+            raise TopologyParseError("invalid managed voltage-reference mapping")
         entries.append((reference_id, groups))
     if not entries or len(entries) > 2:
-        return None
+        raise TopologyParseError("invalid managed voltage-reference mapping")
     expected = _expected_group_keys(topology)
-    if any(groups is None for _, groups in entries):
+    inferred = tuple(groups is None for _, groups in entries)
+    if any(inferred) and not all(inferred):
+        raise TopologyParseError("mixed voltage-reference mapping forms are invalid")
+    if all(inferred):
         if len(entries) == 1:
             return ((entries[0][0], expected),)
         return tuple(
@@ -220,21 +232,40 @@ def _managed_voltage_reference_assignments(
 def voltage_reference_topology_from_config(
     document: ESPHomeConfigDocument,
     topology: MeterTopology,
-    configuration: MeterConfigurationRequest | None = None,
+    configuration: StoredMeterConfiguration | None = None,
+    *,
+    trusted_fingerprint: str | None = None,
 ) -> VoltageReferenceTopology:
     """Prefer verified helper semantics; otherwise use legacy project evidence."""
     if configuration is not None:
-        try:
-            return voltage_reference_topology_from_configuration(topology, configuration)
-        except TopologyParseError:
-            pass
+        trusted_fingerprint = verified_voltage_reference_fingerprint(
+            document, topology, configuration
+        )
+    if trusted_fingerprint is None:
+        return voltage_reference_topology_from_legacy(topology)
     managed = _managed_voltage_reference_assignments(document, topology)
-    if managed is not None:
-        try:
-            return _validated_voltage_reference_topology(topology, managed)
-        except TopologyParseError:
-            pass
-    return voltage_reference_topology_from_legacy(topology)
+    if managed is None:
+        return voltage_reference_topology_from_legacy(topology)
+    voltage_topology = _validated_voltage_reference_topology(topology, managed)
+    if voltage_topology.fingerprint != trusted_fingerprint:
+        raise TopologyParseError("managed voltage-reference topology is not verified")
+    return voltage_topology
+
+
+def verified_voltage_reference_fingerprint(
+    document: ESPHomeConfigDocument,
+    topology: MeterTopology,
+    configuration: StoredMeterConfiguration | None,
+) -> str | None:
+    """Return stored helper identity only for the exact configuration bytes."""
+    if (
+        configuration is None
+        or configuration.config_sha256 != sha256(document.content.encode()).hexdigest()
+    ):
+        return None
+    return voltage_reference_topology_from_configuration(
+        topology, configuration
+    ).fingerprint
 
 
 # Short alias for callers that treat board and voltage topology uniformly.

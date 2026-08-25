@@ -73,6 +73,9 @@ type VerifiedWriter = Callable[[VerifiedCalibrationRecord], Awaitable[None]]
 type CalibrationSnapshotReader = Callable[
     [str, MeterTopology], Awaitable[ESPHomeConfigSnapshot]
 ]
+type TrustedVoltageFingerprintReader = Callable[
+    [str, ESPHomeConfigDocument, MeterTopology], Awaitable[str | None]
+]
 
 _CONFIGURATION_ID = re.compile(r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml")
 
@@ -186,6 +189,8 @@ class CalibrationEngine:
         restart_restore_timeout: float = 120.0,
         restart_backoff_initial: float = 0.25,
         calibration_snapshot_reader: CalibrationSnapshotReader | None = None,
+        trusted_voltage_fingerprint_reader: TrustedVoltageFingerprintReader
+        | None = None,
     ) -> None:
         if sample_count < 1 or zero_concurrency < 1:
             raise ValueError("sample count and zero concurrency must be positive")
@@ -208,6 +213,7 @@ class CalibrationEngine:
         self._restart_restore_timeout = restart_restore_timeout
         self._restart_backoff_initial = restart_backoff_initial
         self._calibration_snapshot_reader = calibration_snapshot_reader
+        self._trusted_voltage_fingerprint_reader = trusted_voltage_fingerprint_reader
         self._operation_sequences: dict[str, int] = {}
 
     async def async_verify_after_restart(
@@ -453,8 +459,17 @@ class CalibrationEngine:
             raise ValueError(
                 "authoritative configuration topology is invalid"
             ) from error
+        trusted_voltage_fingerprint = (
+            await self._trusted_voltage_fingerprint_reader(
+                lease.mac, document, source_topology
+            )
+            if self._trusted_voltage_fingerprint_reader is not None
+            else None
+        )
         source_voltage_fingerprint = voltage_reference_topology_from_config(
-            document, source_topology
+            document,
+            source_topology,
+            trusted_fingerprint=trusted_voltage_fingerprint,
         ).fingerprint
         if not _same_topology_identity(source_topology, binding.topology):
             raise ValueError(

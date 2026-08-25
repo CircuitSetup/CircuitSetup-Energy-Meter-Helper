@@ -345,7 +345,7 @@ def test_helper_configuration_overrides_legacy_layout_when_structurally_valid() 
     assert voltage.source == "helper"
 
 
-def test_managed_voltage_block_overrides_legacy_layout() -> None:
+def test_managed_voltage_block_requires_matching_trusted_fingerprint() -> None:
     document = ESPHomeConfigDocument.parse(
         "esphome:\n"
         "  project:\n"
@@ -357,10 +357,52 @@ def test_managed_voltage_block_overrides_legacy_layout() -> None:
     )
     meter = topology_from_config(document)
 
-    voltage = voltage_reference_topology_from_config(document, meter)
+    injected = voltage_reference_topology_from_config(document, meter)
+    trusted = voltage_reference_topology_from_configuration(
+        meter,
+        default_meter_configuration(
+            meter, {"power_quality": (False,), "status_fields": (True,)}
+        ),
+    )
+    voltage = voltage_reference_topology_from_config(
+        document, meter, trusted_fingerprint=trusted.fingerprint
+    )
 
+    assert injected.source == "legacy"
+    assert injected.reference_ids == ("main", "secondary")
     assert voltage.source == "helper"
     assert voltage.reference_ids == ("main",)
+
+
+@pytest.mark.parametrize(
+    "assignments",
+    (
+        "  main: [main_1]\n  secondary: 120\n",
+        "  main: [main_1]\n",
+        "  main: [main_1, main_2]\n  secondary: [main_2]\n",
+        "  main: [main_1, main_2, addon1_1]\n",
+        "  main: [main_1]\n  main: [main_2]\n",
+    ),
+    ids=("mixed", "missing", "duplicate-group", "extra", "duplicate-reference"),
+)
+def test_trusted_managed_voltage_block_rejects_noncanonical_coverage(
+    assignments: str,
+) -> None:
+    document = ESPHomeConfigDocument.parse(
+        "esphome:\n"
+        "  project:\n"
+        "    name: circuitsetup.6c-energy-meter-2-voltages\n"
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "voltage_references:\n"
+        f"{assignments}"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_config(document)
+
+    with pytest.raises(TopologyParseError):
+        voltage_reference_topology_from_config(
+            document, meter, trusted_fingerprint="v1:" + "0" * 64
+        )
 
 
 def test_helper_configuration_must_cover_each_group_once() -> None:

@@ -204,6 +204,7 @@ def build_calibrated_gain_mutation(
     calibrated_current_channels: frozenset[int] = frozenset(),
     *,
     package_options: Mapping[str, Iterable[bool]] | None = None,
+    trusted_voltage_fingerprint: str | None = None,
 ) -> ConfigMutationPlan:
     """Build a reviewed final-gain plan bound to the calibration source hash."""
     if getattr(snapshot, "configuration_authoritative", True) is not True:
@@ -214,9 +215,13 @@ def build_calibrated_gain_mutation(
     document = ESPHomeConfigDocument.parse(snapshot.content)
     try:
         current_voltage_fingerprint = voltage_reference_topology_from_config(
-            document, topology
+            document, topology, trusted_fingerprint=trusted_voltage_fingerprint
         ).fingerprint
-    except ValueError:
+    except ValueError as error:
+        if trusted_voltage_fingerprint is not None:
+            raise ConfigMutationError(
+                "verified calibration topology does not match target"
+            ) from error
         current_voltage_fingerprint = voltage_reference_fingerprint_for_meter(topology)
     if (
         snapshot.configuration != verified.config_filename

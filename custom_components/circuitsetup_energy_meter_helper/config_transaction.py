@@ -36,8 +36,9 @@ from .models import (
     canonical_mac,
 )
 from .session_manager import ConfigLease, SessionManager
-from .store import VerifiedCalibrationRecord
+from .store import StoredMeterConfiguration, VerifiedCalibrationRecord
 from .topology import (
+    verified_voltage_reference_fingerprint,
     voltage_reference_fingerprint_for_meter,
     voltage_reference_topology_from_config,
 )
@@ -131,6 +132,10 @@ class DeviceBuilder(Protocol):
 
 
 class VerifiedPersistence(Protocol):
+    async def async_get_meter_configuration(
+        self, mac: str
+    ) -> StoredMeterConfiguration | None: ...
+
     async def async_get_ct_selections(
         self, mac: str
     ) -> tuple[StoredCTSelection, ...]: ...
@@ -430,11 +435,23 @@ class ConfigTransactionManager:
             snapshot = await self._device_builder.async_get_config(
                 verified.config_filename
             )
+            document = ESPHomeConfigDocument.parse(snapshot.content)
+            trusted_voltage_fingerprint = verified_voltage_reference_fingerprint(
+                document,
+                topology,
+                await self._persistence.async_get_meter_configuration(mac),
+            )
             try:
                 current_voltage_fingerprint = voltage_reference_topology_from_config(
-                    ESPHomeConfigDocument.parse(snapshot.content), topology
+                    document,
+                    topology,
+                    trusted_fingerprint=trusted_voltage_fingerprint,
                 ).fingerprint
-            except ValueError:
+            except ValueError as error:
+                if trusted_voltage_fingerprint is not None:
+                    raise ConfigMutationError(
+                        "verified calibration topology does not match target"
+                    ) from error
                 current_voltage_fingerprint = voltage_reference_fingerprint_for_meter(
                     topology
                 )
@@ -455,6 +472,7 @@ class ConfigTransactionManager:
                 requested_channels,
                 calibrated_current_channels,
                 package_options=package_options,
+                trusted_voltage_fingerprint=trusted_voltage_fingerprint,
             )
             selections: tuple[StoredCTSelection, ...] = ()
             if requested_channels:
