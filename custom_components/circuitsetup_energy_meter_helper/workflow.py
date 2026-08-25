@@ -54,6 +54,7 @@ from .entity_binding import (
 )
 from .entity_catalog import EntityCatalog
 from .esphome_api import ESPHomeApiSession
+from .meter_inventory import MeterConfigurationInventory
 from .models import MeterTopology, StoredCTSelection, canonical_mac
 from .offset_readiness import (
     OffsetReadinessResult,
@@ -74,6 +75,7 @@ from .topology import (
     topology_from_native,
     verified_voltage_reference_fingerprint,
 )
+from .voltage_transformer_catalog import VoltageTransformerCatalog
 
 DEFAULT_HANDLE_TTL = 15 * 60.0
 MAX_HANDLE_TTL = 60 * 60.0
@@ -115,7 +117,7 @@ class _PlanHandle:
     mac: str
     topology: MeterTopology
     snapshot: ESPHomeConfigSnapshot
-    inventory: CTInventory
+    inventory: MeterConfigurationInventory
     expires_at: float
 
     def scrub(self) -> None:
@@ -424,7 +426,12 @@ class EntryWorkflow:
         self._device(device_id)
         return self._mac(device_id)
 
-    async def async_get_ct_inventory(self, device_id: str) -> dict[str, Any]:
+    async def async_get_meter_configuration(self, device_id: str) -> dict[str, Any]:
+        return await self._async_get_meter_configuration(device_id, True)
+
+    async def _async_get_meter_configuration(
+        self, device_id: str, include_stored_semantics: bool
+    ) -> dict[str, Any]:
         device = self._device(device_id)
         mac = self._mac(device_id)
         snapshot = await self._async_snapshot(device)
@@ -432,15 +439,27 @@ class EntryWorkflow:
         topology = topology_from_config(
             document, native_project_name=device.project_name
         )
-        catalog = await self._hass.async_add_executor_job(CTPresetCatalog.load)
+        ct_catalog = await self._hass.async_add_executor_job(CTPresetCatalog.load)
+        voltage_catalog = await self._hass.async_add_executor_job(
+            VoltageTransformerCatalog.load
+        )
         selections = await self._store.async_get_ct_selections(mac)
-        inventory = CTInventory.from_document(
+        stored_configuration = (
+            await self._store.async_get_meter_configuration(mac)
+            if include_stored_semantics
+            else None
+        )
+        inventory = MeterConfigurationInventory.from_document(
             document,
             topology,
-            catalog,
+            ct_catalog,
+            voltage_catalog,
             snapshot.sha256,
-            selections,
-            _stored_reporting_multipliers(selections, snapshot.sha256),
+            stored_configuration=stored_configuration,
+            stored_ct_selections=selections,
+            reporting_multipliers=_stored_reporting_multipliers(
+                selections, snapshot.sha256
+            ),
         )
         plan_id = uuid4().hex
         self._discard_device_plans(mac)
@@ -461,8 +480,23 @@ class EntryWorkflow:
         return {
             "plan_id": plan_id,
             "source_sha256": snapshot.sha256,
-            "channels": inventory.channels,
-            "catalog": inventory.catalog,
+            "topology": inventory.topology,
+            "configuration": inventory.configuration,
+            "capabilities": inventory.capabilities,
+            "voltage_topology": inventory.voltage_topology,
+            "voltage_transformer_catalog": inventory.voltage_transformer_catalog,
+            "ct_catalog": inventory.ct_catalog,
+            "warnings": inventory.warnings,
+            "channels": inventory.ct_inventory.channels,
+            "catalog": inventory.ct_catalog,
+        }
+
+    async def async_get_ct_inventory(self, device_id: str) -> dict[str, Any]:
+        """Return the legacy CT-only response backed by a complete meter plan."""
+        inventory = await self._async_get_meter_configuration(device_id, False)
+        return {
+            key: inventory[key]
+            for key in ("plan_id", "source_sha256", "channels", "catalog")
         }
 
     async def async_get_session(self, session_id: str) -> SessionStatus:
@@ -534,7 +568,7 @@ class EntryWorkflow:
         updated_inventory = CTInventory.from_document(
             ESPHomeConfigDocument.parse(mutation.proposed_content),
             plan.topology,
-            plan.inventory.catalog,
+            plan.inventory.ct_catalog,
             plan.snapshot.sha256,
             reporting_multipliers={
                 request.channel: request.reporting_multiplier for request in requests
@@ -577,7 +611,9 @@ class EntryWorkflow:
                 raise WorkflowHandleError("label changes are malformed")
             requested[channel] = label
         channels = {item.channel: item for item in binding.channels}
-        if not requested.keys() <= channels.keys() or not requested.keys() <= {item.channel for item in plan.inventory.channels}:
+        if not requested.keys() <= channels.keys() or not requested.keys() <= {
+            item.channel for item in plan.inventory.ct_inventory.channels
+        }:
             raise WorkflowHandleError("channel is not owned by this inventory")
         registry = er.async_get(self._hass)
         targets: list[tuple[int, str, str, Any]] = []

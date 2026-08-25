@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,8 +13,14 @@ from custom_components.circuitsetup_energy_meter_helper.calibration_engine impor
     OffsetCalibrationResult,
     OffsetCalibrationState,
 )
+from custom_components.circuitsetup_energy_meter_helper.device_builder import (
+    ESPHomeConfigSnapshot,
+)
 from custom_components.circuitsetup_energy_meter_helper.entity_binding import (
     OffsetControlStatus,
+)
+from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
+    MeterConfigurationInventory,
 )
 from custom_components.circuitsetup_energy_meter_helper.offset_readiness import (
     DEFAULT_OFFSET_READINESS_THRESHOLDS,
@@ -41,6 +48,96 @@ from custom_components.circuitsetup_energy_meter_helper.workflow import (
 MAC = "aabbccddeeff"
 OFFSET_TABLE = ((1, 2), (3, 4), (5, 6))
 POWER_OFFSET_TABLE = ((7, 8), (9, 10), (11, 12))
+
+
+def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper() -> (
+    None
+):
+    """A foreign device or CT-only handle would bypass the server-owned plan boundary."""
+    content = (
+        "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
+        "substitutions:\n"
+        "  friendly_name: Garage Meter\n"
+        "  update_time: 10s\n"
+        "  electric_freq: 60Hz\n"
+        "  csemh_config_contract: 2\n"
+        "  voltage_cal1: 7305\n"
+        + "".join(
+            f"  ct{channel}_name: CT {channel}\n"
+            f"  current_cal_ct{channel}: {27518 + channel}\n"
+            for channel in range(1, 7)
+        )
+    )
+    digest = sha256(content.encode()).hexdigest()
+    calls: list[str] = []
+
+    class Builder:
+        async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
+            return ESPHomeConfigSnapshot(configuration, content, digest)
+
+        async def async_close(self) -> None:
+            return None
+
+    class Store:
+        async def async_save_interrupted_session(self, *_args: Any) -> None:
+            return None
+
+        async def async_finalize_verified_calibration(self, *_args: Any) -> None:
+            return None
+
+        async def async_get_ct_selections(self, mac: str) -> tuple[object, ...]:
+            calls.append(mac)
+            return ()
+
+        async def async_get_meter_configuration(self, mac: str) -> None:
+            calls.append(mac)
+
+    class Hass:
+        def __init__(self) -> None:
+            self.config_entries = SimpleNamespace(async_get_entry=self._entry)
+
+        @staticmethod
+        def _entry(device_id: str) -> object | None:
+            if device_id != "meter":
+                return None
+            return SimpleNamespace(unique_id="aa:bb:cc:dd:ee:ff")
+
+        async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
+            return target(*args)
+
+    async def run() -> None:
+        provisioning = SimpleNamespace(
+            snapshot=SimpleNamespace(
+                devices=(
+                    DiscoveredDevice(
+                        "meter",
+                        "Garage Meter",
+                        "circuitsetup.6c-energy-meter",
+                        configuration="meter.yaml",
+                    ),
+                )
+            )
+        )
+        workflow = EntryWorkflow(
+            Hass(), provisioning, SessionManager(), Store(), "meter", None, Builder()
+        )
+
+        with pytest.raises(WorkflowHandleError, match="owned"):
+            await workflow.async_get_meter_configuration("other")
+
+        result = await workflow.async_get_meter_configuration("meter")
+        wrapper = await workflow.async_get_ct_inventory("meter")
+
+        assert isinstance(
+            workflow._plans[wrapper["plan_id"]].inventory, MeterConfigurationInventory
+        )
+        assert result["source_sha256"] == digest
+        assert result["configuration"].meter.friendly_name == "Garage Meter"
+        assert wrapper["channels"] == result["channels"]
+        assert calls == ["aabbccddeeff"] * 3
+        await workflow.async_close()
+
+    asyncio.run(run())
 
 
 def _workflow(
