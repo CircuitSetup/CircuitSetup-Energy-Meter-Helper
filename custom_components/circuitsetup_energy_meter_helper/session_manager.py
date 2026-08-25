@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 from uuid import uuid4
 
-from .device_builder import ESPHomeConfigSnapshot
+from .device_builder import ESPHomeConfigSnapshot, _wait_for_owned_cleanup
 from .entity_binding import MeterBinding
 from .models import (
     MeterTopology,
@@ -400,6 +400,7 @@ class SessionManager:
         self._closed = True
         pending: set[asyncio.Task[Any]] = set()
         cleanup_errors: list[BaseException] = []
+        caller_cancelled = False
         transactions = tuple(self._config_transactions.values())
         owned_tasks = tuple(
             {
@@ -455,9 +456,14 @@ class SessionManager:
             task.cancel()
         waited_tasks = tuple(task for task in all_tasks if task is not current)
         if waited_tasks:
-            done, pending = await asyncio.wait(
-                waited_tasks, timeout=self._unload_timeout
-            )
+            try:
+                done, pending = await asyncio.wait(
+                    waited_tasks, timeout=self._unload_timeout
+                )
+            except asyncio.CancelledError:
+                caller_cancelled = True
+                done = {task for task in waited_tasks if task.done()}
+                pending = set(waited_tasks) - done
             for task in done:
                 if task.cancelled():
                     continue
@@ -469,18 +475,13 @@ class SessionManager:
             for task in pending:
                 if task not in protected_tasks:
                     task.cancel()
-        retained_transaction_ids = {
-            id(transaction)
-            for transaction in transactions
-            if any(
-                task in pending
-                for task in tuple(getattr(transaction, "active_tasks", ()))
-            )
-            and id(transaction) in persisting_transaction_ids
-        }
+        protected_pending = pending & protected_tasks
+        if protected_pending:
+            # Durable commits own shutdown completion; storage is not cancellable.
+            drain = asyncio.create_task(asyncio.wait(protected_pending))
+            caller_cancelled |= await _wait_for_owned_cleanup(drain)
+            pending.difference_update(protected_pending)
         for transaction in transactions:
-            if id(transaction) in retained_transaction_ids:
-                continue
             try:
                 release_reservation = getattr(
                     transaction, "async_release_reservation", None
@@ -517,17 +518,20 @@ class SessionManager:
                 task.add_done_callback(release_when_done)
             else:
                 lease.release()
-        self._config_transactions = {
-            transaction_id: transaction
-            for transaction_id, transaction in self._config_transactions.items()
-            if id(transaction) in retained_transaction_ids
-        }
+        self._config_transactions.clear()
         self._calibration_iterations.clear()
         self._pending_calibrations.clear()
         self._calibration_leases = pending_leases
         self._device_locks = {mac: lease.locks for mac, lease in pending_leases.items()}
         if cleanup_errors:
+            if caller_cancelled:
+                raise BaseExceptionGroup(
+                    "reservation cleanup failed after caller cancellation",
+                    [asyncio.CancelledError(), *cleanup_errors],
+                )
             raise BaseExceptionGroup("reservation cleanup failed", cleanup_errors)
+        if caller_cancelled:
+            raise asyncio.CancelledError
 
     def _locks(self, mac: str) -> DeviceLocks:
         return self._device_locks.setdefault(

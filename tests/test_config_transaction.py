@@ -906,8 +906,9 @@ def test_unload_keeps_started_store_commit_owned_until_terminal_state() -> None:
             manager.status(preview.transaction_id)
         assert transaction.meter_configuration == configuration and not transaction.closed
 
-        await sessions.async_unload()
-
+        unload = asyncio.create_task(sessions.async_unload())
+        await asyncio.sleep(0.01)
+        assert not unload.done()
         transaction = sessions._get_transaction(preview.transaction_id)
         assert transaction is not None and not transaction.closed
         assert transaction.meter_configuration == configuration
@@ -916,9 +917,173 @@ def test_unload_keeps_started_store_commit_owned_until_terminal_state() -> None:
         persistence.finish.set()
 
         assert (await install).state is ConfigTransactionState.VERIFIED
+        await unload
         assert persistence.meter_configuration == configuration
         assert states[-1] is ConfigTransactionState.VERIFIED
         assert sessions._get_transaction(preview.transaction_id) is None
+        assert transaction.closed and transaction.meter_configuration is None
+
+    asyncio.run(run())
+
+
+def test_unload_drains_started_store_failure_before_returning() -> None:
+    """A durable-save error reaches the transaction terminal state before unload ends."""
+
+    class FailingPersistence(Persistence):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.finish = asyncio.Event()
+
+        async def async_save_verified_meter_configuration(
+            self,
+            _mac: str,
+            _expected_source_sha256: str,
+            _configuration: StoredMeterConfiguration,
+            _record: object,
+        ) -> None:
+            self.started.set()
+            await self.finish.wait()
+            raise OSError("store unavailable")
+
+    async def run() -> None:
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        sessions = SessionManager(unload_timeout=0.001)
+        persistence = FailingPersistence()
+        manager = _manager(
+            Builder(),
+            persistence,
+            sessions=sessions,
+            evidence=ReconnectEvidence(
+                "aabbccddeeff",
+                _topology(),
+                {channel.channel: channel.name for channel in configuration.channels},
+                6,
+                expected.sensor_entities,
+            ),
+        )
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+            expected_sensor_entities=expected.sensor_entities,
+        )
+        states: list[ConfigTransactionState] = []
+        manager.subscribe(preview.transaction_id, lambda status: states.append(status.state))
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        install = asyncio.create_task(
+            manager.async_confirm_install(preview.transaction_id, "admin")
+        )
+        await persistence.started.wait()
+        transaction = manager._transaction(preview.transaction_id)
+
+        unload = asyncio.create_task(sessions.async_unload())
+        await asyncio.sleep(0.01)
+        assert not unload.done()
+        persistence.finish.set()
+
+        assert (await install).state is ConfigTransactionState.FAILED
+        await unload
+        assert states[-1] is ConfigTransactionState.FAILED
+        assert persistence.meter_configuration is None
+        assert sessions._get_transaction(preview.transaction_id) is None
+        assert transaction.closed and transaction.meter_configuration is None
+
+    asyncio.run(run())
+
+
+def test_cancelled_unload_drains_started_store_commit_before_propagating() -> None:
+    """Cancelling unload cannot orphan a started durable write or private state."""
+
+    class BlockingPersistence(Persistence):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.finish = asyncio.Event()
+
+        async def async_save_verified_meter_configuration(
+            self,
+            mac: str,
+            expected_source_sha256: str,
+            configuration: StoredMeterConfiguration,
+            record: object,
+        ) -> None:
+            self.started.set()
+            await self.finish.wait()
+            await super().async_save_verified_meter_configuration(
+                mac, expected_source_sha256, configuration, record
+            )
+
+    async def run() -> None:
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        sessions = SessionManager(unload_timeout=0.001)
+        persistence = BlockingPersistence()
+        manager = _manager(
+            Builder(),
+            persistence,
+            sessions=sessions,
+            evidence=ReconnectEvidence(
+                "aabbccddeeff",
+                _topology(),
+                {channel.channel: channel.name for channel in configuration.channels},
+                6,
+                expected.sensor_entities,
+            ),
+        )
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+            expected_sensor_entities=expected.sensor_entities,
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        install = asyncio.create_task(
+            manager.async_confirm_install(preview.transaction_id, "admin")
+        )
+        await persistence.started.wait()
+        transaction = manager._transaction(preview.transaction_id)
+
+        unload = asyncio.create_task(sessions.async_unload())
+        await asyncio.sleep(0.01)
+        unload.cancel()
+        await asyncio.sleep(0)
+        assert not unload.done()
+        persistence.finish.set()
+
+        assert (await install).state is ConfigTransactionState.VERIFIED
+        with pytest.raises(asyncio.CancelledError):
+            await unload
+        assert persistence.meter_configuration == configuration
+        assert sessions._get_transaction(preview.transaction_id) is None
+        assert transaction.closed and transaction.meter_configuration is None
 
     asyncio.run(run())
 
