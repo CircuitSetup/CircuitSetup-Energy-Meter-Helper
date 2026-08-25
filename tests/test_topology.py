@@ -455,6 +455,54 @@ def test_trusted_managed_voltage_block_accepts_whitespace_around_list_elements()
 
 
 @pytest.mark.parametrize(
+    "body",
+    (
+        "preamble: unsafe\nvoltage_references:\n  main: 120\n",
+        "voltage_references:\nvoltage_references:\n  main: 120\n",
+        "  voltage_references:\n  main: 120\n",
+        "voltage_references: # ambiguous\n  main: 120\n",
+    ),
+    ids=("preamble", "duplicate-header", "indented-header", "inline-header-comment"),
+)
+def test_trusted_managed_voltage_block_rejects_ambiguous_envelope(body: str) -> None:
+    document = ESPHomeConfigDocument.parse(
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        f"{body}"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_native("circuitsetup.6c-energy-meter")
+    trusted = VoltageReferenceTopology(
+        (("main", ("main_1", "main_2")),), "helper"
+    )
+
+    with pytest.raises(TopologyParseError):
+        voltage_reference_topology_from_config(
+            document, meter, trusted_fingerprint=trusted.fingerprint
+        )
+
+
+def test_trusted_managed_voltage_block_allows_comments_and_blanks_around_header() -> None:
+    document = ESPHomeConfigDocument.parse(
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "\n"
+        "# mapping follows\n"
+        "voltage_references:\n"
+        "\n"
+        "  # primary reference\n"
+        "  main: 120\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_native("circuitsetup.6c-energy-meter")
+    trusted = VoltageReferenceTopology(
+        (("main", ("main_1", "main_2")),), "helper"
+    )
+
+    assert voltage_reference_topology_from_config(
+        document, meter, trusted_fingerprint=trusted.fingerprint
+    ).fingerprint == trusted.fingerprint
+
+
+@pytest.mark.parametrize(
     "reference_id",
     ("bad id", "1bad", "_bad", "bad.id", "x" * 65),
 )

@@ -191,12 +191,15 @@ def _managed_voltage_reference_assignments(
     entries: list[tuple[str, tuple[str, ...] | None]] = []
     in_section = False
     for raw_line in block.content.splitlines():
-        line = raw_line.split("#", 1)[0].rstrip()
-        if line.strip() == "voltage_references:":
+        raw_line = raw_line.rstrip()
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        if not in_section:
+            if raw_line != "voltage_references:":
+                raise TopologyParseError("invalid managed voltage-reference mapping")
             in_section = True
             continue
-        if not in_section or not line.strip():
-            continue
+        line = raw_line.split("#", 1)[0].rstrip()
         match = re.fullmatch(r"\s{2}([^:]+):\s*(.*)", line)
         if match is None:
             raise TopologyParseError("invalid managed voltage-reference mapping")
