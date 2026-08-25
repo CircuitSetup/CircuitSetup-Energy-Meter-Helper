@@ -27,7 +27,7 @@ _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _LINE_BREAK_RE = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
 _LINE_BREAK_FINAL_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 _BLOCK_SCALAR_HEADER_RE = re.compile(
-    r"^(?P<indent> *)(?P<dash>-[ \t]+)?(?:[^:#][^:]*:[ \t]*)?(?:(?:![^\s]+|&[^\s]+)\s+)*"
+    r"^(?P<indent> *)(?P<dash>-[ \t]+)?(?:.+?:[ \t]*)?(?:(?:![^\s]+|&[^\s]+)\s+)*"
     r"[|>][1-9+-]*(?:\s+#.*)?$"
 )
 _EXPLICIT_BLOCK_SCALAR_RE = re.compile(
@@ -37,7 +37,10 @@ _EXPLICIT_KEY_RE = re.compile(
     rf"^[ \t]*\?[ \t]+(?P<key>{_KEY_TOKEN_RE})(?:[ \t]*(?::|#.*|$))"
 )
 _PREFIXED_KEY_RE = re.compile(
-    rf"^\s*(?:[!&][^\s]+\s+)+(?P<key>{_KEY_TOKEN_RE})\s*:"
+    rf"^\s*(?:[!&*][^\s]+\s+)+(?P<key>{_KEY_TOKEN_RE})\s*:"
+)
+_DECORATED_EXPLICIT_KEY_RE = re.compile(
+    rf"^[ \t]*\?[ \t]+(?:[!&*][^\s]+[ \t]+)+(?P<key>{_KEY_TOKEN_RE})(?:[ \t]*(?::|#.*|$))"
 )
 _FLOW_KEY_RE = re.compile(rf"[{{,][ \t]*(?P<key>{_KEY_TOKEN_RE})[ \t]*:")
 _MERGE_KEY_RE = re.compile(r"^\s*(?:<<\s*:|!!merge\s+['\"]<<['\"]\s*:)")
@@ -316,21 +319,23 @@ class _DocumentParser:
                     self._block_scalar_lines.add(index)
                     continue
                 block_indent = None
+            self._reject_unsafe_structural_syntax(body, index + 1)
             header = _BLOCK_SCALAR_HEADER_RE.fullmatch(body) or _EXPLICIT_BLOCK_SCALAR_RE.fullmatch(body)
             if header is not None:
                 block_indent = len(header.group("indent")) + len(header.groupdict().get("dash") or "")
                 continue
-            self._reject_unsafe_structural_syntax(body, index + 1)
             self._reject_multiline_quote(body, index + 1)
 
     def _reject_unsafe_structural_syntax(self, body: str, line: int) -> None:
+        if "{" in body and "}" not in body:
+            raise ESPHomeConfigParseError("unsupported multiline flow mapping", line)
         if _ALIAS_KEY_RE.match(body):
             raise ESPHomeConfigParseError("unsupported structural key syntax", line)
         if _MERGE_KEY_RE.match(body):
             raise ESPHomeConfigParseError(
                 "substitution merges are not locally authoritative", line
             )
-        for pattern in (_EXPLICIT_KEY_RE, _PREFIXED_KEY_RE, _FLOW_KEY_RE):
+        for pattern in (_EXPLICIT_KEY_RE, _DECORATED_EXPLICIT_KEY_RE, _PREFIXED_KEY_RE, _FLOW_KEY_RE):
             for match in pattern.finditer(body):
                 if self._is_structural_key(self._mapping_key(match.group("key"), line)):
                     raise ESPHomeConfigParseError("unsupported structural key syntax", line)

@@ -463,6 +463,45 @@ def test_root_and_explicit_key_block_scalars_are_opaque() -> None:
 
 
 @pytest.mark.parametrize(
+    "content",
+    (
+        "substitutions:\n  &k friendly_name: Holder\n  friendly_name: Good\n  ? *k\n  : Evil\n",
+        "substitutions:\n  friendly_name: Good\n  ? !!str friendly_name\n  : Evil\n",
+        "substitutions:\n  friendly_name: Good\n  ? &k friendly_name\n  : Evil\n",
+    ),
+)
+def test_rejects_decorated_explicit_owned_keys(content: str) -> None:
+    with pytest.raises(ESPHomeConfigParseError):
+        ESPHomeConfigDocument.parse(content)
+
+
+@pytest.mark.parametrize("prefix", ("!!str", "&k", "*k"))
+def test_rejects_decorated_block_headers_for_owned_keys(prefix: str) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match="line 2"):
+        ESPHomeConfigDocument.parse(
+            f"substitutions:\n  {prefix} friendly_name: |-\n    Meter\n"
+        )
+
+
+def test_rejects_multiline_flow_mappings() -> None:
+    with pytest.raises(ESPHomeConfigParseError, match="line 2"):
+        ESPHomeConfigDocument.parse(
+            "substitutions:\n  {other: x, # comment\n  friendly_name: Evil}\n"
+        )
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        "other:\n  |-\n    \"unmatched\n",
+        'other:\n  "a:b": |-\n    "unmatched\n',
+    ),
+)
+def test_valid_nested_block_scalars_are_opaque(content: str) -> None:
+    assert ESPHomeConfigDocument.parse(content).substitutions == {}
+
+
+@pytest.mark.parametrize(
     "value",
     ("&gain 27518", "*gain", "|", ">-", "!secret ct_gain", "# no value"),
 )
