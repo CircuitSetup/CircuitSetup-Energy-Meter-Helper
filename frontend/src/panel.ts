@@ -1181,7 +1181,8 @@ export class CircuitSetupPanel extends LitElement {
         if (target === "voltage") {
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
           const updated = new Map(this.calibrationByTarget);
-          const references = this.voltageReferenceIds().map((referenceId, index) => ({ referenceId, value: this.voltageReferences instanceof Map ? this.voltageReferences.get(referenceId) ?? 0 : this.voltageReferences[index] ?? 0 }));
+          const references = this.voltageReferenceIds().map((referenceId, index) => ({ referenceId, value: this.voltageReferences instanceof Map ? this.voltageReferences.get(referenceId) ?? 0 : this.voltageReferences[index] ?? 0 }))
+            .filter(({ referenceId }) => !this.voltageReferenceComplete(referenceId));
           if (references.some(({ value }) => !Number.isFinite(value) || value < 1 || value > 600)
             || references.some(({ referenceId }) => !this.stabilityByTarget.get(`voltage:${referenceId}`)?.stable)) {
             throw new Error("Voltage references must be valid and stable before calibration.");
@@ -1233,6 +1234,11 @@ export class CircuitSetupPanel extends LitElement {
 
   private voltageReferenceLabel(referenceId: string): string {
     return this.meterSettingsDraft?.voltage_references.find((reference) => reference.reference_id === referenceId)?.label ?? referenceId;
+  }
+
+  private voltageReferenceComplete(referenceId: string): boolean {
+    const groups = this.meterSettingsDraft?.voltage_references.find((reference) => reference.reference_id === referenceId)?.group_keys ?? [referenceId];
+    return groups.every((group) => this.calibrationByTarget.get(`voltage:${group}`)?.state === "applied_pending_restart_verification");
   }
 
   private voltageGroupKeys(): string[] {
