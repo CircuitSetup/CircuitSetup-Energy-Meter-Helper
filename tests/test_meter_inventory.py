@@ -2,6 +2,7 @@
 
 from dataclasses import fields, replace
 from hashlib import sha256
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,10 @@ from custom_components.circuitsetup_energy_meter_helper.config_document import (
 )
 from custom_components.circuitsetup_energy_meter_helper.ct_catalog import (
     CTPresetCatalog,
+)
+from custom_components.circuitsetup_energy_meter_helper.diagnostics import (
+    DiagnosticsTracker,
+    capture_diagnostics_snapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     CircuitAggregate,
@@ -197,6 +202,18 @@ def test_legacy_inventory_keeps_yaml_ct_values_and_requires_electrical_confirmat
         "legacy_generic_totals_unmanaged",
         "config_contract_upgrade_required",
     } <= set(inventory.warnings)
+
+
+def test_diagnostics_maps_production_legacy_totals_inventory_warning() -> None:
+    """The public diagnostics code follows the inventory's production spelling."""
+    tracker = DiagnosticsTracker()
+    tracker.record_result("get_meter_configuration", _inventory(_document(generic_totals=True)))
+
+    assert "legacy_totals_unmanaged" in capture_diagnostics_snapshot(
+        entry=SimpleNamespace(version=1),
+        runtime={"diagnostics": tracker},
+        integration_version="0.1.0",
+    ).public()["error_codes"]
 
 
 def test_matching_stored_semantics_restore_roles_reference_mapping_and_aggregates() -> (
@@ -646,4 +663,4 @@ def test_generic_total_warning_ignores_comments_but_detects_active_ids() -> None
     active = _inventory(_document(contract=True, generic_totals=True))
 
     assert "legacy_generic_totals_unmanaged" not in inactive.warnings
-    assert "legacy_generic_totals_unmanaged" in active.warnings
+    assert "legacy_generic_totals_unmanaged" not in active.warnings

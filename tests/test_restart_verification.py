@@ -43,6 +43,12 @@ from custom_components.circuitsetup_energy_meter_helper.entity_catalog import (
 from custom_components.circuitsetup_energy_meter_helper.log_parser import (
     RestoreEvidence,
 )
+from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+    expected_meter_entity_evidence,
+)
+from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    MeterConfigurationRequest,
+)
 from custom_components.circuitsetup_energy_meter_helper.session_manager import (
     CalibrationBusyError,
     SessionManager,
@@ -1366,6 +1372,55 @@ def test_final_gain_mutation_keeps_selected_board_packages_in_same_review() -> N
     assert "      #- Software/ESPHome/status_fields/6chan_main_status.yaml" in plan.proposed_content
 
 
+@pytest.mark.parametrize("multiplier", (1, 2))
+def test_final_gain_mutation_preserves_unused_managed_phase_state(
+    multiplier: int,
+) -> None:
+    """A gain write cannot reinterpret or discard an unrelated unused phase."""
+    scaling = (
+        """      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 2
+"""
+        if multiplier == 2
+        else ""
+    )
+    managed = (
+        "# CircuitSetup Energy Meter Helper: phase overrides v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_b: # CT2\n"
+        + scaling
+        + """      reactive_power: !remove
+      apparent_power: !remove
+      harmonic_power: !remove
+      peak_current: !remove
+      power_factor: !remove
+      phase_angle: !remove
+# End CircuitSetup Energy Meter Helper: phase overrides v1
+"""
+    )
+    content = _snapshot().content.replace(
+        "logger:\n",
+        """packages:
+  meter:
+    files:
+      - Software/ESPHome/power_quality/6chan_main_power_quality.yaml
+sensor:
+"""
+        + managed
+        + "logger:\n",
+    )
+    snapshot = _snapshot(content)
+    record = _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003)))
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert managed in plan.proposed_content
+
+
 def test_final_gain_preview_combines_ct_edits_without_overwriting_calibrated_current() -> None:
     content = _snapshot().content.replace(
         "substitutions:\n",
@@ -1547,6 +1602,113 @@ class CalibrationPersistence(Persistence):
             return False
         self.installed.append((mac, verification_id, transaction_id))
         return True
+
+    async def async_save_verified_ct_selections_and_mark_verified_calibration_installed(
+        self,
+        mac: str,
+        _expected_source_sha256: str,
+        _proposed_sha256: str,
+        _record: object,
+        _selections: object,
+        verification_id: str,
+        transaction_id: str,
+    ) -> bool:
+        return await self.async_mark_verified_calibration_installed(
+            mac, verification_id, transaction_id
+        )
+
+
+def test_calibration_preview_handoffs_current_full_metadata_atomically() -> None:
+    """A parsed authoritative config carries all CT metadata into one handoff save."""
+
+    class AtomicPersistence(CalibrationPersistence):
+        def __init__(self, record: VerifiedCalibrationRecord) -> None:
+            super().__init__((record,))
+            self.combined: list[tuple[str, object, str, str]] = []
+
+        async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+            self,
+            mac: str,
+            expected_source_sha256: str,
+            configuration: object,
+            verification_id: str,
+            transaction_id: str,
+            _record: object,
+        ) -> bool:
+            if self.claimed.get(verification_id) != transaction_id:
+                return False
+            self.combined.append((mac, configuration, verification_id, transaction_id))
+            return True
+
+        async def async_mark_verified_calibration_installed(
+            self, *_args: object
+        ) -> bool:
+            raise AssertionError("full calibration metadata must be saved atomically")
+
+    async def run() -> None:
+        source = _snapshot(
+            _snapshot().content.replace(
+                "  voltage_cal1: '7305'\n",
+                "  friendly_name: Kitchen meter\n"
+                "  voltage_cal1: '7305'\n"
+                + "".join(f"  ct{i}_name: CT {i}\n" for i in range(1, 7)),
+            )
+        )
+        target = replace(topology(0), voltage_layout="standard")
+        record = replace(
+            _record(source, ((7301, 28001),) * 3),
+            topology_voltage_layout=target.voltage_layout,
+            topology_voltage_fingerprint=voltage_reference_fingerprint_for_meter(
+                target
+            ),
+        )
+        persistence = AtomicPersistence(record)
+        persistence.meter_configuration = replace(
+            stored_configuration(), config_sha256=source.sha256
+        )
+        manager = ConfigTransactionManager(
+            Builder(remote_content=source.content),
+            Verifier(RuntimeError()),
+            persistence,
+            SessionManager(),
+        )
+        preview = await manager.async_preview_calibrated_gains(
+            record.mac,
+            target,
+            record.verification_id,
+            (CTChangeRequest(1, "Kitchen", "sct_006_20a_25ma", 1.0),),
+        )
+        transaction = manager._transaction(preview.transaction_id)
+        configuration = transaction.meter_configuration
+        assert configuration is not None and len(configuration.ct_selections) == 6
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            target,
+        )
+        manager._verifier = Verifier(
+            ReconnectEvidence(
+                record.mac,
+                target,
+                {channel.channel: channel.name for channel in configuration.channels},
+                6,
+                expected.sensor_entities,
+            )
+        )
+
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert len(persistence.combined) == 1 and not persistence.installed
+
+    asyncio.run(run())
 
 
 def _with_offsets(

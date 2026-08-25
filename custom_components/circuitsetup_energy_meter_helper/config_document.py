@@ -22,6 +22,10 @@ _SEQUENCE_MAPPING_RE = re.compile(
     rf"^(?P<indent> *)-[ \t]+(?P<key>{_KEY_TOKEN_RE})[ \t]*:(?P<rest>(?:[ \t].*)?)$"
 )
 _SEQUENCE_RE = re.compile(r"^(?P<indent> *)-\s+(?P<rest>.+)$")
+_SAFE_SENSOR_SEQUENCE_RE = re.compile(
+    r"^(?P<indent> {0,2})-[ \t]+(?P<key>[A-Za-z0-9_-]+)[ \t]*:(?P<rest>.*)$"
+)
+_SAFE_EXTEND_RE = re.compile(r"^!extend[ \t]+[\w${}-]+(?:[ \t]+#.*)?$")
 _YAML_PATH_RE = re.compile(r"(?i)^(.*?\.ya?ml)(?:@.*)?$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _LINE_BREAK_RE = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
@@ -48,26 +52,38 @@ _ALIAS_KEY_RE = re.compile(r"^[ \t]*\*[^\s:]+[ \t]*:")
 _MAX_DOCUMENT_BYTES = 1_048_576
 _MAX_DOCUMENT_LINES = 10_000
 _MAX_SETTING_LENGTH = 64
-_MANAGED_MARKERS = {
-    "# CircuitSetup Energy Meter Helper: voltage references v1": (
-        "voltage_references",
-        False,
+MANAGED_BLOCK_MARKERS = {
+    "voltage_references": (
+        "# CircuitSetup Energy Meter Helper: voltage references v1",
+        "# End CircuitSetup Energy Meter Helper: voltage references v1",
     ),
-    "# End CircuitSetup Energy Meter Helper: voltage references v1": (
-        "voltage_references",
-        True,
+    "phase_overrides": (
+        "# CircuitSetup Energy Meter Helper: phase overrides v1",
+        "# End CircuitSetup Energy Meter Helper: phase overrides v1",
     ),
-    "# CircuitSetup Energy Meter Helper: phase overrides v1": (
-        "phase_overrides",
-        False,
+    "aggregates": (
+        "# CircuitSetup Energy Meter Helper: aggregates v1",
+        "# End CircuitSetup Energy Meter Helper: aggregates v1",
     ),
-    "# End CircuitSetup Energy Meter Helper: phase overrides v1": (
-        "phase_overrides",
-        True,
+    "status_overrides": (
+        "# CircuitSetup Energy Meter Helper: status overrides v1",
+        "# End CircuitSetup Energy Meter Helper: status overrides v1",
     ),
-    "# CircuitSetup Energy Meter Helper: aggregates v1": ("aggregates", False),
-    "# End CircuitSetup Energy Meter Helper: aggregates v1": ("aggregates", True),
 }
+_MANAGED_MARKERS = {
+    marker: (name, is_end)
+    for name, pair in MANAGED_BLOCK_MARKERS.items()
+    for is_end, marker in enumerate(pair)
+}
+_HELPER_MARKER_HINT_RE = re.compile(
+    r"^#\s*(?:end\s+)?circuitsetup\s+energy\s+meter\s+help(?:er|r)\b",
+    re.IGNORECASE,
+)
+
+
+def resembles_managed_block_marker(value: str) -> bool:
+    """Return whether text looks like helper-owned marker syntax."""
+    return _HELPER_MARKER_HINT_RE.search(value) is not None
 
 
 class ESPHomeConfigParseError(ValueError):
@@ -118,6 +134,9 @@ class ESPHomeConfigDocument:
     substitutions: dict[str, ConfigScalar]
     package_files: tuple[str, ...]
     managed_blocks: dict[str, ManagedBlock]
+    writable_sensor_span: SourceSpan | None
+    sensor_item_indent: int | None
+    code_lines: tuple[str, ...] = field(repr=False)
 
     @classmethod
     def parse(cls, content: str) -> ESPHomeConfigDocument:
@@ -168,6 +187,7 @@ class _DocumentParser:
     ) -> ESPHomeConfigDocument:
         project = self._nested_scalar("esphome", "project", "name")
         dashboard = self._section_scalar("dashboard_import", "package_import_url")
+        sensor = self._writable_sensor_section()
         return document_type(
             content=self.content,
             lines=self.lines,
@@ -178,7 +198,99 @@ class _DocumentParser:
             substitutions=self._substitutions(),
             package_files=self._package_files(),
             managed_blocks=self._managed_blocks(),
+            writable_sensor_span=sensor[0] if sensor else None,
+            sensor_item_indent=sensor[1] if sensor else None,
+            code_lines=tuple(
+                "" if index in self._block_scalar_lines else self._without_comment(body)
+                for index, body in enumerate(self._bodies)
+            ),
         )
+
+    def _writable_sensor_section(self) -> tuple[SourceSpan, int] | None:
+        roots: list[tuple[int, _Mapping]] = []
+        for index, body in enumerate(self._bodies):
+            if (
+                index in self._block_scalar_lines
+                or not body.strip()
+                or body.lstrip().startswith("#")
+            ):
+                continue
+            mapping = self._mapping(index)
+            if mapping is not None and mapping.indent == 0:
+                roots.append((index, mapping))
+        matches = [(index, mapping) for index, mapping in roots if mapping.key == "sensor"]
+        if len(matches) != 1:
+            return None
+        start_index, mapping = matches[0]
+        if self._has_value(mapping.rest):
+            return None
+        end_index = next(
+            (index for index, _ in roots if index > start_index), len(self.lines)
+        )
+        item_indent: int | None = None
+        for index, body in enumerate(self._bodies):
+            if (
+                index in self._block_scalar_lines
+                or not body.strip()
+                or body.lstrip().startswith("#")
+            ):
+                continue
+            mapping = self._mapping(index)
+            if not start_index < index < end_index:
+                if mapping is None and not body.startswith(" "):
+                    return None
+                continue
+            sequence_indent = self._safe_sensor_sequence_indent(index)
+            if sequence_indent is not None:
+                if item_indent is None:
+                    item_indent = sequence_indent
+                elif sequence_indent != item_indent and not self._nested_sensor_sequence(
+                    index, start_index, sequence_indent
+                ):
+                    return None
+                continue
+            indent = len(body) - len(body.lstrip(" "))
+            if indent == (item_indent if item_indent is not None else 2):
+                return None
+            if mapping is None and not body.startswith(" "):
+                return None
+        start = self._offsets[start_index] + len(self.lines[start_index])
+        end = self._offsets[end_index] if end_index < len(self.lines) else len(self.content)
+        return (
+            SourceSpan(start, end, start_index + 2, 0, 0),
+            item_indent if item_indent is not None else 2,
+        )
+
+    def _safe_sensor_sequence_indent(self, index: int) -> int | None:
+        match = _SAFE_SENSOR_SEQUENCE_RE.fullmatch(self._bodies[index])
+        if match is None or match["key"] == "<<":
+            return None
+        rest = match["rest"].lstrip(" ")
+        scalar = self._without_comment(rest).strip()
+        if not scalar or scalar.startswith(("|", ">")):
+            return None
+        if rest.startswith(("[", "{", "*", "&")):
+            return None
+        if rest.startswith("!") and (
+            match["key"] != "id" or _SAFE_EXTEND_RE.fullmatch(rest) is None
+        ):
+            return None
+        return len(match["indent"])
+
+    def _nested_sensor_sequence(
+        self, index: int, start_index: int, indent: int
+    ) -> bool:
+        for previous in range(index - 1, start_index, -1):
+            body = self._bodies[previous]
+            if not body.strip() or body.lstrip().startswith("#"):
+                continue
+            mapping = self._mapping(previous)
+            return (
+                mapping is not None
+                and mapping.indent == indent
+                and self._sequence_mapping(previous) is None
+            )
+        return False
 
     def _sections(self, name: str) -> list[tuple[int, _Mapping]]:
         sections: list[tuple[int, _Mapping]] = []
@@ -306,6 +418,34 @@ class _DocumentParser:
             return line[:-1]
         return line
 
+    @staticmethod
+    def _without_comment(body: str) -> str:
+        """Return YAML code only; quoted hashes remain data."""
+        quote: str | None = None
+        escaped = False
+        position = 0
+        while position < len(body):
+            character = body[position]
+            if quote == '"':
+                if character == '"' and not escaped:
+                    quote = None
+                escaped = character == "\\" and not escaped
+            elif quote == "'":
+                if character == "'":
+                    if position + 1 < len(body) and body[position + 1] == "'":
+                        position += 1
+                    else:
+                        quote = None
+            elif character in "\"'":
+                quote = character
+                escaped = False
+            elif character == "#" and (
+                position == 0 or body[position - 1].isspace()
+            ):
+                return body[:position].rstrip()
+            position += 1
+        return body.rstrip()
+
     def _scan_lexical_document(self) -> None:
         block_indent: int | None = None
         explicit_key = False
@@ -382,6 +522,13 @@ class _DocumentParser:
                 if flow_mapping_depth:
                     raise ESPHomeConfigParseError(
                         "unsupported multiline flow mapping", line
+                    )
+                comment = body[position:]
+                if _HELPER_MARKER_HINT_RE.search(comment) and not (
+                    position == 0 and comment in _MANAGED_MARKERS
+                ):
+                    raise ESPHomeConfigParseError(
+                        "unrecognized managed block marker", line
                     )
                 return explicit_key
             if character.isspace():

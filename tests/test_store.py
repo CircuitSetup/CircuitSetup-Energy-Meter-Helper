@@ -42,6 +42,7 @@ from custom_components.circuitsetup_energy_meter_helper.topology import (
 
 MAC = "aabbccddeeff"
 CONFIG_HASH = "a" * 64
+PROPOSED_HASH = "b" * 64
 
 
 def _topology() -> StoredTopology:
@@ -101,6 +102,99 @@ class _CopyingStorage:
     async def async_save(self, data: dict[str, object]) -> None:
         await asyncio.sleep(0)
         self.data = deepcopy(data)
+
+
+def test_verified_meter_configuration_compare_and_swap_updates_record_and_metadata() -> (
+    None
+):
+    """Verified reconnect advances the record digest and all configuration metadata."""
+
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+        proposed = replace(_configuration(), config_sha256=PROPOSED_HASH)
+
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, proposed
+        )
+
+        raw = backend.data["meters"][MAC]  # type: ignore[index]
+        assert raw["config_sha256"] == PROPOSED_HASH  # type: ignore[index]
+        assert raw["meter_configuration"]["config_sha256"] == PROPOSED_HASH  # type: ignore[index]
+        assert await store.async_get_meter_configuration(MAC) == proposed
+        with pytest.raises(ValueError, match="current meter record"):
+            await store.async_save_verified_meter_configuration(
+                MAC, CONFIG_HASH, proposed
+            )
+
+    asyncio.run(run())
+
+
+def test_verified_meter_configuration_creates_initial_record_after_reconnect() -> None:
+    """The first verified configuration creates B only from trusted record A."""
+
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        proposed = replace(_configuration(), config_sha256=PROPOSED_HASH)
+
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, proposed, _record()
+        )
+
+        raw = backend.data["meters"][MAC]  # type: ignore[index]
+        assert raw["config_sha256"] == PROPOSED_HASH  # type: ignore[index]
+        assert raw["meter_configuration"]["config_sha256"] == PROPOSED_HASH  # type: ignore[index]
+        assert await store.async_get_meter_configuration(MAC) == proposed
+        with pytest.raises(ValueError, match="current meter record"):
+            await store.async_save_verified_meter_configuration(
+                MAC, CONFIG_HASH, proposed, _record()
+            )
+
+    asyncio.run(run())
+
+
+def test_stored_meter_configuration_rejects_custom_selection_raw_gain_mismatch() -> (
+    None
+):
+    """A nested custom selection cannot contradict the owning channel gain."""
+    configuration = _configuration()
+    channels = (
+        replace(
+            configuration.channels[0],
+            model_id="custom",
+            custom_gain_ct=24001,
+            custom_label="Custom feed",
+        ),
+        *configuration.channels[1:],
+    )
+    selections = tuple(
+        StoredCTSelection(
+            channel.channel,
+            channel.model_id,
+            channel.custom_label,
+            24002 if channel.channel == 1 else 27518,
+            channel.reporting_multiplier,
+            CONFIG_HASH,
+        )
+        for channel in channels
+    )
+
+    with pytest.raises(ValueError, match="ct_selections"):
+        StoredMeterConfiguration(
+            CONFIG_HASH,
+            configuration.meter,
+            channels,
+            configuration.aggregates,
+            configuration.power_quality,
+            configuration.status_fields,
+            selections,
+        )
 
 
 def test_stored_ct_selection_has_only_safe_metadata() -> None:
@@ -416,7 +510,9 @@ def test_verified_meter_configuration_round_trips_without_operation_acknowledgem
         configuration = _configuration()
 
         await store.async_save_meter(_record())
-        await store.async_save_verified_meter_configuration(MAC, configuration)
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, configuration
+        )
 
         assert (
             await store.async_get_meter_configuration("AA:BB:CC:DD:EE:FF")
@@ -430,10 +526,218 @@ def test_verified_meter_configuration_round_trips_without_operation_acknowledgem
             "aggregates",
             "power_quality",
             "status_fields",
+            "ct_selections",
+            "multi_reference_preparation_acknowledged",
         }
-        assert "multi_reference_preparation_acknowledged" not in str(raw)
+        assert raw["multi_reference_preparation_acknowledged"] is False  # type: ignore[index]
 
     asyncio.run(run())
+
+
+def test_calibrated_install_persists_full_meter_metadata_atomically() -> None:
+    """A failed handoff must not leave CT/configuration metadata half persisted."""
+
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        configuration = replace(_configuration(), config_sha256=PROPOSED_HASH)
+        calibration = VerifiedCalibrationRecord(
+            MAC,
+            "meter.yaml",
+            CONFIG_HASH,
+            0,
+            "circuitsetup.6c-energy-meter",
+            "wifi",
+            "standard",
+            1,
+            (VerifiedGainGroup("meter_main1", ((7305, 27518),) * 3),),
+            "b" * 32,
+        )
+        transaction_id = "c" * 32
+
+        await store.async_save_meter(_record())
+        await store.async_save_verified_calibration(calibration)
+        assert not await store.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+            MAC,
+            CONFIG_HASH,
+            configuration,
+            calibration.verification_id,
+            transaction_id,
+        )
+        assert await store.async_get_meter_configuration(MAC) is None
+        assert await store.async_claim_verified_calibration(
+            MAC, calibration.verification_id, transaction_id
+        )
+
+        assert await store.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+            MAC,
+            CONFIG_HASH,
+            configuration,
+            calibration.verification_id,
+            transaction_id,
+        )
+        installed = await store.async_get_verified_calibration(MAC)
+        assert await store.async_get_meter_configuration(MAC) == configuration
+        assert backend.data["meters"][MAC]["config_sha256"] == PROPOSED_HASH  # type: ignore[index]
+        assert installed is not None and installed.source_handoff_firmware_installed
+
+    asyncio.run(run())
+
+
+def test_legacy_calibrated_install_commits_selections_and_marker_in_one_save() -> (
+    None
+):
+    """A save failure cannot leave legacy CT metadata ahead of its marker."""
+
+    class FailingStorage(_CopyingStorage):
+        fail_save = False
+
+        async def async_save(self, data: dict[str, object]) -> None:
+            if self.fail_save:
+                raise OSError("store unavailable")
+            await super().async_save(data)
+
+    async def run() -> None:
+        backend = FailingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        calibration = VerifiedCalibrationRecord(
+            MAC,
+            "meter.yaml",
+            CONFIG_HASH,
+            0,
+            "circuitsetup.6c-energy-meter",
+            "wifi",
+            "standard",
+            1,
+            (VerifiedGainGroup("meter_main1", ((7305, 27518),) * 3),),
+            "b" * 32,
+        )
+        transaction_id = "c" * 32
+        selections = (
+            StoredCTSelection(1, "ct", "Kitchen", 27518, 1.0, PROPOSED_HASH),
+        )
+        await store.async_save_meter(_record())
+        await store.async_save_verified_calibration(calibration)
+        assert await store.async_claim_verified_calibration(
+            MAC, calibration.verification_id, transaction_id
+        )
+
+        backend.fail_save = True
+        with pytest.raises(OSError, match="unavailable"):
+            await store.async_save_verified_ct_selections_and_mark_verified_calibration_installed(
+                MAC,
+                CONFIG_HASH,
+                PROPOSED_HASH,
+                _record(),
+                selections,
+                calibration.verification_id,
+                transaction_id,
+            )
+        raw = backend.data["meters"][MAC]  # type: ignore[index]
+        assert raw["config_sha256"] == CONFIG_HASH  # type: ignore[index]
+        assert raw["ct_selections"] == []  # type: ignore[index]
+        stored = await store.async_get_verified_calibration(MAC)
+        assert stored is not None and not stored.source_handoff_firmware_installed
+
+        backend.fail_save = False
+        assert await store.async_save_verified_ct_selections_and_mark_verified_calibration_installed(
+            MAC,
+            CONFIG_HASH,
+            PROPOSED_HASH,
+            _record(),
+            selections,
+            calibration.verification_id,
+            transaction_id,
+        )
+        raw = backend.data["meters"][MAC]  # type: ignore[index]
+        assert raw["config_sha256"] == PROPOSED_HASH  # type: ignore[index]
+        assert raw["ct_selections"][0]["config_sha256"] == PROPOSED_HASH  # type: ignore[index]
+        assert "meter_configuration" not in raw  # type: ignore[operator]
+        stored = await store.async_get_verified_calibration(MAC)
+        assert stored is not None and stored.source_handoff_firmware_installed
+
+    asyncio.run(run())
+
+
+def test_old_meter_configuration_payload_without_nested_ct_selections_loads() -> None:
+    """Nested CT metadata is additive, so existing verified records remain readable."""
+
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, _configuration()
+        )
+        raw = backend.data["meters"][MAC]["meter_configuration"]  # type: ignore[index]
+        del raw["ct_selections"]  # type: ignore[index]
+        del raw["multi_reference_preparation_acknowledged"]  # type: ignore[index]
+        for channel in raw["channels"]:  # type: ignore[index]
+            del channel["burden_output_acknowledged"]
+
+        loaded = await store.async_get_meter_configuration(MAC)
+        assert loaded == _configuration() and loaded.ct_selections == ()
+
+    asyncio.run(run())
+
+
+def test_verified_meter_configuration_owns_its_ct_selections_atomically() -> None:
+    """A verified full configuration is the single source for CT metadata."""
+
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        selections = tuple(
+                StoredCTSelection(
+                    channel,
+                    "ct",
+                    None,
+                27_518,
+                1.0,
+                CONFIG_HASH,
+            )
+            for channel in range(1, 7)
+        )
+        configuration = replace(_configuration(), ct_selections=selections)
+
+        await store.async_save_meter(_record())
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, configuration
+        )
+
+        assert await store.async_get_meter_configuration(MAC) == configuration
+        assert await store.async_get_ct_selections(MAC) == selections
+        raw = backend.data["meters"][MAC]["meter_configuration"]  # type: ignore[index]
+        assert raw["ct_selections"][0]["raw_gain_ct"] == 27_518  # type: ignore[index]
+
+    asyncio.run(run())
+
+
+def test_nested_ct_selection_rejects_every_channel_semantic_contradiction() -> None:
+    """Corrupt nested selections cannot override their owning channel settings."""
+    configuration = _configuration()
+    selections = tuple(
+        StoredCTSelection(channel.channel, "ct", None, 27_518, 1.0, CONFIG_HASH)
+        for channel in configuration.channels
+    )
+    valid = replace(configuration, ct_selections=selections)
+
+    for corrupt in (
+        replace(selections[0], model_id="other"),
+        replace(selections[0], display_label="different"),
+        replace(selections[0], reporting_multiplier=2.0),
+        replace(selections[0], channel=2),
+    ):
+        with pytest.raises(ValueError, match="ct_selections"):
+            replace(valid, ct_selections=(corrupt, *selections[1:]))
 
 
 def test_meter_configuration_is_rejected_when_record_hash_is_missing_or_stale() -> None:
@@ -445,14 +749,20 @@ def test_meter_configuration_is_rejected_when_record_hash_is_missing_or_stale() 
         configuration = _configuration()
 
         with pytest.raises(ValueError, match="current meter record"):
-            await store.async_save_verified_meter_configuration(MAC, configuration)
+            await store.async_save_verified_meter_configuration(
+                MAC, CONFIG_HASH, configuration
+            )
         await store.async_save_meter(_record())
-        await store.async_save_verified_meter_configuration(MAC, configuration)
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, configuration
+        )
         backend.data["meters"][MAC]["config_sha256"] = "b" * 64  # type: ignore[index]
 
         assert await store.async_get_meter_configuration(MAC) is None
         with pytest.raises(ValueError, match="current meter record"):
-            await store.async_save_verified_meter_configuration(MAC, configuration)
+            await store.async_save_verified_meter_configuration(
+                MAC, CONFIG_HASH, configuration
+            )
 
     asyncio.run(run())
 
@@ -465,7 +775,9 @@ def test_meter_configuration_rejects_noncanonical_nested_data_and_topology() -> 
         store._update_lock = asyncio.Lock()
         configuration = _configuration()
         await store.async_save_meter(_record())
-        await store.async_save_verified_meter_configuration(MAC, configuration)
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, configuration
+        )
         meter = backend.data["meters"][MAC]  # type: ignore[index]
         raw = meter["meter_configuration"]  # type: ignore[index]
         original_channels = deepcopy(raw["channels"])  # type: ignore[index]
@@ -530,8 +842,10 @@ def test_concurrent_meter_configuration_saves_are_isolated_and_immutable() -> No
         await store.async_save_meter(replace(_record("b" * 64), mac=other_mac))
 
         await asyncio.gather(
-            store.async_save_verified_meter_configuration(MAC, _configuration()),
-            store.async_save_verified_meter_configuration(other_mac, other),
+            store.async_save_verified_meter_configuration(
+                MAC, CONFIG_HASH, _configuration()
+            ),
+            store.async_save_verified_meter_configuration(other_mac, "b" * 64, other),
         )
 
         loaded = await store.async_get_meter_configuration(MAC)
@@ -562,13 +876,15 @@ def test_meter_configuration_never_persists_hardware_preparation_acknowledgement
             ),
         )
         await store.async_save_meter(_record())
-        await store.async_save_verified_meter_configuration(MAC, acknowledged)
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, acknowledged
+        )
 
         raw = backend.data["meters"][MAC]["meter_configuration"]  # type: ignore[index]
-        assert "burden_output_acknowledged" not in raw["channels"][0]  # type: ignore[index]
+        assert raw["channels"][0]["burden_output_acknowledged"] is True  # type: ignore[index]
         assert (await store.async_get_meter_configuration(MAC)).channels[
             0
-        ].burden_output_acknowledged is False  # type: ignore[union-attr]
+        ].burden_output_acknowledged is True  # type: ignore[union-attr]
 
     asyncio.run(run())
 
@@ -581,7 +897,9 @@ def test_save_meter_preserves_only_matching_valid_verified_configuration() -> No
         store._update_lock = asyncio.Lock()
         configuration = _configuration()
         await store.async_save_meter(_record())
-        await store.async_save_verified_meter_configuration(MAC, configuration)
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, configuration
+        )
 
         await store.async_save_meter(_record())
         assert await store.async_get_meter_configuration(MAC) == configuration
@@ -590,7 +908,9 @@ def test_save_meter_preserves_only_matching_valid_verified_configuration() -> No
         await store.async_save_meter(_record())
         assert "meter_configuration" not in backend.data["meters"][MAC]  # type: ignore[index]
 
-        await store.async_save_verified_meter_configuration(MAC, configuration)
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, configuration
+        )
         await store.async_save_meter(
             replace(
                 _record(),
@@ -616,7 +936,9 @@ def test_stale_malformed_meter_configuration_returns_none_before_deserialization
         store._store = backend  # type: ignore[assignment]
         store._update_lock = asyncio.Lock()
         await store.async_save_meter(_record())
-        await store.async_save_verified_meter_configuration(MAC, _configuration())
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, _configuration()
+        )
         meter = backend.data["meters"][MAC]  # type: ignore[index]
         meter["config_sha256"] = "b" * 64  # type: ignore[index]
         meter["meter_configuration"]["channels"] = "invalid"  # type: ignore[index]
@@ -636,7 +958,9 @@ def test_meter_configuration_read_reports_malformed_current_semantics_without_ra
         store._store = backend  # type: ignore[assignment]
         store._update_lock = asyncio.Lock()
         await store.async_save_meter(_record())
-        await store.async_save_verified_meter_configuration(MAC, _configuration())
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, _configuration()
+        )
         backend.data["meters"][MAC]["meter_configuration"]["channels"] = "invalid"  # type: ignore[index]
 
         result = await store.async_get_meter_configuration_read(MAC)
@@ -680,7 +1004,9 @@ def test_meter_configuration_bounds_and_evidence_errors_are_normalized() -> None
         store._store = backend  # type: ignore[assignment]
         store._update_lock = asyncio.Lock()
         await store.async_save_meter(_record())
-        await store.async_save_verified_meter_configuration(MAC, _configuration())
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, _configuration()
+        )
         meter = backend.data["meters"][MAC]  # type: ignore[index]
         mutator(meter)  # type: ignore[operator]
         with pytest.raises(ValueError, match="meter configuration"):
@@ -774,7 +1100,9 @@ def test_meter_configuration_rejects_noncanonical_voltage_reference_id() -> None
         )
 
         with pytest.raises(ValueError, match="reference_id"):
-            await store.async_save_verified_meter_configuration(MAC, invalid)
+            await store.async_save_verified_meter_configuration(
+                MAC, CONFIG_HASH, invalid
+            )
 
     asyncio.run(run())
 
@@ -797,7 +1125,9 @@ def test_save_meter_drops_configuration_when_stable_topology_identity_changes(
         store._update_lock = asyncio.Lock()
         configuration = _configuration()
         await store.async_save_meter(_record())
-        await store.async_save_verified_meter_configuration(MAC, configuration)
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, configuration
+        )
 
         await store.async_save_meter(
             replace(_record(), topology=replace(_topology(), **{field: value}))
@@ -816,7 +1146,9 @@ def test_save_meter_preserves_configuration_when_only_evidence_changes() -> None
         store._update_lock = asyncio.Lock()
         configuration = _configuration()
         await store.async_save_meter(_record())
-        await store.async_save_verified_meter_configuration(MAC, configuration)
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, configuration
+        )
 
         await store.async_save_meter(
             replace(

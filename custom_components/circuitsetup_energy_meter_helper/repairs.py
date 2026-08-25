@@ -15,6 +15,10 @@ from homeassistant.helpers import issue_registry
 from .const import DOMAIN
 
 ISSUES = {
+    "meter_configuration_invalid": {"METER_CONFIGURATION_INVALID"},
+    "legacy_totals_unmanaged": {"LEGACY_TOTALS_UNMANAGED"},
+    "voltage_reference_mismatch": {"VOLTAGE_REFERENCE_MISMATCH"},
+    "aggregate_entity_mismatch": {"AGGREGATE_ENTITY_MISMATCH"},
     "device_builder_unavailable": {"DEVICE_BUILDER_UNAVAILABLE"},
     "topology_project_package_mismatch": {"TOPOLOGY_PROJECT_PACKAGE_MISMATCH"},
     "runtime_entity_count_mismatch": {"TOPOLOGY_RUNTIME_MISMATCH"},
@@ -25,6 +29,16 @@ ISSUES = {
     "restore_verification_failed": {"CONFIG_ROLLBACK_FAILED", "RESTORE_GAIN_MISMATCH"},
 }
 _OPERATION_ISSUES = {
+    "get_meter_configuration": {
+        "legacy_totals_unmanaged",
+        "voltage_reference_mismatch",
+    },
+    "preview_meter_configuration": {
+        "meter_configuration_invalid",
+        "legacy_totals_unmanaged",
+        "voltage_reference_mismatch",
+        "aggregate_entity_mismatch",
+    },
     "adopt_device": {"device_builder_unavailable"},
     "get_topology": {"topology_project_package_mismatch"},
     "get_ct_inventory": {"device_builder_unavailable", "topology_project_package_mismatch", "ct_preset_metadata_diverged"},
@@ -34,7 +48,12 @@ _OPERATION_ISSUES = {
     "calibrate_voltage": {"reference_zero_not_supported"},
     "calibrate_current": {"reference_zero_not_supported"},
     "compile_ct_config": {"device_builder_unavailable", "compile_install_interrupted"},
-    "install_ct_config": {"device_builder_unavailable", "compile_install_interrupted"},
+    "install_ct_config": {
+        "device_builder_unavailable",
+        "compile_install_interrupted",
+        "meter_configuration_invalid",
+        "aggregate_entity_mismatch",
+    },
     "rollback_ct_config": {"device_builder_unavailable", "restore_verification_failed"},
     "restart_and_verify": {"restore_verification_failed"},
 }
@@ -75,7 +94,15 @@ async def async_reconcile_issues(
         scoped_id = scoped_issue_id(issue_id, entry_id)
         if active.intersection(ISSUES[issue_id]):
             issue_registry.async_create_issue(hass, DOMAIN, scoped_id, is_fixable=True, severity=issue_registry.IssueSeverity.WARNING, translation_key=issue_id)
-        elif authoritative:
+        elif (
+            authoritative
+            and operation != "preview_meter_configuration"
+            and (
+                issue_id
+                not in {"meter_configuration_invalid", "aggregate_entity_mismatch"}
+                or "FULL_METER_CONFIGURATION_VERIFIED" in active
+            )
+        ):
             issue_registry.async_delete_issue(hass, DOMAIN, scoped_id)
 
 
@@ -90,6 +117,10 @@ def signals_from_result(result: object) -> set[str]:
         code = getattr(result, "code", None)
         if code == "config_rollback_failed":
             return {"CONFIG_ROLLBACK_FAILED"}
+        if code == "meter_configuration_invalid" or type(result).__name__ == "ConfigMutationError":
+            return {"METER_CONFIGURATION_INVALID"}
+        if "VoltageReferenceMismatchError" in names:
+            return {"VOLTAGE_REFERENCE_MISMATCH"}
         if names & {"WorkflowCapabilityUnavailable", "CapabilityUnavailable"}:
             return {"DEVICE_BUILDER_UNAVAILABLE"}
         if "TopologyMismatchError" in names:
@@ -119,7 +150,14 @@ def signals_from_result(result: object) -> set[str]:
     if not isinstance(result, Mapping):
         return set()
     values: set[str] = set()
-    for key in ("evidence", "issues"):
+    state = result.get("state")
+    if isinstance(state, Enum):
+        state = state.value
+    if state == "verified" and result.get("full_meter_configuration_verified") is True:
+        values.add("FULL_METER_CONFIGURATION_VERIFIED")
+    if result.get("aggregate_entity_mismatch") is True:
+        values.add("aggregate_entity_mismatch")
+    for key in ("evidence", "issues", "warnings"):
         raw = result.get(key, ())
         if isinstance(raw, tuple | list):
             for item in raw:
@@ -153,6 +191,16 @@ def signals_from_result(result: object) -> set[str]:
         values.add("REFERENCE_ZERO_NOT_SUPPORTED")
     if "rollback_failed" in values:
         values.add("CONFIG_ROLLBACK_FAILED")
+    values = {
+        {
+            "legacy_generic_totals_unmanaged": "LEGACY_TOTALS_UNMANAGED",
+            "legacy_totals_unmanaged": "LEGACY_TOTALS_UNMANAGED",
+            "voltage_reference_mismatch": "VOLTAGE_REFERENCE_MISMATCH",
+            "aggregate_entity_mismatch": "AGGREGATE_ENTITY_MISMATCH",
+            "meter_configuration_invalid": "METER_CONFIGURATION_INVALID",
+        }.get(value, value)
+        for value in values
+    }
     channels = result.get("channels", ())
     if isinstance(channels, tuple | list) and any(
         bool(getattr(channel, "stored_selection_present", False))

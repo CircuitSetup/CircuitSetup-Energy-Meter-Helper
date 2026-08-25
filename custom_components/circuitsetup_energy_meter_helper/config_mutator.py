@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import Protocol
 
-from .config_document import ConfigScalar, ESPHomeConfigDocument
+from .config_document import (
+    MANAGED_BLOCK_MARKERS,
+    ConfigScalar,
+    ESPHomeConfigDocument,
+)
 from .ct_catalog import (
     REPORTING_MULTIPLIERS,
     CTPresetCatalog,
@@ -27,18 +31,31 @@ from .topology import (
 
 _SUBSTITUTIONS_RE = re.compile(r"^substitutions:\s*(?:#.*)?(?:\r?\n)?$")
 _SENSOR_RE = re.compile(r"^sensor:\s*(?:#.*)?(?:\r?\n)?$")
+_ROOT_SENSOR_RE = re.compile(r"^(?:sensor|['\"]sensor['\"])\s*:")
 _TOP_LEVEL_RE = re.compile(r"^[\w-]+:")
-_MULTIPLIER_START = "  # CircuitSetup Energy Meter Helper reporting multipliers"
-_MULTIPLIER_END = "  # End reporting multipliers"
-_MULTIPLIER_ENTRY_RE = re.compile(
-    r"    phase_[abc]: # CT(?P<channel>[1-9]|[1-3][0-9]|4[0-2])\r?\n"
-    r"      current:\r?\n        filters:\r?\n"
-    r"          - multiply: (?P<current>[^\r\n]+)\r?\n"
-    r"      power:\r?\n        filters:\r?\n"
-    r"          - multiply: (?P<power>[^\r\n]+)\r?\n"
+_PHASE_OVERRIDE_START, _PHASE_OVERRIDE_END = MANAGED_BLOCK_MARKERS["phase_overrides"]
+_STATUS_OVERRIDE_START, _STATUS_OVERRIDE_END = MANAGED_BLOCK_MARKERS["status_overrides"]
+_PHASE_OWNER_RE = re.compile(r"^  - id: !extend (?P<id>[\w${}-]+)$")
+_PHASE_HEADER_RE = re.compile(
+    r"^    phase_(?P<phase>[abc]): # CT(?P<channel>[1-9]|[1-3][0-9]|4[0-2])$"
 )
 _PLAIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]*$")
 _YAML_RESERVED = {"null", "true", "false", "yes", "no", "on", "off", "~"}
+_YAML_KEY_TOKEN = r'''(?:[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
+_YAML_MAPPING_RE = re.compile(
+    rf"^(?P<indent> *)(?P<dash>-[ \t]+)?"
+    rf"(?P<decorators>(?:(?:![^\s]+|&[^\s]+)[ \t]+)*)"
+    rf"(?P<key>{_YAML_KEY_TOKEN})[ \t]*:"
+    r"(?P<rest>.*)$"
+)
+_YAML_EXPLICIT_KEY_RE = re.compile(
+    rf"^(?P<indent> *)\?[ \t]+(?:(?:![^\s]+|&[^\s]+)[ \t]+)*"
+    rf"(?P<key>{_YAML_KEY_TOKEN})[ \t]*:?$"
+)
+_YAML_FLOW_KEY_RE = re.compile(
+    rf"[{{,][ \t]*(?:(?:![^\s]+|&[^\s]+)[ \t]+)*"
+    rf"(?P<key>{_YAML_KEY_TOKEN})[ \t]*:"
+)
 _PACKAGE_FEATURES = {
     "power_quality": ("power_quality", "power_quality"),
     "status_fields": ("status_fields", "status"),
@@ -79,12 +96,100 @@ class CTChangeRequest:
     burden_output_acknowledged: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _PhaseChannelState:
+    enabled: bool
+    multiplier: float
+
+
 def build_ct_mutation(
     snapshot: ConfigSnapshot,
     topology: MeterTopology,
     requested_channels: Iterable[CTChangeRequest],
     *,
     package_options: Mapping[str, Iterable[bool]] | None = None,
+) -> ConfigMutationPlan:
+    """Build a CT mutation through the generalized configuration entry point."""
+    from .meter_config_mutator import build_meter_configuration_mutation
+    from .meter_inventory import MeterConfigurationInventory
+    from .voltage_transformer_catalog import VoltageTransformerCatalog
+
+    requests = tuple(requested_channels)
+    _validate_requests(requests, topology)
+    options: dict[str, tuple[bool, ...]] | None = None
+    if package_options is not None:
+        if set(package_options) != set(_PACKAGE_FEATURES):
+            raise ConfigMutationError("package options are invalid")
+        options = {name: tuple(values) for name, values in package_options.items()}
+        if any(
+            len(values) != topology.board_count
+            or any(type(value) is not bool for value in values)
+            for values in options.values()
+        ):
+            raise ConfigMutationError(
+                "package options require one state per installed board"
+            )
+    document = ESPHomeConfigDocument.parse(snapshot.content)
+    ct_catalog = CTPresetCatalog.load()
+    voltage_catalog = VoltageTransformerCatalog.load()
+    try:
+        current = MeterConfigurationInventory.from_document(
+            snapshot.configuration,
+            document,
+            topology,
+            ct_catalog,
+            voltage_catalog,
+            snapshot.sha256,
+            configuration_authoritative=getattr(snapshot, "configuration_authoritative", True),
+        )
+    except ValueError:
+        plan = _build_ct_mutation(
+            snapshot, topology, requests, package_options=options
+        )
+        MeterConfigurationInventory.from_document(
+            snapshot.configuration,
+            ESPHomeConfigDocument.parse(plan.proposed_content),
+            topology,
+            ct_catalog,
+            voltage_catalog,
+            sha256(plan.proposed_content.encode()).hexdigest(),
+            configuration_authoritative=True,
+        )
+        return plan
+    requested = replace(
+        current.configuration,
+        channels=tuple(
+            replace(
+                channel,
+                name=request.name,
+                model_id=request.model_id,
+                reporting_multiplier=request.reporting_multiplier,
+                custom_gain_ct=request.custom_gain_ct,
+                custom_label=request.custom_label,
+                burden_output_acknowledged=request.burden_output_acknowledged,
+            )
+            if (request := next((item for item in requests if item.channel == channel.channel), None))
+            is not None
+            else channel
+            for channel in current.configuration.channels
+        ),
+    )
+    if options is not None:
+        requested = replace(
+            requested,
+            power_quality=options["power_quality"],
+            status_fields=options["status_fields"],
+        )
+    return build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+
+def _build_ct_mutation(
+    snapshot: ConfigSnapshot,
+    topology: MeterTopology,
+    requested_channels: Iterable[CTChangeRequest],
+    *,
+    package_options: Mapping[str, Iterable[bool]] | None = None,
+    phase_channels: Mapping[int, tuple[bool, float]] | None = None,
 ) -> ConfigMutationPlan:
     """Build a safe config edit plan without serializing the YAML document."""
     if getattr(snapshot, "configuration_authoritative", True) is not True:
@@ -103,20 +208,25 @@ def build_ct_mutation(
         gain = _requested_gain(request, catalog)
         _append_change(changes, values, name_key, request.name, document.substitutions)
         _append_change(changes, values, gain_key, str(gain), document.substitutions)
-    proposed_content = _apply_reporting_multipliers(
-        _apply_changes(document, changes, values), requests, document.substitutions
-    )
+    proposed_content = _apply_changes(document, changes, values)
     if package_options is not None:
         proposed_content, package_changes = _apply_package_options(
             proposed_content, topology, package_options
         )
         changes.extend(package_changes)
+    proposed_content = _apply_reporting_multipliers(
+        proposed_content,
+        topology,
+        requests,
+        document.substitutions,
+        phase_channels,
+    )
+    proposed_document = ESPHomeConfigDocument.parse(proposed_content)
+    CTInventory.from_document(proposed_document, topology, catalog, snapshot.sha256)
     if proposed_content == snapshot.content:
         return ConfigMutationPlan(
             snapshot.configuration, snapshot.sha256, (), "", snapshot.content
         )
-    proposed_document = ESPHomeConfigDocument.parse(proposed_content)
-    CTInventory.from_document(proposed_document, topology, catalog, snapshot.sha256)
     return ConfigMutationPlan(
         snapshot.configuration,
         snapshot.sha256,
@@ -334,14 +444,15 @@ def build_calibrated_gain_mutation(
             str(next(iter(gains))),
             document.substitutions,
         )
-    proposed_content = _apply_reporting_multipliers(
-        _apply_changes(document, changes, values), requests, document.substitutions
-    )
+    proposed_content = _apply_changes(document, changes, values)
     if package_options is not None:
         proposed_content, package_changes = _apply_package_options(
             proposed_content, topology, package_options
         )
         changes.extend(package_changes)
+    proposed_content = _apply_reporting_multipliers(
+        proposed_content, topology, requests, document.substitutions
+    )
     return ConfigMutationPlan(
         snapshot.configuration,
         snapshot.sha256,
@@ -499,106 +610,336 @@ def _apply_changes(
 
 def _apply_reporting_multipliers(
     content: str,
+    topology: MeterTopology,
     requests: tuple[CTChangeRequest, ...],
     substitutions: Mapping[str, ConfigScalar],
+    phase_channels: Mapping[int, tuple[bool, float]] | None = None,
 ) -> str:
-    starts = [
-        match.start() for match in re.finditer(re.escape(_MULTIPLIER_START), content)
-    ]
-    ends = [match.end() for match in re.finditer(re.escape(_MULTIPLIER_END), content)]
-    if len(starts) != len(ends) or len(starts) > 1 or starts and starts[0] >= ends[0]:
-        raise ConfigMutationError("reporting multiplier block is not safely writable")
-    multipliers: dict[int, float] = {}
-    if starts:
-        managed = content[starts[0] : ends[0]]
-        entries = tuple(_MULTIPLIER_ENTRY_RE.finditer(managed))
-        if len(entries) != managed.count("    phase_"):
-            raise ConfigMutationError(
-                "reporting multiplier block is not safely writable"
-            )
-        for entry in entries:
-            try:
-                current = float(entry.group("current"))
-                power = float(entry.group("power"))
-            except ValueError as error:
-                raise ConfigMutationError(
-                    "reporting multiplier block is not safely writable"
-                ) from error
-            if current != power or current not in REPORTING_MULTIPLIERS:
-                raise ConfigMutationError(
-                    "reporting multiplier block is not safely writable"
-                )
-            channel = int(entry.group("channel"))
-            if channel in multipliers:
-                raise ConfigMutationError(
-                    "reporting multiplier block is not safely writable"
-                )
-            multipliers[channel] = current
-        end = ends[0]
-        if content[end : end + 2] == "\r\n":
-            end += 2
-        elif content[end : end + 1] == "\n":
-            end += 1
-        content = content[: starts[0]] + content[end:]
-    for request in requests:
-        if request.reporting_multiplier == 1:
-            multipliers.pop(request.channel, None)
-        else:
-            multipliers[request.channel] = request.reporting_multiplier
-    if not multipliers:
+    from .config_blocks import render_phase_overrides, replace_managed_block
+
+    if not requests and phase_channels is None:
         return content
-    _reject_local_output_filters(content, multipliers, substitutions)
-    newline = "\r\n" if "\r\n" in content else "\n"
-    block: list[str] = [_MULTIPLIER_START]
-    current_id = ""
-    for channel, value in sorted(multipliers.items()):
+    has_phase_overrides = _PHASE_OVERRIDE_START in content
+    document = ESPHomeConfigDocument.parse(content)
+    package_options = package_options_from_document(document, topology)
+    power_quality = package_options["power_quality"]
+    parsed_channels = _read_phase_channel_states(
+        content, topology, substitutions, power_quality
+    )
+    channels = {
+        channel: (state.enabled, state.multiplier)
+        for channel, state in parsed_channels.items()
+    }
+    for channel, (enabled, multiplier) in (phase_channels or {}).items():
+        channels[channel] = (
+            enabled,
+            parsed_channels.get(
+                channel, _PhaseChannelState(enabled, multiplier)
+            ).multiplier,
+        )
+    for request in requests:
+        enabled, _ = channels.get(request.channel, (True, 1.0))
+        channels[request.channel] = (enabled, request.reporting_multiplier)
+    if not channels and not has_phase_overrides:
+        return _apply_status_overrides(content, channels, package_options["status_fields"], substitutions)
+    phase_lines = {
+        channel: _phase_override_lines(
+            enabled, multiplier, power_quality[(channel - 1) // 6]
+        )
+        for channel, (enabled, multiplier) in channels.items()
+    }
+    managed_outputs = {
+        channel: frozenset(
+            match.group("output")
+            for line in lines
+            if (
+                match := re.fullmatch(
+                    r"      (?P<output>current|power|reactive_power|apparent_power):(?: !remove)?",
+                    line,
+                )
+            )
+        )
+        for channel, lines in phase_lines.items()
+    }
+    if has_phase_overrides:
+        content = replace_managed_block(content, "phase_overrides", "")
+    _reject_local_output_filters(content, managed_outputs, substitutions)
+    entries: dict[str, str] = {}
+    for channel, (enabled, multiplier) in sorted(channels.items()):
+        if channel not in range(1, topology.ct_count + 1):
+            raise ConfigMutationError("reporting multiplier is outside topology")
         meter_key, phase = _channel_meter_phase(channel)
         meter_id = (
             f"${{{meter_key}}}"
             if meter_key in substitutions
             else _canonical_meter_id(meter_key)
         )
-        if meter_id != current_id:
-            block.append(f"  - id: !extend {meter_id}")
-            current_id = meter_id
-        multiplier = f"{value:g}"
-        block.extend(
-            (
-                f"    phase_{phase}: # CT{channel}",
-                "      current:",
-                "        filters:",
-                f"          - multiply: {multiplier}",
-                "      power:",
-                "        filters:",
-                f"          - multiply: {multiplier}",
+        body = [f"  - id: !extend {meter_id}", f"    phase_{phase}: # CT{channel}"]
+        body.extend(phase_lines[channel])
+        if len(body) > 2:
+            entries[f"{channel:02d}"] = "\n".join(body) + "\n"
+    if not entries and not has_phase_overrides:
+        return _apply_status_overrides(content, channels, package_options["status_fields"], substitutions)
+    rendered = render_phase_overrides(entries)
+    if (
+        rendered
+        and ESPHomeConfigDocument.parse(content).writable_sensor_span is None
+        and not any(_ROOT_SENSOR_RE.match(line) for line in content.splitlines())
+    ):
+        newline = "\r\n" if "\r\n" in content else "\n"
+        content += ("" if content.endswith(("\n", "\r")) else newline) + "sensor:" + newline
+    return _apply_status_overrides(
+        replace_managed_block(content, "phase_overrides", rendered),
+        channels,
+        package_options["status_fields"],
+        substitutions,
+    )
+
+
+def _phase_override_lines(
+    enabled: bool, multiplier: float, power_quality: bool
+) -> tuple[str, ...]:
+    lines: list[str] = []
+    if multiplier != 1:
+        value = f"{multiplier:g}"
+        outputs = ["current", "power"]
+        if enabled and power_quality:
+            outputs.extend(("reactive_power", "apparent_power"))
+        for output in outputs:
+            lines.extend(
+                (f"      {output}:", "        filters:", f"          - multiply: {value}")
+            )
+    if not enabled:
+        for output in ("current", "power"):
+            if multiplier == 1:
+                lines.append(f"      {output}:")
+            lines.append("        internal: true")
+    if power_quality:
+        removals = ("harmonic_power", "peak_current") if enabled else (
+            "reactive_power",
+            "apparent_power",
+            "harmonic_power",
+            "peak_current",
+            "power_factor",
+            "phase_angle",
+        )
+        lines.extend(f"      {output}: !remove" for output in removals)
+    return tuple(lines)
+
+
+def _legacy_unused_phase_override_lines(
+    multiplier: float, power_quality: bool
+) -> tuple[str, ...]:
+    """Recognize the Task 15 shape before unused current/power became internal."""
+    lines: list[str] = []
+    if multiplier != 1:
+        value = f"{multiplier:g}"
+        for output in ("current", "power"):
+            lines.extend(
+                (f"      {output}:", "        filters:", f"          - multiply: {value}")
+            )
+    if power_quality:
+        lines.extend(
+            f"      {output}: !remove"
+            for output in (
+                "reactive_power",
+                "apparent_power",
+                "harmonic_power",
+                "peak_current",
+                "power_factor",
+                "phase_angle",
             )
         )
-    block.append(_MULTIPLIER_END)
-    rendered = newline.join(block) + newline
-    lines = content.splitlines(keepends=True)
-    sensor_lines = [
-        index for index, line in enumerate(lines) if line.startswith("sensor:")
+    return tuple(lines)
+
+
+def _apply_status_overrides(
+    content: str,
+    channels: Mapping[int, tuple[bool, float]],
+    status_fields: tuple[bool, ...],
+    substitutions: Mapping[str, ConfigScalar],
+) -> str:
+    from .config_blocks import render_phase_overrides
+
+    entries: dict[str, str] = {}
+    for channel, (enabled, _) in channels.items():
+        if enabled or not status_fields[(channel - 1) // 6]:
+            continue
+        meter_key, phase = _channel_meter_phase(channel)
+        meter_id = (
+            f"${{{meter_key}}}"
+            if meter_key in substitutions
+            else _canonical_meter_id(meter_key)
+        )
+        entries[f"{channel:02d}"] = (
+            f"  - id: !extend {meter_id}\n"
+            "    phase_status:\n"
+            f"      phase_{phase}:\n"
+            "        internal: true\n"
+        )
+    rendered = render_phase_overrides(entries)
+    document = ESPHomeConfigDocument.parse(content)
+    block = document.managed_blocks.get("status_overrides")
+    newline = "\r\n" if "\r\n" in content else "\n"
+    replacement = (
+        _STATUS_OVERRIDE_START
+        + newline
+        + rendered.replace("\n", newline)
+        + _STATUS_OVERRIDE_END
+        + newline
+    )
+    if block is not None:
+        section = _status_section(document, block.span.start, block.span.end)
+        if section is None:
+            raise ConfigMutationError("status override block is not safely writable")
+        section_start, has_user_content = section
+        end = block.span.end
+        if content[end : end + 2] == "\r\n":
+            end += 2
+        elif content[end : end + 1] in {"\r", "\n"}:
+            end += 1
+        if not rendered:
+            if not has_user_content:
+                return content[:section_start] + content[end:]
+            return content[: block.span.start] + replacement + content[end:]
+        return content[: block.span.start] + replacement + content[end:]
+    if not rendered:
+        return content
+    if re.search(r"(?m)^(?:text_sensor|['\"]text_sensor['\"])[ \t]*:", content):
+        raise ConfigMutationError("status override block needs a dedicated text_sensor section")
+    return content + ("" if content.endswith(("\n", "\r")) else newline) + "text_sensor:" + newline + replacement
+
+
+def _status_section(
+    document: ESPHomeConfigDocument, block_start: int, block_end: int
+) -> tuple[int, bool] | None:
+    offsets: list[int] = []
+    offset = 0
+    for line in document.lines:
+        offsets.append(offset)
+        offset += len(line)
+    try:
+        block_index = offsets.index(block_start)
+    except ValueError:
+        return None
+    headers = [
+        index
+        for index, line in enumerate(document.code_lines[:block_index])
+        if line == "text_sensor:"
     ]
-    if len(sensor_lines) > 1 or (
-        sensor_lines and _SENSOR_RE.fullmatch(lines[sensor_lines[0]]) is None
-    ):
-        raise ConfigMutationError("no unambiguous writable sensor block")
-    if not sensor_lines:
-        separator = "" if not content or content.endswith(("\n", "\r")) else newline
-        return content + separator + "sensor:" + newline + rendered
-    start = sensor_lines[0]
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        line = lines[index]
-        if (
-            line.strip()
-            and not line.lstrip().startswith("#")
-            and _TOP_LEVEL_RE.match(line)
-        ):
-            end = index
+    if not headers:
+        return None
+    header_index = headers[-1]
+    section_end = len(document.lines)
+    for index in range(header_index + 1, len(document.lines)):
+        line = document.code_lines[index]
+        if line and not line.startswith(" "):
+            section_end = index
             break
-    offset = sum(len(line) for line in lines[:end])
-    return content[:offset] + rendered + content[offset:]
+    section_start = offsets[header_index]
+    section_content_start = section_start + len(document.lines[header_index])
+    section_content_end = (
+        offsets[section_end] if section_end < len(document.lines) else len(document.content)
+    )
+    if (
+        block_index >= section_end
+        or block_start < section_content_start
+        or block_end > section_content_end
+    ):
+        return None
+    has_user_content = bool(
+        (
+            document.content[section_content_start:block_start]
+            + document.content[section_start + len("text_sensor:") : section_content_start]
+            + document.content[block_end:section_content_end]
+        ).strip()
+    )
+    return section_start, has_user_content
+
+
+def _read_phase_channel_states(
+    content: str,
+    topology: MeterTopology,
+    substitutions: Mapping[str, ConfigScalar],
+    power_quality: tuple[bool, ...],
+) -> dict[int, _PhaseChannelState]:
+    """Read every exact helper-owned phase state needed for safe rewriting."""
+    starts = [match.start() for match in re.finditer(re.escape(_PHASE_OVERRIDE_START), content)]
+    ends = [match.end() for match in re.finditer(re.escape(_PHASE_OVERRIDE_END), content)]
+    if len(starts) != len(ends) or len(starts) > 1 or starts and starts[0] >= ends[0]:
+        raise ConfigMutationError("reporting multiplier block is not safely writable")
+    if not starts:
+        return {}
+    managed = content[starts[0] : ends[0]].splitlines()[1:-1]
+    if ESPHomeConfigDocument.parse(content).sensor_item_indent == 0:
+        managed = [f"  {line}" if line else line for line in managed]
+    states: dict[int, _PhaseChannelState] = {}
+    seen: set[int] = set()
+    index = 0
+    while index < len(managed):
+        owner = _PHASE_OWNER_RE.fullmatch(managed[index])
+        if owner is None:
+            raise ConfigMutationError("reporting multiplier block is not safely writable")
+        owner_id = owner.group("id")
+        index += 1
+        owner_entries = 0
+        while index < len(managed) and not managed[index].startswith("  - id:"):
+            header = _PHASE_HEADER_RE.fullmatch(managed[index])
+            if header is None:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            channel = int(header.group("channel"))
+            if channel in seen or not 1 <= channel <= topology.ct_count:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            meter_key, expected_phase = _channel_meter_phase(channel)
+            expected_id = (
+                f"${{{meter_key}}}"
+                if meter_key in substitutions
+                else _canonical_meter_id(meter_key)
+            )
+            if owner_id != expected_id or header.group("phase") != expected_phase:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            index += 1
+            body_start = index
+            while index < len(managed) and not managed[index].startswith(
+                ("  - id:", "    phase_")
+            ):
+                index += 1
+            body = tuple(managed[body_start:index])
+            if not body:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            board_pq = power_quality[(channel - 1) // 6]
+            state: _PhaseChannelState | None = None
+            for multiplier in REPORTING_MULTIPLIERS:
+                legacy = _phase_override_lines(True, multiplier, False)
+                enabled = _phase_override_lines(True, multiplier, board_pq)
+                unused = _phase_override_lines(False, multiplier, board_pq)
+                legacy_unused = _legacy_unused_phase_override_lines(
+                    multiplier, board_pq
+                )
+                if body in {unused, legacy_unused} and unused != enabled:
+                    state = _PhaseChannelState(False, multiplier)
+                    break
+                if body in {legacy, enabled}:
+                    state = _PhaseChannelState(True, multiplier)
+                    break
+            if state is None:
+                raise ConfigMutationError(
+                    "reporting multiplier block is not safely writable"
+                )
+            states[channel] = state
+            seen.add(channel)
+            owner_entries += 1
+        if owner_entries == 0:
+            raise ConfigMutationError("reporting multiplier block is not safely writable")
+    return states
 
 
 def _channel_meter_phase(channel: int) -> tuple[str, str]:
@@ -620,17 +961,21 @@ def _canonical_meter_id(meter_key: str) -> str:
 
 def _reject_local_output_filters(
     content: str,
-    channels: Iterable[int],
+    channels: Mapping[int, frozenset[str]],
     substitutions: Mapping[str, ConfigScalar],
 ) -> None:
-    targets: dict[tuple[str, str], int] = {}
-    for channel in channels:
+    targets: dict[str, dict[str, tuple[int, frozenset[str]]]] = {}
+    for channel, outputs in channels.items():
+        if not outputs:
+            continue
         meter_key, phase = _channel_meter_phase(channel)
         aliases = {meter_key, _canonical_meter_id(meter_key)}
         if meter_key in substitutions:
             aliases.add(substitutions[meter_key].value)
-        targets.update({(alias, phase): channel for alias in aliases})
-    lines = content.splitlines()
+        for alias in aliases:
+            targets.setdefault(alias, {})[phase] = (channel, outputs)
+    document = ESPHomeConfigDocument.parse(content)
+    lines = document.code_lines
     for index, line in enumerate(lines):
         item = re.match(r"(?P<indent> *)-\s+", line)
         if item is None:
@@ -640,61 +985,236 @@ def _reject_local_output_filters(
         for candidate in range(index + 1, len(lines)):
             stripped = lines[candidate].strip()
             indent = len(lines[candidate]) - len(lines[candidate].lstrip(" "))
-            if stripped and not stripped.startswith("#") and indent <= item_indent:
+            if stripped and indent <= item_indent:
                 item_end = candidate
                 break
-        extend = re.fullmatch(
-            r" *-\s+id:\s*!extend\s+(?:\$\{)?(?P<id>[\w-]+)(?:\})?\s*(?:#.*)?",
-            line,
-        )
-        owner_id = extend.group("id") if extend is not None else None
-        if owner_id is None:
-            for candidate in range(index + 1, item_end):
-                identifier = re.fullmatch(
-                    rf" {{{item_indent + 2}}}id:\s*(?:\$\{{)?(?P<id>[\w-]+)(?:\}})?\s*(?:#.*)?",
-                    lines[candidate],
-                )
-                if identifier is not None:
-                    owner_id = identifier.group("id")
-                    break
-        if owner_id is None or not any(owner_id == target[0] for target in targets):
-            continue
-        for (target_meter_id, phase), channel in targets.items():
-            if target_meter_id != owner_id:
-                continue
-            phase_line = next(
-                (
-                    candidate
-                    for candidate in range(index + 1, item_end)
-                    if lines[candidate].strip().split(" #", 1)[0] == f"phase_{phase}:"
-                ),
-                None,
+        item_keys: set[str] = set()
+        for candidate in range(index, item_end):
+            candidate_mapping = _yaml_mapping(lines[candidate])
+            if candidate_mapping is not None:
+                item_keys.add(candidate_mapping[2])
+            explicit = _yaml_explicit_key(
+                re.sub(r"^( *)-\s+", r"\1", lines[candidate], count=1)
             )
-            if phase_line is None:
+            if explicit is not None:
+                item_keys.add(explicit)
+            item_keys.update(_yaml_flow_keys(lines[candidate]))
+        relevant_channel = next(
+            (
+                channel
+                for phases in targets.values()
+                for phase, (channel, outputs) in phases.items()
+                if f"phase_{phase}" in item_keys and item_keys.intersection(outputs)
+            ),
+            None,
+        )
+        child_indents = [
+            len(lines[candidate]) - len(lines[candidate].lstrip(" "))
+            for candidate in range(index + 1, item_end)
+            if lines[candidate].strip()
+        ]
+        direct_indent = min(child_indents) if child_indents else None
+        direct_ids: list[tuple[str, bool]] = []
+        first_mapping = _yaml_mapping(line)
+        if (
+            first_mapping is not None
+            and first_mapping[1]
+            and first_mapping[2] == "id"
+        ):
+            direct_ids.append((first_mapping[3], first_mapping[4]))
+        if direct_indent is not None:
+            direct_ids.extend(
+                (candidate_mapping[3], candidate_mapping[4])
+                for candidate in range(index + 1, item_end)
+                if (candidate_mapping := _yaml_mapping(lines[candidate])) is not None
+                and not candidate_mapping[1]
+                and candidate_mapping[0] == direct_indent
+                and candidate_mapping[2] == "id"
+            )
+        explicit_id = "id" in {
+            _yaml_explicit_key(
+                re.sub(r"^( *)-\s+", r"\1", lines[candidate], count=1)
+            )
+            for candidate in range(index, item_end)
+        }
+        flow_id = line.lstrip().startswith("- {") and "id" in _yaml_flow_keys(line)
+        resolved_ids = [_yaml_identifier(value) for value, _ in direct_ids]
+        if relevant_channel is not None and (
+            explicit_id
+            or flow_id
+            or len(direct_ids) != 1
+            or direct_ids[0][1]
+            or resolved_ids[0] is None
+        ):
+            _filter_conflict(relevant_channel)
+        owner_id = resolved_ids[0] if len(resolved_ids) == 1 else None
+        if flow_id:
+            flow_keys = _yaml_flow_keys(line)
+            flow_owner = next((alias for alias in targets if alias in line), None)
+            if flow_owner is not None:
+                for phase, (channel, outputs) in targets[flow_owner].items():
+                    if (
+                        f"phase_{phase}" in flow_keys
+                        and flow_keys.intersection(outputs)
+                        and "filters" in flow_keys
+                    ):
+                        _filter_conflict(channel)
+        if owner_id not in targets:
+            continue
+        for phase, (channel, outputs) in targets[owner_id].items():
+            phase_key = f"phase_{phase}"
+            phase_lines = [
+                candidate
+                for candidate in range(index, item_end)
+                if (candidate_mapping := _yaml_mapping(lines[candidate])) is not None
+                and (not candidate_mapping[1] or candidate == index)
+                and candidate_mapping[2] == phase_key
+            ]
+            if any(
+                _yaml_explicit_key(lines[candidate]) == phase_key
+                for candidate in range(index + 1, item_end)
+            ):
+                _filter_conflict(channel)
+            if len(phase_lines) > 1:
+                _filter_conflict(channel)
+            if not phase_lines:
                 continue
-            phase_indent = len(lines[phase_line]) - len(lines[phase_line].lstrip(" "))
+            phase_line = phase_lines[0]
+            phase_mapping = _yaml_mapping(lines[phase_line])
+            assert phase_mapping is not None
+            phase_indent, _, _, phase_rest, _ = phase_mapping
+            if phase_rest.strip():
+                if phase_rest.lstrip().startswith("{"):
+                    flow_keys = _yaml_flow_keys(phase_rest)
+                    if flow_keys.intersection(outputs) and "filters" in flow_keys:
+                        _filter_conflict(channel)
+                else:
+                    _filter_conflict(channel)
+                continue
+            phase_end = item_end
             for candidate in range(phase_line + 1, item_end):
-                stripped = lines[candidate].strip()
                 indent = len(lines[candidate]) - len(lines[candidate].lstrip(" "))
-                if stripped and not stripped.startswith("#") and indent <= phase_indent:
+                if lines[candidate].strip() and indent <= phase_indent:
+                    phase_end = candidate
                     break
-                if stripped in {"current:", "power:"}:
-                    output_indent = indent
-                    for nested in range(candidate + 1, item_end):
-                        nested_value = lines[nested].strip()
-                        nested_indent = len(lines[nested]) - len(
-                            lines[nested].lstrip(" ")
-                        )
-                        if (
-                            nested_value
-                            and not nested_value.startswith("#")
-                            and nested_indent <= output_indent
-                        ):
-                            break
-                        if nested_value == "filters:":
-                            raise ConfigMutationError(
-                                f"existing CT{channel} output filters are not safely writable"
-                            )
+            direct_indents = [
+                len(lines[candidate]) - len(lines[candidate].lstrip(" "))
+                for candidate in range(phase_line + 1, phase_end)
+                if lines[candidate].strip()
+            ]
+            if not direct_indents:
+                continue
+            direct_indent = min(direct_indents)
+            seen_outputs: set[str] = set()
+            for candidate in range(phase_line + 1, phase_end):
+                if not lines[candidate].strip():
+                    continue
+                indent = len(lines[candidate]) - len(lines[candidate].lstrip(" "))
+                if indent != direct_indent:
+                    continue
+                explicit = _yaml_explicit_key(lines[candidate])
+                if explicit in outputs:
+                    _filter_conflict(channel)
+                output = _yaml_mapping(lines[candidate])
+                if output is None:
+                    flow_keys = _yaml_flow_keys(lines[candidate])
+                    if flow_keys.intersection(outputs) and "filters" in flow_keys:
+                        _filter_conflict(channel)
+                    continue
+                _, sequence, output_name, output_rest, _ = output
+                if output_name not in outputs:
+                    continue
+                if sequence or output_name in seen_outputs:
+                    _filter_conflict(channel)
+                seen_outputs.add(output_name)
+                output_end = phase_end
+                for nested in range(candidate + 1, phase_end):
+                    nested_indent = len(lines[nested]) - len(
+                        lines[nested].lstrip(" ")
+                    )
+                    if lines[nested].strip() and nested_indent <= direct_indent:
+                        output_end = nested
+                        break
+                if output_rest.strip():
+                    if not (
+                        output_rest.lstrip().startswith("{")
+                        and "filters" not in _yaml_flow_keys(output_rest)
+                    ):
+                        _filter_conflict(channel)
+                    continue
+                for nested in range(candidate + 1, output_end):
+                    nested_mapping = _yaml_mapping(lines[nested])
+                    if (
+                        nested_mapping is not None
+                        and nested_mapping[2] in {"filters", "<<"}
+                    ) or _yaml_explicit_key(lines[nested]) in {"filters", "<<"}:
+                        _filter_conflict(channel)
+                    nested_keys = _yaml_flow_keys(lines[nested])
+                    if "filters" in nested_keys or re.search(
+                        r"(?:^|\s)[*-][^\s]+", lines[nested].strip()
+                    ):
+                        _filter_conflict(channel)
+
+
+def _yaml_mapping(line: str) -> tuple[int, bool, str, str, bool] | None:
+    match = _YAML_MAPPING_RE.fullmatch(line)
+    if match is None:
+        return None
+    dash = match.group("dash")
+    return (
+        len(match.group("indent")) + (len(dash) if dash is not None else 0),
+        dash is not None,
+        _yaml_key(match.group("key")),
+        match.group("rest"),
+        bool(match.group("decorators")),
+    )
+
+
+def _yaml_explicit_key(line: str) -> str | None:
+    match = _YAML_EXPLICIT_KEY_RE.fullmatch(line)
+    return _yaml_key(match.group("key")) if match is not None else None
+
+
+def _yaml_flow_keys(line: str) -> set[str]:
+    return {_yaml_key(match.group("key")) for match in _YAML_FLOW_KEY_RE.finditer(line)}
+
+
+def _yaml_key(token: str) -> str:
+    if token.startswith('"'):
+        return str(json.loads(token))
+    if token.startswith("'"):
+        return token[1:-1].replace("''", "'")
+    return token
+
+
+def _yaml_identifier(rest: str) -> str | None:
+    value = rest.strip()
+    while (decorator := re.match(r"^(?P<token>![^\s]+|&[^\s]+)\s+", value)) is not None:
+        if decorator.group("token").startswith("!") and decorator.group("token") != "!extend":
+            return None
+        value = value[decorator.end() :]
+    if not value or value.startswith(("*", "{", "[")):
+        return None
+    if value.startswith('"'):
+        try:
+            identifier = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    elif value.startswith("'") and value.endswith("'"):
+        identifier = value[1:-1].replace("''", "'")
+    else:
+        identifier = value
+    if not isinstance(identifier, str) or any(character.isspace() for character in identifier):
+        return None
+    if identifier.startswith("${") and identifier.endswith("}"):
+        identifier = identifier[2:-1]
+    return identifier
+
+
+def _filter_conflict(channel: int) -> None:
+    raise ConfigMutationError(
+        f"existing CT{channel} output filters are not safely writable"
+    )
 
 
 def _substitution_block(
@@ -738,6 +1258,8 @@ def _render_value(key: str, value: str, content: str, current: ConfigScalar) -> 
     old_token = content[current.span.start : current.span.end]
     if _is_gain_key(key):
         return _render_gain(value, old_token)
+    if key == "electric_freq":
+        return _render_frequency(value, old_token)
     return _render_name(value, old_token)
 
 
@@ -745,6 +1267,8 @@ def _render_missing(change: SubstitutionChange, document: ESPHomeConfigDocument)
     quote = _prevailing_quote(document, change.key)
     if _is_gain_key(change.key):
         return _render_gain(change.new_value, quote)
+    if change.key == "electric_freq":
+        return _render_frequency(change.new_value, quote)
     return _render_name(change.new_value, quote)
 
 
@@ -766,6 +1290,12 @@ def _render_gain(value: str, old_token: str) -> str:
     if old_token.startswith('"'):
         return json.dumps(value)
     return value
+
+
+def _render_frequency(value: str, old_token: str) -> str:
+    if old_token.startswith("'"):
+        return "'" + value.replace("'", "''") + "'"
+    return json.dumps(value)
 
 
 def _is_gain_key(key: str) -> bool:
@@ -812,18 +1342,16 @@ def _review_diff(
 
 def _reporting_multiplier_diff(prior_content: str, proposed_content: str) -> str:
     def managed_lines(content: str) -> tuple[str, ...]:
-        start = content.find(_MULTIPLIER_START)
+        start = content.find(_PHASE_OVERRIDE_START)
         if start < 0:
             return ()
-        end = content.find(_MULTIPLIER_END, start)
+        end = content.find(_PHASE_OVERRIDE_END, start)
         return tuple(
-            content[start : end + len(_MULTIPLIER_END)].splitlines()
+            content[start : end + len(_PHASE_OVERRIDE_END)].splitlines()
         )
 
     prior = managed_lines(prior_content)
     proposed = managed_lines(proposed_content)
     if prior == proposed:
         return ""
-    return "\n".join(
-        (*(f"- {line}" for line in prior), *(f"+ {line}" for line in proposed))
-    )
+    return "managed phase overrides updated"

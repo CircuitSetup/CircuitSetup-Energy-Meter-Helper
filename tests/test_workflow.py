@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
@@ -18,6 +19,13 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
 )
 from custom_components.circuitsetup_energy_meter_helper.entity_binding import (
     OffsetControlStatus,
+)
+from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+    expected_meter_entity_evidence,
+)
+from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    CircuitRole,
+    MeterConfigurationRequest,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
     MeterConfigurationInventory,
@@ -37,6 +45,7 @@ from custom_components.circuitsetup_energy_meter_helper.session_manager import (
 )
 from custom_components.circuitsetup_energy_meter_helper.store import (
     MeterConfigurationRead,
+    StoredMeterConfiguration,
 )
 from custom_components.circuitsetup_energy_meter_helper.topology import (
     topology_from_native,
@@ -82,6 +91,10 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             return None
 
     class Store:
+        def __init__(self) -> None:
+            self.configuration: StoredMeterConfiguration | None = None
+            self.stale = False
+
         async def async_save_interrupted_session(self, *_args: Any) -> None:
             return None
 
@@ -96,7 +109,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             self, mac: str
         ) -> MeterConfigurationRead:
             calls.append(mac)
-            return MeterConfigurationRead(None, True)
+            return MeterConfigurationRead(self.configuration, self.stale)
 
     class Hass:
         def __init__(self) -> None:
@@ -111,6 +124,16 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
             return target(*args)
 
+    class Transactions:
+        def __init__(self) -> None:
+            self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+        async def async_preview(
+            self, *args: Any, **kwargs: Any
+        ) -> dict[str, str]:
+            self.calls.append((args, kwargs))
+            return {"transaction_id": str(len(self.calls))}
+
     async def run() -> None:
         provisioning = SimpleNamespace(
             snapshot=SimpleNamespace(
@@ -124,8 +147,9 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
                 )
             )
         )
+        store = Store()
         workflow = EntryWorkflow(
-            Hass(), provisioning, SessionManager(), Store(), "meter", None, Builder()
+            Hass(), provisioning, SessionManager(), store, "meter", None, Builder()
         )
 
         with pytest.raises(WorkflowHandleError, match="owned"):
@@ -133,6 +157,29 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
 
         result = await workflow.async_get_meter_configuration("meter")
         assert workflow._plans[result["plan_id"]].inventory.plan_id == result["plan_id"]
+        authoritative = replace(
+            result["configuration"],
+            channels=(
+                replace(
+                    result["configuration"].channels[0],
+                    role=CircuitRole.GRID,
+                    burden_output_acknowledged=True,
+                ),
+                *result["configuration"].channels[1:],
+            ),
+            power_quality=(True,),
+            status_fields=(True,),
+        )
+        store.configuration = StoredMeterConfiguration(
+            digest,
+            authoritative.meter,
+            authoritative.channels,
+            authoritative.aggregates,
+            authoritative.power_quality,
+            authoritative.status_fields,
+            (),
+            authoritative.multi_reference_preparation_acknowledged,
+        )
         wrapper = await workflow.async_get_ct_inventory("meter")
 
         assert isinstance(
@@ -142,8 +189,154 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert result["source_sha256"] == digest
         assert result["configuration"].meter.friendly_name == "Garage Meter"
         assert wrapper["channels"] == result["channels"]
-        assert "stored_semantics_stale" in result["warnings"]
-        assert calls == ["aabbccddeeff"] * 3
+        assert "stored_semantics_stale" not in result["warnings"]
+        assert calls == ["aabbccddeeff"] * 4
+        wrapper_configuration = workflow._plans[wrapper["plan_id"]].inventory.configuration
+        assert wrapper_configuration.meter == authoritative.meter
+        assert wrapper_configuration.aggregates == authoritative.aggregates
+        assert wrapper_configuration.power_quality == (True,)
+        assert wrapper_configuration.status_fields == (True,)
+        assert wrapper_configuration.channels[0].role is CircuitRole.GRID
+        assert wrapper_configuration.channels[0].burden_output_acknowledged
+
+        transactions = Transactions()
+        workflow.transactions = transactions  # type: ignore[assignment]
+        full = await workflow.async_get_meter_configuration("meter")
+        full_plan = workflow._plans[full["plan_id"]]
+        preview = await workflow.async_preview_meter_configuration(
+            "meter",
+            full["plan_id"],
+            full["source_sha256"],
+            full["configuration"],
+        )
+        expected = expected_meter_entity_evidence(
+            full["configuration"], full_plan.topology
+        )
+        assert preview == {"transaction_id": "1"}
+        assert transactions.calls[0][1]["meter_configuration"].ct_selections
+        assert (
+            transactions.calls[0][1]["expected_sensor_entities"]
+            == expected.sensor_entities
+        )
+        assert (
+            transactions.calls[0][1]["expected_aggregate_sensor_entities"]
+            == expected.aggregate_sensor_entities
+        )
+        assert full_plan.snapshot.content == "" and full["plan_id"] not in workflow._plans
+        with pytest.raises(WorkflowHandleError, match="stale"):
+            await workflow.async_preview_meter_configuration(
+                "meter",
+                full["plan_id"],
+                full["source_sha256"],
+                full["configuration"],
+            )
+
+        stale = await workflow.async_get_meter_configuration("meter")
+        with pytest.raises(WorkflowHandleError, match="stale"):
+            await workflow.async_preview_meter_configuration(
+                "meter", stale["plan_id"], "0" * 64, stale["configuration"]
+            )
+        foreign = await workflow.async_get_meter_configuration("meter")
+        with pytest.raises(WorkflowHandleError, match="stale"):
+            await workflow.async_preview_meter_configuration(
+                "other",
+                foreign["plan_id"],
+                foreign["source_sha256"],
+                foreign["configuration"],
+            )
+
+        ct_wrapper = await workflow.async_get_ct_inventory("meter")
+        wrapper_plan = workflow._plans[ct_wrapper["plan_id"]]
+        wrapper_preview = await workflow.async_preview_ct_config(
+            "meter",
+            ct_wrapper["plan_id"],
+            ct_wrapper["source_sha256"],
+            (
+                {
+                    "channel": 1,
+                    "name": "Kitchen",
+                    "model_id": "sct_006_20a_25ma",
+                },
+            ),
+        )
+        wrapper_configuration = transactions.calls[1][1]["meter_configuration"]
+        assert wrapper_preview == {"transaction_id": "2"}
+        assert wrapper_configuration.channels[0].name == "Kitchen"
+        assert all(
+            channel.name == f"CT {channel.channel}"
+            for channel in wrapper_configuration.channels[1:]
+        )
+        assert len(wrapper_configuration.ct_selections) == 6
+        assert (
+            wrapper_plan.snapshot.content == ""
+            and ct_wrapper["plan_id"] not in workflow._plans
+        )
+        equivalent = await workflow.async_get_meter_configuration("meter")
+        await workflow.async_preview_meter_configuration(
+            "meter",
+            equivalent["plan_id"],
+            equivalent["source_sha256"],
+            MeterConfigurationRequest(
+                wrapper_configuration.meter,
+                wrapper_configuration.channels,
+                wrapper_configuration.aggregates,
+                wrapper_configuration.power_quality,
+                wrapper_configuration.status_fields,
+            ),
+        )
+        assert transactions.calls[2][1]["meter_configuration"] == wrapper_configuration
+        plan_ids = set(workflow._plans)
+        store.stale = True
+        with pytest.raises(WorkflowHandleError, match="stored meter configuration"):
+            await workflow.async_get_meter_configuration("meter")
+        with pytest.raises(WorkflowHandleError, match="stored meter configuration"):
+            await workflow.async_get_ct_inventory("meter")
+        assert set(workflow._plans) == plan_ids
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_calibrated_handoff_delegates_owned_full_ct_context() -> None:
+    """The session boundary forwards calibrated channels and package choices intact."""
+
+    class Transactions:
+        def __init__(self) -> None:
+            self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+        async def async_preview_calibrated_gains(
+            self, *args: Any, **kwargs: Any
+        ) -> dict[str, str]:
+            self.calls.append((args, kwargs))
+            return {"transaction_id": "handoff"}
+
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        handle.state = "verified"
+        handle.calibrated_current_channels.add(1)
+        handle.pending_reporting_multipliers[1] = 2.0
+        transactions = Transactions()
+        workflow.transactions = transactions  # type: ignore[assignment]
+
+        result = await workflow.async_preview_calibrated_gains(
+            handle.session_id,
+            "a" * 32,
+            (
+                {
+                    "channel": 1,
+                    "name": "Kitchen",
+                    "model_id": "ct",
+                    "reporting_multiplier": 2.0,
+                },
+            ),
+            {"power_quality": (False,), "status_fields": (True,)},
+        )
+
+        args, kwargs = transactions.calls[0]
+        assert result == {"transaction_id": "handoff"}
+        assert args[:3] == (MAC, handle.topology, "a" * 32)
+        assert args[3][0].channel == 1 and args[4] == frozenset({1})
+        assert kwargs == {"package_options": {"power_quality": (False,), "status_fields": (True,)}}
         await workflow.async_close()
 
     asyncio.run(run())

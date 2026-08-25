@@ -5,6 +5,9 @@ import asyncio
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper import repairs
+from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
+    ConfigMutationError,
+)
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
     ConfigTransactionState,
     TransactionEvidenceCode,
@@ -71,6 +74,37 @@ def test_unrelated_success_does_not_clear_scoped_issue(monkeypatch) -> None:
     assert "compile_install_interrupted_entry" not in deleted
     asyncio.run(repairs.async_reconcile_issues(object(), "entry", "compile_ct_config", set()))
     assert "compile_install_interrupted_entry" in deleted
+
+
+def test_preview_never_clears_a_persistent_meter_configuration_issue(monkeypatch) -> None:
+    """A proposed request is not authoritative evidence that an issue is resolved."""
+
+    created: list[str] = []
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        repairs.issue_registry,
+        "async_create_issue",
+        lambda _h, _d, issue_id, **_k: created.append(issue_id),
+    )
+    monkeypatch.setattr(
+        repairs.issue_registry,
+        "async_delete_issue",
+        lambda _h, _d, issue_id: deleted.append(issue_id),
+    )
+
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(), "entry", "get_meter_configuration", {"LEGACY_TOTALS_UNMANAGED"}
+        )
+    )
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(), "entry", "preview_meter_configuration", set()
+        )
+    )
+
+    assert created == ["legacy_totals_unmanaged_entry"]
+    assert "legacy_totals_unmanaged_entry" not in deleted
 
 
 def test_unmapped_error_never_clears_operation_owned_issue(monkeypatch) -> None:
@@ -160,6 +194,169 @@ def test_real_frozen_statuses_and_wrapped_errors_emit_repair_signals() -> None:
     assert repairs.signals_from_result(
         EntityBindingMissing("main_1.restore_gain")
     ) == {"CALIBRATION_PACKAGE_MISSING"}
+
+
+def test_meter_configuration_signals_are_scoped_without_threshold_statuses(
+    monkeypatch,
+) -> None:
+    assert repairs.signals_from_result(ConfigMutationError("invalid")) == {
+        "METER_CONFIGURATION_INVALID"
+    }
+    assert repairs.signals_from_result(
+        {
+            "warnings": (
+                "legacy_generic_totals_unmanaged",
+                "voltage_reference_mismatch",
+                "aggregate_entity_mismatch",
+            )
+        }
+    ) == {
+        "LEGACY_TOTALS_UNMANAGED",
+        "VOLTAGE_REFERENCE_MISMATCH",
+        "AGGREGATE_ENTITY_MISMATCH",
+    }
+    assert repairs.signals_from_result(
+        TransactionStatus(
+            "transaction",
+            ConfigTransactionState.FAILED,
+            "a" * 64,
+            (),
+            "",
+            aggregate_entity_mismatch=True,
+        )
+    ) == {"AGGREGATE_ENTITY_MISMATCH"}
+    created: list[str] = []
+    monkeypatch.setattr(
+        repairs.issue_registry,
+        "async_create_issue",
+        lambda _h, _d, issue_id, **_k: created.append(issue_id),
+    )
+    monkeypatch.setattr(repairs.issue_registry, "async_delete_issue", lambda *_: None)
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(),
+            "entry",
+            "preview_meter_configuration",
+            {
+                "METER_CONFIGURATION_INVALID",
+                "LEGACY_TOTALS_UNMANAGED",
+                "VOLTAGE_REFERENCE_MISMATCH",
+                "AGGREGATE_ENTITY_MISMATCH",
+            },
+        )
+    )
+    assert set(created) == {
+        "meter_configuration_invalid_entry",
+        "legacy_totals_unmanaged_entry",
+        "voltage_reference_mismatch_entry",
+        "aggregate_entity_mismatch_entry",
+    }
+
+
+def test_meter_configuration_repair_clears_only_after_verified_full_install(
+    monkeypatch,
+) -> None:
+    created: list[str] = []
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        repairs.issue_registry,
+        "async_create_issue",
+        lambda _h, _d, issue_id, **_k: created.append(issue_id),
+    )
+    monkeypatch.setattr(
+        repairs.issue_registry,
+        "async_delete_issue",
+        lambda _h, _d, issue_id: deleted.append(issue_id),
+    )
+
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(), "entry", "preview_meter_configuration", {"METER_CONFIGURATION_INVALID"}
+        )
+    )
+    bare_install = repairs.signals_from_result(
+        TransactionStatus("bare", ConfigTransactionState.VERIFIED, "a" * 64, (), "")
+    )
+    full_install = repairs.signals_from_result(
+        TransactionStatus(
+            "full",
+            ConfigTransactionState.VERIFIED,
+            "a" * 64,
+            (),
+            "",
+            full_meter_configuration_verified=True,
+        )
+    )
+    assert bare_install == set()
+    assert full_install == {"FULL_METER_CONFIGURATION_VERIFIED"}
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(), "entry", "install_ct_config", bare_install
+        )
+    )
+    assert "meter_configuration_invalid_entry" not in deleted
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(),
+            "entry",
+            "install_ct_config",
+            full_install,
+        )
+    )
+
+    assert created == ["meter_configuration_invalid_entry"]
+    assert "meter_configuration_invalid_entry" in deleted
+
+
+def test_aggregate_repair_clears_only_after_verified_full_install(monkeypatch) -> None:
+    created: list[str] = []
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        repairs.issue_registry,
+        "async_create_issue",
+        lambda _h, _d, issue_id, **_k: created.append(issue_id),
+    )
+    monkeypatch.setattr(
+        repairs.issue_registry,
+        "async_delete_issue",
+        lambda _h, _d, issue_id: deleted.append(issue_id),
+    )
+
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(), "entry", "install_ct_config", {"AGGREGATE_ENTITY_MISMATCH"}
+        )
+    )
+    bare_install = repairs.signals_from_result(
+        TransactionStatus("bare", ConfigTransactionState.VERIFIED, "a" * 64, (), "")
+    )
+    full_install = repairs.signals_from_result(
+        TransactionStatus(
+            "full",
+            ConfigTransactionState.VERIFIED,
+            "a" * 64,
+            (),
+            "",
+            full_meter_configuration_verified=True,
+        )
+    )
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(), "entry", "install_ct_config", bare_install
+        )
+    )
+    assert "aggregate_entity_mismatch_entry" not in deleted
+    asyncio.run(
+        repairs.async_reconcile_issues(
+            object(),
+            "entry",
+            "install_ct_config",
+            full_install,
+        )
+    )
+
+    assert created == ["aggregate_entity_mismatch_entry"]
+    assert deleted.count("aggregate_entity_mismatch_entry") == 1
 
 
 def test_every_builder_dependent_operation_evaluates_builder_repair() -> None:

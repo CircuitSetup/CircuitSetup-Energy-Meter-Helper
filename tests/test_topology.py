@@ -377,6 +377,49 @@ def test_managed_voltage_block_requires_matching_trusted_fingerprint() -> None:
 
 
 @pytest.mark.parametrize(
+    "metadata",
+    (
+        "main=[main_1,main_2];main=[main_1,main_2]",
+        "main=[main_1,main_2];",
+    ),
+)
+def test_sensor_voltage_reference_metadata_fails_closed(metadata: str) -> None:
+    """Owned sensor metadata must have one unambiguous complete assignment."""
+    document = ESPHomeConfigDocument.parse(
+        "sensor:\n"
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        f"  # csemh-voltage-references: {metadata}\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7305\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_native("circuitsetup.6c-energy-meter")
+    trusted = VoltageReferenceTopology((("main", ("main_1", "main_2")),), "helper")
+
+    with pytest.raises(TopologyParseError, match="managed voltage"):
+        voltage_reference_topology_from_config(
+            document, meter, trusted_fingerprint=trusted.fingerprint
+        )
+
+
+def test_comments_outside_owned_sensor_block_cannot_spoof_references() -> None:
+    """Only metadata inside the exact owned block can affect trusted topology."""
+    document = ESPHomeConfigDocument.parse(
+        "# csemh-voltage-references: secondary=[main_1,main_2]\n"
+        "sensor:\n  - platform: uptime\n"
+    )
+    meter = topology_from_native("circuitsetup.6c-energy-meter")
+    trusted = VoltageReferenceTopology(
+        (("secondary", ("main_1", "main_2")),), "helper"
+    )
+
+    assert voltage_reference_topology_from_config(
+        document, meter, trusted_fingerprint=trusted.fingerprint
+    ).source == "legacy"
+
+
+@pytest.mark.parametrize(
     "assignments",
     (
         "  main: [main_1]\n  secondary: 120\n",
