@@ -236,6 +236,4 @@ def _voltage_reference_diff(before: str, after: str) -> str:
     old, new = lines(before), lines(after)
     if old == new:
         return ""
-    return "\n".join(
-        (*(f"- {line}" for line in old), *(f"+ {line}" for line in new))
-    )
+    return "managed voltage-reference overrides updated"

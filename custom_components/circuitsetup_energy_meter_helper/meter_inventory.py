@@ -32,6 +32,7 @@ from .models import (
 from .store import StoredMeterConfiguration
 from .topology import (
     channel_address,
+    voltage_reference_topology_from_config,
     voltage_reference_topology_from_configuration,
     voltage_reference_topology_from_legacy,
 )
@@ -175,7 +176,7 @@ def _stored_request(
     topology: MeterTopology,
     ct_inventory: CTInventory,
 ) -> MeterConfigurationRequest:
-    references = _stored_voltage_references(stored, document)
+    references = _stored_voltage_references(stored, document, topology)
     stored_by_channel = _stored_channels_by_number(stored.channels, topology)
     channels: list[ChannelSettings] = []
     for channel in ct_inventory.channels:
@@ -229,7 +230,12 @@ def _stored_request(
 def _stored_voltage_references(
     stored: StoredMeterConfiguration,
     document: ESPHomeConfigDocument,
+    topology: MeterTopology,
 ) -> tuple[VoltageReferenceConfig, ...]:
+    block = document.managed_blocks.get("voltage_references")
+    if block is not None:
+        _validate_managed_voltage_reference_gains(stored, document, topology)
+        return stored.meter.voltage_references
     references: list[VoltageReferenceConfig] = []
     for reference in stored.meter.voltage_references:
         groups = tuple(
@@ -249,6 +255,60 @@ def _stored_voltage_references(
             replace(reference, gain_voltage=gains.pop())
         )
     return tuple(references)
+
+
+def _validate_managed_voltage_reference_gains(
+    stored: StoredMeterConfiguration,
+    document: ESPHomeConfigDocument,
+    topology: MeterTopology,
+) -> None:
+    """Accept stored gains only when their hash-bound owned block still has them."""
+    block = document.managed_blocks["voltage_references"]
+    sensor = document.writable_sensor_span
+    if sensor is None or not (
+        sensor.start <= block.span.start and block.span.end <= sensor.end
+    ):
+        raise ValueError("managed voltage references are not safely owned")
+    expected = voltage_reference_topology_from_configuration(topology, stored)
+    actual = voltage_reference_topology_from_config(
+        document, topology, trusted_fingerprint=expected.fingerprint
+    )
+    if actual.fingerprint != expected.fingerprint:
+        raise ValueError("managed voltage references are not verified")
+    content = block.content.replace("\r\n", "\n")
+    for reference in stored.meter.voltage_references:
+        for group in reference.group_keys:
+            meter_id = _managed_meter_id(group, document)
+            entries = list(
+                re.finditer(
+                    rf"^  - id: !extend {re.escape(meter_id)}$", content, re.MULTILINE
+                )
+            )
+            if len(entries) != 1:
+                raise ValueError("managed voltage reference gains are ambiguous")
+            start = entries[0].end()
+            next_entry = re.search(r"^  - id: !extend ", content[start:], re.MULTILINE)
+            body = content[start : start + next_entry.start() if next_entry else None]
+            for phase in "abc":
+                if (
+                    f"    phase_{phase}:\n      gain_voltage: {reference.gain_voltage}\n"
+                    not in body
+                ):
+                    raise ValueError("managed voltage reference gain is invalid")
+
+
+def _managed_meter_id(group: str, document: ESPHomeConfigDocument) -> str:
+    board, group_number = group.rsplit("_", 1)
+    meter_key = (
+        f"main_meter_id{group_number}"
+        if board == "main"
+        else f"{board}_id{group_number}"
+    )
+    if meter_key in document.substitutions:
+        return f"${{{meter_key}}}"
+    if board == "main":
+        return f"meter_main{group_number}"
+    return f"{board}_{group_number}"
 
 
 def _legacy_request(

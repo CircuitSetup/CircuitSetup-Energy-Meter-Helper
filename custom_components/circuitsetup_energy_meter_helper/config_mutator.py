@@ -1224,6 +1224,4 @@ def _reporting_multiplier_diff(prior_content: str, proposed_content: str) -> str
     proposed = managed_lines(proposed_content)
     if prior == proposed:
         return ""
-    return "\n".join(
-        (*(f"- {line}" for line in prior), *(f"+ {line}" for line in proposed))
-    )
+    return "managed phase overrides updated"

@@ -34,6 +34,9 @@ from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
     MeterConfigurationInventory,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
+from custom_components.circuitsetup_energy_meter_helper.store import (
+    StoredMeterConfiguration,
+)
 from custom_components.circuitsetup_energy_meter_helper.topology import (
     voltage_reference_topology_from_config,
     voltage_reference_topology_from_configuration,
@@ -126,7 +129,10 @@ def _two_board_topology() -> MeterTopology:
 
 
 def _inventory(
-    snapshot: ESPHomeConfigSnapshot, topology: MeterTopology
+    snapshot: ESPHomeConfigSnapshot,
+    topology: MeterTopology,
+    *,
+    stored: StoredMeterConfiguration | None = None,
 ) -> MeterConfigurationInventory:
     return MeterConfigurationInventory.from_document(
         snapshot.configuration,
@@ -135,6 +141,7 @@ def _inventory(
         CTPresetCatalog.load(),
         VoltageTransformerCatalog.load(),
         snapshot.sha256,
+        stored_configuration=stored,
     )
 
 
@@ -266,6 +273,23 @@ def test_generalized_mutation_renders_electrical_settings_and_references(
     assert block.count("disabled_by_default: true") == 3
     assert "board_revision" not in plan.proposed_content
 
+    stored = StoredMeterConfiguration(
+        sha256(plan.proposed_content.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+    rehydrated_snapshot = replace(
+        snapshot,
+        content=plan.proposed_content,
+        sha256=stored.config_sha256,
+    )
+    rehydrated = _inventory(rehydrated_snapshot, _topology(), stored=stored)
+    assert rehydrated.configuration.meter.voltage_references == requested.meter.voltage_references
+    assert "stored_semantics_stale" not in rehydrated.warnings
+
 
 def test_generalized_mutation_uses_one_representative_per_reference() -> None:
     """Each reference exposes its canonical lowest group only."""
@@ -325,6 +349,152 @@ def test_generalized_mutation_uses_one_representative_per_reference() -> None:
         trusted_fingerprint=expected.fingerprint,
     ).fingerprint == expected.fingerprint
     assert block.count("\n    frequency:") == 2
+
+    stored = StoredMeterConfiguration(
+        sha256(plan.proposed_content.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+    rehydrated = _inventory(
+        replace(snapshot, content=plan.proposed_content, sha256=stored.config_sha256),
+        topology,
+        stored=stored,
+    )
+    assert rehydrated.configuration.meter.voltage_references == requested.meter.voltage_references
+    assert rehydrated.voltage_topology.fingerprint == expected.fingerprint
+
+
+def test_voltage_reference_preview_never_echoes_owned_block_content() -> None:
+    """The review summary stays useful without exposing user-owned YAML values."""
+    snapshot = _snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    initial_request = replace(
+        current.configuration,
+        meter=replace(current.configuration.meter, friendly_name="Initial meter"),
+    )
+    first = build_meter_configuration_mutation(snapshot, topology, current, initial_request)
+    secret_content = first.proposed_content.replace(
+        'name: "${friendly_name} Main Voltage"', "name: super-secret-token"
+    )
+    secret_snapshot = replace(
+        snapshot,
+        content=secret_content,
+        sha256=sha256(secret_content.encode()).hexdigest(),
+    )
+    secret_current = _inventory(secret_snapshot, topology)
+    requested = replace(
+        secret_current.configuration,
+        meter=replace(
+            secret_current.configuration.meter,
+            voltage_references=(
+                replace(
+                    secret_current.configuration.meter.voltage_references[0], gain_voltage=7306
+                ),
+            ),
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(
+        secret_snapshot, topology, secret_current, requested
+    )
+
+    assert "managed voltage-reference overrides updated" in plan.redacted_diff
+    assert "super-secret-token" not in plan.redacted_diff
+
+
+def test_managed_voltage_reference_gains_fail_closed_but_ignore_outside_spoofs() -> None:
+    """Only the exact owned sensor block can retain hash-bound voltage gains."""
+    snapshot = _snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(current.configuration.meter.voltage_references[0], gain_voltage=7305),
+            ),
+        ),
+    )
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    malformed = plan.proposed_content.replace(
+        "gain_voltage: 7305", "gain_voltage: 111", 1
+    )
+    malformed_stored = StoredMeterConfiguration(
+        sha256(malformed.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+    malformed_inventory = _inventory(
+        replace(snapshot, content=malformed, sha256=malformed_stored.config_sha256),
+        topology,
+        stored=malformed_stored,
+    )
+    assert "stored_semantics_stale" in malformed_inventory.warnings
+
+    metadata = "  # csemh-voltage-references: main=[main_1,main_2]\n"
+    ambiguous = plan.proposed_content.replace(metadata, metadata * 2)
+    ambiguous_stored = replace(
+        malformed_stored,
+        config_sha256=sha256(ambiguous.encode()).hexdigest(),
+    )
+    assert "stored_semantics_stale" in _inventory(
+        replace(snapshot, content=ambiguous, sha256=ambiguous_stored.config_sha256),
+        topology,
+        stored=ambiguous_stored,
+    ).warnings
+
+    missing_metadata = plan.proposed_content.replace(metadata, "")
+    missing_metadata_stored = replace(
+        malformed_stored,
+        config_sha256=sha256(missing_metadata.encode()).hexdigest(),
+    )
+    assert "stored_semantics_stale" in _inventory(
+        replace(
+            snapshot,
+            content=missing_metadata,
+            sha256=missing_metadata_stored.config_sha256,
+        ),
+        topology,
+        stored=missing_metadata_stored,
+    ).warnings
+
+    spoofed = plan.proposed_content.replace(
+        "sensor:\n", "# csemh-voltage-references: attacker=[main_1,main_2]\nsensor:\n"
+    )
+    spoofed_stored = replace(
+        malformed_stored,
+        config_sha256=sha256(spoofed.encode()).hexdigest(),
+    )
+    spoofed_inventory = _inventory(
+        replace(snapshot, content=spoofed, sha256=spoofed_stored.config_sha256),
+        topology,
+        stored=spoofed_stored,
+    )
+    assert spoofed_inventory.configuration.meter.voltage_references == requested.meter.voltage_references
+    assert "stored_semantics_stale" not in spoofed_inventory.warnings
+
+
+def test_reporting_preview_never_echoes_owned_block_content() -> None:
+    """The shared phase preview summary cannot reveal earlier YAML content."""
+    before = (
+        "# CircuitSetup Energy Meter Helper: phase overrides v1\n"
+        "  name: super-secret-token\n"
+        "# End CircuitSetup Energy Meter Helper: phase overrides v1\n"
+    )
+    after = before.replace("super-secret-token", "updated")
+
+    assert config_mutator._reporting_multiplier_diff(before, after) == (
+        "managed phase overrides updated"
+    )
 
 
 def test_generalized_mutation_requires_multi_reference_acknowledgement() -> None:
@@ -677,8 +847,7 @@ api:
     assert "multiply: 4" in addon
     assert "reactive_power:" not in addon
     assert "harmonic_power: !remove" not in addon
-    assert "-       power:" in plan.redacted_diff
-    assert "+       reactive_power:" in plan.redacted_diff
+    assert "managed phase overrides updated" in plan.redacted_diff
 
 
 def test_valid_official_legacy_multiplier_block_migrates_without_value_changes() -> None:
@@ -721,8 +890,7 @@ logger:
             "# CT", 1
         )[0]
         assert phase.count(f"multiply: {multiplier}") == 2
-    assert "-     phase_b: # CT2" in plan.redacted_diff
-    assert "+   - id: !extend meter_main1" in plan.redacted_diff
+    assert "managed phase overrides updated" in plan.redacted_diff
 
 
 @pytest.mark.parametrize(
@@ -858,7 +1026,7 @@ def test_reporting_multiplier_uses_configured_id_substitution_and_is_reviewable(
 
     assert "- id: !extend ${main_meter_id1}" in configured_plan.proposed_content
     assert "- id: !extend meter_main1" in legacy_plan.proposed_content
-    assert "+           - multiply: 2" in legacy_plan.redacted_diff
+    assert "managed phase overrides updated" in legacy_plan.redacted_diff
     assert "current_cal_ct2" in legacy_plan.redacted_diff
     assert "top-secret" not in legacy_plan.redacted_diff
 
