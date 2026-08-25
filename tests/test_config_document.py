@@ -398,6 +398,71 @@ def test_rejects_decoded_surrogates_from_all_scalar_consumers(
 
 
 @pytest.mark.parametrize(
+    "content",
+    (
+        '--- "before\nsubstitutions:\n  friendly_name: Spoofed\nafter"\n',
+        '? "before\nsubstitutions:\n  friendly_name: Spoofed\nafter"\n: value\n',
+    ),
+)
+def test_rejects_multiline_quotes_after_document_and_explicit_key_indicators(
+    content: str,
+) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match="line 1"):
+        ESPHomeConfigDocument.parse(content)
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        'opaque: abc:"unterminated\nsubstitutions:\n  friendly_name: Meter\n',
+        'opaque: abc,"unterminated\nsubstitutions:\n  friendly_name: Meter\n',
+    ),
+)
+def test_plain_scalar_quotes_do_not_start_multiline_quote_state(content: str) -> None:
+    assert ESPHomeConfigDocument.parse(content).substitutions["friendly_name"].value == "Meter"
+
+
+@pytest.mark.parametrize(
+    "content, line",
+    (
+        ("anchor_holder: &k substitutions\n*k: {}\n", 2),
+        ("substitutions:\n  ? friendly_name # comment\n  : runtime\n", 2),
+        ("{other: 1, substitutions: {friendly_name: Meter}}\n", 1),
+    ),
+)
+def test_rejects_alias_and_nonfirst_flow_authority_syntax(content: str, line: int) -> None:
+    with pytest.raises(ESPHomeConfigParseError, match=rf"line {line}"):
+        ESPHomeConfigDocument.parse(content)
+
+
+def test_requires_yaml_mapping_separation_for_owned_keys() -> None:
+    doc = ESPHomeConfigDocument.parse(
+        "substitutions:\n  friendly_name:runtime\n  friendly_name\u00a0: Meter\n"
+    )
+
+    assert doc.substitutions == {}
+
+
+def test_sequence_mapping_block_scalar_does_not_hide_sibling_file() -> None:
+    doc = ESPHomeConfigDocument.parse(
+        "packages:\n"
+        "  - config: |-\n"
+        '      unmatched " quote\n'
+        "    file: Software/ESPHome/meter_sensors/main.yaml\n"
+    )
+
+    assert doc.package_files == ("Software/ESPHome/meter_sensors/main.yaml",)
+
+
+def test_root_and_explicit_key_block_scalars_are_opaque() -> None:
+    for content in (
+        '|-\n  unmatched " quote\n',
+        '? note\n: |-\n  unmatched " quote\n',
+    ):
+        assert ESPHomeConfigDocument.parse(content).substitutions == {}
+
+
+@pytest.mark.parametrize(
     "value",
     ("&gain 27518", "*gain", "|", ">-", "!secret ct_gain", "# no value"),
 )

@@ -16,10 +16,10 @@ METER_SETTING_RE = re.compile(
 )
 _KEY_TOKEN_RE = r'''(?:<<|[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
 _MAPPING_RE = re.compile(
-    rf"^(?P<indent> *)(?P<key>{_KEY_TOKEN_RE})\s*:(?P<rest>.*)$"
+    rf"^(?P<indent> *)(?P<key>{_KEY_TOKEN_RE})[ \t]*:(?P<rest>(?:[ \t].*)?)$"
 )
 _SEQUENCE_MAPPING_RE = re.compile(
-    rf"^(?P<indent> *)-\s+(?P<key>{_KEY_TOKEN_RE})\s*:(?P<rest>.*)$"
+    rf"^(?P<indent> *)-[ \t]+(?P<key>{_KEY_TOKEN_RE})[ \t]*:(?P<rest>(?:[ \t].*)?)$"
 )
 _SEQUENCE_RE = re.compile(r"^(?P<indent> *)-\s+(?P<rest>.+)$")
 _YAML_PATH_RE = re.compile(r"(?i)^(.*?\.ya?ml)(?:@.*)?$")
@@ -27,17 +27,21 @@ _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _LINE_BREAK_RE = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
 _LINE_BREAK_FINAL_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 _BLOCK_SCALAR_HEADER_RE = re.compile(
-    r"^(?P<indent> *)(?:-\s+)?(?:[^:#][^:]*:\s*)?(?:(?:![^\s]+|&[^\s]+)\s+)*"
+    r"^(?P<indent> *)(?P<dash>-[ \t]+)?(?:[^:#][^:]*:[ \t]*)?(?:(?:![^\s]+|&[^\s]+)\s+)*"
     r"[|>][1-9+-]*(?:\s+#.*)?$"
 )
+_EXPLICIT_BLOCK_SCALAR_RE = re.compile(
+    r"^(?P<indent> *):[ \t]*(?:(?:![^\s]+|&[^\s]+)\s+)*[|>][1-9+-]*(?:\s+#.*)?$"
+)
 _EXPLICIT_KEY_RE = re.compile(
-    rf"^\s*\?\s+(?P<key>{_KEY_TOKEN_RE})(?:\s*(?::|$))"
+    rf"^[ \t]*\?[ \t]+(?P<key>{_KEY_TOKEN_RE})(?:[ \t]*(?::|#.*|$))"
 )
 _PREFIXED_KEY_RE = re.compile(
     rf"^\s*(?:[!&][^\s]+\s+)+(?P<key>{_KEY_TOKEN_RE})\s*:"
 )
-_FLOW_KEY_RE = re.compile(rf"^\s*[{{[]\s*(?P<key>{_KEY_TOKEN_RE})\s*:")
+_FLOW_KEY_RE = re.compile(rf"[{{,][ \t]*(?P<key>{_KEY_TOKEN_RE})[ \t]*:")
 _MERGE_KEY_RE = re.compile(r"^\s*(?:<<\s*:|!!merge\s+['\"]<<['\"]\s*:)")
+_ALIAS_KEY_RE = re.compile(r"^[ \t]*\*[^\s:]+[ \t]*:")
 _MAX_DOCUMENT_BYTES = 1_048_576
 _MAX_DOCUMENT_LINES = 10_000
 _MAX_SETTING_LENGTH = 64
@@ -128,12 +132,14 @@ class _Mapping:
 
 class _DocumentParser:
     def __init__(self, content: str) -> None:
-        try:
-            content_size = len(content.encode("utf-8"))
-        except UnicodeEncodeError as error:
-            raise ESPHomeConfigParseError("configuration is not valid UTF-8", 1) from error
-        if content_size > _MAX_DOCUMENT_BYTES:
-            raise ESPHomeConfigParseError("configuration exceeds byte limit", 1)
+        content_size = 0
+        for character in content:
+            codepoint = ord(character)
+            if 0xD800 <= codepoint <= 0xDFFF:
+                raise ESPHomeConfigParseError("configuration is not valid UTF-8", 1)
+            content_size += 1 if codepoint < 0x80 else 2 if codepoint < 0x800 else 3 if codepoint < 0x10000 else 4
+            if content_size > _MAX_DOCUMENT_BYTES:
+                raise ESPHomeConfigParseError("configuration exceeds byte limit", 1)
         line_count = 0
         for _ in _LINE_BREAK_RE.finditer(content):
             line_count += 1
@@ -310,24 +316,24 @@ class _DocumentParser:
                     self._block_scalar_lines.add(index)
                     continue
                 block_indent = None
-            header = _BLOCK_SCALAR_HEADER_RE.fullmatch(body)
+            header = _BLOCK_SCALAR_HEADER_RE.fullmatch(body) or _EXPLICIT_BLOCK_SCALAR_RE.fullmatch(body)
             if header is not None:
-                block_indent = len(header.group("indent"))
+                block_indent = len(header.group("indent")) + len(header.groupdict().get("dash") or "")
                 continue
             self._reject_unsafe_structural_syntax(body, index + 1)
             self._reject_multiline_quote(body, index + 1)
 
     def _reject_unsafe_structural_syntax(self, body: str, line: int) -> None:
+        if _ALIAS_KEY_RE.match(body):
+            raise ESPHomeConfigParseError("unsupported structural key syntax", line)
         if _MERGE_KEY_RE.match(body):
             raise ESPHomeConfigParseError(
                 "substitution merges are not locally authoritative", line
             )
         for pattern in (_EXPLICIT_KEY_RE, _PREFIXED_KEY_RE, _FLOW_KEY_RE):
-            match = pattern.match(body)
-            if match is None:
-                continue
-            if self._is_structural_key(self._mapping_key(match.group("key"), line)):
-                raise ESPHomeConfigParseError("unsupported structural key syntax", line)
+            for match in pattern.finditer(body):
+                if self._is_structural_key(self._mapping_key(match.group("key"), line)):
+                    raise ESPHomeConfigParseError("unsupported structural key syntax", line)
 
     @staticmethod
     def _is_structural_key(key: str) -> bool:
@@ -355,6 +361,7 @@ class _DocumentParser:
 
     def _reject_multiline_quote(self, body: str, line: int) -> None:
         expects_token = True
+        flow_depth = 0
         position = 0
         while position < len(body):
             character = body[position]
@@ -363,21 +370,40 @@ class _DocumentParser:
             if character.isspace():
                 position += 1
                 continue
-            if character in "[{,":
+            if body.startswith("---", position) and position == 0 and (
+                len(body) == 3 or body[3] in " \t"
+            ):
+                position = 3
+                expects_token = True
+                continue
+            if character == "?" and expects_token and (
+                position + 1 == len(body) or body[position + 1] in " \t"
+            ):
+                position += 1
+                continue
+            if character in "[{":
+                flow_depth += 1
                 expects_token = True
                 position += 1
                 continue
             if character in "]}":
+                flow_depth = max(0, flow_depth - 1)
                 expects_token = False
                 position += 1
                 continue
-            if character == ":":
+            if character == ":" and (
+                position + 1 == len(body) or body[position + 1] in " \t#[]{}"
+            ):
                 expects_token = True
                 position += 1
                 continue
             if character == "-" and expects_token and (
                 position + 1 == len(body) or body[position + 1].isspace()
             ):
+                position += 1
+                continue
+            if character == "," and flow_depth:
+                expects_token = True
                 position += 1
                 continue
             if expects_token and character in "!&":
