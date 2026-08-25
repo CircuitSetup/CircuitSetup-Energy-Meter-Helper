@@ -1765,6 +1765,42 @@ def test_native_only_session_starts_without_yaml_identity(
     asyncio.run(run())
 
 
+def test_preview_publishes_calibrated_voltage_gain_block_deletion() -> None:
+    """Preview responses expose the managed gain block deletion safely."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+
+        async def call(*args: Any) -> TransactionStatus:
+            del args
+            return TransactionStatus(
+                "transaction",
+                ConfigTransactionState.PREVIEWED,
+                "a" * 64,
+                (SubstitutionChange("calibrated_voltage_gains", "managed", "removed"),),
+                "managed calibrated voltage gains removed",
+            )
+
+        controller.async_call = call  # type: ignore[method-assign]
+        connection = FakeConnection()
+
+        await _invoke(hass, connection, _message(f"{DOMAIN}/preview_ct_config", 1))
+
+        payload = connection.results[-1][1]
+        assert payload["changes"] == [
+            {
+                "key": "meter.calibrated_voltage_gains",
+                "old_value": "managed",
+                "new_value": "removed",
+            }
+        ]
+        assert payload["redacted_diff"] == "managed calibrated voltage gains removed"
+
+    asyncio.run(run())
+
+
 def test_builder_session_uses_legacy_snapshot_configuration_for_calibration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4289,9 +4325,10 @@ def test_transaction_serializer_normalizes_only_known_server_change_dtos() -> No
             SubstitutionChange("electric_freq", "60Hz", "50Hz"),
             SubstitutionChange("power_quality_main", "disabled", "enabled"),
             SubstitutionChange("status_fields_addon1", "disabled", "enabled"),
+            SubstitutionChange("calibrated_voltage_gains", "managed", "removed"),
             SubstitutionChange("not_a_server_key", "old", "new"),
         ),
-        "",
+        "managed calibrated voltage gains removed",
     )
 
     payload = sanitize_payload(status, allow_transaction_change_keys=True)
@@ -4305,7 +4342,9 @@ def test_transaction_serializer_normalizes_only_known_server_change_dtos() -> No
         "meter.line_frequency_hz",
         "package.main.power_quality",
         "package.addon1.status_fields",
+        "meter.calibrated_voltage_gains",
     ]
+    assert payload["redacted_diff"] == "managed calibrated voltage gains removed"
     assert sanitize_payload(
         {"changes": [{"key": "ct1_name", "new_value": "Kitchen"}]},
         allow_transaction_change_keys=True,

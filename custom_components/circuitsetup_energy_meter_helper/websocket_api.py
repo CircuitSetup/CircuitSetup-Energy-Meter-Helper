@@ -127,6 +127,7 @@ _ALLOWED_CHANGE_PATH = re.compile(
     r"(?:meter|voltage_reference|channel|aggregate|package)\.[a-z0-9_.-]+"
 )
 _LEGACY_CHANGE_PATHS = {
+    "calibrated_voltage_gains": "meter.calibrated_voltage_gains",
     "friendly_name": "meter.friendly_name",
     "update_time": "meter.update_interval_s",
     "electric_freq": "meter.line_frequency_hz",
