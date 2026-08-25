@@ -39,6 +39,8 @@ def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
     existing = document.managed_blocks
     position = end
     for name in _ORDER[_ORDER.index(block_name) + 1 :]:
+        if name == "status_overrides":
+            continue
         candidate = existing.get(name)
         if candidate is not None:
             position = candidate.span.start
@@ -132,14 +134,21 @@ def _sensor_bounds(
 
 def _validate_managed_layout(document: ESPHomeConfigDocument) -> None:
     for name, block in document.managed_blocks.items():
+        if name == "status_overrides":
+            continue
         _sensor_bounds(document, name, block.span.start, block.span.end)
     actual = [
         name
         for name, _ in sorted(
             document.managed_blocks.items(), key=lambda item: item[1].span.start
         )
+        if name != "status_overrides"
     ]
-    expected = [name for name in _ORDER if name in document.managed_blocks]
+    expected = [
+        name
+        for name in _ORDER
+        if name != "status_overrides" and name in document.managed_blocks
+    ]
     if actual != expected:
         raise ConfigMutationError("managed blocks are out of canonical order")
 

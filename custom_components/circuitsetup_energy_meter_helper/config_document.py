@@ -61,6 +61,10 @@ MANAGED_BLOCK_MARKERS = {
         "# CircuitSetup Energy Meter Helper: aggregates v1",
         "# End CircuitSetup Energy Meter Helper: aggregates v1",
     ),
+    "status_overrides": (
+        "# CircuitSetup Energy Meter Helper: status overrides v1",
+        "# End CircuitSetup Energy Meter Helper: status overrides v1",
+    ),
 }
 _MANAGED_MARKERS = {
     marker: (name, is_end)

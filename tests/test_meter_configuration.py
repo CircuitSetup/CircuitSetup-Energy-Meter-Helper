@@ -192,6 +192,20 @@ def test_aggregate_invariants_and_direct_multi() -> None:
         validate_meter_configuration(duplicate, topology())
 
 
+def test_aggregates_reject_unused_channels_without_changing_ct_scaling() -> None:
+    value = request()
+    unused = replace(value.channels[2], enabled=False, role=CircuitRole.UNUSED)
+    object.__setattr__(value, "channels", (*value.channels[:2], unused, *value.channels[3:]))
+    aggregate = CircuitAggregate(
+        "dryer", "Dryer", CircuitRole.TWO_POLE, (3,),
+        MeasurementMethod.ONE_CT_DOUBLE_POWER, None, EnergyMode.CONSUMPTION,
+    )
+
+    with pytest.raises(ValueError, match="enabled channels"):
+        validate_meter_configuration(_with_aggregate(value, aggregate), topology())
+    assert unused.reporting_multiplier == 1.0
+
+
 @pytest.mark.parametrize("method,channels", [
     (MeasurementMethod.TWO_CT_SUM, (1, 2)),
     (MeasurementMethod.ONE_CT_DOUBLE_POWER, (1,)),

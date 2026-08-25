@@ -66,6 +66,8 @@ def build_meter_configuration_mutation(
                 name=new.name,
                 model_id=new.model_id,
                 reporting_multiplier=new.reporting_multiplier,
+                enabled=new.enabled,
+                role=new.role,
                 custom_gain_ct=new.custom_gain_ct,
                 custom_label=new.custom_label,
                 burden_output_acknowledged=new.burden_output_acknowledged,

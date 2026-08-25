@@ -965,11 +965,94 @@ def test_unused_channel_removes_all_power_quality_outputs(multiplier: int) -> No
     assert phase.count("multiply: 2") == (2 if multiplier == 2 else 0)
 
 
+def test_unused_channel_hides_runtime_current_and_power_but_keeps_calibration() -> None:
+    """An unused CT remains calibratable without public runtime entities."""
+    snapshot = _package_snapshot()
+    topology = _two_board_topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        channels=tuple(
+            replace(channel, enabled=False, role=CircuitRole.UNUSED)
+            if channel.channel == 3
+            else channel
+            for channel in current.configuration.channels
+        ),
+        power_quality=(True, False),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    phase = plan.proposed_content.split("phase_c: # CT3", 1)[1].split(
+        "# End CircuitSetup", 1
+    )[0]
+    assert "      current:\n        internal: true" in phase
+    assert "      power:\n        internal: true" in phase
+    assert "current_cal_ct3" in plan.proposed_content
+    assert "      current: !remove" not in phase
+    assert "      power: !remove" not in phase
+
+
+def test_unused_channel_hides_its_supported_status_phase_text() -> None:
+    """The official status package exposes each CT status below phase_status."""
+    snapshot = _package_snapshot()
+    topology = _two_board_topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        channels=tuple(
+            replace(channel, enabled=False, role=CircuitRole.UNUSED)
+            if channel.channel == 3
+            else channel
+            for channel in current.configuration.channels
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert (
+        "text_sensor:\n"
+        "# CircuitSetup Energy Meter Helper: status overrides v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_status:\n"
+        "      phase_c:\n"
+        "        internal: true\n"
+        "# End CircuitSetup Energy Meter Helper: status overrides v1\n"
+    ) in plan.proposed_content
+
+
+def test_removing_last_status_override_removes_its_text_sensor_section() -> None:
+    snapshot = _package_snapshot()
+    topology = _two_board_topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        channels=tuple(
+            replace(channel, enabled=False, role=CircuitRole.UNUSED)
+            if channel.channel == 3
+            else channel
+            for channel in current.configuration.channels
+        ),
+    )
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    document = ESPHomeConfigDocument.parse(plan.proposed_content)
+
+    restored = config_mutator._apply_status_overrides(
+        plan.proposed_content,
+        {3: (True, 1.0)},
+        (True, False),
+        document.substitutions,
+    )
+
+    assert "status overrides v1" not in restored
+    assert "\ntext_sensor:\n" not in restored
+
+
 @pytest.mark.parametrize("power_quality", ((False, False), (True, False)))
-def test_generalized_task15_rejects_unsupported_channel_state_changes(
+def test_channel_state_changes_render_runtime_visibility(
     power_quality: tuple[bool, bool],
 ) -> None:
-    """An unsupported semantic request must fail even if its YAML would be a no-op."""
+    """A channel role change is represented by its managed runtime visibility."""
     snapshot = _package_snapshot()
     topology = _two_board_topology()
     current = _inventory(snapshot, topology)
@@ -986,8 +1069,13 @@ def test_generalized_task15_rejects_unsupported_channel_state_changes(
         power_quality=power_quality,
     )
 
-    with pytest.raises(ConfigMutationError, match="semantic"):
-        build_meter_configuration_mutation(snapshot, topology, current, requested)
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    phase = plan.proposed_content.split("phase_a: # CT1", 1)[1].split(
+        "# End CircuitSetup", 1
+    )[0]
+    assert "      current:\n        internal: true" in phase
+    assert "      power:\n        internal: true" in phase
 
 
 def test_phase_overrides_are_board_specific_and_migrate_legacy_scaling() -> None:

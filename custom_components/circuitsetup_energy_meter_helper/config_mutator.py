@@ -34,6 +34,7 @@ _SENSOR_RE = re.compile(r"^sensor:\s*(?:#.*)?(?:\r?\n)?$")
 _ROOT_SENSOR_RE = re.compile(r"^(?:sensor|['\"]sensor['\"])\s*:")
 _TOP_LEVEL_RE = re.compile(r"^[\w-]+:")
 _PHASE_OVERRIDE_START, _PHASE_OVERRIDE_END = MANAGED_BLOCK_MARKERS["phase_overrides"]
+_STATUS_OVERRIDE_START, _STATUS_OVERRIDE_END = MANAGED_BLOCK_MARKERS["status_overrides"]
 _PHASE_OWNER_RE = re.compile(r"^  - id: !extend (?P<id>[\w${}-]+)$")
 _PHASE_HEADER_RE = re.compile(
     r"^    phase_(?P<phase>[abc]): # CT(?P<channel>[1-9]|[1-3][0-9]|4[0-2])$"
@@ -616,9 +617,12 @@ def _apply_reporting_multipliers(
 ) -> str:
     from .config_blocks import render_phase_overrides, replace_managed_block
 
+    if not requests and phase_channels is None:
+        return content
     has_phase_overrides = _PHASE_OVERRIDE_START in content
     document = ESPHomeConfigDocument.parse(content)
-    power_quality = package_options_from_document(document, topology)["power_quality"]
+    package_options = package_options_from_document(document, topology)
+    power_quality = package_options["power_quality"]
     parsed_channels = _read_phase_channel_states(
         content, topology, substitutions, power_quality
     )
@@ -637,7 +641,7 @@ def _apply_reporting_multipliers(
         enabled, _ = channels.get(request.channel, (True, 1.0))
         channels[request.channel] = (enabled, request.reporting_multiplier)
     if not channels and not has_phase_overrides:
-        return content
+        return _apply_status_overrides(content, channels, package_options["status_fields"], substitutions)
     phase_lines = {
         channel: _phase_override_lines(
             enabled, multiplier, power_quality[(channel - 1) // 6]
@@ -675,7 +679,7 @@ def _apply_reporting_multipliers(
         if len(body) > 2:
             entries[f"{channel:02d}"] = "\n".join(body) + "\n"
     if not entries and not has_phase_overrides:
-        return content
+        return _apply_status_overrides(content, channels, package_options["status_fields"], substitutions)
     rendered = render_phase_overrides(entries)
     if (
         rendered
@@ -684,7 +688,12 @@ def _apply_reporting_multipliers(
     ):
         newline = "\r\n" if "\r\n" in content else "\n"
         content += ("" if content.endswith(("\n", "\r")) else newline) + "sensor:" + newline
-    return replace_managed_block(content, "phase_overrides", rendered)
+    return _apply_status_overrides(
+        replace_managed_block(content, "phase_overrides", rendered),
+        channels,
+        package_options["status_fields"],
+        substitutions,
+    )
 
 
 def _phase_override_lines(
@@ -700,6 +709,11 @@ def _phase_override_lines(
             lines.extend(
                 (f"      {output}:", "        filters:", f"          - multiply: {value}")
             )
+    if not enabled:
+        for output in ("current", "power"):
+            if multiplier == 1:
+                lines.append(f"      {output}:")
+            lines.append("        internal: true")
     if power_quality:
         removals = ("harmonic_power", "peak_current") if enabled else (
             "reactive_power",
@@ -711,6 +725,94 @@ def _phase_override_lines(
         )
         lines.extend(f"      {output}: !remove" for output in removals)
     return tuple(lines)
+
+
+def _legacy_unused_phase_override_lines(
+    multiplier: float, power_quality: bool
+) -> tuple[str, ...]:
+    """Recognize the Task 15 shape before unused current/power became internal."""
+    lines: list[str] = []
+    if multiplier != 1:
+        value = f"{multiplier:g}"
+        for output in ("current", "power"):
+            lines.extend(
+                (f"      {output}:", "        filters:", f"          - multiply: {value}")
+            )
+    if power_quality:
+        lines.extend(
+            f"      {output}: !remove"
+            for output in (
+                "reactive_power",
+                "apparent_power",
+                "harmonic_power",
+                "peak_current",
+                "power_factor",
+                "phase_angle",
+            )
+        )
+    return tuple(lines)
+
+
+def _apply_status_overrides(
+    content: str,
+    channels: Mapping[int, tuple[bool, float]],
+    status_fields: tuple[bool, ...],
+    substitutions: Mapping[str, ConfigScalar],
+) -> str:
+    from .config_blocks import render_phase_overrides
+
+    entries: dict[str, str] = {}
+    for channel, (enabled, _) in channels.items():
+        if enabled or not status_fields[(channel - 1) // 6]:
+            continue
+        meter_key, phase = _channel_meter_phase(channel)
+        meter_id = (
+            f"${{{meter_key}}}"
+            if meter_key in substitutions
+            else _canonical_meter_id(meter_key)
+        )
+        entries[f"{channel:02d}"] = (
+            f"  - id: !extend {meter_id}\n"
+            "    phase_status:\n"
+            f"      phase_{phase}:\n"
+            "        internal: true\n"
+        )
+    rendered = render_phase_overrides(entries)
+    document = ESPHomeConfigDocument.parse(content)
+    block = document.managed_blocks.get("status_overrides")
+    newline = "\r\n" if "\r\n" in content else "\n"
+    replacement = (
+        _STATUS_OVERRIDE_START
+        + newline
+        + rendered.replace("\n", newline)
+        + _STATUS_OVERRIDE_END
+        + newline
+    )
+    if block is not None:
+        section_start = _status_section_start(content, block.span.start)
+        if section_start is None:
+            raise ConfigMutationError("status override block is not safely writable")
+        end = block.span.end
+        if content[end : end + 2] == "\r\n":
+            end += 2
+        elif content[end : end + 1] in {"\r", "\n"}:
+            end += 1
+        if not rendered:
+            return content[:section_start] + content[end:]
+        return content[: block.span.start] + replacement + content[end:]
+    if not rendered:
+        return content
+    if re.search(r"(?m)^(?:text_sensor|['\"]text_sensor['\"])[ \t]*:", content):
+        raise ConfigMutationError("status override block needs a dedicated text_sensor section")
+    return content + ("" if content.endswith(("\n", "\r")) else newline) + "text_sensor:" + newline + replacement
+
+
+def _status_section_start(content: str, start: int) -> int | None:
+    preceding = content[:start]
+    header = re.search(r"(?m)^text_sensor:[ \t]*(?:#.*)?\r?\n$", preceding)
+    if header is None or preceding[header.end() :].strip():
+        return None
+    return header.start()
 
 
 def _read_phase_channel_states(
@@ -769,16 +871,22 @@ def _read_phase_channel_states(
                 raise ConfigMutationError(
                     "reporting multiplier block is not safely writable"
                 )
-            multiplier = _managed_phase_multiplier(body)
             board_pq = power_quality[(channel - 1) // 6]
-            legacy = _phase_override_lines(True, multiplier, False)
-            enabled = _phase_override_lines(True, multiplier, board_pq)
-            unused = _phase_override_lines(False, multiplier, board_pq)
-            if body == unused and unused != enabled:
-                state = _PhaseChannelState(False, multiplier)
-            elif body in {legacy, enabled}:
-                state = _PhaseChannelState(True, multiplier)
-            else:
+            state: _PhaseChannelState | None = None
+            for multiplier in REPORTING_MULTIPLIERS:
+                legacy = _phase_override_lines(True, multiplier, False)
+                enabled = _phase_override_lines(True, multiplier, board_pq)
+                unused = _phase_override_lines(False, multiplier, board_pq)
+                legacy_unused = _legacy_unused_phase_override_lines(
+                    multiplier, board_pq
+                )
+                if body in {unused, legacy_unused} and unused != enabled:
+                    state = _PhaseChannelState(False, multiplier)
+                    break
+                if body in {legacy, enabled}:
+                    state = _PhaseChannelState(True, multiplier)
+                    break
+            if state is None:
                 raise ConfigMutationError(
                     "reporting multiplier block is not safely writable"
                 )
@@ -788,28 +896,6 @@ def _read_phase_channel_states(
         if owner_entries == 0:
             raise ConfigMutationError("reporting multiplier block is not safely writable")
     return states
-
-
-def _managed_phase_multiplier(body: tuple[str, ...]) -> float:
-    if not body or body[0] != "      current:":
-        return 1
-    if len(body) < 6 or body[1] != "        filters:" or body[3:5] != (
-        "      power:",
-        "        filters:",
-    ):
-        raise ConfigMutationError("reporting multiplier block is not safely writable")
-    current = re.fullmatch(r"          - multiply: (?P<value>[^\s]+)", body[2])
-    power = re.fullmatch(r"          - multiply: (?P<value>[^\s]+)", body[5])
-    if current is None or power is None:
-        raise ConfigMutationError("reporting multiplier block is not safely writable")
-    try:
-        current_value = float(current.group("value"))
-        power_value = float(power.group("value"))
-    except ValueError as error:
-        raise ConfigMutationError("reporting multiplier block is not safely writable") from error
-    if current_value != power_value or current_value not in REPORTING_MULTIPLIERS:
-        raise ConfigMutationError("reporting multiplier block is not safely writable")
-    return current_value
 
 
 def _channel_meter_phase(channel: int) -> tuple[str, str]:
