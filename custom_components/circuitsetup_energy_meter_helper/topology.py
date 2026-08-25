@@ -224,10 +224,8 @@ def _managed_voltage_reference_assignments(
     if any(inferred) and not all(inferred):
         raise TopologyParseError("mixed voltage-reference mapping forms are invalid")
     if all(inferred):
-        if len(entries) == 1:
-            return ((entries[0][0], expected),)
         return tuple(
-            (reference_id, expected[index::2])
+            (reference_id, expected[index::len(entries)])
             for index, (reference_id, _) in enumerate(entries)
         )
     return tuple((reference_id, groups or ()) for reference_id, groups in entries)

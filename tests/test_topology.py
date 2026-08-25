@@ -493,6 +493,55 @@ def test_trusted_managed_voltage_block_accepts_bounded_reference_counts(
     assert meter.board_count == addon_count + 1
 
 
+@pytest.mark.parametrize(
+    ("project_suffix", "references"),
+    (
+        (
+            "-1-addon",
+            (
+                ("ref0", ("main_1", "addon1_2")),
+                ("ref1", ("main_2",)),
+                ("ref2", ("addon1_1",)),
+            ),
+        ),
+        (
+            "-3-addons",
+            (
+                ("ref0", ("main_1",)),
+                ("ref1", ("main_2",)),
+                ("ref2", ("addon1_1",)),
+                ("ref3", ("addon1_2",)),
+                ("ref4", ("addon2_1",)),
+                ("ref5", ("addon2_2",)),
+                ("ref6", ("addon3_1",)),
+                ("ref7", ("addon3_2",)),
+            ),
+        ),
+    ),
+    ids=("three", "eight"),
+)
+def test_trusted_scalar_voltage_block_uses_canonical_round_robin_coverage(
+    project_suffix: str,
+    references: tuple[tuple[str, tuple[str, ...]], ...],
+) -> None:
+    document = ESPHomeConfigDocument.parse(
+        "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter"
+        f"{project_suffix}\n"
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "voltage_references:\n"
+        + "".join(f"  {reference_id}: 120\n" for reference_id, _ in references)
+        + "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+    meter = topology_from_config(document)
+    trusted = VoltageReferenceTopology(references, "helper")
+
+    voltage = voltage_reference_topology_from_config(
+        document, meter, trusted_fingerprint=trusted.fingerprint
+    )
+
+    assert voltage.references == references
+
+
 @pytest.mark.parametrize("reference_count", (0, 9), ids=("zero", "nine"))
 def test_trusted_managed_voltage_block_rejects_counts_outside_one_to_eight(
     reference_count: int,
