@@ -41,7 +41,7 @@ _PHASE_HEADER_RE = re.compile(
 )
 _PLAIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]*$")
 _YAML_RESERVED = {"null", "true", "false", "yes", "no", "on", "off", "~"}
-_YAML_KEY_TOKEN = r"""(?:[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")"""
+_YAML_KEY_TOKEN = r'''(?:[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
 _YAML_MAPPING_RE = re.compile(
     rf"^(?P<indent> *)(?P<dash>-[ \t]+)?"
     rf"(?P<decorators>(?:(?:![^\s]+|&[^\s]+)[ \t]+)*)"
@@ -140,12 +140,12 @@ def build_ct_mutation(
             ct_catalog,
             voltage_catalog,
             snapshot.sha256,
-            configuration_authoritative=getattr(
-                snapshot, "configuration_authoritative", True
-            ),
+            configuration_authoritative=getattr(snapshot, "configuration_authoritative", True),
         )
     except ValueError:
-        plan = _build_ct_mutation(snapshot, topology, requests, package_options=options)
+        plan = _build_ct_mutation(
+            snapshot, topology, requests, package_options=options
+        )
         MeterConfigurationInventory.from_document(
             snapshot.configuration,
             ESPHomeConfigDocument.parse(plan.proposed_content),
@@ -168,11 +168,7 @@ def build_ct_mutation(
                 custom_label=request.custom_label,
                 burden_output_acknowledged=request.burden_output_acknowledged,
             )
-            if (
-                request := next(
-                    (item for item in requests if item.channel == channel.channel), None
-                )
-            )
+            if (request := next((item for item in requests if item.channel == channel.channel), None))
             is not None
             else channel
             for channel in current.configuration.channels
@@ -253,9 +249,7 @@ def _apply_package_options(
         or any(type(value) is not bool for value in values)
         for values in desired.values()
     ):
-        raise ConfigMutationError(
-            "package options require one state per installed board"
-        )
+        raise ConfigMutationError("package options require one state per installed board")
 
     lines = content.splitlines(keepends=True)
     changes: list[SubstitutionChange] = []
@@ -350,7 +344,8 @@ def build_calibrated_gain_mutation(
         verified.topology_addon_count != topology.addon_count
         or verified.topology_project_name != topology.project_name
         or verified.topology_connection_type != topology.connection_type
-        or verified.topology_voltage_fingerprint != current_voltage_fingerprint
+        or verified.topology_voltage_fingerprint
+        != current_voltage_fingerprint
     ):
         raise ConfigMutationError("verified calibration topology does not match target")
     requests = tuple(requested_channels)
@@ -649,9 +644,7 @@ def _apply_reporting_multipliers(
         enabled, _ = channels.get(request.channel, (True, 1.0))
         channels[request.channel] = (enabled, request.reporting_multiplier)
     if not channels and not has_phase_overrides:
-        return _apply_status_overrides(
-            content, channels, package_options["status_fields"], substitutions
-        )
+        return _apply_status_overrides(content, channels, package_options["status_fields"], substitutions)
     phase_lines = {
         channel: _phase_override_lines(
             enabled, multiplier, power_quality[(channel - 1) // 6]
@@ -689,9 +682,7 @@ def _apply_reporting_multipliers(
         if len(body) > 2:
             entries[f"{channel:02d}"] = "\n".join(body) + "\n"
     if not entries and not has_phase_overrides:
-        return _apply_status_overrides(
-            content, channels, package_options["status_fields"], substitutions
-        )
+        return _apply_status_overrides(content, channels, package_options["status_fields"], substitutions)
     rendered = render_phase_overrides(entries)
     if (
         rendered
@@ -699,9 +690,7 @@ def _apply_reporting_multipliers(
         and not any(_ROOT_SENSOR_RE.match(line) for line in content.splitlines())
     ):
         newline = "\r\n" if "\r\n" in content else "\n"
-        content += (
-            ("" if content.endswith(("\n", "\r")) else newline) + "sensor:" + newline
-        )
+        content += ("" if content.endswith(("\n", "\r")) else newline) + "sensor:" + newline
     return _apply_status_overrides(
         replace_managed_block(content, "phase_overrides", rendered),
         channels,
@@ -753,11 +742,7 @@ def _phase_override_lines(
             outputs.extend(("reactive_power", "apparent_power"))
         for output in outputs:
             lines.extend(
-                (
-                    f"      {output}:",
-                    "        filters:",
-                    f"          - multiply: {value}",
-                )
+                (f"      {output}:", "        filters:", f"          - multiply: {value}")
             )
     if not enabled:
         for output in ("current", "power"):
@@ -765,17 +750,13 @@ def _phase_override_lines(
                 lines.append(f"      {output}:")
             lines.append("        internal: true")
     if power_quality:
-        removals = (
-            ("harmonic_power", "peak_current")
-            if enabled
-            else (
-                "reactive_power",
-                "apparent_power",
-                "harmonic_power",
-                "peak_current",
-                "power_factor",
-                "phase_angle",
-            )
+        removals = ("harmonic_power", "peak_current") if enabled else (
+            "reactive_power",
+            "apparent_power",
+            "harmonic_power",
+            "peak_current",
+            "power_factor",
+            "phase_angle",
         )
         lines.extend(f"      {output}: !remove" for output in removals)
     return tuple(lines)
@@ -790,11 +771,7 @@ def _legacy_unused_phase_override_lines(
         value = f"{multiplier:g}"
         for output in ("current", "power"):
             lines.extend(
-                (
-                    f"      {output}:",
-                    "        filters:",
-                    f"          - multiply: {value}",
-                )
+                (f"      {output}:", "        filters:", f"          - multiply: {value}")
             )
     if power_quality:
         lines.extend(
@@ -864,16 +841,8 @@ def _apply_status_overrides(
     if not rendered:
         return content
     if re.search(r"(?m)^(?:text_sensor|['\"]text_sensor['\"])[ \t]*:", content):
-        raise ConfigMutationError(
-            "status override block needs a dedicated text_sensor section"
-        )
-    return (
-        content
-        + ("" if content.endswith(("\n", "\r")) else newline)
-        + "text_sensor:"
-        + newline
-        + replacement
-    )
+        raise ConfigMutationError("status override block needs a dedicated text_sensor section")
+    return content + ("" if content.endswith(("\n", "\r")) else newline) + "text_sensor:" + newline + replacement
 
 
 def _status_section(
@@ -905,9 +874,7 @@ def _status_section(
     section_start = offsets[header_index]
     section_content_start = section_start + len(document.lines[header_index])
     section_content_end = (
-        offsets[section_end]
-        if section_end < len(document.lines)
-        else len(document.content)
+        offsets[section_end] if section_end < len(document.lines) else len(document.content)
     )
     if (
         block_index >= section_end
@@ -918,9 +885,7 @@ def _status_section(
     has_user_content = bool(
         (
             document.content[section_content_start:block_start]
-            + document.content[
-                section_start + len("text_sensor:") : section_content_start
-            ]
+            + document.content[section_start + len("text_sensor:") : section_content_start]
             + document.content[block_end:section_content_end]
         ).strip()
     )
@@ -934,13 +899,8 @@ def _read_phase_channel_states(
     power_quality: tuple[bool, ...],
 ) -> dict[int, _PhaseChannelState]:
     """Read every exact helper-owned phase state needed for safe rewriting."""
-    starts = [
-        match.start()
-        for match in re.finditer(re.escape(_PHASE_OVERRIDE_START), content)
-    ]
-    ends = [
-        match.end() for match in re.finditer(re.escape(_PHASE_OVERRIDE_END), content)
-    ]
+    starts = [match.start() for match in re.finditer(re.escape(_PHASE_OVERRIDE_START), content)]
+    ends = [match.end() for match in re.finditer(re.escape(_PHASE_OVERRIDE_END), content)]
     if len(starts) != len(ends) or len(starts) > 1 or starts and starts[0] >= ends[0]:
         raise ConfigMutationError("reporting multiplier block is not safely writable")
     if not starts:
@@ -954,9 +914,7 @@ def _read_phase_channel_states(
     while index < len(managed):
         owner = _PHASE_OWNER_RE.fullmatch(managed[index])
         if owner is None:
-            raise ConfigMutationError(
-                "reporting multiplier block is not safely writable"
-            )
+            raise ConfigMutationError("reporting multiplier block is not safely writable")
         owner_id = owner.group("id")
         index += 1
         owner_entries = 0
@@ -1015,9 +973,7 @@ def _read_phase_channel_states(
             seen.add(channel)
             owner_entries += 1
         if owner_entries == 0:
-            raise ConfigMutationError(
-                "reporting multiplier block is not safely writable"
-            )
+            raise ConfigMutationError("reporting multiplier block is not safely writable")
     return states
 
 
@@ -1095,7 +1051,11 @@ def _reject_local_output_filters(
         direct_indent = min(child_indents) if child_indents else None
         direct_ids: list[tuple[str, bool]] = []
         first_mapping = _yaml_mapping(line)
-        if first_mapping is not None and first_mapping[1] and first_mapping[2] == "id":
+        if (
+            first_mapping is not None
+            and first_mapping[1]
+            and first_mapping[2] == "id"
+        ):
             direct_ids.append((first_mapping[3], first_mapping[4]))
         if direct_indent is not None:
             direct_ids.extend(
@@ -1107,7 +1067,9 @@ def _reject_local_output_filters(
                 and candidate_mapping[2] == "id"
             )
         explicit_id = "id" in {
-            _yaml_explicit_key(re.sub(r"^( *)-\s+", r"\1", lines[candidate], count=1))
+            _yaml_explicit_key(
+                re.sub(r"^( *)-\s+", r"\1", lines[candidate], count=1)
+            )
             for candidate in range(index, item_end)
         }
         flow_id = line.lstrip().startswith("- {") and "id" in _yaml_flow_keys(line)
@@ -1202,7 +1164,9 @@ def _reject_local_output_filters(
                 seen_outputs.add(output_name)
                 output_end = phase_end
                 for nested in range(candidate + 1, phase_end):
-                    nested_indent = len(lines[nested]) - len(lines[nested].lstrip(" "))
+                    nested_indent = len(lines[nested]) - len(
+                        lines[nested].lstrip(" ")
+                    )
                     if lines[nested].strip() and nested_indent <= direct_indent:
                         output_end = nested
                         break
@@ -1261,10 +1225,7 @@ def _yaml_key(token: str) -> str:
 def _yaml_identifier(rest: str) -> str | None:
     value = rest.strip()
     while (decorator := re.match(r"^(?P<token>![^\s]+|&[^\s]+)\s+", value)) is not None:
-        if (
-            decorator.group("token").startswith("!")
-            and decorator.group("token") != "!extend"
-        ):
+        if decorator.group("token").startswith("!") and decorator.group("token") != "!extend":
             return None
         value = value[decorator.end() :]
     if not value or value.startswith(("*", "{", "[")):
@@ -1278,9 +1239,7 @@ def _yaml_identifier(rest: str) -> str | None:
         identifier = value[1:-1].replace("''", "'")
     else:
         identifier = value
-    if not isinstance(identifier, str) or any(
-        character.isspace() for character in identifier
-    ):
+    if not isinstance(identifier, str) or any(character.isspace() for character in identifier):
         return None
     if identifier.startswith("${") and identifier.endswith("}"):
         identifier = identifier[2:-1]
@@ -1435,7 +1394,9 @@ def _reporting_multiplier_diff(prior_content: str, proposed_content: str) -> str
         if start < 0:
             return ()
         end = content.find(_PHASE_OVERRIDE_END, start)
-        return tuple(content[start : end + len(_PHASE_OVERRIDE_END)].splitlines())
+        return tuple(
+            content[start : end + len(_PHASE_OVERRIDE_END)].splitlines()
+        )
 
     prior = managed_lines(prior_content)
     proposed = managed_lines(proposed_content)

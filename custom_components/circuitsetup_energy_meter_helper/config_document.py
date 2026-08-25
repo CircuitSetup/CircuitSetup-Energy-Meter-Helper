@@ -14,7 +14,7 @@ METER_ID_RE = re.compile(r"^(?:main_meter_id[12]|addon[1-6]_id[12])$")
 METER_SETTING_RE = re.compile(
     r"^(?:friendly_name|update_time|electric_freq|csemh_config_contract)$"
 )
-_KEY_TOKEN_RE = r"""(?:<<|[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")"""
+_KEY_TOKEN_RE = r'''(?:<<|[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
 _MAPPING_RE = re.compile(
     rf"^(?P<indent> *)(?P<key>{_KEY_TOKEN_RE})[ \t]*:(?P<rest>(?:[ \t].*)?)$"
 )
@@ -40,7 +40,9 @@ _EXPLICIT_BLOCK_SCALAR_RE = re.compile(
 _EXPLICIT_KEY_RE = re.compile(
     rf"^[ \t]*\?[ \t]+(?P<key>{_KEY_TOKEN_RE})(?:[ \t]*(?::|#.*|$))"
 )
-_PREFIXED_KEY_RE = re.compile(rf"^\s*(?:[!&*][^\s]+\s+)+(?P<key>{_KEY_TOKEN_RE})\s*:")
+_PREFIXED_KEY_RE = re.compile(
+    rf"^\s*(?:[!&*][^\s]+\s+)+(?P<key>{_KEY_TOKEN_RE})\s*:"
+)
 _DECORATED_EXPLICIT_KEY_RE = re.compile(
     rf"^[ \t]*\?[ \t]+(?:[!&*][^\s]+[ \t]+)+(?P<key>{_KEY_TOKEN_RE})(?:[ \t]*(?::|#.*|$))"
 )
@@ -161,15 +163,7 @@ class _DocumentParser:
             codepoint = ord(character)
             if 0xD800 <= codepoint <= 0xDFFF:
                 raise ESPHomeConfigParseError("configuration is not valid UTF-8", 1)
-            content_size += (
-                1
-                if codepoint < 0x80
-                else 2
-                if codepoint < 0x800
-                else 3
-                if codepoint < 0x10000
-                else 4
-            )
+            content_size += 1 if codepoint < 0x80 else 2 if codepoint < 0x800 else 3 if codepoint < 0x10000 else 4
             if content_size > _MAX_DOCUMENT_BYTES:
                 raise ESPHomeConfigParseError("configuration exceeds byte limit", 1)
         line_count = 0
@@ -228,9 +222,7 @@ class _DocumentParser:
             mapping = self._mapping(index)
             if mapping is not None and mapping.indent == 0:
                 roots.append((index, mapping))
-        matches = [
-            (index, mapping) for index, mapping in roots if mapping.key == "sensor"
-        ]
+        matches = [(index, mapping) for index, mapping in roots if mapping.key == "sensor"]
         if len(matches) != 1:
             return None
         start_index, mapping = matches[0]
@@ -256,11 +248,8 @@ class _DocumentParser:
             if sequence_indent is not None:
                 if item_indent is None:
                     item_indent = sequence_indent
-                elif (
-                    sequence_indent != item_indent
-                    and not self._nested_sensor_sequence(
-                        index, start_index, sequence_indent
-                    )
+                elif sequence_indent != item_indent and not self._nested_sensor_sequence(
+                    index, start_index, sequence_indent
                 ):
                     return None
                 continue
@@ -270,11 +259,7 @@ class _DocumentParser:
             if mapping is None and not body.startswith(" "):
                 return None
         start = self._offsets[start_index] + len(self.lines[start_index])
-        end = (
-            self._offsets[end_index]
-            if end_index < len(self.lines)
-            else len(self.content)
-        )
+        end = self._offsets[end_index] if end_index < len(self.lines) else len(self.content)
         return (
             SourceSpan(start, end, start_index + 2, 0, 0),
             item_indent if item_indent is not None else 2,
@@ -389,14 +374,7 @@ class _DocumentParser:
     def _validate_meter_setting(key: str, value: str, line: int) -> None:
         if not value or len(value) > _MAX_SETTING_LENGTH or _CONTROL_RE.search(value):
             raise ESPHomeConfigParseError("meter setting is not safely bounded", line)
-        if key == "update_time" and value not in {
-            "1s",
-            "2s",
-            "5s",
-            "10s",
-            "30s",
-            "60s",
-        }:
+        if key == "update_time" and value not in {"1s", "2s", "5s", "10s", "30s", "60s"}:
             raise ESPHomeConfigParseError("unsupported update_time", line)
         if key == "electric_freq" and value not in {"50Hz", "60Hz"}:
             raise ESPHomeConfigParseError("unsupported electric_freq", line)
@@ -419,14 +397,10 @@ class _DocumentParser:
                 open_block = (name, index)
                 continue
             if open_block is None:
-                raise ESPHomeConfigParseError(
-                    "managed block ends before it starts", index + 1
-                )
+                raise ESPHomeConfigParseError("managed block ends before it starts", index + 1)
             open_name, start = open_block
             if name != open_name:
-                raise ESPHomeConfigParseError(
-                    "mismatched managed block marker", index + 1
-                )
+                raise ESPHomeConfigParseError("mismatched managed block marker", index + 1)
             span = SourceSpan(
                 start=self._offsets[start],
                 end=self._offsets[index] + len(self._bodies[index]),
@@ -437,9 +411,7 @@ class _DocumentParser:
             blocks[name] = ManagedBlock(self.content[span.start : span.end], span)
             open_block = None
         if open_block is not None:
-            raise ESPHomeConfigParseError(
-                "unterminated managed block", open_block[1] + 1
-            )
+            raise ESPHomeConfigParseError("unterminated managed block", open_block[1] + 1)
         return blocks
 
     @staticmethod
@@ -471,7 +443,9 @@ class _DocumentParser:
             elif character in "\"'":
                 quote = character
                 escaped = False
-            elif character == "#" and (position == 0 or body[position - 1].isspace()):
+            elif character == "#" and (
+                position == 0 or body[position - 1].isspace()
+            ):
                 return body[:position].rstrip()
             position += 1
         return body.rstrip()
@@ -492,9 +466,7 @@ class _DocumentParser:
                 block_indent = None
             structural_body = f"? {body.lstrip()}" if explicit_key else body
             self._reject_unsafe_structural_syntax(structural_body, index + 1)
-            header = _BLOCK_SCALAR_HEADER_RE.fullmatch(
-                body
-            ) or _EXPLICIT_BLOCK_SCALAR_RE.fullmatch(body)
+            header = _BLOCK_SCALAR_HEADER_RE.fullmatch(body) or _EXPLICIT_BLOCK_SCALAR_RE.fullmatch(body)
             if header is not None:
                 block_indent = len(header.group("indent"))
                 if header.groupdict().get("dash") and header.groupdict().get("mapping"):
@@ -512,17 +484,10 @@ class _DocumentParser:
             raise ESPHomeConfigParseError(
                 "substitution merges are not locally authoritative", line
             )
-        for pattern in (
-            _EXPLICIT_KEY_RE,
-            _DECORATED_EXPLICIT_KEY_RE,
-            _PREFIXED_KEY_RE,
-            _FLOW_KEY_RE,
-        ):
+        for pattern in (_EXPLICIT_KEY_RE, _DECORATED_EXPLICIT_KEY_RE, _PREFIXED_KEY_RE, _FLOW_KEY_RE):
             for match in pattern.finditer(body):
                 if self._is_structural_key(self._mapping_key(match.group("key"), line)):
-                    raise ESPHomeConfigParseError(
-                        "unsupported structural key syntax", line
-                    )
+                    raise ESPHomeConfigParseError("unsupported structural key syntax", line)
 
     @staticmethod
     def _is_structural_key(key: str) -> bool:
@@ -573,18 +538,14 @@ class _DocumentParser:
             if character.isspace():
                 position += 1
                 continue
-            if (
-                body.startswith("---", position)
-                and position == 0
-                and (len(body) == 3 or body[3] in " \t")
+            if body.startswith("---", position) and position == 0 and (
+                len(body) == 3 or body[3] in " \t"
             ):
                 position = 3
                 expects_token = True
                 continue
-            if (
-                character == "?"
-                and expects_token
-                and (position + 1 == len(body) or body[position + 1] in " \t")
+            if character == "?" and expects_token and (
+                position + 1 == len(body) or body[position + 1] in " \t"
             ):
                 explicit_key = True
                 position += 1
@@ -610,10 +571,8 @@ class _DocumentParser:
                 expects_token = True
                 position += 1
                 continue
-            if (
-                character == "-"
-                and expects_token
-                and (position + 1 == len(body) or body[position + 1].isspace())
+            if character == "-" and expects_token and (
+                position + 1 == len(body) or body[position + 1].isspace()
             ):
                 position += 1
                 continue
@@ -631,7 +590,7 @@ class _DocumentParser:
                 try:
                     end = (
                         self._double_quote_end(body[position:], line)
-                        if character == '"'
+                        if character == "\""
                         else self._single_quote_end(body[position:], line)
                     )
                 except ESPHomeConfigParseError as error:
@@ -717,9 +676,10 @@ class _DocumentParser:
         index, mapping = matches[0]
         if not self._has_value(mapping.rest) and index + 1 < end:
             continuation = self._bodies[index + 1]
-            if len(continuation) - len(
-                continuation.lstrip(" ")
-            ) > mapping.indent and continuation.lstrip(" ").startswith("github://"):
+            if (
+                len(continuation) - len(continuation.lstrip(" ")) > mapping.indent
+                and continuation.lstrip(" ").startswith("github://")
+            ):
                 return self._scalar_parts(index + 1, continuation, 0)
         return self._scalar(index, mapping)
 
@@ -829,21 +789,17 @@ class _DocumentParser:
     def _mapping_key(token: str, line: int) -> str:
         if token[0] == "'":
             value = token[1:-1].replace("''", "'")
-        elif token[0] == '"':
+        elif token[0] == "\"":
             try:
                 value = json.loads(token)
             except json.JSONDecodeError as error:
-                raise ESPHomeConfigParseError(
-                    "invalid quoted mapping key", line
-                ) from error
+                raise ESPHomeConfigParseError("invalid quoted mapping key", line) from error
         else:
             value = token
         try:
             value.encode("utf-8")
         except UnicodeEncodeError as error:
-            raise ESPHomeConfigParseError(
-                "mapping key is not valid UTF-8", line
-            ) from error
+            raise ESPHomeConfigParseError("mapping key is not valid UTF-8", line) from error
         if _CONTROL_RE.search(value):
             raise ESPHomeConfigParseError("mapping key is not safely bounded", line)
         return value

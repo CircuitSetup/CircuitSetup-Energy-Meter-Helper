@@ -128,7 +128,9 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         def __init__(self) -> None:
             self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
-        async def async_preview(self, *args: Any, **kwargs: Any) -> dict[str, str]:
+        async def async_preview(
+            self, *args: Any, **kwargs: Any
+        ) -> dict[str, str]:
             self.calls.append((args, kwargs))
             return {"transaction_id": str(len(self.calls))}
 
@@ -183,17 +185,13 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert isinstance(
             workflow._plans[wrapper["plan_id"]].inventory, MeterConfigurationInventory
         )
-        assert (
-            workflow._plans[wrapper["plan_id"]].inventory.plan_id == wrapper["plan_id"]
-        )
+        assert workflow._plans[wrapper["plan_id"]].inventory.plan_id == wrapper["plan_id"]
         assert result["source_sha256"] == digest
         assert result["configuration"].meter.friendly_name == "Garage Meter"
         assert wrapper["channels"] == result["channels"]
         assert "stored_semantics_stale" not in result["warnings"]
         assert calls == ["aabbccddeeff"] * 4
-        wrapper_configuration = workflow._plans[
-            wrapper["plan_id"]
-        ].inventory.configuration
+        wrapper_configuration = workflow._plans[wrapper["plan_id"]].inventory.configuration
         assert wrapper_configuration.meter == authoritative.meter
         assert wrapper_configuration.aggregates == authoritative.aggregates
         assert wrapper_configuration.power_quality == (True,)
@@ -224,9 +222,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             transactions.calls[0][1]["expected_aggregate_sensor_entities"]
             == expected.aggregate_sensor_entities
         )
-        assert (
-            full_plan.snapshot.content == "" and full["plan_id"] not in workflow._plans
-        )
+        assert full_plan.snapshot.content == "" and full["plan_id"] not in workflow._plans
         with pytest.raises(WorkflowHandleError, match="stale"):
             await workflow.async_preview_meter_configuration(
                 "meter",
@@ -340,9 +336,7 @@ def test_calibrated_handoff_delegates_owned_full_ct_context() -> None:
         assert result == {"transaction_id": "handoff"}
         assert args[:3] == (MAC, handle.topology, "a" * 32)
         assert args[3][0].channel == 1 and args[4] == frozenset({1})
-        assert kwargs == {
-            "package_options": {"power_quality": (False,), "status_fields": (True,)}
-        }
+        assert kwargs == {"package_options": {"power_quality": (False,), "status_fields": (True,)}}
         await workflow.async_close()
 
     asyncio.run(run())
@@ -516,9 +510,7 @@ def _adoption_session(state: str) -> _SessionHandle:
 
 def test_adopt_imports_current_compatible_discovery_once() -> None:
     async def run() -> None:
-        workflow, builder = adoption_workflow(
-            listing={"configured": [], "importable": []}
-        )
+        workflow, builder = adoption_workflow(listing={"configured": [], "importable": []})
 
         first = await workflow.async_adopt_device("new-meter")
         builder.listing = {
@@ -529,25 +521,21 @@ def test_adopt_imports_current_compatible_discovery_once() -> None:
 
         assert first == {"device_id": "new-meter", "configuration": "new-meter.yaml"}
         assert second == first
-        assert builder.imports == [
-            {
-                "name": "new-meter",
-                "friendly_name": "New meter",
-                "package_import_url": "github://circuitsetup/package.yaml",
-            }
-        ]
+        assert builder.imports == [{
+            "name": "new-meter",
+            "friendly_name": "New meter",
+            "package_import_url": "github://circuitsetup/package.yaml",
+        }]
 
     asyncio.run(run())
 
 
 def test_adopt_reuses_existing_builder_configuration() -> None:
     async def run() -> None:
-        workflow, builder = adoption_workflow(
-            listing={
-                "configured": [{"name": "new-meter", "configuration": "existing.yaml"}],
-                "importable": [],
-            }
-        )
+        workflow, builder = adoption_workflow(listing={
+            "configured": [{"name": "new-meter", "configuration": "existing.yaml"}],
+            "importable": [],
+        })
 
         assert await workflow.async_adopt_device("new-meter") == {
             "device_id": "new-meter",
@@ -581,9 +569,7 @@ def test_adopt_rejects_missing_device_name_before_builder_lookup() -> None:
 
 def test_adopt_rejects_device_outside_current_compatible_snapshot() -> None:
     async def run() -> None:
-        workflow, builder = adoption_workflow(
-            listing={"configured": [], "importable": []}
-        )
+        workflow, builder = adoption_workflow(listing={"configured": [], "importable": []})
 
         with pytest.raises(WorkflowHandleError, match="available"):
             await workflow.async_adopt_device("unrelated-meter")
@@ -609,9 +595,7 @@ def test_adopt_propagates_import_failure_without_rebinding() -> None:
 
 def test_adopt_rejects_rebinding_while_previous_session_is_active() -> None:
     async def run() -> None:
-        workflow, builder = adoption_workflow(
-            listing={"configured": [], "importable": []}
-        )
+        workflow, builder = adoption_workflow(listing={"configured": [], "importable": []})
         workflow._sessions["active"] = _adoption_session("ready")
 
         with pytest.raises(CalibrationBusyError, match="112233445566"):
@@ -623,9 +607,7 @@ def test_adopt_rejects_rebinding_while_previous_session_is_active() -> None:
 
 def test_adopt_rejects_rebinding_while_previous_transaction_is_active() -> None:
     async def run() -> None:
-        workflow, builder = adoption_workflow(
-            listing={"configured": [], "importable": []}
-        )
+        workflow, builder = adoption_workflow(listing={"configured": [], "importable": []})
         workflow.transactions = SimpleNamespace(active_status=lambda mac: {"mac": mac})
 
         with pytest.raises(CalibrationBusyError, match="112233445566"):
@@ -638,9 +620,7 @@ def test_adopt_rejects_rebinding_while_previous_transaction_is_active() -> None:
 @pytest.mark.parametrize("state", ("verified", "cancelled"))
 def test_adopt_allows_rebinding_after_previous_session_is_finalized(state: str) -> None:
     async def run() -> None:
-        workflow, builder = adoption_workflow(
-            listing={"configured": [], "importable": []}
-        )
+        workflow, builder = adoption_workflow(listing={"configured": [], "importable": []})
         workflow._sessions["finalized"] = _adoption_session(state)
 
         assert await workflow.async_adopt_device("new-meter") == {

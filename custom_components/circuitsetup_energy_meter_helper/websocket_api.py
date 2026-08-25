@@ -228,11 +228,7 @@ class WorkflowOwner(Protocol):
     ) -> Any: ...
 
     async def async_set_ha_labels(
-        self,
-        device_id: str,
-        plan_id: str,
-        source_sha256: str,
-        changes: tuple[Mapping[str, Any], ...],
+        self, device_id: str, plan_id: str, source_sha256: str, changes: tuple[Mapping[str, Any], ...]
     ) -> Any: ...
 
     async def async_start_session(self, device_id: str) -> Any: ...
@@ -394,8 +390,12 @@ class EntryWebsocketController:
                     msg["connection_type"],
                     msg.get("firmware_product_id"),
                     msg.get("esphome_version"),
-                    tuple(msg["power_quality"]) if "power_quality" in msg else None,
-                    tuple(msg["status_fields"]) if "status_fields" in msg else None,
+                    tuple(msg["power_quality"])
+                    if "power_quality" in msg
+                    else None,
+                    tuple(msg["status_fields"])
+                    if "status_fields" in msg
+                    else None,
                     msg.get("electrical_system"),
                     msg.get("line_frequency_hz"),
                 )
@@ -436,10 +436,7 @@ class EntryWebsocketController:
                 ) from error
         if operation == "set_ha_labels" and workflow is not None:
             return await workflow.async_set_ha_labels(
-                msg["device_id"],
-                msg["plan_id"],
-                msg["source_sha256"],
-                tuple(msg["changes"]),
+                msg["device_id"], msg["plan_id"], msg["source_sha256"], tuple(msg["changes"])
             )
         if operation in {
             "apply_ct_config",
@@ -778,14 +775,12 @@ class _Router:
                 except Exception as error:  # noqa: BLE001 - success was already sent
                     controller.diagnostics.record_error(error)
 
-    async def _async_rebind_device(self, entry_id: str, device_id: str) -> None:
+    async def _async_rebind_device(
+        self, entry_id: str, device_id: str
+    ) -> None:
         controller = self.controllers.get(entry_id)
         entry = self.hass.config_entries.async_get_entry(entry_id)
-        if (
-            entry is None
-            or controller is None
-            or controller.esphome_entry_id == device_id
-        ):
+        if entry is None or controller is None or controller.esphome_entry_id == device_id:
             return
         if entry.data.get(CONF_ESPHOME_ENTRY_ID) != device_id:
             self.hass.config_entries.async_update_entry(
@@ -928,11 +923,7 @@ def async_unregister_entry(hass: HomeAssistant, entry_id: str) -> None:
 
 def _handler(command: str) -> websocket_api.WebSocketCommandHandler:
     preview_configuration = command == f"{_PREFIX}preview_meter_configuration"
-    schema = (
-        _preview_meter_configuration_envelope(command)
-        if preview_configuration
-        else _schema(command)
-    )
+    schema = _preview_meter_configuration_envelope(command) if preview_configuration else _schema(command)
 
     async def handle(
         hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
@@ -994,8 +985,12 @@ def _schema(command: str) -> Any:
             ),
             vol.Optional("firmware_product_id"): str,
             vol.Optional("esphome_version"): str,
-            vol.Optional("power_quality"): vol.All([bool], vol.Length(min=1, max=7)),
-            vol.Optional("status_fields"): vol.All([bool], vol.Length(min=1, max=7)),
+            vol.Optional("power_quality"): vol.All(
+                [bool], vol.Length(min=1, max=7)
+            ),
+            vol.Optional("status_fields"): vol.All(
+                [bool], vol.Length(min=1, max=7)
+            ),
             vol.Optional("electrical_system"): vol.In(
                 (
                     "split_phase_120_240",
@@ -1004,9 +999,7 @@ def _schema(command: str) -> Any:
                     "custom",
                 )
             ),
-            vol.Optional("line_frequency_hz"): vol.All(
-                _strict_integer, vol.In((50, 60))
-            ),
+            vol.Optional("line_frequency_hz"): vol.All(_strict_integer, vol.In((50, 60))),
         }
         return vol.All(vol.Schema(schema), _validate_installer_firmware_schema)
     elif operation in {
@@ -1067,15 +1060,10 @@ def _schema(command: str) -> Any:
             vol.Required("device_id"): _ID,
             vol.Required("plan_id"): _ID,
             vol.Required("source_sha256"): _SHA256,
-            vol.Required("changes"): vol.All(
-                [
-                    {
-                        vol.Required("channel"): vol.All(int, vol.Range(min=1, max=42)),
-                        vol.Required("name"): vol.All(str, vol.Length(min=1, max=64)),
-                    }
-                ],
-                vol.Length(min=1, max=42),
-            ),
+            vol.Required("changes"): vol.All([
+                {vol.Required("channel"): vol.All(int, vol.Range(min=1, max=42)),
+                 vol.Required("name"): vol.All(str, vol.Length(min=1, max=64))}
+            ], vol.Length(min=1, max=42)),
         }
     elif operation in {
         "apply_ct_config",
@@ -1104,12 +1092,8 @@ def _schema(command: str) -> Any:
                         vol.Optional(
                             "reporting_multiplier", default=1.0
                         ): _reporting_multiplier,
-                        vol.Optional("custom_gain_ct"): vol.All(
-                            int, vol.Range(min=1, max=65535)
-                        ),
-                        vol.Optional("custom_label"): vol.All(
-                            str, vol.Length(min=1, max=64)
-                        ),
+                        vol.Optional("custom_gain_ct"): vol.All(int, vol.Range(min=1, max=65535)),
+                        vol.Optional("custom_label"): vol.All(str, vol.Length(min=1, max=64)),
                         vol.Optional("burden_output_acknowledged", default=False): bool,
                     }
                 ],
@@ -1513,7 +1497,9 @@ def sanitize_payload(
                 changes = [
                     change
                     for item in list(item)[:_MAX_ITEMS]
-                    if (change := _sanitize_transaction_change(item, _depth + 2))
+                    if (
+                        change := _sanitize_transaction_change(item, _depth + 2)
+                    )
                     is not None
                 ]
                 result[key] = changes
@@ -1596,10 +1582,7 @@ def _send_safe_error(
     elif isinstance(error, StaleConfirmation):
         code, message = "stale_confirmation", "The confirmation is stale or invalid"
     elif isinstance(error, WorkflowHandleError):
-        code, message = (
-            "stale_handle",
-            "The selected device changed or is no longer available",
-        )
+        code, message = "stale_handle", "The selected device changed or is no longer available"
     elif isinstance(error, WorkflowCapabilityUnavailable):
         code, message = "capability_unavailable", "This capability is not available"
     elif isinstance(error, KeyError | ResourceNotFound):
