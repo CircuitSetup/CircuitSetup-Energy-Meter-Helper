@@ -266,6 +266,9 @@ class _DocumentParser:
         if match is None or match["key"] == "<<":
             return None
         rest = match["rest"].lstrip(" ")
+        scalar = self._without_comment(rest).strip()
+        if not scalar or scalar.startswith(("|", ">")):
+            return None
         if rest.startswith(("[", "{", "*", "&")):
             return None
         if rest.startswith("!") and (

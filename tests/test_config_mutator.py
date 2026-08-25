@@ -1435,10 +1435,25 @@ def test_indentless_contract_sensor_supports_phase_replacement_and_removal() -> 
 
 
 @pytest.mark.parametrize("indent", ("", "  "))
-def test_aggregate_preview_rejects_unsupported_sensor_sequence_entry(indent: str) -> None:
+@pytest.mark.parametrize(
+    "entry",
+    (
+        "- platform:",
+        "- platform: # comment-only",
+        "- platform: >",
+        "- platform: |",
+        "- platform: >-",
+        "- platform: |+",
+        "- platform: >2",
+        "- platform: |2",
+    ),
+)
+def test_aggregate_preview_rejects_non_scalar_sensor_sequence_entry(
+    indent: str, entry: str
+) -> None:
     """The high-level aggregate writer cannot turn unsafe items into mixed YAML."""
     source = _contract_snapshot()
-    content = source.content.replace("  - platform: uptime", indent + "- <<: {}")
+    content = source.content.replace("  - platform: uptime", indent + entry)
     snapshot = replace(
         source, content=content, sha256=sha256(content.encode()).hexdigest()
     )

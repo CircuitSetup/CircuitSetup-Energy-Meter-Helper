@@ -226,6 +226,14 @@ def test_indentless_sensor_sequence_rejects_mixed_or_ambiguous_forms(content: st
         "- <<: {platform: uptime}",
         '- "platform": uptime',
         "- uptime",
+        "- platform:",
+        "- platform: # comment-only",
+        "- platform: >",
+        "- platform: |",
+        "- platform: >-",
+        "- platform: |+",
+        "- platform: >2",
+        "- platform: |2",
     ),
 )
 def test_sensor_sequence_rejects_unsupported_top_level_forms(
@@ -239,6 +247,21 @@ def test_sensor_sequence_rejects_unsupported_top_level_forms(
     except ESPHomeConfigParseError:
         return
     assert document.writable_sensor_span is None
+
+
+@pytest.mark.parametrize("indent", ("", "  "))
+@pytest.mark.parametrize(
+    "entry",
+    ("- platform: uptime", '- platform: "uptime"', "- id: !extend meter_main1"),
+)
+def test_sensor_sequence_accepts_plain_scalar_mapping_entries(
+    indent: str, entry: str
+) -> None:
+    """Ordinary scalar values and helper extensions remain writable."""
+    document = ESPHomeConfigDocument.parse("sensor:\n" + indent + entry + "\n")
+
+    assert document.writable_sensor_span is not None
+    assert document.sensor_item_indent == len(indent)
 @pytest.mark.parametrize(
     "order",
     tuple(permutations(("voltage_references", "phase_overrides", "aggregates"))),
