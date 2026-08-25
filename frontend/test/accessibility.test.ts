@@ -147,6 +147,22 @@ describe("calibration tab semantics", () => {
     expect(live?.textContent).toContain("120.00 V");
     expect(live?.textContent).not.toMatch(/Mean|Standard deviation|Range/);
   });
+
+  it("keeps a board with partial shared voltage evidence actionable", () => {
+    const calibrate = vi.fn();
+    const root = mount(voltageStep(topology, null, 1, [120], ["C"], {
+      target: "voltage", target_id: "C", stable: true,
+      windows: Array.from({ length: 3 }, () => ({ samples: [120], mean: 120, standard_deviation: 0, range_percent: 0 })),
+    }, [{ state: "applied_pending_restart_verification", group_key: "main_1", phase: null, changed_channels: [1, 2, 3],
+      iteration: 1, before_values: [120, 120, 120], after_values: [120, 120, 120], error_percent_values: [0, 0, 0],
+      gain_evidence: null, restore_evidence: null, retry_allowed: false }], false, noop, noop, noop, calibrate, noop, noop));
+
+    const button = root.querySelector<HTMLButtonElement>(".calibration-actions .primary");
+    expect(root.textContent).not.toContain("Voltage calibration complete for Add-on 1");
+    expect(button?.disabled).toBe(false);
+    button?.click();
+    expect(calibrate).toHaveBeenCalledOnce();
+  });
 });
 
 it("gives the CT inventory table explicit header and data-cell semantics", () => {
