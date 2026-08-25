@@ -188,10 +188,12 @@ def _managed_voltage_reference_assignments(
     block = document.managed_blocks.get("voltage_references")
     if block is None:
         return None
+    item_indent = document.sensor_item_indent
+    metadata_prefix = " " * item_indent + "# csemh-voltage-references: " if item_indent is not None else "  # csemh-voltage-references: "
     metadata = [
-        line.removeprefix("  # csemh-voltage-references: ")
+        line.removeprefix(metadata_prefix)
         for line in block.content.splitlines()
-        if line.startswith("  # csemh-voltage-references: ")
+        if line.startswith(metadata_prefix)
     ]
     if metadata:
         sensor = document.writable_sensor_span

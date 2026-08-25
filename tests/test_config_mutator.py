@@ -94,6 +94,18 @@ def _contract_snapshot(*, generic_totals: bool = False) -> ESPHomeConfigSnapshot
     )
 
 
+def _indentless_contract_snapshot() -> ESPHomeConfigSnapshot:
+    """Return the official root-sequence spelling without changing other sections."""
+    snapshot = _contract_snapshot(generic_totals=True)
+    prefix, sensor = snapshot.content.split("sensor:\n", 1)
+    sensor, suffix = sensor.split("logger:\n", 1)
+    sensor = "\n".join(
+        line.removeprefix("  ") for line in sensor.split("\n")
+    )
+    content = prefix + "sensor:\n" + sensor + "logger:\n" + suffix
+    return replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+
+
 def _package_snapshot() -> ESPHomeConfigSnapshot:
     content = """substitutions:
   ct1_name: CT 1
@@ -1334,6 +1346,92 @@ def test_aggregate_preview_renders_bidirectional_grid_and_hides_contract_totals(
     for total_id in ("totalEnergyDaily",):
         assert f"- id: !extend {total_id}\n    internal: true" in block
     ESPHomeConfigDocument.parse(plan.proposed_content)
+
+
+def test_indentless_contract_sensor_supports_voltage_aggregate_preview_and_readback() -> None:
+    """Official root-level sensor lists retain valid relative helper indentation."""
+    snapshot = _indentless_contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(
+                    current.configuration.meter.voltage_references[0], gain_voltage=7305
+                ),
+            ),
+        ),
+        aggregates=(
+            CircuitAggregate(
+                "load", "Load", CircuitRole.BRANCH, (1,),
+                MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION,
+            ),
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert "\n- id: !extend totalEnergyDaily\n  internal: true" in plan.proposed_content
+    assert "\n  - id: !extend totalEnergyDaily" not in plan.proposed_content
+    assert "\n- id: !extend meter_main1" in plan.proposed_content
+    stored = StoredMeterConfiguration(
+        sha256(plan.proposed_content.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+    configured_snapshot = replace(
+        snapshot, content=plan.proposed_content, sha256=stored.config_sha256
+    )
+    configured = _inventory(configured_snapshot, topology, stored=stored)
+
+    assert configured.configuration.meter == requested.meter
+    assert configured.configuration.aggregates == requested.aggregates
+    removed = build_meter_configuration_mutation(
+        configured_snapshot,
+        topology,
+        configured,
+        replace(configured.configuration, aggregates=()),
+    )
+    assert "aggregates v1" not in removed.proposed_content
+    assert "\n- id: !extend meter_main1" in removed.proposed_content
+
+
+def test_indentless_contract_sensor_supports_phase_replacement_and_removal() -> None:
+    """Task-15 phase ownership is read with the sensor list's relative indent."""
+    snapshot = _indentless_contract_snapshot()
+    request = CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 2)
+
+    first = build_ct_mutation(snapshot, _topology(), (request,))
+
+    assert "\n- id: !extend meter_main1" in first.proposed_content
+    configured_snapshot = replace(
+        snapshot,
+        content=first.proposed_content,
+        sha256=sha256(first.proposed_content.encode()).hexdigest(),
+    )
+    updated = build_ct_mutation(
+        configured_snapshot,
+        _topology(),
+        (CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 4),),
+    )
+    reset_snapshot = replace(
+        configured_snapshot,
+        content=updated.proposed_content,
+        sha256=sha256(updated.proposed_content.encode()).hexdigest(),
+    )
+    reset = build_ct_mutation(
+        reset_snapshot,
+        _topology(),
+        (CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 1),),
+    )
+
+    assert "multiply: 4" in updated.proposed_content
+    assert "phase overrides v1" not in reset.proposed_content
 
 
 def test_aggregate_energy_signs_and_one_ct_power_multiplier_are_semantic_only() -> None:

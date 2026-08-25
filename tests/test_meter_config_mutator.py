@@ -3,12 +3,16 @@
 from itertools import permutations
 
 import pytest
+import yaml
 
 from custom_components.circuitsetup_energy_meter_helper.config_blocks import (
     render_aggregates,
     render_phase_overrides,
     render_voltage_references,
     replace_managed_block,
+)
+from custom_components.circuitsetup_energy_meter_helper.config_document import (
+    ESPHomeConfigDocument,
 )
 from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
     ConfigMutationError,
@@ -116,13 +120,110 @@ def test_empty_newline_less_sensor_fails_with_a_manual_snippet() -> None:
     assert error.value.snippet is not None
 
 
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+@pytest.mark.parametrize(
+    ("predecessor", "successor"),
+    (
+        ("voltage_references", "phase_overrides"),
+        ("voltage_references", "aggregates"),
+        ("phase_overrides", "aggregates"),
+    ),
+)
+def test_new_block_after_newline_less_legacy_marker_fails_safely(
+    newline: str, predecessor: str, successor: str
+) -> None:
+    """A new marker never glues itself to an unowned legacy EOF marker."""
+    start, end = {
+        name: (
+            f"# CircuitSetup Energy Meter Helper: {name.replace('_', ' ')} v1",
+            f"# End CircuitSetup Energy Meter Helper: {name.replace('_', ' ')} v1",
+        )
+        for name in ("voltage_references", "phase_overrides")
+    }[predecessor]
+    content = newline.join(("sensor:", start, "  - id: legacy", end))
+
+    with pytest.raises(ConfigMutationError, match="document root") as error:
+        replace_managed_block(content, successor, "  - id: new\n")
+
+    assert error.value.snippet is not None
+    assert content.endswith(end)
+
+
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+def test_new_block_after_terminated_legacy_marker_is_valid(newline: str) -> None:
+    """An existing line boundary keeps legacy blocks writable without normalization."""
+    content = newline.join(
+        (
+            "sensor:",
+            "# CircuitSetup Energy Meter Helper: voltage references v1",
+            "  - id: legacy",
+            "# End CircuitSetup Energy Meter Helper: voltage references v1",
+            "",
+        )
+    )
+
+    actual = replace_managed_block(content, "phase_overrides", "  - id: phase\n")
+
+    assert (
+        "v1" + newline + "# CircuitSetup Energy Meter Helper: phase overrides v1"
+    ) in actual
+
+
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+@pytest.mark.parametrize("final_newline", (False, True))
+def test_indentless_sensor_sequence_uses_indentless_helper_items(
+    newline: str, final_newline: bool
+) -> None:
+    """Official root-level sensor sequences retain their one unambiguous style."""
+    content = (
+        "sensor:"
+        + newline
+        + "- platform: uptime"
+        + newline
+        + "  name: Uptime"
+        + newline
+        + "logger:"
+        + newline
+        + "  level: DEBUG"
+        + (newline if final_newline else "")
+    )
+
+    document = ESPHomeConfigDocument.parse(content)
+    actual = replace_managed_block(content, "aggregates", "  - id: total\n    name: Total\n")
+
+    assert document.sensor_item_indent == 0
+    assert "\n- id: total" in actual
+    assert "\n  - id: total" not in actual
+    assert yaml.safe_load(actual)["sensor"][0]["id"] == "total"
+    assert replace_managed_block(actual, "aggregates", "") == content
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        "sensor:\n- platform: uptime\n  - platform: template\n",
+        "sensor:\n- platform: uptime\n? logger\n: {}\n",
+        "sensor:\n- !tag platform: uptime\n",
+    ),
+)
+def test_indentless_sensor_sequence_rejects_mixed_or_ambiguous_forms(content: str) -> None:
+    """Only a plain, single-style sensor list is writable."""
+    assert ESPHomeConfigDocument.parse(content).writable_sensor_span is None
+
 @pytest.mark.parametrize(
     "order",
     tuple(permutations(("voltage_references", "phase_overrides", "aggregates"))),
 )
-def test_new_managed_blocks_cluster_before_user_sensor_content(order: tuple[str, ...]) -> None:
+@pytest.mark.parametrize("indentless", (False, True))
+def test_new_managed_blocks_cluster_before_user_sensor_content(
+    order: tuple[str, ...], indentless: bool
+) -> None:
     """Any insertion order creates one canonical helper cluster at the section start."""
-    content = "sensor:\n  # user comment\n  - platform: uptime\n"
+    content = (
+        "sensor:\n# user comment\n- platform: uptime\n"
+        if indentless
+        else "sensor:\n  # user comment\n  - platform: uptime\n"
+    )
     rendered = {
         "voltage_references": "  - id: voltage\n",
         "phase_overrides": "  - id: phase\n",
@@ -135,6 +236,7 @@ def test_new_managed_blocks_cluster_before_user_sensor_content(order: tuple[str,
     assert actual.index("voltage references v1") < actual.index("phase overrides v1")
     assert actual.index("phase overrides v1") < actual.index("aggregates v1")
     assert actual.index("aggregates v1") < actual.index("# user comment")
+    assert ("\n- id: voltage" in actual) is indentless
     for name in reversed(order):
         actual = replace_managed_block(actual, name, "")
     assert actual == content

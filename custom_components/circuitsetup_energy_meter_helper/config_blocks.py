@@ -28,21 +28,36 @@ def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
     newline = "\r\n" if "\r\n" in content else "\n"
     block = document.managed_blocks.get(block_name)
     if block is not None:
-        _sensor_bounds(document, block_name, block.span.start, block.span.end)
+        _, _, item_indent = _sensor_bounds(
+            document, block_name, block.span.start, block.span.end
+        )
         end = _line_end(content, block.span.end)
         if not rendered:
             return content[: block.span.start] + content[end:]
-        return content[: block.span.start] + _block(markers, rendered, newline) + content[end:]
+        return (
+            content[: block.span.start]
+            + _block(markers, rendered, newline, item_indent)
+            + content[end:]
+        )
     if not rendered:
         return content
-    start, end = _sensor_bounds(document, block_name, rendered=rendered)
+    start, end, item_indent = _sensor_bounds(document, block_name, rendered=rendered)
     if start == end == len(content) and content and content[-1] not in "\r\n":
         raise ConfigMutationError(
             "no unambiguous writable sensor block; add snippet at document root",
             snippet=_snippet(block_name, rendered),
         )
     position = end if block_name == "status_overrides" else _insertion_position(document, block_name, start)
-    return content[:position] + _block(markers, rendered, newline) + content[position:]
+    if position == len(content) and content and content[-1] not in "\r\n":
+        raise ConfigMutationError(
+            "no unambiguous writable sensor block; add snippet at document root",
+            snippet=_snippet(block_name, rendered),
+        )
+    return (
+        content[:position]
+        + _block(markers, rendered, newline, item_indent)
+        + content[position:]
+    )
 
 
 def render_voltage_references(entries: Mapping[str, str]) -> str:
@@ -69,8 +84,12 @@ def _render_entries(entries: Mapping[str, str]) -> str:
     return _validated_body("".join(entries[key] for key in sorted(entries)))
 
 
-def _block(markers: tuple[str, str], rendered: str, newline: str) -> str:
+def _block(
+    markers: tuple[str, str], rendered: str, newline: str, item_indent: int = 2
+) -> str:
     body = _validated_body(rendered)
+    if item_indent == 0:
+        body = "\n".join(line[2:] if line else line for line in body.split("\n"))
     if body and not body.endswith("\n"):
         body += "\n"
     return markers[0] + newline + body.replace("\n", newline) + markers[1] + newline
@@ -108,9 +127,10 @@ def _sensor_bounds(
     block_start: int | None = None,
     block_end: int | None = None,
     rendered: str = "",
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     span = document.writable_sensor_span
-    if span is None:
+    item_indent = document.sensor_item_indent
+    if span is None or item_indent is None:
         raise ConfigMutationError(
             "no unambiguous writable sensor block; add snippet at document root",
             snippet=_snippet(block_name, rendered),
@@ -120,7 +140,7 @@ def _sensor_bounds(
         raise ConfigMutationError(
             "managed block is outside the sensor section", snippet=_snippet(block_name)
         )
-    return start, end
+    return start, end, item_indent
 
 
 def _validate_managed_layout(document: ESPHomeConfigDocument) -> None:

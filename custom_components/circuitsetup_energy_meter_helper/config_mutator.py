@@ -871,6 +871,8 @@ def _read_phase_channel_states(
     if not starts:
         return {}
     managed = content[starts[0] : ends[0]].splitlines()[1:-1]
+    if ESPHomeConfigDocument.parse(content).sensor_item_indent == 0:
+        managed = [f"  {line}" if line else line for line in managed]
     states: dict[int, _PhaseChannelState] = {}
     seen: set[int] = set()
     index = 0

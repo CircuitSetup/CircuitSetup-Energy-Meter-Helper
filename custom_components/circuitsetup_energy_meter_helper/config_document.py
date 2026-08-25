@@ -131,6 +131,7 @@ class ESPHomeConfigDocument:
     package_files: tuple[str, ...]
     managed_blocks: dict[str, ManagedBlock]
     writable_sensor_span: SourceSpan | None
+    sensor_item_indent: int | None
     code_lines: tuple[str, ...] = field(repr=False)
 
     @classmethod
@@ -182,6 +183,7 @@ class _DocumentParser:
     ) -> ESPHomeConfigDocument:
         project = self._nested_scalar("esphome", "project", "name")
         dashboard = self._section_scalar("dashboard_import", "package_import_url")
+        sensor = self._writable_sensor_section()
         return document_type(
             content=self.content,
             lines=self.lines,
@@ -192,14 +194,15 @@ class _DocumentParser:
             substitutions=self._substitutions(),
             package_files=self._package_files(),
             managed_blocks=self._managed_blocks(),
-            writable_sensor_span=self._writable_section_span("sensor"),
+            writable_sensor_span=sensor[0] if sensor else None,
+            sensor_item_indent=sensor[1] if sensor else None,
             code_lines=tuple(
                 "" if index in self._block_scalar_lines else self._without_comment(body)
                 for index, body in enumerate(self._bodies)
             ),
         )
 
-    def _writable_section_span(self, name: str) -> SourceSpan | None:
+    def _writable_sensor_section(self) -> tuple[SourceSpan, int] | None:
         roots: list[tuple[int, _Mapping]] = []
         for index, body in enumerate(self._bodies):
             if (
@@ -209,13 +212,9 @@ class _DocumentParser:
             ):
                 continue
             mapping = self._mapping(index)
-            if mapping is None:
-                if not body.startswith(" "):
-                    return None
-                continue
-            if mapping.indent == 0:
+            if mapping is not None and mapping.indent == 0:
                 roots.append((index, mapping))
-        matches = [(index, mapping) for index, mapping in roots if mapping.key == name]
+        matches = [(index, mapping) for index, mapping in roots if mapping.key == "sensor"]
         if len(matches) != 1:
             return None
         start_index, mapping = matches[0]
@@ -224,9 +223,32 @@ class _DocumentParser:
         end_index = next(
             (index for index, _ in roots if index > start_index), len(self.lines)
         )
+        item_indents: set[int] = set()
+        for index, body in enumerate(self._bodies):
+            if (
+                index in self._block_scalar_lines
+                or not body.strip()
+                or body.lstrip().startswith("#")
+            ):
+                continue
+            mapping = self._mapping(index)
+            if not start_index < index < end_index:
+                if mapping is None and not body.startswith(" "):
+                    return None
+                continue
+            sequence = self._sequence_mapping(index)
+            if sequence is not None and sequence.indent in {0, 2}:
+                item_indents.add(sequence.indent)
+                continue
+            if mapping is None and not body.startswith(" "):
+                return None
+        if len(item_indents) > 1:
+            return None
         start = self._offsets[start_index] + len(self.lines[start_index])
         end = self._offsets[end_index] if end_index < len(self.lines) else len(self.content)
-        return SourceSpan(start, end, start_index + 2, 0, 0)
+        return SourceSpan(start, end, start_index + 2, 0, 0), next(
+            iter(item_indents), 2
+        )
 
     def _sections(self, name: str) -> list[tuple[int, _Mapping]]:
         sections: list[tuple[int, _Mapping]] = []

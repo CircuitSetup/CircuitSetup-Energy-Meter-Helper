@@ -280,7 +280,7 @@ def _validate_managed_voltage_reference_gains(
     if actual.fingerprint != expected.fingerprint:
         raise ValueError("managed voltage references are not verified")
     lines = block.content.replace("\r\n", "\n").splitlines()
-    items = _managed_voltage_items(lines)
+    items = _managed_voltage_items(lines, document.sensor_item_indent)
     for reference in stored.meter.voltage_references:
         representative = min(reference.group_keys, key=_managed_group_order)
         for group in reference.group_keys:
@@ -295,8 +295,12 @@ def _validate_managed_voltage_reference_gains(
         raise ValueError("managed voltage reference gains are ambiguous")
 
 
-def _managed_voltage_items(lines: list[str]) -> dict[str, list[str]]:
+def _managed_voltage_items(
+    lines: list[str], item_indent: int | None
+) -> dict[str, list[str]]:
     """Return exact direct meter items from the helper-owned sensor block."""
+    if item_indent == 0:
+        lines = [f"  {line}" if line else line for line in lines]
     headers: list[tuple[str, int]] = []
     for index, line in enumerate(lines):
         code = _managed_code(line)
