@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source_repository": "CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter",
+  "source_ref": "b94637a4f084a3a4a35e3e5f48eb1586bbd972c3",
+  "presets": [
+    {
+      "model_id": "jameco_reliapro_9vac_120v",
+      "label": "Jameco Reliapro 120 V to 9 VAC",
+      "primary_nominal_v": 120.0,
+      "secondary_nominal_v": 9.0,
+      "default_gain_voltage": 7305,
+      "notes": "Official CircuitSetup starting value; calibrate for best accuracy."
+    }
+  ]
+}
