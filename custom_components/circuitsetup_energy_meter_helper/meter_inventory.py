@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -281,12 +282,15 @@ def _validate_managed_voltage_reference_gains(
     lines = block.content.replace("\r\n", "\n").splitlines()
     items = _managed_voltage_items(lines)
     for reference in stored.meter.voltage_references:
+        representative = min(reference.group_keys, key=_managed_group_order)
         for group in reference.group_keys:
             meter_id = _managed_meter_id(group, document)
             item = items.pop(meter_id, None)
             if item is None:
                 raise ValueError("managed voltage reference gains are ambiguous")
-            _validate_managed_voltage_item(item, reference.gain_voltage)
+            _validate_managed_voltage_item(
+                item, reference, group == representative
+            )
     if items:
         raise ValueError("managed voltage reference gains are ambiguous")
 
@@ -295,16 +299,17 @@ def _managed_voltage_items(lines: list[str]) -> dict[str, list[str]]:
     """Return exact direct meter items from the helper-owned sensor block."""
     headers: list[tuple[str, int]] = []
     for index, line in enumerate(lines):
-        if not line.strip() or line.lstrip().startswith("#"):
+        code = _managed_code(line)
+        if not code.strip():
             continue
-        if _ambiguous_managed_yaml(line):
+        if _ambiguous_managed_yaml(code):
             raise ValueError("managed voltage references are ambiguous")
-        if line.startswith("  - "):
-            match = re.fullmatch(r"  - id: !extend (?P<id>[^\s]+)", line)
+        if code.startswith("  - "):
+            match = re.fullmatch(r"  - id: !extend (?P<id>[^\s]+)", code)
             if match is None:
                 raise ValueError("managed voltage reference item is invalid")
             headers.append((match["id"], index))
-        elif re.match(r"^\s*(?:-\s+)?id\s*:", line):
+        elif not headers or len(code) - len(code.lstrip(" ")) <= 2:
             raise ValueError("managed voltage reference item is invalid")
     items: dict[str, list[str]] = {}
     for item_index, (meter_id, start) in enumerate(headers):
@@ -315,61 +320,136 @@ def _managed_voltage_items(lines: list[str]) -> dict[str, list[str]]:
     return items
 
 
-def _validate_managed_voltage_item(lines: list[str], expected_gain: int) -> None:
-    phases: dict[str, list[str]] = {}
+def _validate_managed_voltage_item(
+    lines: list[str], reference: VoltageReferenceConfig, representative: bool
+) -> None:
+    expected_keys = {"phase_a", "phase_b", "phase_c"}
+    if representative:
+        expected_keys.add("frequency")
+    entries = _managed_mappings(lines, 4)
+    if set(entries) != expected_keys or any(value for value, _ in entries.values()):
+        raise ValueError("managed voltage reference item is invalid")
+    for phase in "abc":
+        _validate_managed_voltage_phase(
+            entries[f"phase_{phase}"][1],
+            reference,
+            not representative or phase == "a",
+            representative and phase == "a",
+        )
+    if representative:
+        _validate_managed_fields(
+            entries["frequency"][1],
+            6,
+            {
+                "name": json.dumps(
+                    f"${{friendly_name}} {reference.label} Frequency"
+                ),
+                "disabled_by_default": "false",
+            },
+        )
+
+
+def _validate_managed_voltage_phase(
+    lines: list[str],
+    reference: VoltageReferenceConfig,
+    voltage_expected: bool,
+    visible_voltage: bool,
+) -> None:
+    expected_keys = {"gain_voltage"}
+    if voltage_expected:
+        expected_keys.add("voltage")
+    entries = _managed_mappings(lines, 6)
+    if set(entries) != expected_keys or entries["gain_voltage"][0] != str(
+        reference.gain_voltage
+    ) or not _managed_body_is_empty(entries["gain_voltage"][1]):
+        raise ValueError("managed voltage reference gain is invalid")
+    if voltage_expected:
+        expected_fields = (
+            {
+                "name": json.dumps(
+                    f"${{friendly_name}} {reference.label} Voltage"
+                ),
+                "disabled_by_default": "false",
+            }
+            if visible_voltage
+            else {
+                "entity_category": "diagnostic",
+                "disabled_by_default": "true",
+            }
+        )
+        _validate_managed_fields(entries["voltage"][1], 8, expected_fields)
+
+
+def _validate_managed_fields(
+    lines: list[str], indent: int, expected: dict[str, str]
+) -> None:
+    entries = _managed_mappings(lines, indent)
+    if (
+        set(entries) != set(expected)
+        or any(
+            entries[key][0] != value or not _managed_body_is_empty(entries[key][1])
+            for key, value in expected.items()
+        )
+    ):
+        raise ValueError("managed voltage reference fields are invalid")
+
+
+def _managed_mappings(lines: list[str], indent: int) -> dict[str, tuple[str, list[str]]]:
+    entries: dict[str, tuple[str, list[str]]] = {}
     index = 0
     while index < len(lines):
         line = lines[index]
-        if not line.strip() or line.lstrip().startswith("#"):
+        code = _managed_code(line)
+        if not code.strip():
             index += 1
             continue
-        indent = len(line) - len(line.lstrip(" "))
-        if indent < 4:
-            raise ValueError("managed voltage reference item is invalid")
-        if indent == 4:
-            match = re.fullmatch(r"    phase_(?P<phase>[abc]):", line)
-            if match is None:
-                if line.lstrip().startswith("phase_"):
-                    raise ValueError("managed voltage reference phase is invalid")
-                index += 1
+        if _ambiguous_managed_yaml(code):
+            raise ValueError("managed voltage references are ambiguous")
+        if len(code) - len(code.lstrip(" ")) != indent:
+            raise ValueError("managed voltage reference structure is invalid")
+        match = re.fullmatch(
+            rf" {' ' * (indent - 1)}(?P<key>[a-z][a-z0-9_]*):(?P<value>.*)", code
+        )
+        if match is None or match["key"] in entries:
+            raise ValueError("managed voltage reference structure is invalid")
+        end = index + 1
+        while end < len(lines):
+            candidate = lines[end]
+            candidate_code = _managed_code(candidate)
+            if candidate_code.strip() and (
+                len(candidate_code) - len(candidate_code.lstrip(" "))
+            ) <= indent:
+                break
+            end += 1
+        entries[match["key"]] = (match["value"].strip(), lines[index + 1 : end])
+        index = end
+    return entries
+
+
+def _managed_body_is_empty(lines: list[str]) -> bool:
+    return not any(_managed_code(line).strip() for line in lines)
+
+
+def _managed_code(line: str) -> str:
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        character = line[index]
+        if quote is not None:
+            if quote == '"' and character == "\\":
+                index += 2
                 continue
-            phase = match["phase"]
-            if phase in phases:
-                raise ValueError("managed voltage reference phase is ambiguous")
-            end = index + 1
-            while end < len(lines):
-                candidate = lines[end]
-                if candidate.strip() and not candidate.lstrip().startswith("#") and (
-                    len(candidate) - len(candidate.lstrip(" "))
-                ) <= 4:
-                    break
-                end += 1
-            phases[phase] = lines[index + 1 : end]
-            index = end
-            continue
-        if line.lstrip().startswith("phase_"):
-            raise ValueError("managed voltage reference phase is invalid")
+            if character == quote:
+                if quote == "'" and line[index + 1 : index + 2] == "'":
+                    index += 2
+                    continue
+                quote = None
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == "#" and (index == 0 or line[index - 1].isspace()):
+            return line[:index].rstrip()
         index += 1
-    if set(phases) != {"a", "b", "c"}:
-        raise ValueError("managed voltage reference phases are incomplete")
-    for phase_lines in phases.values():
-        gains = [
-            match["gain"]
-            for line in phase_lines
-            if (
-                match := re.fullmatch(
-                    r"      gain_voltage: (?P<gain>0|[1-9][0-9]*)", line
-                )
-            )
-        ]
-        if len(gains) != 1 or int(gains[0]) != expected_gain:
-            raise ValueError("managed voltage reference gain is invalid")
-        if any(
-            "gain_voltage" in line
-            and re.fullmatch(r"      gain_voltage: (?:0|[1-9][0-9]*)", line) is None
-            for line in phase_lines
-        ):
-            raise ValueError("managed voltage reference gain is ambiguous")
+    return line.rstrip()
 
 
 def _ambiguous_managed_yaml(line: str) -> bool:
@@ -381,6 +461,11 @@ def _ambiguous_managed_yaml(line: str) -> bool:
         re.search(r"(?:^|[\s\-\[\{,])(?:\?|<<:|[&*!][^\s]+)", lexical)
         is not None
     )
+
+
+def _managed_group_order(group: str) -> tuple[int, int]:
+    board, number = group.rsplit("_", 1)
+    return (0 if board == "main" else int(board.removeprefix("addon")), int(number))
 
 
 def _managed_meter_id(group: str, document: ESPHomeConfigDocument) -> str:

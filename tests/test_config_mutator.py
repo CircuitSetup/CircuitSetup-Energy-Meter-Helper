@@ -497,6 +497,9 @@ def test_managed_voltage_reference_gains_fail_closed_but_ignore_outside_spoofs()
             1,
         ),
         lambda content: content.replace(
+            "      gain_voltage: 7305\n", "      gain_voltage: 7305#tampered\n", 1
+        ),
+        lambda content: content.replace(
             "    phase_b:\n",
             "    phase_a:\n      gain_voltage: 7305\n    phase_b:\n",
             1,
@@ -509,6 +512,39 @@ def test_managed_voltage_reference_gains_fail_closed_but_ignore_outside_spoofs()
         lambda content: content.replace(
             "      voltage:\n",
             "      current: [*defaults]\n      voltage:\n",
+            1,
+        ),
+        lambda content: content.replace(
+            "  # csemh-voltage-references: main=[main_1,main_2]\n",
+            "  # csemh-voltage-references: main=[main_1,main_2]\n  bogus: true\n",
+            1,
+        ),
+        lambda content: content.replace(
+            "  - id: !extend meter_main1\n",
+            "  - id: !extend meter_main1\n    gain_voltage: 111\n",
+            1,
+        ),
+        lambda content: content.replace(
+            "    phase_b:\n", "    current: false\n    phase_b:\n", 1
+        ),
+        lambda content: content.replace(
+            "    frequency:\n",
+            "    frequency:\n      name: duplicate\n    frequency:\n",
+            1,
+        ),
+        lambda content: content.replace(
+            "        disabled_by_default: false\n",
+            "        disabled_by_default: false\n        disabled_by_default: false\n",
+            1,
+        ),
+        lambda content: content.replace(
+            "    phase_b:\n",
+            "    'phase_a':\n      gain_voltage: 111\n    phase_b:\n",
+            1,
+        ),
+        lambda content: content.replace(
+            "    phase_b:\n",
+            '    "phase_a":\n      gain_voltage: 111\n    phase_b:\n',
             1,
         ),
     ),
@@ -583,8 +619,8 @@ def test_inventory_requires_caller_digest_to_match_document_before_stored_state(
     assert inventory.configuration.meter.voltage_references != requested.meter.voltage_references
 
 
-def test_managed_voltage_reference_gains_allow_unrelated_phase_children() -> None:
-    """Strict gain parsing leaves official non-gain phase settings usable."""
+def test_managed_voltage_reference_gains_allow_harmless_comments() -> None:
+    """Comments do not alter the exact helper-owned structure."""
     snapshot = _snapshot()
     topology = _topology()
     current = _inventory(snapshot, topology)
@@ -599,7 +635,17 @@ def test_managed_voltage_reference_gains_allow_unrelated_phase_children() -> Non
     )
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
     compatible = plan.proposed_content.replace(
-        "      voltage:\n", "      current:\n        accuracy_decimals: 2\n      voltage:\n", 1
+        "    phase_a:\n",
+        "    phase_a: # CT1\n",
+        1,
+    ).replace(
+        "      gain_voltage: 7305\n",
+        "      gain_voltage: 7305 # calibrated\n",
+        1,
+    ).replace(
+        "        disabled_by_default: false\n",
+        "        disabled_by_default: false # generated\n",
+        1,
     )
     stored = StoredMeterConfiguration(
         sha256(compatible.encode()).hexdigest(),
