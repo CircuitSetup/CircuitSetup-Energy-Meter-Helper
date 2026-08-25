@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
@@ -131,6 +131,7 @@ class DeviceBuilderClient:
         self._next_message_id = 0
         self._disconnect_task: asyncio.Task[None] | None = None
         self._server_version: AwesomeVersion | None = None
+        self._connect_lock = asyncio.Lock()
 
     def __repr__(self) -> str:
         parsed = urlsplit(self._base_url)
@@ -156,33 +157,59 @@ class DeviceBuilderClient:
 
     async def async_connect(self) -> None:
         """Connect to `/ws` and perform opaque-token auth only if requested."""
+        async with self._connect_lock:
+            if self._ws is not None or self._listener is not None:
+                raise ConnectionError("Device Builder is already connected")
+            await self._async_connect()
+
+    async def _async_connect(self) -> None:
         connection = self._connect(f"{self._base_url}/ws")
-        self._ws = await connection if inspect.isawaitable(connection) else connection
-        server_info = await self._ws.receive_json()
-        if not server_info or "server_version" not in server_info:
-            raise ConnectionError("Device Builder did not provide server info")
+        websocket = await connection if inspect.isawaitable(connection) else connection
+        listener: asyncio.Task[None] | None = None
         try:
-            server_version = AwesomeVersion(server_info["server_version"])
-        except (TypeError, ValueError) as error:
-            raise ConnectionError(
-                "Device Builder returned an invalid server version"
-            ) from error
-        if not server_version.valid:
-            raise ConnectionError("Device Builder returned an invalid server version")
-        self._server_version = server_version
-        self._listener = asyncio.create_task(self._listen())
-        if server_info.get("requires_auth") is not False:
-            if not self._token:
-                raise ConnectionError("Device Builder requires an issued bearer token")
-            future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-            self._pending["0"] = future
-            await self._ws.send_json(
-                {"command": "auth", "message_id": "0", "args": {"token": self._token}}
-            )
+            server_info = await websocket.receive_json()
+            if not isinstance(server_info, Mapping) or "server_version" not in server_info:
+                raise ConnectionError("Device Builder did not provide server info")
+            version_value = server_info["server_version"]
+            if type(version_value) is not str:
+                raise ConnectionError("Device Builder returned an invalid server version")
             try:
-                await future
-            finally:
-                self._pending.pop("0", None)
+                server_version = AwesomeVersion(version_value)
+            except (TypeError, ValueError) as error:
+                raise ConnectionError(
+                    "Device Builder returned an invalid server version"
+                ) from error
+            if not server_version.valid:
+                raise ConnectionError("Device Builder returned an invalid server version")
+            listener = asyncio.create_task(self._listen(websocket))
+            self._ws = websocket
+            self._listener = listener
+            if server_info.get("requires_auth") is not False:
+                if not self._token:
+                    raise ConnectionError("Device Builder requires an issued bearer token")
+                future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+                self._pending["0"] = future
+                await websocket.send_json(
+                    {"command": "auth", "message_id": "0", "args": {"token": self._token}}
+                )
+                try:
+                    await future
+                finally:
+                    self._pending.pop("0", None)
+            self._server_version = server_version
+        except BaseException:
+            if self._ws is websocket:
+                self._ws = None
+                self._listener = None
+                self._fail_pending()
+            if listener is not None and not listener.done():
+                listener.cancel()
+                await asyncio.gather(listener, return_exceptions=True)
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+            raise
 
     async def async_disconnect(self) -> None:
         """Close the websocket and fail all outstanding callers."""
@@ -400,10 +427,9 @@ class DeviceBuilderClient:
             warning_count=_structured_count(result.get("warning_count")),
         )
 
-    async def _listen(self) -> None:
-        assert self._ws is not None
+    async def _listen(self, websocket: WebSocket) -> None:
         try:
-            while message := await self._ws.receive_json():
+            while message := await websocket.receive_json():
                 message_id = message.get("message_id")
                 if (
                     isinstance(message_id, str)
@@ -434,8 +460,11 @@ class DeviceBuilderClient:
                 elif "result" in message:
                     future.set_result(message["result"])
         finally:
-            self._ws = None
-            self._fail_pending()
+            if self._ws is websocket:
+                self._ws = None
+                if self._listener is asyncio.current_task():
+                    self._listener = None
+                self._fail_pending()
 
     def _fail_pending(self) -> None:
         for future in self._pending.values():

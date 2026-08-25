@@ -19,11 +19,12 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
 class FakeWebSocket:
     """Small in-memory websocket used to drive the protocol."""
 
-    def __init__(self, server_info: dict) -> None:
+    def __init__(self, server_info: object) -> None:
         self.sent: list[dict] = []
+        self.closed = False
         self._received: asyncio.Queue[dict | None] = asyncio.Queue()
         self._received.put_nowait(server_info)
-        if server_info.get("requires_auth"):
+        if isinstance(server_info, dict) and server_info.get("requires_auth"):
             self._received.put_nowait({"message_id": "0", "result": {}})
 
     async def send_json(self, message: dict) -> None:
@@ -41,6 +42,7 @@ class FakeWebSocket:
         )
 
     async def close(self) -> None:
+        self.closed = True
         await self._received.put(None)
 
 
@@ -111,6 +113,56 @@ def test_failed_reconnect_preserves_last_observed_server_version() -> None:
         with pytest.raises(ConnectionError):
             await client.async_connect()
         assert client.server_version == AwesomeVersion("2026.9.0")
+
+    asyncio.run(run())
+
+
+def test_failed_auth_does_not_publish_version_and_closes_failed_transport() -> None:
+    async def run() -> None:
+        ws = FakeWebSocket({"server_version": "2026.9.0", "requires_auth": True})
+        client = DeviceBuilderClient(
+            "http://builder", token=None, connect=lambda _: ws
+        )
+        with pytest.raises(ConnectionError):
+            await client.async_connect()
+        assert client.server_version is None
+        assert not client.connected
+        assert ws.closed
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "server_info",
+    (None, [], {"server_version": 2026}, {"server_version": True},
+     {"server_version": None}, {"server_version": []}),
+)
+def test_server_info_boundary_rejects_non_mapping_or_non_string_version(
+    server_info: object,
+) -> None:
+    async def run() -> None:
+        ws = FakeWebSocket(server_info)  # type: ignore[arg-type]
+        client = DeviceBuilderClient("http://builder", connect=lambda _: ws)
+        with pytest.raises(ConnectionError):
+            await client.async_connect()
+        assert not client.connected
+        assert ws.closed
+
+    asyncio.run(run())
+
+
+def test_overlapping_connect_is_rejected_without_disturbing_owner() -> None:
+    async def run() -> None:
+        first = FakeWebSocket({"server_version": "2026.9.0", "requires_auth": False})
+        second = FakeWebSocket({"server_version": "2026.10.0", "requires_auth": False})
+        sockets = iter((first, second))
+        client = DeviceBuilderClient("http://builder", connect=lambda _: next(sockets))
+        await client.async_connect()
+        with pytest.raises(ConnectionError, match="already connected"):
+            await client.async_connect()
+        assert client.server_version == AwesomeVersion("2026.9.0")
+        assert not second.closed
+        await client.async_disconnect()
 
     asyncio.run(run())
 
