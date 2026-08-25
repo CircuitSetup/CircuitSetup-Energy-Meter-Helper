@@ -158,6 +158,45 @@ def test_rejects_duplicate_or_overlapping_markers(content: str) -> None:
         replace_managed_block(content, "aggregates", "  - id: total\n")
 
 
+@pytest.mark.parametrize("rendered", ("", "  - id: replacement\n"))
+def test_replacement_and_removal_reject_sibling_outside_sensor(
+    rendered: str,
+) -> None:
+    """A valid target does not excuse an invalid sibling managed block."""
+    content = _content().replace(
+        "logger:\n",
+        "# CircuitSetup Energy Meter Helper: phase overrides v1\n"
+        "  - id: phase\n"
+        "# End CircuitSetup Energy Meter Helper: phase overrides v1\n"
+        "logger:\n",
+    ) + (
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+        "  - id: total\n"
+        "# End CircuitSetup Energy Meter Helper: aggregates v1\n"
+    )
+
+    with pytest.raises(ConfigMutationError, match="outside the sensor"):
+        replace_managed_block(content, "phase_overrides", rendered)
+
+
+@pytest.mark.parametrize("rendered", ("", "  - id: replacement\n"))
+def test_replacement_and_removal_reject_misordered_siblings(rendered: str) -> None:
+    """All owned blocks must retain their canonical order before any edit."""
+    content = _content().replace(
+        "logger:\n",
+        "# CircuitSetup Energy Meter Helper: phase overrides v1\n"
+        "  - id: phase\n"
+        "# End CircuitSetup Energy Meter Helper: phase overrides v1\n"
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "  - id: voltage\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "logger:\n",
+    )
+
+    with pytest.raises(ConfigMutationError, match="order"):
+        replace_managed_block(content, "aggregates", rendered)
+
+
 def test_renderers_are_deterministic_and_keep_block_order() -> None:
     """Mapping insertion order cannot change reviewable managed output."""
     entries_a = {"beta": "  - id: beta\n", "alpha": "  - id: alpha\n"}

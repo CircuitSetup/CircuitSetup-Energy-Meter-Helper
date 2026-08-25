@@ -24,6 +24,7 @@ def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
         document = ESPHomeConfigDocument.parse(content)
     except ESPHomeConfigParseError as error:
         raise ConfigMutationError("managed block is not safely writable") from error
+    _validate_managed_layout(document)
     newline = "\r\n" if "\r\n" in content else "\n"
     block = document.managed_blocks.get(block_name)
     if block is not None:
@@ -40,7 +41,6 @@ def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
     for name in _ORDER[_ORDER.index(block_name) + 1 :]:
         candidate = existing.get(name)
         if candidate is not None:
-            _sensor_bounds(document, name, candidate.span.start, candidate.span.end)
             position = candidate.span.start
             break
     prefix = "" if position == 0 or content[position - 1] in "\r\n" else newline
@@ -128,6 +128,20 @@ def _sensor_bounds(
             "managed block is outside the sensor section", snippet=_snippet(block_name)
         )
     return start, end
+
+
+def _validate_managed_layout(document: ESPHomeConfigDocument) -> None:
+    for name, block in document.managed_blocks.items():
+        _sensor_bounds(document, name, block.span.start, block.span.end)
+    actual = [
+        name
+        for name, _ in sorted(
+            document.managed_blocks.items(), key=lambda item: item[1].span.start
+        )
+    ]
+    expected = [name for name in _ORDER if name in document.managed_blocks]
+    if actual != expected:
+        raise ConfigMutationError("managed blocks are out of canonical order")
 
 
 def _line_end(content: str, position: int) -> int:

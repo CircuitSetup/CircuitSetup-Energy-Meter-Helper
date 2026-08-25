@@ -68,7 +68,8 @@ _MANAGED_MARKERS = {
     for is_end, marker in enumerate(pair)
 }
 _HELPER_MARKER_HINT_RE = re.compile(
-    r"circuitsetup\s+energy\s+meter", re.IGNORECASE
+    r"^#\s*(?:end\s+)?circuitsetup\s+energy\s+meter\s+help(?:er|r)\b",
+    re.IGNORECASE,
 )
 
 

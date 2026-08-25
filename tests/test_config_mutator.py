@@ -226,6 +226,55 @@ def test_legacy_wrapper_rejects_invalid_untouched_inventory(
         )
 
 
+@pytest.mark.parametrize(
+    "requests",
+    ((), (CTChangeRequest(2, "Kitchen", "sct_006_20a_25ma"),)),
+)
+@pytest.mark.parametrize(
+    "setting, message",
+    (
+        ("voltage_cal1: 0", "invalid gain for voltage_cal1"),
+        ("electric_freq: 55Hz", "unsupported electric_freq"),
+        ("update_time: 7s", "unsupported update_time"),
+        ("main_meter_id1: !secret meter_id", "unsafe non-literal"),
+    ),
+)
+def test_repair_fallback_validates_complete_proposed_meter_configuration(
+    requests: tuple[CTChangeRequest, ...], setting: str, message: str
+) -> None:
+    """A CT repair cannot preserve invalid complete meter settings."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace(
+        "substitutions:\n", f"substitutions:\n  {setting}\n"
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    with pytest.raises(ValueError, match=message):
+        build_ct_mutation(snapshot, _topology(), requests)
+
+
+@pytest.mark.parametrize(
+    "requests",
+    ((), (CTChangeRequest(2, "Kitchen", "sct_006_20a_25ma"),)),
+)
+def test_ct_mutation_rejects_invalid_untouched_package_structure(
+    requests: tuple[CTChangeRequest, ...],
+) -> None:
+    """No-op and CT changes both preserve package structural validation."""
+    snapshot = _snapshot()
+    content = snapshot.content.replace(
+        "logger:\n", "packages:\n  meter:\n    files: inline\nlogger:\n"
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    with pytest.raises(ValueError, match="inline package"):
+        build_ct_mutation(snapshot, _topology(), requests)
+
+
 def test_board_package_options_toggle_only_requested_meter_boards() -> None:
     """A wrong board index or direction would enable the wrong firmware package."""
     plan = build_ct_mutation(

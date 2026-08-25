@@ -224,6 +224,18 @@ def test_ignores_marker_like_text_that_is_not_a_yaml_comment() -> None:
     assert doc.managed_blocks == {}
 
 
+def test_allows_branded_comments_outside_the_reserved_marker_namespace() -> None:
+    """Ordinary product notes are not mistaken for helper ownership markers."""
+    doc = ESPHomeConfigDocument.parse(
+        "# CircuitSetup Energy Meter installation notes\n"
+        "# Configure CircuitSetup Energy Meter Helper below\n"
+        "sensor:\n"
+        "  # Configure CircuitSetup Energy Meter Helper below\n"
+    )
+
+    assert doc.managed_blocks == {}
+
+
 @pytest.mark.parametrize(
     "comment",
     (

@@ -110,20 +110,32 @@ def build_ct_mutation(
                 "package options require one state per installed board"
             )
     document = ESPHomeConfigDocument.parse(snapshot.content)
+    ct_catalog = CTPresetCatalog.load()
+    voltage_catalog = VoltageTransformerCatalog.load()
     try:
         current = MeterConfigurationInventory.from_document(
             snapshot.configuration,
             document,
             topology,
-            CTPresetCatalog.load(),
-            VoltageTransformerCatalog.load(),
+            ct_catalog,
+            voltage_catalog,
             snapshot.sha256,
             configuration_authoritative=getattr(snapshot, "configuration_authoritative", True),
         )
     except ValueError:
-        return _build_ct_mutation(
+        plan = _build_ct_mutation(
             snapshot, topology, requests, package_options=options
         )
+        MeterConfigurationInventory.from_document(
+            snapshot.configuration,
+            ESPHomeConfigDocument.parse(plan.proposed_content),
+            topology,
+            ct_catalog,
+            voltage_catalog,
+            sha256(plan.proposed_content.encode()).hexdigest(),
+            configuration_authoritative=True,
+        )
+        return plan
     requested = replace(
         current.configuration,
         channels=tuple(
