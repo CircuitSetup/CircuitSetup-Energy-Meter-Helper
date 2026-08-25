@@ -1434,6 +1434,27 @@ def test_indentless_contract_sensor_supports_phase_replacement_and_removal() -> 
     assert "phase overrides v1" not in reset.proposed_content
 
 
+@pytest.mark.parametrize("indent", ("", "  "))
+def test_aggregate_preview_rejects_unsupported_sensor_sequence_entry(indent: str) -> None:
+    """The high-level aggregate writer cannot turn unsafe items into mixed YAML."""
+    source = _contract_snapshot()
+    content = source.content.replace("  - platform: uptime", indent + "- <<: {}")
+    snapshot = replace(
+        source, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+    current = _inventory(snapshot, _topology())
+    requested = _aggregate_request(
+        current,
+        CircuitAggregate(
+            "load", "Load", CircuitRole.BRANCH, (1,),
+            MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION,
+        ),
+    )
+
+    with pytest.raises(ConfigMutationError, match="sensor block"):
+        build_meter_configuration_mutation(snapshot, _topology(), current, requested)
+
+
 def test_aggregate_energy_signs_and_one_ct_power_multiplier_are_semantic_only() -> None:
     """Energy clamps are explicit and doubling never changes aggregate current."""
     snapshot = _contract_snapshot()
@@ -2329,8 +2350,8 @@ sensor:
     assert plan.proposed_content.count("multiply: 2") == 2
 
 
-def test_reporting_multiplier_allows_quoted_owner_after_unfiltered_first_phase() -> None:
-    """Quoted ordinary keys and comments remain safe without a local filter."""
+def test_reporting_multiplier_rejects_quoted_top_level_sensor_key() -> None:
+    """A quoted direct sensor-item key is outside the writable allowlist."""
     snapshot = _snapshot()
     content = snapshot.content.replace(
         "sensor:\n",
@@ -2345,13 +2366,12 @@ def test_reporting_multiplier_allows_quoted_owner_after_unfiltered_first_phase()
         snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
     )
 
-    plan = build_ct_mutation(
-        snapshot,
-        _topology(),
-        (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
-    )
-
-    assert plan.proposed_content.count("multiply: 2") == 2
+    with pytest.raises(ConfigMutationError, match="sensor block"):
+        build_ct_mutation(
+            snapshot,
+            _topology(),
+            (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+        )
 
 
 def test_reporting_multiplier_ignores_opaque_text_and_unmanaged_pq_filters() -> None:

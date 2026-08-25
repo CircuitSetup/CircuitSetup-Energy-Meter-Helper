@@ -22,6 +22,10 @@ _SEQUENCE_MAPPING_RE = re.compile(
     rf"^(?P<indent> *)-[ \t]+(?P<key>{_KEY_TOKEN_RE})[ \t]*:(?P<rest>(?:[ \t].*)?)$"
 )
 _SEQUENCE_RE = re.compile(r"^(?P<indent> *)-\s+(?P<rest>.+)$")
+_SAFE_SENSOR_SEQUENCE_RE = re.compile(
+    r"^(?P<indent> {0,2})-[ \t]+(?P<key>[A-Za-z0-9_-]+)[ \t]*:(?P<rest>.*)$"
+)
+_SAFE_EXTEND_RE = re.compile(r"^!extend[ \t]+[\w${}-]+(?:[ \t]+#.*)?$")
 _YAML_PATH_RE = re.compile(r"(?i)^(.*?\.ya?ml)(?:@.*)?$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _LINE_BREAK_RE = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
@@ -223,7 +227,7 @@ class _DocumentParser:
         end_index = next(
             (index for index, _ in roots if index > start_index), len(self.lines)
         )
-        item_indents: set[int] = set()
+        item_indent: int | None = None
         for index, body in enumerate(self._bodies):
             if (
                 index in self._block_scalar_lines
@@ -236,19 +240,54 @@ class _DocumentParser:
                 if mapping is None and not body.startswith(" "):
                     return None
                 continue
-            sequence = self._sequence_mapping(index)
-            if sequence is not None and sequence.indent in {0, 2}:
-                item_indents.add(sequence.indent)
+            sequence_indent = self._safe_sensor_sequence_indent(index)
+            if sequence_indent is not None:
+                if item_indent is None:
+                    item_indent = sequence_indent
+                elif sequence_indent != item_indent and not self._nested_sensor_sequence(
+                    index, start_index, sequence_indent
+                ):
+                    return None
                 continue
+            indent = len(body) - len(body.lstrip(" "))
+            if indent == (item_indent if item_indent is not None else 2):
+                return None
             if mapping is None and not body.startswith(" "):
                 return None
-        if len(item_indents) > 1:
-            return None
         start = self._offsets[start_index] + len(self.lines[start_index])
         end = self._offsets[end_index] if end_index < len(self.lines) else len(self.content)
-        return SourceSpan(start, end, start_index + 2, 0, 0), next(
-            iter(item_indents), 2
+        return (
+            SourceSpan(start, end, start_index + 2, 0, 0),
+            item_indent if item_indent is not None else 2,
         )
+
+    def _safe_sensor_sequence_indent(self, index: int) -> int | None:
+        match = _SAFE_SENSOR_SEQUENCE_RE.fullmatch(self._bodies[index])
+        if match is None or match["key"] == "<<":
+            return None
+        rest = match["rest"].lstrip(" ")
+        if rest.startswith(("[", "{", "*", "&")):
+            return None
+        if rest.startswith("!") and (
+            match["key"] != "id" or _SAFE_EXTEND_RE.fullmatch(rest) is None
+        ):
+            return None
+        return len(match["indent"])
+
+    def _nested_sensor_sequence(
+        self, index: int, start_index: int, indent: int
+    ) -> bool:
+        for previous in range(index - 1, start_index, -1):
+            body = self._bodies[previous]
+            if not body.strip() or body.lstrip().startswith("#"):
+                continue
+            mapping = self._mapping(previous)
+            return (
+                mapping is not None
+                and mapping.indent == indent
+                and self._sequence_mapping(previous) is None
+            )
+        return False
 
     def _sections(self, name: str) -> list[tuple[int, _Mapping]]:
         sections: list[tuple[int, _Mapping]] = []

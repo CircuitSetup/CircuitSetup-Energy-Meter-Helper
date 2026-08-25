@@ -13,6 +13,7 @@ from custom_components.circuitsetup_energy_meter_helper.config_blocks import (
 )
 from custom_components.circuitsetup_energy_meter_helper.config_document import (
     ESPHomeConfigDocument,
+    ESPHomeConfigParseError,
 )
 from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
     ConfigMutationError,
@@ -210,6 +211,34 @@ def test_indentless_sensor_sequence_rejects_mixed_or_ambiguous_forms(content: st
     """Only a plain, single-style sensor list is writable."""
     assert ESPHomeConfigDocument.parse(content).writable_sensor_span is None
 
+
+@pytest.mark.parametrize("indent", ("", "  "))
+@pytest.mark.parametrize(
+    "entry",
+    (
+        "- {platform: uptime}",
+        "- [x]",
+        "- !tag platform: uptime",
+        "- platform: !tag uptime",
+        "- *anchor",
+        "- &anchor platform: uptime",
+        "? platform: uptime",
+        "- <<: {platform: uptime}",
+        '- "platform": uptime',
+        "- uptime",
+    ),
+)
+def test_sensor_sequence_rejects_unsupported_top_level_forms(
+    indent: str, entry: str
+) -> None:
+    """Only ordinary platform/id mapping entries define a writable sensor style."""
+    content = "sensor:\n" + indent + entry + "\n"
+
+    try:
+        document = ESPHomeConfigDocument.parse(content)
+    except ESPHomeConfigParseError:
+        return
+    assert document.writable_sensor_span is None
 @pytest.mark.parametrize(
     "order",
     tuple(permutations(("voltage_references", "phase_overrides", "aggregates"))),
