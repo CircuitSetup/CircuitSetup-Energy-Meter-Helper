@@ -45,7 +45,7 @@ describe("firmware installer resolver", () => {
   it("suggests profile frequencies without changing topology-only product resolution", () => {
     expect(suggestedLineFrequency("split_phase_120_240")).toBe(60);
     expect(suggestedLineFrequency("single_phase_230")).toBe(50);
-    expect(suggestedLineFrequency("three_phase_120_208")).toBeNull();
+    expect(suggestedLineFrequency("three_phase")).toBeNull();
     expect(suggestedLineFrequency("custom")).toBeNull();
   });
   it.each(standardSelections)("maps %i add-ons with %s to the published product IDs", (addonCount, connectionType, expected) => {

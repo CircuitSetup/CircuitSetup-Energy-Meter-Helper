@@ -165,6 +165,18 @@ describe("HelperApi", () => {
     });
   });
 
+  it("sends the attached three-phase profile with an explicit frequency", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+
+    await api.setInstallerIntent(1, "wifi", null, undefined, "three_phase", 60);
+
+    expect(hass.messages.at(-1)).toMatchObject({
+      electrical_system: "three_phase",
+      line_frequency_hz: 60,
+    });
+  });
+
   it("omits both firmware identifiers without a catalog selection", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");

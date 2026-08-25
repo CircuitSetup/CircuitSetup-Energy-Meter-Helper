@@ -713,6 +713,25 @@ def test_installer_intent_schema_requires_a_valid_paired_firmware_selection() ->
             schema(partial)
 
 
+@pytest.mark.parametrize("frequency", (50, 60))
+def test_installer_intent_schema_accepts_attached_three_phase_profile(
+    frequency: int,
+) -> None:
+    """The installer schema keeps the single attached three-phase value."""
+    schema = vol.Schema(_schema(f"{DOMAIN}/set_installer_intent"))
+
+    assert schema(
+        {
+            "type": f"{DOMAIN}/set_installer_intent",
+            "entry_id": "helper",
+            "addon_count": 0,
+            "connection_type": "wifi",
+            "electrical_system": "three_phase",
+            "line_frequency_hz": frequency,
+        }
+    )["electrical_system"] == "three_phase"
+
+
 def test_preview_ct_schema_requires_a_ct_or_package_change() -> None:
     schema = vol.Schema(_schema(f"{DOMAIN}/preview_ct_config"))
     message = {

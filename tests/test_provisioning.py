@@ -100,8 +100,7 @@ def test_installer_intent_uses_new_install_package_defaults() -> None:
     [
         ("split_phase_120_240", 60),
         ("single_phase_230", 50),
-        ("three_phase_120_208", 60),
-        ("three_phase_230_400", 50),
+        ("three_phase", 60),
         ("custom", 50),
     ],
 )
@@ -150,6 +149,15 @@ def test_legacy_installer_intent_has_no_authoritative_electrical_defaults() -> N
 
     assert intent.electrical_system is None
     assert intent.line_frequency_hz is None
+
+
+def test_meter_configuration_retains_the_attached_three_phase_enum() -> None:
+    """Existing attached plans use one stable three-phase profile value."""
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        ElectricalSystem,
+    )
+
+    assert ElectricalSystem.THREE_PHASE.value == "three_phase"
 
 
 def test_installer_intent_validates_one_package_choice_per_board() -> None:

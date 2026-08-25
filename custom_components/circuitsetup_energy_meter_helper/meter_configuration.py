@@ -19,8 +19,7 @@ UpdateIntervalSeconds = Literal[1, 2, 5, 10, 30, 60]
 class ElectricalSystem(StrEnum):
     SPLIT_PHASE_120_240 = "split_phase_120_240"
     SINGLE_PHASE_230 = "single_phase_230"
-    THREE_PHASE_120_208 = "three_phase_120_208"
-    THREE_PHASE_230_400 = "three_phase_230_400"
+    THREE_PHASE = "three_phase"
     CUSTOM = "custom"
 
 

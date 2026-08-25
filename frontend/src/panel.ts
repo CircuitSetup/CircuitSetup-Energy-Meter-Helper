@@ -90,7 +90,7 @@ export class CircuitSetupPanel extends LitElement {
   private sourcePackageOptions: BoardPackageOptions | null = newInstallPackageOptions(0);
   private connection: Exclude<ConnectionType, "unknown"> = "wifi";
   private electricalSystem: ElectricalSystem = "split_phase_120_240";
-  private lineFrequencyHz: LineFrequencyHz = 60;
+  private lineFrequencyHz: LineFrequencyHz | null = 60;
   private electricalProfileConfirmed = false;
   private meterSettingsDraft: MeterSettingsDraft | null = null;
   private board = 0;
@@ -197,6 +197,8 @@ export class CircuitSetupPanel extends LitElement {
           this.lineFrequencyHz = intent.line_frequency_hz;
           this.electricalProfileConfirmed = true;
         } else {
+          this.electricalSystem = "split_phase_120_240";
+          this.lineFrequencyHz = 60;
           this.electricalProfileConfirmed = false;
         }
         this.refreshFirmwareOptions();
@@ -429,7 +431,7 @@ export class CircuitSetupPanel extends LitElement {
   private setElectricalSystem(value: ElectricalSystem): void {
     this.electricalSystem = value;
     const suggested = value === "split_phase_120_240" ? 60 : value === "single_phase_230" ? 50 : null;
-    if (suggested !== null) this.lineFrequencyHz = suggested;
+    this.lineFrequencyHz = suggested;
     this.electricalProfileConfirmed = false;
     this.requestUpdate();
   }
@@ -441,6 +443,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private confirmElectricalProfile(): void {
+    if (this.lineFrequencyHz === null) return;
     this.electricalProfileConfirmed = true;
     this.announcement = `Electrical profile confirmed: ${this.electricalSystem.replaceAll("_", " ")}, ${this.lineFrequencyHz} Hz.`;
     this.requestUpdate();
@@ -556,7 +559,7 @@ export class CircuitSetupPanel extends LitElement {
         this.selectedFirmware(),
         this.packageOptions,
         this.electricalProfileConfirmed ? this.electricalSystem : null,
-        this.electricalProfileConfirmed ? this.lineFrequencyHz : null,
+        this.electricalProfileConfirmed && this.lineFrequencyHz !== null ? this.lineFrequencyHz : null,
       );
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
@@ -591,7 +594,7 @@ export class CircuitSetupPanel extends LitElement {
       this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
       await this.subscribeSetup(connectionGeneration, api);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      if (this.electricalProfileConfirmed) {
+      if (this.electricalProfileConfirmed && this.lineFrequencyHz !== null) {
         this.meterSettingsDraft = {
           electrical_system: this.electricalSystem,
           line_frequency_hz: this.lineFrequencyHz,

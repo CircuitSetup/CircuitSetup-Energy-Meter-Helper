@@ -21,8 +21,7 @@ _CONNECTION_TYPES = {
 _ELECTRICAL_SYSTEMS = {
     "split_phase_120_240",
     "single_phase_230",
-    "three_phase_120_208",
-    "three_phase_230_400",
+    "three_phase",
     "custom",
 }
 _EVIDENCE_SOURCES = {

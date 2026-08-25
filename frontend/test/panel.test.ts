@@ -318,7 +318,7 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("Set up a new device");
     expect(panel.shadowRoot?.querySelectorAll('[name="addon-count"]')).toHaveLength(7);
     expect(panel.shadowRoot?.querySelectorAll('[name="connection-type"]')).toHaveLength(3);
-    expect(panel.shadowRoot?.querySelectorAll('[name="electrical-system"]')).toHaveLength(5);
+    expect(panel.shadowRoot?.querySelectorAll('[name="electrical-system"]')).toHaveLength(4);
     expect(panel.shadowRoot?.querySelector('[name="line-frequency"]')).not.toBeNull();
     expect(panel.shadowRoot?.querySelector('[data-action="confirm-electrical-profile"]')).not.toBeNull();
     expect(text(panel)).toContain("Install firmware");
@@ -378,6 +378,9 @@ describe("CircuitSetup panel", () => {
     expect(initial).not.toHaveProperty("electrical_system");
     expect(initial).not.toHaveProperty("line_frequency_hz");
 
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[name="electrical-system"][value="split_phase_120_240"]')?.checked).toBe(true);
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[name="line-frequency"][value="60"]')?.checked).toBe(true);
+
     panel.shadowRoot?.querySelector<HTMLInputElement>('[name="electrical-system"][value="single_phase_230"]')?.click();
     panel.shadowRoot?.querySelector<HTMLInputElement>('[name="line-frequency"][value="50"]')?.click();
     panel.shadowRoot?.querySelector<HTMLInputElement>('[data-action="confirm-electrical-profile"]')?.click();
@@ -388,6 +391,54 @@ describe("CircuitSetup panel", () => {
       electrical_system: "single_phase_230",
       line_frequency_hz: 50,
     });
+  });
+
+  it.each([
+    ["split_phase_120_240", "60"],
+    ["single_phase_230", "50"],
+  ] as const)("confirms the %s frequency suggestion", async (system, frequency) => {
+    const messages: Record<string, unknown>[] = [];
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        messages.push(message);
+        return { state: "installer_guide", devices: [] } as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    panel.shadowRoot?.querySelector<HTMLInputElement>(`[name="electrical-system"][value="${system}"]`)?.click();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>(`[name="line-frequency"][value="${frequency}"]`)?.checked).toBe(true);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="confirm-electrical-profile"]')?.click();
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+
+    expect(messages.filter((message) => String(message.type).endsWith("set_installer_intent")).at(-1)).toMatchObject({
+      electrical_system: system,
+      line_frequency_hz: Number(frequency),
+    });
+  });
+
+  it.each(["custom", "three_phase"] as const)("requires an explicit frequency for %s", async (system) => {
+    const messages: Record<string, unknown>[] = [];
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        messages.push(message);
+        return { state: "installer_guide", devices: [] } as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="confirm-electrical-profile"]')?.click();
+    panel.shadowRoot?.querySelector<HTMLInputElement>(`[name="electrical-system"][value="${system}"]`)?.click();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="confirm-electrical-profile"]')?.disabled).toBe(true);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
+    await tick();
+    const intent = messages.filter((message) => String(message.type).endsWith("set_installer_intent")).at(-1);
+    expect(intent).not.toHaveProperty("electrical_system");
+    expect(intent).not.toHaveProperty("line_frequency_hz");
   });
 
   it("loads imported meter configuration before topology after adoption", async () => {

@@ -11,7 +11,7 @@ const VERSION = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$/;
 const CONTROL = /[\u0000-\u001F\u007F-\u009F]/;
 
 export type FirmwareConnectionType = "wifi" | "ethernet_lilygo" | "ethernet_waveshare";
-export type SuggestedElectricalSystem = "split_phase_120_240" | "single_phase_230" | "three_phase_120_208" | "three_phase_230_400" | "custom";
+export type SuggestedElectricalSystem = "split_phase_120_240" | "single_phase_230" | "three_phase" | "custom";
 
 export interface FirmwareVersion {
   version: string;

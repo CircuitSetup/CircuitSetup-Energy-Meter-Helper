@@ -620,7 +620,7 @@ def test_trusted_managed_voltage_block_rejects_more_references_than_groups() -> 
         )
 
 
-@pytest.mark.parametrize("profile", ("three_phase_120_208", "custom"))
+@pytest.mark.parametrize("profile", ("three_phase", "custom"))
 def test_electrical_profile_does_not_change_managed_topology_board_count(
     profile: str,
 ) -> None:

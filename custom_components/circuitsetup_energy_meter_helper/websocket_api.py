@@ -996,8 +996,7 @@ def _schema(command: str) -> Any:
                 (
                     "split_phase_120_240",
                     "single_phase_230",
-                    "three_phase_120_208",
-                    "three_phase_230_400",
+                    "three_phase",
                     "custom",
                 )
             ),

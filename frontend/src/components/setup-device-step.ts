@@ -12,8 +12,7 @@ const ADDON_PINS = ["(0, 16)", "(27, 17)", "(2, 21)", "(13, 22)", "(14, 25)", "(
 const ELECTRICAL_SYSTEMS: Array<[ElectricalSystem, string]> = [
   ["split_phase_120_240", "Split phase 120/240 V"],
   ["single_phase_230", "Single phase 230 V"],
-  ["three_phase_120_208", "Three phase 120/208 V"],
-  ["three_phase_230_400", "Three phase 230/400 V"],
+  ["three_phase", "Three phase"],
   ["custom", "Custom"],
 ];
 const suggestedFrequency = (system: ElectricalSystem): LineFrequencyHz | null =>
@@ -35,7 +34,7 @@ export function setupDeviceStep(
   boardPackages: BoardPackageOptions = newInstallPackageOptions(addonCount),
   setBoardPackages: (options: BoardPackageOptions) => void = () => undefined,
   electricalSystem: ElectricalSystem = "split_phase_120_240",
-  lineFrequencyHz: LineFrequencyHz = 60,
+  lineFrequencyHz: LineFrequencyHz | null = 60,
   electricalProfileConfirmed = false,
   setElectricalSystem: (value: ElectricalSystem) => void = () => undefined,
   setLineFrequency: (value: LineFrequencyHz) => void = () => undefined,
@@ -98,7 +97,7 @@ export function setupDeviceStep(
         <p>${suggestedFrequency(electricalSystem)
           ? `${suggestedFrequency(electricalSystem)} Hz is suggested; confirm it after checking your supply.`
           : "Choose the line frequency for this electrical system."}</p>
-        <button class="secondary" data-action="confirm-electrical-profile" @click=${confirmElectricalProfile}>
+        <button class="secondary" data-action="confirm-electrical-profile" ?disabled=${lineFrequencyHz === null} @click=${confirmElectricalProfile}>
           ${electricalProfileConfirmed ? "Electrical profile confirmed" : "Confirm electrical profile"}
         </button>
       </fieldset>

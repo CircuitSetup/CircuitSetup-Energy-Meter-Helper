@@ -9,8 +9,7 @@ export type FirmwareCatalogState = "idle" | "loading" | "ready" | "error";
 export type ElectricalSystem =
   | "split_phase_120_240"
   | "single_phase_230"
-  | "three_phase_120_208"
-  | "three_phase_230_400"
+  | "three_phase"
   | "custom";
 export type LineFrequencyHz = 50 | 60;
 
