@@ -24,6 +24,9 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
 from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
     build_meter_configuration_mutation,
 )
+from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    CircuitRole,
+)
 from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
     MeterConfigurationInventory,
 )
@@ -53,7 +56,7 @@ def _snapshot(*, missing: str | None = None, quote: str = '"') -> ESPHomeConfigS
     content = (
         "api:\n  encryption:\n    key: top-secret\nsubstitutions:\n"
         + "\n".join(substitutions)
-        + "\nlogger:\n  level: DEBUG\n"
+        + "\nsensor:\n  - platform: uptime\n    name: Uptime\nlogger:\n  level: DEBUG\n"
     )
     return ESPHomeConfigSnapshot(
         "meter.yaml", content, sha256(content.encode()).hexdigest()
@@ -93,6 +96,9 @@ packages:
       #- Software/ESPHome/power_quality/6chan_addon1_power_quality.yaml
       - Software/ESPHome/status_fields/6chan_main_status.yaml
       #- Software/ESPHome/status_fields/6chan_addon1_status.yaml
+sensor:
+  - platform: uptime
+    name: Uptime
 api:
   encryption:
     key: top-secret
@@ -329,13 +335,6 @@ def test_board_package_options_require_one_state_per_installed_board() -> None:
 def test_reporting_multiplier_divides_gain_and_multiplies_current_and_power() -> None:
     """CT scaling must keep the ATM90E32 register and reported output in sync."""
     snapshot = _snapshot()
-    content = snapshot.content.replace(
-        "logger:\n  level: DEBUG\n",
-        "sensor:\n  - platform: uptime\n    name: Uptime\nlogger:\n  level: DEBUG\n",
-    )
-    snapshot = replace(
-        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
-    )
 
     plan = build_ct_mutation(
         snapshot,
@@ -357,6 +356,148 @@ def test_reporting_multiplier_divides_gain_and_multiplies_current_and_power() ->
         in plan.proposed_content
     )
     assert "- platform: uptime" in plan.proposed_content
+
+
+def test_power_quality_scaling_uses_managed_phase_overrides() -> None:
+    """A scaled PQ phase must scale only its supported measurements."""
+    snapshot = _package_snapshot()
+
+    plan = build_ct_mutation(
+        snapshot,
+        _two_board_topology(),
+        (CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 4),),
+        package_options={
+            "power_quality": (True, False),
+            "status_fields": (True, False),
+        },
+    )
+
+    assert (
+        """  - id: !extend meter_main1
+    phase_a: # CT1
+      current:
+        filters:
+          - multiply: 4
+      power:
+        filters:
+          - multiply: 4
+      reactive_power:
+        filters:
+          - multiply: 4
+      apparent_power:
+        filters:
+          - multiply: 4
+      harmonic_power: !remove
+      peak_current: !remove
+"""
+        in plan.proposed_content
+    )
+    assert "power_factor:\n        filters:" not in plan.proposed_content
+    assert "phase_angle:\n        filters:" not in plan.proposed_content
+
+
+def test_unused_channel_removes_all_power_quality_outputs() -> None:
+    """Unused phases retain calibration outputs but remove every PQ output."""
+    snapshot = _package_snapshot()
+    topology = _two_board_topology()
+    current = MeterConfigurationInventory.from_document(
+        snapshot.configuration,
+        ESPHomeConfigDocument.parse(snapshot.content),
+        topology,
+        CTPresetCatalog.load(),
+        VoltageTransformerCatalog.load(),
+        snapshot.sha256,
+    )
+    requested = replace(
+        current.configuration,
+        channels=tuple(
+            replace(channel, enabled=False, role=CircuitRole.UNUSED)
+            if channel.channel == 2
+            else channel
+            for channel in current.configuration.channels
+        ),
+        power_quality=(True, False),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert (
+        """    phase_b: # CT2
+      reactive_power: !remove
+      apparent_power: !remove
+      harmonic_power: !remove
+      peak_current: !remove
+      power_factor: !remove
+      phase_angle: !remove
+"""
+        in plan.proposed_content
+    )
+    assert "phase_b: # CT2\n      current: !remove" not in plan.proposed_content
+    assert "phase_b: # CT2\n      power: !remove" not in plan.proposed_content
+
+
+def test_phase_overrides_are_board_specific_and_migrate_legacy_scaling() -> None:
+    """A preview keeps legacy scaling while limiting PQ-only fields to its board."""
+    snapshot = _package_snapshot()
+    legacy = snapshot.content.replace(
+        "api:\n",
+        """# CircuitSetup Energy Meter Helper: phase overrides v1
+  - id: !extend meter_main1
+    phase_a: # CT1
+      current:
+        filters:
+          - multiply: 2
+      power:
+        filters:
+          - multiply: 2
+# End CircuitSetup Energy Meter Helper: phase overrides v1
+api:
+""",
+    )
+    snapshot = replace(
+        snapshot, content=legacy, sha256=sha256(legacy.encode()).hexdigest()
+    )
+
+    plan = build_ct_mutation(
+        snapshot,
+        _two_board_topology(),
+        (CTChangeRequest(7, "CT 7", "sct_006_20a_25ma", 4),),
+        package_options={
+            "power_quality": (True, False),
+            "status_fields": (True, False),
+        },
+    )
+
+    main = plan.proposed_content.split("phase_a: # CT1", 1)[1].split(
+        "phase_b: # CT2", 1
+    )[0]
+    assert "reactive_power:" in main
+    addon = plan.proposed_content.split("phase_a: # CT7", 1)[1]
+    assert "multiply: 4" in addon
+    assert "reactive_power:" not in addon
+    assert "harmonic_power: !remove" not in addon
+    assert "-       power:" in plan.redacted_diff
+    assert "+       reactive_power:" in plan.redacted_diff
+
+
+def test_multiplier_one_omits_scaling_filters_but_removes_active_pq_outputs() -> None:
+    """The base range leaves measurements unscaled while still pruning PQ extras."""
+    plan = build_ct_mutation(
+        _package_snapshot(),
+        _two_board_topology(),
+        (CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 1),),
+        package_options={
+            "power_quality": (True, False),
+            "status_fields": (True, False),
+        },
+    )
+
+    phase = plan.proposed_content.split("phase_a: # CT1", 1)[1].split(
+        "phase_b: # CT2", 1
+    )[0]
+    assert "filters:" not in phase
+    assert "harmonic_power: !remove" in phase
+    assert "peak_current: !remove" in phase
 
 
 def test_reporting_multiplier_uses_configured_id_substitution_and_is_reviewable() -> None:
@@ -514,6 +655,38 @@ logger:
         )
 
 
+@pytest.mark.parametrize("output", ("reactive_power", "apparent_power"))
+def test_reporting_multiplier_refuses_supported_power_quality_filters(
+    output: str,
+) -> None:
+    """Helper scaling must never merge with an external supported PQ filter."""
+    snapshot = _package_snapshot()
+    content = snapshot.content.replace(
+        "sensor:\n",
+        f"""sensor:
+  - id: !extend meter_main1
+    phase_b:
+      {output}:
+        filters:
+          - throttle: 5s
+""",
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    with pytest.raises(ConfigMutationError, match="filters"):
+        build_ct_mutation(
+            snapshot,
+            _two_board_topology(),
+            (CTChangeRequest(2, "CT 2", "sct_006_20a_25ma", 2),),
+            package_options={
+                "power_quality": (True, False),
+                "status_fields": (True, False),
+            },
+        )
+
+
 def test_missing_keys_insert_only_in_writable_substitutions_or_refuse_with_snippet() -> (
     None
 ):
@@ -523,7 +696,7 @@ def test_missing_keys_insert_only_in_writable_substitutions_or_refuse_with_snipp
         _topology(),
         (CTChangeRequest(3, "CT 3", "sct_006_20a_25ma"),),
     )
-    assert '  current_cal_ct3: "11143"\nlogger:' in plan.proposed_content
+    assert '  current_cal_ct3: "11143"\nsensor:' in plan.proposed_content
     assert plan.changes[-1].old_value is None
 
     missing_name = build_ct_mutation(
@@ -531,13 +704,13 @@ def test_missing_keys_insert_only_in_writable_substitutions_or_refuse_with_snipp
         _topology(),
         (CTChangeRequest(3, "O'Clock", "sct_006_20a_25ma"),),
     )
-    assert "  ct3_name: 'O''Clock'\nlogger:" in missing_name.proposed_content
+    assert "  ct3_name: 'O''Clock'\nsensor:" in missing_name.proposed_content
     missing_gain = build_ct_mutation(
         _snapshot(missing="current_cal_ct3", quote="'"),
         _topology(),
         (CTChangeRequest(3, "CT 3", "sct_006_20a_25ma"),),
     )
-    assert "  current_cal_ct3: '11143'\nlogger:" in missing_gain.proposed_content
+    assert "  current_cal_ct3: '11143'\nsensor:" in missing_gain.proposed_content
 
     snapshot = _snapshot()
     without_substitutions = replace(

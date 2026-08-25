@@ -38,8 +38,7 @@ def build_meter_configuration_mutation(
         requested.meter != previous.meter
         or requested.aggregates != previous.aggregates
         or any(
-            (new.enabled, new.role, new.voltage_reference_id)
-            != (old.enabled, old.role, old.voltage_reference_id)
+            new.voltage_reference_id != old.voltage_reference_id
             for old, new in zip(previous.channels, requested.channels, strict=True)
         )
     ):
@@ -82,5 +81,12 @@ def build_meter_configuration_mutation(
     }:
         package_options = None
     return _build_ct_mutation(
-        snapshot, topology, changes, package_options=package_options
+        snapshot,
+        topology,
+        changes,
+        package_options=package_options,
+        phase_channels={
+            channel.channel: (channel.enabled, channel.reporting_multiplier)
+            for channel in requested.channels
+        },
     )

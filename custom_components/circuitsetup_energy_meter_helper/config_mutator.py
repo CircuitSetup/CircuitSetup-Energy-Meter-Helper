@@ -31,14 +31,17 @@ from .topology import (
 
 _SUBSTITUTIONS_RE = re.compile(r"^substitutions:\s*(?:#.*)?(?:\r?\n)?$")
 _SENSOR_RE = re.compile(r"^sensor:\s*(?:#.*)?(?:\r?\n)?$")
+_ROOT_SENSOR_RE = re.compile(r"^(?:sensor|['\"]sensor['\"])\s*:")
 _TOP_LEVEL_RE = re.compile(r"^[\w-]+:")
-_MULTIPLIER_START, _MULTIPLIER_END = MANAGED_BLOCK_MARKERS["phase_overrides"]
-_MULTIPLIER_ENTRY_RE = re.compile(
+_PHASE_OVERRIDE_START, _PHASE_OVERRIDE_END = MANAGED_BLOCK_MARKERS["phase_overrides"]
+_PHASE_HEADER_RE = re.compile(
+    r"^    phase_[abc]: # CT(?P<channel>[1-9]|[1-3][0-9]|4[0-2])\r?$",
+    re.MULTILINE,
+)
+_PHASE_MULTIPLIER_RE = re.compile(
     r"    phase_[abc]: # CT(?P<channel>[1-9]|[1-3][0-9]|4[0-2])\r?\n"
-    r"      current:\r?\n        filters:\r?\n"
-    r"          - multiply: (?P<current>[^\r\n]+)\r?\n"
-    r"      power:\r?\n        filters:\r?\n"
-    r"          - multiply: (?P<power>[^\r\n]+)\r?\n"
+    r"(?P<body>.*?)(?=^    phase_[abc]: # CT|\Z)",
+    re.MULTILINE | re.DOTALL,
 )
 _PLAIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]*$")
 _YAML_RESERVED = {"null", "true", "false", "yes", "no", "on", "off", "~"}
@@ -169,6 +172,7 @@ def _build_ct_mutation(
     requested_channels: Iterable[CTChangeRequest],
     *,
     package_options: Mapping[str, Iterable[bool]] | None = None,
+    phase_channels: Mapping[int, tuple[bool, float]] | None = None,
 ) -> ConfigMutationPlan:
     """Build a safe config edit plan without serializing the YAML document."""
     if getattr(snapshot, "configuration_authoritative", True) is not True:
@@ -187,14 +191,19 @@ def _build_ct_mutation(
         gain = _requested_gain(request, catalog)
         _append_change(changes, values, name_key, request.name, document.substitutions)
         _append_change(changes, values, gain_key, str(gain), document.substitutions)
-    proposed_content = _apply_reporting_multipliers(
-        _apply_changes(document, changes, values), requests, document.substitutions
-    )
+    proposed_content = _apply_changes(document, changes, values)
     if package_options is not None:
         proposed_content, package_changes = _apply_package_options(
             proposed_content, topology, package_options
         )
         changes.extend(package_changes)
+    proposed_content = _apply_reporting_multipliers(
+        proposed_content,
+        topology,
+        requests,
+        document.substitutions,
+        phase_channels,
+    )
     proposed_document = ESPHomeConfigDocument.parse(proposed_content)
     CTInventory.from_document(proposed_document, topology, catalog, snapshot.sha256)
     if proposed_content == snapshot.content:
@@ -418,14 +427,15 @@ def build_calibrated_gain_mutation(
             str(next(iter(gains))),
             document.substitutions,
         )
-    proposed_content = _apply_reporting_multipliers(
-        _apply_changes(document, changes, values), requests, document.substitutions
-    )
+    proposed_content = _apply_changes(document, changes, values)
     if package_options is not None:
         proposed_content, package_changes = _apply_package_options(
             proposed_content, topology, package_options
         )
         changes.extend(package_changes)
+    proposed_content = _apply_reporting_multipliers(
+        proposed_content, topology, requests, document.substitutions
+    )
     return ConfigMutationPlan(
         snapshot.configuration,
         snapshot.sha256,
@@ -583,106 +593,130 @@ def _apply_changes(
 
 def _apply_reporting_multipliers(
     content: str,
+    topology: MeterTopology,
     requests: tuple[CTChangeRequest, ...],
     substitutions: Mapping[str, ConfigScalar],
+    phase_channels: Mapping[int, tuple[bool, float]] | None = None,
 ) -> str:
-    starts = [
-        match.start() for match in re.finditer(re.escape(_MULTIPLIER_START), content)
-    ]
-    ends = [match.end() for match in re.finditer(re.escape(_MULTIPLIER_END), content)]
-    if len(starts) != len(ends) or len(starts) > 1 or starts and starts[0] >= ends[0]:
-        raise ConfigMutationError("reporting multiplier block is not safely writable")
-    multipliers: dict[int, float] = {}
-    if starts:
-        managed = content[starts[0] : ends[0]]
-        entries = tuple(_MULTIPLIER_ENTRY_RE.finditer(managed))
-        if len(entries) != managed.count("    phase_"):
-            raise ConfigMutationError(
-                "reporting multiplier block is not safely writable"
-            )
-        for entry in entries:
-            try:
-                current = float(entry.group("current"))
-                power = float(entry.group("power"))
-            except ValueError as error:
-                raise ConfigMutationError(
-                    "reporting multiplier block is not safely writable"
-                ) from error
-            if current != power or current not in REPORTING_MULTIPLIERS:
-                raise ConfigMutationError(
-                    "reporting multiplier block is not safely writable"
-                )
-            channel = int(entry.group("channel"))
-            if channel in multipliers:
-                raise ConfigMutationError(
-                    "reporting multiplier block is not safely writable"
-                )
-            multipliers[channel] = current
-        end = ends[0]
-        if content[end : end + 2] == "\r\n":
-            end += 2
-        elif content[end : end + 1] == "\n":
-            end += 1
-        content = content[: starts[0]] + content[end:]
+    from .config_blocks import render_phase_overrides, replace_managed_block
+
+    multipliers = _read_phase_multipliers(content)
+    has_phase_overrides = _PHASE_OVERRIDE_START in content
     for request in requests:
         if request.reporting_multiplier == 1:
             multipliers.pop(request.channel, None)
         else:
             multipliers[request.channel] = request.reporting_multiplier
-    if not multipliers:
+    channels = dict(phase_channels or {})
+    requested_by_channel = {request.channel: request for request in requests}
+    for channel, multiplier in multipliers.items():
+        if channel not in requested_by_channel:
+            enabled, _ = channels.get(channel, (True, 1.0))
+            channels[channel] = (enabled, multiplier)
+    for request in requests:
+        channels[request.channel] = (True, request.reporting_multiplier)
+    if not channels and not has_phase_overrides:
         return content
-    _reject_local_output_filters(content, multipliers, substitutions)
-    newline = "\r\n" if "\r\n" in content else "\n"
-    block: list[str] = [_MULTIPLIER_START]
-    current_id = ""
-    for channel, value in sorted(multipliers.items()):
+    power_quality = package_options_from_document(
+        ESPHomeConfigDocument.parse(content), topology
+    )["power_quality"]
+    scaled_channels = {
+        channel: multiplier
+        for channel, (_enabled, multiplier) in channels.items()
+        if multiplier != 1
+    }
+    if has_phase_overrides:
+        content = replace_managed_block(content, "phase_overrides", "")
+    _reject_local_output_filters(content, scaled_channels, substitutions)
+    entries: dict[str, str] = {}
+    for channel, (enabled, multiplier) in sorted(channels.items()):
+        if channel not in range(1, topology.ct_count + 1):
+            raise ConfigMutationError("reporting multiplier is outside topology")
         meter_key, phase = _channel_meter_phase(channel)
         meter_id = (
             f"${{{meter_key}}}"
             if meter_key in substitutions
             else _canonical_meter_id(meter_key)
         )
-        if meter_id != current_id:
-            block.append(f"  - id: !extend {meter_id}")
-            current_id = meter_id
-        multiplier = f"{value:g}"
-        block.extend(
-            (
-                f"    phase_{phase}: # CT{channel}",
-                "      current:",
-                "        filters:",
-                f"          - multiply: {multiplier}",
-                "      power:",
-                "        filters:",
-                f"          - multiply: {multiplier}",
+        body = [f"  - id: !extend {meter_id}", f"    phase_{phase}: # CT{channel}"]
+        if multiplier != 1:
+            value = f"{multiplier:g}"
+            for output in ("current", "power"):
+                body.extend((f"      {output}:", "        filters:", f"          - multiply: {value}"))
+            if power_quality[(channel - 1) // 6]:
+                for output in ("reactive_power", "apparent_power"):
+                    body.extend((f"      {output}:", "        filters:", f"          - multiply: {value}"))
+        if power_quality[(channel - 1) // 6]:
+            removals = ("harmonic_power", "peak_current") if enabled else (
+                "reactive_power",
+                "apparent_power",
+                "harmonic_power",
+                "peak_current",
+                "power_factor",
+                "phase_angle",
             )
-        )
-    block.append(_MULTIPLIER_END)
-    rendered = newline.join(block) + newline
-    lines = content.splitlines(keepends=True)
-    sensor_lines = [
-        index for index, line in enumerate(lines) if line.startswith("sensor:")
-    ]
-    if len(sensor_lines) > 1 or (
-        sensor_lines and _SENSOR_RE.fullmatch(lines[sensor_lines[0]]) is None
+            body.extend(f"      {output}: !remove" for output in removals)
+        if len(body) > 2:
+            entries[f"{channel:02d}"] = "\n".join(body) + "\n"
+    if not entries and not has_phase_overrides:
+        return content
+    rendered = render_phase_overrides(entries)
+    if (
+        rendered
+        and ESPHomeConfigDocument.parse(content).writable_sensor_span is None
+        and not any(_ROOT_SENSOR_RE.match(line) for line in content.splitlines())
     ):
-        raise ConfigMutationError("no unambiguous writable sensor block")
-    if not sensor_lines:
-        separator = "" if not content or content.endswith(("\n", "\r")) else newline
-        return content + separator + "sensor:" + newline + rendered
-    start = sensor_lines[0]
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        line = lines[index]
-        if (
-            line.strip()
-            and not line.lstrip().startswith("#")
-            and _TOP_LEVEL_RE.match(line)
-        ):
-            end = index
-            break
-    offset = sum(len(line) for line in lines[:end])
-    return content[:offset] + rendered + content[offset:]
+        newline = "\r\n" if "\r\n" in content else "\n"
+        content += ("" if content.endswith(("\n", "\r")) else newline) + "sensor:" + newline
+    return replace_managed_block(content, "phase_overrides", rendered)
+
+
+def _read_phase_multipliers(content: str) -> dict[int, float]:
+    """Migrate only the helper's former current/power multiplier entries."""
+    starts = [match.start() for match in re.finditer(re.escape(_PHASE_OVERRIDE_START), content)]
+    ends = [match.end() for match in re.finditer(re.escape(_PHASE_OVERRIDE_END), content)]
+    if len(starts) != len(ends) or len(starts) > 1 or starts and starts[0] >= ends[0]:
+        raise ConfigMutationError("reporting multiplier block is not safely writable")
+    if not starts:
+        return {}
+    managed = content[starts[0] : ends[0]]
+    headers = tuple(_PHASE_HEADER_RE.finditer(managed))
+    entries = tuple(_PHASE_MULTIPLIER_RE.finditer(managed))
+    if len(entries) != len(headers) or len(
+        {header.group("channel") for header in headers}
+    ) != len(headers):
+        raise ConfigMutationError("reporting multiplier block is not safely writable")
+    multipliers: dict[int, float] = {}
+    for entry in entries:
+        body = entry.group("body")
+        current = _phase_output_multiplier(body, "current")
+        power = _phase_output_multiplier(body, "power")
+        if current is None and power is None:
+            continue
+        if current != power or current not in REPORTING_MULTIPLIERS:
+            raise ConfigMutationError("reporting multiplier block is not safely writable")
+        channel = int(entry.group("channel"))
+        if channel in multipliers:
+            raise ConfigMutationError("reporting multiplier block is not safely writable")
+        multipliers[channel] = current
+    return multipliers
+
+
+def _phase_output_multiplier(body: str, output: str) -> float | None:
+    if re.search(rf"^      {output}:\r?$", body, re.MULTILINE) is None:
+        return None
+    match = re.search(
+        rf"^      {output}:\r?\n        filters:\r?\n"
+        r"          - multiply: (?P<value>[^\r\n]+)\r?$",
+        body,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise ConfigMutationError("reporting multiplier block is not safely writable")
+    try:
+        return float(match.group("value"))
+    except ValueError as error:
+        raise ConfigMutationError("reporting multiplier block is not safely writable") from error
 
 
 def _channel_meter_phase(channel: int) -> tuple[str, str]:
@@ -762,7 +796,12 @@ def _reject_local_output_filters(
                 indent = len(lines[candidate]) - len(lines[candidate].lstrip(" "))
                 if stripped and not stripped.startswith("#") and indent <= phase_indent:
                     break
-                if stripped in {"current:", "power:"}:
+                if stripped in {
+                    "current:",
+                    "power:",
+                    "reactive_power:",
+                    "apparent_power:",
+                }:
                     output_indent = indent
                     for nested in range(candidate + 1, item_end):
                         nested_value = lines[nested].strip()
@@ -896,12 +935,12 @@ def _review_diff(
 
 def _reporting_multiplier_diff(prior_content: str, proposed_content: str) -> str:
     def managed_lines(content: str) -> tuple[str, ...]:
-        start = content.find(_MULTIPLIER_START)
+        start = content.find(_PHASE_OVERRIDE_START)
         if start < 0:
             return ()
-        end = content.find(_MULTIPLIER_END, start)
+        end = content.find(_PHASE_OVERRIDE_END, start)
         return tuple(
-            content[start : end + len(_MULTIPLIER_END)].splitlines()
+            content[start : end + len(_PHASE_OVERRIDE_END)].splitlines()
         )
 
     prior = managed_lines(prior_content)
