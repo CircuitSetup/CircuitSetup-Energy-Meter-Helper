@@ -483,6 +483,143 @@ def test_managed_voltage_reference_gains_fail_closed_but_ignore_outside_spoofs()
     assert "stored_semantics_stale" not in spoofed_inventory.warnings
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda content: content.replace(
+            "    phase_a:\n      gain_voltage: 7305",
+            "    phase_a:\n      gain_voltage: 111\n      gain_voltage: 7305",
+            1,
+        ),
+        lambda content: content.replace(
+            "      gain_voltage: 7305\n      voltage:",
+            "      gain_voltage: 7305\n      gain_voltage: 111\n      voltage:",
+            1,
+        ),
+        lambda content: content.replace(
+            "    phase_b:\n",
+            "    phase_a:\n      gain_voltage: 7305\n    phase_b:\n",
+            1,
+        ),
+        lambda content: content.replace(
+            "      voltage:\n",
+            "      voltage:\n        gain_voltage: 111\n",
+            1,
+        ),
+        lambda content: content.replace(
+            "      voltage:\n",
+            "      current: [*defaults]\n      voltage:\n",
+            1,
+        ),
+    ),
+)
+def test_managed_voltage_reference_gains_reject_duplicate_or_nested_yaml(
+    mutation: object,
+) -> None:
+    """Stored gains cannot be retained when YAML has ambiguous effective keys."""
+    snapshot = _snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(current.configuration.meter.voltage_references[0], gain_voltage=7305),
+            ),
+        ),
+    )
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    assert callable(mutation)
+    tampered = mutation(plan.proposed_content)
+    stored = StoredMeterConfiguration(
+        sha256(tampered.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+
+    assert "stored_semantics_stale" in _inventory(
+        replace(snapshot, content=tampered, sha256=stored.config_sha256),
+        topology,
+        stored=stored,
+    ).warnings
+
+
+def test_inventory_requires_caller_digest_to_match_document_before_stored_state() -> None:
+    """A stale caller digest cannot authenticate tampered YAML or stored semantics."""
+    snapshot = _snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(current.configuration.meter.voltage_references[0], gain_voltage=7305),
+            ),
+        ),
+    )
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    stored = StoredMeterConfiguration(
+        sha256(plan.proposed_content.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+    tampered = plan.proposed_content.replace("key: top-secret", "key: tampered")
+
+    inventory = _inventory(
+        replace(snapshot, content=tampered, sha256=stored.config_sha256),
+        topology,
+        stored=stored,
+    )
+
+    assert "stored_semantics_stale" in inventory.warnings
+    assert inventory.configuration.meter.voltage_references != requested.meter.voltage_references
+
+
+def test_managed_voltage_reference_gains_allow_unrelated_phase_children() -> None:
+    """Strict gain parsing leaves official non-gain phase settings usable."""
+    snapshot = _snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(current.configuration.meter.voltage_references[0], gain_voltage=7305),
+            ),
+        ),
+    )
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    compatible = plan.proposed_content.replace(
+        "      voltage:\n", "      current:\n        accuracy_decimals: 2\n      voltage:\n", 1
+    )
+    stored = StoredMeterConfiguration(
+        sha256(compatible.encode()).hexdigest(),
+        requested.meter,
+        requested.channels,
+        requested.aggregates,
+        requested.power_quality,
+        requested.status_fields,
+    )
+
+    inventory = _inventory(
+        replace(snapshot, content=compatible, sha256=stored.config_sha256),
+        topology,
+        stored=stored,
+    )
+
+    assert inventory.configuration.meter.voltage_references == requested.meter.voltage_references
+    assert "stored_semantics_stale" not in inventory.warnings
+
+
 def test_reporting_preview_never_echoes_owned_block_content() -> None:
     """The shared phase preview summary cannot reveal earlier YAML content."""
     before = (

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
+from hashlib import sha256
 from typing import cast
 
 from .config_document import ESPHomeConfigDocument
@@ -104,11 +105,12 @@ class MeterConfigurationInventory:
         stored_semantics_stale: bool = False,
     ) -> MeterConfigurationInventory:
         """Merge current YAML with hash-bound semantics and explicit legacy defaults."""
+        actual_sha256 = sha256(document.content.encode()).hexdigest()
         ct_inventory = CTInventory.from_document(
             document,
             topology,
             ct_catalog,
-            config_sha256,
+            actual_sha256,
             stored_ct_selections,
             reporting_multipliers,
         )
@@ -119,7 +121,8 @@ class MeterConfigurationInventory:
         matching = (
             stored_configuration
             if stored_configuration is not None
-            and stored_configuration.config_sha256 == config_sha256
+            and config_sha256 == actual_sha256
+            and stored_configuration.config_sha256 == actual_sha256
             else None
         )
         configuration = _legacy_request(document, topology, ct_inventory)
@@ -153,7 +156,7 @@ class MeterConfigurationInventory:
             warnings.append("stored_semantics_stale")
         return cls(
             plan_id=plan_id,
-            source_sha256=config_sha256,
+            source_sha256=actual_sha256,
             topology=topology,
             configuration=configuration,
             capabilities=capabilities,
@@ -275,26 +278,109 @@ def _validate_managed_voltage_reference_gains(
     )
     if actual.fingerprint != expected.fingerprint:
         raise ValueError("managed voltage references are not verified")
-    content = block.content.replace("\r\n", "\n")
+    lines = block.content.replace("\r\n", "\n").splitlines()
+    items = _managed_voltage_items(lines)
     for reference in stored.meter.voltage_references:
         for group in reference.group_keys:
             meter_id = _managed_meter_id(group, document)
-            entries = list(
-                re.finditer(
-                    rf"^  - id: !extend {re.escape(meter_id)}$", content, re.MULTILINE
+            item = items.pop(meter_id, None)
+            if item is None:
+                raise ValueError("managed voltage reference gains are ambiguous")
+            _validate_managed_voltage_item(item, reference.gain_voltage)
+    if items:
+        raise ValueError("managed voltage reference gains are ambiguous")
+
+
+def _managed_voltage_items(lines: list[str]) -> dict[str, list[str]]:
+    """Return exact direct meter items from the helper-owned sensor block."""
+    headers: list[tuple[str, int]] = []
+    for index, line in enumerate(lines):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if _ambiguous_managed_yaml(line):
+            raise ValueError("managed voltage references are ambiguous")
+        if line.startswith("  - "):
+            match = re.fullmatch(r"  - id: !extend (?P<id>[^\s]+)", line)
+            if match is None:
+                raise ValueError("managed voltage reference item is invalid")
+            headers.append((match["id"], index))
+        elif re.match(r"^\s*(?:-\s+)?id\s*:", line):
+            raise ValueError("managed voltage reference item is invalid")
+    items: dict[str, list[str]] = {}
+    for item_index, (meter_id, start) in enumerate(headers):
+        end = headers[item_index + 1][1] if item_index + 1 < len(headers) else len(lines)
+        if meter_id in items:
+            raise ValueError("managed voltage reference gains are ambiguous")
+        items[meter_id] = lines[start + 1 : end]
+    return items
+
+
+def _validate_managed_voltage_item(lines: list[str], expected_gain: int) -> None:
+    phases: dict[str, list[str]] = {}
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            index += 1
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent < 4:
+            raise ValueError("managed voltage reference item is invalid")
+        if indent == 4:
+            match = re.fullmatch(r"    phase_(?P<phase>[abc]):", line)
+            if match is None:
+                if line.lstrip().startswith("phase_"):
+                    raise ValueError("managed voltage reference phase is invalid")
+                index += 1
+                continue
+            phase = match["phase"]
+            if phase in phases:
+                raise ValueError("managed voltage reference phase is ambiguous")
+            end = index + 1
+            while end < len(lines):
+                candidate = lines[end]
+                if candidate.strip() and not candidate.lstrip().startswith("#") and (
+                    len(candidate) - len(candidate.lstrip(" "))
+                ) <= 4:
+                    break
+                end += 1
+            phases[phase] = lines[index + 1 : end]
+            index = end
+            continue
+        if line.lstrip().startswith("phase_"):
+            raise ValueError("managed voltage reference phase is invalid")
+        index += 1
+    if set(phases) != {"a", "b", "c"}:
+        raise ValueError("managed voltage reference phases are incomplete")
+    for phase_lines in phases.values():
+        gains = [
+            match["gain"]
+            for line in phase_lines
+            if (
+                match := re.fullmatch(
+                    r"      gain_voltage: (?P<gain>0|[1-9][0-9]*)", line
                 )
             )
-            if len(entries) != 1:
-                raise ValueError("managed voltage reference gains are ambiguous")
-            start = entries[0].end()
-            next_entry = re.search(r"^  - id: !extend ", content[start:], re.MULTILINE)
-            body = content[start : start + next_entry.start() if next_entry else None]
-            for phase in "abc":
-                if (
-                    f"    phase_{phase}:\n      gain_voltage: {reference.gain_voltage}\n"
-                    not in body
-                ):
-                    raise ValueError("managed voltage reference gain is invalid")
+        ]
+        if len(gains) != 1 or int(gains[0]) != expected_gain:
+            raise ValueError("managed voltage reference gain is invalid")
+        if any(
+            "gain_voltage" in line
+            and re.fullmatch(r"      gain_voltage: (?:0|[1-9][0-9]*)", line) is None
+            for line in phase_lines
+        ):
+            raise ValueError("managed voltage reference gain is ambiguous")
+
+
+def _ambiguous_managed_yaml(line: str) -> bool:
+    stripped = line.lstrip()
+    lexical = re.sub(r'"(?:[^"\\]|\\.)*"|\'(?:[^\']|\'\')*\'', '""', stripped)
+    if lexical.startswith("- id: !extend "):
+        return False
+    return (
+        re.search(r"(?:^|[\s\-\[\{,])(?:\?|<<:|[&*!][^\s]+)", lexical)
+        is not None
+    )
 
 
 def _managed_meter_id(group: str, document: ESPHomeConfigDocument) -> str:
