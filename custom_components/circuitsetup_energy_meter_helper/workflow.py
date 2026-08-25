@@ -444,8 +444,8 @@ class EntryWorkflow:
             VoltageTransformerCatalog.load
         )
         selections = await self._store.async_get_ct_selections(mac)
-        stored_configuration = (
-            await self._store.async_get_meter_configuration(mac)
+        stored_read = (
+            await self._store.async_get_meter_configuration_read(mac)
             if include_stored_semantics
             else None
         )
@@ -455,11 +455,14 @@ class EntryWorkflow:
             ct_catalog,
             voltage_catalog,
             snapshot.sha256,
-            stored_configuration=stored_configuration,
+            stored_configuration=(
+                stored_read.configuration if stored_read is not None else None
+            ),
             stored_ct_selections=selections,
             reporting_multipliers=_stored_reporting_multipliers(
                 selections, snapshot.sha256
             ),
+            stored_semantics_stale=(stored_read.stale if stored_read is not None else False),
         )
         plan_id = uuid4().hex
         self._discard_device_plans(mac)

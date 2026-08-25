@@ -550,6 +550,14 @@ class StoredMeterConfiguration:
                 raise TypeError(f"{field} must be a tuple of booleans")
 
 
+@dataclass(frozen=True, slots=True)
+class MeterConfigurationRead:
+    """Safe inventory-facing result that preserves strict getter behavior."""
+
+    configuration: StoredMeterConfiguration | None
+    stale: bool
+
+
 def _exact_mapping(raw: object, keys: set[str], label: str) -> dict[str, Any]:
     if (
         not isinstance(raw, dict)
@@ -991,6 +999,31 @@ class HelperStore:
         topology = _current_topology(raw_meter)
         configuration = _deserialize_meter_configuration(raw_configuration, topology)
         return configuration
+
+    async def async_get_meter_configuration_read(
+        self, mac: str
+    ) -> MeterConfigurationRead:
+        """Read semantics for an inventory without surfacing malformed storage."""
+        mac = canonical_mac(mac)
+        raw_meter = (await self.async_load()).get("meters", {}).get(mac)
+        if not isinstance(raw_meter, dict):
+            return MeterConfigurationRead(None, False)
+        raw_configuration = raw_meter.get("meter_configuration")
+        if raw_configuration is None:
+            return MeterConfigurationRead(None, False)
+        current_hash = _configuration_hash(raw_meter)
+        if (
+            current_hash is None
+            or _configuration_hash(raw_configuration) != current_hash
+        ):
+            return MeterConfigurationRead(None, True)
+        try:
+            configuration = _deserialize_meter_configuration(
+                raw_configuration, _current_topology(raw_meter)
+            )
+        except (TypeError, ValueError):
+            return MeterConfigurationRead(None, True)
+        return MeterConfigurationRead(configuration, False)
 
     async def async_save_verified_meter_configuration(
         self, mac: str, configuration: StoredMeterConfiguration

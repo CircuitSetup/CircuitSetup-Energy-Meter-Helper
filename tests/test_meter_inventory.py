@@ -225,6 +225,75 @@ def test_matching_stored_semantics_restore_roles_reference_mapping_and_aggregate
     assert "electrical_profile_requires_confirmation" not in inventory.warnings
 
 
+def test_matching_stored_channels_merge_by_channel_identity_not_tuple_order() -> None:
+    """Zipping reordered storage into YAML channel order would cross-wire circuit roles."""
+    content = _document(contract=True)
+    baseline = _inventory(content).configuration
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        baseline.meter,
+        tuple(
+            replace(channel, role=CircuitRole.GRID if channel.channel == 1 else CircuitRole.BRANCH)
+            for channel in reversed(baseline.channels)
+        ),
+        (),
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+
+    inventory = _inventory(content, stored=stored)
+
+    assert inventory.configuration.channels[0].channel == 1
+    assert inventory.configuration.channels[0].role is CircuitRole.GRID
+    assert all(
+        channel.role is CircuitRole.BRANCH
+        for channel in inventory.configuration.channels[1:]
+    )
+    assert "stored_semantics_stale" not in inventory.warnings
+
+
+def test_invalid_matching_stored_semantics_fall_back_to_legacy_defaults() -> None:
+    """Returning an invalid hash-matching reference would publish an unusable plan."""
+    content = _document(contract=True)
+    baseline = _inventory(content).configuration
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        baseline.meter,
+        (replace(baseline.channels[0], voltage_reference_id="missing"), *baseline.channels[1:]),
+        (),
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+
+    inventory = _inventory(content, stored=stored)
+
+    assert {channel.role for channel in inventory.configuration.channels} == {
+        CircuitRole.CUSTOM
+    }
+    assert "stored_semantics_stale" in inventory.warnings
+
+
+def test_duplicate_matching_stored_channels_fall_back_to_legacy_defaults() -> None:
+    """A duplicate stored channel must not be silently matched by tuple position."""
+    content = _document(contract=True)
+    baseline = _inventory(content).configuration
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        baseline.meter,
+        (baseline.channels[0], baseline.channels[0], *baseline.channels[2:]),
+        (),
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+
+    inventory = _inventory(content, stored=stored)
+
+    assert {channel.role for channel in inventory.configuration.channels} == {
+        CircuitRole.CUSTOM
+    }
+    assert "stored_semantics_stale" in inventory.warnings
+
+
 def test_stale_stored_semantics_are_ignored_and_reported() -> None:
     """Accepting a stored role after its source hash changed is a stale-plan bug."""
     content = _document(contract=True)
@@ -263,3 +332,16 @@ def test_inventory_exposes_capability_reason_codes_without_threshold_capabilitie
     assert inventory.capabilities.reason_codes == ("configuration_not_authoritative",)
     assert "configuration_not_authoritative" in inventory.warnings
     assert not hasattr(inventory, "status_thresholds")
+
+
+def test_generic_total_warning_ignores_comments_but_detects_active_ids() -> None:
+    """Treating comments as generic totals would report a warning for inactive YAML."""
+    inactive = _inventory(
+        _document(contract=True)
+        + "# id: totalWatts\n"
+        + "note: preserved # id: totalAmps\n"
+    )
+    active = _inventory(_document(contract=True, generic_totals=True))
+
+    assert "legacy_generic_totals_unmanaged" not in inactive.warnings
+    assert "legacy_generic_totals_unmanaged" in active.warnings

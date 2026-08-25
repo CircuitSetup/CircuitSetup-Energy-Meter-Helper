@@ -28,6 +28,7 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
     STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
     HelperStore,
+    MeterConfigurationRead,
     StoredMeterConfiguration,
     VerifiedCalibrationRecord,
     VerifiedGainGroup,
@@ -621,6 +622,28 @@ def test_stale_malformed_meter_configuration_returns_none_before_deserialization
         meter["meter_configuration"]["channels"] = "invalid"  # type: ignore[index]
 
         assert await store.async_get_meter_configuration(MAC) is None
+
+    asyncio.run(run())
+
+
+def test_meter_configuration_read_reports_malformed_current_semantics_without_raising() -> (
+    None
+):
+    """Inventory reads need a stale result while strict callers still reject bad storage."""
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+        await store.async_save_verified_meter_configuration(MAC, _configuration())
+        backend.data["meters"][MAC]["meter_configuration"]["channels"] = "invalid"  # type: ignore[index]
+
+        result = await store.async_get_meter_configuration_read(MAC)
+
+        assert result == MeterConfigurationRead(None, True)
+        with pytest.raises(ValueError, match="meter configuration"):
+            await store.async_get_meter_configuration(MAC)
 
     asyncio.run(run())
 

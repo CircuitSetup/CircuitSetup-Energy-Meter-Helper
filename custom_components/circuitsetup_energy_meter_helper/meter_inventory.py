@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from typing import cast
 
 from .config_document import ESPHomeConfigDocument
+from .config_mutator import package_options_from_document
 from .ct_catalog import CTPresetCatalog
 from .ct_inventory import CTInventory
 from .meter_configuration import (
@@ -32,7 +33,7 @@ from .topology import (
 from .voltage_transformer_catalog import VoltageTransformerCatalog
 
 _GENERIC_TOTAL_ID = re.compile(
-    r"\bid:\s*[\"']?(?:totalAmps|totalWatts|totalEnergyDaily)\b"
+    r"^\s*(?:-\s*)?id:\s*[\"']?(?:totalAmps|totalWatts|totalEnergyDaily)[\"']?\s*$"
 )
 
 
@@ -96,6 +97,7 @@ class MeterConfigurationInventory:
         stored_ct_selections: Iterable[StoredCTSelection] = (),
         reporting_multipliers: Mapping[int, float] | None = None,
         configuration_authoritative: bool = True,
+        stored_semantics_stale: bool = False,
     ) -> MeterConfigurationInventory:
         """Merge current YAML with hash-bound semantics and explicit legacy defaults."""
         ct_inventory = CTInventory.from_document(
@@ -116,22 +118,30 @@ class MeterConfigurationInventory:
             and stored_configuration.config_sha256 == config_sha256
             else None
         )
-        configuration = (
-            _stored_request(matching, document, topology, ct_inventory)
-            if matching is not None
-            else _legacy_request(document, topology, ct_inventory)
+        configuration = _legacy_request(document, topology, ct_inventory)
+        voltage_topology = voltage_reference_topology_from_legacy(topology)
+        stale = stored_semantics_stale or (
+            stored_configuration is not None and matching is None
         )
-        voltage_topology = (
-            voltage_reference_topology_from_configuration(topology, configuration)
-            if matching is not None
-            else voltage_reference_topology_from_legacy(topology)
-        )
+        if matching is not None:
+            try:
+                configuration = _stored_request(
+                    matching, document, topology, ct_inventory
+                )
+                validate_meter_configuration(configuration, topology)
+                voltage_topology = voltage_reference_topology_from_configuration(
+                    topology, configuration
+                )
+            except (TypeError, ValueError):
+                configuration = _legacy_request(document, topology, ct_inventory)
+                voltage_topology = voltage_reference_topology_from_legacy(topology)
+                stale = True
         warnings = list(capabilities.reason_codes)
         if configuration.meter.electrical_system is ElectricalSystem.CUSTOM:
             warnings.append("electrical_profile_requires_confirmation")
-        if _GENERIC_TOTAL_ID.search(document.content):
+        if _has_generic_total(document):
             warnings.append("legacy_generic_totals_unmanaged")
-        if stored_configuration is not None and matching is None:
+        if stale:
             warnings.append("stored_semantics_stale")
         return cls(
             config_sha256,
@@ -165,22 +175,23 @@ def _stored_request(
         )
         for index, reference in enumerate(stored.meter.voltage_references)
     )
-    channels = tuple(
-        replace(
-            stored_channel,
-            name=channel.name,
-            reporting_multiplier=channel.reporting_multiplier,
-            custom_gain_ct=(
-                channel.raw_gain_ct if stored_channel.model_id == "custom" else None
-            ),
-            custom_label=(
-                channel.name if stored_channel.model_id == "custom" else None
-            ),
+    stored_by_channel = _stored_channels_by_number(stored.channels, topology)
+    channels: list[ChannelSettings] = []
+    for channel in ct_inventory.channels:
+        stored_channel = stored_by_channel[channel.channel]
+        channels.append(
+            replace(
+                stored_channel,
+                name=channel.name,
+                reporting_multiplier=channel.reporting_multiplier,
+                custom_gain_ct=(
+                    channel.raw_gain_ct if stored_channel.model_id == "custom" else None
+                ),
+                custom_label=(
+                    channel.name if stored_channel.model_id == "custom" else None
+                ),
+            )
         )
-        for stored_channel, channel in zip(
-            stored.channels, ct_inventory.channels, strict=True
-        )
-    )
     return MeterConfigurationRequest(
         replace(
             stored.meter,
@@ -207,7 +218,7 @@ def _stored_request(
             ),
             voltage_references=references,
         ),
-        channels,
+        tuple(channels),
         stored.aggregates,
         stored.power_quality,
         stored.status_fields,
@@ -247,7 +258,7 @@ def _legacy_request(
         )
         for channel in ct_inventory.channels
     )
-    package_options = _package_options(document, topology)
+    package_options = package_options_from_document(document, topology)
     request = MeterConfigurationRequest(
         MeterSettings(
             _value(document, "friendly_name", "Energy meter"),
@@ -303,9 +314,24 @@ def _reference_for_channel(
     )
 
 
-def _package_options(
-    document: ESPHomeConfigDocument, topology: MeterTopology
-) -> dict[str, tuple[bool, ...]]:
-    from .config_mutator import package_options_from_document
+def _stored_channels_by_number(
+    channels: tuple[ChannelSettings, ...], topology: MeterTopology
+) -> dict[int, ChannelSettings]:
+    stored_by_channel: dict[int, ChannelSettings] = {}
+    for channel in channels:
+        if (
+            channel.channel not in range(1, topology.ct_count + 1)
+            or channel.channel in stored_by_channel
+        ):
+            raise ValueError("stored channels must uniquely cover topology")
+        stored_by_channel[channel.channel] = channel
+    if set(stored_by_channel) != set(range(1, topology.ct_count + 1)):
+        raise ValueError("stored channels must uniquely cover topology")
+    return stored_by_channel
 
-    return package_options_from_document(document, topology)
+
+def _has_generic_total(document: ESPHomeConfigDocument) -> bool:
+    return any(
+        _GENERIC_TOTAL_ID.fullmatch(line.split("#", 1)[0].rstrip())
+        for line in document.lines
+    )

@@ -35,6 +35,9 @@ from custom_components.circuitsetup_energy_meter_helper.session_manager import (
     PendingCalibrationOrigin,
     SessionManager,
 )
+from custom_components.circuitsetup_energy_meter_helper.store import (
+    MeterConfigurationRead,
+)
 from custom_components.circuitsetup_energy_meter_helper.topology import (
     topology_from_native,
 )
@@ -89,8 +92,11 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             calls.append(mac)
             return ()
 
-        async def async_get_meter_configuration(self, mac: str) -> None:
+        async def async_get_meter_configuration_read(
+            self, mac: str
+        ) -> MeterConfigurationRead:
             calls.append(mac)
+            return MeterConfigurationRead(None, True)
 
     class Hass:
         def __init__(self) -> None:
@@ -134,6 +140,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert result["source_sha256"] == digest
         assert result["configuration"].meter.friendly_name == "Garage Meter"
         assert wrapper["channels"] == result["channels"]
+        assert "stored_semantics_stale" in result["warnings"]
         assert calls == ["aabbccddeeff"] * 3
         await workflow.async_close()
 
