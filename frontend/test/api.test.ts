@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { HelperApi, type HomeAssistant } from "../src/api";
-import type { MeterTopology, OffsetReadinessResult } from "../src/types";
+import type { MeterConfiguration, MeterTopology, OffsetReadinessResult } from "../src/types";
 import sanitizerContract from "../../tests/fixtures/task20_sanitized_change.json";
 
 class FakeHass implements HomeAssistant {
@@ -44,6 +44,40 @@ const inventory = {
   catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
     secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }],
     source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
+};
+const meterConfiguration: MeterConfiguration = {
+  plan_id: "b".repeat(32), source_sha256: "a".repeat(64), topology,
+  configuration: {
+    meter: {
+      friendly_name: "Energy meter", electrical_system: "split_phase_120_240", line_frequency_hz: 60,
+      update_interval_s: 30, voltage_layout: "standard", voltage_references: [{
+        reference_id: "main", label: "Main", phase_label: "A", nominal_voltage_v: 120,
+        transformer_model_id: "default", gain_voltage: 7305, group_keys: ["main_1", "main_2"],
+      }],
+    },
+    channels: inventory.channels.map((channel) => ({
+      channel: channel.channel, enabled: true, name: channel.name, model_id: "model",
+      reporting_multiplier: 1, role: "branch", voltage_reference_id: "main",
+      custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false,
+    })),
+    aggregates: [{
+      aggregate_id: "main-load", name: "Main load", role: "grid", channels: [1, 2],
+      measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional",
+      expose_power: true, expose_current: false,
+    }],
+    power_quality: [true], status_fields: [false], multi_reference_preparation_acknowledged: false,
+  },
+  capabilities: {
+    configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [],
+  },
+  voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" },
+  voltage_transformer_catalog: {
+    presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120,
+      secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }],
+    source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1,
+  },
+  ct_catalog: inventory.catalog, warnings: ["slow_interval_extends_calibration"],
+  channels: inventory.channels as MeterConfiguration["channels"], catalog: inventory.catalog,
 };
 const transaction = { transaction_id: "tx-1", state: "previewed", source_sha256: "a".repeat(64),
   changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], upload_progress: [] };
@@ -152,14 +186,50 @@ describe("HelperApi", () => {
 
   it("keeps the slow-interval warning from the full meter configuration", async () => {
     const hass = new FakeHass();
-    hass.responses.get_meter_configuration = { configuration: { meter: {
-      electrical_system: "split_phase_120_240", line_frequency_hz: 60, update_interval_s: 30,
-      voltage_references: [{ reference_id: "main", group_keys: ["main_1", "main_2"] }],
-    } }, warnings: ["slow_interval_extends_calibration"] };
+    hass.responses.get_meter_configuration = meterConfiguration;
 
     await expect(new HelperApi(hass, "entry-1").getMeterConfiguration("meter-1")).resolves.toMatchObject({
       update_interval_s: 30, warnings: ["slow_interval_extends_calibration"],
     });
+  });
+
+  it("decodes the full hash-bound meter configuration plan", async () => {
+    const hass = new FakeHass();
+    hass.responses.get_meter_configuration = meterConfiguration;
+
+    await expect(new HelperApi(hass, "entry-1").getMeterConfiguration("meter-1")).resolves.toMatchObject({
+      plan_id: "b".repeat(32), source_sha256: "a".repeat(64),
+      configuration: { meter: { voltage_layout: "standard", update_interval_s: 30 }, aggregates: [{ aggregate_id: "main-load" }] },
+      capabilities: { managed_totals: true }, voltage_topology: { source: "legacy" },
+      voltage_transformer_catalog: { presets: [{ default_gain_voltage: 7305 }] }, ct_catalog: inventory.catalog,
+      warnings: ["slow_interval_extends_calibration"], channels: inventory.channels, catalog: inventory.catalog,
+    });
+  });
+
+  it("sends the exact full meter preview payload", async () => {
+    const hass = new FakeHass();
+    hass.responses.preview_meter_configuration = transaction;
+    const api = new HelperApi(hass, "entry-1");
+
+    await expect(api.previewMeterConfiguration("meter-1", "b".repeat(32), "a".repeat(64), meterConfiguration.configuration)).resolves.toMatchObject({ state: "previewed" });
+    expect(hass.messages).toContainEqual({
+      type: "circuitsetup_energy_meter_helper/preview_meter_configuration", entry_id: "entry-1",
+      device_id: "meter-1", plan_id: "b".repeat(32), source_sha256: "a".repeat(64), configuration: meterConfiguration.configuration,
+    });
+  });
+
+  it("rejects malformed full meter configuration nesting before rendering", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    for (const invalid of [
+      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, meter: { ...meterConfiguration.configuration.meter, voltage_references: [{ ...meterConfiguration.configuration.meter.voltage_references[0], gain_voltage: Number.NaN }] } } },
+      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, channels: [{ ...meterConfiguration.configuration.channels[0], role: "invented" }] } },
+      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, aggregates: [{ ...meterConfiguration.configuration.aggregates[0], channels: ["1"] }] } },
+      { ...meterConfiguration, voltage_transformer_catalog: { ...meterConfiguration.voltage_transformer_catalog, presets: [{ ...meterConfiguration.voltage_transformer_catalog.presets[0], default_gain_voltage: "7305" }] } },
+    ]) {
+      hass.responses.get_meter_configuration = invalid;
+      await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration");
+    }
   });
 
   it("sends paired selected firmware identifiers without a manifest URL", async () => {

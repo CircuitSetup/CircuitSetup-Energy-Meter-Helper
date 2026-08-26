@@ -12,6 +12,11 @@ export type ElectricalSystem =
   | "three_phase"
   | "custom";
 export type LineFrequencyHz = 50 | 60;
+export type UpdateIntervalSeconds = 1 | 2 | 5 | 10 | 30 | 60;
+export type VoltageLayout = "standard" | "multi_reference" | "custom";
+export type CircuitRole = "grid" | "solar" | "generator" | "subpanel" | "branch" | "two_pole" | "custom" | "unused";
+export type MeasurementMethod = "direct" | "two_ct_sum" | "one_ct_double_power" | "both_conductors_one_ct";
+export type EnergyMode = "none" | "consumption" | "bidirectional" | "generation";
 
 export type SetupState =
   | "no_device"
@@ -59,6 +64,59 @@ export interface MeterSettingsDraft {
   update_interval_s: number;
   voltage_references: Array<{ reference_id: string; label: string; group_keys: string[] }>;
   warnings: string[];
+}
+
+export interface VoltageReferenceConfig {
+  reference_id: string;
+  label: string;
+  phase_label: string;
+  nominal_voltage_v: number;
+  transformer_model_id: string;
+  gain_voltage: number;
+  group_keys: string[];
+}
+
+export interface MeterSettings {
+  friendly_name: string;
+  electrical_system: ElectricalSystem;
+  line_frequency_hz: LineFrequencyHz;
+  update_interval_s: UpdateIntervalSeconds;
+  voltage_layout: VoltageLayout;
+  voltage_references: VoltageReferenceConfig[];
+}
+
+export interface ChannelSettings {
+  channel: number;
+  enabled: boolean;
+  name: string;
+  model_id: string;
+  reporting_multiplier: number;
+  role: CircuitRole;
+  voltage_reference_id: string;
+  custom_gain_ct: number | null;
+  custom_label: string | null;
+  burden_output_acknowledged: boolean;
+}
+
+export interface CircuitAggregate {
+  aggregate_id: string;
+  name: string;
+  role: CircuitRole;
+  channels: number[];
+  measurement_method: MeasurementMethod;
+  parent_id: string | null;
+  energy_mode: EnergyMode;
+  expose_power: boolean;
+  expose_current: boolean;
+}
+
+export interface MeterConfigurationRequest {
+  meter: MeterSettings;
+  channels: ChannelSettings[];
+  aggregates: CircuitAggregate[];
+  power_quality: boolean[];
+  status_fields: boolean[];
+  multi_reference_preparation_acknowledged?: boolean;
 }
 
 export interface BoardPackageOptions {
@@ -142,6 +200,46 @@ export interface CtInventory {
   source_sha256: string;
   channels: CtChannel[];
   catalog: CtCatalog;
+}
+
+export interface VoltageTransformerPreset {
+  model_id: string;
+  label: string;
+  primary_nominal_v: number;
+  secondary_nominal_v: number;
+  default_gain_voltage: number;
+  notes: string;
+}
+
+export interface VoltageTransformerCatalog {
+  presets: VoltageTransformerPreset[];
+  source_repository: string;
+  source_ref: string;
+  schema_version: number;
+}
+
+export interface MeterConfigurationCapabilities {
+  configuration_authoritative: boolean;
+  managed_totals: boolean;
+  multi_reference: boolean;
+  reason_codes: string[];
+}
+
+export interface VoltageReferenceTopology {
+  references: Array<[string, string[]]>;
+  source: "helper" | "legacy";
+}
+
+export interface MeterConfiguration extends CtInventory {
+  plan_id: string;
+  source_sha256: string;
+  topology: MeterTopology;
+  configuration: MeterConfigurationRequest;
+  capabilities: MeterConfigurationCapabilities;
+  voltage_topology: VoltageReferenceTopology;
+  voltage_transformer_catalog: VoltageTransformerCatalog;
+  ct_catalog: CtCatalog;
+  warnings: string[];
 }
 
 export interface CtChange {
