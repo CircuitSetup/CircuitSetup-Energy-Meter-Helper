@@ -164,30 +164,48 @@ function roleLabel(role: CircuitRole): string {
   return role === "grid" ? "Mains" : role === "branch" ? "Branch circuit" : role.replaceAll("_", " ");
 }
 
-export function reconcileSplitPhaseAggregates(configuration: MeterConfigurationRequest): MeterConfigurationRequest {
+function sameAggregate(first: CircuitAggregate, second: CircuitAggregate): boolean {
+  return first.aggregate_id === second.aggregate_id && first.name === second.name && first.role === second.role
+    && first.measurement_method === second.measurement_method && first.parent_id === second.parent_id
+    && first.energy_mode === second.energy_mode && first.expose_power === second.expose_power
+    && first.expose_current === second.expose_current && first.channels.length === second.channels.length
+    && first.channels.every((channel, index) => channel === second.channels[index]);
+}
+
+export function reconcileSplitPhaseAggregates(
+  configuration: MeterConfigurationRequest,
+  previousManaged: readonly CircuitAggregate[] | null = null,
+): { configuration: MeterConfigurationRequest; managed: CircuitAggregate[]; changed: boolean } {
   const definitionFor = (aggregate: CircuitAggregate) => Object.entries(automaticAggregates)
     .find(([, definition]) => definition.aggregate_id === aggregate.aggregate_id) as [keyof typeof automaticAggregates, (typeof automaticAggregates)[keyof typeof automaticAggregates]] | undefined;
   const isManaged = (aggregate: CircuitAggregate) => {
+    if (previousManaged !== null) return previousManaged.some((item) => sameAggregate(item, aggregate));
     const definition = definitionFor(aggregate);
+    const channels = definition === undefined ? [] : configuration.channels
+      .filter((channel) => channel.enabled && channel.role === definition[0]).map((channel) => channel.channel);
     return definition !== undefined && aggregate.role === definition[0] && aggregate.name === definition[1].name
       && aggregate.measurement_method === "two_ct_sum" && aggregate.parent_id === null
       && aggregate.energy_mode === definition[1].energy_mode && aggregate.expose_power && aggregate.expose_current === definition[1].expose_current
-      && aggregate.channels.length === 2 && new Set(aggregate.channels).size === 2;
+      && aggregate.channels.length === 2 && aggregate.channels.every((channel, index) => channel === channels[index]);
   };
   const managed = configuration.aggregates.filter(isManaged);
   const preserved = configuration.aggregates.filter((aggregate) => !isManaged(aggregate));
+  const preservedIds = new Set(preserved.map((aggregate) => aggregate.aggregate_id));
   const claimed = new Set(preserved.flatMap((aggregate) => aggregate.channels));
   const rebuilt = configuration.meter.electrical_system === "split_phase_120_240"
     ? (Object.keys(automaticAggregates) as Array<keyof typeof automaticAggregates>).flatMap((role) => {
       const channels = configuration.channels.filter((channel) => channel.enabled && channel.role === role && !claimed.has(channel.channel)).map((channel) => channel.channel);
       const definition = automaticAggregates[role];
-      return channels.length === 2 ? [{ ...definition, role, channels, measurement_method: "two_ct_sum" as const,
+      return channels.length === 2 && !preservedIds.has(definition.aggregate_id) ? [{ ...definition, role, channels, measurement_method: "two_ct_sum" as const,
         parent_id: null, expose_power: true }] : [];
     }) : [];
   const rebuiltIds = new Set<string>(rebuilt.map((aggregate) => aggregate.aggregate_id));
   const removedIds = new Set(managed.map((aggregate) => aggregate.aggregate_id));
-  return { ...configuration, aggregates: [...preserved.map((aggregate) => aggregate.parent_id !== null
-    && removedIds.has(aggregate.parent_id) && !rebuiltIds.has(aggregate.parent_id) ? { ...aggregate, parent_id: null } : aggregate), ...rebuilt] };
+  const aggregates = [...preserved.map((aggregate) => aggregate.parent_id !== null
+    && removedIds.has(aggregate.parent_id) && !rebuiltIds.has(aggregate.parent_id) ? { ...aggregate, parent_id: null } : aggregate), ...rebuilt];
+  const changed = aggregates.length !== configuration.aggregates.length
+    || aggregates.some((aggregate, index) => !sameAggregate(aggregate, configuration.aggregates[index]!));
+  return { configuration: changed ? { ...configuration, aggregates } : configuration, managed: rebuilt, changed };
 }
 
 function circuitsEditor(

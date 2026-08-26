@@ -1629,19 +1629,25 @@ const automaticAggregates = {
 function roleLabel(role) {
   return role === "grid" ? "Mains" : role === "branch" ? "Branch circuit" : role.replaceAll("_", " ");
 }
-function reconcileSplitPhaseAggregates(configuration) {
+function sameAggregate(first, second) {
+  return first.aggregate_id === second.aggregate_id && first.name === second.name && first.role === second.role && first.measurement_method === second.measurement_method && first.parent_id === second.parent_id && first.energy_mode === second.energy_mode && first.expose_power === second.expose_power && first.expose_current === second.expose_current && first.channels.length === second.channels.length && first.channels.every((channel, index) => channel === second.channels[index]);
+}
+function reconcileSplitPhaseAggregates(configuration, previousManaged = null) {
   const definitionFor = (aggregate) => Object.entries(automaticAggregates).find(([, definition]) => definition.aggregate_id === aggregate.aggregate_id);
   const isManaged = (aggregate) => {
+    if (previousManaged !== null) return previousManaged.some((item) => sameAggregate(item, aggregate));
     const definition = definitionFor(aggregate);
-    return definition !== void 0 && aggregate.role === definition[0] && aggregate.name === definition[1].name && aggregate.measurement_method === "two_ct_sum" && aggregate.parent_id === null && aggregate.energy_mode === definition[1].energy_mode && aggregate.expose_power && aggregate.expose_current === definition[1].expose_current && aggregate.channels.length === 2 && new Set(aggregate.channels).size === 2;
+    const channels = definition === void 0 ? [] : configuration.channels.filter((channel) => channel.enabled && channel.role === definition[0]).map((channel) => channel.channel);
+    return definition !== void 0 && aggregate.role === definition[0] && aggregate.name === definition[1].name && aggregate.measurement_method === "two_ct_sum" && aggregate.parent_id === null && aggregate.energy_mode === definition[1].energy_mode && aggregate.expose_power && aggregate.expose_current === definition[1].expose_current && aggregate.channels.length === 2 && aggregate.channels.every((channel, index) => channel === channels[index]);
   };
   const managed = configuration.aggregates.filter(isManaged);
   const preserved = configuration.aggregates.filter((aggregate) => !isManaged(aggregate));
+  const preservedIds = new Set(preserved.map((aggregate) => aggregate.aggregate_id));
   const claimed = new Set(preserved.flatMap((aggregate) => aggregate.channels));
   const rebuilt = configuration.meter.electrical_system === "split_phase_120_240" ? Object.keys(automaticAggregates).flatMap((role) => {
     const channels = configuration.channels.filter((channel) => channel.enabled && channel.role === role && !claimed.has(channel.channel)).map((channel) => channel.channel);
     const definition = automaticAggregates[role];
-    return channels.length === 2 ? [{
+    return channels.length === 2 && !preservedIds.has(definition.aggregate_id) ? [{
       ...definition,
       role,
       channels,
@@ -1652,7 +1658,9 @@ function reconcileSplitPhaseAggregates(configuration) {
   }) : [];
   const rebuiltIds = new Set(rebuilt.map((aggregate) => aggregate.aggregate_id));
   const removedIds = new Set(managed.map((aggregate) => aggregate.aggregate_id));
-  return { ...configuration, aggregates: [...preserved.map((aggregate) => aggregate.parent_id !== null && removedIds.has(aggregate.parent_id) && !rebuiltIds.has(aggregate.parent_id) ? { ...aggregate, parent_id: null } : aggregate), ...rebuilt] };
+  const aggregates = [...preserved.map((aggregate) => aggregate.parent_id !== null && removedIds.has(aggregate.parent_id) && !rebuiltIds.has(aggregate.parent_id) ? { ...aggregate, parent_id: null } : aggregate), ...rebuilt];
+  const changed = aggregates.length !== configuration.aggregates.length || aggregates.some((aggregate, index) => !sameAggregate(aggregate, configuration.aggregates[index]));
+  return { configuration: changed ? { ...configuration, aggregates } : configuration, managed: rebuilt, changed };
 }
 function circuitsEditor(configuration, update, managedTotals, managedTotalsReason) {
   const patchAggregate = (index, patch) => update({
@@ -2924,6 +2932,7 @@ class CircuitSetupPanel extends i$2 {
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
     this.canonicalConfigurationChanged = false;
+    this.managedAutomaticAggregates = [];
     this.board = 0;
     this.group = 0;
     this.channel = 1;
@@ -3215,6 +3224,7 @@ class CircuitSetupPanel extends i$2 {
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
     this.canonicalConfigurationChanged = false;
+    this.managedAutomaticAggregates = [];
     this.board = 0;
     this.resetCalibrationRun();
   }
@@ -3551,31 +3561,11 @@ class CircuitSetupPanel extends i$2 {
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       if (fresh.source_sha256 !== correction.sourceSha256) {
-        const normalizedFresh = { ...fresh, configuration: {
-          ...fresh.configuration,
-          multi_reference_preparation_acknowledged: false
-        } };
-        this.verifiedMeterConfiguration = fresh.capabilities.configuration_authoritative ? normalizedFresh : null;
-        this.sourcePackageOptions = {
-          power_quality: [...fresh.configuration.power_quality],
-          status_fields: [...fresh.configuration.status_fields]
-        };
-        this.packageOptions = {
-          power_quality: [...fresh.configuration.power_quality],
-          status_fields: [...fresh.configuration.status_fields]
-        };
         this.packageOptionsTouched = false;
-        this.meterConfiguration = normalizedFresh;
-        this.meterSettingsDraft = {
-          ...fresh.configuration.meter,
-          authoritative: fresh.capabilities.configuration_authoritative,
-          warnings: fresh.warnings
-        };
-        this.multiReferencePreparationAcknowledged = false;
         this.meterFrequencyTouched = false;
         this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
-        this.canonicalConfigurationChanged = false;
-        this.showInventory(normalizedFresh);
+        this.setMeterConfiguration(fresh);
+        this.showInventory(this.meterConfiguration);
         this.reviewCorrection = null;
         this.error = "The meter source changed while this review was open. Preserved drafts were not restored to avoid overwriting external edits; review the live configuration and reapply changes.";
         this.announcement = this.error;
@@ -3641,15 +3631,14 @@ class CircuitSetupPanel extends i$2 {
       ...seeded,
       configuration: { ...seeded.configuration, ...this.packageOptions }
     } : seeded;
-    if (this.meterConfiguration.capabilities.managed_totals) this.meterConfiguration = {
-      ...this.meterConfiguration,
-      configuration: reconcileSplitPhaseAggregates(this.meterConfiguration.configuration)
-    };
+    const reconciliation = this.meterConfiguration.capabilities.managed_totals ? reconcileSplitPhaseAggregates(this.meterConfiguration.configuration) : null;
+    this.managedAutomaticAggregates = reconciliation?.managed ?? [];
+    if (reconciliation) this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation.configuration };
     if (!this.packageOptionsTouched) this.packageOptions = {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields]
     };
-    this.canonicalConfigurationChanged = this.packageOptionsTouched || seededMeter !== importedMeter;
+    this.canonicalConfigurationChanged = this.packageOptionsTouched || seededMeter !== importedMeter || reconciliation?.changed === true;
     this.meterSettingsDraft = {
       ...seededMeter,
       authoritative: configuration.capabilities.configuration_authoritative,
@@ -3739,7 +3728,9 @@ class CircuitSetupPanel extends i$2 {
   }
   updateCircuitConfiguration(configuration, changed = true) {
     if (!this.meterConfiguration) return;
-    this.meterConfiguration = { ...this.meterConfiguration, configuration: this.meterConfiguration.capabilities.managed_totals ? reconcileSplitPhaseAggregates(configuration) : configuration };
+    const reconciliation = this.meterConfiguration.capabilities.managed_totals ? reconcileSplitPhaseAggregates(configuration, this.managedAutomaticAggregates) : null;
+    this.managedAutomaticAggregates = reconciliation?.managed ?? [];
+    this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation?.configuration ?? configuration };
     this.canonicalConfigurationChanged ||= changed;
     this.requestUpdate();
   }

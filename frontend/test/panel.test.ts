@@ -350,6 +350,72 @@ describe("CircuitSetup panel", () => {
     });
   });
 
+  it("previews an automatic aggregate imported without installer edits", async () => {
+    const previews: MeterConfigurationRequest[] = [];
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "preview_meter_configuration") {
+          previews.push(message.configuration as MeterConfigurationRequest);
+          return preview as T;
+        }
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+      continueFromCt(): Promise<void>;
+    };
+    const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel);
+    state.selectedDeviceId = "meter-1";
+    state.topology = response.topology;
+    state.setMeterConfiguration(response);
+    panel.showInventory(response as unknown as CtInventory);
+
+    await state.continueFromCt();
+
+    expect(previews).toHaveLength(1);
+    expect(previews[0]?.aggregates).toContainEqual(expect.objectContaining({ aggregate_id: "auto-mains", channels: [1, 2] }));
+  });
+
+  it("does not append an automatic aggregate over a preserved reserved ID", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+    };
+    const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel);
+    const collision = { aggregate_id: "auto-mains", name: "Manual reserved total", role: "branch" as const, channels: [3], measurement_method: "direct" as const, parent_id: null, energy_mode: "consumption" as const, expose_power: true, expose_current: false };
+    response.configuration.aggregates = [collision];
+
+    state.setMeterConfiguration(response);
+
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.aggregates).toEqual([collision]);
+  });
+
+  it("preserves a channel edit to an automatic reserved-ID aggregate", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+      updateCircuitConfiguration(configuration: MeterConfigurationRequest): void;
+    };
+    const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel);
+    state.setMeterConfiguration(response);
+    const current = () => (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration;
+    const automatic = current().aggregates.find((aggregate) => aggregate.aggregate_id === "auto-mains")!;
+
+    state.updateCircuitConfiguration({ ...current(), aggregates: current().aggregates.map((aggregate) =>
+      aggregate === automatic ? { ...aggregate, channels: [1, 3] } : aggregate) });
+
+    expect(current().aggregates).toContainEqual({ ...automatic, channels: [1, 3] });
+  });
+
   it("rebuilds supported split-phase aggregates and removes stale automatic pairs", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const state = panel as unknown as Record<string, unknown> & {
@@ -544,7 +610,8 @@ describe("CircuitSetup panel", () => {
           const fresh = meterResponse() as unknown as import("../src/types").MeterConfiguration;
           return { ...fresh, plan_id: activePlan, source_sha256: "f".repeat(64),
             configuration: { ...fresh.configuration,
-              meter: { ...fresh.configuration.meter, friendly_name: "External meter" } } } as T;
+              meter: { ...fresh.configuration.meter, friendly_name: "External meter" },
+              channels: fresh.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel) } } as T;
         }
         return {} as T;
       },
@@ -580,7 +647,7 @@ describe("CircuitSetup panel", () => {
     expect(fresh.source_sha256).toBe("f".repeat(64));
     expect(fresh.configuration.meter.friendly_name).toBe("External meter");
     expect(fresh.configuration.channels[0]?.name).toBe("CT1");
-    expect(fresh.configuration.aggregates).toEqual([]);
+    expect(fresh.configuration.aggregates).toContainEqual(expect.objectContaining({ aggregate_id: "auto-mains", channels: [1, 2] }));
     expect(fresh.configuration.power_quality).toEqual([true]);
     expect(fresh.configuration.status_fields).toEqual([false]);
     expect((state.drafts as Map<number, CtDraft>).get(1)?.name).toBe("CT1");
@@ -592,7 +659,7 @@ describe("CircuitSetup panel", () => {
 
     expect(previews).toHaveLength(2);
     expect(previews[1]).toMatchObject({ planId: "c".repeat(32), sourceSha256: "f".repeat(64),
-      configuration: { meter: { friendly_name: "Reviewed external meter" }, aggregates: [],
+      configuration: { meter: { friendly_name: "Reviewed external meter" }, aggregates: [expect.objectContaining({ aggregate_id: "auto-mains", channels: [1, 2] })],
         power_quality: [true], status_fields: [false] } });
     expect(JSON.stringify(previews[1]?.configuration)).not.toContain("Stale draft");
     expect(JSON.stringify(previews[1]?.configuration)).not.toContain("Stale channel");
