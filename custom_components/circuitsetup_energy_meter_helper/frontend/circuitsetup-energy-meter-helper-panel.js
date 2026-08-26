@@ -527,12 +527,12 @@ function A(n, e) {
   if (!Number.isInteger(t)) throw new Error(`${e} response is invalid`);
   return t;
 }
-function q(n, e, t = !1) {
+function B(n, e, t = !1) {
   if (t && n === null) return null;
   if (typeof n != "boolean") throw new Error(`${e} response is invalid`);
   return n;
 }
-function B(n, e, t) {
+function D(n, e, t) {
   const i = v(n, t);
   if (!e.has(i)) throw new Error(`${t} response is invalid`);
   return i;
@@ -543,7 +543,7 @@ function qe(n, e) {
 function G(n, e) {
   return Math.abs(n - e) <= 1e-9 * Math.max(1, Math.abs(n), Math.abs(e));
 }
-function D(n, e, t) {
+function q(n, e, t) {
   const i = Object.keys(n);
   if (i.length !== e.length || i.some((s) => !e.includes(s))) throw new Error(`${t} response is invalid`);
 }
@@ -552,14 +552,14 @@ function ee(n, e) {
 }
 function Tt(n, e) {
   const t = S(n, e);
-  v(t.entry_id, e), v(t.title, e), v(t.project_name, e), v(t.project_version, e, !0), q(t.importable, e, !0), v(t.configuration, e, !0);
+  v(t.entry_id, e), v(t.title, e), v(t.project_name, e), v(t.project_version, e, !0), B(t.importable, e, !0), v(t.configuration, e, !0);
 }
 function we(n, e) {
   const t = S(n, e);
-  if (B(t.state, Ci, e), C(t.devices, e).forEach((i) => Tt(i, e)), t.configuration_authoritative !== void 0 && q(t.configuration_authoritative, e), t.bound_device_id !== void 0 && t.bound_device_id !== null && v(t.bound_device_id, e), t.installer_intent !== void 0) {
+  if (D(t.state, Ci, e), C(t.devices, e).forEach((i) => Tt(i, e)), t.configuration_authoritative !== void 0 && B(t.configuration_authoritative, e), t.bound_device_id !== void 0 && t.bound_device_id !== null && v(t.bound_device_id, e), t.installer_intent !== void 0) {
     const i = S(t.installer_intent, e), s = A(i.addon_count, e);
     if (s < 0 || s > 6) throw new Error(`${e} response is invalid`);
-    if (B(i.connection_type, Ge, e) === "unknown") throw new Error(`${e} response is invalid`);
+    if (D(i.connection_type, Ge, e) === "unknown") throw new Error(`${e} response is invalid`);
     if (i.power_quality === void 0 != (i.status_fields === void 0))
       throw new Error(`${e} response is invalid`);
     i.power_quality !== void 0 && Mt(i, e, s + 1);
@@ -573,16 +573,16 @@ function we(n, e) {
 }
 function Be(n, e) {
   const t = S(n, e);
-  D(t, ["addon_count", "board_count", "ct_count", "group_count", "connection_type", "voltage_layout", "project_name", "evidence"], e);
+  q(t, ["addon_count", "board_count", "ct_count", "group_count", "connection_type", "voltage_layout", "project_name", "evidence"], e);
   const i = A(t.addon_count, e), s = A(t.board_count, e), r = A(t.ct_count, e), o = A(t.group_count, e);
   if (i < 0 || i > 6 || s < 1 || s > 7 || r < 6 || r > 42 || o < 2 || o > 14 || s !== i + 1 || r !== 6 * s || o !== 2 * s) throw new Error(`${e} response is invalid`);
-  B(t.connection_type, Ge, e), v(t.voltage_layout, e), v(t.project_name, e);
+  D(t.connection_type, Ge, e), v(t.voltage_layout, e), v(t.project_name, e);
   const a = C(t.evidence, e);
   if (a.length < 1 || a.length > pt.size) throw new Error(`${e} response is invalid`);
   const c = a.map((h) => {
     const u = S(h, e);
-    D(u, ["source", "addon_count", "detail"], e);
-    const d = B(u.source, pt, e), p = A(u.addon_count, e);
+    q(u, ["source", "addon_count", "detail"], e);
+    const d = D(u.source, pt, e), p = A(u.addon_count, e);
     if (p < 0 || p > 6) throw new Error(`${e} response is invalid`);
     return v(u.detail, e), d;
   });
@@ -593,26 +593,26 @@ function ji(n, e) {
   const t = S(n, e);
   if ("topology" in t) {
     const i = Be(t.topology, e);
-    return t.configuration_authoritative !== void 0 && q(t.configuration_authoritative, e), t.package_options !== void 0 && Mt(t.package_options, e, i.board_count), n;
+    return t.configuration_authoritative !== void 0 && B(t.configuration_authoritative, e), t.package_options !== void 0 && Mt(t.package_options, e, i.board_count), n;
   }
   return Be(n, e);
 }
 function Li(n, e) {
   const t = S(n, e);
-  D(t, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "channels", "catalog"], e);
+  q(t, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "channels", "catalog"], e);
   const i = v(t.plan_id, e);
   if (!Ue.test(i) || !Ee.test(v(t.source_sha256, e))) throw new Error(`${e} response is invalid`);
   const s = Be(t.topology, e), r = S(t.configuration, e);
-  D(r, ["meter", "channels", "aggregates", "power_quality", "status_fields", "multi_reference_preparation_acknowledged"], e);
+  q(r, ["meter", "channels", "aggregates", "power_quality", "status_fields", "multi_reference_preparation_acknowledged"], e);
   const o = S(r.meter, e);
-  D(o, ["friendly_name", "electrical_system", "line_frequency_hz", "update_interval_s", "voltage_layout", "voltage_references"], e), v(o.friendly_name, e), B(o.electrical_system, It, e);
+  q(o, ["friendly_name", "electrical_system", "line_frequency_hz", "update_interval_s", "voltage_layout", "voltage_references"], e), v(o.friendly_name, e), D(o.electrical_system, It, e);
   const a = A(o.line_frequency_hz, e);
   if (a !== 50 && a !== 60) throw new Error(`${e} response is invalid`);
   const c = A(o.update_interval_s, e);
-  if (!Ri.has(c) || !lt.has(B(o.voltage_layout, lt, e))) throw new Error(`${e} response is invalid`);
+  if (!Ri.has(c) || !lt.has(D(o.voltage_layout, lt, e))) throw new Error(`${e} response is invalid`);
   const h = C(o.voltage_references, e, 8).map((y) => {
     const w = S(y, e);
-    D(w, ["reference_id", "label", "phase_label", "nominal_voltage_v", "transformer_model_id", "gain_voltage", "group_keys"], e);
+    q(w, ["reference_id", "label", "phase_label", "nominal_voltage_v", "transformer_model_id", "gain_voltage", "group_keys"], e);
     const x = j(w.reference_id, e), $ = v(w.label, e);
     v(w.phase_label, e);
     const I = U(w.nominal_voltage_v, e);
@@ -632,26 +632,26 @@ function Li(n, e) {
   if (p.length !== s.ct_count) throw new Error(`${e} response is invalid`);
   p.forEach((y, w) => {
     const x = S(y, e);
-    if (D(x, ["channel", "enabled", "name", "model_id", "reporting_multiplier", "role", "voltage_reference_id", "custom_gain_ct", "custom_label", "burden_output_acknowledged"], e), A(x.channel, e) !== w + 1 || ![1, 2, 4, 8].includes(U(x.reporting_multiplier, e)) || !h.some((E) => E.reference_id === j(x.voltage_reference_id, e))) throw new Error(`${e} response is invalid`);
-    const $ = q(x.enabled, e);
+    if (q(x, ["channel", "enabled", "name", "model_id", "reporting_multiplier", "role", "voltage_reference_id", "custom_gain_ct", "custom_label", "burden_output_acknowledged"], e), A(x.channel, e) !== w + 1 || ![1, 2, 4, 8].includes(U(x.reporting_multiplier, e)) || !h.some((E) => E.reference_id === j(x.voltage_reference_id, e))) throw new Error(`${e} response is invalid`);
+    const $ = B(x.enabled, e);
     v(x.name, e), j(x.model_id, e);
-    const I = B(x.role, ht, e);
+    const I = D(x.role, ht, e);
     if ($ && I === "unused" || !$ && I !== "unused") throw new Error(`${e} response is invalid`);
     if (x.custom_gain_ct !== null && (A(x.custom_gain_ct, e) < 1 || A(x.custom_gain_ct, e) > 65535)) throw new Error(`${e} response is invalid`);
-    x.custom_label !== null && v(x.custom_label, e), q(x.burden_output_acknowledged, e);
+    x.custom_label !== null && v(x.custom_label, e), B(x.burden_output_acknowledged, e);
   });
   const g = /* @__PURE__ */ new Set(), f = /* @__PURE__ */ new Set(), m = /* @__PURE__ */ new Map();
   C(r.aggregates, e, 32).forEach((y) => {
     const w = S(y, e);
-    D(w, ["aggregate_id", "name", "role", "channels", "measurement_method", "parent_id", "energy_mode", "expose_power", "expose_current"], e);
+    q(w, ["aggregate_id", "name", "role", "channels", "measurement_method", "parent_id", "energy_mode", "expose_power", "expose_current"], e);
     const x = j(w.aggregate_id, e);
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(x) || g.has(x)) throw new Error(`${e} response is invalid`);
-    g.add(x), v(w.name, e), B(w.role, ht, e);
-    const $ = C(w.channels, e, 42).map((z) => A(z, e)), I = B(w.measurement_method, xi, e), E = I === "two_ct_sum" ? 2 : I === "one_ct_double_power" || I === "both_conductors_one_ct" ? 1 : void 0;
-    if (!$.length || new Set($).size !== $.length || $.some((z) => z < 1 || z > s.ct_count || f.has(z) || !q(S(p[z - 1], e).enabled, e)) || E !== void 0 && $.length !== E) throw new Error(`${e} response is invalid`);
+    g.add(x), v(w.name, e), D(w.role, ht, e);
+    const $ = C(w.channels, e, 42).map((z) => A(z, e)), I = D(w.measurement_method, xi, e), E = I === "two_ct_sum" ? 2 : I === "one_ct_double_power" || I === "both_conductors_one_ct" ? 1 : void 0;
+    if (!$.length || new Set($).size !== $.length || $.some((z) => z < 1 || z > s.ct_count || f.has(z) || !B(S(p[z - 1], e).enabled, e)) || E !== void 0 && $.length !== E) throw new Error(`${e} response is invalid`);
     $.forEach((z) => f.add(z));
     const N = w.parent_id === null ? null : j(w.parent_id, e);
-    m.set(x, N), B(w.energy_mode, Ii, e), q(w.expose_power, e), q(w.expose_current, e);
+    m.set(x, N), D(w.energy_mode, Ii, e), B(w.expose_power, e), B(w.expose_current, e);
   });
   for (const [y, w] of m) {
     const x = /* @__PURE__ */ new Set();
@@ -663,13 +663,13 @@ function Li(n, e) {
   for (const y of ["power_quality", "status_fields"]) {
     const w = C(r[y], e, 7);
     if (w.length !== s.board_count) throw new Error(`${e} response is invalid`);
-    w.forEach((x) => q(x, e));
+    w.forEach((x) => B(x, e));
   }
-  q(r.multi_reference_preparation_acknowledged, e);
+  B(r.multi_reference_preparation_acknowledged, e);
   const _ = S(t.capabilities, e);
-  D(_, ["configuration_authoritative", "managed_totals", "multi_reference", "reason_codes"], e), q(_.configuration_authoritative, e), q(_.managed_totals, e), q(_.multi_reference, e), C(_.reason_codes, e, 8).forEach((y) => v(y, e));
+  q(_, ["configuration_authoritative", "managed_totals", "multi_reference", "reason_codes"], e), B(_.configuration_authoritative, e), B(_.managed_totals, e), B(_.multi_reference, e), C(_.reason_codes, e, 8).forEach((y) => v(y, e));
   const k = S(t.voltage_topology, e);
-  D(k, ["references", "source"], e), B(k.source, /* @__PURE__ */ new Set(["helper", "legacy"]), e);
+  q(k, ["references", "source"], e), D(k.source, /* @__PURE__ */ new Set(["helper", "legacy"]), e);
   const P = C(k.references, e, 8).map((y) => {
     const w = C(y, e, 2);
     if (w.length !== 2) throw new Error(`${e} response is invalid`);
@@ -679,13 +679,13 @@ function Li(n, e) {
   });
   if (P.length !== h.length || !ee(P.map(([y]) => y), h.map((y) => y.reference_id)) || !P.every(([y, w], x) => ee(w, h[x].group_keys))) throw new Error(`${e} response is invalid`);
   const T = S(t.voltage_transformer_catalog, e);
-  if (D(T, ["presets", "source_repository", "source_ref", "schema_version"], e), v(T.source_repository, e), !/^[0-9a-f]{40}$/.test(v(T.source_ref, e)) || A(T.schema_version, e) !== 1) throw new Error(`${e} response is invalid`);
+  if (q(T, ["presets", "source_repository", "source_ref", "schema_version"], e), v(T.source_repository, e), !/^[0-9a-f]{40}$/.test(v(T.source_ref, e)) || A(T.schema_version, e) !== 1) throw new Error(`${e} response is invalid`);
   const b = C(T.presets, e, 64);
   if (!b.length) throw new Error(`${e} response is invalid`);
   const M = /* @__PURE__ */ new Set();
   b.forEach((y) => {
     const w = S(y, e);
-    D(w, ["model_id", "label", "primary_nominal_v", "secondary_nominal_v", "default_gain_voltage", "notes"], e);
+    q(w, ["model_id", "label", "primary_nominal_v", "secondary_nominal_v", "default_gain_voltage", "notes"], e);
     const x = j(w.model_id, e);
     if (M.has(x)) throw new Error(`${e} response is invalid`);
     if (M.add(x), v(w.label, e), U(w.primary_nominal_v, e) <= 0 || U(w.secondary_nominal_v, e) <= 0) throw new Error(`${e} response is invalid`);
@@ -694,104 +694,106 @@ function Li(n, e) {
     v(w.notes, e);
   }), De({ plan_id: t.plan_id, source_sha256: t.source_sha256, channels: t.channels, catalog: t.catalog }, e);
   const O = S(t.ct_catalog, e);
-  return D(O, ["presets", "source_repository", "source_ref", "schema_version"], e), De({ plan_id: t.plan_id, source_sha256: t.source_sha256, channels: t.channels, catalog: t.ct_catalog }, e), C(t.warnings, e, 32).map((y) => v(y, e)), n;
+  return q(O, ["presets", "source_repository", "source_ref", "schema_version"], e), De({ plan_id: t.plan_id, source_sha256: t.source_sha256, channels: t.channels, catalog: t.ct_catalog }, e), C(t.warnings, e, 32).map((y) => v(y, e)), n;
 }
 function Mt(n, e, t) {
   const i = S(n, e);
   for (const s of ["power_quality", "status_fields"]) {
     const r = C(i[s], e, 7);
     if (r.length !== t) throw new Error(`${e} response is invalid`);
-    r.forEach((o) => q(o, e));
+    r.forEach((o) => B(o, e));
   }
   return n;
 }
 function De(n, e) {
   const t = S(n, e);
-  if (D(t, ["plan_id", "source_sha256", "channels", "catalog"], e), v(t.plan_id, e), !Ee.test(v(t.source_sha256, e))) throw new Error(`${e} response is invalid`);
+  if (q(t, ["plan_id", "source_sha256", "channels", "catalog"], e), v(t.plan_id, e), !Ee.test(v(t.source_sha256, e))) throw new Error(`${e} response is invalid`);
   const i = C(t.channels, e);
   if (i.length < 6 || i.length > 42 || i.length % 6 !== 0) throw new Error(`${e} response is invalid`);
   i.forEach((o, a) => {
     const c = S(o, e);
-    D(c, ["channel", "name", "raw_gain_ct", "reporting_multiplier", "selected_model_id", "selection_verified_against_config", "address", "display_label", "stored_selection_present"], e);
+    q(c, ["channel", "name", "raw_gain_ct", "reporting_multiplier", "selected_model_id", "selection_verified_against_config", "address", "display_label", "stored_selection_present"], e);
     const h = A(c.channel, e);
-    v(c.name, e), A(c.raw_gain_ct, e), U(c.reporting_multiplier, e), qe(c.selected_model_id, e), q(c.selection_verified_against_config, e), qe(c.display_label, e), q(c.stored_selection_present, e);
+    v(c.name, e), A(c.raw_gain_ct, e), U(c.reporting_multiplier, e), qe(c.selected_model_id, e), B(c.selection_verified_against_config, e), qe(c.display_label, e), B(c.stored_selection_present, e);
     const u = S(c.address, e);
-    D(u, ["channel", "board_index", "group_index", "phase"], e);
-    const d = A(u.channel, e), p = A(u.board_index, e), g = A(u.group_index, e), f = B(u.phase, $e, e), m = a + 1;
+    q(u, ["channel", "board_index", "group_index", "phase"], e);
+    const d = A(u.channel, e), p = A(u.board_index, e), g = A(u.group_index, e), f = D(u.phase, $e, e), m = a + 1;
     if (h !== m || d !== m || p !== Math.floor(a / 6) || g !== Math.floor(a % 6 / 3) || f !== ["A", "B", "C"][a % 3]) throw new Error(`${e} response is invalid`);
   });
   const s = S(t.catalog, e);
-  D(s, ["presets", "source_repository", "source_ref", "schema_version"], e), v(s.source_repository, e), v(s.source_ref, e), A(s.schema_version, e);
+  q(s, ["presets", "source_repository", "source_ref", "schema_version"], e), v(s.source_repository, e), v(s.source_ref, e), A(s.schema_version, e);
   const r = C(s.presets, e);
   if (r.length > 64) throw new Error(`${e} response is invalid`);
   return r.forEach((o) => {
     const a = S(o, e);
-    D(a, ["model_id", "label", "rated_current_a", "secondary", "default_gain_ct", "requires_burden_jumper_cut", "notes"], e), v(a.model_id, e), v(a.label, e), U(a.rated_current_a, e), v(a.secondary, e), a.default_gain_ct !== null && A(a.default_gain_ct, e), q(a.requires_burden_jumper_cut, e), v(a.notes, e);
+    q(a, ["model_id", "label", "rated_current_a", "secondary", "default_gain_ct", "requires_burden_jumper_cut", "notes"], e), v(a.model_id, e), v(a.label, e), U(a.rated_current_a, e), v(a.secondary, e), a.default_gain_ct !== null && A(a.default_gain_ct, e), B(a.requires_burden_jumper_cut, e), v(a.notes, e);
   }), n;
 }
 function oe(n, e) {
   const t = S(n, e);
-  if (D(t, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified"], e), v(t.transaction_id, e), B(t.state, Ai, e), !Ee.test(v(t.source_sha256, e))) throw new Error(`${e} response is invalid`);
-  if (q(t.rollback_available, e), v(t.redacted_diff, e), C(t.changes, e).forEach((i) => {
-    const s = S(i, e), r = v(s.key, e);
+  if (q(t, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified"], e), v(t.transaction_id, e), D(t.state, Ai, e), !Ee.test(v(t.source_sha256, e))) throw new Error(`${e} response is invalid`);
+  if (B(t.rollback_available, e), typeof t.redacted_diff != "string") throw new Error(`${e} response is invalid`);
+  if (C(t.changes, e).forEach((i) => {
+    const s = S(i, e);
+    q(s, ["key", "old_value", "new_value"], e);
+    const r = v(s.key, e);
     if (!qi.test(r)) throw new Error(`${e} response is invalid`);
     s.old_value !== null && v(s.old_value, e), v(s.new_value, e);
-  }), C(t.evidence, e).forEach((i) => B(i, Ti, e)), C(t.progress, e).forEach((i) => B(i, Mi, e)), t.validation_detail !== null) {
+  }), C(t.evidence, e).forEach((i) => D(i, Ti, e)), C(t.progress, e).forEach((i) => D(i, Mi, e)), t.validation_detail !== null) {
     const i = S(t.validation_detail, e);
+    q(i, ["code", "reported_error_count", "reported_warning_count", "error_record_count", "warning_record_count"], e);
     for (const s of ["reported_error_count", "reported_warning_count"]) i[s] !== null && A(i[s], e);
     i.code !== null && A(i.code, e), A(i.error_record_count, e), A(i.warning_record_count, e);
   }
   return C(t.upload_progress, e).forEach((i) => {
     const s = S(i, e);
-    if (B(s.stage, Oi, e), s.progress !== null && s.percentage !== null && s.progress !== void 0 && s.percentage !== void 0) throw new Error(`${e} response is invalid`);
-    const r = s.progress ?? s.percentage;
-    if (r != null) {
-      const o = A(r, e);
-      if (o < 0 || o > 100) throw new Error(`${e} response is invalid`);
+    if (q(s, ["stage", "percentage"], e), D(s.stage, Oi, e), s.percentage !== null) {
+      const r = A(s.percentage, e);
+      if (r < 0 || r > 100) throw new Error(`${e} response is invalid`);
     }
-  }), q(t.aggregate_entity_mismatch, e), q(t.full_meter_configuration_verified, e), n;
+  }), B(t.aggregate_entity_mismatch, e), B(t.full_meter_configuration_verified, e), n;
 }
 function V(n, e) {
   const t = S(n, e);
-  v(t.session_id, e), v(t.device_id, e), B(t.state, Ei, e), q(t.safety_acknowledged, e);
+  v(t.session_id, e), v(t.device_id, e), D(t.state, Ei, e), B(t.safety_acknowledged, e);
   const i = S(t.preflight, e);
   C(i.issues, e).forEach((d) => {
     const p = S(d, e);
-    B(p.code, Pi, e), v(p.role, e), v(p.detail, e);
+    D(p.code, Pi, e), v(p.role, e), v(p.detail, e);
   }), C(i.zeroed_roles, e).forEach((d) => v(d, e)), t.entity_role_counts !== void 0 && Object.values(S(t.entity_role_counts, e)).forEach((d) => {
     if (A(d, e) < 0) throw new Error(`${e} response is invalid`);
-  }), t.calibration_sources !== void 0 && Object.values(S(t.calibration_sources, e)).forEach((d) => B(d, /* @__PURE__ */ new Set(["flash", "configuration", "unknown"]), e));
+  }), t.calibration_sources !== void 0 && Object.values(S(t.calibration_sources, e)).forEach((d) => D(d, /* @__PURE__ */ new Set(["flash", "configuration", "unknown"]), e));
   const s = [t.offset_capability, t.offset_disposition, t.offset_boards, t.has_pending_calibration];
   if (s.every((d) => d === void 0)) return n;
   if (s.some((d) => d === void 0)) throw new Error(`${e} response is invalid`);
   const r = S(t.offset_capability, e);
-  if (D(r, ["status", "repair_reason"], e), B(r.status, Ni, e) === "invalid") v(r.repair_reason, e);
+  if (q(r, ["status", "repair_reason"], e), D(r.status, Ni, e) === "invalid") v(r.repair_reason, e);
   else if (r.repair_reason !== null) throw new Error(`${e} response is invalid`);
-  const a = B(t.offset_disposition, zi, e), c = C(t.offset_boards, e, 7);
+  const a = D(t.offset_disposition, zi, e), c = C(t.offset_boards, e, 7);
   if (c.length < 1) throw new Error(`${e} response is invalid`);
   const h = [];
   c.forEach((d, p) => {
     const g = S(d, e);
-    if (D(g, ["board_index", "stages"], e), A(g.board_index, e) !== p) throw new Error(`${e} response is invalid`);
+    if (q(g, ["board_index", "stages"], e), A(g.board_index, e) !== p) throw new Error(`${e} response is invalid`);
     const f = C(g.stages, e, 2);
     if (f.length !== 2) throw new Error(`${e} response is invalid`);
     f.forEach((m, _) => {
       const k = S(m, e);
-      if (D(k, ["stage", "state"], e), A(k.stage, e) !== _ + 1) throw new Error(`${e} response is invalid`);
-      h.push(B(k.state, Fi, e));
+      if (q(k, ["stage", "state"], e), A(k.stage, e) !== _ + 1) throw new Error(`${e} response is invalid`);
+      h.push(D(k.state, Fi, e));
     });
   });
   const u = h.every((d) => d === "skipped") ? "skipped" : h.every((d) => d === "completed") ? "completed" : h.every((d) => d === "not_started") ? "not_started" : h.some((d) => d === "partial" || d === "indeterminate") || h.some((d) => d === "skipped") ? "partial" : "in_progress";
   if (a !== u) throw new Error(`${e} response is invalid`);
-  return q(t.has_pending_calibration, e), n;
+  return B(t.has_pending_calibration, e), n;
 }
 function Gi(n, e, t, i) {
   const s = S(n, e);
-  if (D(s, ["stage", "ready", "connection_generation", "entities", "reasons", "thresholds"], e), A(s.stage, e) !== i || t < 0 || t > 6) throw new Error(`${e} response is invalid`);
-  const r = q(s.ready, e), o = A(s.connection_generation, e);
+  if (q(s, ["stage", "ready", "connection_generation", "entities", "reasons", "thresholds"], e), A(s.stage, e) !== i || t < 0 || t > 6) throw new Error(`${e} response is invalid`);
+  const r = B(s.ready, e), o = A(s.connection_generation, e);
   if (o < 1) throw new Error(`${e} response is invalid`);
   const a = S(s.thresholds, e);
-  D(a, ["sample_count", "zero_voltage_peak_volts", "zero_voltage_spread_volts", "zero_current_peak_amps", "zero_current_spread_amps", "voltage_present_minimum_volts", "voltage_present_spread_volts"], e);
+  q(a, ["sample_count", "zero_voltage_peak_volts", "zero_voltage_spread_volts", "zero_current_peak_amps", "zero_current_spread_amps", "voltage_present_minimum_volts", "voltage_present_spread_volts"], e);
   const c = A(a.sample_count, e), h = U(a.zero_voltage_peak_volts, e), u = U(a.zero_voltage_spread_volts, e), d = U(a.zero_current_peak_amps, e), p = U(a.zero_current_spread_amps, e), g = U(a.voltage_present_minimum_volts, e), f = U(a.voltage_present_spread_volts, e), m = [
     h,
     u,
@@ -813,11 +815,11 @@ function Gi(n, e, t, i) {
   let O = 0;
   _.forEach((I) => {
     const E = S(I, e);
-    D(E, ["role", "quantity", "ready", "reasons", "window"], e);
-    const N = v(E.role, e), z = B(E.quantity, /* @__PURE__ */ new Set(["voltage", "current"]), e);
+    q(E, ["role", "quantity", "ready", "reasons", "window"], e);
+    const N = v(E.role, e), z = D(E.quantity, /* @__PURE__ */ new Set(["voltage", "current"]), e);
     if (b.has(N) || k.get(N) !== z) throw new Error(`${e} response is invalid`);
     b.add(N);
-    const Ze = q(E.ready, e), ie = C(E.reasons, e, 12).map((F) => v(F, e));
+    const Ze = B(E.ready, e), ie = C(E.reasons, e, 12).map((F) => v(F, e));
     let H;
     if (E.window === null) {
       if (Ze || ie.length !== 1) throw new Error(`${e} response is invalid`);
@@ -827,7 +829,7 @@ function Gi(n, e, t, i) {
       H = ie;
     } else {
       const F = S(E.window, e);
-      D(F, ["values", "received_at", "connection_generation", "mean", "minimum", "maximum", "absolute_peak", "absolute_spread"], e);
+      q(F, ["values", "received_at", "connection_generation", "mean", "minimum", "maximum", "absolute_peak", "absolute_spread"], e);
       const se = C(F.values, e, c).map((Z) => U(Z, e)), Ie = C(F.received_at, e, c).map((Z) => U(Z, e)), Yt = U(F.mean, e), Re = U(F.minimum, e), Xe = U(F.maximum, e), Oe = U(F.absolute_peak, e), ve = U(F.absolute_spread, e), Zt = se.reduce((Z, me) => Z + me, 0) / se.length, Xt = A(F.connection_generation, e);
       if (se.length !== c || Ie.length !== c || Ie.some((Z, me) => me > 0 && Z <= Ie[me - 1]) || !G(Yt, Zt) || !G(Re, Math.min(...se)) || !G(Xe, Math.max(...se)) || !G(Oe, Math.max(...se.map(Math.abs))) || !G(ve, Xe - Re)) throw new Error(`${e} response is invalid`);
       H = [], Xt !== o ? H.push("window is from another connection generation") : z === "current" ? (Oe > d && H.push("absolute peak exceeds zero_current_peak_amps"), ve > p && H.push("absolute spread exceeds zero_current_spread_amps")) : i === 1 ? (Oe > h && H.push("absolute peak exceeds zero_voltage_peak_volts"), ve > u && H.push("absolute spread exceeds zero_voltage_spread_volts")) : (Re < g && H.push("minimum is below voltage_present_minimum_volts"), ve > f && H.push("absolute spread exceeds voltage_present_spread_volts"));
@@ -852,8 +854,8 @@ function Pt(n, e) {
 }
 function Vi(n, e, t, i) {
   const s = S(n, e);
-  D(s, ["state", "board_index", "stage", "expected_tables", "unfinished_group_keys", "retry_allowed", "error"], e);
-  const r = B(s.state, Hi, e);
+  q(s, ["state", "board_index", "stage", "expected_tables", "unfinished_group_keys", "retry_allowed", "error"], e);
+  const r = D(s.state, Hi, e);
   if (A(s.board_index, e) !== t || A(s.stage, e) !== i) throw new Error(`${e} response is invalid`);
   const o = t === 0 ? ["main_1", "main_2"] : [`addon${t}_1`, `addon${t}_2`], a = C(s.expected_tables, e, 2).map((d) => {
     const p = C(d, e, 2);
@@ -861,7 +863,7 @@ function Vi(n, e, t, i) {
     const g = v(p[0], e);
     if (!o.includes(g)) throw new Error(`${e} response is invalid`);
     return Pt(p[1], e), g;
-  }), c = C(s.unfinished_group_keys, e, 2).map((d) => v(d, e)), h = [...a, ...c], u = q(s.retry_allowed, e);
+  }), c = C(s.unfinished_group_keys, e, 2).map((d) => v(d, e)), h = [...a, ...c], u = B(s.retry_allowed, e);
   if (h.length !== 2 || new Set(h).size !== 2 || h.some((d) => !o.includes(d))) throw new Error(`${e} response is invalid`);
   if (r === "applied_pending_restart_verification") {
     if (a.length !== 2 || c.length !== 0 || u || s.error !== null) throw new Error(`${e} response is invalid`);
@@ -869,9 +871,9 @@ function Vi(n, e, t, i) {
   return n;
 }
 function Wi(n, e, t, i) {
-  const s = S(n, e), r = B(s.target, /* @__PURE__ */ new Set(["voltage", "current"]), e);
+  const s = S(n, e), r = D(s.target, /* @__PURE__ */ new Set(["voltage", "current"]), e);
   v(s.target_id, e);
-  const o = q(s.stable, e);
+  const o = B(s.stable, e);
   if (r !== t || s.target_id !== i) throw new Error(`${e} response is invalid`);
   const a = C(s.windows, e, r === "voltage" ? 42 : 1);
   if (r === "voltage" ? a.length < 3 || a.length % 3 !== 0 : a.length !== 1) throw new Error(`${e} response is invalid`);
@@ -886,11 +888,11 @@ function Wi(n, e, t, i) {
   return n;
 }
 function ft(n, e, t) {
-  const i = S(n, e), s = B(i.state, /* @__PURE__ */ new Set(["applied_pending_restart_verification", "result_outside_tolerance", "indeterminate"]), e);
-  v(i.group_key, e), i.phase !== null && B(i.phase, $e, e);
+  const i = S(n, e), s = D(i.state, /* @__PURE__ */ new Set(["applied_pending_restart_verification", "result_outside_tolerance", "indeterminate"]), e);
+  v(i.group_key, e), i.phase !== null && D(i.phase, $e, e);
   const r = A(i.iteration, e), o = C(i.changed_channels, e, 3).map((f) => A(f, e)), a = C(i.before_values, e, 3), c = C(i.after_values, e, 3), h = C(i.error_percent_values, e, 3);
   for (const f of [a, c, h]) f.forEach((m) => U(m, e));
-  const u = t.target === "voltage" ? t.groupKey : Ve(t.references[0].channel), d = t.target === "voltage" ? Yi(t.groupKey) : t.references.map((f) => f.channel), p = t.target === "current" && t.references.length === 1 ? ["A", "B", "C"][(t.references[0].channel - 1) % 3] : null, g = q(i.retry_allowed, e);
+  const u = t.target === "voltage" ? t.groupKey : Ve(t.references[0].channel), d = t.target === "voltage" ? Yi(t.groupKey) : t.references.map((f) => f.channel), p = t.target === "current" && t.references.length === 1 ? ["A", "B", "C"][(t.references[0].channel - 1) % 3] : null, g = B(i.retry_allowed, e);
   if (t.target === "voltage" && (!Number.isFinite(t.reference) || t.reference <= 0) || t.target === "current" && t.references.some((f) => !Number.isFinite(f.reference) || f.reference <= 0 || !Number.isFinite(f.rawReference) || f.rawReference <= 0) || ![1, 2, 3].includes(o.length) || s !== "indeterminate" && a.length !== o.length || new Set(o).size !== o.length || o.some((f) => f < 1 || f > 42) || r < 1 || r > 3 || i.group_key !== u || i.phase !== p || o.length !== d.length || o.some((f, m) => f !== d[m]) || (s === "indeterminate" ? c.length !== 0 || h.length !== 0 : c.length !== o.length || h.length !== o.length)) throw new Error(`${e} response is invalid`);
   if (s === "indeterminate") {
     if (i.gain_evidence !== null || g) throw new Error(`${e} response is invalid`);
@@ -915,7 +917,7 @@ function Ki(n, e, t) {
   const c = t.target === "current" ? new Map(t.references.map((p) => [["A", "B", "C"][(p.channel - 1) % 3], p.rawReference])) : /* @__PURE__ */ new Map(), h = C(i.phases, e, 3);
   if (h.length !== 3) throw new Error(`${e} response is invalid`);
   h.forEach((p, g) => {
-    const f = S(p, e), m = B(f.phase, $e, e);
+    const f = S(p, e), m = D(f.phase, $e, e);
     if (m !== ["A", "B", "C"][g]) throw new Error(`${e} response is invalid`);
     U(f.measured_voltage, e), U(f.measured_current, e);
     const _ = U(f.reference_voltage, e), k = U(f.reference_current, e), P = A(f.old_voltage_gain, e), T = A(f.new_voltage_gain, e), b = A(f.old_current_gain, e), M = A(f.new_current_gain, e);
@@ -928,9 +930,9 @@ function Ki(n, e, t) {
     }
   });
   const u = C(i.register_mismatch_phases, e, 3);
-  u.forEach((p) => B(p, $e, e));
+  u.forEach((p) => D(p, $e, e));
   const d = C(i.matching_lines, e, 100);
-  if (d.length === 0 || d.some((p) => typeof p != "string") || q(i.flash_saved, e) !== !0 || u.length !== 0 || q(i.calibration_disabled, e) !== !1) throw new Error(`${e} response is invalid`);
+  if (d.length === 0 || d.some((p) => typeof p != "string") || B(i.flash_saved, e) !== !0 || u.length !== 0 || B(i.calibration_disabled, e) !== !1) throw new Error(`${e} response is invalid`);
 }
 function Yi(n) {
   const e = /^(?:main_([12])|addon([1-6])_([12]))$/.exec(n);
@@ -942,8 +944,8 @@ function Ne(n, e, t) {
   const i = S(n, e);
   for (const f of ["mac", "topology_project_name", "topology_voltage_layout", "verification_id"]) v(i[f], e);
   const s = A(i.topology_addon_count, e);
-  B(i.topology_connection_type, Ge, e);
-  const r = A(i.connection_generation, e), o = B(i.source_authority, /* @__PURE__ */ new Set(["saved_flash", "configuration"]), e), a = q(i.source_handoff_available, e), c = q(i.source_handoff_firmware_installed, e);
+  D(i.topology_connection_type, Ge, e);
+  const r = A(i.connection_generation, e), o = D(i.source_authority, /* @__PURE__ */ new Set(["saved_flash", "configuration"]), e), a = B(i.source_handoff_available, e), c = B(i.source_handoff_firmware_installed, e);
   qe(i.source_handoff_transaction_id, e);
   const h = i.config_filename !== null || i.config_sha256 !== null;
   if (h && (v(i.config_filename, e), v(i.config_sha256, e), !Di.test(i.config_filename) || !Ee.test(i.config_sha256)))
@@ -954,7 +956,7 @@ function Ne(n, e, t) {
     const k = C(i[f] ?? [], e, 14), P = /* @__PURE__ */ new Set();
     return k.forEach((T) => {
       const b = S(T, e);
-      D(b, ["instance_id", m], e);
+      q(b, ["instance_id", m], e);
       const M = v(b.instance_id, e);
       if (!u.has(M) || P.has(M)) throw new Error(`${e} response is invalid`);
       if (P.add(M), _) Pt(b[m], e);
@@ -1133,7 +1135,7 @@ function Ji(n, e, t, i, s, r, o) {
         <div><dt>Warnings</dt><dd>${n.validation_detail.warning_record_count} records (${n.validation_detail.reported_warning_count === null ? "unreported" : `${n.validation_detail.reported_warning_count} reported`})</dd></div>
       </dl>` : ""}
       ${n?.upload_progress?.length ? l`<ul class="upload-progress">${n.upload_progress.map((h) => l`
-        <li>${h.stage}: ${h.percentage ?? h.progress ?? "in progress"}${h.percentage != null || h.progress != null ? "%" : ""}</li>
+        <li>${h.stage}: ${h.percentage ?? "in progress"}${h.percentage != null ? "%" : ""}</li>
       `)}</ul>` : ""}
       <footer class="action-footer">
         <button class="secondary" @click=${r}>Back</button>
@@ -1903,7 +1905,7 @@ function Wt(n, e, t, i, s, r = null, o = !1) {
         <section><h3>Calibration results by target</h3>${[...s.entries()].map(([a, c]) => l`<div data-target=${a}>${Ye(c)}</div>`) || "No calibration evidence."}</section>
         <section><h3>Build evidence</h3><p>${t?.evidence.join(", ") || "No build evidence."}</p><p>${t?.progress.join(", ") || "No transaction progress."}</p>
           ${t?.validation_detail ? l`<p>Validation code ${t.validation_detail.code ?? "unavailable"}; ${t.validation_detail.error_record_count} error records; ${t.validation_detail.warning_record_count} warning records.</p>` : ""}
-          ${t?.upload_progress?.length ? l`<ul>${t.upload_progress.map((a) => l`<li>${a.stage}: ${a.percentage ?? a.progress ?? "in progress"}${a.percentage != null || a.progress != null ? "%" : ""}</li>`)}</ul>` : ""}
+          ${t?.upload_progress?.length ? l`<ul>${t.upload_progress.map((a) => l`<li>${a.stage}: ${a.percentage ?? "in progress"}${a.percentage != null ? "%" : ""}</li>`)}</ul>` : ""}
         </section>
         <section><h3>Calibration completion record</h3><p>${r ? `Restart-verified ${r.source_authority.replaceAll("_", " ")} calibration record` : o ? "No-change completion; no restart-verified record was created" : "Not yet established"}</p><p>${r ? `Verification ${r.verification_id}, generation ${r.connection_generation}; ${r.offset_groups?.length ?? 0} voltage/current offset tables; ${r.power_offset_groups?.length ?? 0} power-offset tables.` : o ? "The server confirmed there were no pending gain or offset changes." : "No authoritative restart result."}</p></section>
       </div>

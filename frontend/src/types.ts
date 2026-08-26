@@ -293,7 +293,7 @@ export interface TransactionStatus {
     error_record_count: number;
     warning_record_count: number;
   } | null;
-  upload_progress: Array<{ stage: string; progress?: number | null; percentage?: number | null }>;
+  upload_progress: Array<{ stage: string; percentage: number | null }>;
   aggregate_entity_mismatch: boolean;
   full_meter_configuration_verified: boolean;
 }

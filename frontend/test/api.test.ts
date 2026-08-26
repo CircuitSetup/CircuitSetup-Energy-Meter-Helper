@@ -270,6 +270,22 @@ describe("HelperApi", () => {
     }
   });
 
+  it("accepts no-op previews and rejects extra nested transaction fields", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    hass.responses.preview_ct_config = { ...transaction, redacted_diff: "" };
+    await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({ redacted_diff: "" });
+    for (const invalid of [
+      { ...transaction, changes: [{ key: "channel.1.name", old_value: "CT1", new_value: "Load", extra: true }] },
+      { ...transaction, validation_detail: { code: null, reported_error_count: null, reported_warning_count: null, error_record_count: 0, warning_record_count: 0, extra: true } },
+      { ...transaction, upload_progress: [{ stage: "uploading", percentage: 65, extra: true }] },
+      { ...transaction, upload_progress: [{ stage: "uploading", progress: 65 }] },
+    ]) {
+      hass.responses.preview_ct_config = invalid;
+      await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
+    }
+  });
+
   it("fails closed on the exact meter configuration and preview contract", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
