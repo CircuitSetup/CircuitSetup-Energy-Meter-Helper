@@ -39,6 +39,10 @@ REPRESENTATIVES = (
 )
 EXPECTED_MATRIX = {
     f"Software/ESPHome/{PREFIX}{variant}.yaml" for variant in REPRESENTATIVES
+} | {
+    "Software/ESPHome/6chan_energy_meter_main_ethernet.yaml",
+    "Software/ESPHome/6chan_energy_meter_main_ethernet_waveshare.yaml",
+    "Software/ESPHome/local_status_harness.generated.yaml",
 }
 
 

@@ -180,7 +180,14 @@ def _contract_fixture(tmp_path: Path, *, api_ready: bool = True) -> tuple[Path, 
         matrix = [
             f"Software/ESPHome/6chan_energy_meter_{variant}.yaml"
             for variant in REPRESENTATIVES
+        ] + [
+            "Software/ESPHome/6chan_energy_meter_main_ethernet.yaml",
+            "Software/ESPHome/6chan_energy_meter_main_ethernet_waveshare.yaml",
+            "Software/ESPHome/local_status_harness.generated.yaml",
         ]
+        (firmware_data / "local_status_harness.generated.yaml").write_text(
+            "packages:\n", encoding="utf-8"
+        )
         (tests / "compile_matrix.py").write_text(
             "import json\nprint(json.dumps({'configurations': "
             + repr(sorted(matrix))
