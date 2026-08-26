@@ -163,6 +163,21 @@ describe("calibration tab semantics", () => {
     button?.click();
     expect(calibrate).toHaveBeenCalledOnce();
   });
+
+  it.each(["indeterminate", "result_outside_tolerance"] as const)("blocks terminal %s voltage recovery without retry", (state) => {
+    const calibrate = vi.fn();
+    const root = mount(voltageStep(topology, null, 1, [120], ["C"], {
+      target: "voltage", target_id: "C", stable: true,
+      windows: Array.from({ length: 3 }, () => ({ samples: [120], mean: 120, standard_deviation: 0, range_percent: 0 })),
+    }, [{ state, group_key: "addon1_1", phase: null, changed_channels: [4, 5, 6], iteration: 3,
+      before_values: [120, 120, 120], after_values: [], error_percent_values: [], gain_evidence: null,
+      restore_evidence: null, retry_allowed: false }], false, noop, noop, noop, calibrate, noop, noop));
+
+    const button = root.querySelector<HTMLButtonElement>(".calibration-actions .primary");
+    expect(button?.disabled).toBe(true);
+    button?.click();
+    expect(calibrate).not.toHaveBeenCalled();
+  });
 });
 
 it("gives the CT inventory table explicit header and data-cell semantics", () => {
