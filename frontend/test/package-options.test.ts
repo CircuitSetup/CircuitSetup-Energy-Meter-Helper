@@ -1,30 +1,20 @@
-import { html, render } from "lit";
+import { render } from "lit";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { setupDeviceStep } from "../src/components/setup-device-step";
+import { newInstallPackageOptions, packageOptions } from "../src/components/package-options";
 
 afterEach(() => document.body.replaceChildren());
 
-it("shows mixed per-board package state and applies each all-boards choice", () => {
+it("lays out mixed package state by board and applies each all-boards choice", () => {
   const container = document.createElement("div");
   document.body.append(container);
   const changed = vi.fn();
-  render(setupDeviceStep(
-    null,
-    1,
-    "wifi",
-    () => undefined,
-    () => undefined,
-    () => undefined,
-    () => undefined,
-    () => undefined,
-    "",
-    false,
-    html``,
-    null,
-    { power_quality: [false, false], status_fields: [true, false] },
-    changed,
-  ), container);
+  render(packageOptions({ power_quality: [false, false], status_fields: [true, false] }, changed), container);
+
+  expect(Array.from(container.querySelectorAll("th"), (header) => header.textContent?.trim())).toEqual([
+    "Board", "Power quality sensors", "Status fields", "All boards", "Main board", "Add-on 1",
+  ]);
+  expect(container.querySelectorAll("fieldset")).toHaveLength(0);
 
   const mainStatus = container.querySelector<HTMLInputElement>(
     '[data-feature="status_fields"][data-board="0"]',
@@ -53,21 +43,8 @@ it("shows mixed per-board package state and applies each all-boards choice", () 
 });
 
 it("uses disabled power quality and main-only status defaults for new boards", () => {
-  const container = document.createElement("div");
-  document.body.append(container);
-  render(setupDeviceStep(
-    null,
-    2,
-    "wifi",
-    () => undefined,
-    () => undefined,
-    () => undefined,
-    () => undefined,
-    () => undefined,
-  ), container);
-
-  expect([...container.querySelectorAll<HTMLInputElement>('[data-feature="power_quality"]')]
-    .map((input) => input.checked)).toEqual([false, false, false]);
-  expect([...container.querySelectorAll<HTMLInputElement>('[data-feature="status_fields"]')]
-    .map((input) => input.checked)).toEqual([true, false, false]);
+  expect(newInstallPackageOptions(2)).toEqual({
+    power_quality: [false, false, false],
+    status_fields: [true, false, false],
+  });
 });

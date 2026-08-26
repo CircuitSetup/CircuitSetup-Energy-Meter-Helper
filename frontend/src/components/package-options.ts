@@ -30,32 +30,25 @@ export function packageOptions(
   return html`<section class="package-options" aria-labelledby="package-options-heading">
     <h2 id="package-options-heading">Optional meter fields</h2>
     <p>Choose which meter boards expose additional power quality and status entities.</p>
-    ${FEATURES.map(([feature, label]) => {
-      const states = options[feature];
-      const all = states.every(Boolean);
-      const mixed = states.some(Boolean) && !all;
-      return html`<fieldset class="choice-field feature-options">
-        <legend>${label}</legend>
-        <label>
-          <input type="checkbox" data-all-feature=${feature}
-            .checked=${all} .indeterminate=${mixed}
-            @change=${(event: Event) => change({
-              ...options,
-              [feature]: states.map(() => (event.currentTarget as HTMLInputElement).checked),
-            })} />
-          <span>All boards</span>
-        </label>
-        ${states.map((enabled, board) => html`<label>
-          <input type="checkbox" data-feature=${feature} data-board=${board}
-            .checked=${enabled}
-            @change=${(event: Event) => change({
-              ...options,
-              [feature]: states.map((value, index) => index === board
-                ? (event.currentTarget as HTMLInputElement).checked : value),
-            })} />
-          <span>${board === 0 ? "Main board" : `Add-on ${board}`}</span>
-        </label>`)}
-      </fieldset>`;
-    })}
+    <table class="package-options-table">
+      <thead><tr><th scope="col">Board</th>${FEATURES.map(([_feature, label]) => html`<th scope="col">${label}</th>`)}</tr></thead>
+      <tbody>
+        <tr><th scope="row">All boards</th>${FEATURES.map(([feature, label]) => {
+          const states = options[feature];
+          const all = states.every(Boolean);
+          return html`<td><input type="checkbox" data-all-feature=${feature} aria-label=${`All boards ${label}`}
+            .checked=${all} .indeterminate=${states.some(Boolean) && !all}
+            @change=${(event: Event) => change({ ...options,
+              [feature]: states.map(() => (event.currentTarget as HTMLInputElement).checked), })} /></td>`;
+        })}</tr>
+        ${options.power_quality.map((_enabled, board) => html`<tr>
+          <th scope="row">${board === 0 ? "Main board" : `Add-on ${board}`}</th>
+          ${FEATURES.map(([feature, label]) => html`<td><input type="checkbox" data-feature=${feature} data-board=${board}
+            aria-label=${`${board === 0 ? "Main board" : `Add-on ${board}`} ${label}`} .checked=${options[feature][board] ?? false}
+            @change=${(event: Event) => change({ ...options,
+              [feature]: options[feature].map((value, index) => index === board ? (event.currentTarget as HTMLInputElement).checked : value), })} /></td>`)}
+        </tr>`)}
+      </tbody>
+    </table>
   </section>`;
 }

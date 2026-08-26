@@ -1,6 +1,7 @@
 import { html, type TemplateResult } from "lit";
 
-import type { ElectricalSystem, LineFrequencyHz, MeterSettingsDraft, VoltageTransformerCatalog } from "../types";
+import type { BoardPackageOptions, ElectricalSystem, LineFrequencyHz, MeterSettingsDraft, VoltageTransformerCatalog } from "../types";
+import { packageOptions } from "./package-options";
 
 const SYSTEMS: Array<[ElectricalSystem, string]> = [
   ["split_phase_120_240", "Split phase 120/240 V"], ["single_phase_230", "Single phase 230 V"],
@@ -24,6 +25,8 @@ export function meterSettingsStep(
   setAcknowledged: (value: boolean) => void,
   back: () => void,
   continueToCircuits: () => void,
+  boardPackages: BoardPackageOptions | null = null,
+  setBoardPackages: (options: BoardPackageOptions) => void = () => undefined,
 ): TemplateResult {
   const multiReference = draft.voltage_references.length > 1;
   const valid = Boolean(draft.friendly_name.trim()) && draft.voltage_references.every((reference) =>
@@ -90,6 +93,7 @@ export function meterSettingsStep(
           @change=${(event: Event) => patch({ update_interval_s: Number((event.target as HTMLSelectElement).value) as MeterSettingsDraft["update_interval_s"] })}>${INTERVALS.map((value) => html`<option value=${value}>${value} seconds</option>`)}</select></label>
       </div>
       <p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>
+      ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
       <h3>Voltage references</h3>
       <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
       <div class="voltage-reference-cards">${draft.voltage_references.map((reference) => html`

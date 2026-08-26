@@ -55,6 +55,7 @@ it("keeps Setup Device free of legacy installer and IO0 controls", () => {
 
   expect(container.querySelector('[data-action="rescan"]')?.textContent).toContain("Rescan for device");
   expect(container.querySelector("button.installer")).toBeNull();
+  expect(container.querySelector(".package-options")).toBeNull();
   expect([...container.querySelectorAll("dt")].some((term) => term.textContent === "IO0")).toBe(false);
   expect(container.querySelector(".io-guidance")).toBeNull();
   expect([...container.querySelectorAll("input")].some((input) =>

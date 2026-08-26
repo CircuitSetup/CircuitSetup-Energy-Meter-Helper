@@ -1,6 +1,5 @@
 import { html, type TemplateResult } from "lit";
-import type { BoardPackageOptions, MeterTopology } from "../types";
-import { packageOptions } from "./package-options";
+import type { MeterTopology } from "../types";
 
 export function topologyMismatch(topology: MeterTopology): boolean {
   const expected = topology.addon_count;
@@ -16,9 +15,7 @@ export function topologyMismatch(topology: MeterTopology): boolean {
     || topology.evidence.some((item) => item.addon_count !== expected);
 }
 
-export function topologyStep(topology: MeterTopology, projectVersion: string | null, back: () => void, continueFlow: () => void, forceMismatch = false, busy = false,
-  boardPackages: BoardPackageOptions | null = null,
-  setBoardPackages: (options: BoardPackageOptions) => void = () => undefined): TemplateResult {
+export function topologyStep(topology: MeterTopology, projectVersion: string | null, back: () => void, continueFlow: () => void, forceMismatch = false, busy = false): TemplateResult {
   const mismatch = forceMismatch || topologyMismatch(topology);
   return html`
     <section class="step-content" aria-labelledby="step-heading">
@@ -35,7 +32,6 @@ export function topologyStep(topology: MeterTopology, projectVersion: string | n
           <tr><td>${item.source.replaceAll("_", " ")}</td><td>${item.addon_count}</td><td>${item.detail}</td></tr>
         `)}</tbody>
       </table>
-      ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
       ${mismatch ? html`
         <div class="error-panel" role="alert" tabindex="-1">
           <strong>Topology mismatch</strong>
