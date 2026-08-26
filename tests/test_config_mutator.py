@@ -1711,6 +1711,53 @@ def test_aggregate_preview_renders_bidirectional_grid_and_hides_contract_totals(
     ESPHomeConfigDocument.parse(plan.proposed_content)
 
 
+def test_mains_and_solar_templates_split_grid_import_from_export() -> None:
+    """Solar export remains a positive Home Assistant return-to-grid total."""
+    snapshot = _contract_snapshot(generic_totals=True)
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        aggregates=(
+            CircuitAggregate(
+                "auto-mains", "Mains", CircuitRole.GRID, (1, 2),
+                MeasurementMethod.TWO_CT_SUM, None, EnergyMode.BIDIRECTIONAL,
+                expose_current=True,
+            ),
+            CircuitAggregate(
+                "auto-solar", "Solar", CircuitRole.SOLAR, (3, 4),
+                MeasurementMethod.TWO_CT_SUM, None, EnergyMode.GENERATION,
+            ),
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    block = plan.proposed_content.split(
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n", 1
+    )[1].split("# End CircuitSetup", 1)[0]
+    assert "lambda: return id(ct1Watts).state + id(ct2Watts).state;" in block
+    assert (
+        "lambda: return std::max(0.0f, id(csemh_auto_mains_power).state);"
+        in block
+    )
+    assert (
+        "lambda: return std::max(0.0f, -id(csemh_auto_mains_power).state);"
+        in block
+    )
+    _assert_lifetime_energy(block, "csemh_auto_mains_import_power")
+    _assert_lifetime_energy(block, "csemh_auto_mains_export_power")
+    assert 'name: "${friendly_name} Mains Import Energy"' in block
+    assert 'name: "${friendly_name} Mains Export Energy"' in block
+    assert (
+        "lambda: return std::max(0.0f, "
+        "-(id(ct3Watts).state + id(ct4Watts).state));"
+        in block
+    )
+    _assert_lifetime_energy(block, "csemh_auto_solar_power")
+    ESPHomeConfigDocument.parse(plan.proposed_content)
+
+
 def test_indentless_contract_sensor_supports_voltage_aggregate_preview_and_readback() -> None:
     """Official root-level sensor lists retain valid relative helper indentation."""
     snapshot = _indentless_contract_snapshot()
@@ -1861,7 +1908,7 @@ def test_aggregate_energy_signs_and_one_ct_power_multiplier_are_semantic_only() 
     assert "lambda: return std::max(0.0f, id(ct1Watts).state * 2.0);" in block
     assert "lambda: return id(ct1Amps).state;" in block
     assert "sensor: csemh_load_power" in block
-    assert "lambda: return std::max(0.0f, -id(ct2Watts).state);" in block
+    assert "lambda: return std::max(0.0f, -(id(ct2Watts).state));" in block
     assert "sensor: csemh_solar_power" in block
     _assert_lifetime_energy(block, "csemh_load_power")
     _assert_lifetime_energy(block, "csemh_solar_power")

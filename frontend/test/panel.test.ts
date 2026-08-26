@@ -328,7 +328,9 @@ describe("CircuitSetup panel", () => {
     response.configuration.meter = { ...response.configuration.meter, friendly_name: "Garage meter",
       voltage_references: [{ ...response.configuration.meter.voltage_references[0]!, nominal_voltage_v: 240 }] };
     const manual = { aggregate_id: "manual-load", name: "Manual load", role: "branch" as const, channels: [3], measurement_method: "direct" as const, parent_id: null, energy_mode: "consumption" as const, expose_power: true, expose_current: false };
-    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel);
+    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2
+      ? { ...channel, role: "grid" }
+      : [4, 5].includes(channel.channel) ? { ...channel, role: "solar" } : channel);
     response.configuration.aggregates = [manual];
 
     state.setMeterConfiguration(response);
@@ -347,6 +349,17 @@ describe("CircuitSetup panel", () => {
       energy_mode: "bidirectional",
       expose_power: true,
       expose_current: true,
+    });
+    expect(configuration.aggregates).toContainEqual({
+      aggregate_id: "auto-solar",
+      name: "Solar",
+      role: "solar",
+      channels: [4, 5],
+      measurement_method: "two_ct_sum",
+      parent_id: null,
+      energy_mode: "generation",
+      expose_power: true,
+      expose_current: false,
     });
   });
 

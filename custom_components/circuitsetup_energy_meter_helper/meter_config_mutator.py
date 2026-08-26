@@ -626,7 +626,7 @@ def _energy_power_expression(aggregate: CircuitAggregate, expression: str) -> st
     if aggregate.energy_mode is EnergyMode.CONSUMPTION:
         return f"std::max(0.0f, {expression})"
     if aggregate.energy_mode is EnergyMode.GENERATION:
-        return f"std::max(0.0f, -{expression})"
+        return f"std::max(0.0f, -({expression}))"
     return expression
 
 
