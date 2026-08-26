@@ -101,6 +101,7 @@ export class CircuitSetupPanel extends LitElement {
   private multiReferencePreparationAcknowledged = false;
   private meterFrequencyTouched = false;
   private meterNominalVoltageTouched = new Set<string>();
+  private canonicalConfigurationChanged = false;
   private board = 0;
   private group = 0;
   private channel = 1;
@@ -395,6 +396,7 @@ export class CircuitSetupPanel extends LitElement {
     this.multiReferencePreparationAcknowledged = false;
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = new Set();
+    this.canonicalConfigurationChanged = false;
     this.board = 0;
     this.resetCalibrationRun();
   }
@@ -700,6 +702,7 @@ export class CircuitSetupPanel extends LitElement {
       ...(defaults ? { voltage_references: this.meterSettingsDraft.voltage_references.map((reference) =>
         this.meterNominalVoltageTouched.has(reference.reference_id) ? reference
           : { ...reference, nominal_voltage_v: defaults.voltage }) } : {}) };
+    this.updateMeterSettings(this.meterSettingsDraft);
     this.requestUpdate();
   }
 
@@ -707,6 +710,7 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.meterSettingsDraft) return;
     this.meterFrequencyTouched = true;
     this.meterSettingsDraft = { ...this.meterSettingsDraft, line_frequency_hz: lineFrequencyHz };
+    this.updateMeterSettings(this.meterSettingsDraft);
     this.requestUpdate();
   }
 
@@ -715,6 +719,7 @@ export class CircuitSetupPanel extends LitElement {
     this.meterNominalVoltageTouched = new Set(this.meterNominalVoltageTouched).add(referenceId);
     this.meterSettingsDraft = { ...this.meterSettingsDraft, voltage_references: this.meterSettingsDraft.voltage_references.map((reference) =>
       reference.reference_id === referenceId ? { ...reference, nominal_voltage_v: nominalVoltage } : reference) };
+    this.updateMeterSettings(this.meterSettingsDraft);
     this.requestUpdate();
   }
 
@@ -725,6 +730,8 @@ export class CircuitSetupPanel extends LitElement {
     const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
     try {
       await this.run(async () => {
+        this.updateCircuitConfiguration({ ...this.meterConfiguration!.configuration, meter: this.meterSettingsDraft!,
+          multi_reference_preparation_acknowledged: this.multiReferencePreparationAcknowledged }, false);
         const result = await api.getCtInventory(deviceId);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.showInventory(result);
@@ -755,23 +762,54 @@ export class CircuitSetupPanel extends LitElement {
     const current = this.drafts.get(channel);
     if (!current) return;
     this.drafts = new Map(this.drafts).set(channel, { ...current, ...patch });
+    if (this.meterConfiguration && !this.labelOnly) {
+      const draft = { ...current, ...patch };
+      this.updateCircuitConfiguration({ ...this.meterConfiguration.configuration,
+        channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel ? {
+          ...item, name: draft.name, model_id: draft.modelId,
+          reporting_multiplier: draft.multiplier,
+          custom_gain_ct: draft.modelId === "custom" ? draft.customGainCt ?? null : null,
+          custom_label: draft.modelId === "custom" ? draft.customLabel?.trim() || null : null,
+          burden_output_acknowledged: draft.burdenAcknowledged,
+        } : item) });
+    }
     this.requestUpdate();
   }
 
-  private updateCircuitConfiguration(configuration: MeterConfigurationRequest): void {
+  private updateCircuitConfiguration(configuration: MeterConfigurationRequest, changed = true): void {
     if (!this.meterConfiguration) return;
     this.meterConfiguration = { ...this.meterConfiguration, configuration };
+    this.canonicalConfigurationChanged ||= changed;
     this.requestUpdate();
+  }
+
+  private updateMeterSettings(draft: MeterSettingsDraft): void {
+    this.meterSettingsDraft = draft;
+    if (this.meterConfiguration) this.updateCircuitConfiguration({ ...this.meterConfiguration.configuration, meter: draft,
+      multi_reference_preparation_acknowledged: this.multiReferencePreparationAcknowledged });
   }
 
   private disableCircuit(channel: number): void {
     if (!this.meterConfiguration) return;
-    const aggregates = this.meterConfiguration.configuration.aggregates.filter((aggregate) => !aggregate.channels.includes(channel));
-    if (aggregates.length !== this.meterConfiguration.configuration.aggregates.length
-      && !window.confirm(`Marking CT${channel} unused removes it from aggregate totals. Continue?`)) return;
+    const affected = this.meterConfiguration.configuration.aggregates.filter((aggregate) => aggregate.channels.includes(channel));
+    const invalid = affected.find((aggregate) => {
+      const remaining = aggregate.channels.filter((item) => item !== channel).length;
+      return !remaining || aggregate.measurement_method === "two_ct_sum" && remaining !== 2
+        || (aggregate.measurement_method === "one_ct_double_power" || aggregate.measurement_method === "both_conductors_one_ct") && remaining !== 1;
+    });
+    if (invalid) {
+      this.fail(new Error(), `Repair aggregate ${invalid.name} before marking CT${channel} unused.`);
+      return;
+    }
+    if (affected.length && !window.confirm(`Marking CT${channel} unused removes it from ${affected.map((aggregate) => aggregate.name).join(", ")}. Continue?`)) {
+      this.requestUpdate();
+      return;
+    }
     this.updateCircuitConfiguration({ ...this.meterConfiguration.configuration,
       channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel
-        ? { ...item, enabled: false, role: "unused" } : item), aggregates });
+        ? { ...item, enabled: false, role: "unused" } : item),
+      aggregates: this.meterConfiguration.configuration.aggregates.map((aggregate) => ({ ...aggregate,
+        channels: aggregate.channels.filter((item) => item !== channel) })), });
   }
 
   private hasPackageChanges(): boolean {
@@ -862,7 +900,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private async continueFromCt(): Promise<void> {
     if (!this.api || !this.inventory || !this.selectedDeviceId || this.pendingAction) return;
-    if (this.meterConfiguration && !this.labelOnly) {
+    if (this.meterConfiguration && !this.labelOnly && this.canonicalConfigurationChanged) {
       const configuration = this.meterConfiguration.configuration;
       if (!circuitConfigurationIsValid(configuration, this.inventory.channels.length)) {
         return this.fail(new Error(), "Complete the circuit and aggregate assignments before review.");
@@ -1540,10 +1578,10 @@ export class CircuitSetupPanel extends LitElement {
       (options) => { this.packageOptions = options; this.requestUpdate(); }) : nothing}`;
     if (this.step === "meter" && this.meterSettingsDraft && this.meterConfiguration) return meterSettingsStep(
       this.meterSettingsDraft, this.meterConfiguration.voltage_transformer_catalog, this.multiReferencePreparationAcknowledged,
-      (draft) => { this.meterSettingsDraft = draft; this.requestUpdate(); },
+      (draft) => this.updateMeterSettings(draft),
       (value) => this.setMeterProfile(value), (value) => this.setMeterFrequency(value),
       (referenceId, value) => this.setMeterNominalVoltage(referenceId, value),
-      (value) => { this.multiReferencePreparationAcknowledged = value; this.requestUpdate(); },
+      (value) => { this.multiReferencePreparationAcknowledged = value; if (this.meterSettingsDraft) this.updateMeterSettings(this.meterSettingsDraft); this.requestUpdate(); },
       () => this.back(), () => void this.continueFromMeterSettings(),
     );
     if (this.step === "ct" && this.inventory) return html`<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,

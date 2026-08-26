@@ -51,6 +51,7 @@ function inventory(addons: number) {
       address: { channel: index + 1, board_index: Math.floor(index / 6),
         group_index: Math.floor((index % 6) / 3),
         phase: (["A", "B", "C"] as const)[index % 3] },
+      display_label: null, stored_selection_present: false,
     })),
     catalog: { presets: [{ model_id: "cs-ct-200a", label: "CS-CT-200A-333mV", rated_current_a: 200,
       secondary: "333 mV @ 200 A", default_gain_ct: 5500, requires_burden_jumper_cut: false,
@@ -63,22 +64,36 @@ function inventory(addons: number) {
 }
 
 function meterConfiguration(addons: number) {
-  return { configuration: { meter: { electrical_system: "split_phase_120_240", line_frequency_hz: 60,
-    update_interval_s: 5, voltage_references: Array.from({ length: addons + 1 }, (_, board) => ({
-      reference_id: board ? `addon${board}` : "main",
-      group_keys: board ? [`addon${board}_1`, `addon${board}_2`] : ["main_1", "main_2"],
-    })) } }, warnings: [] };
+  const live = inventory(addons); const references = Array.from({ length: addons + 1 }, (_, board) => ({
+    reference_id: board ? `addon${board}` : "main", label: board ? `Add-on ${board}` : "Main", phase_label: "A/B",
+    nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305,
+    group_keys: board ? [`addon${board}_1`, `addon${board}_2`] : ["main_1", "main_2"],
+  }));
+  const channels = live.channels.map((channel) => ({ channel: channel.channel, enabled: true, name: channel.name,
+    model_id: channel.selected_model_id ?? "custom", reporting_multiplier: channel.reporting_multiplier, role: "branch",
+    voltage_reference_id: channel.address.board_index ? `addon${channel.address.board_index}` : "main",
+    custom_gain_ct: channel.selected_model_id === null ? channel.raw_gain_ct : null,
+    custom_label: channel.selected_model_id === null ? "Custom CT" : null,
+    burden_output_acknowledged: channel.selected_model_id === null }));
+  return { plan_id: "b".repeat(32), source_sha256: live.source_sha256, topology: { ...topology(addons), voltage_layout: "standard" },
+    configuration: { meter: { friendly_name: "Energy meter", electrical_system: "split_phase_120_240", line_frequency_hz: 60,
+      update_interval_s: 5, voltage_layout: "standard", voltage_references: references }, channels, aggregates: [],
+      power_quality: Array(addons + 1).fill(false), status_fields: Array(addons + 1).fill(false), multi_reference_preparation_acknowledged: addons > 0 },
+    capabilities: { configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [] },
+    voltage_topology: { references: references.map((reference) => [reference.reference_id, reference.group_keys]), source: "legacy" },
+    voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 },
+    ct_catalog: live.catalog, warnings: [], channels: live.channels, catalog: live.catalog };
 }
 
 function transaction(state: string, channel: number, options: { evidence?: string[]; progress?: string[];
   rollback?: boolean; validation?: boolean } = {}) {
-  return { ...sanitizerContract.sanitized, transaction_id: "tx-1", state, source_sha256: hash,
+  return { ...sanitizerContract.sanitized, transaction_id: "b".repeat(32), state, source_sha256: hash,
     changes: [{ key: `channel.${channel}.name`, old_value: `CT${channel}`, new_value: `Load ${channel}` }],
     redacted_diff: `- ct${channel}_name: <redacted>\n+ ct${channel}_name: <redacted>`,
     rollback_available: options.rollback ?? false, evidence: options.evidence ?? [], progress: options.progress ?? [],
     validation_detail: options.validation ? { code: 1, reported_error_count: 1,
       reported_warning_count: 0, error_record_count: 1, warning_record_count: 0 } : null,
-    upload_progress: [] };
+    upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: true };
 }
 
 function offsetBoards(addons: number, stageState: "not_started" | "skipped" = "not_started") {
@@ -218,6 +233,8 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       else if (operation === "preview_ct_config") {
         if (outcome === "collision") return fail("CT_NAME_COLLISION", "Names resolve to the same entity ID");
         result = currentTransaction = transaction("previewed", Number((frame.changes as Array<{ channel: number }>)[0]?.channel ?? 1));
+      } else if (operation === "preview_meter_configuration") {
+        result = currentTransaction = transaction("previewed", 1);
       } else if (operation === "preview_calibrated_gains") {
         result = currentTransaction = { ...transaction("previewed", 1), transaction_id: "d".repeat(32) };
       } else if (operation === "apply_ct_config") {
@@ -301,7 +318,9 @@ async function openInventory(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Topology evidence", exact: true })).toBeVisible();
   await page.locator('[data-action="continue"]').click();
-  await expect(page.getByRole("heading", { name: "CT Settings" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
 }
 
 async function reviewChannel(page: Page, channel: number): Promise<void> {
@@ -310,15 +329,6 @@ async function reviewChannel(page: Page, channel: number): Promise<void> {
   }
   await page.getByLabel(`CT${channel} name`).fill(`Load ${channel}`);
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
-  await page.getByRole("checkbox").check();
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByRole("button", { name: "Skip offset calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByRole("button", { name: "Skip voltage calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByRole("button", { name: "Skip current calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
 }
 
@@ -326,7 +336,6 @@ async function reachCurrent(page: Page, channel: number): Promise<void> {
   if (channel === 42) {
     await page.getByRole("tab", { name: "Add-on 6" }).click();
   }
-  await page.getByLabel(`CT${channel} name`).fill(`Load ${channel}`);
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
@@ -446,8 +455,8 @@ test("a firmware catalog failure leaves Retry and Rescan available", async ({ pa
   await expect(page.getByRole("button", { name: "Rescan for device", exact: true })).toBeVisible();
 });
 
-test("six-channel inventory exposes ambiguous gain while label-only stays out of preview and collisions refuse", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { outcome: "collision" });
+test("six-channel inventory routes canonical edits through Meter Settings and full preview", async ({ page }) => {
+  const frames = await mockHomeAssistant(page);
   await openInventory(page);
   await expect(page.locator('[data-ct-row]')).toHaveCount(6);
   await expect(page.locator('[data-group-nav]')).toHaveCount(0);
@@ -470,21 +479,13 @@ test("six-channel inventory exposes ambiguous gain while label-only stays out of
   expect(operations(frames)).not.toContain("preview_ct_config");
 
   await page.getByRole("button", { name: "Back" }).click();
-  await expect(page.getByRole("heading", { name: "CT Settings" })).toBeVisible();
+  await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
   await page.getByLabel("ESPHome / firmware names").check();
   await page.getByLabel("CT2 name").fill("Kitchen mains");
   await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByRole("checkbox").check();
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByRole("button", { name: "Skip offset calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByRole("button", { name: "Skip voltage calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByRole("button", { name: "Skip current calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("preview is stale");
-  expect(operations(frames).filter((value) => value === "preview_ct_config")).toHaveLength(1);
-  expect(operations(frames)).not.toContain("apply_ct_config");
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  expect(operations(frames)).toContain("preview_meter_configuration");
+  expect(operations(frames)).not.toContain("preview_ct_config");
 });
 
 test("validation failure exposes evidence and performs only a user-requested rollback", async ({ page }) => {
@@ -497,7 +498,7 @@ test("validation failure exposes evidence and performs only a user-requested rol
   await expect(page.getByText("1 records (1 reported)")).toBeVisible();
   await page.getByRole("button", { name: "Rollback" }).click();
   await expect(page.getByText("rolled_back", { exact: true })).toBeVisible();
-  expect(operations(frames)).toEqual(expect.arrayContaining(["preview_ct_config", "apply_ct_config", "rollback_ct_config"]));
+  expect(operations(frames)).toEqual(expect.arrayContaining(["preview_meter_configuration", "apply_ct_config", "rollback_ct_config"]));
   expect(operations(frames)).not.toContain("compile_ct_config");
 });
 
@@ -541,12 +542,10 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   const ordered = operations(frames);
   expect(ordered.indexOf("apply_ct_config")).toBeLessThan(ordered.indexOf("compile_ct_config"));
   expect(ordered.indexOf("compile_ct_config")).toBeLessThan(ordered.indexOf("install_ct_config"));
-  expect(frames.find((frame) => frame.type.endsWith("/preview_calibrated_gains"))).toMatchObject({
-    changes: [{ channel: 42, name: "Load 42" }],
-  });
+  expect(frames.find((frame) => frame.type.endsWith("/preview_calibrated_gains"))).toMatchObject({ changes: [] });
   expect(frames.find((frame) => frame.type.endsWith("/acknowledge_safety"))).toMatchObject({ acknowledged: true });
   expect(frames.find((frame) => frame.type.endsWith("/calibrate_current"))).toMatchObject({ references: [{ channel: 1,
-    reference: 5 }], pending_multipliers: [{ channel: 42, reporting_multiplier: 1 }], confirm_iteration: true });
+    reference: 5 }], pending_multipliers: [], confirm_iteration: true });
   expect(ordered).toContain("restart_and_verify");
   expect(ordered.indexOf("restart_and_verify")).toBeLessThan(ordered.indexOf("preview_calibrated_gains"));
   expect(ordered.indexOf("install_ct_config", ordered.indexOf("preview_calibrated_gains")))

@@ -146,12 +146,20 @@ function circuitsEditor(
     channels: configuration.channels.map((item) => item.channel === channel ? { ...item, ...patch } : item) });
   const patchAggregate = (index: number, patch: Partial<CircuitAggregate>) => update({ ...configuration,
     aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) });
+  const renameAggregate = (index: number, aggregateId: string) => {
+    const old = configuration.aggregates[index]!.aggregate_id;
+    update({ ...configuration, aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index
+      ? { ...item, aggregate_id: aggregateId } : item.parent_id === old ? { ...item, parent_id: aggregateId } : item) });
+  };
   const references = configuration.meter.voltage_references;
-  const warning = configuration.aggregates.some((aggregate) => aggregate.channels.length > 1)
-    ? "Totals include multiple circuits. Do not also count a child circuit in the same dashboard total."
-    : "";
+  const available = configuration.channels.filter((channel) => channel.enabled && !configuration.aggregates.some((aggregate) => aggregate.channels.includes(channel.channel))).map((channel) => channel.channel);
+  const warnings = configuration.aggregates.flatMap((aggregate) => [
+    aggregate.role === "grid" && aggregate.parent_id !== null ? "A root-grid total must not be included under another aggregate." : "",
+    aggregate.measurement_method === "one_ct_double_power" && aggregate.role !== "two_pole" ? `${aggregate.name}: doubled-one-leg measurement is only for a two-pole circuit.` : "",
+    aggregate.role === "two_pole" && aggregate.measurement_method === "direct" ? `${aggregate.name}: select a two-pole measurement method.` : "",
+  ].filter(Boolean));
   return html`<section class="step-content" aria-labelledby="circuits-heading">
-    <h2 id="circuits-heading">Circuit assignments</h2>
+    <h2 id="circuits-heading">Circuits & CTs</h2>
     <p>These fields are part of the meter configuration. Calibration values remain internal.</p>
     ${configuration.channels.map((channel) => html`<section class="ct-detail" aria-label=${`CT${channel.channel} circuit`}>
       <strong>CT${channel.channel}</strong>
@@ -159,17 +167,18 @@ function circuitsEditor(
         @change=${(event: Event) => (event.target as HTMLInputElement).checked
           ? patchChannel(channel.channel, { enabled: true, role: channel.role === "unused" ? "branch" : channel.role })
           : disable(channel.channel)} />Used</label>
-      <label>Name <input aria-label=${`CT${channel.channel} circuit name`} maxlength="64" .value=${channel.name}
-        @input=${(event: Event) => patchChannel(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
       <label>Role <select aria-label=${`CT${channel.channel} role`} .value=${channel.role}
-        @change=${(event: Event) => patchChannel(channel.channel, { role: (event.target as HTMLSelectElement).value as ChannelSettings["role"] })}>${ROLES.map((role) => html`<option value=${role}>${role.replaceAll("_", " ")}</option>`)}</select></label>
+        ?disabled=${!channel.enabled}
+        @change=${(event: Event) => patchChannel(channel.channel, { role: (event.target as HTMLSelectElement).value as ChannelSettings["role"] })}>${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${role.replaceAll("_", " ")}</option>`)}</select></label>
       <label>Voltage reference <select aria-label=${`CT${channel.channel} voltage reference`} .value=${channel.voltage_reference_id}
         @change=${(event: Event) => patchChannel(channel.channel, { voltage_reference_id: (event.target as HTMLSelectElement).value })}>${references.map((reference) => html`<option value=${reference.reference_id}>${reference.label || reference.reference_id}</option>`)}</select></label>
       <span>${channel.enabled ? `${channel.model_id || "No CT model"}; ${channel.role.replaceAll("_", " ")}` : "Unused"}</span>
     </section>`)}
     <h2>Aggregate totals</h2>
-    ${warning ? html`<p class="warning-band" role="status">${warning}</p>` : nothing}
+    ${warnings.map((warning) => html`<p class="warning-band" role="status">${warning}</p>`)}
     ${configuration.aggregates.map((aggregate, index) => html`<section class="ct-detail" aria-label=${`${aggregate.name} aggregate`}>
+      <label>ID <input aria-label=${`${aggregate.aggregate_id} aggregate id`} maxlength="64" .value=${aggregate.aggregate_id}
+        @change=${(event: Event) => renameAggregate(index, (event.target as HTMLInputElement).value.trim())} /></label>
       <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
         @input=${(event: Event) => patchAggregate(index, { name: (event.target as HTMLInputElement).value })} /></label>
       <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
@@ -180,20 +189,35 @@ function circuitsEditor(
         @change=${(event: Event) => patchAggregate(index, { energy_mode: (event.target as HTMLSelectElement).value as CircuitAggregate["energy_mode"] })}>${ENERGY.map((mode) => html`<option value=${mode}>${mode}</option>`)}</select></label>
       <label>Channels <input aria-label=${`${aggregate.aggregate_id} aggregate channels`} .value=${aggregate.channels.join(",")}
         @change=${(event: Event) => patchAggregate(index, { channels: (event.target as HTMLInputElement).value.split(",").map(Number).filter(Number.isInteger) })} /></label>
+      <fieldset><legend>Selected channels</legend>${configuration.channels.filter((channel) => channel.enabled).map((channel) => html`<label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} CT${channel.channel}`} .checked=${aggregate.channels.includes(channel.channel)}
+        @change=${(event: Event) => patchAggregate(index, { channels: (event.target as HTMLInputElement).checked ? [...aggregate.channels, channel.channel] : aggregate.channels.filter((item) => item !== channel.channel) })} />CT${channel.channel}</label>`)}</fieldset>
       <label>Parent <select aria-label=${`${aggregate.aggregate_id} aggregate parent`} .value=${aggregate.parent_id ?? ""}
         @change=${(event: Event) => patchAggregate(index, { parent_id: (event.target as HTMLSelectElement).value || null })}><option value="">None</option>${configuration.aggregates.filter((item) => item.aggregate_id !== aggregate.aggregate_id).map((item) => html`<option value=${item.aggregate_id}>${item.name}</option>`)}</select></label>
       <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose power`} .checked=${aggregate.expose_power}
         @change=${(event: Event) => patchAggregate(index, { expose_power: (event.target as HTMLInputElement).checked })} />Power</label>
       <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose current`} .checked=${aggregate.expose_current}
         @change=${(event: Event) => patchAggregate(index, { expose_current: (event.target as HTMLInputElement).checked })} />Current</label>
+      <button class="secondary" @click=${() => update({ ...configuration, aggregates: configuration.aggregates.filter((_item, itemIndex) => itemIndex !== index) })}>Delete aggregate</button>
     </section>`)}
-    <button class="secondary" @click=${() => update({ ...configuration, aggregates: [...configuration.aggregates, {
-      aggregate_id: `aggregate-${configuration.aggregates.length + 1}`, name: "New aggregate", role: "branch", channels: [], measurement_method: "direct", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false,
-    }] })}>Add aggregate</button>
-    <button class="secondary" @click=${() => update({ ...configuration, aggregates: [...configuration.aggregates, {
-      aggregate_id: `main-service-${configuration.aggregates.length + 1}`, name: "Main service", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true,
-    }] })}>Add main-service preset</button>
+    ${aggregateButtons(configuration, available, update)}
   </section>`;
+}
+
+function aggregateButtons(configuration: MeterConfigurationRequest, available: number[], update: (configuration: MeterConfigurationRequest) => void): TemplateResult {
+  const add = (name: string, role: CircuitAggregate["role"], method: CircuitAggregate["measurement_method"], count: number, energy: CircuitAggregate["energy_mode"]) => {
+    const channels = available.slice(0, count); if (channels.length !== count) return;
+    const base = role.replaceAll("_", "-"); let suffix = configuration.aggregates.length + 1;
+    const ids = new Set(configuration.aggregates.map((aggregate) => aggregate.aggregate_id));
+    while (ids.has(`${base}-${suffix}`)) suffix++;
+    update({ ...configuration, aggregates: [...configuration.aggregates, { aggregate_id: `${base}-${suffix}`,
+      name, role, channels, measurement_method: method, parent_id: null, energy_mode: energy, expose_power: true, expose_current: role === "grid" }] });
+  };
+  return html`<div class="action-footer"><button class="secondary" ?disabled=${!available.length} @click=${() => add("New aggregate", "branch", "direct", 1, "consumption")}>Add aggregate</button>
+    <button class="secondary" ?disabled=${available.length < 2} @click=${() => add("Main service", "grid", "two_ct_sum", 2, "bidirectional")}>Main service</button>
+    <button class="secondary" ?disabled=${!available.length} @click=${() => add("Solar", "solar", "direct", 1, "generation")}>Solar</button>
+    <button class="secondary" ?disabled=${!available.length} @click=${() => add("Generator", "generator", "direct", 1, "generation")}>Generator</button>
+    <button class="secondary" ?disabled=${!available.length} @click=${() => add("Two-pole circuit", "two_pole", "one_ct_double_power", 1, "consumption")}>Two-pole</button>
+    <button class="secondary" ?disabled=${available.length < 2} @click=${() => add("Subpanel", "subpanel", "two_ct_sum", 2, "consumption")}>Subpanel</button></div>`;
 }
 
 export function circuitConfigurationIsValid(configuration: MeterConfigurationRequest, ctCount: number): boolean {
