@@ -309,6 +309,87 @@ describe("CircuitSetup panel", () => {
     expect(root.querySelector('[data-action="add-aggregate"]')).toBeNull();
   });
 
+  it("uses friendly labels for serialized circuit roles", () => {
+    const response = meterResponse();
+    const root = document.createElement("div");
+    render(ctInventoryStep(response as unknown as CtInventory, 0, new Map(), () => undefined, () => undefined, () => undefined, () => undefined, false, false, response.configuration as MeterConfigurationRequest), root);
+
+    const roleOptions = [...root.querySelectorAll<HTMLSelectElement>('select[aria-label="CT1 role"] option')].map((option) => option.textContent);
+    expect(roleOptions).toContain("Mains");
+    expect(roleOptions).toContain("Branch circuit");
+  });
+
+  it("reconciles split-phase role pairs without overwriting imported meter settings or manual aggregates", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+    };
+    const response = meterResponse("split_phase_120_240", 60, 10) as unknown as import("../src/types").MeterConfiguration;
+    response.configuration.meter = { ...response.configuration.meter, friendly_name: "Garage meter",
+      voltage_references: [{ ...response.configuration.meter.voltage_references[0]!, nominal_voltage_v: 240 }] };
+    const manual = { aggregate_id: "manual-load", name: "Manual load", role: "branch" as const, channels: [3], measurement_method: "direct" as const, parent_id: null, energy_mode: "consumption" as const, expose_power: true, expose_current: false };
+    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel);
+    response.configuration.aggregates = [manual];
+
+    state.setMeterConfiguration(response);
+
+    const configuration = (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration;
+    expect(configuration.meter).toMatchObject({ friendly_name: "Garage meter", line_frequency_hz: 60, update_interval_s: 10,
+      voltage_references: [{ nominal_voltage_v: 240 }] });
+    expect(configuration.aggregates).toContainEqual(manual);
+    expect(configuration.aggregates).toContainEqual({
+      aggregate_id: "auto-mains",
+      name: "Mains",
+      role: "grid",
+      channels: [1, 2],
+      measurement_method: "two_ct_sum",
+      parent_id: null,
+      energy_mode: "bidirectional",
+      expose_power: true,
+      expose_current: true,
+    });
+  });
+
+  it("rebuilds supported split-phase aggregates and removes stale automatic pairs", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+      updateCircuitConfiguration(configuration: MeterConfigurationRequest): void;
+    };
+    state.setMeterConfiguration(meterResponse() as unknown as import("../src/types").MeterConfiguration);
+    const current = () => (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration;
+    const setRoles = (role: "solar" | "subpanel" | "two_pole", channels: number[]) => state.updateCircuitConfiguration({ ...current(),
+      channels: current().channels.map((channel) => channels.includes(channel.channel) ? { ...channel, role } : { ...channel, role: "branch" }) });
+
+    setRoles("solar", [1, 2]);
+    expect(current().aggregates).toContainEqual({ aggregate_id: "auto-solar", name: "Solar", role: "solar", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "generation", expose_power: true, expose_current: false });
+    setRoles("subpanel", [1, 2]);
+    expect(current().aggregates).toContainEqual({ aggregate_id: "auto-subpanel", name: "Subpanel", role: "subpanel", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false });
+    setRoles("two_pole", [1, 2]);
+    expect(current().aggregates).toContainEqual({ aggregate_id: "auto-two-pole", name: "Two-pole circuit", role: "two_pole", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false });
+
+    state.updateCircuitConfiguration({ ...current(), channels: current().channels.map((channel) => channel.channel === 2 ? { ...channel, role: "branch" } : channel) });
+    expect(current().aggregates).not.toContainEqual(expect.objectContaining({ aggregate_id: "auto-two-pole" }));
+    state.updateCircuitConfiguration({ ...current(), meter: { ...current().meter, electrical_system: "single_phase_230" }, channels: current().channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel) });
+    expect(current().aggregates).not.toContainEqual(expect.objectContaining({ aggregate_id: "auto-mains" }));
+  });
+
+  it("does not claim manual aggregate channels or build partial automatic pairs", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+    };
+    const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 3 ? { ...channel, role: "grid" } : channel);
+    const manual = { aggregate_id: "manual-service", name: "Manual service", role: "grid" as const, channels: [1, 2], measurement_method: "two_ct_sum" as const, parent_id: null, energy_mode: "bidirectional" as const, expose_power: true, expose_current: true };
+    response.configuration.aggregates = [manual];
+
+    state.setMeterConfiguration(response);
+
+    const configuration = (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration;
+    expect(configuration.aggregates).toEqual([manual]);
+  });
+
   it("reuses the canonical meter plan when advancing to CTs and preview", async () => {
     const operations: Array<{ operation: string; planId: unknown }> = [];
     let activePlan = "b".repeat(32);

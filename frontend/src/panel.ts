@@ -2,7 +2,7 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 
 import { HelperApi, type HomeAssistant } from "./api";
 import { buildInstallStep } from "./components/build-install-step";
-import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, type CtDraft } from "./components/ct-inventory-step";
+import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, reconcileSplitPhaseAggregates, type CtDraft } from "./components/ct-inventory-step";
 import { currentStep } from "./components/current-step";
 import { meterSettingsStep } from "./components/meter-settings-step";
 import { espWebInstaller } from "./components/esp-web-installer";
@@ -855,6 +855,8 @@ export class CircuitSetupPanel extends LitElement {
       ...seeded,
       configuration: { ...seeded.configuration, ...this.packageOptions },
     } : seeded;
+    if (this.meterConfiguration.capabilities.managed_totals) this.meterConfiguration = { ...this.meterConfiguration,
+      configuration: reconcileSplitPhaseAggregates(this.meterConfiguration.configuration) };
     if (!this.packageOptionsTouched) this.packageOptions = {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields],
@@ -951,7 +953,8 @@ export class CircuitSetupPanel extends LitElement {
 
   private updateCircuitConfiguration(configuration: MeterConfigurationRequest, changed = true): void {
     if (!this.meterConfiguration) return;
-    this.meterConfiguration = { ...this.meterConfiguration, configuration };
+    this.meterConfiguration = { ...this.meterConfiguration, configuration: this.meterConfiguration.capabilities.managed_totals
+      ? reconcileSplitPhaseAggregates(configuration) : configuration };
     this.canonicalConfigurationChanged ||= changed;
     this.requestUpdate();
   }
