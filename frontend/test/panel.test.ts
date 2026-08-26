@@ -274,6 +274,8 @@ describe("CircuitSetup panel", () => {
     const root = document.createElement("div");
     render(ctInventoryStep(response as unknown as CtInventory, 0, new Map(), () => undefined, () => undefined, () => undefined, () => undefined, false, false, configuration, () => undefined, () => undefined, false, "unmanaged_total_present"), root);
     expect(root.textContent).toContain("Aggregate editing unavailable");
+    expect(root.textContent).toContain("Upgrade the meter configuration before editing aggregate totals.");
+    expect(root.textContent).not.toContain("unmanaged_total_present");
     expect(root.textContent).toContain("Main service");
     expect(root.querySelector<HTMLFieldSetElement>('[aria-label="Main service aggregate"]')?.disabled).toBe(true);
     expect(root.querySelector('[data-action="add-aggregate"]')).toBeNull();
