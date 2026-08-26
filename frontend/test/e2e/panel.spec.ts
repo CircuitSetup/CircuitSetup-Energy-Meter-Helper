@@ -4,6 +4,7 @@ import sanitizerContract from "../../../tests/fixtures/task20_sanitized_change.j
 type Frame = Record<string, unknown> & { id?: number; type: string };
 type Outcome = "success" | "collision" | "validation" | "compile";
 type Calibration = "main-success" | "addon-indeterminate" | undefined;
+type Scenario = "single-phase-pq" | undefined;
 
 const hash = "a".repeat(64);
 const FIRMWARE_INDEX_URL = "https://circuitsetup.github.io/ESPWebInstaller/manifests/firmware_index.json";
@@ -41,12 +42,12 @@ function topology(addons: number) {
       { source: "native_entity_counts", addon_count: addons, detail: `${6 * boards} current sensors` }] };
 }
 
-function inventory(addons: number) {
+function inventory(addons: number, scenario: Scenario = undefined) {
   const count = 6 * (addons + 1);
   return { plan_id: `plan-${count}`, source_sha256: hash,
     channels: Array.from({ length: count }, (_, index) => ({
       channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: index === 3 ? 27518 : 5500,
-      reporting_multiplier: 1, selected_model_id: index === 3 ? null : "cs-ct-200a",
+      reporting_multiplier: scenario === "single-phase-pq" && index === 6 ? 4 : 1, selected_model_id: index === 3 ? null : "cs-ct-200a",
       selection_verified_against_config: index !== 3,
       address: { channel: index + 1, board_index: Math.floor(index / 6),
         group_index: Math.floor((index % 6) / 3),
@@ -63,8 +64,8 @@ function inventory(addons: number) {
     schema_version: 1 } };
 }
 
-function meterConfiguration(addons: number) {
-  const live = inventory(addons); const references = Array.from({ length: addons + 1 }, (_, board) => ({
+function meterConfiguration(addons: number, scenario: Scenario = undefined) {
+  const live = inventory(addons, scenario); const references = Array.from({ length: addons + 1 }, (_, board) => ({
     reference_id: board ? `addon${board}` : "main", label: board ? `Add-on ${board}` : "Main", phase_label: "A/B",
     nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305,
     group_keys: board ? [`addon${board}_1`, `addon${board}_2`] : ["main_1", "main_2"],
@@ -75,14 +76,16 @@ function meterConfiguration(addons: number) {
     custom_gain_ct: channel.selected_model_id === null ? channel.raw_gain_ct : null,
     custom_label: channel.selected_model_id === null ? "Custom CT" : null,
     burden_output_acknowledged: channel.selected_model_id === null }));
+  const singlePhase = scenario === "single-phase-pq";
+  const numericEntityCount = live.channels.length * 2 + 2 * (addons + 1) + (singlePhase ? 24 : 0);
   return { plan_id: "b".repeat(32), source_sha256: live.source_sha256, topology: { ...topology(addons), voltage_layout: "standard" },
-    configuration: { meter: { friendly_name: "Energy meter", electrical_system: "split_phase_120_240", line_frequency_hz: 60,
-      update_interval_s: 5, voltage_layout: "standard", voltage_references: references }, channels, aggregates: [],
-      power_quality: Array(addons + 1).fill(false), status_fields: Array(addons + 1).fill(false), multi_reference_preparation_acknowledged: addons > 0 },
+    configuration: { meter: { friendly_name: "Energy meter", electrical_system: singlePhase ? "single_phase_230" : "split_phase_120_240", line_frequency_hz: singlePhase ? 50 : 60,
+      update_interval_s: 5, voltage_layout: addons ? "multi_reference" : "standard", voltage_references: references.map((reference) => singlePhase ? { ...reference, nominal_voltage_v: 230 } : reference) }, channels, aggregates: [],
+      power_quality: Array.from({ length: addons + 1 }, (_value, board) => singlePhase && board === 1), status_fields: Array(addons + 1).fill(false), multi_reference_preparation_acknowledged: addons > 0 },
     capabilities: { configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [] },
     voltage_topology: { references: references.map((reference) => [reference.reference_id, reference.group_keys]), source: "legacy" },
     voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 },
-    ct_catalog: live.catalog, warnings: [], configuration_impact: { enabled_channel_count: live.channels.length, numeric_entity_count: live.channels.length * 2 + 2 * (addons + 1), text_entity_count: 0, energy_entity_count: 0, approximate_publications_per_second: (live.channels.length * 2 + 2 * (addons + 1)) / 5 }, channels: live.channels, catalog: live.catalog };
+    ct_catalog: live.catalog, warnings: [], configuration_impact: { enabled_channel_count: live.channels.length, numeric_entity_count: numericEntityCount, text_entity_count: 0, energy_entity_count: 0, approximate_publications_per_second: numericEntityCount / 5 }, channels: live.channels, catalog: live.catalog };
 }
 
 function transaction(state: string, channel: number, options: { evidence?: string[]; progress?: string[];
@@ -165,7 +168,7 @@ function restart(addons: number) {
 async function mockHomeAssistant(page: Page, options: { addons?: number; outcome?: Outcome;
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
-  firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean } = {}) {
+  firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean; scenario?: Scenario } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
@@ -229,7 +232,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       else if (operation === "get_topology") result = {
         topology: topology(addons),
         package_options: {
-          power_quality: Array.from({ length: addons + 1 }, () => false),
+          power_quality: Array.from({ length: addons + 1 }, (_value, board) => options.scenario === "single-phase-pq" && board === 1),
           status_fields: Array.from({ length: addons + 1 }, () => false),
         },
       };
@@ -240,13 +243,13 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           freshPlanGeneration += 1;
           if (options.freshSourceChanged) activeSourceSha256 = "f".repeat(64);
         }
-        const live = meterConfiguration(addons);
+        const live = meterConfiguration(addons, options.scenario);
         result = { ...live, plan_id: activePlan ?? "b".repeat(32), source_sha256: activeSourceSha256,
           configuration: refreshingConsumedPlan && options.freshSourceChanged
             ? { ...live.configuration, meter: { ...live.configuration.meter, friendly_name: "External meter" } }
             : live.configuration };
       }
-      else if (operation === "get_ct_inventory") result = inventory(addons);
+      else if (operation === "get_ct_inventory") result = inventory(addons, options.scenario);
       else if (operation === "get_active_work") result = {
         session: null, transaction: null, verified_calibration: null,
       };
@@ -303,6 +306,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         result = currentSession = session("ready", true, addons, currentSession.has_pending_calibration as boolean, "skipped");
       }
       else if (operation === "check_stability") result = stability(frame);
+      else if (operation === "calibrate_voltage") result = voltageCalibration(frame);
       else if (operation === "calibrate_current") {
         const references = frame.references as Array<{ channel: number; reference: number }>;
         const channel = Number(references[0]?.channel); const reference = Number(references[0]?.reference);
@@ -357,6 +361,23 @@ async function openInventory(page: Page): Promise<void> {
   if (await preparation.count()) await preparation.check();
   await page.locator('[data-action="continue-meter-settings"]').click();
   await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
+}
+
+function voltageCalibration(frame: Frame) {
+  const referenceId = String(frame.reference_id); const reference = Number(frame.reference_voltage);
+  const board = referenceId === "main" ? 0 : Number(referenceId.replace("addon", ""));
+  return [1, 2].map((group) => {
+    const groupKey = board ? `addon${board}_${group}` : `main_${group}`;
+    const first = board * 6 + (group - 1) * 3 + 1;
+    return { state: "applied_pending_restart_verification", group_key: groupKey, phase: null,
+      changed_channels: [first, first + 1, first + 2], iteration: 1,
+      before_values: [reference - 0.1, reference - 0.1, reference - 0.1], after_values: [reference, reference, reference], error_percent_values: [0, 0, 0], retry_allowed: false,
+      gain_evidence: { connection_generation: 2, operation_sequence: 7, instance_id: board ? groupKey : `meter_main${group}`,
+        phases: ["A", "B", "C"].map((phase) => ({ phase, measured_voltage: reference, measured_current: 0,
+          reference_voltage: reference, reference_current: 0, old_voltage_gain: 7305, new_voltage_gain: 7305,
+          old_current_gain: 5500, new_current_gain: 5500 })), flash_saved: true, register_mismatch_phases: [], calibration_disabled: false,
+        matching_lines: ["[CALIBRATION] voltage gain saved"] }, restore_evidence: null };
+  });
 }
 
 async function reviewChannel(page: Page, channel: number): Promise<void> {
@@ -670,6 +691,106 @@ test("verified configuration continues through calibration and finishes only fro
   const ordered = operations(frames);
   expect(ordered.indexOf("install_ct_config")).toBeLessThan(ordered.indexOf("start_session"));
   expect(ordered.indexOf("start_session")).toBeLessThan(ordered.indexOf("complete_calibration_without_changes"));
+});
+
+test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidirectional main service", async ({ page }) => {
+  const frames = await mockHomeAssistant(page);
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
+  await page.locator('[data-feature="status_fields"][data-board="0"]').check();
+  await page.locator('[data-action="continue"]').click();
+  await page.getByLabel("Reporting interval").selectOption("10");
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByLabel("Preset channels").selectOption(["1", "2"]);
+  await page.getByRole("button", { name: "Main service" }).dispatchEvent("click");
+  await expect(page.getByLabel("Main service aggregate")).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
+  expect(preview.configuration).toMatchObject({ meter: { electrical_system: "split_phase_120_240", line_frequency_hz: 60, update_interval_s: 10 },
+    status_fields: [true], aggregates: [{ role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", energy_mode: "bidirectional" }] });
+  await page.getByRole("button", { name: "Apply" }).click();
+  await page.getByRole("button", { name: "Compile" }).click();
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await page.locator('[data-action="continue"]').click();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Skip offset calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.locator('.reference-block input').fill("120");
+  await page.getByRole("button", { name: "Check stability" }).click();
+  await page.getByRole("button", { name: "Calibrate voltage" }).click();
+  await expect(page.getByText("Voltage calibration complete for Main Board.")).toBeVisible();
+});
+
+test("one-add-on 230 V configuration preserves scaled PQ circuit semantics without harmonic or peak entities", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { addons: 1, scenario: "single-phase-pq" });
+  await openInventory(page);
+  await page.getByRole("tab", { name: "Add-on 1" }).click();
+  await expect(page.getByLabel("CT7 multiplier")).toHaveValue("4");
+  await expect(page.locator(".ct-step")).toContainText("multiplies current and power output by the same amount");
+  await expect(page.locator(".ct-step")).not.toContainText(/harmonic|peak/i);
+  await page.getByLabel("Preset channels").selectOption("7");
+  await page.getByRole("button", { name: "Add aggregate" }).dispatchEvent("click");
+  await expect(page.getByLabel("New aggregate aggregate")).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+  const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
+  expect(preview.configuration).toEqual(expect.objectContaining({ meter: expect.objectContaining({ electrical_system: "single_phase_230", line_frequency_hz: 50 }),
+    power_quality: [false, true], channels: expect.arrayContaining([expect.objectContaining({ channel: 7, reporting_multiplier: 4 })]),
+    aggregates: expect.arrayContaining([expect.objectContaining({ channels: [7], energy_mode: "consumption" })]) }));
+});
+
+test("three voltage references cover each three-phase board exactly once and calibrate reference by reference", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { addons: 2 });
+  await openInventory(page);
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.getByLabel("Electrical system").selectOption("three_phase");
+  await page.getByLabel("Line frequency").selectOption("50");
+  await expect(page.locator(".voltage-reference-card")).toHaveCount(3);
+  await page.getByLabel("Multi-reference preparation acknowledgement").check();
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Apply" }).click();
+  await page.getByRole("button", { name: "Compile" }).click();
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await page.locator('[data-action="continue"]').click();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Skip offset calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  for (const [board, label] of [[0, "Main Board"], [1, "Add-on 1"], [2, "Add-on 2"]] as const) {
+    await page.getByRole("tab", { name: label }).click();
+    await page.locator('.reference-block input').fill("230");
+    await page.getByRole("button", { name: "Check stability" }).click();
+    await page.getByRole("button", { name: "Calibrate voltage" }).click();
+    await expect(page.getByText(`Voltage calibration complete for ${label}.`)).toBeVisible();
+    expect(board).toBeGreaterThanOrEqual(0);
+  }
+  const calibrations = frames.filter((frame) => frame.type.endsWith("/calibrate_voltage"));
+  expect(calibrations.map((frame) => frame.reference_id)).toEqual(["main", "addon1", "addon2"]);
+  expect(calibrations.every((frame) => frame.confirm_iteration === true && frame.reference_voltage === 230)).toBe(true);
+});
+
+test("unused channels and two-pole aggregates remain distinct from the grid total", async ({ page }) => {
+  const frames = await mockHomeAssistant(page);
+  await openInventory(page);
+  await page.getByLabel("CT6 used").uncheck();
+  await page.getByLabel("Preset channels").selectOption("1");
+  await page.getByRole("button", { name: "Two-pole" }).dispatchEvent("click");
+  await expect(page.getByLabel("Two-pole circuit aggregate")).toBeVisible();
+  await page.getByLabel("Preset channels").selectOption(["2", "3"]);
+  await page.getByRole("button", { name: "Main service" }).dispatchEvent("click");
+  await expect(page.getByLabel("Main service aggregate")).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+  const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
+  expect(preview.configuration).toEqual(expect.objectContaining({
+    channels: expect.arrayContaining([expect.objectContaining({ channel: 6, enabled: false, role: "unused" })]),
+    aggregates: expect.arrayContaining([
+      expect.objectContaining({ role: "two_pole", channels: [1], measurement_method: "one_ct_double_power", energy_mode: "consumption" }),
+      expect.objectContaining({ role: "grid", channels: [2, 3], measurement_method: "two_ct_sum", energy_mode: "bidirectional" }),
+    ]),
+  }));
 });
 
 test("42-channel separate install/rebind leads through main CT evidence and exact restart verification", async ({ page }) => {
