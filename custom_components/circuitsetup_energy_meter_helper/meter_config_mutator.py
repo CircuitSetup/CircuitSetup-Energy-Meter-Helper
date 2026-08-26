@@ -570,7 +570,7 @@ def _aggregate_entry(aggregate: CircuitAggregate) -> str:
             "current",
         )
     if aggregate.energy_mode is EnergyMode.CONSUMPTION:
-        lines += _daily_energy(
+        lines += _lifetime_energy(
             f"{identifier}_energy",
             f"${{friendly_name}} {aggregate.name} Energy",
             power_id,
@@ -594,18 +594,18 @@ def _aggregate_entry(aggregate: CircuitAggregate) -> str:
             "W",
             "power",
         )
-        lines += _daily_energy(
+        lines += _lifetime_energy(
             f"{identifier}_import_energy",
             f"${{friendly_name}} {aggregate.name} Import Energy",
             import_power_id,
         )
-        lines += _daily_energy(
+        lines += _lifetime_energy(
             f"{identifier}_export_energy",
             f"${{friendly_name}} {aggregate.name} Export Energy",
             export_power_id,
         )
     elif aggregate.energy_mode is EnergyMode.GENERATION:
-        lines += _daily_energy(
+        lines += _lifetime_energy(
             f"{identifier}_energy",
             f"${{friendly_name}} {aggregate.name} Energy",
             power_id,
@@ -655,13 +655,15 @@ def _template_sensor(
     return "\n".join(lines) + "\n"
 
 
-def _daily_energy(entity_id: str, name: str, power_id: str) -> str:
+def _lifetime_energy(entity_id: str, name: str, power_id: str) -> str:
     return "\n".join(
         (
-            "  - platform: total_daily_energy",
+            "  - platform: integration",
             f"    id: {entity_id}",
             f"    name: {json.dumps(name)}",
-            f"    power_id: {power_id}",
+            f"    sensor: {power_id}",
+            "    time_unit: h",
+            "    restore: true",
             "    filters:",
             "      - multiply: 0.001",
             "    unit_of_measurement: kWh",

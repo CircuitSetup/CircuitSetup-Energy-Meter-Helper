@@ -1654,6 +1654,21 @@ def _aggregate_request(
     return replace(current.configuration, aggregates=(aggregate,))
 
 
+def _assert_lifetime_energy(block: str, power_id: str) -> None:
+    for line in (
+        "  - platform: integration",
+        f"    sensor: {power_id}",
+        "    time_unit: h",
+        "    restore: true",
+        "    filters:",
+        "      - multiply: 0.001",
+        "    unit_of_measurement: kWh",
+        "    device_class: energy",
+        "    state_class: total_increasing",
+    ):
+        assert line in block
+
+
 def test_aggregate_preview_renders_bidirectional_grid_and_hides_contract_totals() -> None:
     """Contract-2 totals are internal before deterministic grid entities appear."""
     snapshot = _contract_snapshot(generic_totals=True)
@@ -1688,8 +1703,9 @@ def test_aggregate_preview_renders_bidirectional_grid_and_hides_contract_totals(
     assert "lambda: return id(ct1Watts).state + id(ct2Watts).state;" in block
     assert "lambda: return std::max(0.0f, id(csemh_grid_power).state);" in block
     assert "lambda: return std::max(0.0f, -id(csemh_grid_power).state);" in block
-    assert "power_id: csemh_grid_import_power" in block
-    assert "power_id: csemh_grid_export_power" in block
+    _assert_lifetime_energy(block, "csemh_grid_import_power")
+    _assert_lifetime_energy(block, "csemh_grid_export_power")
+    assert "  - platform: total_daily_energy" not in block
     for total_id in ("totalEnergyDaily",):
         assert f"- id: !extend {total_id}\n    internal: true" in block
     ESPHomeConfigDocument.parse(plan.proposed_content)
@@ -1844,9 +1860,12 @@ def test_aggregate_energy_signs_and_one_ct_power_multiplier_are_semantic_only() 
 
     assert "lambda: return std::max(0.0f, id(ct1Watts).state * 2.0);" in block
     assert "lambda: return id(ct1Amps).state;" in block
-    assert "power_id: csemh_load_power" in block
+    assert "sensor: csemh_load_power" in block
     assert "lambda: return std::max(0.0f, -id(ct2Watts).state);" in block
-    assert "power_id: csemh_solar_power" in block
+    assert "sensor: csemh_solar_power" in block
+    _assert_lifetime_energy(block, "csemh_load_power")
+    _assert_lifetime_energy(block, "csemh_solar_power")
+    assert "  - platform: total_daily_energy" not in block
     assert "id(ct1Amps).state * 2.0" not in block
 
 
