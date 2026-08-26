@@ -1,5 +1,5 @@
 import { html, nothing, type TemplateResult } from "lit";
-import type { ChannelSettings, CircuitAggregate, CtChange, CtInventory, CtPreset, MeterConfigurationRequest } from "../types";
+import type { ChannelSettings, CircuitAggregate, CircuitRole, CtChange, CtInventory, CtPreset, MeterConfigurationRequest } from "../types";
 import { moveTab } from "./tab-keyboard";
 
 export interface CtDraft {
@@ -80,7 +80,7 @@ export function ctInventoryStep(
                     : disableChannel(channel.channel)} /></label>` : html`<span role="cell"><span class="mobile-label">Used</span>—</span>`}
                 ${circuit ? html`<label role="cell"><span class="mobile-label">Role</span><select aria-label=${`CT${channel.channel} role`} .value=${circuit.role} ?disabled=${!circuit.enabled}
                   @change=${(event: Event) => patchChannel(channel.channel, { role: (event.target as HTMLSelectElement).value as ChannelSettings["role"] })}>
-                  ${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${role.replaceAll("_", " ")}</option>`)}</select></label>` : html`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
+                  ${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${roleLabel(role)}</option>`)}</select></label>` : html`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
                 <span role="cell" data-voltage-reference><span class="mobile-label">Voltage reference</span>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span>
                 <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
                   @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
@@ -153,6 +153,60 @@ export function ctInventoryStep(
 const ROLES = ["grid", "solar", "generator", "subpanel", "branch", "two_pole", "custom", "unused"] as const;
 const METHODS = ["direct", "two_ct_sum", "one_ct_double_power", "both_conductors_one_ct"] as const;
 const ENERGY = ["none", "consumption", "bidirectional", "generation"] as const;
+const automaticAggregates = {
+  grid: { aggregate_id: "auto-mains", name: "Mains", energy_mode: "bidirectional", expose_current: false },
+  solar: { aggregate_id: "auto-solar", name: "Solar", energy_mode: "generation", expose_current: false },
+  subpanel: { aggregate_id: "auto-subpanel", name: "Subpanel", energy_mode: "consumption", expose_current: false },
+  two_pole: { aggregate_id: "auto-two-pole", name: "Two-pole circuit", energy_mode: "consumption", expose_current: false },
+} as const;
+
+function roleLabel(role: CircuitRole): string {
+  return role === "grid" ? "Mains" : role === "branch" ? "Branch circuit" : role.replaceAll("_", " ");
+}
+
+function sameAggregate(first: CircuitAggregate, second: CircuitAggregate): boolean {
+  return first.aggregate_id === second.aggregate_id && first.name === second.name && first.role === second.role
+    && first.measurement_method === second.measurement_method && first.parent_id === second.parent_id
+    && first.energy_mode === second.energy_mode && first.expose_power === second.expose_power
+    && first.expose_current === second.expose_current && first.channels.length === second.channels.length
+    && first.channels.every((channel, index) => channel === second.channels[index]);
+}
+
+export function reconcileSplitPhaseAggregates(
+  configuration: MeterConfigurationRequest,
+  previousManaged: readonly CircuitAggregate[] | null = null,
+): { configuration: MeterConfigurationRequest; managed: CircuitAggregate[]; changed: boolean } {
+  const definitionFor = (aggregate: CircuitAggregate) => Object.entries(automaticAggregates)
+    .find(([, definition]) => definition.aggregate_id === aggregate.aggregate_id) as [keyof typeof automaticAggregates, (typeof automaticAggregates)[keyof typeof automaticAggregates]] | undefined;
+  const isManaged = (aggregate: CircuitAggregate) => {
+    if (previousManaged !== null) return previousManaged.some((item) => sameAggregate(item, aggregate));
+    const definition = definitionFor(aggregate);
+    const channels = definition === undefined ? [] : configuration.channels
+      .filter((channel) => channel.enabled && channel.role === definition[0]).map((channel) => channel.channel);
+    return definition !== undefined && aggregate.role === definition[0] && aggregate.name === definition[1].name
+      && aggregate.measurement_method === "two_ct_sum" && aggregate.parent_id === null
+      && aggregate.energy_mode === definition[1].energy_mode && aggregate.expose_power && aggregate.expose_current === definition[1].expose_current
+      && aggregate.channels.length === 2 && aggregate.channels.every((channel, index) => channel === channels[index]);
+  };
+  const managed = configuration.aggregates.filter(isManaged);
+  const preserved = configuration.aggregates.filter((aggregate) => !isManaged(aggregate));
+  const preservedIds = new Set(preserved.map((aggregate) => aggregate.aggregate_id));
+  const claimed = new Set(preserved.flatMap((aggregate) => aggregate.channels));
+  const rebuilt = configuration.meter.electrical_system === "split_phase_120_240"
+    ? (Object.keys(automaticAggregates) as Array<keyof typeof automaticAggregates>).flatMap((role) => {
+      const channels = configuration.channels.filter((channel) => channel.enabled && channel.role === role && !claimed.has(channel.channel)).map((channel) => channel.channel);
+      const definition = automaticAggregates[role];
+      return channels.length === 2 && !preservedIds.has(definition.aggregate_id) ? [{ ...definition, role, channels, measurement_method: "two_ct_sum" as const,
+        parent_id: null, expose_power: true }] : [];
+    }) : [];
+  const rebuiltIds = new Set<string>(rebuilt.map((aggregate) => aggregate.aggregate_id));
+  const removedIds = new Set(managed.map((aggregate) => aggregate.aggregate_id));
+  const aggregates = [...preserved.map((aggregate) => aggregate.parent_id !== null
+    && removedIds.has(aggregate.parent_id) && !rebuiltIds.has(aggregate.parent_id) ? { ...aggregate, parent_id: null } : aggregate), ...rebuilt];
+  const changed = aggregates.length !== configuration.aggregates.length
+    || aggregates.some((aggregate, index) => !sameAggregate(aggregate, configuration.aggregates[index]!));
+  return { configuration: changed ? { ...configuration, aggregates } : configuration, managed: rebuilt, changed };
+}
 
 function circuitsEditor(
   configuration: MeterConfigurationRequest,
@@ -184,7 +238,7 @@ function circuitsEditor(
       <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
         @input=${(event: Event) => patchAggregate(index, { name: (event.target as HTMLInputElement).value })} /></label>
       <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
-        @change=${(event: Event) => patchAggregate(index, { role: (event.target as HTMLSelectElement).value as CircuitAggregate["role"] })}>${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${role.replaceAll("_", " ")}</option>`)}</select></label>
+        @change=${(event: Event) => patchAggregate(index, { role: (event.target as HTMLSelectElement).value as CircuitAggregate["role"] })}>${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${roleLabel(role)}</option>`)}</select></label>
       <label>Method <select aria-label=${`${aggregate.aggregate_id} aggregate method`} .value=${aggregate.measurement_method}
         @change=${(event: Event) => patchAggregate(index, { measurement_method: (event.target as HTMLSelectElement).value as CircuitAggregate["measurement_method"] })}>${METHODS.map((method) => html`<option value=${method}>${method.replaceAll("_", " ")}</option>`)}</select></label>
       <label>Energy <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}

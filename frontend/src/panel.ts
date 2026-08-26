@@ -2,7 +2,7 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 
 import { HelperApi, type HomeAssistant } from "./api";
 import { buildInstallStep } from "./components/build-install-step";
-import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, type CtDraft } from "./components/ct-inventory-step";
+import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, reconcileSplitPhaseAggregates, type CtDraft } from "./components/ct-inventory-step";
 import { currentStep } from "./components/current-step";
 import { meterSettingsStep } from "./components/meter-settings-step";
 import { espWebInstaller } from "./components/esp-web-installer";
@@ -21,6 +21,7 @@ import { panelStyles } from "./styles";
 import type {
   CalibrationResult,
   BoardPackageOptions,
+  CircuitAggregate,
   ConnectionType,
   ElectricalSystem,
   LineFrequencyHz,
@@ -109,6 +110,7 @@ export class CircuitSetupPanel extends LitElement {
   private meterFrequencyTouched = false;
   private meterNominalVoltageTouched = new Set<string>();
   private canonicalConfigurationChanged = false;
+  private managedAutomaticAggregates: CircuitAggregate[] = [];
   private board = 0;
   private group = 0;
   private channel = 1;
@@ -416,6 +418,7 @@ export class CircuitSetupPanel extends LitElement {
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = new Set();
     this.canonicalConfigurationChanged = false;
+    this.managedAutomaticAggregates = [];
     this.board = 0;
     this.resetCalibrationRun();
   }
@@ -766,28 +769,11 @@ export class CircuitSetupPanel extends LitElement {
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       if (fresh.source_sha256 !== correction!.sourceSha256) {
-        const normalizedFresh = { ...fresh, configuration: { ...fresh.configuration,
-          multi_reference_preparation_acknowledged: false } };
-        this.verifiedMeterConfiguration = fresh.capabilities.configuration_authoritative
-          ? normalizedFresh : null;
-        this.sourcePackageOptions = {
-          power_quality: [...fresh.configuration.power_quality],
-          status_fields: [...fresh.configuration.status_fields],
-        };
-        this.packageOptions = {
-          power_quality: [...fresh.configuration.power_quality],
-          status_fields: [...fresh.configuration.status_fields],
-        };
         this.packageOptionsTouched = false;
-        this.meterConfiguration = normalizedFresh;
-        this.meterSettingsDraft = { ...fresh.configuration.meter,
-          authoritative: fresh.capabilities.configuration_authoritative,
-          warnings: fresh.warnings };
-        this.multiReferencePreparationAcknowledged = false;
         this.meterFrequencyTouched = false;
         this.meterNominalVoltageTouched = new Set();
-        this.canonicalConfigurationChanged = false;
-        this.showInventory(normalizedFresh);
+        this.setMeterConfiguration(fresh);
+        this.showInventory(this.meterConfiguration!);
         this.reviewCorrection = null;
         this.error = "The meter source changed while this review was open. Preserved drafts were not restored to avoid overwriting external edits; review the live configuration and reapply changes.";
         this.announcement = this.error;
@@ -855,11 +841,15 @@ export class CircuitSetupPanel extends LitElement {
       ...seeded,
       configuration: { ...seeded.configuration, ...this.packageOptions },
     } : seeded;
+    const reconciliation = this.meterConfiguration.capabilities.managed_totals
+      ? reconcileSplitPhaseAggregates(this.meterConfiguration.configuration) : null;
+    this.managedAutomaticAggregates = reconciliation?.managed ?? [];
+    if (reconciliation) this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation.configuration };
     if (!this.packageOptionsTouched) this.packageOptions = {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields],
     };
-    this.canonicalConfigurationChanged = this.packageOptionsTouched || seededMeter !== importedMeter;
+    this.canonicalConfigurationChanged = this.packageOptionsTouched || seededMeter !== importedMeter || reconciliation?.changed === true;
     this.meterSettingsDraft = { ...seededMeter,
       authoritative: configuration.capabilities.configuration_authoritative, warnings: configuration.warnings };
     this.multiReferencePreparationAcknowledged = false;
@@ -951,7 +941,10 @@ export class CircuitSetupPanel extends LitElement {
 
   private updateCircuitConfiguration(configuration: MeterConfigurationRequest, changed = true): void {
     if (!this.meterConfiguration) return;
-    this.meterConfiguration = { ...this.meterConfiguration, configuration };
+    const reconciliation = this.meterConfiguration.capabilities.managed_totals
+      ? reconcileSplitPhaseAggregates(configuration, this.managedAutomaticAggregates) : null;
+    this.managedAutomaticAggregates = reconciliation?.managed ?? [];
+    this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation?.configuration ?? configuration };
     this.canonicalConfigurationChanged ||= changed;
     this.requestUpdate();
   }

@@ -1,7 +1,7 @@
-import { ESP32C6ROM as e } from "./circuitsetup-energy-meter-helper-esp32c6-DolpfL0e-CfDh6Tsc.js";
-import "./circuitsetup-energy-meter-helper-install-dialog-im156JnI-BNCTyjx2.js";
-import "./circuitsetup-energy-meter-helper-styles-sT2V1cOw-50QkNMEY.js";
-class R extends e {
+import { ESP32C6ROM as s } from "./circuitsetup-energy-meter-helper-esp32c6-DolpfL0e-D8esBcqJ.js";
+import "./circuitsetup-energy-meter-helper-install-dialog-im156JnI-CM2eHnjj.js";
+import "./circuitsetup-energy-meter-helper-styles-sT2V1cOw-CrAdtexe.js";
+class _ extends s {
   constructor() {
     super(...arguments), this.CHIP_NAME = "ESP32-H2", this.IMAGE_CHIP_ID = 16, this.EFUSE_BASE = 1611335680, this.EFUSE_BLOCK1_ADDR = this.EFUSE_BASE + 68, this.MAC_EFUSE_REG = this.EFUSE_BASE + 68, this.UART_CLKDIV_REG = 1072955412, this.UART_CLKDIV_MASK = 1048575, this.UART_DATE_REG_ADDR = 1610612860, this.FLASH_WRITE_SIZE = 1024, this.BOOTLOADER_FLASH_OFFSET = 0, this.SPI_REG_BASE = 1610620928, this.SPI_USR_OFFS = 24, this.SPI_USR1_OFFS = 28, this.SPI_USR2_OFFS = 32, this.SPI_MOSI_DLEN_OFFS = 36, this.SPI_MISO_DLEN_OFFS = 40, this.SPI_W0_OFFS = 88, this.USB_RAM_BLOCK = 2048, this.UARTDEV_BUF_NO_USB = 3, this.UARTDEV_BUF_NO = 1070526796, this.IROM_MAP_START = 1107296256, this.IROM_MAP_END = 1115684864, this.MEMORY_MAP = [[0, 65536, "PADDING"], [1107296256, 1124073472, "DROM"], [1082130432, 1082654720, "DRAM"], [1082130432, 1082654720, "BYTE_ACCESSIBLE"], [1074048e3, 1074069504, "DROM_MASK"], [1073741824, 1074048e3, "IROM_MASK"], [1107296256, 1124073472, "IROM"], [1082130432, 1082654720, "IRAM"], [1342177280, 1342193664, "RTC_IRAM"], [1342177280, 1342193664, "RTC_DRAM"], [1611653120, 1611661312, "MEM_INTERNAL2"]];
   }
@@ -15,8 +15,9 @@ class R extends e {
     return await t.readReg(this.EFUSE_BLOCK1_ADDR + 12) >> 21 & 3;
   }
   async getChipDescription(t) {
-    let _;
-    return _ = await this.getPkgVersion(t) === 0 ? "ESP32-H2" : "unknown ESP32-H2", `${_} (revision v${await this.getMajorChipVersion(t)}.${await this.getMinorChipVersion(t)})`;
+    let _2;
+    _2 = 0 === await this.getPkgVersion(t) ? "ESP32-H2" : "unknown ESP32-H2";
+    return `${_2} (revision v${await this.getMajorChipVersion(t)}.${await this.getMinorChipVersion(t)})`;
   }
   async getChipFeatures(t) {
     return ["BT 5 (LE)", "IEEE802.15.4", "Single Core", "96MHz"];
@@ -25,25 +26,25 @@ class R extends e {
     return 32;
   }
   _d2h(t) {
-    const _ = (+t).toString(16);
-    return _.length === 1 ? "0" + _ : _;
+    const _2 = (+t).toString(16);
+    return 1 === _2.length ? "0" + _2 : _2;
   }
   async postConnect(t) {
-    const _ = 255 & await t.readReg(this.UARTDEV_BUF_NO);
-    t.debug("In _post_connect " + _), _ == this.UARTDEV_BUF_NO_USB && (t.ESP_RAM_BLOCK = this.USB_RAM_BLOCK);
+    const _2 = 255 & await t.readReg(this.UARTDEV_BUF_NO);
+    t.debug("In _post_connect " + _2), _2 == this.UARTDEV_BUF_NO_USB && (t.ESP_RAM_BLOCK = this.USB_RAM_BLOCK);
   }
   async readMac(t) {
-    let _ = await t.readReg(this.MAC_EFUSE_REG);
-    _ >>>= 0;
-    let s = await t.readReg(this.MAC_EFUSE_REG + 4);
-    s = s >>> 0 & 65535;
+    let _2 = await t.readReg(this.MAC_EFUSE_REG);
+    _2 >>>= 0;
+    let s2 = await t.readReg(this.MAC_EFUSE_REG + 4);
+    s2 = s2 >>> 0 & 65535;
     const i = new Uint8Array(6);
-    return i[0] = s >> 8 & 255, i[1] = 255 & s, i[2] = _ >> 24 & 255, i[3] = _ >> 16 & 255, i[4] = _ >> 8 & 255, i[5] = 255 & _, this._d2h(i[0]) + ":" + this._d2h(i[1]) + ":" + this._d2h(i[2]) + ":" + this._d2h(i[3]) + ":" + this._d2h(i[4]) + ":" + this._d2h(i[5]);
+    return i[0] = s2 >> 8 & 255, i[1] = 255 & s2, i[2] = _2 >> 24 & 255, i[3] = _2 >> 16 & 255, i[4] = _2 >> 8 & 255, i[5] = 255 & _2, this._d2h(i[0]) + ":" + this._d2h(i[1]) + ":" + this._d2h(i[2]) + ":" + this._d2h(i[3]) + ":" + this._d2h(i[4]) + ":" + this._d2h(i[5]);
   }
-  getEraseSize(t, _) {
-    return _;
+  getEraseSize(t, _2) {
+    return _2;
   }
 }
 export {
-  R as ESP32H2ROM
+  _ as ESP32H2ROM
 };
