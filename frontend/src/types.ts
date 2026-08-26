@@ -57,12 +57,8 @@ export interface InstallerIntent {
   line_frequency_hz?: LineFrequencyHz;
 }
 
-export interface MeterSettingsDraft {
-  electrical_system: ElectricalSystem;
-  line_frequency_hz: LineFrequencyHz;
+export interface MeterSettingsDraft extends MeterSettings {
   authoritative: boolean;
-  update_interval_s: number;
-  voltage_references: Array<{ reference_id: string; label: string; group_keys: string[] }>;
   warnings: string[];
 }
 
@@ -448,6 +444,7 @@ export type RestartVerificationResult = RestartVerificationBase;
 
 export type PanelStep =
   | "setup"
+  | "meter"
   | "ct"
   | "build"
   | "safety"

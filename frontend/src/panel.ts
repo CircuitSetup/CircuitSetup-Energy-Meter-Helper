@@ -4,6 +4,7 @@ import { HelperApi, type HomeAssistant } from "./api";
 import { buildInstallStep } from "./components/build-install-step";
 import { changesFromDrafts, ctInventoryStep, type CtDraft } from "./components/ct-inventory-step";
 import { currentStep } from "./components/current-step";
+import { meterSettingsStep } from "./components/meter-settings-step";
 import { espWebInstaller } from "./components/esp-web-installer";
 import { offsetStep } from "./components/offset-step";
 import { newInstallPackageOptions, resizePackageOptions } from "./components/package-options";
@@ -22,6 +23,7 @@ import type {
   ConnectionType,
   ElectricalSystem,
   LineFrequencyHz,
+  MeterConfiguration,
   MeterSettingsDraft,
   CtInventory,
   FirmwareCatalogState,
@@ -39,7 +41,8 @@ import type {
 
 const STEPS: Array<[PanelStep, string]> = [
   ["setup", "Setup Device"],
-  ["ct", "CT Settings"],
+  ["meter", "Meter Settings"],
+  ["ct", "Circuits & CTs"],
   ["safety", "Safety"],
   ["offset", "Offset"],
   ["voltage", "Voltage"],
@@ -93,6 +96,8 @@ export class CircuitSetupPanel extends LitElement {
   private lineFrequencyHz: LineFrequencyHz | null = 60;
   private electricalProfileConfirmed = false;
   private meterSettingsDraft: MeterSettingsDraft | null = null;
+  private meterConfiguration: MeterConfiguration | null = null;
+  private multiReferencePreparationAcknowledged = false;
   private board = 0;
   private group = 0;
   private channel = 1;
@@ -383,6 +388,8 @@ export class CircuitSetupPanel extends LitElement {
     this.session = null;
     this.drafts = new Map();
     this.meterSettingsDraft = null;
+    this.meterConfiguration = null;
+    this.multiReferencePreparationAcknowledged = false;
     this.board = 0;
     this.resetCalibrationRun();
   }
@@ -484,7 +491,8 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private back(): void {
-    if (this.step === "ct") this.navigate("setup");
+    if (this.step === "meter") this.navigate("setup");
+    else if (this.step === "ct") this.navigate("meter");
     else if (this.step === "safety") void this.cancelSession("ct");
     else if (this.step === "offset") this.navigate("safety");
     else if (this.step === "voltage") this.navigate("offset");
@@ -594,19 +602,9 @@ export class CircuitSetupPanel extends LitElement {
       this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
       await this.subscribeSetup(connectionGeneration, api);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      if (this.electricalProfileConfirmed && this.lineFrequencyHz !== null) {
-        this.meterSettingsDraft = {
-          electrical_system: this.electricalSystem,
-          line_frequency_hz: this.lineFrequencyHz,
-          authoritative: false,
-          update_interval_s: 5,
-          voltage_references: [],
-          warnings: [],
-        };
-      }
       const importedConfiguration = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      this.meterSettingsDraft = { ...importedConfiguration.configuration.meter, authoritative: true, warnings: importedConfiguration.warnings };
+      this.setMeterConfiguration(importedConfiguration);
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = null;
@@ -666,11 +664,32 @@ export class CircuitSetupPanel extends LitElement {
     const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
     try {
       await this.run(async () => {
-        if (!this.meterSettingsDraft) {
+        if (!this.meterConfiguration) {
           const configuration = await api.getMeterConfiguration(deviceId);
-          this.meterSettingsDraft = { ...configuration.configuration.meter, authoritative: true, warnings: configuration.warnings };
+          this.setMeterConfiguration(configuration);
         }
         if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.navigate("meter");
+      }, "Meter settings could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      this.pendingAction = "";
+      this.requestUpdate();
+    }
+  }
+
+  private setMeterConfiguration(configuration: MeterConfiguration): void {
+    this.meterConfiguration = configuration;
+    this.meterSettingsDraft = { ...configuration.configuration.meter, authoritative: true, warnings: configuration.warnings };
+    this.multiReferencePreparationAcknowledged = configuration.configuration.multi_reference_preparation_acknowledged === true;
+  }
+
+  private async continueFromMeterSettings(): Promise<void> {
+    if (!this.api || !this.selectedDeviceId || !this.meterSettingsDraft || this.pendingAction) return;
+    this.pendingAction = "inventory";
+    this.requestUpdate();
+    const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
+    try {
+      await this.run(async () => {
         const result = await api.getCtInventory(deviceId);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.showInventory(result);
@@ -1449,7 +1468,13 @@ export class CircuitSetupPanel extends LitElement {
         () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
           ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session",
         this.sourcePackageOptions ? this.packageOptions : null,
-        (options) => { this.packageOptions = options; this.requestUpdate(); }) : nothing}`;
+      (options) => { this.packageOptions = options; this.requestUpdate(); }) : nothing}`;
+    if (this.step === "meter" && this.meterSettingsDraft && this.meterConfiguration) return meterSettingsStep(
+      this.meterSettingsDraft, this.meterConfiguration.voltage_transformer_catalog, this.multiReferencePreparationAcknowledged,
+      (draft) => { this.meterSettingsDraft = draft; this.requestUpdate(); },
+      (value) => { this.multiReferencePreparationAcknowledged = value; this.requestUpdate(); },
+      () => this.back(), () => void this.continueFromMeterSettings(),
+    );
     if (this.step === "ct" && this.inventory) return html`<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
       (board) => { this.board = board; this.requestUpdate(); },
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session")}`;

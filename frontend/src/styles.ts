@@ -117,6 +117,10 @@ export const panelStyles = css`
   .status-list, .summary-list { display: grid; gap: 8px; }
   .confirmation-actions { display: flex; gap: 12px; margin-top: 20px; }
   .check-row { display: flex; align-items: center; gap: 10px; }
+  .meter-settings-grid, .voltage-reference-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; max-width: 860px; }
+  .meter-settings-grid label, .voltage-reference-card label { display: grid; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
+  .meter-settings-grid input, .meter-settings-grid select, .voltage-reference-card input, .voltage-reference-card select { width: 100%; padding: 10px; border: 1px solid var(--border); }
+  .voltage-reference-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   .reference-block { display: grid; max-width: 420px; gap: 12px; }
   .reference-block label { display: grid; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
   .calibration-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0 10px; }
@@ -164,7 +168,7 @@ export const panelStyles = css`
     .ct-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .ct-row > * { min-width: 0; }
     .mobile-label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; }
-    .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid { grid-template-columns: 1fr; }
+    .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card { grid-template-columns: 1fr; }
     .progress-steps { grid-template-columns: 1fr; gap: 8px; }
     .action-footer { left: 0; padding: 12px 18px; }
     .offset-step { padding-bottom: 84px; }

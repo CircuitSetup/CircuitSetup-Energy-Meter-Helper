@@ -305,18 +305,18 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>("[data-action=firmware-version]")?.value).toBe("2026.9.0");
   });
 
-  it("shows existing meters with semantic nine-step navigation and setup controls", async () => {
+  it("shows existing meters with semantic ten-step navigation and setup controls", async () => {
     const panel = await mount(
       makeHass({ setup_status: { state: "device_discovered", devices: [device] } }),
     );
 
     expect(text(panel)).toContain("CircuitSetup Energy Meter Helper");
     const steps = Array.from(panel.shadowRoot?.querySelectorAll("nav ol li") ?? []).map((item) => item.textContent?.trim());
-    expect(steps).toHaveLength(9);
-    expect(steps).toContain("4Offset");
+    expect(steps).toHaveLength(10);
+    expect(steps).toContain("5Offset");
     expect(steps.join(" ")).not.toContain("Discover");
     expect(steps.join(" ")).not.toContain("Topology");
-    expect(panel.shadowRoot?.querySelector(".mobile-progress")?.textContent).toContain("of 9");
+    expect(panel.shadowRoot?.querySelector(".mobile-progress")?.textContent).toContain("of 10");
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
     expect(text(panel)).toContain("Configure an existing device");
     expect(text(panel)).toContain("Basement meter");
@@ -591,7 +591,7 @@ describe("CircuitSetup panel", () => {
     state.showState("ct");
     setupCallback?.({ state: "device_discovered", devices: [device] });
     await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Settings");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Circuits & CTs");
     state.showState("setup");
     setupCallback?.({ state: "device_discovered", devices: [device] });
     await panel.updateComplete;
@@ -1297,9 +1297,13 @@ describe("CircuitSetup panel", () => {
     panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]")?.click();
     await tick(); await tick(); await panel.updateComplete;
 
-    expect(operations).toContain("get_ct_inventory");
+    expect(operations).toContain("get_meter_configuration");
     expect(operations).not.toContain("start_session");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Settings");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Meter Settings");
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue-meter-settings"]')?.click();
+    await tick(); await tick(); await panel.updateComplete;
+    expect(operations).toContain("get_ct_inventory");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Circuits & CTs");
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 name"]')?.value).toBe("Main A");
     expect(text(panel)).toContain("If you expect to measure more than 65.535 A");
     expect(text(panel)).toContain("divides the gain and multiplies current and power output");
@@ -1317,7 +1321,7 @@ describe("CircuitSetup panel", () => {
     const configured = { ...device, importable: false, configuration: "meter.yaml" };
     const panel = await mount(makeHass({
       setup_status: { state: "device_discovered", devices: [configured] },
-      get_ct_inventory: new Error("blocking catalog load"),
+      get_meter_configuration: meterResponse(), get_ct_inventory: new Error("blocking catalog load"),
     }));
     panel.showTopology({ addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
       connection_type: "wifi", voltage_layout: "two_groups", project_name: configured.project_name,
@@ -1325,10 +1329,12 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]")?.click();
     await tick(); await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue-meter-settings"]')?.click();
+    await tick(); await panel.updateComplete;
 
     expect(text(panel)).toContain("CT inventory could not be loaded");
     expect(text(panel)).not.toContain("Configuration and runtime evidence disagree");
-    expect(panel.shadowRoot?.querySelector("[data-action=continue]")).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector('[data-action="continue-meter-settings"]')).not.toBeNull();
   });
 
   it("starts only one calibration session when Continue is clicked repeatedly", async () => {
@@ -1531,7 +1537,7 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
 
     expect(panel.shadowRoot?.querySelector("[role=alert]")).toBeNull();
-    expect(text(panel)).toContain("CT Settings");
+    expect(text(panel)).toContain("Circuits & CTs");
     expect(text(panel)).toContain("Live CT data reloaded");
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('select[aria-label="CT1 model"]')?.value)
       .toBe("cs-ct-200a");
@@ -2474,7 +2480,7 @@ describe("CircuitSetup panel", () => {
     panel.showState("safety"); await panel.updateComplete;
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .secondary")?.click();
     await tick(); await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("CT Settings");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Circuits & CTs");
     expect(panel.shadowRoot?.activeElement).toBe(panel.shadowRoot?.querySelector("h1"));
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".mobile-progress button")?.click();
     await panel.updateComplete;
