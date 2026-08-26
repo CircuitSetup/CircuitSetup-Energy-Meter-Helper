@@ -25,6 +25,7 @@ import type {
   LineFrequencyHz,
   MeterConfiguration,
   MeterConfigurationRequest,
+  MeterSettings,
   MeterSettingsDraft,
   CtInventory,
   FirmwareCatalogState,
@@ -56,6 +57,7 @@ const CIRCUITSETUP_PROJECT_PREFIX = "circuitsetup.6c-energy-meter";
 const REBIND_TIMEOUT_MS = 10_000;
 const REBIND_RETRY_MS = 250;
 const wait = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+const meterSettings = ({ authoritative: _authoritative, warnings: _warnings, ...meter }: MeterSettingsDraft): MeterSettings => meter;
 
 interface PanelConfig {
   config: { entry_id: string };
@@ -730,7 +732,7 @@ export class CircuitSetupPanel extends LitElement {
     const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
     try {
       await this.run(async () => {
-        this.updateCircuitConfiguration({ ...this.meterConfiguration!.configuration, meter: this.meterSettingsDraft!,
+        this.updateCircuitConfiguration({ ...this.meterConfiguration!.configuration, meter: meterSettings(this.meterSettingsDraft!),
           multi_reference_preparation_acknowledged: this.multiReferencePreparationAcknowledged }, false);
         const result = await api.getCtInventory(deviceId);
         if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -785,30 +787,27 @@ export class CircuitSetupPanel extends LitElement {
 
   private updateMeterSettings(draft: MeterSettingsDraft): void {
     this.meterSettingsDraft = draft;
-    if (this.meterConfiguration) this.updateCircuitConfiguration({ ...this.meterConfiguration.configuration, meter: draft,
+    if (this.meterConfiguration) this.updateCircuitConfiguration({ ...this.meterConfiguration.configuration, meter: meterSettings(draft),
       multi_reference_preparation_acknowledged: this.multiReferencePreparationAcknowledged });
   }
 
   private disableCircuit(channel: number): void {
     if (!this.meterConfiguration) return;
     const affected = this.meterConfiguration.configuration.aggregates.filter((aggregate) => aggregate.channels.includes(channel));
-    const invalid = affected.find((aggregate) => {
+    const invalid = affected.filter((aggregate) => {
       const remaining = aggregate.channels.filter((item) => item !== channel).length;
       return !remaining || aggregate.measurement_method === "two_ct_sum" && remaining !== 2
         || (aggregate.measurement_method === "one_ct_double_power" || aggregate.measurement_method === "both_conductors_one_ct") && remaining !== 1;
     });
-    if (invalid) {
-      this.fail(new Error(), `Repair aggregate ${invalid.name} before marking CT${channel} unused.`);
-      return;
-    }
-    if (affected.length && !window.confirm(`Marking CT${channel} unused removes it from ${affected.map((aggregate) => aggregate.name).join(", ")}. Continue?`)) {
+    const removed = invalid.map((aggregate) => aggregate.name);
+    if (affected.length && !window.confirm(`Marking CT${channel} unused removes it from ${affected.map((aggregate) => aggregate.name).join(", ")}${removed.length ? ` and deletes invalid aggregate ${removed.join(", ")}` : ""}. Continue?`)) {
       this.requestUpdate();
       return;
     }
     this.updateCircuitConfiguration({ ...this.meterConfiguration.configuration,
       channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel
         ? { ...item, enabled: false, role: "unused" } : item),
-      aggregates: this.meterConfiguration.configuration.aggregates.map((aggregate) => ({ ...aggregate,
+      aggregates: this.meterConfiguration.configuration.aggregates.filter((aggregate) => !invalid.includes(aggregate)).map((aggregate) => ({ ...aggregate,
         channels: aggregate.channels.filter((item) => item !== channel) })), });
   }
 
@@ -900,24 +899,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private async continueFromCt(): Promise<void> {
     if (!this.api || !this.inventory || !this.selectedDeviceId || this.pendingAction) return;
-    if (this.meterConfiguration && !this.labelOnly && this.canonicalConfigurationChanged) {
-      const configuration = this.meterConfiguration.configuration;
-      if (!circuitConfigurationIsValid(configuration, this.inventory.channels.length)) {
-        return this.fail(new Error(), "Complete the circuit and aggregate assignments before review.");
-      }
-      this.pendingAction = "session";
-      const api = this.api; const deviceId = this.selectedDeviceId; const meter = this.meterConfiguration;
-      const generation = ++this.operationGeneration;
-      await this.run(async () => {
-        this.transaction = await api.previewMeterConfiguration(deviceId, meter.plan_id, meter.source_sha256, configuration);
-        if (!this.ownsOperation(generation, api, deviceId)) return;
-        this.navigate("build");
-        await this.subscribeTransaction(this.connectionGeneration);
-      }, "Circuit configuration could not be reviewed.", () => this.ownsOperation(generation, api, deviceId));
-      this.pendingAction = "";
-      this.requestUpdate();
-      return;
-    }
+    if (this.meterConfiguration && !this.labelOnly && this.canonicalConfigurationChanged) return this.previewCanonicalConfiguration();
     const changes = changesFromDrafts(this.inventory, this.drafts);
     if (this.labelOnly && changes.length) {
       const labels = changes.map(({ channel, name }) => ({ channel, name }));
@@ -937,7 +919,22 @@ export class CircuitSetupPanel extends LitElement {
       this.pendingAction = "";
       if (this.error) return;
     }
+    if (this.meterConfiguration && this.canonicalConfigurationChanged) return this.previewCanonicalConfiguration();
     await this.startSession();
+  }
+
+  private async previewCanonicalConfiguration(): Promise<void> {
+    if (!this.api || !this.inventory || !this.selectedDeviceId || !this.meterConfiguration) return;
+    const configuration = this.meterConfiguration.configuration;
+    if (!circuitConfigurationIsValid(configuration, this.inventory.channels.length)) return this.fail(new Error(), "Complete the circuit and aggregate assignments before review.");
+    this.pendingAction = "session";
+    const api = this.api; const deviceId = this.selectedDeviceId; const meter = this.meterConfiguration; const generation = ++this.operationGeneration;
+    await this.run(async () => {
+      this.transaction = await api.previewMeterConfiguration(deviceId, meter.plan_id, meter.source_sha256, configuration);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.navigate("build"); await this.subscribeTransaction(this.connectionGeneration);
+    }, "Circuit configuration could not be reviewed.", () => this.ownsOperation(generation, api, deviceId));
+    this.pendingAction = ""; this.requestUpdate();
   }
 
   private async reviewCalibrationHandoff(): Promise<void> {

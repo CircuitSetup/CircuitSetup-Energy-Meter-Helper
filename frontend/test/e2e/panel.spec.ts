@@ -486,6 +486,10 @@ test("six-channel inventory routes canonical edits through Meter Settings and fu
   await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
   expect(operations(frames)).toContain("preview_meter_configuration");
   expect(operations(frames)).not.toContain("preview_ct_config");
+  const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
+  expect(preview.configuration).toMatchObject({ meter: { friendly_name: "Energy meter" } });
+  expect(JSON.stringify(preview.configuration)).not.toContain("authoritative");
+  expect(JSON.stringify(preview.configuration)).not.toContain("warnings");
 });
 
 test("validation failure exposes evidence and performs only a user-requested rollback", async ({ page }) => {
