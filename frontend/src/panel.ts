@@ -694,7 +694,8 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private setMeterConfiguration(configuration: MeterConfiguration): void {
-    this.verifiedMeterConfiguration = configuration;
+    this.verifiedMeterConfiguration = configuration.capabilities.configuration_authoritative
+      ? configuration : null;
     this.sourcePackageOptions = {
       power_quality: [...configuration.configuration.power_quality],
       status_fields: [...configuration.configuration.status_fields],

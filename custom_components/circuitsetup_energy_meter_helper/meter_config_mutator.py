@@ -428,24 +428,6 @@ def _render_voltage_references(
     return render_voltage_references(entries)
 
 
-def _voltage_reference_diff(before: str, after: str) -> str:
-    marker = "# CircuitSetup Energy Meter Helper: voltage references v1"
-
-    def lines(content: str) -> tuple[str, ...]:
-        start = content.find(marker)
-        if start < 0:
-            return ()
-        end = content.find(
-            "# End CircuitSetup Energy Meter Helper: voltage references v1", start
-        )
-        return tuple(content[start:end].splitlines())
-
-    old, new = lines(before), lines(after)
-    if old == new:
-        return ""
-    return "managed voltage-reference overrides updated"
-
-
 def _render_aggregates(
     aggregates: tuple[CircuitAggregate, ...], topology: MeterTopology
 ) -> str:
@@ -591,8 +573,3 @@ def _daily_energy(entity_id: str, name: str, power_id: str) -> str:
             "    state_class: total_increasing",
         )
     ) + "\n"
-
-
-def _aggregate_diff(before: str, after: str) -> str:
-    marker = "# CircuitSetup Energy Meter Helper: aggregates v1"
-    return "" if before.count(marker) == after.count(marker) == 0 else "managed aggregate overrides updated"

@@ -140,6 +140,23 @@ describe("meter configuration review and summary", () => {
     panel.requestUpdate(); await panel.updateComplete;
     expect(text(panel)).not.toContain("Installed electrical profile");
   });
+
+  it("does not treat a non-authoritative configuration response as installed", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const configuration = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    configuration.capabilities = { ...configuration.capabilities, configuration_authoritative: false };
+    const state = panel as unknown as {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+      completedWithoutChanges: boolean;
+      transaction: import("../src/types").TransactionStatus | null;
+    };
+    state.setMeterConfiguration(configuration);
+    state.completedWithoutChanges = true;
+    state.transaction = null;
+    panel.showState("summary"); await panel.updateComplete;
+
+    expect(text(panel)).not.toContain("Installed electrical profile");
+  });
 });
 
 describe("ESP Web Tools installer", () => {

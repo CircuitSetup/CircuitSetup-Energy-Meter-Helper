@@ -2699,7 +2699,7 @@ class dn extends ue {
     }
   }
   setMeterConfiguration(e) {
-    this.verifiedMeterConfiguration = e, this.sourcePackageOptions = {
+    this.verifiedMeterConfiguration = e.capabilities.configuration_authoritative ? e : null, this.sourcePackageOptions = {
       power_quality: [...e.configuration.power_quality],
       status_fields: [...e.configuration.status_fields]
     }, this.meterConfiguration = this.packageOptionsTouched ? {

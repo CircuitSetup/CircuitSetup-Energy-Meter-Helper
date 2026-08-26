@@ -222,7 +222,13 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         nextSetupStatusUnavailable = true;
         result = { device_id: "meter-1", configuration: "meter.yaml" };
       }
-      else if (operation === "get_topology") result = topology(addons);
+      else if (operation === "get_topology") result = {
+        topology: topology(addons),
+        package_options: {
+          power_quality: Array.from({ length: addons + 1 }, () => false),
+          status_fields: Array.from({ length: addons + 1 }, () => false),
+        },
+      };
       else if (operation === "get_meter_configuration") result = meterConfiguration(addons);
       else if (operation === "get_ct_inventory") result = inventory(addons);
       else if (operation === "get_active_work") result = {
@@ -514,7 +520,7 @@ test("topology package choice survives the first meter configuration load", asyn
   await expect(page.getByRole("heading", { name: "Topology evidence" })).toBeVisible();
   await page.locator('[data-feature="status_fields"][data-board="0"]').check();
   await page.locator('[data-action="continue"]').click();
-  await expect(page.getByRole("heading", { name: "Meter Settings" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
