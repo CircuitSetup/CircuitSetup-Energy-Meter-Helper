@@ -1264,6 +1264,64 @@ def test_power_quality_scaling_uses_managed_phase_overrides() -> None:
     assert "phase_angle:\n        filters:" not in plan.proposed_content
 
 
+def test_generalized_meter_preview_scales_addon_power_quality_and_consumption_energy() -> None:
+    """The meter workflow emits the real scaled PQ and aggregate configuration."""
+    topology = _two_board_topology()
+    source = _contract_snapshot_for(topology)
+    content = source.content.replace(
+        "sensor:\n",
+        """packages:
+  circuitsetup_meter:
+    files:
+      #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
+      #- Software/ESPHome/power_quality/6chan_addon1_power_quality.yaml
+      #- Software/ESPHome/status_fields/6chan_main_status.yaml
+      #- Software/ESPHome/status_fields/6chan_addon1_status.yaml
+sensor:
+""",
+    )
+    snapshot = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        channels=tuple(
+            replace(channel, reporting_multiplier=4) if channel.channel == 7 else channel
+            for channel in current.configuration.channels
+        ),
+        aggregates=(
+            CircuitAggregate(
+                "load", "Load", CircuitRole.BRANCH, (7,), MeasurementMethod.DIRECT,
+                None, EnergyMode.CONSUMPTION,
+            ),
+        ),
+        power_quality=(False, True),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert (
+        """  - id: !extend addon1_1
+    phase_a: # CT7
+      current:
+        filters:
+          - multiply: 4
+      power:
+        filters:
+          - multiply: 4
+      reactive_power:
+        filters:
+          - multiply: 4
+      apparent_power:
+        filters:
+          - multiply: 4
+      harmonic_power: !remove
+      peak_current: !remove
+"""
+        in plan.proposed_content
+    )
+    assert "csemh_load_energy" in plan.proposed_content
+
+
 @pytest.mark.parametrize("multiplier", (1, 2))
 def test_unused_channel_removes_all_power_quality_outputs(multiplier: int) -> None:
     """Unused phases retain calibration outputs but remove every PQ output."""

@@ -1317,7 +1317,7 @@ function as(n, e, t, i, s) {
       <span>${u.enabled ? `${u.model_id || "No CT model"}; ${u.role.replaceAll("_", " ")}` : "Unused"}</span>
     </section>`)}
     <h2>Aggregate totals</h2>
-    ${i ? O : d`<p class="info-band" role="status">Aggregate editing unavailable: ${s || "this meter does not expose managed totals."} Existing aggregates remain reviewable.</p>`}
+    ${i ? O : d`<p class="info-band" role="status">Aggregate editing unavailable: ${s === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>`}
     ${v.map((u) => d`<p class="warning-band" role="status">${u}</p>`)}
     ${n.aggregates.map((u, g) => d`<fieldset class="ct-detail" aria-label=${`${u.name} aggregate`} ?disabled=${!i}><legend>${u.name}</legend>
       <label>ID <input aria-label=${`${u.aggregate_id} aggregate id`} maxlength="64" .value=${u.aggregate_id}

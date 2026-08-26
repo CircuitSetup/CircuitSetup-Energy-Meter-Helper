@@ -182,7 +182,7 @@ function circuitsEditor(
       <span>${channel.enabled ? `${channel.model_id || "No CT model"}; ${channel.role.replaceAll("_", " ")}` : "Unused"}</span>
     </section>`)}
     <h2>Aggregate totals</h2>
-    ${!managedTotals ? html`<p class="info-band" role="status">Aggregate editing unavailable: ${managedTotalsReason || "this meter does not expose managed totals."} Existing aggregates remain reviewable.</p>` : nothing}
+    ${!managedTotals ? html`<p class="info-band" role="status">Aggregate editing unavailable: ${managedTotalsReason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : nothing}
     ${warnings.map((warning) => html`<p class="warning-band" role="status">${warning}</p>`)}
     ${configuration.aggregates.map((aggregate, index) => html`<fieldset class="ct-detail" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!managedTotals}><legend>${aggregate.name}</legend>
       <label>ID <input aria-label=${`${aggregate.aggregate_id} aggregate id`} maxlength="64" .value=${aggregate.aggregate_id}
