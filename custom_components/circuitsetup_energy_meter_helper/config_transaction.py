@@ -680,6 +680,19 @@ class ConfigTransactionManager:
         """Return only the safe DTO for a live transaction."""
         return _status(self._transaction(transaction_id))
 
+    async def async_abandon(self, transaction_id: str) -> TransactionStatus:
+        """Abandon one unconfirmed preview and scrub all retained configuration."""
+        transaction = self._transaction(transaction_id)
+        async with _operation(transaction):
+            if transaction.state is not ConfigTransactionState.PREVIEWED:
+                raise RuntimeError("only an unconfirmed preview can be abandoned")
+            await transaction.async_release_reservation()
+            return self._finish(
+                transaction,
+                ConfigTransactionState.FAILED,
+                TransactionEvidenceCode.CANCELLED,
+            )
+
     async def async_confirm_write(
         self, transaction_id: str, confirmed_by_admin_user_id: str
     ) -> TransactionStatus:

@@ -259,6 +259,122 @@ def test_generalized_mutation_keeps_ct_wrapper_output_compatible() -> None:
     assert generalized == legacy
 
 
+def test_full_meter_preview_diff_groups_redacted_semantic_changes() -> None:
+    snapshot = _contract_snapshot()
+    content = snapshot.content.replace(
+        "sensor:\n",
+        """packages:
+  circuitsetup_meter:
+    files:
+      #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
+      - Software/ESPHome/status_fields/6chan_main_status.yaml
+sensor:
+""",
+    )
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            friendly_name="Kitchen meter",
+            voltage_references=(
+                replace(current.configuration.meter.voltage_references[0], label="Service"),
+            ),
+        ),
+        channels=tuple(
+            replace(channel, name="Kitchen mains") if channel.channel == 1 else channel
+            for channel in current.configuration.channels
+        ),
+        aggregates=(
+            CircuitAggregate(
+                "load", "Kitchen load", CircuitRole.BRANCH, (1,),
+                MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION,
+            ),
+        ),
+        power_quality=tuple(not value for value in current.configuration.power_quality),
+        status_fields=tuple(not value for value in current.configuration.status_fields),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert [line for line in plan.redacted_diff.splitlines() if not line.startswith(("+", "-", "~"))] == [
+        "Meter", "Voltage reference", "Channel", "Aggregate", "Package",
+    ]
+    assert "+ friendly_name: Kitchen meter" in plan.redacted_diff
+    assert "+ ct1_name: Kitchen mains" in plan.redacted_diff
+    assert "+ power_quality_main: enabled" in plan.redacted_diff
+    assert '+        name: "${friendly_name} Service Voltage"' in plan.redacted_diff
+    assert "+  - platform: template" in plan.redacted_diff
+    assert "current_cal" not in plan.redacted_diff
+    assert "gain_voltage" not in plan.redacted_diff
+
+
+def test_friendly_name_only_diff_does_not_invent_voltage_block_changes() -> None:
+    snapshot = _contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(current.configuration.meter, friendly_name="Kitchen meter"),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert "Meter\n" in plan.redacted_diff
+    assert "Voltage reference" not in plan.redacted_diff
+    assert "calibration gain updated" not in plan.redacted_diff
+
+
+def test_managed_voltage_diff_has_exact_removed_added_lines_and_one_gain_marker() -> None:
+    snapshot = _contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    first_request = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(
+                    current.configuration.meter.voltage_references[0],
+                    label="Old service",
+                ),
+            ),
+        ),
+    )
+    first = build_meter_configuration_mutation(snapshot, topology, current, first_request)
+    installed = replace(
+        snapshot,
+        content=first.proposed_content,
+        sha256=sha256(first.proposed_content.encode()).hexdigest(),
+    )
+    installed_current = _inventory(installed, topology)
+    requested = replace(
+        installed_current.configuration,
+        meter=replace(
+            installed_current.configuration.meter,
+            voltage_references=(
+                replace(
+                    installed_current.configuration.meter.voltage_references[0],
+                    label="New service",
+                    gain_voltage=7306,
+                ),
+            ),
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(
+        installed, topology, installed_current, requested
+    )
+
+    assert '-        name: "${friendly_name} Old service Voltage"' in plan.redacted_diff
+    assert '+        name: "${friendly_name} New service Voltage"' in plan.redacted_diff
+    assert plan.redacted_diff.count("calibration gain updated") == 1
+    assert "7305" not in plan.redacted_diff
+    assert "7306" not in plan.redacted_diff
+
+
 def test_generalized_mutation_requires_authoritative_inventory_capability() -> None:
     """A real provisional inventory cannot mutate even when the snapshot looks final."""
     snapshot = _snapshot()
@@ -375,6 +491,12 @@ def test_generalized_mutation_uses_one_representative_per_reference() -> None:
                 ),
             ),
         ),
+        channels=tuple(
+            replace(channel, voltage_reference_id="secondary")
+            if channel.channel in (*range(4, 10),)
+            else channel
+            for channel in current.configuration.channels
+        ),
         multi_reference_preparation_acknowledged=True,
     )
 
@@ -427,6 +549,40 @@ def test_generalized_mutation_uses_one_representative_per_reference() -> None:
     assert rehydrated.voltage_topology.fingerprint == expected.fingerprint
 
 
+def test_group_transfer_updates_channel_reference_metadata_without_fake_yaml() -> None:
+    snapshot = _contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    first = current.configuration.meter.voltage_references[0]
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_layout=VoltageLayout.MULTI_REFERENCE,
+            voltage_references=(
+                replace(first, group_keys=("main_1",)),
+                VoltageReferenceConfig(
+                    "secondary", "Secondary", "B", 120.0, "default", 1,
+                    ("main_2",),
+                ),
+            ),
+        ),
+        channels=tuple(
+            replace(channel, voltage_reference_id="secondary")
+            if channel.channel >= 4
+            else channel
+            for channel in current.configuration.channels
+        ),
+        multi_reference_preparation_acknowledged=True,
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert "voltage_reference_id" not in plan.proposed_content
+    assert "Channel" in plan.redacted_diff
+    assert '"voltage_reference_id": "secondary"' in plan.redacted_diff
+
+
 def test_voltage_reference_preview_never_echoes_owned_block_content() -> None:
     """The review summary stays useful without exposing user-owned YAML values."""
     snapshot = _snapshot()
@@ -434,7 +590,15 @@ def test_voltage_reference_preview_never_echoes_owned_block_content() -> None:
     current = _inventory(snapshot, topology)
     initial_request = replace(
         current.configuration,
-        meter=replace(current.configuration.meter, friendly_name="Initial meter"),
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(
+                    current.configuration.meter.voltage_references[0],
+                    label="Initial service",
+                ),
+            ),
+        ),
     )
     first = build_meter_configuration_mutation(snapshot, topology, current, initial_request)
     secret_content = first.proposed_content.replace(
@@ -462,7 +626,8 @@ def test_voltage_reference_preview_never_echoes_owned_block_content() -> None:
         secret_snapshot, topology, secret_current, requested
     )
 
-    assert "managed voltage-reference overrides updated" in plan.redacted_diff
+    assert "Voltage reference" in plan.redacted_diff
+    assert "7306" not in plan.redacted_diff
     assert "super-secret-token" not in plan.redacted_diff
 
 
@@ -875,6 +1040,12 @@ def test_generalized_mutation_requires_multi_reference_acknowledgement() -> None
                     ("addon1_1", "addon1_2"),
                 ),
             ),
+        ),
+        channels=tuple(
+            replace(channel, voltage_reference_id="secondary")
+            if channel.channel >= 7
+            else channel
+            for channel in current.configuration.channels
         ),
     )
 
@@ -1693,7 +1864,9 @@ def test_removing_last_aggregate_restores_official_totals(
     assert "aggregates v1" not in removed.proposed_content
     assert "internal: true" not in removed.proposed_content
     assert removed.proposed_content == snapshot.content
-    assert removed.redacted_diff == "managed aggregate overrides updated"
+    assert removed.redacted_diff.startswith("Aggregate\n-  - id: !extend")
+    assert "-  - platform: template" in removed.redacted_diff
+    assert "- load:" in removed.redacted_diff
 
     empty_stored = StoredMeterConfiguration(
         sha256(removed.proposed_content.encode()).hexdigest(),
@@ -1933,7 +2106,7 @@ api:
     assert "multiply: 4" in addon
     assert "reactive_power:" not in addon
     assert "harmonic_power: !remove" not in addon
-    assert "managed phase overrides updated" in plan.redacted_diff
+    assert "Channel" in plan.redacted_diff
 
 
 def test_valid_official_legacy_multiplier_block_migrates_without_value_changes() -> None:
@@ -1976,7 +2149,7 @@ logger:
             "# CT", 1
         )[0]
         assert phase.count(f"multiply: {multiplier}") == 2
-    assert "managed phase overrides updated" in plan.redacted_diff
+    assert "Channel" in plan.redacted_diff
 
 
 @pytest.mark.parametrize(
@@ -2112,8 +2285,8 @@ def test_reporting_multiplier_uses_configured_id_substitution_and_is_reviewable(
 
     assert "- id: !extend ${main_meter_id1}" in configured_plan.proposed_content
     assert "- id: !extend meter_main1" in legacy_plan.proposed_content
-    assert "managed phase overrides updated" in legacy_plan.redacted_diff
-    assert "current_cal_ct2" in legacy_plan.redacted_diff
+    assert "Channel" in legacy_plan.redacted_diff
+    assert "current_cal_ct2" not in legacy_plan.redacted_diff
     assert "top-secret" not in legacy_plan.redacted_diff
 
 
@@ -2645,3 +2818,82 @@ def test_custom_needs_its_explicit_gain_label_and_acknowledgement() -> None:
     assert [change.key for change in plan.changes] == ["current_cal_ct1"]
     assert 'current_cal_ct1: "50"' in plan.proposed_content
     assert plan.proposed_content.count("multiply: 2") == 2
+
+
+def test_gain_only_review_lines_are_redacted_and_keep_one_group_heading() -> None:
+    snapshot = _snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    custom = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(
+                    current.configuration.meter.voltage_references[0],
+                    gain_voltage=7305,
+                ),
+            ),
+        ),
+        channels=tuple(
+            replace(
+                channel,
+                model_id="custom",
+                custom_gain_ct=100,
+                custom_label="Kitchen load",
+                burden_output_acknowledged=True,
+            )
+            if channel.channel == 1
+            else channel
+            for channel in current.configuration.channels
+        ),
+    )
+    first = build_meter_configuration_mutation(snapshot, topology, current, custom)
+    stored = StoredMeterConfiguration(
+        sha256(first.proposed_content.encode()).hexdigest(),
+        custom.meter,
+        custom.channels,
+        custom.aggregates,
+        custom.power_quality,
+        custom.status_fields,
+    )
+    configured_snapshot = replace(
+        snapshot, content=first.proposed_content, sha256=stored.config_sha256
+    )
+    configured = _inventory(configured_snapshot, topology, stored=stored)
+    gain_only = replace(
+        configured.configuration,
+        channels=tuple(
+            replace(channel, custom_gain_ct=200) if channel.channel == 1 else channel
+            for channel in configured.configuration.channels
+        ),
+    )
+
+    custom_plan = build_meter_configuration_mutation(
+        configured_snapshot, topology, configured, gain_only
+    )
+    voltage_plan = build_meter_configuration_mutation(
+        configured_snapshot,
+        topology,
+        configured,
+        replace(
+            configured.configuration,
+            meter=replace(
+                configured.configuration.meter,
+                voltage_references=(
+                    replace(
+                        configured.configuration.meter.voltage_references[0],
+                        gain_voltage=7306,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert custom_plan.redacted_diff == "Channel\n~ CT1: calibration gain updated"
+    assert "100" not in custom_plan.redacted_diff
+    assert "200" not in custom_plan.redacted_diff
+    assert voltage_plan.redacted_diff == (
+        "Voltage reference\n~ calibration gain updated"
+    )
+    assert "7306" not in voltage_plan.redacted_diff

@@ -428,6 +428,24 @@ def test_preview_preserves_unchanged_hash_bound_ct_selections() -> None:
     asyncio.run(run())
 
 
+def test_abandon_preview_releases_and_scrubs_pending_transaction() -> None:
+    """Build Back must remove the consumed preview before another plan is issued."""
+
+    async def run() -> None:
+        manager = _manager(Builder(), Persistence())
+        preview = await _preview(manager)
+
+        abandoned = await manager.async_abandon(preview.transaction_id)
+
+        assert abandoned.state is ConfigTransactionState.FAILED
+        assert TransactionEvidenceCode.CANCELLED in abandoned.evidence
+        assert manager.active_status("aabbccddeeff") is None
+        with pytest.raises(KeyError):
+            manager.status(preview.transaction_id)
+
+    asyncio.run(run())
+
+
 def test_write_and_compile_are_distinct_confirmed_phases() -> None:
     """Apply stops at validated and the standalone compile owns compilation."""
 

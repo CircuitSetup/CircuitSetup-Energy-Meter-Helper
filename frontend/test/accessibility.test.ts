@@ -191,6 +191,8 @@ it("gives the CT inventory table explicit header and data-cell semantics", () =>
       reporting_multiplier: 1,
       selected_model_id: "preset",
       selection_verified_against_config: true,
+      display_label: null,
+      stored_selection_present: false,
       address: {
         channel: index + 1,
         board_index: 0,

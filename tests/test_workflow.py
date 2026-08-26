@@ -26,6 +26,7 @@ from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator imp
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     CircuitRole,
     MeterConfigurationRequest,
+    VoltageLayout,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
     MeterConfigurationInventory,
@@ -79,6 +80,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             f"  current_cal_ct{channel}: {27518 + channel}\n"
             for channel in range(1, 7)
         )
+        + "sensor:\n  - platform: uptime\n    name: Uptime\n"
     )
     digest = sha256(content.encode()).hexdigest()
     calls: list[str] = []
@@ -188,6 +190,8 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert workflow._plans[wrapper["plan_id"]].inventory.plan_id == wrapper["plan_id"]
         assert result["source_sha256"] == digest
         assert result["configuration"].meter.friendly_name == "Garage Meter"
+        assert result["configuration_impact"].numeric_entity_count == 14
+        assert result["configuration_impact"].text_entity_count == 0
         assert "slow_interval_extends_calibration" in result["warnings"]
         assert wrapper["channels"] == result["channels"]
         assert "stored_semantics_stale" not in result["warnings"]
@@ -204,17 +208,43 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         workflow.transactions = transactions  # type: ignore[assignment]
         full = await workflow.async_get_meter_configuration("meter")
         full_plan = workflow._plans[full["plan_id"]]
+        first_reference = full["configuration"].meter.voltage_references[0]
+        acknowledged = replace(
+            full["configuration"],
+            meter=replace(
+                full["configuration"].meter,
+                voltage_layout=VoltageLayout.MULTI_REFERENCE,
+                voltage_references=(
+                    replace(first_reference, group_keys=("main_1",)),
+                    replace(
+                        first_reference,
+                        reference_id="reference-2",
+                        label="Reference 2",
+                        phase_label="B",
+                        group_keys=("main_2",),
+                    ),
+                ),
+            ),
+            channels=tuple(
+                replace(channel, voltage_reference_id="reference-2")
+                if channel.channel >= 4
+                else channel
+                for channel in full["configuration"].channels
+            ),
+            multi_reference_preparation_acknowledged=True,
+        )
         preview = await workflow.async_preview_meter_configuration(
             "meter",
             full["plan_id"],
             full["source_sha256"],
-            full["configuration"],
+            acknowledged,
         )
         expected = expected_meter_entity_evidence(
-            full["configuration"], full_plan.topology
+            acknowledged, full_plan.topology
         )
         assert preview == {"transaction_id": "1"}
         assert transactions.calls[0][1]["meter_configuration"].ct_selections
+        assert not transactions.calls[0][1]["meter_configuration"].multi_reference_preparation_acknowledged
         assert (
             transactions.calls[0][1]["expected_sensor_entities"]
             == expected.sensor_entities

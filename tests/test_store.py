@@ -870,6 +870,7 @@ def test_meter_configuration_never_persists_hardware_preparation_acknowledgement
         configuration = _configuration()
         acknowledged = replace(
             configuration,
+            multi_reference_preparation_acknowledged=True,
             channels=(
                 replace(configuration.channels[0], burden_output_acknowledged=True),
                 *configuration.channels[1:],
@@ -881,6 +882,10 @@ def test_meter_configuration_never_persists_hardware_preparation_acknowledgement
         )
 
         raw = backend.data["meters"][MAC]["meter_configuration"]  # type: ignore[index]
+        assert raw["multi_reference_preparation_acknowledged"] is False  # type: ignore[index]
+        assert (
+            await store.async_get_meter_configuration(MAC)
+        ).multi_reference_preparation_acknowledged is False  # type: ignore[union-attr]
         assert raw["channels"][0]["burden_output_acknowledged"] is True  # type: ignore[index]
         assert (await store.async_get_meter_configuration(MAC)).channels[
             0

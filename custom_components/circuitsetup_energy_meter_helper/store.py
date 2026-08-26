@@ -803,9 +803,7 @@ def _serialize_meter_configuration(
             _serialize_ct_selection(selection)
             for selection in configuration.ct_selections
         ],
-        "multi_reference_preparation_acknowledged": (
-            configuration.multi_reference_preparation_acknowledged
-        ),
+        "multi_reference_preparation_acknowledged": False,
     }
 
 
@@ -996,9 +994,9 @@ def _deserialize_meter_configuration_payload(
             tuple(channels),
             tuple(aggregates),
             tuple(data["power_quality"]),
-        tuple(data["status_fields"]),
-        selections,
-        data.get("multi_reference_preparation_acknowledged", False),
+            tuple(data["status_fields"]),
+            selections,
+            False,
         )
         _validate_configuration(configuration, topology)
     except (TypeError, ValueError) as error:

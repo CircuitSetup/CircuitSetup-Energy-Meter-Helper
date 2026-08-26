@@ -586,6 +586,7 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         "apply_ct_config",
         "compile_ct_config",
         "install_ct_config",
+        "abandon_ct_config",
         "rollback_ct_config",
         "subscribe_config_transaction",
     }:
@@ -3485,6 +3486,45 @@ def test_transaction_confirmation_rejects_hash_device_and_replay_before_mutation
         await _invoke(hass, connection, forged)
         assert transactions.calls == 1
         assert connection.errors[-1][:2] == (3, "stale_confirmation")
+
+    asyncio.run(run())
+
+
+def test_abandon_routes_to_the_exact_confirmed_preview() -> None:
+    """Review cancellation uses the same bound transaction identity as writes."""
+
+    class Transactions:
+        def __init__(self) -> None:
+            self.confirmed: tuple[str, str, str] | None = None
+            self.abandoned: str | None = None
+
+        def assert_confirmation(
+            self, transaction_id: str, device_id: str, source_sha256: str
+        ) -> None:
+            self.confirmed = (transaction_id, device_id, source_sha256)
+
+        async def async_abandon(self, transaction_id: str) -> dict[str, object]:
+            self.abandoned = transaction_id
+            return {
+                "transaction_id": transaction_id,
+                "state": "failed",
+                "source_sha256": "a" * 64,
+                "evidence": ["cancelled"],
+            }
+
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+        transactions = Transactions()
+        controller.transactions = transactions
+        connection = FakeConnection()
+
+        await _invoke(hass, connection, _message(f"{DOMAIN}/abandon_ct_config"))
+
+        assert transactions.confirmed == ("transaction", "meter", "a" * 64)
+        assert transactions.abandoned == "transaction"
+        assert connection.results[-1][1]["evidence"] == ["cancelled"]
 
     asyncio.run(run())
 

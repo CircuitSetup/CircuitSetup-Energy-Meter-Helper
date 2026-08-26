@@ -191,6 +191,9 @@ def validate_meter_configuration(
         raise ValueError("one channel setting is required per topology channel")
     by_channel: dict[int, ChannelSettings] = {}
     ref_ids = {r.reference_id for r in refs}
+    reference_by_group = {
+        group: reference.reference_id for reference in refs for group in reference.group_keys
+    }
     for channel in request.channels:
         if type(channel.channel) is not int or not 1 <= channel.channel <= topology.ct_count or channel.channel in by_channel:
             raise ValueError("channels must uniquely cover topology")
@@ -212,6 +215,11 @@ def validate_meter_configuration(
         valid_reference = channel.voltage_reference_id in ref_ids
         if not valid_reference:
             raise ValueError("channel has invalid voltage reference")
+        physical_group = group_key(
+            (channel.channel - 1) // 6, ((channel.channel - 1) % 6) // 3
+        )
+        if channel.voltage_reference_id != reference_by_group[physical_group]:
+            raise ValueError("channel voltage reference does not own its physical voltage group")
         if channel.custom_gain_ct is not None and (type(channel.custom_gain_ct) is not int or not 1 <= channel.custom_gain_ct <= 65535):
             raise ValueError("custom_gain_ct must be 1-65535")
         if channel.custom_label is not None:

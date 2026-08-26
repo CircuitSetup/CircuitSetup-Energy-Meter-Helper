@@ -68,6 +68,7 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}apply_ct_config",
     f"{_PREFIX}compile_ct_config",
     f"{_PREFIX}install_ct_config",
+    f"{_PREFIX}abandon_ct_config",
     f"{_PREFIX}rollback_ct_config",
     f"{_PREFIX}start_session",
     f"{_PREFIX}acknowledge_safety",
@@ -98,6 +99,7 @@ _TRANSACTION_STATUS_COMMANDS = frozenset(
         "apply_ct_config",
         "compile_ct_config",
         "install_ct_config",
+        "abandon_ct_config",
         "rollback_ct_config",
         "subscribe_config_transaction",
     )
@@ -194,6 +196,8 @@ class TransactionOwner(Protocol):
     ) -> Any: ...
 
     async def async_rollback(self, transaction_id: str) -> Any: ...
+
+    async def async_abandon(self, transaction_id: str) -> Any: ...
 
 
 class WorkflowOwner(Protocol):
@@ -443,6 +447,7 @@ class EntryWebsocketController:
             "apply_ct_config",
             "compile_ct_config",
             "install_ct_config",
+            "abandon_ct_config",
             "rollback_ct_config",
         }:
             return await self._async_transaction(operation, msg, user_id)
@@ -541,6 +546,8 @@ class EntryWebsocketController:
                 result = await owner.async_confirm_install(
                     msg["transaction_id"], _admin_user_id(user_id)
                 )
+            elif operation == "abandon_ct_config":
+                result = await owner.async_abandon(msg["transaction_id"])
             else:
                 result = await owner.async_rollback(msg["transaction_id"])
         except ConfigChangedError as error:
@@ -1070,6 +1077,7 @@ def _schema(command: str) -> Any:
         "apply_ct_config",
         "compile_ct_config",
         "install_ct_config",
+        "abandon_ct_config",
         "rollback_ct_config",
         "subscribe_config_transaction",
     }:
