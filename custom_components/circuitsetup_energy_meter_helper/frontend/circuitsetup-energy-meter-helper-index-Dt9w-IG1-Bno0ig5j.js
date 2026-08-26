@@ -1,5 +1,5 @@
-import { V as r, a as d, n as c, t as h, p as w, c as u, j as i } from "./circuitsetup-energy-meter-helper-styles-sT2V1cOw-50QkNMEY.js";
-const a = r`
+import { V, a as be, n, t, p as pt, c as ct, j } from "./circuitsetup-energy-meter-helper-styles-sT2V1cOw-CrAdtexe.js";
+const s = V`
   <svg
     version="1.1"
     id="Capa_1"
@@ -19,14 +19,14 @@ const a = r`
     </g>
   </svg>
 `;
-let n = class extends u {
+let r = class extends ct {
   render() {
     const e = (() => {
-      var t, l;
-      const s = window.navigator.userAgent, o = ((l = (t = window.navigator) === null || t === void 0 ? void 0 : t.userAgentData) === null || l === void 0 ? void 0 : l.platform) || window.navigator.platform;
-      return ["macOS", "Macintosh", "MacIntel", "MacPPC", "Mac68K"].indexOf(o) !== -1 ? "Mac OS" : ["iPhone", "iPad", "iPod"].indexOf(o) !== -1 ? "iOS" : ["Win32", "Win64", "Windows", "WinCE"].indexOf(o) !== -1 ? "Windows" : /Android/.test(s) ? "Android" : /Linux/.test(o) ? "Linux" : null;
+      var e2, t2;
+      const o = window.navigator.userAgent, i = (null === (t2 = null === (e2 = window.navigator) || void 0 === e2 ? void 0 : e2.userAgentData) || void 0 === t2 ? void 0 : t2.platform) || window.navigator.platform;
+      return -1 !== ["macOS", "Macintosh", "MacIntel", "MacPPC", "Mac68K"].indexOf(i) ? "Mac OS" : -1 !== ["iPhone", "iPad", "iPod"].indexOf(i) ? "iOS" : -1 !== ["Win32", "Win64", "Windows", "WinCE"].indexOf(i) ? "Windows" : /Android/.test(o) ? "Android" : /Linux/.test(i) ? "Linux" : null;
     })();
-    return i`
+    return j`
       <ew-dialog open @closed=${this._handleClose}>
         <div slot="headline">No port selected</div>
         <div slot="content">
@@ -47,7 +47,7 @@ let n = class extends u {
               Make sure that the USB cable you use can be used for data and is
               not a power-only cable.
             </li>
-            ${e === "Linux" ? i`
+            ${"Linux" === e ? j`
                   <li>
                     If you are using a Linux flavor, make sure that your user is
                     part of the <code>dialout</code> group so it has permission
@@ -87,7 +87,7 @@ let n = class extends u {
                     >Mac</a
                   >
                   <br />
-                  (download via blue button with ${a} icon)
+                  (download via blue button with ${s} icon)
                 </li>
                 <li>
                   CH340, CH341 drivers:
@@ -104,19 +104,19 @@ let n = class extends u {
                     >Mac</a
                   >
                   <br />
-                  (download via blue button with ${a} icon)
+                  (download via blue button with ${s} icon)
                 </li>
               </ul>
             </li>
           </ol>
         </div>
         <div slot="actions">
-          ${this.doTryAgain ? i`
+          ${this.doTryAgain ? j`
                 <ew-text-button @click=${this.close}>Cancel</ew-text-button>
                 <ew-text-button @click=${this.tryAgain}>
                   Try Again
                 </ew-text-button>
-              ` : i`
+              ` : j`
                 <ew-text-button @click=${this.close}>Close</ew-text-button>
               `}
         </div>
@@ -125,7 +125,7 @@ let n = class extends u {
   }
   tryAgain() {
     var e;
-    this.close(), (e = this.doTryAgain) === null || e === void 0 || e.call(this);
+    this.close(), null === (e = this.doTryAgain) || void 0 === e || e.call(this);
   }
   close() {
     this.shadowRoot.querySelector("ew-dialog").close();
@@ -134,7 +134,7 @@ let n = class extends u {
     this.parentNode.removeChild(this);
   }
 };
-n.styles = [d, c`
+r.styles = [be, n`
       li + li,
       li > ul {
         margin-top: 8px;
@@ -148,11 +148,11 @@ n.styles = [d, c`
         display: block;
         margin: 0.5em 0;
       }
-    `], n = h([w("ewt-no-port-picked-dialog")], n);
-const v = async (e) => {
-  const t = document.createElement("ewt-no-port-picked-dialog");
-  return t.doTryAgain = e, document.body.append(t), !0;
+    `], r = t([pt("ewt-no-port-picked-dialog")], r);
+const d = async (e) => {
+  const t2 = document.createElement("ewt-no-port-picked-dialog");
+  return t2.doTryAgain = e, document.body.append(t2), true;
 };
 export {
-  v as openNoPortPickedDialog
+  d as openNoPortPickedDialog
 };
