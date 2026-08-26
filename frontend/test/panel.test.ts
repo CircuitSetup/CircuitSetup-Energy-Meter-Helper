@@ -107,11 +107,13 @@ describe("meter configuration review and summary", () => {
     expect(review).toContain("Power quality");
     expect(review).not.toContain("threshold");
 
-    render(summaryStep(meter.topology, null, transaction, new Map(), new Map(), null, false, "2026.8.0", () => undefined, () => undefined, meter, meter.configuration_impact), root);
+    render(summaryStep(meter.topology, null, { ...transaction, state: "verified" }, new Map(), new Map(), null, false, "2026.8.0", () => undefined, () => undefined, meter, meter.configuration_impact), root);
     const summary = root.textContent ?? "";
     expect(summary).toContain("Configuration authority");
     expect(summary).toContain("Installed electrical profile");
     expect(summary).toContain("Aggregate energy");
+    expect(summary).toContain("Installed package scope");
+    expect(summary).toContain("Main board");
     expect(summary).toContain("Reporting and entities");
   });
 });
@@ -664,11 +666,13 @@ describe("CircuitSetup panel", () => {
     const state = panel as unknown as { meterConfiguration: typeof response; inventory: { plan_id: string; source_sha256: string; channels: typeof response.channels; catalog: typeof response.catalog }; packageOptions: { power_quality: boolean[]; status_fields: boolean[] } };
     state.meterConfiguration = response;
     state.inventory = { plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.catalog };
-    state.packageOptions = { power_quality: [false], status_fields: [false] };
+    (response.configuration as MeterConfigurationRequest).power_quality = [false];
+    (response.configuration as MeterConfigurationRequest).status_fields = [false];
     panel.showState("ct");
     await panel.updateComplete;
     expect(text(panel)).toContain("14 public entities");
-    state.packageOptions = { power_quality: [true], status_fields: [true] };
+    (response.configuration as MeterConfigurationRequest).power_quality = [true];
+    (response.configuration as MeterConfigurationRequest).status_fields = [true];
     (response.configuration as MeterConfigurationRequest).aggregates = Array.from({ length: 20 }, (_, index) => ({ aggregate_id: `grid-${index}`, name: `Grid ${index}`, role: "grid" as const, channels: [1], measurement_method: "direct" as const, parent_id: null, energy_mode: "bidirectional" as const, expose_power: true, expose_current: true }));
     panel.requestUpdate();
     await panel.updateComplete;

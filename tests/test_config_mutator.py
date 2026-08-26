@@ -259,6 +259,53 @@ def test_generalized_mutation_keeps_ct_wrapper_output_compatible() -> None:
     assert generalized == legacy
 
 
+def test_full_meter_preview_diff_groups_redacted_semantic_changes() -> None:
+    snapshot = _contract_snapshot()
+    content = snapshot.content.replace(
+        "sensor:\n",
+        """packages:
+  circuitsetup_meter:
+    files:
+      #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
+      - Software/ESPHome/status_fields/6chan_main_status.yaml
+sensor:
+""",
+    )
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            friendly_name="Kitchen meter",
+            voltage_references=(
+                replace(current.configuration.meter.voltage_references[0], label="Service"),
+            ),
+        ),
+        channels=tuple(
+            replace(channel, name="Kitchen mains") if channel.channel == 1 else channel
+            for channel in current.configuration.channels
+        ),
+        aggregates=(
+            CircuitAggregate(
+                "load", "Kitchen load", CircuitRole.BRANCH, (1,),
+                MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION,
+            ),
+        ),
+        power_quality=tuple(not value for value in current.configuration.power_quality),
+        status_fields=tuple(not value for value in current.configuration.status_fields),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert [line for line in plan.redacted_diff.splitlines() if not line.startswith(("+", "-", "~"))] == [
+        "Meter", "Voltage reference", "Channel", "Aggregate", "Package",
+    ]
+    assert "current_cal" not in plan.redacted_diff
+    assert "gain_voltage" not in plan.redacted_diff
+
+
 def test_generalized_mutation_requires_authoritative_inventory_capability() -> None:
     """A real provisional inventory cannot mutate even when the snapshot looks final."""
     snapshot = _snapshot()
@@ -462,7 +509,8 @@ def test_voltage_reference_preview_never_echoes_owned_block_content() -> None:
         secret_snapshot, topology, secret_current, requested
     )
 
-    assert "managed voltage-reference overrides updated" in plan.redacted_diff
+    assert "Voltage reference" in plan.redacted_diff
+    assert "7306" not in plan.redacted_diff
     assert "super-secret-token" not in plan.redacted_diff
 
 
@@ -1693,7 +1741,7 @@ def test_removing_last_aggregate_restores_official_totals(
     assert "aggregates v1" not in removed.proposed_content
     assert "internal: true" not in removed.proposed_content
     assert removed.proposed_content == snapshot.content
-    assert removed.redacted_diff == "managed aggregate overrides updated"
+    assert removed.redacted_diff.startswith("Aggregate\n- load:")
 
     empty_stored = StoredMeterConfiguration(
         sha256(removed.proposed_content.encode()).hexdigest(),
@@ -1933,7 +1981,7 @@ api:
     assert "multiply: 4" in addon
     assert "reactive_power:" not in addon
     assert "harmonic_power: !remove" not in addon
-    assert "managed phase overrides updated" in plan.redacted_diff
+    assert "Channel" in plan.redacted_diff
 
 
 def test_valid_official_legacy_multiplier_block_migrates_without_value_changes() -> None:
@@ -1976,7 +2024,7 @@ logger:
             "# CT", 1
         )[0]
         assert phase.count(f"multiply: {multiplier}") == 2
-    assert "managed phase overrides updated" in plan.redacted_diff
+    assert "Channel" in plan.redacted_diff
 
 
 @pytest.mark.parametrize(
@@ -2112,8 +2160,8 @@ def test_reporting_multiplier_uses_configured_id_substitution_and_is_reviewable(
 
     assert "- id: !extend ${main_meter_id1}" in configured_plan.proposed_content
     assert "- id: !extend meter_main1" in legacy_plan.proposed_content
-    assert "managed phase overrides updated" in legacy_plan.redacted_diff
-    assert "current_cal_ct2" in legacy_plan.redacted_diff
+    assert "Channel" in legacy_plan.redacted_diff
+    assert "current_cal_ct2" not in legacy_plan.redacted_diff
     assert "top-secret" not in legacy_plan.redacted_diff
 
 

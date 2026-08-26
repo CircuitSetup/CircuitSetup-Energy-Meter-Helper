@@ -187,7 +187,6 @@ def build_meter_configuration_mutation(
     )
     content = plan.proposed_content
     changes: list[SubstitutionChange] = []
-    diffs = [plan.redacted_diff]
     if requested.meter != previous.meter:
         substitutions = {
             "friendly_name": requested.meter.friendly_name,
@@ -209,7 +208,6 @@ def build_meter_configuration_mutation(
                 requested.meter.voltage_references, topology, document
             ),
         )
-        diffs.append(_voltage_reference_diff(plan.proposed_content, content))
     if requested.aggregates != previous.aggregates:
         content = replace_managed_block(
             content,
@@ -218,16 +216,130 @@ def build_meter_configuration_mutation(
             if requested.aggregates
             else "",
         )
-        diffs.append(_aggregate_diff(plan.proposed_content, content))
-    if content == plan.proposed_content:
-        return plan
+    review_diff = _grouped_review_diff(previous, requested)
     return ConfigMutationPlan(
         plan.configuration,
         plan.source_sha256,
         (*plan.changes, *changes),
-        "\n".join(part for part in diffs if part),
+        review_diff,
         content,
     )
+
+
+def _grouped_review_diff(
+    previous: MeterConfigurationRequest, requested: MeterConfigurationRequest
+) -> str:
+    """Return semantic, line-oriented review data without YAML secrets or gains."""
+    groups: list[tuple[str, list[str]]] = []
+
+    def add(name: str, old: dict[str, object], new: dict[str, object]) -> None:
+        if old != new:
+            keys = tuple(dict.fromkeys((*old, *new)))
+            groups.append(
+                (
+                    name,
+                    [
+                        f"- {key}: {json.dumps(old[key], ensure_ascii=False, sort_keys=True)}"
+                        for key in keys
+                        if old.get(key) != new.get(key) and key in old
+                    ]
+                    + [
+                        f"+ {key}: {json.dumps(new[key], ensure_ascii=False, sort_keys=True)}"
+                        for key in keys
+                        if old.get(key) != new.get(key) and key in new
+                    ],
+                )
+            )
+
+    add("Meter", _meter_review_value(previous), _meter_review_value(requested))
+    add("Voltage reference", _reference_review_value(previous), _reference_review_value(requested))
+    previous_gains = {
+        reference.reference_id: reference.gain_voltage
+        for reference in previous.meter.voltage_references
+    }
+    gain_updates = [
+        reference.reference_id
+        for reference in requested.meter.voltage_references
+        if previous_gains.get(reference.reference_id) != reference.gain_voltage
+    ]
+    if gain_updates:
+        groups.append(
+            (
+                "Voltage reference",
+                [f"~ {reference}: calibration gain updated" for reference in gain_updates],
+            )
+        )
+    add("Channel", _channel_review_value(previous), _channel_review_value(requested))
+    add("Aggregate", _aggregate_review_value(previous), _aggregate_review_value(requested))
+    add("Package", _package_review_value(previous), _package_review_value(requested))
+    return "\n".join("\n".join((name, *lines)) for name, lines in groups)
+
+
+def _meter_review_value(configuration: MeterConfigurationRequest) -> dict[str, object]:
+    meter = configuration.meter
+    return {
+        "friendly_name": meter.friendly_name,
+        "electrical_system": meter.electrical_system.value,
+        "line_frequency_hz": meter.line_frequency_hz,
+        "update_interval_s": meter.update_interval_s,
+        "voltage_layout": meter.voltage_layout,
+        "multi_reference_preparation_acknowledged": configuration.multi_reference_preparation_acknowledged,
+    }
+
+
+def _reference_review_value(configuration: MeterConfigurationRequest) -> dict[str, object]:
+    return {
+        reference.reference_id: {
+            "label": reference.label,
+            "phase_label": reference.phase_label,
+            "nominal_voltage_v": reference.nominal_voltage_v,
+            "transformer_model_id": reference.transformer_model_id,
+            "group_keys": reference.group_keys,
+        }
+        for reference in configuration.meter.voltage_references
+    }
+
+
+def _channel_review_value(configuration: MeterConfigurationRequest) -> dict[str, object]:
+    return {
+        f"CT{channel.channel}": {
+            "enabled": channel.enabled,
+            "name": channel.name,
+            "model_id": channel.model_id,
+            "reporting_multiplier": channel.reporting_multiplier,
+            "role": channel.role.value,
+            "voltage_reference_id": channel.voltage_reference_id,
+            "custom_label": channel.custom_label,
+            "burden_output_acknowledged": channel.burden_output_acknowledged,
+        }
+        for channel in configuration.channels
+    }
+
+
+def _aggregate_review_value(configuration: MeterConfigurationRequest) -> dict[str, object]:
+    return {
+        aggregate.aggregate_id: {
+            "name": aggregate.name,
+            "role": aggregate.role.value,
+            "channels": aggregate.channels,
+            "measurement_method": aggregate.measurement_method.value,
+            "parent_id": aggregate.parent_id,
+            "energy_mode": aggregate.energy_mode.value,
+            "expose_power": aggregate.expose_power,
+            "expose_current": aggregate.expose_current,
+        }
+        for aggregate in configuration.aggregates
+    }
+
+
+def _package_review_value(configuration: MeterConfigurationRequest) -> dict[str, object]:
+    return {
+        "main" if board == 0 else f"addon{board}": {
+            "power_quality": configuration.power_quality[board],
+            "status_fields": configuration.status_fields[board],
+        }
+        for board in range(len(configuration.power_quality))
+    }
 
 
 def _render_voltage_references(

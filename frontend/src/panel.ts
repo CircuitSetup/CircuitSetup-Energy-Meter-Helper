@@ -691,6 +691,14 @@ export class CircuitSetupPanel extends LitElement {
 
   private setMeterConfiguration(configuration: MeterConfiguration): void {
     this.meterConfiguration = configuration;
+    this.packageOptions = {
+      power_quality: [...configuration.configuration.power_quality],
+      status_fields: [...configuration.configuration.status_fields],
+    };
+    this.sourcePackageOptions = {
+      power_quality: [...configuration.configuration.power_quality],
+      status_fields: [...configuration.configuration.status_fields],
+    };
     this.meterSettingsDraft = { ...configuration.configuration.meter,
       authoritative: configuration.capabilities.configuration_authoritative, warnings: configuration.warnings };
     this.multiReferencePreparationAcknowledged = configuration.configuration.multi_reference_preparation_acknowledged === true;
@@ -786,6 +794,19 @@ export class CircuitSetupPanel extends LitElement {
     this.meterConfiguration = { ...this.meterConfiguration, configuration };
     this.canonicalConfigurationChanged ||= changed;
     this.requestUpdate();
+  }
+
+  private setPackageOptions(options: BoardPackageOptions): void {
+    const packageOptions = {
+      power_quality: [...options.power_quality],
+      status_fields: [...options.status_fields],
+    };
+    this.packageOptions = packageOptions;
+    if (this.meterConfiguration) this.updateCircuitConfiguration({
+      ...this.meterConfiguration.configuration,
+      ...packageOptions,
+    });
+    else this.requestUpdate();
   }
 
   private updateMeterSettings(draft: MeterSettingsDraft): void {
@@ -1569,7 +1590,7 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.connection = value; this.refreshFirmwareOptions(); },
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, Boolean(this.topology),
       this.firmwareCatalog(), this.importFailedDeviceId, this.packageOptions,
-      (options) => { this.packageOptions = options; this.requestUpdate(); }, this.electricalSystem,
+      (options) => this.setPackageOptions(options), this.electricalSystem,
       this.lineFrequencyHz, this.electricalProfileConfirmed,
       (value) => this.setElectricalSystem(value), (value) => this.setLineFrequency(value),
       () => this.confirmElectricalProfile())}
@@ -1577,7 +1598,7 @@ export class CircuitSetupPanel extends LitElement {
         () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
           ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session",
         this.sourcePackageOptions ? this.packageOptions : null,
-      (options) => { this.packageOptions = options; this.requestUpdate(); }) : nothing}`;
+      (options) => this.setPackageOptions(options)) : nothing}`;
     if (this.step === "meter" && this.meterSettingsDraft && this.meterConfiguration) return meterSettingsStep(
       this.meterSettingsDraft, this.meterConfiguration.voltage_transformer_catalog, this.multiReferencePreparationAcknowledged,
       (draft) => this.updateMeterSettings(draft),
@@ -1586,7 +1607,7 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.multiReferencePreparationAcknowledged = value; if (this.meterSettingsDraft) this.updateMeterSettings(this.meterSettingsDraft); this.requestUpdate(); },
       () => this.back(), () => void this.continueFromMeterSettings(),
     );
-    if (this.step === "ct" && this.inventory) { const impact = this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology, this.packageOptions) : null; const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0; return html`${impact ? html`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? html`<strong>Warning: high entity count. </strong>` : nothing}${impact.enabled_channel_count} enabled channels; ${total} public entities (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : nothing}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
+    if (this.step === "ct" && this.inventory) { const impact = this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null; const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0; return html`${impact ? html`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? html`<strong>Warning: high entity count. </strong>` : nothing}${impact.enabled_channel_count} enabled channels; ${total} public entities (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : nothing}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
       (board) => { this.board = board; this.requestUpdate(); },
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session",
       this.labelOnly ? null : this.meterConfiguration?.configuration ?? null, (configuration) => this.updateCircuitConfiguration(configuration), (channel) => this.disableCircuit(channel))}`; }
@@ -1594,7 +1615,7 @@ export class CircuitSetupPanel extends LitElement {
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(),
       () => this.finishFlow("Configuration changes were installed and verified."), this.meterConfiguration?.configuration ?? null,
-      this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology, this.packageOptions) : null);
+      this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null);
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back(), this.pendingAction === "safety");
     if (this.step === "offset") return offsetStep(this.topology, this.session, this.board, this.offsetStage,
@@ -1630,7 +1651,7 @@ export class CircuitSetupPanel extends LitElement {
       this.completedWithoutChanges, this.selectedProjectVersion(),
       () => void (this.restartResult?.source_handoff_firmware_installed
         ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back(), this.meterConfiguration,
-      this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology, this.packageOptions) : null);
+      this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null);
     return html`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct"
       ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;

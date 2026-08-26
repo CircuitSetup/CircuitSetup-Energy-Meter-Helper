@@ -492,6 +492,20 @@ test("six-channel inventory routes canonical edits through Meter Settings and fu
   expect(JSON.stringify(preview.configuration)).not.toContain("warnings");
 });
 
+test("topology package choices stay in the canonical preview payload", async ({ page }) => {
+  const frames = await mockHomeAssistant(page);
+  await openInventory(page);
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.locator('[data-feature="status_fields"][data-board="0"]').check();
+  await page.locator('[data-action="continue"]').click();
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
+  expect(preview.configuration).toMatchObject({ power_quality: [false], status_fields: [true] });
+});
+
 test("validation failure exposes evidence and performs only a user-requested rollback", async ({ page }) => {
   const frames = await mockHomeAssistant(page, { outcome: "validation" });
   await openInventory(page);
