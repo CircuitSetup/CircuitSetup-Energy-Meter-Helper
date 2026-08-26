@@ -40,7 +40,8 @@ const inventory = {
   channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`,
     raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model",
     selection_verified_against_config: true, address: { channel: index + 1, board_index: 0,
-      group_index: Math.floor(index / 3), phase: (["A", "B", "C"] as const)[index % 3] } })),
+      group_index: Math.floor(index / 3), phase: (["A", "B", "C"] as const)[index % 3] },
+    display_label: null })),
   catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
     secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }],
     source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
@@ -74,13 +75,14 @@ const meterConfiguration: MeterConfiguration = {
   voltage_transformer_catalog: {
     presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120,
       secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }],
-    source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1,
+    source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1,
   },
   ct_catalog: inventory.catalog, warnings: ["slow_interval_extends_calibration"],
   channels: inventory.channels as MeterConfiguration["channels"], catalog: inventory.catalog,
 };
 const transaction = { transaction_id: "tx-1", state: "previewed", source_sha256: "a".repeat(64),
-  changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], upload_progress: [] };
+  changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], upload_progress: [],
+  aggregate_entity_mismatch: false, full_meter_configuration_verified: true };
 const session = { session_id: "session-1", device_id: "meter-1", state: "ready", safety_acknowledged: true,
   preflight: { issues: [], zeroed_roles: ["reference"] }, entity_role_counts: {},
   offset_capability: { status: "available", repair_reason: null }, offset_disposition: "not_started",
@@ -189,7 +191,7 @@ describe("HelperApi", () => {
     hass.responses.get_meter_configuration = meterConfiguration;
 
     await expect(new HelperApi(hass, "entry-1").getMeterConfiguration("meter-1")).resolves.toMatchObject({
-      update_interval_s: 30, warnings: ["slow_interval_extends_calibration"],
+      configuration: { meter: { update_interval_s: 30 } }, warnings: ["slow_interval_extends_calibration"],
     });
   });
 
@@ -229,6 +231,42 @@ describe("HelperApi", () => {
     ]) {
       hass.responses.get_meter_configuration = invalid;
       await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration");
+    }
+  });
+
+  it("requires every full-plan boundary and rejects unsupported nested fields", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    const withoutTopology = { ...meterConfiguration } as Partial<typeof meterConfiguration>;
+    delete withoutTopology.topology;
+    for (const invalid of [
+      withoutTopology,
+      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, aggregates: [{ ...meterConfiguration.configuration.aggregates[0], channels: [7] }] } },
+      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, aggregates: [{ ...meterConfiguration.configuration.aggregates[0], measurement_method: "two_ct_sum", channels: [1] }] } },
+      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, aggregates: [{ ...meterConfiguration.configuration.aggregates[0], parent_id: "missing" }] } },
+      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, meter: { ...meterConfiguration.configuration.meter, voltage_references: [{ ...meterConfiguration.configuration.meter.voltage_references[0], group_keys: ["main_1", "main_1"] }] } } },
+      { ...meterConfiguration, voltage_topology: { ...meterConfiguration.voltage_topology, references: [["main", ["main_1"]]] } },
+      { ...meterConfiguration, voltage_transformer_catalog: { ...meterConfiguration.voltage_transformer_catalog, source_ref: "a".repeat(39) } },
+      { ...meterConfiguration, ct_catalog: { ...meterConfiguration.ct_catalog, extra: true } },
+    ]) {
+      hass.responses.get_meter_configuration = invalid;
+      await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration");
+    }
+    hass.responses.get_ct_inventory = { ...inventory, channels: [{ ...inventory.channels[0], board_revision: "x" }] };
+    await expect(api.getCtInventory("meter-1")).rejects.toThrow("get_ct_inventory");
+  });
+
+  it("requires complete aggregate verification transaction fields", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    hass.responses.preview_ct_config = transaction;
+    await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({
+      aggregate_entity_mismatch: false, full_meter_configuration_verified: true,
+    });
+    for (const field of ["aggregate_entity_mismatch", "full_meter_configuration_verified"] as const) {
+      const invalid = { ...transaction } as Partial<typeof transaction>;
+      delete invalid[field]; hass.responses.preview_ct_config = invalid;
+      await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
     }
   });
 

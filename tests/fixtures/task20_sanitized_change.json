@@ -16,6 +16,8 @@
     "rollback_available": false,
     "evidence": [],
     "progress": [],
+    "aggregate_entity_mismatch": false,
+    "full_meter_configuration_verified": false,
     "key": "generic-provider-key",
     "entity_key": 9,
     "raw_key": 10
@@ -34,6 +36,8 @@
     "redacted_diff": "- old+ new",
     "rollback_available": false,
     "evidence": [],
-    "progress": []
+    "progress": [],
+    "aggregate_entity_mismatch": false,
+    "full_meter_configuration_verified": false
   }
 }

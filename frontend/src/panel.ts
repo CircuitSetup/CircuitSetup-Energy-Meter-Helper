@@ -606,7 +606,7 @@ export class CircuitSetupPanel extends LitElement {
       }
       const importedConfiguration = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      this.meterSettingsDraft = importedConfiguration;
+      this.meterSettingsDraft = { ...importedConfiguration.configuration.meter, authoritative: true, warnings: importedConfiguration.warnings };
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = null;
@@ -666,7 +666,10 @@ export class CircuitSetupPanel extends LitElement {
     const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
     try {
       await this.run(async () => {
-        if (!this.meterSettingsDraft) this.meterSettingsDraft = await api.getMeterConfiguration(deviceId);
+        if (!this.meterSettingsDraft) {
+          const configuration = await api.getMeterConfiguration(deviceId);
+          this.meterSettingsDraft = { ...configuration.configuration.meter, authoritative: true, warnings: configuration.warnings };
+        }
         if (!this.ownsOperation(generation, api, deviceId)) return;
         const result = await api.getCtInventory(deviceId);
         if (!this.ownsOperation(generation, api, deviceId)) return;

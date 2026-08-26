@@ -293,6 +293,8 @@ export interface TransactionStatus {
     warning_record_count: number;
   } | null;
   upload_progress?: Array<{ stage: string; progress?: number | null; percentage?: number | null }>;
+  aggregate_entity_mismatch: boolean;
+  full_meter_configuration_verified: boolean;
 }
 
 export interface PreflightIssue {

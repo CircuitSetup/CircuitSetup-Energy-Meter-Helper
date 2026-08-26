@@ -53,6 +53,12 @@ const makeHass = (responses: Record<string, unknown>): HomeAssistant => ({
   },
 });
 
+const meterResponse = (electrical_system = "split_phase_120_240", line_frequency_hz = 60, update_interval_s = 5) => ({
+  plan_id: "b".repeat(32), source_sha256: "a".repeat(64), topology: { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2, connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] },
+  configuration: { meter: { friendly_name: "Energy meter", electrical_system, line_frequency_hz, update_interval_s, voltage_layout: "standard", voltage_references: [{ reference_id: "main", label: "Main", phase_label: "A", nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305, group_keys: ["main_1", "main_2"] }] }, channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, enabled: true, name: `CT${index + 1}`, model_id: "model", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false })), aggregates: [], power_quality: [true], status_fields: [false], multi_reference_preparation_acknowledged: false },
+  capabilities: { configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [] }, voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" }, voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 }, ct_catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 }, warnings: [], channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model", selection_verified_against_config: true, address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3), phase: (["A", "B", "C"] as const)[index % 3] }, display_label: null })), catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
+});
+
 const mount = async (hass: HomeAssistant) => {
   const panel = document.createElement(
     "circuitsetup-energy-meter-helper-panel",
@@ -452,13 +458,7 @@ describe("CircuitSetup panel", () => {
           ? { state: "device_discovered", devices: [{ ...device, configuration: "meter.yaml" }], bound_device_id: device.entry_id }
           : { state: "no_device", devices: [] }) as T;
         if (operation === "adopt_device") { adopted = true; return { device_id: device.entry_id, configuration: "meter.yaml" } as T; }
-        if (operation === "get_meter_configuration") return {
-          plan_id: "plan-1", source_sha256: "a".repeat(64), configuration: {
-            meter: { electrical_system: "single_phase_230", line_frequency_hz: 50, update_interval_s: 5,
-              voltage_references: [{ reference_id: "main", group_keys: ["main_1", "main_2"] }] },
-          },
-          warnings: [],
-        } as T;
+        if (operation === "get_meter_configuration") return meterResponse("single_phase_230", 50) as T;
         if (operation === "get_topology") return { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
           connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
           evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] } as T;
@@ -1037,7 +1037,7 @@ describe("CircuitSetup panel", () => {
             { key: "package.addon7.power_quality", old_value: "enabled", new_value: "disabled" },
           ],
           redacted_diff: "+ power quality", rollback_available: true, evidence: [],
-          progress: operation === "apply_ct_config" ? ["config_validated"] : [], upload_progress: [] } as T;
+          progress: operation === "apply_ct_config" ? ["config_validated"] : [], upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as T;
         return {} as T;
       },
       connection: { subscribeMessage: async () => () => undefined },
@@ -1279,8 +1279,7 @@ describe("CircuitSetup panel", () => {
     };
     const hass = makeHass({
       setup_status: { state: "device_discovered", devices: [configured], configuration_authoritative: false },
-      get_meter_configuration: { configuration: { meter: { electrical_system: "split_phase_120_240", line_frequency_hz: 60,
-        update_interval_s: 5, voltage_references: [{ reference_id: "main", group_keys: ["main_1", "main_2"] }] } }, warnings: [] },
+      get_meter_configuration: meterResponse(),
       get_ct_inventory: inventory,
     });
     const callWS = hass.callWS;
@@ -2156,7 +2155,7 @@ describe("CircuitSetup panel", () => {
     const session = { session_id: "session-active", device_id: "meter-1", state: "ready",
       safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
     const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [] };
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>) => {
         const operation = String(message.type).split("/").at(-1) ?? "";
@@ -2203,13 +2202,13 @@ describe("CircuitSetup panel", () => {
     const generation = state.connectionGeneration as number;
     state.selectedDeviceId = "meter-1";
     state.transaction = { transaction_id: "tx-old", state: "previewed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [] };
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     await state.subscribeTransaction(generation);
     state.transaction = { transaction_id: "tx-new", state: "previewed", source_sha256: "b".repeat(64),
-      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [] };
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     await state.subscribeTransaction(generation);
     callbacks[1]?.({ transaction_id: "tx-old", state: "failed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [] });
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false });
     expect((state.transaction as { transaction_id: string }).transaction_id).toBe("tx-new");
     expect(unsubscriptions).toContain(1);
 
@@ -2276,10 +2275,7 @@ describe("CircuitSetup panel", () => {
       callWS: async <T>(message: Record<string, unknown>) => {
         const operation = String(message.type).split("/").at(-1) ?? "";
         if (operation === "setup_status") return { state: "device_discovered", devices: [device, meter2] } as T;
-        if (operation === "get_meter_configuration") return { configuration: { meter: {
-          electrical_system: "split_phase_120_240", line_frequency_hz: 60, update_interval_s: 5,
-          voltage_references: [{ reference_id: "main", group_keys: ["main_1", "main_2"] }],
-        } }, warnings: [] } as T;
+        if (operation === "get_meter_configuration") return meterResponse() as T;
         return await new Promise<T>((resolve) => pending.set(operation, resolve as (value: unknown) => void));
       },
       connection: { subscribeMessage: async (_callback, message) => {
@@ -2537,7 +2533,7 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled,
       restart_and_verify: restartResult, preview_calibrated_gains: { transaction_id: "5".repeat(32), state: "previewed",
         source_sha256: "a".repeat(64), changes: [], redacted_diff: "- old\n+ new", rollback_available: false,
-        evidence: [], progress: [] } }));
+        evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } }));
     const state = panel as unknown as Record<string, unknown> & { cancelSession(): Promise<void>; restart(): Promise<void> };
     state.session = { ...cancelled, state: "ready" };
     await state.cancelSession(); await panel.updateComplete;
@@ -2606,7 +2602,7 @@ describe("CircuitSetup panel", () => {
       evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] } as const;
     const transactionId = "2".repeat(32);
     const preview = { transaction_id: transactionId, state: "previewed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [] };
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const restartResult = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
       topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
       topology_voltage_layout: "two_groups", connection_generation: 4,
