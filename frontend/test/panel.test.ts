@@ -5,10 +5,10 @@ import "../src/index";
 import { espWebInstaller } from "../src/components/esp-web-installer";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
-import { changesFromDrafts, type CtDraft } from "../src/components/ct-inventory-step";
+import { changesFromDrafts, circuitConfigurationIsValid, type CtDraft } from "../src/components/ct-inventory-step";
 import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
-import type { CtInventory, MeterTopology } from "../src/types";
+import type { CtInventory, MeterConfigurationRequest, MeterTopology } from "../src/types";
 
 const tick = async () => {
   await Promise.resolve();
@@ -161,6 +161,25 @@ describe("ESP Web Tools installer", () => {
 });
 
 describe("CircuitSetup panel", () => {
+  it("shows canonical circuit fields when meter configuration is loaded", async () => {
+    const configuration = meterResponse();
+    const panel = document.createElement("circuitsetup-energy-meter-helper-panel") as CircuitSetupPanel;
+    document.body.append(panel);
+    (panel as unknown as { meterConfiguration: typeof configuration }).meterConfiguration = configuration;
+    (panel as unknown as { showInventory: (value: CtInventory) => void }).showInventory(configuration as unknown as CtInventory);
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 used"]')).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 role"]')).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 voltage reference"]')).not.toBeNull();
+  });
+
+  it("rejects aggregate channels that overlap or include disabled circuits", () => {
+    const configuration = meterResponse().configuration as MeterConfigurationRequest;
+    const aggregate = { aggregate_id: "main-service", name: "Main service", role: "grid" as const, channels: [1, 2], measurement_method: "two_ct_sum" as const, parent_id: null, energy_mode: "bidirectional" as const, expose_power: true, expose_current: true };
+    expect(circuitConfigurationIsValid({ ...configuration, aggregates: [aggregate] }, 6)).toBe(true);
+    expect(circuitConfigurationIsValid({ ...configuration, aggregates: [aggregate, { ...aggregate, aggregate_id: "duplicate", channels: [2, 3] }] }, 6)).toBe(false);
+    expect(circuitConfigurationIsValid({ ...configuration, channels: [{ ...configuration.channels[0]!, enabled: false, role: "unused" }, ...configuration.channels.slice(1)], aggregates: [aggregate] }, 6)).toBe(false);
+  });
   it("loads the firmware catalog once when the panel connects", async () => {
     const fetcher = vi.fn(() => Promise.resolve(firmwareResponse()));
     vi.stubGlobal("fetch", fetcher);

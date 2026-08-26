@@ -2,7 +2,7 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 
 import { HelperApi, type HomeAssistant } from "./api";
 import { buildInstallStep } from "./components/build-install-step";
-import { changesFromDrafts, ctInventoryStep, type CtDraft } from "./components/ct-inventory-step";
+import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, type CtDraft } from "./components/ct-inventory-step";
 import { currentStep } from "./components/current-step";
 import { meterSettingsStep } from "./components/meter-settings-step";
 import { espWebInstaller } from "./components/esp-web-installer";
@@ -24,6 +24,7 @@ import type {
   ElectricalSystem,
   LineFrequencyHz,
   MeterConfiguration,
+  MeterConfigurationRequest,
   MeterSettingsDraft,
   CtInventory,
   FirmwareCatalogState,
@@ -757,6 +758,22 @@ export class CircuitSetupPanel extends LitElement {
     this.requestUpdate();
   }
 
+  private updateCircuitConfiguration(configuration: MeterConfigurationRequest): void {
+    if (!this.meterConfiguration) return;
+    this.meterConfiguration = { ...this.meterConfiguration, configuration };
+    this.requestUpdate();
+  }
+
+  private disableCircuit(channel: number): void {
+    if (!this.meterConfiguration) return;
+    const aggregates = this.meterConfiguration.configuration.aggregates.filter((aggregate) => !aggregate.channels.includes(channel));
+    if (aggregates.length !== this.meterConfiguration.configuration.aggregates.length
+      && !window.confirm(`Marking CT${channel} unused removes it from aggregate totals. Continue?`)) return;
+    this.updateCircuitConfiguration({ ...this.meterConfiguration.configuration,
+      channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel
+        ? { ...item, enabled: false, role: "unused" } : item), aggregates });
+  }
+
   private hasPackageChanges(): boolean {
     return Boolean(this.sourcePackageOptions && (["power_quality", "status_fields"] as const)
       .some((feature) => this.packageOptions[feature]
@@ -845,6 +862,24 @@ export class CircuitSetupPanel extends LitElement {
 
   private async continueFromCt(): Promise<void> {
     if (!this.api || !this.inventory || !this.selectedDeviceId || this.pendingAction) return;
+    if (this.meterConfiguration && !this.labelOnly) {
+      const configuration = this.meterConfiguration.configuration;
+      if (!circuitConfigurationIsValid(configuration, this.inventory.channels.length)) {
+        return this.fail(new Error(), "Complete the circuit and aggregate assignments before review.");
+      }
+      this.pendingAction = "session";
+      const api = this.api; const deviceId = this.selectedDeviceId; const meter = this.meterConfiguration;
+      const generation = ++this.operationGeneration;
+      await this.run(async () => {
+        this.transaction = await api.previewMeterConfiguration(deviceId, meter.plan_id, meter.source_sha256, configuration);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.navigate("build");
+        await this.subscribeTransaction(this.connectionGeneration);
+      }, "Circuit configuration could not be reviewed.", () => this.ownsOperation(generation, api, deviceId));
+      this.pendingAction = "";
+      this.requestUpdate();
+      return;
+    }
     const changes = changesFromDrafts(this.inventory, this.drafts);
     if (this.labelOnly && changes.length) {
       const labels = changes.map(({ channel, name }) => ({ channel, name }));
@@ -1513,7 +1548,8 @@ export class CircuitSetupPanel extends LitElement {
     );
     if (this.step === "ct" && this.inventory) return html`<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
       (board) => { this.board = board; this.requestUpdate(); },
-      (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session")}`;
+      (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session",
+      this.labelOnly ? null : this.meterConfiguration?.configuration ?? null, (configuration) => this.updateCircuitConfiguration(configuration), (channel) => this.disableCircuit(channel))}`;
     if (this.step === "build") return buildInstallStep(this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(),

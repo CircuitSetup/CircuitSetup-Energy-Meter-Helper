@@ -1,5 +1,5 @@
 import { html, nothing, type TemplateResult } from "lit";
-import type { CtChange, CtInventory, CtPreset } from "../types";
+import type { ChannelSettings, CircuitAggregate, CtChange, CtInventory, CtPreset, MeterConfigurationRequest } from "../types";
 import { moveTab } from "./tab-keyboard";
 
 export interface CtDraft {
@@ -27,6 +27,9 @@ export function ctInventoryStep(
   review: () => void,
   labelOnly = false,
   busy = false,
+  configuration: MeterConfigurationRequest | null = null,
+  updateConfiguration: (configuration: MeterConfigurationRequest) => void = () => undefined,
+  disableChannel: (channel: number) => void = () => undefined,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -121,12 +124,103 @@ export function ctInventoryStep(
       </div>
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
+      ${configuration ? circuitsEditor(configuration, updateConfiguration, disableChannel) : nothing}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
       </footer>
     </section>
   `;
+}
+
+const ROLES = ["grid", "solar", "generator", "subpanel", "branch", "two_pole", "custom", "unused"] as const;
+const METHODS = ["direct", "two_ct_sum", "one_ct_double_power", "both_conductors_one_ct"] as const;
+const ENERGY = ["none", "consumption", "bidirectional", "generation"] as const;
+
+function circuitsEditor(
+  configuration: MeterConfigurationRequest,
+  update: (configuration: MeterConfigurationRequest) => void,
+  disable: (channel: number) => void,
+): TemplateResult {
+  const patchChannel = (channel: number, patch: Partial<ChannelSettings>) => update({ ...configuration,
+    channels: configuration.channels.map((item) => item.channel === channel ? { ...item, ...patch } : item) });
+  const patchAggregate = (index: number, patch: Partial<CircuitAggregate>) => update({ ...configuration,
+    aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) });
+  const references = configuration.meter.voltage_references;
+  const warning = configuration.aggregates.some((aggregate) => aggregate.channels.length > 1)
+    ? "Totals include multiple circuits. Do not also count a child circuit in the same dashboard total."
+    : "";
+  return html`<section class="step-content" aria-labelledby="circuits-heading">
+    <h2 id="circuits-heading">Circuit assignments</h2>
+    <p>These fields are part of the meter configuration. Calibration values remain internal.</p>
+    ${configuration.channels.map((channel) => html`<section class="ct-detail" aria-label=${`CT${channel.channel} circuit`}>
+      <strong>CT${channel.channel}</strong>
+      <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} used`} .checked=${channel.enabled}
+        @change=${(event: Event) => (event.target as HTMLInputElement).checked
+          ? patchChannel(channel.channel, { enabled: true, role: channel.role === "unused" ? "branch" : channel.role })
+          : disable(channel.channel)} />Used</label>
+      <label>Name <input aria-label=${`CT${channel.channel} circuit name`} maxlength="64" .value=${channel.name}
+        @input=${(event: Event) => patchChannel(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
+      <label>Role <select aria-label=${`CT${channel.channel} role`} .value=${channel.role}
+        @change=${(event: Event) => patchChannel(channel.channel, { role: (event.target as HTMLSelectElement).value as ChannelSettings["role"] })}>${ROLES.map((role) => html`<option value=${role}>${role.replaceAll("_", " ")}</option>`)}</select></label>
+      <label>Voltage reference <select aria-label=${`CT${channel.channel} voltage reference`} .value=${channel.voltage_reference_id}
+        @change=${(event: Event) => patchChannel(channel.channel, { voltage_reference_id: (event.target as HTMLSelectElement).value })}>${references.map((reference) => html`<option value=${reference.reference_id}>${reference.label || reference.reference_id}</option>`)}</select></label>
+      <span>${channel.enabled ? `${channel.model_id || "No CT model"}; ${channel.role.replaceAll("_", " ")}` : "Unused"}</span>
+    </section>`)}
+    <h2>Aggregate totals</h2>
+    ${warning ? html`<p class="warning-band" role="status">${warning}</p>` : nothing}
+    ${configuration.aggregates.map((aggregate, index) => html`<section class="ct-detail" aria-label=${`${aggregate.name} aggregate`}>
+      <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
+        @input=${(event: Event) => patchAggregate(index, { name: (event.target as HTMLInputElement).value })} /></label>
+      <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
+        @change=${(event: Event) => patchAggregate(index, { role: (event.target as HTMLSelectElement).value as CircuitAggregate["role"] })}>${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${role.replaceAll("_", " ")}</option>`)}</select></label>
+      <label>Method <select aria-label=${`${aggregate.aggregate_id} aggregate method`} .value=${aggregate.measurement_method}
+        @change=${(event: Event) => patchAggregate(index, { measurement_method: (event.target as HTMLSelectElement).value as CircuitAggregate["measurement_method"] })}>${METHODS.map((method) => html`<option value=${method}>${method.replaceAll("_", " ")}</option>`)}</select></label>
+      <label>Energy <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
+        @change=${(event: Event) => patchAggregate(index, { energy_mode: (event.target as HTMLSelectElement).value as CircuitAggregate["energy_mode"] })}>${ENERGY.map((mode) => html`<option value=${mode}>${mode}</option>`)}</select></label>
+      <label>Channels <input aria-label=${`${aggregate.aggregate_id} aggregate channels`} .value=${aggregate.channels.join(",")}
+        @change=${(event: Event) => patchAggregate(index, { channels: (event.target as HTMLInputElement).value.split(",").map(Number).filter(Number.isInteger) })} /></label>
+      <label>Parent <select aria-label=${`${aggregate.aggregate_id} aggregate parent`} .value=${aggregate.parent_id ?? ""}
+        @change=${(event: Event) => patchAggregate(index, { parent_id: (event.target as HTMLSelectElement).value || null })}><option value="">None</option>${configuration.aggregates.filter((item) => item.aggregate_id !== aggregate.aggregate_id).map((item) => html`<option value=${item.aggregate_id}>${item.name}</option>`)}</select></label>
+      <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose power`} .checked=${aggregate.expose_power}
+        @change=${(event: Event) => patchAggregate(index, { expose_power: (event.target as HTMLInputElement).checked })} />Power</label>
+      <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose current`} .checked=${aggregate.expose_current}
+        @change=${(event: Event) => patchAggregate(index, { expose_current: (event.target as HTMLInputElement).checked })} />Current</label>
+    </section>`)}
+    <button class="secondary" @click=${() => update({ ...configuration, aggregates: [...configuration.aggregates, {
+      aggregate_id: `aggregate-${configuration.aggregates.length + 1}`, name: "New aggregate", role: "branch", channels: [], measurement_method: "direct", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false,
+    }] })}>Add aggregate</button>
+    <button class="secondary" @click=${() => update({ ...configuration, aggregates: [...configuration.aggregates, {
+      aggregate_id: `main-service-${configuration.aggregates.length + 1}`, name: "Main service", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true,
+    }] })}>Add main-service preset</button>
+  </section>`;
+}
+
+export function circuitConfigurationIsValid(configuration: MeterConfigurationRequest, ctCount: number): boolean {
+  const references = new Set(configuration.meter.voltage_references.map((reference) => reference.reference_id));
+  if (configuration.channels.length !== ctCount || new Set(configuration.channels.map((channel) => channel.channel)).size !== ctCount
+    || configuration.channels.some((channel) => channel.channel < 1 || channel.channel > ctCount || !channel.name.trim()
+      || !references.has(channel.voltage_reference_id) || channel.enabled === (channel.role === "unused"))) return false;
+  const ids = new Set<string>(); const claimed = new Set<number>(); const parents = new Map<string, string | null>();
+  for (const aggregate of configuration.aggregates) {
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(aggregate.aggregate_id) || ids.has(aggregate.aggregate_id)
+      || !aggregate.name.trim() || !aggregate.channels.length || new Set(aggregate.channels).size !== aggregate.channels.length) return false;
+    ids.add(aggregate.aggregate_id); parents.set(aggregate.aggregate_id, aggregate.parent_id);
+    const needed = aggregate.measurement_method === "two_ct_sum" ? 2
+      : aggregate.measurement_method === "one_ct_double_power" || aggregate.measurement_method === "both_conductors_one_ct" ? 1 : undefined;
+    if (needed !== undefined && aggregate.channels.length !== needed
+      || aggregate.channels.some((channel) => channel < 1 || channel > ctCount || claimed.has(channel)
+        || !configuration.channels[channel - 1]?.enabled)) return false;
+    aggregate.channels.forEach((channel) => claimed.add(channel));
+  }
+  for (const [id, parent] of parents) {
+    const seen = new Set<string>();
+    for (let current = parent; current !== null; current = parents.get(current) ?? null) {
+      if (!ids.has(current) || current === id || seen.has(current)) return false;
+      seen.add(current);
+    }
+  }
+  return true;
 }
 
 export function changesFromDrafts(inventory: CtInventory, drafts: Map<number, CtDraft>): CtChange[] {
