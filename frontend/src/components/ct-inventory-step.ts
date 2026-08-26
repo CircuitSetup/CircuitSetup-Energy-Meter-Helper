@@ -35,8 +35,13 @@ export function ctInventoryStep(
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
+  const referenceByGroup = new Map(configuration?.meter.voltage_references.flatMap((reference) =>
+    reference.group_keys.map((group) => [group, reference] as const)) ?? []);
+  const patchChannel = (channel: number, patch: Partial<ChannelSettings>) => configuration && updateConfiguration({ ...configuration,
+    channels: configuration.channels.map((item) => item.channel === channel ? { ...item, ...patch } : item) });
   return html`
     <section class="step-content ct-step" aria-labelledby="step-heading">
+      <p class="info-band">CT numbering starts at the top-left connector on each board and continues counterclockwise, then continues upward through the board stack. A circuit's voltage reference is determined by the physical voltage setup and cannot be changed in software.</p>
       <div class="board-tabs" role="tablist" aria-label="Meter boards" aria-orientation="horizontal">
         ${Array.from({ length: boardCount }, (_, index) => html`
           <button role="tab" id=${`board-tab-${index}`} data-board-tab=${index} aria-selected=${index === board}
@@ -50,7 +55,7 @@ export function ctInventoryStep(
       <div id="board-panel" role="tabpanel" aria-labelledby=${`board-tab-${board}`}>
       <div class="ct-table" role="table" aria-rowcount=${inventory.channels.length + 1}>
         <div class="ct-header" role="row" aria-rowindex="1">
-          <span role="columnheader">CT</span><span role="columnheader">Name</span><span role="columnheader">Model</span><span role="columnheader">Current gain</span><span role="columnheader">Multiplier</span><span role="columnheader">Resulting gain</span><span role="columnheader">Burden</span><span role="columnheader">Status</span>
+          <span role="columnheader">CT</span><span role="columnheader">Used</span><span role="columnheader">Role</span><span role="columnheader">Voltage reference</span><span role="columnheader">Name</span><span role="columnheader">Model</span><span role="columnheader">Current gain</span><span role="columnheader">Multiplier</span><span role="columnheader">Resulting gain</span><span role="columnheader">Burden</span><span role="columnheader">Status</span>
         </div>
         <div class="ct-window" aria-label="Current transformers">
           ${rows.map((channel) => {
@@ -64,9 +69,19 @@ export function ctInventoryStep(
             const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
             const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : undefined);
             const dirty = isDirty(channel, draft);
+            const circuit = configuration?.channels.find((item) => item.channel === channel.channel);
+            const reference = referenceByGroup.get(`${channel.address.board_index === 0 ? "main" : `addon${channel.address.board_index}`}_${channel.address.group_index + 1}`);
             return html`
               <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index} role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
                 <strong class="ct-index" role="cell">CT${channel.channel}</strong>
+                ${circuit ? html`<label role="cell" class="check-row"><span class="mobile-label">Used</span><input type="checkbox" aria-label=${`CT${channel.channel} used`} .checked=${circuit.enabled}
+                  @change=${(event: Event) => (event.target as HTMLInputElement).checked
+                    ? patchChannel(channel.channel, { enabled: true, role: circuit.role === "unused" ? "branch" : circuit.role })
+                    : disableChannel(channel.channel)} /></label>` : html`<span role="cell"><span class="mobile-label">Used</span>—</span>`}
+                ${circuit ? html`<label role="cell"><span class="mobile-label">Role</span><select aria-label=${`CT${channel.channel} role`} .value=${circuit.role} ?disabled=${!circuit.enabled}
+                  @change=${(event: Event) => patchChannel(channel.channel, { role: (event.target as HTMLSelectElement).value as ChannelSettings["role"] })}>
+                  ${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${role.replaceAll("_", " ")}</option>`)}</select></label>` : html`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
+                <span role="cell" data-voltage-reference><span class="mobile-label">Voltage reference</span>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span>
                 <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
                   @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
                 <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} ?disabled=${labelOnly}
@@ -126,7 +141,7 @@ export function ctInventoryStep(
       </div>
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
-      ${configuration ? circuitsEditor(configuration, updateConfiguration, disableChannel, managedTotals, managedTotalsReason) : nothing}
+      ${configuration ? circuitsEditor(configuration, updateConfiguration, managedTotals, managedTotalsReason) : nothing}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
@@ -142,12 +157,9 @@ const ENERGY = ["none", "consumption", "bidirectional", "generation"] as const;
 function circuitsEditor(
   configuration: MeterConfigurationRequest,
   update: (configuration: MeterConfigurationRequest) => void,
-  disable: (channel: number) => void,
   managedTotals: boolean,
   managedTotalsReason: string,
 ): TemplateResult {
-  const patchChannel = (channel: number, patch: Partial<ChannelSettings>) => update({ ...configuration,
-    channels: configuration.channels.map((item) => item.channel === channel ? { ...item, ...patch } : item) });
   const patchAggregate = (index: number, patch: Partial<CircuitAggregate>) => update({ ...configuration,
     aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) });
   const renameAggregate = (index: number, aggregateId: string) => {
@@ -155,9 +167,6 @@ function circuitsEditor(
     update({ ...configuration, aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index
       ? { ...item, aggregate_id: aggregateId } : item.parent_id === old ? { ...item, parent_id: aggregateId } : item) });
   };
-  const references = configuration.meter.voltage_references;
-  const referenceByGroup = new Map(references.flatMap((reference) => reference.group_keys.map((group) => [group, reference] as const)));
-  const physicalReference = (channel: number) => referenceByGroup.get(`${channel <= 6 ? "main" : `addon${Math.floor((channel - 1) / 6)}`}_${Math.floor(((channel - 1) % 6) / 3) + 1}`);
   const available = configuration.channels.filter((channel) => channel.enabled && !configuration.aggregates.some((aggregate) => aggregate.channels.includes(channel.channel))).map((channel) => channel.channel);
   const warnings = configuration.aggregates.flatMap((aggregate) => [
     aggregate.role === "grid" && aggregate.channels.some((channel) => configuration.channels[channel - 1]?.role === "branch") ? `${aggregate.name}: keep branch loads out of the root-grid total.` : "",
@@ -165,23 +174,8 @@ function circuitsEditor(
     aggregate.role === "two_pole" && !["one_ct_double_power", "both_conductors_one_ct", "two_ct_sum"].includes(aggregate.measurement_method) ? `${aggregate.name}: select a two-pole measurement method.` : "",
     aggregate.role === "two_pole" && aggregate.channels.some((channel) => configuration.aggregates.filter((item) => item.role === "two_pole" && item.channels.includes(channel)).length > 1) ? `${aggregate.name}: a CT cannot belong to two two-pole aggregates.` : "",
   ].filter(Boolean));
-  return html`<section class="step-content" aria-labelledby="circuits-heading">
-    <h2 id="circuits-heading">Circuits & CTs</h2>
-    <p>These fields are part of the meter configuration. Calibration values remain internal.</p>
-    ${configuration.channels.map((channel) => html`<section class="ct-detail" aria-label=${`CT${channel.channel} circuit`}>
-      <strong>CT${channel.channel}</strong>
-      <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} used`} .checked=${channel.enabled}
-        @change=${(event: Event) => (event.target as HTMLInputElement).checked
-          ? patchChannel(channel.channel, { enabled: true, role: channel.role === "unused" ? "branch" : channel.role })
-          : disable(channel.channel)} />Used</label>
-      <label>Role <select aria-label=${`CT${channel.channel} role`} .value=${channel.role}
-        ?disabled=${!channel.enabled}
-        @change=${(event: Event) => patchChannel(channel.channel, { role: (event.target as HTMLSelectElement).value as ChannelSettings["role"] })}>${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${role.replaceAll("_", " ")}</option>`)}</select></label>
-      <label>Voltage reference <select aria-label=${`CT${channel.channel} voltage reference`} .value=${physicalReference(channel.channel)?.reference_id ?? channel.voltage_reference_id} disabled title="Determined by the physical ATM voltage group assignment">
-        ${(physicalReference(channel.channel) ? [physicalReference(channel.channel)!] : references).map((reference) => html`<option value=${reference.reference_id}>${reference.label || reference.reference_id}</option>`)}</select></label>
-      <span>${channel.enabled ? `${channel.model_id || "No CT model"}; ${channel.role.replaceAll("_", " ")}` : "Unused"}</span>
-    </section>`)}
-    <h2>Aggregate totals</h2>
+  return html`<section class="step-content" aria-labelledby="aggregates-heading">
+    <h2 id="aggregates-heading">Aggregate totals</h2>
     ${!managedTotals ? html`<p class="info-band" role="status">Aggregate editing unavailable: ${managedTotalsReason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : nothing}
     ${warnings.map((warning) => html`<p class="warning-band" role="status">${warning}</p>`)}
     ${configuration.aggregates.map((aggregate, index) => html`<fieldset class="ct-detail" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!managedTotals}><legend>${aggregate.name}</legend>

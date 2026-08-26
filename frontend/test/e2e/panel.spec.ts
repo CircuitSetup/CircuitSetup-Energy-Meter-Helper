@@ -525,6 +525,12 @@ test("six-channel inventory routes canonical edits through Meter Settings and fu
   await expect(page.locator('[data-group-nav]')).toHaveCount(0);
   await expect(page.locator('.ct-index')).toHaveText(["CT1", "CT2", "CT3", "CT4", "CT5", "CT6"]);
   await expect(page.locator('.row-count')).toHaveText("Showing 1–6 of 6 CTs");
+  await page.setViewportSize({ width: 900, height: 900 });
+  expect(await page.locator('.ct-table').evaluate((table) => ({
+    overflowX: getComputedStyle(table).overflowX,
+    scrollable: table.scrollWidth > table.clientWidth,
+  }))).toEqual({ overflowX: "auto", scrollable: true });
+  await page.setViewportSize({ width: 1280, height: 720 });
   const alignment = await page.locator('.name-mode label').evaluateAll((labels) => labels.map((label) => {
     const input = label.querySelector('input')!.getBoundingClientRect();
     const row = label.getBoundingClientRect();
@@ -859,6 +865,8 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   const frames = await mockHomeAssistant(page, { addons: 6, calibration: "main-success" });
   await openInventory(page);
   await expect(page.locator('[data-board-tab]')).toHaveCount(7);
+  await page.getByRole("tab", { name: "Add-on 1" }).click();
+  await expect(page.locator('[data-ct-row][aria-label="CT7"] [data-voltage-reference]')).toContainText("Add-on 1");
   await reachCurrent(page, 42);
   await page.getByRole("tab", { name: "Main Board" }).click();
   await page.getByLabel("CT1 reference").fill("5");

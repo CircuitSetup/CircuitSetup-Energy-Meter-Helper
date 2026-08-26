@@ -8,9 +8,10 @@ import { summaryStep } from "../src/components/summary-step";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
 import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
+import { meterSettingsStep } from "../src/components/meter-settings-step";
 import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
-import type { CtInventory, MeterConfigurationRequest, MeterTopology } from "../src/types";
+import type { CtInventory, MeterConfigurationRequest, MeterSettingsDraft, MeterTopology } from "../src/types";
 
 const tick = async () => {
   await Promise.resolve();
@@ -235,16 +236,43 @@ describe("ESP Web Tools installer", () => {
 });
 
 describe("CircuitSetup panel", () => {
-  it("shows canonical circuit fields when meter configuration is loaded", async () => {
+  it("explains that voltage-reference configuration must match physical wiring", () => {
+    const response = meterResponse();
+    const root = document.createElement("div");
+    render(meterSettingsStep(response.configuration.meter as MeterSettingsDraft, response.voltage_transformer_catalog, false,
+      () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+
+    expect(root.textContent).toContain("must match the meter's physical voltage wiring");
+    expect(root.textContent).toContain("main-board voltage reference applies to every board");
+  });
+
+  it("keeps circuit controls in each board row and voltage references read only", async () => {
     const configuration = meterResponse();
     const panel = document.createElement("circuitsetup-energy-meter-helper-panel") as CircuitSetupPanel;
     document.body.append(panel);
     (panel as unknown as { meterConfiguration: typeof configuration }).meterConfiguration = configuration;
     (panel as unknown as { showInventory: (value: CtInventory) => void }).showInventory(configuration as unknown as CtInventory);
     await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 used"]')).not.toBeNull();
-    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 role"]')).not.toBeNull();
-    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 voltage reference"]')).not.toBeNull();
+    const row = panel.shadowRoot?.querySelector('[data-ct-row][aria-label="CT1"]');
+    expect(row?.querySelector('[aria-label="CT1 used"]')).not.toBeNull();
+    expect(row?.querySelector('[aria-label="CT1 role"]')).not.toBeNull();
+    expect(row?.querySelector('[data-voltage-reference]')?.textContent).toContain("Main");
+    expect(panel.shadowRoot?.querySelector('select[aria-label="CT1 voltage reference"]')).toBeNull();
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 circuit"]')).toBeNull();
+    expect(text(panel)).toContain("top-left connector on each board");
+    expect(text(panel)).toContain("continues counterclockwise");
+    expect(text(panel)).toContain("cannot be changed in software");
+
+    const role = row?.querySelector<HTMLSelectElement>('[aria-label="CT1 role"]');
+    if (!role) throw new Error("CT1 role control missing");
+    role.value = "solar";
+    role.dispatchEvent(new Event("change"));
+    await panel.updateComplete;
+    expect((panel as unknown as { meterConfiguration: typeof configuration }).meterConfiguration.configuration.channels[0]?.role).toBe("solar");
+
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 used"]')?.click();
+    await panel.updateComplete;
+    expect((panel as unknown as { meterConfiguration: typeof configuration }).meterConfiguration.configuration.channels[0]).toMatchObject({ enabled: false, role: "unused" });
   });
 
   it("rejects aggregate channels that overlap or include disabled circuits", () => {
