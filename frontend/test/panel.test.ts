@@ -314,6 +314,98 @@ describe("CircuitSetup panel", () => {
     expect((state.transaction as { state: string }).state).toBe("previewed");
   });
 
+  it("abandons a consumed review and preserves edits on a fresh plan", async () => {
+    const operations: Array<{ operation: string; planId: unknown }> = [];
+    let activePlan: string | null = "b".repeat(32);
+    let pendingTransaction = false;
+    let planGeneration = 0;
+    let releaseAbandon: () => void = () => undefined;
+    const abandonGate = new Promise<void>((resolve) => { releaseAbandon = resolve; });
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        operations.push({ operation, planId: message.plan_id });
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "preview_meter_configuration") {
+          if (message.plan_id !== activePlan || pendingTransaction) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
+          activePlan = null; pendingTransaction = true;
+          return preview as T;
+        }
+        if (operation === "abandon_ct_config") {
+          if (!pendingTransaction) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
+          await abandonGate;
+          pendingTransaction = false;
+          return { ...preview, state: "failed", evidence: ["cancelled"] } as T;
+        }
+        if (operation === "get_meter_configuration") {
+          planGeneration += 1;
+          activePlan = (planGeneration === 1 ? "c" : "d").repeat(32);
+          return { ...meterResponse(), plan_id: activePlan } as T;
+        }
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+      updateMeterSettings(draft: import("../src/types").MeterSettingsDraft): void;
+      continueFromMeterSettings(): Promise<void>;
+      continueFromCt(): Promise<void>;
+      backFromBuild(): Promise<void>;
+    };
+    state.selectedDeviceId = "meter-1";
+    const configuration = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    state.topology = configuration.topology;
+    state.setMeterConfiguration(configuration);
+    state.updateMeterSettings({ ...(state.meterSettingsDraft as import("../src/types").MeterSettingsDraft), friendly_name: "Preserved edit" });
+    await state.continueFromMeterSettings();
+    await state.continueFromCt();
+
+    const returning = state.backFromBuild();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .secondary")?.disabled).toBe(true);
+    expect(panel.shadowRoot?.querySelector(".action-footer .secondary")?.textContent).toBe("Loading…");
+    releaseAbandon();
+    await returning;
+
+    expect(pendingTransaction).toBe(false);
+    expect(state.step).toBe("ct");
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).plan_id).toBe("c".repeat(32));
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.meter.friendly_name).toBe("Preserved edit");
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.multi_reference_preparation_acknowledged).toBe(false);
+    await state.continueFromCt();
+    expect(operations.filter(({ operation }) => operation === "preview_meter_configuration").map(({ planId }) => planId)).toEqual(["b".repeat(32), "c".repeat(32)]);
+  });
+
+  it("keeps a failed review cancellation visible and does not discard edits", async () => {
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "abandon_ct_config") throw Object.assign(new Error("busy"), { code: "stale_confirmation" });
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.meterConfiguration = meterResponse();
+    state.transaction = preview;
+    state.step = "build";
+
+    await state.backFromBuild();
+    await panel.updateComplete;
+
+    expect(state.step).toBe("build");
+    expect(state.transaction).toBe(preview);
+    expect(state.error).toBe("The review could not be cancelled. Retry Back before editing the configuration.");
+    expect(panel.shadowRoot?.querySelector("[role=alert]")?.textContent).toContain("The review could not be cancelled");
+  });
+
   it("moves channel references with physical groups and resets operation acknowledgement", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;

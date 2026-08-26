@@ -165,7 +165,7 @@ function restart(addons: number) {
 async function mockHomeAssistant(page: Page, options: { addons?: number; outcome?: Outcome;
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
-  firmwareRequests?: string[] } = {}) {
+  firmwareRequests?: string[]; consumePlans?: boolean } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
@@ -175,6 +175,9 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   let setupSubscriptionGeneration = 0;
   let currentTransaction = transaction("previewed", addons ? 42 : 1);
   let currentSession = session("safety_required", false, addons);
+  let activePlan: string | null = "b".repeat(32);
+  let pendingPreview = false;
+  let freshPlanGeneration = 0;
   const setupDevices = options.setupEvent === "devices"
     ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
     : options.setupEvent === "device" ? [device(addons, options.importable)] : [];
@@ -229,7 +232,13 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           status_fields: Array.from({ length: addons + 1 }, () => false),
         },
       };
-      else if (operation === "get_meter_configuration") result = meterConfiguration(addons);
+      else if (operation === "get_meter_configuration") {
+        if (options.consumePlans && activePlan === null) {
+          activePlan = String.fromCharCode("c".charCodeAt(0) + freshPlanGeneration).repeat(32);
+          freshPlanGeneration += 1;
+        }
+        result = { ...meterConfiguration(addons), plan_id: activePlan ?? "b".repeat(32) };
+      }
       else if (operation === "get_ct_inventory") result = inventory(addons);
       else if (operation === "get_active_work") result = {
         session: null, transaction: null, verified_calibration: null,
@@ -240,7 +249,14 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         if (outcome === "collision") return fail("CT_NAME_COLLISION", "Names resolve to the same entity ID");
         result = currentTransaction = transaction("previewed", Number((frame.changes as Array<{ channel: number }>)[0]?.channel ?? 1));
       } else if (operation === "preview_meter_configuration") {
+        if (options.consumePlans && (frame.plan_id !== activePlan || pendingPreview)) {
+          return fail("stale_confirmation", "preview plan was already consumed");
+        }
         result = currentTransaction = transaction("previewed", 1);
+        if (options.consumePlans) {
+          activePlan = null;
+          pendingPreview = true;
+        }
       } else if (operation === "preview_calibrated_gains") {
         result = currentTransaction = { ...transaction("previewed", 1), transaction_id: "d".repeat(32) };
       } else if (operation === "apply_ct_config") {
@@ -257,6 +273,11 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       } else if (operation === "install_ct_config") result = currentTransaction = { ...transaction("verified", addons ? 42 : 1,
         { progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"] }),
         transaction_id: String(frame.transaction_id) };
+      else if (operation === "abandon_ct_config") {
+        if (options.consumePlans && !pendingPreview) return fail("stale_confirmation", "no pending preview");
+        pendingPreview = false;
+        result = currentTransaction = { ...currentTransaction, state: "failed", evidence: ["cancelled"] };
+      }
       else if (operation === "clear_calibration_flash") result = { ...restart(addons), source_authority: "configuration",
         source_handoff_available: false, source_handoff_transaction_id: frame.transaction_id,
         source_handoff_firmware_installed: true };
@@ -498,6 +519,31 @@ test("six-channel inventory routes canonical edits through Meter Settings and fu
   expect(preview.configuration).toMatchObject({ meter: { friendly_name: "Energy meter" } });
   expect(JSON.stringify(preview.configuration)).not.toContain("authoritative");
   expect(JSON.stringify(preview.configuration)).not.toContain("warnings");
+});
+
+test("review Back abandons the consumed preview and reuses preserved edits with a fresh plan", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { consumePlans: true });
+  await openInventory(page);
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.getByLabel("Friendly name").fill("Preserved meter");
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByLabel("Friendly name")).toHaveValue("Preserved meter");
+  await page.getByLabel("Friendly name").fill("Corrected meter");
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+
+  const previews = frames.filter((frame) => frame.type.endsWith("/preview_meter_configuration"));
+  expect(previews.map((frame) => frame.plan_id)).toEqual(["b".repeat(32), "c".repeat(32)]);
+  expect(previews[1]?.configuration).toMatchObject({ meter: { friendly_name: "Corrected meter" },
+    multi_reference_preparation_acknowledged: false });
+  expect(operations(frames).filter((operation) => operation === "abandon_ct_config")).toHaveLength(1);
 });
 
 test("topology package choices stay in the canonical preview payload", async ({ page }) => {

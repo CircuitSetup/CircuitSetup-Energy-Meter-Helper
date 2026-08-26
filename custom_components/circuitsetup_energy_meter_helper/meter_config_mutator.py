@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, replace
+from difflib import unified_diff
 
 from .config_blocks import (
     render_aggregates,
@@ -102,6 +104,10 @@ def build_meter_configuration_mutation(
     except ValueError as error:
         raise ConfigMutationError(str(error)) from error
     previous = current.configuration
+    source_document = ESPHomeConfigDocument.parse(snapshot.content)
+    voltage_references_changed = (
+        requested.meter.voltage_references != previous.meter.voltage_references
+    )
     if (
         len(requested.meter.voltage_references) > 1
         and not current.capabilities.multi_reference
@@ -206,13 +212,14 @@ def build_meter_configuration_mutation(
             or scalar.value != value
         ]
         content = _apply_changes(document, changes, substitutions)
-        content = replace_managed_block(
-            content,
-            "voltage_references",
-            _render_voltage_references(
-                requested.meter.voltage_references, topology, document
-            ),
-        )
+        if voltage_references_changed:
+            content = replace_managed_block(
+                content,
+                "voltage_references",
+                _render_voltage_references(
+                    requested.meter.voltage_references, topology, document
+                ),
+            )
     if requested.aggregates != previous.aggregates:
         content = replace_managed_block(
             content,
@@ -226,12 +233,22 @@ def build_meter_configuration_mutation(
     )
     rendered_blocks: dict[str, list[str]] = {}
     proposed_document = ESPHomeConfigDocument.parse(content)
-    if requested.meter != previous.meter:
-        rendered_blocks["Voltage reference"] = _managed_review_lines(
-            proposed_document.managed_blocks.get("voltage_references")
+    if voltage_references_changed:
+        previous_gains = {
+            reference.reference_id: reference.gain_voltage
+            for reference in previous.meter.voltage_references
+        }
+        rendered_blocks["Voltage reference"] = _managed_block_diff(
+            source_document.managed_blocks.get("voltage_references"),
+            proposed_document.managed_blocks.get("voltage_references"),
+            gain_changed=any(
+                previous_gains.get(reference.reference_id) != reference.gain_voltage
+                for reference in requested.meter.voltage_references
+            ),
         )
-    if requested.aggregates != previous.aggregates and requested.aggregates:
-        rendered_blocks["Aggregate"] = _managed_review_lines(
+    if requested.aggregates != previous.aggregates:
+        rendered_blocks["Aggregate"] = _managed_block_diff(
+            source_document.managed_blocks.get("aggregates"),
             proposed_document.managed_blocks.get("aggregates")
         )
     review_diff = _grouped_review_diff(
@@ -293,19 +310,6 @@ def _grouped_review_diff(
     reference_lines = lines(
         _reference_review_value(previous), _reference_review_value(requested)
     )
-    previous_gains = {
-        reference.reference_id: reference.gain_voltage
-        for reference in previous.meter.voltage_references
-    }
-    gain_updates = [
-        reference.reference_id
-        for reference in requested.meter.voltage_references
-        if previous_gains.get(reference.reference_id) != reference.gain_voltage
-    ]
-    if gain_updates:
-        reference_lines.extend(
-            f"~ {reference}: calibration gain updated" for reference in gain_updates
-        )
     reference_lines = [*rendered["Voltage reference"], *reference_lines]
     if reference_lines:
         groups.append(("Voltage reference", reference_lines))
@@ -342,17 +346,46 @@ def _grouped_review_diff(
     )
 
 
-def _managed_review_lines(block: ManagedBlock | None) -> list[str]:
-    content = block.content if block is not None else ""
-    lines = []
-    gain_redacted = False
-    for line in content.splitlines():
-        if "gain_voltage:" in line:
-            gain_redacted = True
-        elif not line.startswith(("# CircuitSetup Energy Meter Helper", "# End CircuitSetup Energy Meter Helper")):
-            lines.append(f"+ {line}")
-    if gain_redacted:
-        lines.append("~ calibration gain updated")
+_SENSITIVE_REVIEW_VALUE = re.compile(
+    r"(?:api[_ -]?key|credential|encryption[_ -]?key|noise[_ -]?psk|password|secret|token)",
+    re.IGNORECASE,
+)
+
+
+def _managed_block_diff(
+    previous: ManagedBlock | None,
+    proposed: ManagedBlock | None,
+    *,
+    gain_changed: bool = False,
+) -> list[str]:
+    """Return exact safe +/- managed YAML lines without block markers or gains."""
+    old = _managed_block_lines(previous)
+    new = _managed_block_lines(proposed)
+    old = [line for line in old if "gain_voltage:" not in line]
+    new = [line for line in new if "gain_voltage:" not in line]
+    changed = [
+        line
+        for line in unified_diff(old, new, n=0, lineterm="")
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+    ]
+    if gain_changed:
+        changed.append("~ calibration gain updated")
+    return changed
+
+
+def _managed_block_lines(block: ManagedBlock | None) -> list[str]:
+    if block is None:
+        return []
+    lines: list[str] = []
+    for line in block.content.splitlines():
+        if line.lstrip().startswith(
+            ("# CircuitSetup Energy Meter Helper", "# End CircuitSetup Energy Meter Helper")
+        ):
+            continue
+        if _SENSITIVE_REVIEW_VALUE.search(line):
+            key, separator, _value = line.partition(":")
+            line = f"{key}{separator} <redacted>" if separator else "<redacted>"
+        lines.append(line)
     return lines
 
 

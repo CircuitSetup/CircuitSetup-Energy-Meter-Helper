@@ -120,6 +120,14 @@ export class CircuitSetupPanel extends LitElement {
   private offsetAcknowledged = [false, false];
   private offsetRetryConfirmed = false;
   private drafts = new Map<number, CtDraft>();
+  private reviewCorrection: {
+    configuration: MeterConfigurationRequest;
+    drafts: Map<number, CtDraft>;
+    packageOptions: BoardPackageOptions;
+    packageOptionsTouched: boolean;
+    meterFrequencyTouched: boolean;
+    meterNominalVoltageTouched: Set<string>;
+  } | null = null;
   private labelOnly = false;
   private error = "";
   private announcement = "";
@@ -396,6 +404,7 @@ export class CircuitSetupPanel extends LitElement {
     this.topology = null;
     this.inventory = null;
     this.transaction = null;
+    this.reviewCorrection = null;
     this.session = null;
     this.drafts = new Map();
     this.meterSettingsDraft = null;
@@ -529,7 +538,7 @@ export class CircuitSetupPanel extends LitElement {
     else if (this.step === "voltage") this.navigate("offset");
     else if (this.step === "current") this.navigate("voltage");
     else if (this.step === "restart") this.navigate("current");
-    else if (this.step === "build") this.navigate(this.calibrationHandoff ? "restart" : "ct");
+    else if (this.step === "build") void this.backFromBuild();
     else if (this.step === "summary") this.navigate("build");
   }
 
@@ -705,6 +714,86 @@ export class CircuitSetupPanel extends LitElement {
     } finally {
       this.pendingAction = "";
       this.requestUpdate();
+    }
+  }
+
+  private async backFromBuild(): Promise<void> {
+    if (!this.api || !this.selectedDeviceId || this.pendingAction) return;
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const current = this.transaction;
+    if (current && current.state !== "previewed") {
+      this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
+      return;
+    }
+    const correction = this.reviewCorrection ?? (this.meterConfiguration ? {
+      configuration: { ...this.meterConfiguration.configuration,
+        multi_reference_preparation_acknowledged: false },
+      drafts: new Map(this.drafts),
+      packageOptions: {
+        power_quality: [...this.packageOptions.power_quality],
+        status_fields: [...this.packageOptions.status_fields],
+      },
+      packageOptionsTouched: this.packageOptionsTouched,
+      meterFrequencyTouched: this.meterFrequencyTouched,
+      meterNominalVoltageTouched: new Set(this.meterNominalVoltageTouched),
+    } : null);
+    if (!this.calibrationHandoff && !correction) {
+      this.fail(new Error(), "The edited configuration is unavailable. Return to setup and reload the meter.");
+      return;
+    }
+    this.pendingAction = "review-back";
+    this.error = "";
+    this.requestUpdate();
+    const generation = ++this.operationGeneration;
+    let abandoned = current === null;
+    try {
+      if (current) {
+        await api.abandonCtConfig(deviceId, current.transaction_id, current.source_sha256);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.clearSubscription("transaction");
+        this.transaction = null;
+        abandoned = true;
+      }
+      if (this.calibrationHandoff) {
+        this.calibrationHandoff = false;
+        this.navigate("restart");
+        return;
+      }
+      this.reviewCorrection = correction;
+      const fresh = await api.getMeterConfiguration(deviceId);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.setMeterConfiguration(fresh);
+      const restoredConfiguration = { ...correction!.configuration,
+        multi_reference_preparation_acknowledged: false };
+      this.packageOptions = {
+        power_quality: [...correction!.packageOptions.power_quality],
+        status_fields: [...correction!.packageOptions.status_fields],
+      };
+      this.packageOptionsTouched = correction!.packageOptionsTouched;
+      this.meterFrequencyTouched = correction!.meterFrequencyTouched;
+      this.meterNominalVoltageTouched = new Set(correction!.meterNominalVoltageTouched);
+      this.meterConfiguration = { ...fresh, configuration: restoredConfiguration };
+      this.meterSettingsDraft = { ...restoredConfiguration.meter,
+        authoritative: fresh.capabilities.configuration_authoritative,
+        warnings: fresh.warnings };
+      this.multiReferencePreparationAcknowledged = false;
+      this.canonicalConfigurationChanged = true;
+      this.showInventory(this.meterConfiguration);
+      this.drafts = new Map(correction!.drafts);
+      this.reviewCorrection = null;
+      this.announcement = "Review cancelled. Live meter data was reloaded and your edits were preserved.";
+    } catch (error) {
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (abandoned) this.reviewCorrection = correction;
+      this.fail(error, abandoned
+        ? "The review was cancelled, but fresh meter data could not be loaded. Retry Back to preserve your edits."
+        : "The review could not be cancelled. Retry Back before editing the configuration.");
+    } finally {
+      if (this.ownsOperation(generation, api, deviceId)) {
+        this.pendingAction = "";
+        this.requestUpdate();
+      }
     }
   }
 
@@ -1671,9 +1760,10 @@ export class CircuitSetupPanel extends LitElement {
       this.meterConfiguration?.capabilities.managed_totals ?? true, this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "")}`; }
     if (this.step === "build") return buildInstallStep(this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
-      () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(),
+      () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => void this.backFromBuild(),
       () => void this.startSession(), this.meterConfiguration?.configuration ?? null,
-      this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null);
+      this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null,
+      this.pendingAction === "review-back", this.reviewCorrection !== null);
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back(), this.pendingAction === "safety");
     if (this.step === "offset") return offsetStep(this.topology, this.session, this.board, this.offsetStage,

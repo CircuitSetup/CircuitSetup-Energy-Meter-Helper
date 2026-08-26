@@ -151,7 +151,7 @@ function validResponse(operation: string): unknown {
   if (operation === "list_meters") return [device];
   if (operation === "get_topology") return topology;
   if (operation === "get_ct_inventory") return inventory;
-  if (["preview_ct_config", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config"].includes(operation)) return transaction;
+  if (["preview_ct_config", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config"].includes(operation)) return transaction;
   if (["start_session", "get_session", "acknowledge_safety", "cancel_session"].includes(operation)) return session;
   if (operation === "skip_offset_calibration") return session;
   if (operation === "complete_calibration_without_changes") return { ...session, state: "verified" };
@@ -470,6 +470,7 @@ describe("HelperApi", () => {
     await api.applyCtConfig("meter-1", "tx-1", hash);
     await api.compileCtConfig("meter-1", "tx-1", hash);
     await api.installCtConfig("meter-1", "tx-1", hash);
+    await api.abandonCtConfig("meter-1", "tx-1", hash);
     await api.rollbackCtConfig("meter-1", "tx-1", hash);
     await api.startSession("meter-1");
     await api.getSession("session-1");
@@ -529,6 +530,7 @@ describe("HelperApi", () => {
       "circuitsetup_energy_meter_helper/apply_ct_config",
       "circuitsetup_energy_meter_helper/compile_ct_config",
       "circuitsetup_energy_meter_helper/install_ct_config",
+      "circuitsetup_energy_meter_helper/abandon_ct_config",
       "circuitsetup_energy_meter_helper/rollback_ct_config",
       "circuitsetup_energy_meter_helper/start_session",
       "circuitsetup_energy_meter_helper/get_session",

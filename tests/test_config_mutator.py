@@ -305,10 +305,74 @@ sensor:
     assert "+ friendly_name: Kitchen meter" in plan.redacted_diff
     assert "+ ct1_name: Kitchen mains" in plan.redacted_diff
     assert "+ power_quality_main: enabled" in plan.redacted_diff
-    assert "+   - id: !extend meter_main1" in plan.redacted_diff
-    assert "+   - platform: template" in plan.redacted_diff
+    assert '+        name: "${friendly_name} Service Voltage"' in plan.redacted_diff
+    assert "+  - platform: template" in plan.redacted_diff
     assert "current_cal" not in plan.redacted_diff
     assert "gain_voltage" not in plan.redacted_diff
+
+
+def test_friendly_name_only_diff_does_not_invent_voltage_block_changes() -> None:
+    snapshot = _contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        meter=replace(current.configuration.meter, friendly_name="Kitchen meter"),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert "Meter\n" in plan.redacted_diff
+    assert "Voltage reference" not in plan.redacted_diff
+    assert "calibration gain updated" not in plan.redacted_diff
+
+
+def test_managed_voltage_diff_has_exact_removed_added_lines_and_one_gain_marker() -> None:
+    snapshot = _contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    first_request = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(
+                    current.configuration.meter.voltage_references[0],
+                    label="Old service",
+                ),
+            ),
+        ),
+    )
+    first = build_meter_configuration_mutation(snapshot, topology, current, first_request)
+    installed = replace(
+        snapshot,
+        content=first.proposed_content,
+        sha256=sha256(first.proposed_content.encode()).hexdigest(),
+    )
+    installed_current = _inventory(installed, topology)
+    requested = replace(
+        installed_current.configuration,
+        meter=replace(
+            installed_current.configuration.meter,
+            voltage_references=(
+                replace(
+                    installed_current.configuration.meter.voltage_references[0],
+                    label="New service",
+                    gain_voltage=7306,
+                ),
+            ),
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(
+        installed, topology, installed_current, requested
+    )
+
+    assert '-        name: "${friendly_name} Old service Voltage"' in plan.redacted_diff
+    assert '+        name: "${friendly_name} New service Voltage"' in plan.redacted_diff
+    assert plan.redacted_diff.count("calibration gain updated") == 1
+    assert "7305" not in plan.redacted_diff
+    assert "7306" not in plan.redacted_diff
 
 
 def test_generalized_mutation_requires_authoritative_inventory_capability() -> None:
@@ -526,7 +590,15 @@ def test_voltage_reference_preview_never_echoes_owned_block_content() -> None:
     current = _inventory(snapshot, topology)
     initial_request = replace(
         current.configuration,
-        meter=replace(current.configuration.meter, friendly_name="Initial meter"),
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(
+                    current.configuration.meter.voltage_references[0],
+                    label="Initial service",
+                ),
+            ),
+        ),
     )
     first = build_meter_configuration_mutation(snapshot, topology, current, initial_request)
     secret_content = first.proposed_content.replace(
@@ -1792,7 +1864,9 @@ def test_removing_last_aggregate_restores_official_totals(
     assert "aggregates v1" not in removed.proposed_content
     assert "internal: true" not in removed.proposed_content
     assert removed.proposed_content == snapshot.content
-    assert removed.redacted_diff.startswith("Aggregate\n- load:")
+    assert removed.redacted_diff.startswith("Aggregate\n-  - id: !extend")
+    assert "-  - platform: template" in removed.redacted_diff
+    assert "- load:" in removed.redacted_diff
 
     empty_stored = StoredMeterConfiguration(
         sha256(removed.proposed_content.encode()).hexdigest(),
@@ -2752,6 +2826,15 @@ def test_gain_only_review_lines_are_redacted_and_keep_one_group_heading() -> Non
     current = _inventory(snapshot, topology)
     custom = replace(
         current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_references=(
+                replace(
+                    current.configuration.meter.voltage_references[0],
+                    gain_voltage=7305,
+                ),
+            ),
+        ),
         channels=tuple(
             replace(
                 channel,
@@ -2810,5 +2893,7 @@ def test_gain_only_review_lines_are_redacted_and_keep_one_group_heading() -> Non
     assert custom_plan.redacted_diff == "Channel\n~ CT1: calibration gain updated"
     assert "100" not in custom_plan.redacted_diff
     assert "200" not in custom_plan.redacted_diff
-    assert voltage_plan.redacted_diff.count("Voltage reference") == 1
+    assert voltage_plan.redacted_diff == (
+        "Voltage reference\n~ calibration gain updated"
+    )
     assert "7306" not in voltage_plan.redacted_diff

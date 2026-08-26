@@ -64,7 +64,7 @@ const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
 const FIRMWARE_PRODUCT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const ESPHOME_VERSION = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$/;
-const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_configuration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
+const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_configuration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
 const OFFSET_CAPABILITIES = new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
@@ -727,6 +727,8 @@ export class HelperApi {
     this.transaction("compile_ct_config", deviceId, transactionId, sourceSha256);
   public installCtConfig = (deviceId: string, transactionId: string, sourceSha256: string) =>
     this.transaction("install_ct_config", deviceId, transactionId, sourceSha256);
+  public abandonCtConfig = (deviceId: string, transactionId: string, sourceSha256: string) =>
+    this.transaction("abandon_ct_config", deviceId, transactionId, sourceSha256);
   public rollbackCtConfig = (deviceId: string, transactionId: string, sourceSha256: string) =>
     this.transaction("rollback_ct_config", deviceId, transactionId, sourceSha256);
   public startSession = (deviceId: string) =>
