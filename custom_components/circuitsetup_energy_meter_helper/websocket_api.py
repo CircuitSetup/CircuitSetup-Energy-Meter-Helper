@@ -127,6 +127,7 @@ _ALLOWED_CHANGE_PATH = re.compile(
     r"(?:meter|voltage_reference|channel|aggregate|package)\.[a-z0-9_.-]+"
 )
 _LEGACY_CHANGE_PATHS = {
+    "calibrated_voltage_gains": "meter.calibrated_voltage_gains",
     "friendly_name": "meter.friendly_name",
     "update_time": "meter.update_interval_s",
     "electric_freq": "meter.line_frequency_hz",
@@ -238,7 +239,7 @@ class WorkflowOwner(Protocol):
     ) -> Any: ...
 
     async def async_check_stability(
-        self, session_id: str, target: str, target_id: str | tuple[str, ...]
+        self, session_id: str, target: str, target_id: str
     ) -> Any: ...
 
     async def async_check_offset_readiness(
@@ -259,7 +260,8 @@ class WorkflowOwner(Protocol):
     async def async_calibrate_voltage(
         self,
         session_id: str,
-        references: tuple[Mapping[str, Any], ...],
+        reference_id: str,
+        reference_voltage: float,
         confirm_iteration: bool,
     ) -> Any: ...
 
@@ -395,6 +397,8 @@ class EntryWebsocketController:
                     tuple(msg["status_fields"])
                     if "status_fields" in msg
                     else None,
+                    msg.get("electrical_system"),
+                    msg.get("line_frequency_hz"),
                 )
             )
             return await self.async_call(f"{_PREFIX}setup_status", msg, user_id)
@@ -450,17 +454,14 @@ class EntryWebsocketController:
             )
         if operation == "check_stability" and workflow is not None:
             target = msg["target"]
-            target_id: str | tuple[str, ...]
             if target == "voltage":
-                if "target_id" in msg or "target_ids" not in msg:
-                    raise ValueError("voltage stability requires one board")
-                target_id = tuple(msg["target_ids"])
+                if "target_id" not in msg or "target_ids" in msg:
+                    raise ValueError("voltage stability requires one reference")
             else:
                 if "target_ids" in msg or "target_id" not in msg:
                     raise ValueError("current stability requires one channel")
-                target_id = msg["target_id"]
             return await workflow.async_check_stability(
-                msg["session_id"], target, target_id
+                msg["session_id"], target, msg["target_id"]
             )
         if operation == "check_offset_readiness" and workflow is not None:
             return await workflow.async_check_offset_readiness(
@@ -479,7 +480,8 @@ class EntryWebsocketController:
         if operation == "calibrate_voltage" and workflow is not None:
             return await workflow.async_calibrate_voltage(
                 msg["session_id"],
-                tuple(msg["references"]),
+                msg["reference_id"],
+                msg["reference_voltage"],
                 msg["confirm_iteration"],
             )
         if operation == "calibrate_current" and workflow is not None:
@@ -990,6 +992,15 @@ def _schema(command: str) -> Any:
             vol.Optional("status_fields"): vol.All(
                 [bool], vol.Length(min=1, max=7)
             ),
+            vol.Optional("electrical_system"): vol.In(
+                (
+                    "split_phase_120_240",
+                    "single_phase_230",
+                    "three_phase",
+                    "custom",
+                )
+            ),
+            vol.Optional("line_frequency_hz"): vol.All(_strict_integer, vol.In((50, 60))),
         }
         return vol.All(vol.Schema(schema), _validate_installer_firmware_schema)
     elif operation in {
@@ -1114,8 +1125,9 @@ def _schema(command: str) -> Any:
             vol.Required("session_id"): _ID,
             vol.Required("target"): vol.In(("voltage", "current")),
             vol.Optional("target_id"): _ID,
-            vol.Optional("target_ids"): vol.All([_ID], vol.Length(min=2, max=2)),
+            vol.Optional("target_ids"): vol.All([_ID], vol.Length(min=1, max=8)),
         }
+        return vol.All(vol.Schema(schema), _validate_stability_schema)
     elif operation in {"check_offset_readiness", "calibrate_offset"}:
         schema |= {
             vol.Required("session_id"): _ID,
@@ -1130,17 +1142,9 @@ def _schema(command: str) -> Any:
     elif operation == "calibrate_voltage":
         schema |= {
             vol.Required("session_id"): _ID,
-            vol.Required("references"): vol.All(
-                [
-                    vol.Schema(
-                        {
-                            vol.Required("group_key"): _ID,
-                            vol.Required("reference"): vol.Coerce(float),
-                        },
-                        extra=vol.PREVENT_EXTRA,
-                    )
-                ],
-                vol.Length(min=2, max=2),
+            vol.Required("reference_id"): _ID,
+            vol.Required("reference_voltage"): vol.All(
+                _finite_float, vol.Range(min=1, max=600)
             ),
             vol.Optional("confirm_iteration", default=False): bool,
         }
@@ -1200,6 +1204,8 @@ def _validate_installer_firmware_schema(value: dict[str, Any]) -> dict[str, Any]
             value.get("esphome_version"),
             tuple(value["power_quality"]) if "power_quality" in value else None,
             tuple(value["status_fields"]) if "status_fields" in value else None,
+            value.get("electrical_system"),
+            value.get("line_frequency_hz"),
         )
     except ValueError as error:
         raise vol.Invalid(str(error)) from error
@@ -1209,6 +1215,15 @@ def _validate_installer_firmware_schema(value: dict[str, Any]) -> dict[str, Any]
 def _validate_config_preview_schema(value: dict[str, Any]) -> dict[str, Any]:
     if not value["changes"] and "package_options" not in value:
         raise vol.Invalid("at least one configuration change is required")
+    return value
+
+
+def _validate_stability_schema(value: dict[str, Any]) -> dict[str, Any]:
+    if value["target"] == "voltage":
+        if "target_id" not in value or "target_ids" in value:
+            raise vol.Invalid("voltage stability requires one reference")
+    elif "target_id" not in value or "target_ids" in value:
+        raise vol.Invalid("current stability requires one channel")
     return value
 
 

@@ -17,6 +17,7 @@ from custom_components.circuitsetup_energy_meter_helper.calibration_engine impor
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
     CalibrationInvariantError,
     CalibrationState,
+    CalibrationTimingPolicy,
     IterationConfirmationRequired,
 )
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
@@ -55,6 +56,64 @@ class CalibrationEngine(ProductionCalibrationEngine):
     def __init__(self, sessions: SessionManager, persist: Any, **kwargs: Any) -> None:
         kwargs.setdefault("calibration_snapshot_reader", _authoritative_snapshot)
         super().__init__(sessions, persist, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("interval", "sensor_timeout", "evidence_timeout"),
+    (
+        (1, 35.0, 35.0),
+        (2, 35.0, 35.0),
+        (5, 35.0, 35.0),
+        (10, 45.0, 35.0),
+        (30, 125.0, 75.0),
+        (60, 245.0, 135.0),
+    ),
+)
+def test_calibration_timing_policy_uses_supported_interval_formulas(
+    interval: int, sensor_timeout: float, evidence_timeout: float
+) -> None:
+    policy = CalibrationTimingPolicy(interval, sample_count=3)
+
+    assert policy.sensor_window_timeout_s == sensor_timeout
+    assert policy.evidence_timeout_s == evidence_timeout
+
+
+@pytest.mark.parametrize("interval", (0, 3, 61, True, "30"))
+def test_calibration_timing_policy_rejects_unsupported_intervals(interval: object) -> None:
+    with pytest.raises(ValueError):
+        CalibrationTimingPolicy(interval, sample_count=3)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("sample_count", (0, -1, True))
+def test_calibration_timing_policy_requires_positive_integer_samples(
+    sample_count: object,
+) -> None:
+    with pytest.raises(ValueError):
+        CalibrationTimingPolicy(5, sample_count=sample_count)  # type: ignore[arg-type]
+
+
+def test_sensor_window_uses_installed_timing_policy() -> None:
+    async def run() -> None:
+        meter = binding(0)
+        session = FakeCalibrationSession(gain_evidence("meter_main1"))
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        await engine._window(
+            session,
+            meter.groups[0].voltage_sensors[0],
+            timing_policy=CalibrationTimingPolicy(30, 3),
+        )
+
+        assert session.events[-1] == (
+            "window",
+            meter.groups[0].voltage_sensors[0].descriptor.key,
+            meter.groups[0].voltage_sensors[0].descriptor.device_id,
+            3,
+            125.0,
+        )
+
+    asyncio.run(run())
 
 
 def sample_window(*values: float) -> SensorSampleWindow:
@@ -477,5 +536,81 @@ def test_additional_iterations_require_explicit_confirmation_and_stop_at_three()
                 confirm_iteration=True,
             )
         assert not any(event[0] == "button" for event in session.events)
+
+    asyncio.run(run())
+
+
+def test_voltage_calibrates_all_groups_across_boards() -> None:
+    class MultiBoardSession(FakeCalibrationSession):
+        def expect_gain_run(self, **kwargs: Any) -> Awaitable[GainRunEvidence]:
+            self.events.append(("expect_gain", kwargs))
+            future: asyncio.Future[GainRunEvidence] = (
+                asyncio.get_running_loop().create_future()
+            )
+            future.set_result(
+                replace(
+                    gain_evidence(
+                        kwargs["target_instance_id"],
+                        voltage_changes=(True, True, True),
+                        reference_voltages=(120.0, 120.0, 120.0),
+                    ),
+                    operation_sequence=kwargs["operation_sequence"],
+                )
+            )
+            return future
+
+    async def run() -> None:
+        meter = binding(1)
+        session = MultiBoardSession(gain_evidence("meter_main1"))
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        results = await engine.async_calibrate_voltages(
+            "aabbccddeeff",
+            session,
+            meter,
+            (
+                ("main_1", 120.0, 1),
+                ("main_2", 120.0, 1),
+                ("addon1_1", 120.0, 1),
+                ("addon1_2", 120.0, 1),
+            ),
+            1.0,
+        )
+
+        assert [result.group_key for result in results] == [
+            "main_1",
+            "main_2",
+            "addon1_1",
+            "addon1_2",
+        ]
+        assert [event[0] for event in session.events].count("button") == 4
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "references",
+    (
+        (),
+        (("main_1", 120.0, 1), ("main_1", 120.0, 1)),
+        (("missing", 120.0, 1),),
+    ),
+)
+def test_voltage_rejects_empty_duplicate_or_unknown_groups_before_hardware(
+    references: tuple[tuple[str, float, int], ...],
+) -> None:
+    async def run() -> None:
+        meter = binding(1)
+        session = FakeCalibrationSession(gain_evidence("meter_main1"))
+        _, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        with pytest.raises(ValueError):
+            await engine.async_calibrate_voltages(
+                "aabbccddeeff", session, meter, references, 1.0
+            )
+
+        assert session.events == []
 
     asyncio.run(run())

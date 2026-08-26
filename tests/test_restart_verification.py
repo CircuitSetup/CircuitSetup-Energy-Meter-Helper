@@ -25,6 +25,7 @@ from custom_components.circuitsetup_energy_meter_helper.config_document import (
 from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
     ConfigMutationError,
     CTChangeRequest,
+    _review_diff,
     build_calibrated_gain_mutation,
 )
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
@@ -1445,17 +1446,20 @@ def test_final_gain_preview_combines_ct_edits_without_overwriting_calibrated_cur
     assert "current_cal_ct2: '4325'" in plan.proposed_content
 
 
-def test_divergent_voltage_gains_return_exact_extend_snippet_and_never_auto_write() -> (
-    None
-):
+def test_divergent_voltage_gains_render_exact_extend_block() -> None:
     snapshot = _snapshot()
     record = _record(snapshot, ((7301, 28001), (7302, 28002), (7303, 28003)))
-    expected = (
-        "substitutions:\n"
-        "  current_cal_ct1: 28001\n"
-        "  current_cal_ct2: 28002\n"
-        "  current_cal_ct3: 28003\n"
-        "sensor:\n"
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+    assert "calibrated voltage gains v1" in plan.proposed_content
+    assert "gain_voltage: 7301" in plan.proposed_content
+    assert "gain_voltage: 7302" in plan.proposed_content
+    assert "gain_voltage: 7303" in plan.proposed_content
+    assert "voltage_cal1: '7301'" not in plan.proposed_content
+
+
+def test_partial_voltage_gain_handoff_preserves_existing_uncalibrated_overrides() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
         "  - id: !extend meter_main1\n"
         "    phase_a:\n"
         "      gain_voltage: 7301\n"
@@ -1463,11 +1467,142 @@ def test_divergent_voltage_gains_return_exact_extend_snippet_and_never_auto_writ
         "      gain_voltage: 7302\n"
         "    phase_c:\n"
         "      gain_voltage: 7303\n"
+        "  - id: !extend meter_main2\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7401\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7402\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7403\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+    )
+    snapshot = _snapshot(_snapshot().content + "sensor:\n" + block)
+    record = _record(snapshot, ((7501, 28001), (7502, 28002), (7503, 28003)))
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    merged = block.replace("7301", "7501").replace("7302", "7502").replace(
+        "7303", "7503"
+    )
+    assert merged in plan.proposed_content
+    assert merged.rstrip() in plan.redacted_diff
+
+
+def test_partial_uniform_voltage_gain_removes_only_its_stale_override() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7301\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7302\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7303\n"
+        "  - id: !extend meter_main2\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7401\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7402\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7403\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+    )
+    snapshot = _snapshot(_snapshot().content + "sensor:\n" + block)
+    record = _record(snapshot, ((7501, 28001),) * 3)
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert "!extend meter_main1" not in plan.proposed_content
+    assert block[block.index("  - id: !extend meter_main2") :] in plan.proposed_content
+
+
+def test_mixed_voltage_gain_handoff_replaces_only_divergent_instances() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7301\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7302\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7303\n"
+        "  - id: !extend meter_main2\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7401\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7402\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7403\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+    )
+    snapshot = _snapshot(_snapshot().content + "sensor:\n" + block)
+    record = replace(
+        _record(snapshot, ((7501, 28001),) * 3),
+        groups=(
+            VerifiedGainGroup("meter_main1", ((7501, 28001),) * 3),
+            VerifiedGainGroup(
+                "meter_main2", ((7601, 28004), (7602, 28005), (7603, 28006))
+            ),
+        ),
     )
 
-    with pytest.raises(ConfigMutationError, match="manual review") as error:
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert "!extend meter_main1" not in plan.proposed_content
+    assert "!extend meter_main2" in plan.proposed_content
+    assert all(f"gain_voltage: {gain}" in plan.proposed_content for gain in (7601, 7602, 7603))
+
+
+def test_final_uniform_voltage_gain_removal_is_explicit_in_review() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7301\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7302\n"
+        "    phase_c:\n"
+        "      gain_voltage: 7303\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+    )
+    snapshot = _snapshot(_snapshot().content + "sensor:\n" + block)
+    plan = build_calibrated_gain_mutation(
+        snapshot, topology(0), _record(snapshot, ((7501, 28001),) * 3)
+    )
+
+    assert "calibrated voltage gains v1" not in plan.proposed_content
+    assert any(change.key == "calibrated_voltage_gains" for change in plan.changes)
+    assert "calibrated_voltage_gains" in plan.redacted_diff
+    assert _review_diff((), block, block) == ""
+
+
+def test_uniform_gain_handoff_refuses_unwritable_stale_voltage_block() -> None:
+    content = _snapshot().content.replace(
+        "logger:\n",
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7301\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "logger:\n",
+    )
+    snapshot = _snapshot(content)
+    record = _record(snapshot, ((7310, 28001), (7310, 28002), (7310, 28003)))
+
+    with pytest.raises(ConfigMutationError, match="invalid|writable"):
         build_calibrated_gain_mutation(snapshot, topology(0), record)
-    assert error.value.snippet == expected
+
+
+def test_review_diff_ignores_trailing_unrelated_changes_after_voltage_block() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      gain_voltage: 7301\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+    )
+
+    assert _review_diff((), block + "packages: []\n", block + "packages: [x]\n") == ""
 
 
 def test_shared_voltage_substitution_requires_every_mapped_gain_to_match() -> None:
@@ -1497,10 +1632,9 @@ def test_shared_voltage_substitution_requires_every_mapped_gain_to_match() -> No
         ),
         verification_id="4" * 32,
     )
-    with pytest.raises(ConfigMutationError, match="manual review") as partial_error:
-        build_calibrated_gain_mutation(snapshot, topology(1), partial)
-    assert "- id: !extend meter_main1" in partial_error.value.snippet
-    assert "voltage_cal1" not in partial_error.value.snippet
+    partial_plan = build_calibrated_gain_mutation(snapshot, topology(1), partial)
+    assert "- id: !extend meter_main1" in partial_plan.proposed_content
+    assert "voltage_cal1: '7305'" in partial_plan.proposed_content
 
     matching = VerifiedCalibrationRecord(
         mac="aabbccddeeff",
@@ -1541,10 +1675,8 @@ def test_shared_voltage_substitution_requires_every_mapped_gain_to_match() -> No
         ),
         verification_id="3" * 32,
     )
-    with pytest.raises(ConfigMutationError) as error:
-        build_calibrated_gain_mutation(snapshot, topology(1), divergent)
-    assert "- id: !extend meter_main1" in error.value.snippet
-    assert "- id: !extend addon1_1" in error.value.snippet
+    divergent_plan = build_calibrated_gain_mutation(snapshot, topology(1), divergent)
+    assert "gain_voltage: 7302" in divergent_plan.proposed_content
 
 
 class CalibrationPersistence(Persistence):

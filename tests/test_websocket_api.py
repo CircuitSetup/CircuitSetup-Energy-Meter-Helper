@@ -29,6 +29,9 @@ from custom_components.circuitsetup_energy_meter_helper import (
     async_unload_entry,
     repairs,
 )
+from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
+    CalibrationTimingPolicy,
+)
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
     ConfigTransactionManager,
     ConfigTransactionState,
@@ -49,6 +52,9 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
 )
 from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeApiSession,
+)
+from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    VoltageReferenceConfig,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
@@ -604,7 +610,7 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         base |= {
             "session_id": "session",
             "target": "voltage",
-            "target_ids": ["main_1", "main_2"],
+            "target_id": "main",
         }
     elif suffix in {"check_offset_readiness", "calibrate_offset"}:
         base |= {"session_id": "session", "board_index": 0, "stage": 1}
@@ -618,10 +624,8 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
     elif suffix == "calibrate_voltage":
         base |= {
             "session_id": "session",
-            "references": [
-                {"group_key": "main_1", "reference": 120.0},
-                {"group_key": "main_2", "reference": 120.0},
-            ],
+            "reference_id": "main",
+            "reference_voltage": 120.0,
         }
     elif suffix == "calibrate_current":
         base |= {
@@ -691,6 +695,8 @@ def test_installer_intent_schema_requires_a_valid_paired_firmware_selection() ->
         "esphome_version": "2026.8.0",
         "power_quality": [True, False],
         "status_fields": [False, True],
+        "electrical_system": "single_phase_230",
+        "line_frequency_hz": 50,
     }
 
     assert schema(valid) == valid
@@ -702,9 +708,32 @@ def test_installer_intent_schema_requires_a_valid_paired_firmware_selection() ->
         {**valid, "firmware_product_id": "a" * 129},
         {**valid, "esphome_version": "https://2026.8.0"},
         {**valid, "esphome_version": "2026.8.0-" + "a" * 152},
+        {**valid, "line_frequency_hz": True},
+        {**valid, "line_frequency_hz": "50"},
+        {**valid, "line_frequency_hz": 55},
+        {**valid, "electrical_system": "split_phase"},
     ):
         with pytest.raises(vol.Invalid):
             schema(partial)
+
+
+@pytest.mark.parametrize("frequency", (50, 60))
+def test_installer_intent_schema_accepts_attached_three_phase_profile(
+    frequency: int,
+) -> None:
+    """The installer schema keeps the single attached three-phase value."""
+    schema = vol.Schema(_schema(f"{DOMAIN}/set_installer_intent"))
+
+    assert schema(
+        {
+            "type": f"{DOMAIN}/set_installer_intent",
+            "entry_id": "helper",
+            "addon_count": 0,
+            "connection_type": "wifi",
+            "electrical_system": "three_phase",
+            "line_frequency_hz": frequency,
+        }
+    )["electrical_system"] == "three_phase"
 
 
 def test_preview_ct_schema_requires_a_ct_or_package_change() -> None:
@@ -745,6 +774,8 @@ def test_setup_status_exposes_only_safe_installer_firmware_identifiers() -> None
             "esphome_version": "2026.8.0",
             "power_quality": [True, False],
             "status_fields": [False, True],
+            "electrical_system": "split_phase_120_240",
+            "line_frequency_hz": 60,
         }
         await _invoke(hass, connection, intent)
         await _invoke(hass, connection, _message(f"{DOMAIN}/setup_status", 2))
@@ -757,6 +788,8 @@ def test_setup_status_exposes_only_safe_installer_firmware_identifiers() -> None
             "esphome_version": "2026.8.0",
             "power_quality": [True, False],
             "status_fields": [False, True],
+            "electrical_system": "split_phase_120_240",
+            "line_frequency_hz": 60,
         }
         assert "url" not in repr(snapshot).casefold()
 
@@ -1725,7 +1758,229 @@ def test_native_only_session_starts_without_yaml_identity(
         assert status.state == "safety_required"
         assert handle.configuration is None
         assert handle.substitutions == {}
+        assert handle.meter_configuration is None
+        assert handle.timing_policy == CalibrationTimingPolicy(5, 3)
         await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_preview_publishes_calibrated_voltage_gain_block_deletion() -> None:
+    """Preview responses expose the managed gain block deletion safely."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+
+        async def call(*args: Any) -> TransactionStatus:
+            del args
+            return TransactionStatus(
+                "transaction",
+                ConfigTransactionState.PREVIEWED,
+                "a" * 64,
+                (SubstitutionChange("calibrated_voltage_gains", "managed", "removed"),),
+                "managed calibrated voltage gains removed",
+            )
+
+        controller.async_call = call  # type: ignore[method-assign]
+        connection = FakeConnection()
+
+        await _invoke(hass, connection, _message(f"{DOMAIN}/preview_ct_config", 1))
+
+        payload = connection.results[-1][1]
+        assert payload["changes"] == [
+            {
+                "key": "meter.calibrated_voltage_gains",
+                "old_value": "managed",
+                "new_value": "removed",
+            }
+        ]
+        assert payload["redacted_diff"] == "managed calibrated voltage gains removed"
+
+    asyncio.run(run())
+
+
+def test_builder_session_uses_legacy_snapshot_configuration_for_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.topology import (
+            topology_from_native,
+        )
+
+        project_name = "circuitsetup.6c-energy-meter-1-addon"
+        content = (
+            f"esphome:\n  project:\n    name: {project_name}\nsubstitutions:\n"
+            "  update_time: 60s\n"
+            "  voltage_cal1: 7305\n"
+            + "".join(
+                f"  ct{channel}_name: CT {channel}\n"
+                f"  current_cal_ct{channel}: 27518\n"
+                for channel in range(1, 13)
+            )
+        )
+        digest = sha256(content.encode()).hexdigest()
+        snapshot = ESPHomeConfigSnapshot("meter.yaml", content, digest)
+        topology = topology_from_native(project_name)
+        entry = SimpleNamespace(
+            domain="esphome",
+            entry_id="meter",
+            title="Meter",
+            unique_id="aa:bb:cc:dd:ee:ff",
+            data={"device_name": "meter"},
+            runtime_data=SimpleNamespace(
+                device_info=SimpleNamespace(project_name=project_name)
+            ),
+        )
+        hass = FakeHass((entry,))
+        provisioning = ProvisioningCoordinator(hass)
+        await provisioning.async_rescan()
+
+        class Builder:
+            async def async_list_devices(self) -> dict[str, Any]:
+                return {
+                    "configured": [
+                        {"name": "meter", "configuration": "meter.yaml"}
+                    ]
+                }
+
+            async def async_get_config(
+                self, configuration: str
+            ) -> ESPHomeConfigSnapshot:
+                assert configuration == snapshot.configuration
+                return snapshot
+
+            async def async_close(self) -> None:
+                return None
+
+        class Api:
+            entities: tuple[Any, ...] = ()
+            connection_generation = 1
+
+            async def async_connect(self) -> None:
+                return None
+
+        groups = tuple(
+            SimpleNamespace(
+                key=key,
+                references=(),
+                buttons=(),
+                voltage_sensors=(),
+                current_sensors=(),
+            )
+            for key in ("main_1", "main_2", "addon1_1", "addon1_2")
+        )
+        binding = SimpleNamespace(
+            topology=topology, connection_generation=1, groups=groups, channels=()
+        )
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.workflow.EntityCatalog",
+            lambda *args: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.workflow.bind_meter",
+            lambda *args: binding,
+        )
+        preflight_calls: list[object] = []
+
+        async def preflight(*_args: Any) -> PreflightResult:
+            preflight_calls.append(object())
+            return PreflightResult(())
+
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.workflow.async_preflight",
+            preflight,
+        )
+
+        class Store:
+            async def async_get_meter_configuration_read(self, _mac: str) -> Any:
+                return SimpleNamespace(configuration=None, stale=False)
+
+            async def async_get_ct_selections(self, _mac: str) -> tuple[object, ...]:
+                return ()
+
+            async def async_get_interrupted_session(self, _mac: str) -> None:
+                return None
+
+            async def async_get_verified_calibration(self, _mac: str) -> None:
+                return None
+
+            async def async_save_interrupted_session(self, *_args: Any) -> None:
+                return None
+
+            async def async_finalize_verified_calibration(self, *_args: Any) -> None:
+                return None
+
+        workflow = EntryWorkflow(
+            hass,
+            provisioning,
+            SessionManager(),
+            Store(),  # type: ignore[arg-type]
+            "meter",
+            Api(),  # type: ignore[arg-type]
+            Builder(),  # type: ignore[arg-type]
+        )
+        session = await workflow.async_start_session("meter")
+        handle = workflow._sessions[session.session_id]
+
+        assert handle.meter_configuration is not None
+        assert handle.meter_configuration.meter.update_interval_s == 60
+        assert handle.timing_policy == CalibrationTimingPolicy(60, 3)
+        assert tuple(
+            group.key for group in workflow._voltage_reference_groups(handle, "main")
+        ) == tuple(group.key for group in groups)
+
+        changed = content.replace("update_time: 60s", "update_time: 30s")
+        snapshot = ESPHomeConfigSnapshot(
+            "meter.yaml", changed, sha256(changed.encode()).hexdigest()
+        )
+        with pytest.raises(WorkflowHandleError, match="calibration configuration is stale"):
+            await workflow._async_calibration_snapshot(handle.mac, handle.topology)
+        snapshot = ESPHomeConfigSnapshot("meter.yaml", content, digest)
+
+        captured: list[tuple[Any, ...]] = []
+
+        class Calibration:
+            async def async_calibrate_voltages(
+                self, *args: Any, **kwargs: Any
+            ) -> tuple[object, ...]:
+                captured.append((*args, kwargs))
+                return ()
+
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+        await workflow.async_acknowledge_safety(session.session_id, True)
+        await workflow.async_calibrate_voltage(session.session_id, "main", 120.0, False)
+
+        assert captured[0][3] == (
+            ("main_1", 120.0, 1),
+            ("main_2", 120.0, 1),
+            ("addon1_1", 120.0, 1),
+            ("addon1_2", 120.0, 1),
+        )
+        assert captured[0][-1]["timing_policy"] == CalibrationTimingPolicy(60, 3)
+        await workflow.async_close()
+
+        class MismatchedStore(Store):
+            async def async_get_meter_configuration_read(self, _mac: str) -> Any:
+                return SimpleNamespace(
+                    configuration=SimpleNamespace(config_sha256="0" * 64), stale=False
+                )
+
+        preflight_calls.clear()
+        mismatched = EntryWorkflow(
+            hass,
+            provisioning,
+            SessionManager(),
+            MismatchedStore(),  # type: ignore[arg-type]
+            "meter",
+            Api(),  # type: ignore[arg-type]
+            Builder(),  # type: ignore[arg-type]
+        )
+        with pytest.raises(WorkflowHandleError, match="stored meter configuration is stale"):
+            await mismatched.async_start_session("meter")
+        assert preflight_calls == []
+        await mismatched.async_close()
 
     asyncio.run(run())
 
@@ -1779,15 +2034,28 @@ def test_stability_collects_all_phase_windows_concurrently(
         workflow._api.async_wait_for_sensor_window = window  # type: ignore[method-assign,union-attr]
         status = await workflow.async_start_session("meter")
         await workflow.async_acknowledge_safety(status.session_id, True)
+        workflow._sessions[status.session_id].meter_configuration = SimpleNamespace(
+            meter=SimpleNamespace(
+                voltage_references=(
+                    VoltageReferenceConfig(
+                        "main",
+                        "Main",
+                        "A",
+                        120.0,
+                        "default",
+                        7305,
+                        ("main_1", "main_2"),
+                    ),
+                )
+            )
+        )
 
         result = await asyncio.wait_for(
-            workflow.async_check_stability(
-                status.session_id, "voltage", ("main_1", "main_2")
-            ),
+            workflow.async_check_stability(status.session_id, "voltage", "main"),
             0.2,
         )
 
-        assert all(item["stable"] for item in result)
+        assert result["stable"]
         assert len(started) == 6
         assert len({after for _, after, _ in started}) == 1
         assert all(after is not None for _, after, _ in started)
@@ -1805,6 +2073,21 @@ def test_native_only_current_requires_explicit_reporting_multiplier(
         workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
         status = await workflow.async_start_session("meter")
         await workflow.async_acknowledge_safety(status.session_id, True)
+        workflow._sessions[status.session_id].meter_configuration = SimpleNamespace(
+            meter=SimpleNamespace(
+                voltage_references=(
+                    VoltageReferenceConfig(
+                        "main",
+                        "Main",
+                        "A",
+                        120.0,
+                        "default",
+                        7305,
+                        ("main_1", "main_2"),
+                    ),
+                )
+            )
+        )
         calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
         class Calibration:
@@ -1926,6 +2209,21 @@ def test_native_only_board_voltage_calibration_needs_no_builder_snapshot(
         workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
         status = await workflow.async_start_session("meter")
         await workflow.async_acknowledge_safety(status.session_id, True)
+        workflow._sessions[status.session_id].meter_configuration = SimpleNamespace(
+            meter=SimpleNamespace(
+                voltage_references=(
+                    VoltageReferenceConfig(
+                        "main",
+                        "Main",
+                        "A",
+                        120.0,
+                        "default",
+                        7305,
+                        ("main_1", "main_2"),
+                    ),
+                )
+            )
+        )
         calls: list[dict[str, Any]] = []
 
         class Calibration:
@@ -1948,17 +2246,178 @@ def test_native_only_board_voltage_calibration_needs_no_builder_snapshot(
 
         await workflow.async_calibrate_voltage(
             status.session_id,
-            (
-                {"group_key": "main_1", "reference": 120.0},
-                {"group_key": "main_2", "reference": 120.0},
-            ),
+            "main",
+            120.0,
             False,
         )
 
-        assert calls == [{"confirm_iteration": False, "substitutions": {}}]
+        assert calls == [
+            {
+                "confirm_iteration": False,
+                "substitutions": {},
+                "timing_policy": CalibrationTimingPolicy(5, 3),
+            }
+        ]
         await workflow.async_close()
 
     asyncio.run(run())
+
+
+def test_voltage_calibration_resolves_all_groups_from_one_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(
+            monkeypatch, addon_count=1
+        )
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        handle = workflow._sessions[status.session_id]
+        handle.meter_configuration = SimpleNamespace(
+            meter=SimpleNamespace(
+                voltage_references=(
+                    VoltageReferenceConfig(
+                        "all",
+                        "All",
+                        "A",
+                        120.0,
+                        "default",
+                        7305,
+                        ("main_1", "main_2", "addon1_1", "addon1_2"),
+                    ),
+                )
+            )
+        )
+        calls: list[tuple[tuple[tuple[str, float, int], ...], dict[str, Any]]] = []
+
+        class Calibration:
+            async def async_calibrate_voltages(
+                self, *_args: Any, **kwargs: Any
+            ) -> tuple[Any, ...]:
+                calls.append((_args[3], kwargs))
+                return tuple(
+                    SimpleNamespace(
+                        state="applied_pending_restart_verification",
+                        gain_evidence=None,
+                    )
+                    for _ in _args[3]
+                )
+
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+        await workflow.async_calibrate_voltage(status.session_id, "all", 120.0, False)
+
+        assert calls == [
+            (
+                (
+                    ("main_1", 120.0, 1),
+                    ("main_2", 120.0, 1),
+                    ("addon1_1", 120.0, 1),
+                    ("addon1_2", 120.0, 1),
+                ),
+                {
+                    "confirm_iteration": False,
+                    "substitutions": {},
+                    "timing_policy": CalibrationTimingPolicy(5, 3),
+                },
+            )
+        ]
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_voltage_calibration_rejects_duplicate_group_assignment_before_hardware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        workflow._sessions[status.session_id].meter_configuration = SimpleNamespace(
+            meter=SimpleNamespace(
+                voltage_references=(
+                    VoltageReferenceConfig(
+                        "main",
+                        "Main",
+                        "A",
+                        120.0,
+                        "default",
+                        7305,
+                        ("main_1", "main_1", "main_2"),
+                    ),
+                )
+            )
+        )
+
+        with pytest.raises(WorkflowHandleError, match="assignments are invalid"):
+            await workflow.async_calibrate_voltage(
+                status.session_id, "main", 120.0, False
+            )
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("references", "reference_id", "expected"),
+    (
+        (
+            (("all", ("main_1", "main_2", "addon1_1", "addon1_2")),),
+            "all",
+            ("main_1", "main_2", "addon1_1", "addon1_2"),
+        ),
+        (
+            (("first", ("main_1", "main_2")), ("second", ("addon1_1", "addon1_2"))),
+            "second",
+            ("addon1_1", "addon1_2"),
+        ),
+        (
+            (
+                ("one", ("main_1",)),
+                ("two", ("main_2",)),
+                ("three", ("addon1_1", "addon1_2")),
+            ),
+            "one",
+            ("main_1",),
+        ),
+        (
+            (("single", ("main_1",)), ("rest", ("main_2", "addon1_1", "addon1_2"))),
+            "single",
+            ("main_1",),
+        ),
+    ),
+)
+def test_voltage_reference_resolution_supports_arbitrary_assigned_groups(
+    references: tuple[tuple[str, tuple[str, ...]], ...],
+    reference_id: str,
+    expected: tuple[str, ...],
+) -> None:
+    handle = SimpleNamespace(
+        binding=SimpleNamespace(
+            groups=tuple(
+                SimpleNamespace(key=key)
+                for key in ("main_1", "main_2", "addon1_1", "addon1_2")
+            )
+        ),
+        meter_configuration=SimpleNamespace(
+            meter=SimpleNamespace(
+                voltage_references=tuple(
+                    VoltageReferenceConfig(
+                        item_id, item_id, "A", 120.0, "default", 7305, groups
+                    )
+                    for item_id, groups in references
+                )
+            )
+        ),
+    )
+
+    assert (
+        tuple(
+            group.key
+            for group in EntryWorkflow._voltage_reference_groups(handle, reference_id)
+        )
+        == expected
+    )
 
 
 def test_native_only_restart_verification_persists_without_source_handoff(
@@ -2619,7 +3078,15 @@ def test_cancel_revokes_session_before_waiting_calibration_can_mutate(
 
     async def run() -> None:
         topology = topology_from_native("circuitsetup.6c-energy-meter")
-        content = """esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\nsubstitutions:\n  ct1_name: CT 1\n  current_cal_ct1: '27518'\n"""
+        content = (
+            "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
+            "substitutions:\n"
+            + "".join(
+                f"  ct{channel}_name: CT {channel}\n"
+                f"  current_cal_ct{channel}: '27518'\n"
+                for channel in range(1, 7)
+            )
+        )
         digest = sha256(content.encode()).hexdigest()
 
         class Builder:
@@ -3858,9 +4325,10 @@ def test_transaction_serializer_normalizes_only_known_server_change_dtos() -> No
             SubstitutionChange("electric_freq", "60Hz", "50Hz"),
             SubstitutionChange("power_quality_main", "disabled", "enabled"),
             SubstitutionChange("status_fields_addon1", "disabled", "enabled"),
+            SubstitutionChange("calibrated_voltage_gains", "managed", "removed"),
             SubstitutionChange("not_a_server_key", "old", "new"),
         ),
-        "",
+        "managed calibrated voltage gains removed",
     )
 
     payload = sanitize_payload(status, allow_transaction_change_keys=True)
@@ -3874,7 +4342,9 @@ def test_transaction_serializer_normalizes_only_known_server_change_dtos() -> No
         "meter.line_frequency_hz",
         "package.main.power_quality",
         "package.addon1.status_fields",
+        "meter.calibrated_voltage_gains",
     ]
+    assert payload["redacted_diff"] == "managed calibrated voltage gains removed"
     assert sanitize_payload(
         {"changes": [{"key": "ct1_name", "new_value": "Kitchen"}]},
         allow_transaction_change_keys=True,

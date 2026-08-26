@@ -62,6 +62,14 @@ function inventory(addons: number) {
     schema_version: 1 } };
 }
 
+function meterConfiguration(addons: number) {
+  return { configuration: { meter: { electrical_system: "split_phase_120_240", line_frequency_hz: 60,
+    update_interval_s: 5, voltage_references: Array.from({ length: addons + 1 }, (_, board) => ({
+      reference_id: board ? `addon${board}` : "main",
+      group_keys: board ? [`addon${board}_1`, `addon${board}_2`] : ["main_1", "main_2"],
+    })) } }, warnings: [] };
+}
+
 function transaction(state: string, channel: number, options: { evidence?: string[]; progress?: string[];
   rollback?: boolean; validation?: boolean } = {}) {
   return { ...sanitizerContract.sanitized, transaction_id: "tx-1", state, source_sha256: hash,
@@ -199,6 +207,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         result = { device_id: "meter-1", configuration: "meter.yaml" };
       }
       else if (operation === "get_topology") result = topology(addons);
+      else if (operation === "get_meter_configuration") result = meterConfiguration(addons);
       else if (operation === "get_ct_inventory") result = inventory(addons);
       else if (operation === "get_active_work") result = {
         session: null, transaction: null, verified_calibration: null,
@@ -241,9 +250,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       } else if (operation === "skip_offset_calibration") {
         result = currentSession = session("ready", true, addons, currentSession.has_pending_calibration as boolean, "skipped");
       }
-      else if (operation === "check_stability") result = frame.target === "voltage"
-        ? (frame.target_ids as string[]).map((target_id) => stability({ ...frame, target_id }))
-        : stability(frame);
+      else if (operation === "check_stability") result = stability(frame);
       else if (operation === "calibrate_current") {
         const references = frame.references as Array<{ channel: number; reference: number }>;
         const channel = Number(references[0]?.channel); const reference = Number(references[0]?.reference);

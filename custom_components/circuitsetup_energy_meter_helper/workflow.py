@@ -29,8 +29,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
 from .calibration_engine import (
-    DEFAULT_EVIDENCE_TIMEOUT,
     CalibrationEngine,
+    CalibrationTimingPolicy,
     OffsetCalibrationResult,
     OffsetCalibrationState,
 )
@@ -169,6 +169,11 @@ class _SessionHandle:
     offset_skipped: bool = False
     calibrated_current_channels: set[int] = field(default_factory=set)
     pending_reporting_multipliers: dict[int, float] = field(default_factory=dict)
+    meter_configuration: MeterConfigurationRequest | None = None
+    configuration_sha256: str | None = None
+    timing_policy: CalibrationTimingPolicy = field(
+        default_factory=lambda: CalibrationTimingPolicy(5, 3)
+    )
 
     def status(self) -> SessionStatus:
         capability = getattr(self.binding, "offset_capability", None)
@@ -724,6 +729,7 @@ class EntryWorkflow:
         api = self._require_api()
         await api.async_connect()
         configuration: str | None = None
+        snapshot: ESPHomeConfigSnapshot | None = None
         substitutions: dict[str, str] = {}
         if self._builder is None:
             topology = topology_from_native(device.project_name)
@@ -732,6 +738,8 @@ class EntryWorkflow:
             )
         else:
             snapshot = await self._async_snapshot(device)
+            if sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256:
+                raise WorkflowHandleError("configuration snapshot is untrusted")
             document = ESPHomeConfigDocument.parse(snapshot.content)
             topology = topology_from_config(
                 document, native_project_name=device.project_name
@@ -746,6 +754,37 @@ class EntryWorkflow:
                 substitutions,
             )
         mac = self._mac(device_id)
+        stored_read = await self._store.async_get_meter_configuration_read(mac)
+        if stored_read.stale or (
+            stored_read.configuration is not None
+            and (
+                snapshot is None
+                or stored_read.configuration.config_sha256 != snapshot.sha256
+            )
+        ):
+            raise WorkflowHandleError("stored meter configuration is stale")
+        session_id = uuid4().hex
+        meter_configuration: MeterConfigurationRequest | None = None
+        if snapshot is not None:
+            ct_catalog = await self._hass.async_add_executor_job(CTPresetCatalog.load)
+            voltage_catalog = await self._hass.async_add_executor_job(
+                VoltageTransformerCatalog.load
+            )
+            selections = await self._store.async_get_ct_selections(mac)
+            meter_configuration = MeterConfigurationInventory.from_document(
+                session_id,
+                document,
+                topology,
+                ct_catalog,
+                voltage_catalog,
+                snapshot.sha256,
+                stored_configuration=stored_read.configuration,
+                stored_ct_selections=selections,
+                reporting_multipliers=_stored_reporting_multipliers(
+                    selections, snapshot.sha256
+                ),
+                stored_semantics_stale=False,
+            ).configuration
         cleanup = self._cleaning_macs.get(mac)
         if cleanup is not None and await _wait_for_owned_cleanup(cleanup):
             raise asyncio.CancelledError
@@ -785,7 +824,6 @@ class EntryWorkflow:
             )
             for instance_id, source in observed_sources.items()
         }
-        session_id = uuid4().hex
         handle = _SessionHandle(
             session_id,
             device_id,
@@ -798,6 +836,16 @@ class EntryWorkflow:
             calibration_sources,
             self._deadline(),
             state="safety_required" if preflight.ok else "preflight_failed",
+            meter_configuration=meter_configuration,
+            configuration_sha256=(snapshot.sha256 if snapshot is not None else None),
+            timing_policy=CalibrationTimingPolicy(
+                (
+                    meter_configuration.meter.update_interval_s
+                    if meter_configuration is not None
+                    else 5
+                ),
+                3,
+            ),
         )
         with self._guard(mac):
             self._prune_device_sessions_locked(mac)
@@ -829,35 +877,16 @@ class EntryWorkflow:
             return self._publish(handle)
 
     async def async_check_stability(
-        self, session_id: str, target: str, target_id: str | tuple[str, ...]
-    ) -> dict[str, Any] | tuple[dict[str, Any], ...]:
+        self, session_id: str, target: str, target_id: str
+    ) -> dict[str, Any]:
         handle, revision = self._claim_ready_session(session_id)
         api = self._require_api()
         try:
             entities: tuple[Any, ...]
             if target == "voltage":
-                if not isinstance(target_id, tuple) or len(target_id) != 2:
-                    raise WorkflowHandleError("voltage stability requires one board")
-                groups = tuple(
-                    next(
-                        (item for item in handle.binding.groups if item.key == group_key),
-                        None,
-                    )
-                    for group_key in target_id
-                )
-                if any(group is None for group in groups) or len(
-                    {
-                        group.voltage_reference.descriptor.device_id
-                        for group in groups
-                        if group is not None
-                    }
-                ) != 1:
-                    raise WorkflowHandleError("unknown voltage target")
+                groups = self._voltage_reference_groups(handle, target_id)
                 entities = tuple(
-                    entity
-                    for group in groups
-                    if group is not None
-                    for entity in group.voltage_sensors
+                    entity for group in groups for entity in group.voltage_sensors
                 )
             else:
                 if not isinstance(target_id, str):
@@ -881,7 +910,9 @@ class EntryWorkflow:
                             device_id=entity.descriptor.device_id,
                             sample_count=1,
                             after=boundary,
-                            timeout=DEFAULT_EVIDENCE_TIMEOUT,
+                            timeout=CalibrationTimingPolicy(
+                                handle.timing_policy.update_interval_s, 1
+                            ).sensor_window_timeout_s,
                         )
                         for entity in entities
                     )
@@ -893,21 +924,14 @@ class EntryWorkflow:
             self._refresh(handle)
             self._publish(handle)
             if target == "voltage":
-                return tuple(
-                    {
-                        "target": target,
-                        "target_id": group_key,
-                        "stable": all(
-                            window.range_percent <= 1.0
-                            for window in windows[index * 3 : index * 3 + 3]
-                        ),
-                        "windows": tuple(
-                            _public_sample_window(window)
-                            for window in windows[index * 3 : index * 3 + 3]
-                        ),
-                    }
-                    for index, group_key in enumerate(target_id)
-                )
+                return {
+                    "target": target,
+                    "target_id": target_id,
+                    "stable": stable,
+                    "windows": tuple(
+                        _public_sample_window(window) for window in windows
+                    ),
+                }
             return {
                 "target": target,
                 "target_id": target_id,
@@ -928,7 +952,11 @@ class EntryWorkflow:
             self._validate_offset_target(handle, board_index, stage)
             api = self._require_api()
             result = await async_check_offset_readiness(
-                api, handle.binding, board_index, stage
+                api,
+                handle.binding,
+                board_index,
+                stage,
+                timeout=handle.timing_policy.sensor_window_timeout_s,
             )
             self._assert_claim(handle, revision)
             if (
@@ -968,6 +996,7 @@ class EntryWorkflow:
                 board_index,
                 stage,
                 confirm_retry=confirm_retry,
+                timing_policy=handle.timing_policy,
             )
             self._assert_claim(handle, revision)
             handle.offset_results[(board_index, stage)] = result
@@ -1010,22 +1039,22 @@ class EntryWorkflow:
     async def async_calibrate_voltage(
         self,
         session_id: str,
-        references: tuple[Mapping[str, Any], ...],
+        reference_id: str,
+        reference_voltage: float,
         confirm_iteration: bool,
     ) -> Any:
         handle, revision = self._claim_ready_session(session_id)
         try:
-            if len(references) != 2:
-                raise WorkflowHandleError("voltage calibration requires one board")
+            groups = self._voltage_reference_groups(handle, reference_id)
             calibrated = tuple(
                 (
-                    str(item["group_key"]),
-                    float(item["reference"]),
+                    group.key,
+                    reference_voltage,
                     self._sessions_owner.next_calibration_iteration(
-                        handle.mac, f"voltage:{item['group_key']}"
+                        handle.mac, f"voltage:{group.key}"
                     ),
                 )
-                for item in references
+                for group in groups
             )
             self._assert_claim(handle, revision)
             results = await self._calibration.async_calibrate_voltages(
@@ -1036,6 +1065,7 @@ class EntryWorkflow:
                 1.0,
                 confirm_iteration=confirm_iteration,
                 substitutions=handle.substitutions,
+                timing_policy=handle.timing_policy,
             )
             self._assert_claim(handle, revision)
             for result in results:
@@ -1054,6 +1084,32 @@ class EntryWorkflow:
             return results
         finally:
             self._release_claim(handle, revision)
+
+    @staticmethod
+    def _voltage_reference_groups(
+        handle: _SessionHandle, reference_id: str
+    ) -> tuple[Any, ...]:
+        configuration = handle.meter_configuration
+        if configuration is None:
+            raise WorkflowHandleError("meter configuration is unavailable")
+        references = configuration.meter.voltage_references
+        groups_by_key = {group.key: group for group in handle.binding.groups}
+        assigned = [key for reference in references for key in reference.group_keys]
+        if not assigned or len(assigned) != len(set(assigned)):
+            raise WorkflowHandleError("voltage reference group assignments are invalid")
+        if set(assigned) != set(groups_by_key):
+            raise WorkflowHandleError(
+                "voltage reference group assignments are incomplete"
+            )
+        matched = [item for item in references if item.reference_id == reference_id]
+        if len(matched) != 1 or not matched[0].group_keys:
+            raise WorkflowHandleError("unknown voltage reference")
+        try:
+            return tuple(groups_by_key[key] for key in matched[0].group_keys)
+        except KeyError:
+            raise WorkflowHandleError(
+                "voltage reference group assignments are invalid"
+            ) from None
 
     async def async_calibrate_current(
         self,
@@ -1110,6 +1166,7 @@ class EntryWorkflow:
                 iteration=iteration,
                 confirm_iteration=confirm_iteration,
                 substitutions=handle.substitutions,
+                timing_policy=handle.timing_policy,
             )
             self._assert_claim(handle, revision)
             if result.gain_evidence is not None and result.gain_evidence.flash_saved:
@@ -1428,7 +1485,13 @@ class EntryWorkflow:
             raise WorkflowCapabilityUnavailable(
                 "calibration source handoff is unavailable"
             )
-        return await self._require_builder().async_get_config(handle.configuration)
+        snapshot = await self._require_builder().async_get_config(handle.configuration)
+        if (
+            handle.configuration_sha256 is not None
+            and snapshot.sha256 != handle.configuration_sha256
+        ):
+            raise WorkflowHandleError("calibration configuration is stale")
+        return snapshot
 
     async def _async_trusted_voltage_fingerprint(
         self,

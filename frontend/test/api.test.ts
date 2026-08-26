@@ -133,6 +133,35 @@ function validResponse(operation: string): unknown {
 }
 
 describe("HelperApi", () => {
+  it("accepts voltage stability windows for every group assigned to one reference", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    const window = { samples: [120], mean: 120, standard_deviation: 0, range_percent: 0 };
+    hass.responses.check_stability = { target: "voltage", target_id: "main", stable: true,
+      windows: Array.from({ length: 6 }, () => window) };
+    await expect(api.checkStability("session-1", "voltage", "main")).resolves.toMatchObject({ windows: expect.any(Array) });
+    hass.responses.check_stability = { target: "voltage", target_id: "crossboard", stable: true,
+      windows: Array.from({ length: 12 }, () => window) };
+    await expect(api.checkStability("session-1", "voltage", "crossboard")).resolves.toMatchObject({ windows: expect.any(Array) });
+    for (const count of [0, 4, 45]) {
+      hass.responses.check_stability = { target: "voltage", target_id: "main", stable: true,
+        windows: Array.from({ length: count }, () => window) };
+      await expect(api.checkStability("session-1", "voltage", "main")).rejects.toThrow("check_stability");
+    }
+  });
+
+  it("keeps the slow-interval warning from the full meter configuration", async () => {
+    const hass = new FakeHass();
+    hass.responses.get_meter_configuration = { configuration: { meter: {
+      electrical_system: "split_phase_120_240", line_frequency_hz: 60, update_interval_s: 30,
+      voltage_references: [{ reference_id: "main", group_keys: ["main_1", "main_2"] }],
+    } }, warnings: ["slow_interval_extends_calibration"] };
+
+    await expect(new HelperApi(hass, "entry-1").getMeterConfiguration("meter-1")).resolves.toMatchObject({
+      update_interval_s: 30, warnings: ["slow_interval_extends_calibration"],
+    });
+  });
+
   it("sends paired selected firmware identifiers without a manifest URL", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
@@ -151,6 +180,30 @@ describe("HelperApi", () => {
       esphome_version: "2026.8.0",
     });
     expect(JSON.stringify(hass.messages)).not.toMatch(/manifest|firmware_url|binary_url/i);
+  });
+
+  it("sends a confirmed electrical profile independently of firmware selection", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+
+    await api.setInstallerIntent(1, "wifi", null, undefined, "single_phase_230", 50);
+
+    expect(hass.messages.at(-1)).toMatchObject({
+      electrical_system: "single_phase_230",
+      line_frequency_hz: 50,
+    });
+  });
+
+  it("sends the attached three-phase profile with an explicit frequency", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+
+    await api.setInstallerIntent(1, "wifi", null, undefined, "three_phase", 60);
+
+    expect(hass.messages.at(-1)).toMatchObject({
+      electrical_system: "three_phase",
+      line_frequency_hz: 60,
+    });
   });
 
   it("omits both firmware identifiers without a catalog selection", async () => {
@@ -259,12 +312,12 @@ describe("HelperApi", () => {
     await api.checkOffsetReadiness("session-1", 0, 1);
     await api.calibrateOffset("session-1", 0, 1, true, false);
     await api.skipOffsetCalibration("session-1");
-    hass.responses.check_stability = ["addon6_1", "addon6_2"].map((target_id) => ({
-      target: "voltage", target_id, stable: true,
+    hass.responses.check_stability = {
+      target: "voltage", target_id: "addon6", stable: true,
       windows: Array.from({ length: 3 }, () => ({ samples: [120], mean: 120,
         standard_deviation: 0, range_percent: 0 })),
-    }));
-    await api.checkVoltageStability("session-1", ["addon6_1", "addon6_2"]);
+    };
+    await api.checkStability("session-1", "voltage", "addon6");
     hass.responses.calibrate_voltage = [
       { ...calibration, group_key: "addon6_1", phase: null, changed_channels: [37, 38, 39],
         before_values: [120, 120, 120], after_values: [120, 120, 120], error_percent_values: [0, 0, 0],
@@ -273,10 +326,7 @@ describe("HelperApi", () => {
         before_values: [120, 120, 120], after_values: [120, 120, 120], error_percent_values: [0, 0, 0],
         gain_evidence: gainEvidence("addon6_2", "voltage", 120) },
     ];
-    await api.calibrateVoltage("session-1", [
-      { group_key: "addon6_1", reference: 120 },
-      { group_key: "addon6_2", reference: 120 },
-    ], true);
+    await api.calibrateVoltage("session-1", "addon6", 120, true);
     await api.calibrateCurrent("session-1", [{ channel: 42, reference: 25, reporting_multiplier: 1 }], true,
       [{ channel: 42, reporting_multiplier: 1 }]);
     await api.restartAndVerify("session-1", topology);
@@ -339,10 +389,11 @@ describe("HelperApi", () => {
       .toMatchObject({ pending_multipliers: [{ channel: 42, reporting_multiplier: 1 }] });
     expect(hass.messages.find((message) => String(message.type).endsWith("check_stability")
       && message.target === "voltage"))
-      .toMatchObject({ target: "voltage", target_ids: ["addon6_1", "addon6_2"] });
+      .toEqual({ type: "circuitsetup_energy_meter_helper/check_stability", entry_id: "entry-1",
+        session_id: "session-1", target: "voltage", target_id: "addon6" });
     expect(hass.messages.find((message) => String(message.type).endsWith("calibrate_voltage")))
-      .toMatchObject({ references: [{ group_key: "addon6_1", reference: 120 },
-        { group_key: "addon6_2", reference: 120 }] });
+      .toEqual({ type: "circuitsetup_energy_meter_helper/calibrate_voltage", entry_id: "entry-1",
+        session_id: "session-1", reference_id: "addon6", reference_voltage: 120, confirm_iteration: true });
     expect(hass.messages[7]).toEqual({
       type: "circuitsetup_energy_meter_helper/preview_ct_config",
       entry_id: "entry-1",

@@ -6,6 +6,13 @@ export type ConnectionType =
 
 export type FirmwareCatalogState = "idle" | "loading" | "ready" | "error";
 
+export type ElectricalSystem =
+  | "split_phase_120_240"
+  | "single_phase_230"
+  | "three_phase"
+  | "custom";
+export type LineFrequencyHz = 50 | 60;
+
 export type SetupState =
   | "no_device"
   | "installer_guide"
@@ -41,6 +48,17 @@ export interface InstallerIntent {
   esphome_version?: string;
   power_quality?: boolean[];
   status_fields?: boolean[];
+  electrical_system?: ElectricalSystem;
+  line_frequency_hz?: LineFrequencyHz;
+}
+
+export interface MeterSettingsDraft {
+  electrical_system: ElectricalSystem;
+  line_frequency_hz: LineFrequencyHz;
+  authoritative: boolean;
+  update_interval_s: number;
+  voltage_references: Array<{ reference_id: string; label: string; group_keys: string[] }>;
+  warnings: string[];
 }
 
 export interface BoardPackageOptions {

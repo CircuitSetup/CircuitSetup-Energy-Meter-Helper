@@ -20,6 +20,9 @@ import type {
   CalibrationResult,
   BoardPackageOptions,
   ConnectionType,
+  ElectricalSystem,
+  LineFrequencyHz,
+  MeterSettingsDraft,
   CtInventory,
   FirmwareCatalogState,
   MeterTopology,
@@ -86,10 +89,14 @@ export class CircuitSetupPanel extends LitElement {
   private packageOptions = newInstallPackageOptions(0);
   private sourcePackageOptions: BoardPackageOptions | null = newInstallPackageOptions(0);
   private connection: Exclude<ConnectionType, "unknown"> = "wifi";
+  private electricalSystem: ElectricalSystem = "split_phase_120_240";
+  private lineFrequencyHz: LineFrequencyHz | null = 60;
+  private electricalProfileConfirmed = false;
+  private meterSettingsDraft: MeterSettingsDraft | null = null;
   private board = 0;
   private group = 0;
   private channel = 1;
-  private voltageReferences = [0, 0];
+  private voltageReferences = new Map<string, number>();
   private currentReferences = new Map<number, number>();
   private reportingMultiplier: number | null = null;
   private safetyAcknowledged = false;
@@ -185,6 +192,15 @@ export class CircuitSetupPanel extends LitElement {
           ? { power_quality: [...intent.power_quality], status_fields: [...intent.status_fields] }
           : newInstallPackageOptions(intent.addon_count);
         this.sourcePackageOptions = newInstallPackageOptions(intent.addon_count);
+        if (intent.electrical_system !== undefined && intent.line_frequency_hz !== undefined) {
+          this.electricalSystem = intent.electrical_system;
+          this.lineFrequencyHz = intent.line_frequency_hz;
+          this.electricalProfileConfirmed = true;
+        } else {
+          this.electricalSystem = "split_phase_120_240";
+          this.lineFrequencyHz = 60;
+          this.electricalProfileConfirmed = false;
+        }
         this.refreshFirmwareOptions();
       }
       if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.firstDeviceId(this.setup.devices));
@@ -343,7 +359,7 @@ export class CircuitSetupPanel extends LitElement {
     this.calibrationHandoff = false;
     this.group = 0;
     this.channel = 1;
-    this.voltageReferences = [0, 0];
+    this.voltageReferences = new Map();
     this.currentReferences = new Map();
     this.reportingMultiplier = null;
     this.offsetStage = 1;
@@ -366,6 +382,7 @@ export class CircuitSetupPanel extends LitElement {
     this.transaction = null;
     this.session = null;
     this.drafts = new Map();
+    this.meterSettingsDraft = null;
     this.board = 0;
     this.resetCalibrationRun();
   }
@@ -409,6 +426,27 @@ export class CircuitSetupPanel extends LitElement {
     this.packageOptions = resizePackageOptions(this.packageOptions, value);
     this.sourcePackageOptions = newInstallPackageOptions(value);
     this.refreshFirmwareOptions();
+  }
+
+  private setElectricalSystem(value: ElectricalSystem): void {
+    this.electricalSystem = value;
+    const suggested = value === "split_phase_120_240" ? 60 : value === "single_phase_230" ? 50 : null;
+    this.lineFrequencyHz = suggested;
+    this.electricalProfileConfirmed = false;
+    this.requestUpdate();
+  }
+
+  private setLineFrequency(value: LineFrequencyHz): void {
+    this.lineFrequencyHz = value;
+    this.electricalProfileConfirmed = false;
+    this.requestUpdate();
+  }
+
+  private confirmElectricalProfile(): void {
+    if (this.lineFrequencyHz === null) return;
+    this.electricalProfileConfirmed = true;
+    this.announcement = `Electrical profile confirmed: ${this.electricalSystem.replaceAll("_", " ")}, ${this.lineFrequencyHz} Hz.`;
+    this.requestUpdate();
   }
 
   public showInventory(inventory: CtInventory): void {
@@ -520,6 +558,8 @@ export class CircuitSetupPanel extends LitElement {
         this.connection,
         this.selectedFirmware(),
         this.packageOptions,
+        this.electricalProfileConfirmed ? this.electricalSystem : null,
+        this.electricalProfileConfirmed && this.lineFrequencyHz !== null ? this.lineFrequencyHz : null,
       );
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
@@ -554,6 +594,19 @@ export class CircuitSetupPanel extends LitElement {
       this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
       await this.subscribeSetup(connectionGeneration, api);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (this.electricalProfileConfirmed && this.lineFrequencyHz !== null) {
+        this.meterSettingsDraft = {
+          electrical_system: this.electricalSystem,
+          line_frequency_hz: this.lineFrequencyHz,
+          authoritative: false,
+          update_interval_s: 5,
+          voltage_references: [],
+          warnings: [],
+        };
+      }
+      const importedConfiguration = await api.getMeterConfiguration(deviceId);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.meterSettingsDraft = importedConfiguration;
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = null;
@@ -613,6 +666,8 @@ export class CircuitSetupPanel extends LitElement {
     const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
     try {
       await this.run(async () => {
+        if (!this.meterSettingsDraft) this.meterSettingsDraft = await api.getMeterConfiguration(deviceId);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
         const result = await api.getCtInventory(deviceId);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.showInventory(result);
@@ -1080,19 +1135,21 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.session || (target === "voltage" && this.voltageBusy)) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
-    const targetIds = target === "voltage" ? this.voltageGroupKeys()
+    const targetIds = target === "voltage" ? this.voltageReferenceIds()
       : this.currentReferenceEntries().map((item) => String(item.channel));
     if (!targetIds.length) return;
     if (target === "voltage") { this.voltageBusy = true; this.requestUpdate(); }
     try {
       await this.run(async () => {
         if (target === "voltage") {
-          const results = await api.checkVoltageStability(sessionId, targetIds);
-          if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
           const updated = new Map(this.stabilityByTarget);
-          results.forEach((result) => updated.set(`voltage:${result.target_id}`, result));
+          for (const referenceId of targetIds) {
+            const result = await api.checkStability(sessionId, "voltage", referenceId);
+            if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+            updated.set(`voltage:${referenceId}`, result);
+          }
           this.stabilityByTarget = updated;
-          this.announcement = "Loaded voltage data from both chips on this board.";
+          this.announcement = "Loaded voltage data for the selected reference.";
           return;
         }
         for (const [index, targetId] of targetIds.entries()) {
@@ -1111,7 +1168,7 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.session || (target === "voltage" && this.voltageBusy)) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
-    const targetIds = target === "voltage" ? this.voltageGroupKeys()
+    const targetIds = target === "voltage" ? this.voltageReferenceIds()
       : this.currentReferenceEntries().map((item) => String(item.channel));
     const currentReferences = this.currentReferenceEntries();
     if (target === "current" && !currentReferences.length) {
@@ -1122,16 +1179,24 @@ export class CircuitSetupPanel extends LitElement {
     try {
       await this.run(async () => {
         if (target === "voltage") {
-          const results = await api.calibrateVoltage(sessionId, targetIds.map((groupKey, index) => ({
-            group_key: groupKey,
-            reference: this.voltageReferences[this.topology?.voltage_layout === "two_voltages" ? index : 0]!,
-          })), true);
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
           const updated = new Map(this.calibrationByTarget);
-          results.forEach((result) => updated.set(`voltage:${result.group_key}`, result));
+          const references = this.voltageReferenceIds().map((referenceId, index) => ({ referenceId, value: this.voltageReferences instanceof Map ? this.voltageReferences.get(referenceId) ?? 0 : this.voltageReferences[index] ?? 0 }))
+            .filter(({ referenceId }) => !this.voltageReferenceComplete(referenceId));
+          if (references.some(({ value }) => !Number.isFinite(value) || value < 1 || value > 600)
+            || references.some(({ referenceId }) => !this.stabilityByTarget.get(`voltage:${referenceId}`)?.stable)) {
+            throw new Error("Voltage references must be valid and stable before calibration.");
+          }
+          for (const { referenceId, value } of references) {
+            const results = await api.calibrateVoltage(sessionId, referenceId, value, true);
+            if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+            results.forEach((result) => updated.set(`voltage:${result.group_key}`, result));
+            this.calibrationByTarget = new Map(updated);
+            this.requestUpdate();
+          }
           this.calibrationByTarget = updated;
           this.session = { ...this.session!, has_pending_calibration: true };
-          this.announcement = "Calibrated both voltage chips on this board.";
+          this.announcement = "Calibrated the selected voltage reference.";
           return;
         }
         const result = await api.calibrateCurrent(sessionId, currentReferences, true,
@@ -1158,6 +1223,22 @@ export class CircuitSetupPanel extends LitElement {
     const board = Math.floor(index / 2);
     const group = index % 2 + 1;
     return board === 0 ? `main_${group}` : `addon${board}_${group}`;
+  }
+
+  private voltageReferenceIds(): string[] {
+    const groups = this.voltageGroupKeys();
+    const references = this.meterSettingsDraft?.voltage_references.filter((reference) => reference.group_keys.some((key) => groups.includes(key))) ?? [];
+    if (references.length) return references.map((reference) => reference.reference_id);
+    return this.topology?.voltage_layout === "two_voltages" ? groups : [this.board === 0 ? "main" : `addon${this.board}`];
+  }
+
+  private voltageReferenceLabel(referenceId: string): string {
+    return this.meterSettingsDraft?.voltage_references.find((reference) => reference.reference_id === referenceId)?.label ?? referenceId;
+  }
+
+  private voltageReferenceComplete(referenceId: string): boolean {
+    const groups = this.meterSettingsDraft?.voltage_references.find((reference) => reference.reference_id === referenceId)?.group_keys ?? [referenceId];
+    return groups.every((group) => this.calibrationByTarget.get(`voltage:${group}`)?.state === "applied_pending_restart_verification");
   }
 
   private voltageGroupKeys(): string[] {
@@ -1300,7 +1381,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private stabilityFor(target: "voltage" | "current"): StabilityResult | null {
-    const targetIds = target === "voltage" ? this.voltageGroupKeys()
+    const targetIds = target === "voltage" ? this.voltageReferenceIds()
       : this.currentReferenceEntries().map((item) => String(item.channel));
     const results = targetIds.flatMap((targetId) => {
       const result = this.stabilityByTarget.get(`${target}:${targetId}`);
@@ -1357,7 +1438,10 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.connection = value; this.refreshFirmwareOptions(); },
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, Boolean(this.topology),
       this.firmwareCatalog(), this.importFailedDeviceId, this.packageOptions,
-      (options) => { this.packageOptions = options; this.requestUpdate(); })}
+      (options) => { this.packageOptions = options; this.requestUpdate(); }, this.electricalSystem,
+      this.lineFrequencyHz, this.electricalProfileConfirmed,
+      (value) => this.setElectricalSystem(value), (value) => this.setLineFrequency(value),
+      () => this.confirmElectricalProfile())}
       ${this.topology ? topologyStep(this.topology, this.selectedProjectVersion(),
         () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
           ? this.loadInventory() : this.startSession()), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session",
@@ -1384,9 +1468,9 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.offsetRetryConfirmed = value; this.requestUpdate(); },
       () => void this.checkOffsetReadiness(), () => void this.calibrateOffset(), () => void this.reconnectSession(),
       () => void this.skipOffset(), () => this.back(), () => this.navigate("voltage"));
-    if (this.step === "voltage") return html`${voltageStep(this.topology, this.session, this.board, this.voltageReferences, this.stabilityFor("voltage"), this.voltageResultsForBoard(), this.voltageBusy,
+    if (this.step === "voltage") return html`${this.meterSettingsDraft?.warnings.includes("slow_interval_extends_calibration") ? html`<div class="warning-band" role="status">This meter uses a ${this.meterSettingsDraft.update_interval_s}-second update interval. Calibration takes longer; keep the reference stable until each check finishes.</div>` : nothing}${voltageStep(this.topology, this.session, this.board, this.voltageReferenceIds().map((id, index) => this.voltageReferences instanceof Map ? this.voltageReferences.get(id) ?? 0 : this.voltageReferences[index] ?? 0), this.voltageReferenceIds().map((id) => this.voltageReferenceLabel(id)), this.stabilityFor("voltage"), this.voltageResultsForBoard(), this.voltageBusy,
       (value) => { this.board = value; this.requestUpdate(); },
-      (index, value) => { this.voltageReferences = this.voltageReferences.map((current, offset) => offset === index ? value : current); this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
+      (index, value) => { const id = this.voltageReferenceIds()[index]; if (id) this.voltageReferences = new Map(this.voltageReferences).set(id, value); this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
       <footer class="action-footer offset-footer"><button class="secondary" @click=${() => this.back()}>Back</button>
         <button class="secondary" ?disabled=${this.voltageBusy || this.voltageSkipped} @click=${() => { this.voltageSkipped = true; this.announcement = "Remaining voltage calibration was skipped; completed gains were preserved."; this.requestUpdate(); }}>Skip voltage calibration</button>
         <button class="primary" ?disabled=${this.voltageBusy || !this.voltageSkipped && !this.hasCompletedCalibration("voltage")} @click=${() => this.navigate("current")}>Continue</button></footer>`;

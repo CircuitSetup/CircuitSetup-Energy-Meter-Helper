@@ -8,6 +8,9 @@ import type {
   LabelUpdateResult,
   DiscoveredDevice,
   MeterTopology,
+  MeterSettingsDraft,
+  ElectricalSystem,
+  LineFrequencyHz,
   OffsetCalibrationResult,
   OffsetReadinessResult,
   OffsetTable,
@@ -38,6 +41,7 @@ const SETUP_STATES = new Set(["no_device", "installer_guide", "waiting_for_disco
 const TRANSACTION_STATES = new Set(["previewed", "write_confirmed", "written", "validated", "compiled", "install_confirmation_required", "installing", "reconnecting", "verified", "rolled_back", "failed"]);
 const SESSION_STATES = new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "partial", "indeterminate", "verified", "cancelled"]);
 const CONNECTIONS = new Set(["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]);
+const ELECTRICAL_SYSTEMS = new Set(["split_phase_120_240", "single_phase_230", "three_phase", "custom"]);
 const EVIDENCE_SOURCES = new Set(["config_project", "config_packages", "dashboard_import", "native_project", "native_entity_counts"]);
 const PHASES = new Set(["A", "B", "C"]);
 const JOB_STAGES = new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
@@ -136,6 +140,11 @@ function setup(value: unknown, label: string): SetupSnapshot {
       || version !== undefined && (typeof version !== "string" || version.length > 160 || !ESPHOME_VERSION.test(version))) {
       throw new Error(`${label} response is invalid`);
     }
+    if ((intent.electrical_system === undefined) !== (intent.line_frequency_hz === undefined)
+      || intent.electrical_system !== undefined && (!ELECTRICAL_SYSTEMS.has(intent.electrical_system as string)
+        || ![50, 60].includes(integer(intent.line_frequency_hz, label)))) {
+      throw new Error(`${label} response is invalid`);
+    }
   }
   return value as SetupSnapshot;
 }
@@ -168,6 +177,29 @@ function topologyResponse(value: unknown, label: string): MeterTopology | { topo
     return value as { topology: MeterTopology };
   }
   return topology(value, label);
+}
+function meterConfiguration(value: unknown, label: string): MeterSettingsDraft {
+  const response = record(value, label);
+  const configuration = record(response.configuration, label);
+  const meter = record(configuration.meter, label);
+  const electricalSystem = enumeration(meter.electrical_system, ELECTRICAL_SYSTEMS, label) as ElectricalSystem;
+  const lineFrequency = integer(meter.line_frequency_hz, label);
+  if (lineFrequency !== 50 && lineFrequency !== 60) throw new Error(`${label} response is invalid`);
+  const updateInterval = integer(meter.update_interval_s, label);
+  const voltageReferences = array(meter.voltage_references, label, 14).map((entry) => {
+    const reference = record(entry, label);
+    const referenceId = string(reference.reference_id, label)!;
+    const referenceLabel = reference.label === undefined ? referenceId : string(reference.label, label)!;
+    const groupKeys = array(reference.group_keys, label, 14).map((key) => string(key, label)!);
+    if (!groupKeys.length) throw new Error(`${label} response is invalid`);
+    return { reference_id: referenceId, label: referenceLabel, group_keys: groupKeys };
+  });
+  if (!voltageReferences.length || new Set(voltageReferences.map((reference) => reference.reference_id)).size !== voltageReferences.length) {
+    throw new Error(`${label} response is invalid`);
+  }
+  const warnings = array(response.warnings, label, 32).map((warning) => string(warning, label)!);
+  return { electrical_system: electricalSystem, line_frequency_hz: lineFrequency as LineFrequencyHz, authoritative: true,
+    update_interval_s: updateInterval, voltage_references: voltageReferences, warnings };
 }
 
 function packageOptions(value: unknown, label: string, boardCount: number): BoardPackageOptions {
@@ -352,8 +384,8 @@ function offsetCalibration(value: unknown, label: string, expectedBoard: number,
 function stability(value: unknown, label: string, expectedTarget: "voltage" | "current", expectedTargetId: string): StabilityResult {
   const item = record(value, label); const target = enumeration(item.target, new Set(["voltage", "current"]), label); string(item.target_id, label); const stable = boolean(item.stable, label);
   if (target !== expectedTarget || item.target_id !== expectedTargetId) throw new Error(`${label} response is invalid`);
-  const windows = array(item.windows, label, target === "voltage" ? 3 : 1);
-  if (windows.length !== (target === "voltage" ? 3 : 1)) throw new Error(`${label} response is invalid`);
+  const windows = array(item.windows, label, target === "voltage" ? 42 : 1);
+  if (target === "voltage" ? windows.length < 3 || windows.length % 3 !== 0 : windows.length !== 1) throw new Error(`${label} response is invalid`);
   const ranges = windows.map((entry) => {
     const window = record(entry, label); const samples = array(window.samples, label, 1).map((sample) => number(sample, label));
     if (samples.length !== 1) throw new Error(`${label} response is invalid`);
@@ -581,6 +613,8 @@ export class HelperApi {
     this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
   public getCtInventory = (deviceId: string) =>
     this.call("get_ct_inventory", (value) => ctInventory(value, "get_ct_inventory"), { device_id: deviceId });
+  public getMeterConfiguration = (deviceId: string) =>
+    this.call("get_meter_configuration", (value) => meterConfiguration(value, "get_meter_configuration"), { device_id: deviceId });
   public getActiveWork = (deviceId: string, expectedTopology: MeterTopology) =>
     this.call("get_active_work", (value) => activeWork(value, "get_active_work", expectedTopology), { device_id: deviceId });
   public getSession = (sessionId: string) =>
@@ -591,6 +625,8 @@ export class HelperApi {
     connectionType: Exclude<ConnectionType, "unknown">,
     firmware: FirmwareOption | null,
     packageOptions?: BoardPackageOptions,
+    electricalSystem?: ElectricalSystem | null,
+    lineFrequencyHz?: LineFrequencyHz | null,
   ) => this.call("set_installer_intent", (value) => setup(value, "set_installer_intent"), {
     addon_count: addonCount,
     connection_type: connectionType,
@@ -598,6 +634,9 @@ export class HelperApi {
     ...(firmware && firmware.productId.length <= 160 && firmware.version.length <= 160
       && FIRMWARE_PRODUCT_ID.test(firmware.productId) && ESPHOME_VERSION.test(firmware.version)
       ? { firmware_product_id: firmware.productId, esphome_version: firmware.version }
+      : {}),
+    ...(electricalSystem !== null && electricalSystem !== undefined && lineFrequencyHz !== null && lineFrequencyHz !== undefined
+      ? { electrical_system: electricalSystem, line_frequency_hz: lineFrequencyHz }
       : {}),
   });
   public rescan = () => this.call("rescan", (value) => setup(value, "rescan"));
@@ -650,33 +689,18 @@ export class HelperApi {
     });
   public skipOffsetCalibration = (sessionId: string) =>
     this.call("skip_offset_calibration", (value) => session(value, "skip_offset_calibration"), { session_id: sessionId });
-  public checkVoltageStability = (sessionId: string, groupKeys: string[]) => {
-    if (groupKeys.length !== 2 || new Set(groupKeys).size !== 2) return Promise.reject(new Error("check_stability board is invalid"));
-    return this.call("check_stability", (value) => {
-      const results = array(value, "check_stability", 2);
-      if (results.length !== 2) throw new Error("check_stability response is invalid");
-      return results.map((item, index) => stability(item, "check_stability", "voltage", groupKeys[index]!));
-    }, { session_id: sessionId, target: "voltage", target_ids: groupKeys });
-  };
   public calibrateVoltage = (
     sessionId: string,
-    references: Array<{ group_key: string; reference: number }>,
+    referenceId: string,
+    referenceVoltage: number,
     confirmIteration: boolean,
   ) => {
-    const channels = references.map((item) => groupChannels(item.group_key));
-    if (references.length !== 2 || new Set(references.map((item) => item.group_key)).size !== 2
-      || channels.some((item) => item.length !== 3)
-      || new Set(channels.map((item) => Math.floor((item[0]! - 1) / 6))).size !== 1
-      || references.some((item) => !Number.isFinite(item.reference) || item.reference <= 0)) {
-      return Promise.reject(new Error("calibrate_voltage board is invalid"));
-    }
+    if (!referenceId || !Number.isFinite(referenceVoltage) || referenceVoltage < 1 || referenceVoltage > 600) return Promise.reject(new Error("calibrate_voltage reference is invalid"));
     return this.call("calibrate_voltage", (value) => {
-      const results = array(value, "calibrate_voltage", 2);
-      if (results.length !== 2) throw new Error("calibrate_voltage response is invalid");
-      return results.map((item, index) => calibration(item, "calibrate_voltage", {
-        target: "voltage", groupKey: references[index]!.group_key, reference: references[index]!.reference,
+      return array(value, "calibrate_voltage", 14).map((item) => calibration(item, "calibrate_voltage", {
+        target: "voltage", groupKey: string(record(item, "calibrate_voltage").group_key, "calibrate_voltage")!, reference: referenceVoltage,
       }));
-    }, { session_id: sessionId, references, confirm_iteration: confirmIteration });
+    }, { session_id: sessionId, reference_id: referenceId, reference_voltage: referenceVoltage, confirm_iteration: confirmIteration });
   };
   public calibrateCurrent = (
     sessionId: string,

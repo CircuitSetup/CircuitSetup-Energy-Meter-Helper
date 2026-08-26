@@ -175,6 +175,8 @@ class MeterConfigurationInventory:
             warnings.append("legacy_generic_totals_unmanaged")
         if stale:
             warnings.append("stored_semantics_stale")
+        if configuration.meter.update_interval_s in (30, 60):
+            warnings.append("slow_interval_extends_calibration")
         return cls(
             plan_id=plan_id,
             source_sha256=actual_sha256,

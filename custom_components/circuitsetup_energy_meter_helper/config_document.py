@@ -61,6 +61,10 @@ MANAGED_BLOCK_MARKERS = {
         "# CircuitSetup Energy Meter Helper: phase overrides v1",
         "# End CircuitSetup Energy Meter Helper: phase overrides v1",
     ),
+    "calibrated_voltage_gains": (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1",
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1",
+    ),
     "aggregates": (
         "# CircuitSetup Energy Meter Helper: aggregates v1",
         "# End CircuitSetup Energy Meter Helper: aggregates v1",

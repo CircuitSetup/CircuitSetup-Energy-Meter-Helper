@@ -70,7 +70,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
         "substitutions:\n"
         "  friendly_name: Garage Meter\n"
-        "  update_time: 10s\n"
+        "  update_time: 60s\n"
         "  electric_freq: 60Hz\n"
         "  csemh_config_contract: 2\n"
         "  voltage_cal1: 7305\n"
@@ -188,6 +188,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert workflow._plans[wrapper["plan_id"]].inventory.plan_id == wrapper["plan_id"]
         assert result["source_sha256"] == digest
         assert result["configuration"].meter.friendly_name == "Garage Meter"
+        assert "slow_interval_extends_calibration" in result["warnings"]
         assert wrapper["channels"] == result["channels"]
         assert "stored_semantics_stale" not in result["warnings"]
         assert calls == ["aabbccddeeff"] * 4
@@ -710,9 +711,9 @@ def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
         calls: list[tuple[Any, ...]] = []
 
         async def readiness(
-            session: Any, binding: Any, board_index: int, stage: int
+            session: Any, binding: Any, board_index: int, stage: int, **kwargs: Any
         ) -> OffsetReadinessResult:
-            calls.append((session, binding, board_index, stage))
+            calls.append((session, binding, board_index, stage, kwargs))
             return OffsetReadinessResult(
                 stage, True, 1, (), (), DEFAULT_OFFSET_READINESS_THRESHOLDS
             )
@@ -723,9 +724,17 @@ def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
         )
         result = await workflow.async_check_offset_readiness(handle.session_id, 0, 1)
         assert result.ready
-        assert calls == [(api, handle.binding, 0, 1)]
+        assert calls == [
+            (
+                api,
+                handle.binding,
+                0,
+                1,
+                {"timeout": handle.timing_policy.sensor_window_timeout_s},
+            )
+        ]
 
-        async def stale(*_args: Any) -> OffsetReadinessResult:
+        async def stale(*_args: Any, **_kwargs: Any) -> OffsetReadinessResult:
             return OffsetReadinessResult(
                 1, True, 0, (), (), DEFAULT_OFFSET_READINESS_THRESHOLDS
             )
@@ -769,7 +778,19 @@ def test_one_offset_call_maps_one_board_stage_and_status_retains_result() -> Non
         status = await workflow.async_get_session(handle.session_id)
 
         assert result.expected_tables == (("meter_main1", OFFSET_TABLE),)
-        assert calls == [(MAC, api, handle.binding, 0, 1, {"confirm_retry": False})]
+        assert calls == [
+            (
+                MAC,
+                api,
+                handle.binding,
+                0,
+                1,
+                {
+                    "confirm_retry": False,
+                    "timing_policy": handle.timing_policy,
+                },
+            )
+        ]
         assert status.offset_disposition == "in_progress"
         assert status.offset_boards[0]["stages"] == (
             {"stage": 1, "state": "completed"},
@@ -796,7 +817,9 @@ def test_noncanonical_offset_targets_cannot_bypass_partial_retry_confirmation() 
                 stage: int,
                 *,
                 confirm_retry: bool,
+                timing_policy: Any,
             ) -> OffsetCalibrationResult:
+                del timing_policy
                 calls.append((board_index, stage, confirm_retry))
                 return OffsetCalibrationResult(
                     OffsetCalibrationState.PARTIAL,
@@ -976,10 +999,8 @@ def test_complete_without_changes_finishes_once_without_restart_or_persistence()
         with pytest.raises(WorkflowHandleError, match="already finalized"):
             await workflow.async_calibrate_voltage(
                 handle.session_id,
-                (
-                    {"group_key": "main_1", "reference": 120.0},
-                    {"group_key": "main_2", "reference": 120.0},
-                ),
+                "main",
+                120.0,
                 False,
             )
         repeated = await workflow.async_complete_calibration_without_changes(

@@ -67,6 +67,7 @@ from .topology import (
 )
 
 DEFAULT_EVIDENCE_TIMEOUT = 35.0
+_SUPPORTED_UPDATE_INTERVALS = frozenset((1, 2, 5, 10, 30, 60))
 
 type MarkerWriter = Callable[[str, StoredInterruptedSession | None], Awaitable[None]]
 type VerifiedWriter = Callable[[VerifiedCalibrationRecord], Awaitable[None]]
@@ -122,6 +123,31 @@ class RestartVerificationError(CalibrationError):
 
 class RestartDisconnectTimeoutError(RestartVerificationError):
     """The native Restart command did not disconnect within 20 seconds."""
+
+
+@dataclass(frozen=True, slots=True)
+class CalibrationTimingPolicy:
+    """Bound calibration waits to the installed meter reporting interval."""
+
+    update_interval_s: int
+    sample_count: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.update_interval_s) is not int
+            or self.update_interval_s not in _SUPPORTED_UPDATE_INTERVALS
+            or type(self.sample_count) is not int
+            or self.sample_count < 1
+        ):
+            raise ValueError("calibration timing inputs are invalid")
+
+    @property
+    def sensor_window_timeout_s(self) -> float:
+        return max(35.0, self.update_interval_s * (self.sample_count + 1) + 5.0)
+
+    @property
+    def evidence_timeout_s(self) -> float:
+        return max(35.0, self.update_interval_s * 2 + 15.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -522,6 +548,7 @@ class CalibrationEngine:
         stage: OffsetReadinessStage,
         *,
         confirm_retry: bool = False,
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> OffsetCalibrationResult:
         """Run one offset stage for both chips on a selected board."""
         if stage not in (1, 2):
@@ -573,7 +600,11 @@ class CalibrationEngine:
             if attempt > 1 and not confirm_retry:
                 raise CalibrationError("explicit confirmation is required for retry")
             readiness = await async_check_offset_readiness(
-                session, binding, board_index, stage
+                session,
+                binding,
+                board_index,
+                stage,
+                timeout=self._sensor_timeout(timing_policy),
             )
             if (
                 not readiness.ready
@@ -605,7 +636,13 @@ class CalibrationEngine:
                     )
                     try:
                         evidence = await self._run_offset(
-                            mac, session, button, instance_id, stage, generation
+                            mac,
+                            session,
+                            button,
+                            instance_id,
+                            stage,
+                            generation,
+                            timing_policy,
                         )
                     except Exception as error:  # noqa: BLE001 - typed partial result
                         state = (
@@ -658,6 +695,7 @@ class CalibrationEngine:
         iteration: int = 1,
         confirm_iteration: bool = False,
         substitutions: Mapping[str, str] | None = None,
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> CalibrationResult:
         return (
             await self.async_calibrate_voltages(
@@ -668,6 +706,7 @@ class CalibrationEngine:
                 tolerance_percent,
                 confirm_iteration=confirm_iteration,
                 substitutions=substitutions,
+                timing_policy=timing_policy,
             )
         )[0]
 
@@ -681,14 +720,13 @@ class CalibrationEngine:
         *,
         confirm_iteration: bool = False,
         substitutions: Mapping[str, str] | None = None,
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> tuple[CalibrationResult, ...]:
-        if not 1 <= len(references) <= 2:
-            raise ValueError("voltage calibration requires one board")
+        if not references:
+            raise ValueError("voltage calibration requires at least one group")
         groups = tuple(self._group(binding, item[0]) for item in references)
-        if len({group.key for group in groups}) != len(groups) or len(
-            {group.voltage_reference.descriptor.device_id for group in groups}
-        ) != 1:
-            raise ValueError("voltage calibration groups must share one meter board")
+        if len({group.key for group in groups}) != len(groups):
+            raise ValueError("voltage calibration groups must be unique")
         attempts = tuple(
             self._prepare_iteration(
                 mac,
@@ -729,7 +767,7 @@ class CalibrationEngine:
                     )
                 )
                 gain_runs = await self._run_gains(
-                    mac, session, groups, zeroer
+                    mac, session, groups, zeroer, timing_policy
                 )
                 if any(evidence is not None and evidence.flash_saved for evidence, _ in gain_runs):
                     await self._persist_interrupted(
@@ -812,6 +850,7 @@ class CalibrationEngine:
         iteration: int = 1,
         confirm_iteration: bool = False,
         substitutions: Mapping[str, str] | None = None,
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> CalibrationResult:
         return await self.async_calibrate_currents(
             mac,
@@ -822,6 +861,7 @@ class CalibrationEngine:
             iteration=iteration,
             confirm_iteration=confirm_iteration,
             substitutions=substitutions,
+            timing_policy=timing_policy,
         )
 
     async def async_calibrate_currents(
@@ -835,6 +875,7 @@ class CalibrationEngine:
         iteration: int = 1,
         confirm_iteration: bool = False,
         substitutions: Mapping[str, str] | None = None,
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> CalibrationResult:
         if not 1 <= len(references) <= 3:
             raise ValueError("current calibration requires one to three references")
@@ -884,7 +925,12 @@ class CalibrationEngine:
                         raw_references[phase_index],
                     )
                 evidence, restore = await self._run_gain(
-                    mac, session, group, _instance_id(group.key), zeroer
+                    mac,
+                    session,
+                    group,
+                    _instance_id(group.key),
+                    zeroer,
+                    timing_policy,
                 )
                 phase = "ABC"[phase_indices[0]] if len(phase_indices) == 1 else None
                 if evidence is None:
@@ -983,11 +1029,12 @@ class CalibrationEngine:
         group: GroupBinding,
         instance_id: str,
         zeroer: _BoundZeroer,
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> tuple[
         GainRunEvidence | None,
         dict[str, RestoreEvidence] | dict[str, object] | None,
     ]:
-        return (await self._run_gains(mac, session, (group,), zeroer))[0]
+        return (await self._run_gains(mac, session, (group,), zeroer, timing_policy))[0]
 
     async def _run_gains(
         self,
@@ -995,6 +1042,7 @@ class CalibrationEngine:
         session: Any,
         groups: tuple[GroupBinding, ...],
         zeroer: _BoundZeroer,
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> tuple[
         tuple[
             GainRunEvidence | None,
@@ -1020,6 +1068,7 @@ class CalibrationEngine:
                 instance_id=instance_id,
                 button_name=group.run_gain.descriptor.name,
                 dispatched_after=dispatched_after,
+                timeout=self._evidence_timeout_for(timing_policy),
             )
             for group, instance_id, sequence, dispatched_after in runs
         )
@@ -1063,6 +1112,7 @@ class CalibrationEngine:
                 operation_sequence=self._next_sequence(mac),
                 started_after=restore_started,
                 baseline=baseline,
+                timeout=self._evidence_timeout_for(timing_policy),
             )
             return tuple((None, restore) for _group in groups)
         except BaseException:
@@ -1089,6 +1139,7 @@ class CalibrationEngine:
         instance_id: str,
         stage: OffsetReadinessStage,
         generation: int,
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> OffsetRunEvidence | PowerOffsetRunEvidence:
         self._validate_offset_generation(session, generation)
         sequence = self._next_sequence(mac)
@@ -1101,6 +1152,7 @@ class CalibrationEngine:
             button_name=button.descriptor.name,
             dispatched_after=dispatched_after,
             stage=stage,
+            timeout=self._evidence_timeout_for(timing_policy),
         )
         try:
             self._validate_offset_generation(session, generation)
@@ -1148,20 +1200,37 @@ class CalibrationEngine:
         button_name: str,
         dispatched_after: float,
         stage: OffsetReadinessStage,
+        timeout: float | None = None,
     ) -> Awaitable[OffsetRunEvidence | PowerOffsetRunEvidence]:
         factory_name = "expect_offset_run" if stage == 1 else "expect_power_offset_run"
         expect = getattr(session, factory_name, None)
         if expect is not None:
-            return cast(
-                Awaitable[OffsetRunEvidence | PowerOffsetRunEvidence],
-                expect(
-                    connection_generation=generation,
-                    operation_sequence=sequence,
-                    target_instance_id=instance_id,
-                    button_name=button_name,
-                    dispatched_after=dispatched_after,
-                ),
+            evidence = expect(
+                connection_generation=generation,
+                operation_sequence=sequence,
+                target_instance_id=instance_id,
+                button_name=button_name,
+                dispatched_after=dispatched_after,
             )
+
+            async def wait_for_evidence() -> OffsetRunEvidence | PowerOffsetRunEvidence:
+                try:
+                    async with asyncio.timeout(
+                        self._evidence_timeout if timeout is None else timeout
+                    ):
+                        return await evidence
+                finally:
+                    if isinstance(evidence, asyncio.Future) and not evidence.done():
+                        evidence.cancel()
+
+            waiter = asyncio.create_task(wait_for_evidence())
+            if isinstance(evidence, asyncio.Future):
+                waiter.add_done_callback(
+                    lambda _task: evidence.cancel()
+                    if _task.cancelled() and not evidence.done()
+                    else None
+                )
+            return waiter
         baseline = tuple(getattr(session, "log_lines", ()))
         return asyncio.create_task(
             self._poll_offset(
@@ -1173,6 +1242,7 @@ class CalibrationEngine:
                 button_name,
                 dispatched_after,
                 stage,
+                timeout,
             )
         )
 
@@ -1186,8 +1256,11 @@ class CalibrationEngine:
         button_name: str,
         dispatched_after: float,
         stage: OffsetReadinessStage,
+        timeout: float | None = None,
     ) -> OffsetRunEvidence | PowerOffsetRunEvidence:
-        deadline = monotonic() + self._evidence_timeout
+        deadline = monotonic() + (
+            self._evidence_timeout if timeout is None else timeout
+        )
         parser = parse_offset_run if stage == 1 else parse_power_offset_run
         while True:
             if getattr(session, "connected", True) is False:
@@ -1228,19 +1301,36 @@ class CalibrationEngine:
         instance_id: str,
         button_name: str,
         dispatched_after: float,
+        timeout: float | None = None,
     ) -> Awaitable[GainRunEvidence]:
         expect = getattr(session, "expect_gain_run", None)
         if expect is not None:
-            return cast(
-                Awaitable[GainRunEvidence],
-                expect(
-                    connection_generation=generation,
-                    operation_sequence=sequence,
-                    target_instance_id=instance_id,
-                    button_name=button_name,
-                    dispatched_after=dispatched_after,
-                ),
+            evidence = expect(
+                connection_generation=generation,
+                operation_sequence=sequence,
+                target_instance_id=instance_id,
+                button_name=button_name,
+                dispatched_after=dispatched_after,
             )
+
+            async def wait_for_evidence() -> GainRunEvidence:
+                try:
+                    async with asyncio.timeout(
+                        self._evidence_timeout if timeout is None else timeout
+                    ):
+                        return await evidence
+                finally:
+                    if isinstance(evidence, asyncio.Future) and not evidence.done():
+                        evidence.cancel()
+
+            waiter = asyncio.create_task(wait_for_evidence())
+            if isinstance(evidence, asyncio.Future):
+                waiter.add_done_callback(
+                    lambda _task: evidence.cancel()
+                    if _task.cancelled() and not evidence.done()
+                    else None
+                )
+            return waiter
         baseline = tuple(getattr(session, "log_lines", ()))
         return asyncio.create_task(
             self._poll_gain(
@@ -1251,6 +1341,7 @@ class CalibrationEngine:
                 instance_id,
                 button_name,
                 dispatched_after,
+                timeout,
             )
         )
 
@@ -1263,8 +1354,11 @@ class CalibrationEngine:
         instance_id: str,
         button_name: str,
         dispatched_after: float,
+        timeout: float | None = None,
     ) -> GainRunEvidence:
-        deadline = monotonic() + self._evidence_timeout
+        deadline = monotonic() + (
+            self._evidence_timeout if timeout is None else timeout
+        )
         # Current firmware logs only failures after save/verify, not success.
         # Reparse until the full bounded window ends; silence is not a terminal.
 
@@ -1365,11 +1459,19 @@ class CalibrationEngine:
         return evidence
 
     async def _windows(
-        self, session: Any, entities: Sequence[BoundEntity]
+        self,
+        session: Any,
+        entities: Sequence[BoundEntity],
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> tuple[SensorSampleWindow, ...]:
         boundary = monotonic()
         windows = await asyncio.gather(
-            *(self._window(session, entity, boundary=boundary) for entity in entities)
+            *(
+                self._window(
+                    session, entity, boundary=boundary, timing_policy=timing_policy
+                )
+                for entity in entities
+            )
         )
         return tuple(windows)
 
@@ -1379,6 +1481,7 @@ class CalibrationEngine:
         entity: BoundEntity,
         *,
         boundary: float | None = None,
+        timing_policy: CalibrationTimingPolicy | None = None,
     ) -> SensorSampleWindow:
         descriptor = entity.descriptor
         raw = await session.async_wait_for_sensor_window(
@@ -1386,7 +1489,7 @@ class CalibrationEngine:
             device_id=descriptor.device_id,
             sample_count=self._sample_count,
             after=monotonic() if boundary is None else boundary,
-            timeout=self._evidence_timeout,
+            timeout=self._sensor_timeout(timing_policy),
         )
         window = _sample_window(raw)
         if len(window.values) != self._sample_count:
@@ -1396,6 +1499,22 @@ class CalibrationEngine:
                 f"{entity.role} range exceeds the stability limit"
             )
         return window
+
+    def _sensor_timeout(self, timing_policy: CalibrationTimingPolicy | None) -> float:
+        return (
+            timing_policy.sensor_window_timeout_s
+            if timing_policy is not None
+            else self._evidence_timeout
+        )
+
+    def _evidence_timeout_for(
+        self, timing_policy: CalibrationTimingPolicy | None
+    ) -> float:
+        return (
+            timing_policy.evidence_timeout_s
+            if timing_policy is not None
+            else self._evidence_timeout
+        )
 
     @staticmethod
     async def _set_number(session: Any, entity: BoundEntity, value: float) -> None:

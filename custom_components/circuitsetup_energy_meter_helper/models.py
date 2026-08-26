@@ -18,6 +18,12 @@ _CONNECTION_TYPES = {
     "ethernet_waveshare",
     "unknown",
 }
+_ELECTRICAL_SYSTEMS = {
+    "split_phase_120_240",
+    "single_phase_230",
+    "three_phase",
+    "custom",
+}
 _EVIDENCE_SOURCES = {
     "config_project",
     "config_packages",
@@ -84,6 +90,8 @@ class InstallerIntent:
     esphome_version: str | None = None
     power_quality: tuple[bool, ...] | None = None
     status_fields: tuple[bool, ...] | None = None
+    electrical_system: str | None = None
+    line_frequency_hz: int | None = None
 
     def __post_init__(self) -> None:
         if not 0 <= self.addon_count <= 6:
@@ -94,6 +102,16 @@ class InstallerIntent:
             self.firmware_product_id,
             self.esphome_version,
         )
+        if (self.electrical_system is None) != (self.line_frequency_hz is None):
+            raise ValueError("electrical system and line frequency must be paired")
+        if self.electrical_system is not None:
+            if (
+                not isinstance(self.electrical_system, str)
+                or self.electrical_system not in _ELECTRICAL_SYSTEMS
+            ):
+                raise ValueError("unsupported electrical_system")
+            if type(self.line_frequency_hz) is not int or self.line_frequency_hz not in (50, 60):
+                raise ValueError("line_frequency_hz must be 50 or 60")
         board_count = self.addon_count + 1
         defaults = {
             "power_quality": (False,) * board_count,
