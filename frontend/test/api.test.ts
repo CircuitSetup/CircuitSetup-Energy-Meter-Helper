@@ -78,6 +78,7 @@ const meterConfiguration: MeterConfiguration = {
     source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1,
   },
   ct_catalog: inventory.catalog, warnings: ["slow_interval_extends_calibration"],
+  configuration_impact: { numeric_entities: 20, text_entities: 6, approximate_publications_per_second: 26 / 30 },
   channels: inventory.channels as MeterConfiguration["channels"], catalog: inventory.catalog,
 };
 const transaction = { transaction_id: "tx-1", state: "previewed", source_sha256: "a".repeat(64),
@@ -228,6 +229,7 @@ describe("HelperApi", () => {
       { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, channels: [{ ...meterConfiguration.configuration.channels[0], role: "invented" }] } },
       { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, aggregates: [{ ...meterConfiguration.configuration.aggregates[0], channels: ["1"] }] } },
       { ...meterConfiguration, voltage_transformer_catalog: { ...meterConfiguration.voltage_transformer_catalog, presets: [{ ...meterConfiguration.voltage_transformer_catalog.presets[0], default_gain_voltage: "7305" }] } },
+      { ...meterConfiguration, configuration_impact: { numeric_entities: -1, text_entities: 0, approximate_publications_per_second: 0 } },
     ]) {
       hass.responses.get_meter_configuration = invalid;
       await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration");

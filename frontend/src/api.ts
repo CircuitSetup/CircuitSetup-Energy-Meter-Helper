@@ -193,7 +193,7 @@ function topologyResponse(value: unknown, label: string): MeterTopology | { topo
 }
 function meterConfiguration(value: unknown, label: string): MeterConfiguration {
   const response = record(value, label);
-  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "channels", "catalog"], label);
+  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "channels", "catalog"], label);
   const planId = string(response.plan_id, label)!;
   if (!SERVER_ID.test(planId) || !SHA256.test(string(response.source_sha256, label)!)) throw new Error(`${label} response is invalid`);
   const planTopology = topology(response.topology, label);
@@ -244,6 +244,7 @@ function meterConfiguration(value: unknown, label: string): MeterConfiguration {
   const ctCatalog = record(response.ct_catalog, label); exactKeys(ctCatalog, ["presets", "source_repository", "source_ref", "schema_version"], label);
   ctInventory({ plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.ct_catalog }, label);
   const warnings = array(response.warnings, label, 32).map((warning) => string(warning, label)!);
+  const impact = record(response.configuration_impact, label); exactKeys(impact, ["numeric_entities", "text_entities", "approximate_publications_per_second"], label); if (integer(impact.numeric_entities, label) < 0 || integer(impact.text_entities, label) < 0 || number(impact.approximate_publications_per_second, label) < 0) throw new Error(`${label} response is invalid`);
   return value as MeterConfiguration;
 }
 

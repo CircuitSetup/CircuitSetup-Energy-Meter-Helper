@@ -222,6 +222,12 @@ export interface MeterConfigurationCapabilities {
   reason_codes: string[];
 }
 
+export interface ConfigurationImpact {
+  numeric_entities: number;
+  text_entities: number;
+  approximate_publications_per_second: number;
+}
+
 export interface VoltageReferenceTopology {
   references: Array<[string, string[]]>;
   source: "helper" | "legacy";
@@ -237,6 +243,7 @@ export interface MeterConfiguration extends CtInventory {
   voltage_transformer_catalog: VoltageTransformerCatalog;
   ct_catalog: CtCatalog;
   warnings: string[];
+  configuration_impact: ConfigurationImpact;
 }
 
 export interface CtChange {
