@@ -1,7 +1,5 @@
 import { html, type TemplateResult } from "lit";
 import type { ConnectionType, ElectricalSystem, LineFrequencyHz, SetupSnapshot } from "../types";
-import type { BoardPackageOptions } from "../types";
-import { newInstallPackageOptions, packageOptions } from "./package-options";
 
 const CONNECTIONS: Array<[Exclude<ConnectionType, "unknown">, string]> = [
   ["wifi", "Wi-Fi"],
@@ -31,8 +29,6 @@ export function setupDeviceStep(
   discoverOnly = false,
   firmwareCatalog: TemplateResult = html``,
   importFailedDeviceId: string | null = null,
-  boardPackages: BoardPackageOptions = newInstallPackageOptions(addonCount),
-  setBoardPackages: (options: BoardPackageOptions) => void = () => undefined,
   electricalSystem: ElectricalSystem = "split_phase_120_240",
   lineFrequencyHz: LineFrequencyHz | null = 60,
   electricalProfileConfirmed = false,
@@ -114,7 +110,6 @@ export function setupDeviceStep(
           `)}
         </div>
       </fieldset>
-      ${packageOptions(boardPackages, setBoardPackages)}
       <section aria-labelledby="jumper-heading">
         <h2 id="jumper-heading">Jumper summary</h2>
         <dl class="summary-band">

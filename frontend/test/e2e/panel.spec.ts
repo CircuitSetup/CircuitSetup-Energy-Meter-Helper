@@ -611,13 +611,12 @@ test("review Back rejects stale drafts when the source changed externally", asyn
   expect(JSON.stringify(previews[1]?.configuration)).not.toContain("Stale draft");
 });
 
-test("topology package choices stay in the canonical preview payload", async ({ page }) => {
+test("Meter Settings package choices stay in the canonical preview payload", async ({ page }) => {
   const frames = await mockHomeAssistant(page);
   await openInventory(page);
   await page.getByRole("button", { name: "Back" }).click();
-  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
   await page.locator('[data-feature="status_fields"][data-board="0"]').check();
-  await page.locator('[data-action="continue"]').click();
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
@@ -625,15 +624,16 @@ test("topology package choices stay in the canonical preview payload", async ({ 
   expect(preview.configuration).toMatchObject({ power_quality: [false], status_fields: [true] });
 });
 
-test("topology package choice survives the first meter configuration load", async ({ page }) => {
+test("package choices appear only after the first meter configuration load", async ({ page }) => {
   const frames = await mockHomeAssistant(page);
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
   await expect(page.getByRole("heading", { name: "Topology evidence" })).toBeVisible();
-  await page.locator('[data-feature="status_fields"][data-board="0"]').check();
+  await expect(page.locator('[data-feature="status_fields"]')).toHaveCount(0);
   await page.locator('[data-action="continue"]').click();
   await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
+  await page.locator('[data-feature="status_fields"][data-board="0"]').check();
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
@@ -710,8 +710,8 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
-  await page.locator('[data-feature="status_fields"][data-board="0"]').check();
   await page.locator('[data-action="continue"]').click();
+  await page.locator('[data-feature="status_fields"][data-board="0"]').check();
   await page.getByLabel("Reporting interval").selectOption("10");
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByLabel("Preset channels").selectOption(["1", "2"]);

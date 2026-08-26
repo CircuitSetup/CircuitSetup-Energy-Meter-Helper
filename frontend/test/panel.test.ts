@@ -1365,7 +1365,7 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toMatch(/(?:USB flash|installation|provisioning) complete/i);
   });
 
-  it("persists new-install package choices with installer intent", async () => {
+  it("persists new-install package defaults with installer intent", async () => {
     const messages: Record<string, unknown>[] = [];
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
@@ -1380,18 +1380,17 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(hass);
     panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="1"]')?.click();
     await panel.updateComplete;
-    panel.shadowRoot?.querySelector<HTMLInputElement>('[data-all-feature="power_quality"]')?.click();
-    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector('[data-feature="power_quality"]')).toBeNull();
     panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="rescan"]')?.click();
     await tick();
 
     expect(messages.find((message) => String(message.type).endsWith("set_installer_intent"))).toMatchObject({
-      power_quality: [true, true],
+      power_quality: [false, false],
       status_fields: [true, false],
     });
   });
 
-  it("shows existing package state from the selected meter config", async () => {
+  it("loads existing package state without exposing it before Meter Settings", async () => {
     const configured = {
       ...device,
       project_name: "circuitsetup.6c-energy-meter-1-addon",
@@ -1420,13 +1419,13 @@ describe("CircuitSetup panel", () => {
     await tick();
     await panel.updateComplete;
 
-    expect([...panel.shadowRoot?.querySelectorAll<HTMLInputElement>('[data-feature="power_quality"]') ?? []]
-      .map((input) => input.checked)).toEqual([true, false]);
-    expect([...panel.shadowRoot?.querySelectorAll<HTMLInputElement>('[data-feature="status_fields"]') ?? []]
-      .map((input) => input.checked)).toEqual([false, true]);
+    expect(panel.shadowRoot?.querySelector('[data-feature="power_quality"]')).toBeNull();
+    expect((panel as unknown as { packageOptions: import("../src/types").BoardPackageOptions }).packageOptions).toEqual({
+      power_quality: [true, false], status_fields: [false, true],
+    });
   });
 
-  it("keeps selected package choices when a new meter config is imported", async () => {
+  it("keeps new-install package defaults until the meter config is imported", async () => {
     let setupCallback: ((snapshot: unknown) => void) | undefined;
     let adopted = false;
     const newDevice = {
@@ -1464,14 +1463,15 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(hass);
     panel.shadowRoot?.querySelector<HTMLInputElement>('[name="addon-count"][value="1"]')?.click();
     await panel.updateComplete;
-    panel.shadowRoot?.querySelector<HTMLInputElement>('[data-all-feature="power_quality"]')?.click();
     setupCallback?.({ state: "device_discovered", devices: [newDevice] });
     await tick();
     await tick();
     await panel.updateComplete;
 
-    expect([...panel.shadowRoot?.querySelectorAll<HTMLInputElement>('[data-feature="power_quality"]') ?? []]
-      .map((input) => input.checked)).toEqual([true, true]);
+    expect(panel.shadowRoot?.querySelector('[data-feature="power_quality"]')).toBeNull();
+    expect((panel as unknown as { packageOptions: import("../src/types").BoardPackageOptions }).packageOptions).toEqual({
+      power_quality: [false, false], status_fields: [true, false],
+    });
   });
 
   it("keeps package review state synchronized across apply and rollback", async () => {
