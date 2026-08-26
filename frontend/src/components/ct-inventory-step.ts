@@ -157,6 +157,7 @@ function circuitsEditor(
     aggregate.role === "grid" && aggregate.channels.some((channel) => configuration.channels[channel - 1]?.role === "branch") ? `${aggregate.name}: keep branch loads out of the root-grid total.` : "",
     aggregate.measurement_method === "one_ct_double_power" && aggregate.channels.length !== 1 ? `${aggregate.name}: doubled-one-leg measurement requires exactly one CT.` : "",
     aggregate.role === "two_pole" && !["one_ct_double_power", "both_conductors_one_ct", "two_ct_sum"].includes(aggregate.measurement_method) ? `${aggregate.name}: select a two-pole measurement method.` : "",
+    aggregate.role === "two_pole" && aggregate.channels.some((channel) => configuration.aggregates.filter((item) => item.role === "two_pole" && item.channels.includes(channel)).length > 1) ? `${aggregate.name}: a CT cannot belong to two two-pole aggregates.` : "",
   ].filter(Boolean));
   return html`<section class="step-content" aria-labelledby="circuits-heading">
     <h2 id="circuits-heading">Circuits & CTs</h2>
@@ -210,8 +211,9 @@ function aggregateButtons(configuration: MeterConfigurationRequest, available: n
     const base = role.replaceAll("_", "-"); let suffix = configuration.aggregates.length + 1;
     const ids = new Set(configuration.aggregates.map((aggregate) => aggregate.aggregate_id));
     while (ids.has(`${base}-${suffix}`)) suffix++;
-    update({ ...configuration, aggregates: [...configuration.aggregates, { aggregate_id: `${base}-${suffix}`,
-      name, role, channels, measurement_method: method, parent_id: null, energy_mode: energy, expose_power: true, expose_current: role === "grid" }] });
+    update({ ...configuration, channels: role === "grid" ? configuration.channels.map((channel) => channels.includes(channel.channel) ? { ...channel, role: "grid" } : channel) : configuration.channels,
+      aggregates: [...configuration.aggregates, { aggregate_id: `${base}-${suffix}`,
+        name, role, channels, measurement_method: method, parent_id: null, energy_mode: energy, expose_power: true, expose_current: role === "grid" }] });
   };
   return html`<div class="action-footer"><label>Preset channels <select multiple data-preset-channels aria-label="Preset channels">${available.map((channel) => html`<option value=${channel}>CT${channel}</option>`)}</select></label>
     <button class="secondary" @click=${(event: Event) => add(event, "New aggregate", "branch", "direct", 1, "consumption")}>Add aggregate</button>

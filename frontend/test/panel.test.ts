@@ -1346,7 +1346,7 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     panel.showState("ct"); await panel.updateComplete;
 
-    expect(text(panel)).toContain("CT settings are not loaded");
+    expect(text(panel)).toContain("Circuits & CTs are not loaded");
     expect(text(panel)).not.toContain("Restart verification is not complete");
   });
 

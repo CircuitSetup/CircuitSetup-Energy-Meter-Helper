@@ -804,10 +804,12 @@ export class CircuitSetupPanel extends LitElement {
       this.requestUpdate();
       return;
     }
+    const removedIds = new Set(invalid.map((aggregate) => aggregate.aggregate_id));
     this.updateCircuitConfiguration({ ...this.meterConfiguration.configuration,
       channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel
         ? { ...item, enabled: false, role: "unused" } : item),
       aggregates: this.meterConfiguration.configuration.aggregates.filter((aggregate) => !invalid.includes(aggregate)).map((aggregate) => ({ ...aggregate,
+        parent_id: aggregate.parent_id !== null && removedIds.has(aggregate.parent_id) ? null : aggregate.parent_id,
         channels: aggregate.channels.filter((item) => item !== channel) })), });
   }
 
@@ -1625,7 +1627,7 @@ export class CircuitSetupPanel extends LitElement {
       () => void (this.restartResult?.source_handoff_firmware_installed
         ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back());
     return html`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct"
-      ? "CT settings are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
+      ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;
   }
 

@@ -1261,7 +1261,8 @@ function ns(n, e, t) {
   }, o = n.meter.voltage_references, a = n.channels.filter((c) => c.enabled && !n.aggregates.some((u) => u.channels.includes(c.channel))).map((c) => c.channel), l = n.aggregates.flatMap((c) => [
     c.role === "grid" && c.channels.some((u) => n.channels[u - 1]?.role === "branch") ? `${c.name}: keep branch loads out of the root-grid total.` : "",
     c.measurement_method === "one_ct_double_power" && c.channels.length !== 1 ? `${c.name}: doubled-one-leg measurement requires exactly one CT.` : "",
-    c.role === "two_pole" && !["one_ct_double_power", "both_conductors_one_ct", "two_ct_sum"].includes(c.measurement_method) ? `${c.name}: select a two-pole measurement method.` : ""
+    c.role === "two_pole" && !["one_ct_double_power", "both_conductors_one_ct", "two_ct_sum"].includes(c.measurement_method) ? `${c.name}: select a two-pole measurement method.` : "",
+    c.role === "two_pole" && c.channels.some((u) => n.aggregates.filter((d) => d.role === "two_pole" && d.channels.includes(u)).length > 1) ? `${c.name}: a CT cannot belong to two two-pole aggregates.` : ""
   ].filter(Boolean));
   return p`<section class="step-content" aria-labelledby="circuits-heading">
     <h2 id="circuits-heading">Circuits & CTs</h2>
@@ -1313,17 +1314,21 @@ function rs(n, e, t) {
     let b = n.aggregates.length + 1;
     const h = new Set(n.aggregates.map((f) => f.aggregate_id));
     for (; h.has(`${g}-${b}`); ) b++;
-    t({ ...n, aggregates: [...n.aggregates, {
-      aggregate_id: `${g}-${b}`,
-      name: r,
-      role: o,
-      channels: d,
-      measurement_method: a,
-      parent_id: null,
-      energy_mode: c,
-      expose_power: !0,
-      expose_current: o === "grid"
-    }] });
+    t({
+      ...n,
+      channels: o === "grid" ? n.channels.map((f) => d.includes(f.channel) ? { ...f, role: "grid" } : f) : n.channels,
+      aggregates: [...n.aggregates, {
+        aggregate_id: `${g}-${b}`,
+        name: r,
+        role: o,
+        channels: d,
+        measurement_method: a,
+        parent_id: null,
+        energy_mode: c,
+        expose_power: !0,
+        expose_current: o === "grid"
+      }]
+    });
   };
   return p`<div class="action-footer"><label>Preset channels <select multiple data-preset-channels aria-label="Preset channels">${e.map((s) => p`<option value=${s}>CT${s}</option>`)}</select></label>
     <button class="secondary" @click=${(s) => i(s, "New aggregate", "branch", "direct", 1, "consumption")}>Add aggregate</button>
@@ -2735,20 +2740,22 @@ class an extends he {
   }
   disableCircuit(e) {
     if (!this.meterConfiguration) return;
-    const t = this.meterConfiguration.configuration.aggregates.filter((r) => r.channels.includes(e)), i = t.filter((r) => {
-      const o = r.channels.filter((a) => a !== e).length;
-      return !o || r.measurement_method === "two_ct_sum" && o !== 2 || (r.measurement_method === "one_ct_double_power" || r.measurement_method === "both_conductors_one_ct") && o !== 1;
-    }), s = i.map((r) => r.name);
-    if (t.length && !window.confirm(`Marking CT${e} unused removes it from ${t.map((r) => r.name).join(", ")}${s.length ? ` and deletes invalid aggregate ${s.join(", ")}` : ""}. Continue?`)) {
+    const t = this.meterConfiguration.configuration.aggregates.filter((o) => o.channels.includes(e)), i = t.filter((o) => {
+      const a = o.channels.filter((l) => l !== e).length;
+      return !a || o.measurement_method === "two_ct_sum" && a !== 2 || (o.measurement_method === "one_ct_double_power" || o.measurement_method === "both_conductors_one_ct") && a !== 1;
+    }), s = i.map((o) => o.name);
+    if (t.length && !window.confirm(`Marking CT${e} unused removes it from ${t.map((o) => o.name).join(", ")}${s.length ? ` and deletes invalid aggregate ${s.join(", ")}` : ""}. Continue?`)) {
       this.requestUpdate();
       return;
     }
+    const r = new Set(i.map((o) => o.aggregate_id));
     this.updateCircuitConfiguration({
       ...this.meterConfiguration.configuration,
-      channels: this.meterConfiguration.configuration.channels.map((r) => r.channel === e ? { ...r, enabled: !1, role: "unused" } : r),
-      aggregates: this.meterConfiguration.configuration.aggregates.filter((r) => !i.includes(r)).map((r) => ({
-        ...r,
-        channels: r.channels.filter((o) => o !== e)
+      channels: this.meterConfiguration.configuration.channels.map((o) => o.channel === e ? { ...o, enabled: !1, role: "unused" } : o),
+      aggregates: this.meterConfiguration.configuration.aggregates.filter((o) => !i.includes(o)).map((o) => ({
+        ...o,
+        parent_id: o.parent_id !== null && r.has(o.parent_id) ? null : o.parent_id,
+        channels: o.channels.filter((a) => a !== e)
       }))
     });
   }
@@ -3534,7 +3541,7 @@ class an extends he {
         this.restartResult?.source_handoff_firmware_installed ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff();
       },
       () => this.back()
-    ) : p`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct" ? "CT settings are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
+    ) : p`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct" ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;
   }
   firmwareCatalog() {
