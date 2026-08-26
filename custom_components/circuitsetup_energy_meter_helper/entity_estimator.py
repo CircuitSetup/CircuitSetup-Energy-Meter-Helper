@@ -16,21 +16,24 @@ from .models import MeterTopology
 class ConfigurationImpact:
     """Visible entities published by the configured meter."""
 
-    numeric_entities: int
-    text_entities: int
+    enabled_channel_count: int
+    numeric_entity_count: int
+    text_entity_count: int
+    energy_entity_count: int
     approximate_publications_per_second: float
 
 
-def estimate_configuration_entity_impact(
+def estimate_configuration_impact(
     configuration: MeterConfigurationRequest, topology: MeterTopology
 ) -> ConfigurationImpact:
     """Count the non-calibration entities rendered by a validated configuration."""
     validate_meter_configuration(configuration, topology)
     numeric = len(configuration.meter.voltage_references) * 2
-    text = 0
+    text = energy = enabled = 0
     for channel in configuration.channels:
         if not channel.enabled:
             continue
+        enabled += 1
         numeric += 2 + (
             4 if configuration.power_quality[(channel.channel - 1) // 6] else 0
         )
@@ -39,8 +42,14 @@ def estimate_configuration_entity_impact(
         numeric += int(aggregate.expose_power) + int(aggregate.expose_current)
         if aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
             numeric += 1
+            energy += 1
         elif aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
             numeric += 4  # import/export clamp power plus their daily energy entities
+            energy += 2
     return ConfigurationImpact(
-        numeric, text, (numeric + text) / configuration.meter.update_interval_s
+        enabled,
+        numeric,
+        text,
+        energy,
+        (numeric + text) / configuration.meter.update_interval_s,
     )

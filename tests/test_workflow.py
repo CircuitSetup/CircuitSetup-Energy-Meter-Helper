@@ -188,8 +188,8 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert workflow._plans[wrapper["plan_id"]].inventory.plan_id == wrapper["plan_id"]
         assert result["source_sha256"] == digest
         assert result["configuration"].meter.friendly_name == "Garage Meter"
-        assert result["configuration_impact"].numeric_entities == 14
-        assert result["configuration_impact"].text_entities == 0
+        assert result["configuration_impact"].numeric_entity_count == 14
+        assert result["configuration_impact"].text_entity_count == 0
         assert "slow_interval_extends_calibration" in result["warnings"]
         assert wrapper["channels"] == result["channels"]
         assert "stored_semantics_stale" not in result["warnings"]

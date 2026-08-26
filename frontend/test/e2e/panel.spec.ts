@@ -82,7 +82,7 @@ function meterConfiguration(addons: number) {
     capabilities: { configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [] },
     voltage_topology: { references: references.map((reference) => [reference.reference_id, reference.group_keys]), source: "legacy" },
     voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 },
-    ct_catalog: live.catalog, warnings: [], configuration_impact: { numeric_entities: 14, text_entities: 6, approximate_publications_per_second: 4 }, channels: live.channels, catalog: live.catalog };
+    ct_catalog: live.catalog, warnings: [], configuration_impact: { enabled_channel_count: live.channels.length, numeric_entity_count: live.channels.length * 2 + 2 * (addons + 1), text_entity_count: 0, energy_entity_count: 0, approximate_publications_per_second: (live.channels.length * 2 + 2 * (addons + 1)) / 5 }, channels: live.channels, catalog: live.catalog };
 }
 
 function transaction(state: string, channel: number, options: { evidence?: string[]; progress?: string[];

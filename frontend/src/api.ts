@@ -23,6 +23,7 @@ import type {
   TransactionStatus,
 } from "./types";
 import type { FirmwareOption } from "./firmware-installer";
+import { configurationImpact } from "./configuration-impact";
 
 export interface HomeAssistant {
   callWS<T>(message: Record<string, unknown>): Promise<T>;
@@ -244,7 +245,7 @@ function meterConfiguration(value: unknown, label: string): MeterConfiguration {
   const ctCatalog = record(response.ct_catalog, label); exactKeys(ctCatalog, ["presets", "source_repository", "source_ref", "schema_version"], label);
   ctInventory({ plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.ct_catalog }, label);
   const warnings = array(response.warnings, label, 32).map((warning) => string(warning, label)!);
-  const impact = record(response.configuration_impact, label); exactKeys(impact, ["numeric_entities", "text_entities", "approximate_publications_per_second"], label); if (integer(impact.numeric_entities, label) < 0 || integer(impact.text_entities, label) < 0 || number(impact.approximate_publications_per_second, label) < 0) throw new Error(`${label} response is invalid`);
+  const impact = record(response.configuration_impact, label); exactKeys(impact, ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count", "approximate_publications_per_second"], label); for (const key of ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count"] as const) if (integer(impact[key], label) < 0) throw new Error(`${label} response is invalid`); const publications = number(impact.approximate_publications_per_second, label); if (publications < 0) throw new Error(`${label} response is invalid`); const expectedImpact = configurationImpact(response.configuration as MeterConfigurationRequest, planTopology); if (impact.enabled_channel_count !== expectedImpact.enabled_channel_count || impact.numeric_entity_count !== expectedImpact.numeric_entity_count || impact.text_entity_count !== expectedImpact.text_entity_count || impact.energy_entity_count !== expectedImpact.energy_entity_count || Math.abs(publications - expectedImpact.approximate_publications_per_second) > Number.EPSILON * Math.max(1, publications, expectedImpact.approximate_publications_per_second) * 8) throw new Error(`${label} response is invalid`);
   return value as MeterConfiguration;
 }
 

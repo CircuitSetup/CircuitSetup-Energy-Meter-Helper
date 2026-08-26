@@ -54,7 +54,7 @@ from .entity_binding import (
     bind_native_meter,
 )
 from .entity_catalog import EntityCatalog
-from .entity_estimator import estimate_configuration_entity_impact
+from .entity_estimator import estimate_configuration_impact
 from .esphome_api import ESPHomeApiSession
 from .meter_config_mutator import (
     build_meter_configuration_mutation,
@@ -499,7 +499,7 @@ class EntryWorkflow:
             "voltage_transformer_catalog": inventory.voltage_transformer_catalog,
             "ct_catalog": inventory.ct_catalog,
             "warnings": inventory.warnings,
-            "configuration_impact": estimate_configuration_entity_impact(
+            "configuration_impact": estimate_configuration_impact(
                 inventory.configuration, inventory.topology
             ),
             "channels": inventory.ct_inventory.channels,

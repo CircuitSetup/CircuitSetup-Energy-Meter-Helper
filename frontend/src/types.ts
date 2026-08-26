@@ -223,8 +223,10 @@ export interface MeterConfigurationCapabilities {
 }
 
 export interface ConfigurationImpact {
-  numeric_entities: number;
-  text_entities: number;
+  enabled_channel_count: number;
+  numeric_entity_count: number;
+  text_entity_count: number;
+  energy_entity_count: number;
   approximate_publications_per_second: number;
 }
 
