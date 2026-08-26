@@ -175,7 +175,8 @@ export interface CtChannel {
   selected_model_id: string | null;
   selection_verified_against_config: boolean;
   address: ChannelAddress;
-  display_label?: string | null;
+  display_label: string | null;
+  stored_selection_present: boolean;
 }
 
 export interface CtPreset {
@@ -285,14 +286,14 @@ export interface TransactionStatus {
   rollback_available: boolean;
   evidence: string[];
   progress: string[];
-  validation_detail?: {
+  validation_detail: {
     code: number | null;
     reported_error_count: number | null;
     reported_warning_count: number | null;
     error_record_count: number;
     warning_record_count: number;
   } | null;
-  upload_progress?: Array<{ stage: string; progress?: number | null; percentage?: number | null }>;
+  upload_progress: Array<{ stage: string; progress?: number | null; percentage?: number | null }>;
   aggregate_entity_mismatch: boolean;
   full_meter_configuration_verified: boolean;
 }

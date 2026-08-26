@@ -41,7 +41,7 @@ const inventory = {
     raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model",
     selection_verified_against_config: true, address: { channel: index + 1, board_index: 0,
       group_index: Math.floor(index / 3), phase: (["A", "B", "C"] as const)[index % 3] },
-    display_label: null })),
+    display_label: null, stored_selection_present: false })),
   catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
     secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }],
     source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
@@ -81,7 +81,7 @@ const meterConfiguration: MeterConfiguration = {
   channels: inventory.channels as MeterConfiguration["channels"], catalog: inventory.catalog,
 };
 const transaction = { transaction_id: "tx-1", state: "previewed", source_sha256: "a".repeat(64),
-  changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], upload_progress: [],
+  changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [],
   aggregate_entity_mismatch: false, full_meter_configuration_verified: true };
 const session = { session_id: "session-1", device_id: "meter-1", state: "ready", safety_acknowledged: true,
   preflight: { issues: [], zeroed_roles: ["reference"] }, entity_role_counts: {},
@@ -266,6 +266,37 @@ describe("HelperApi", () => {
     for (const field of ["aggregate_entity_mismatch", "full_meter_configuration_verified"] as const) {
       const invalid = { ...transaction } as Partial<typeof transaction>;
       delete invalid[field]; hass.responses.preview_ct_config = invalid;
+      await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
+    }
+  });
+
+  it("fails closed on the exact meter configuration and preview contract", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    const configuration = meterConfiguration.configuration;
+    const disabled = { ...configuration.channels[0], enabled: false, role: "unused" };
+    const invalidConfigurations = [
+      { ...configuration, channels: [{ ...configuration.channels[0], enabled: false }, ...configuration.channels.slice(1)] },
+      { ...configuration, channels: [{ ...configuration.channels[0], role: "unused" }, ...configuration.channels.slice(1)] },
+      { ...configuration, channels: [disabled, ...configuration.channels.slice(1)], aggregates: [{ ...configuration.aggregates[0], channels: [1, 2] }] },
+      { ...configuration, aggregates: [{ ...configuration.aggregates[0], aggregate_id: "Main_Load" }] },
+    ];
+    for (const invalid of invalidConfigurations) {
+      hass.responses.get_meter_configuration = { ...meterConfiguration, configuration: invalid };
+      await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration");
+    }
+    for (const field of ["display_label", "stored_selection_present"] as const) {
+      const channel = { ...inventory.channels[0] } as Partial<(typeof inventory.channels)[number]>;
+      delete channel[field]; hass.responses.get_ct_inventory = { ...inventory, channels: [channel] };
+      await expect(api.getCtInventory("meter-1")).rejects.toThrow("get_ct_inventory");
+    }
+    for (const invalid of [
+      { ...transaction, source_sha256: "z".repeat(64) },
+      { ...transaction, validation_detail: undefined },
+      { ...transaction, upload_progress: undefined },
+      { ...transaction, extra: true },
+    ]) {
+      hass.responses.preview_ct_config = invalid;
       await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
     }
   });

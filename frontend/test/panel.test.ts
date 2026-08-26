@@ -56,7 +56,7 @@ const makeHass = (responses: Record<string, unknown>): HomeAssistant => ({
 const meterResponse = (electrical_system = "split_phase_120_240", line_frequency_hz = 60, update_interval_s = 5) => ({
   plan_id: "b".repeat(32), source_sha256: "a".repeat(64), topology: { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2, connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] },
   configuration: { meter: { friendly_name: "Energy meter", electrical_system, line_frequency_hz, update_interval_s, voltage_layout: "standard", voltage_references: [{ reference_id: "main", label: "Main", phase_label: "A", nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305, group_keys: ["main_1", "main_2"] }] }, channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, enabled: true, name: `CT${index + 1}`, model_id: "model", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false })), aggregates: [], power_quality: [true], status_fields: [false], multi_reference_preparation_acknowledged: false },
-  capabilities: { configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [] }, voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" }, voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 }, ct_catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 }, warnings: [], channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model", selection_verified_against_config: true, address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3), phase: (["A", "B", "C"] as const)[index % 3] }, display_label: null })), catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
+  capabilities: { configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [] }, voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" }, voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 }, ct_catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 }, warnings: [], channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model", selection_verified_against_config: true, address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3), phase: (["A", "B", "C"] as const)[index % 3] }, display_label: null, stored_selection_present: false })), catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
 });
 
 const mount = async (hass: HomeAssistant) => {
@@ -1016,6 +1016,8 @@ describe("CircuitSetup panel", () => {
         reporting_multiplier: 1,
         selected_model_id: "model",
         selection_verified_against_config: true,
+        display_label: null,
+        stored_selection_present: false,
         address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3),
           phase: (["A", "B", "C"] as const)[index % 3]! },
       })),
@@ -1037,7 +1039,7 @@ describe("CircuitSetup panel", () => {
             { key: "package.addon7.power_quality", old_value: "enabled", new_value: "disabled" },
           ],
           redacted_diff: "+ power quality", rollback_available: true, evidence: [],
-          progress: operation === "apply_ct_config" ? ["config_validated"] : [], upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as T;
+          progress: operation === "apply_ct_config" ? ["config_validated"] : [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as T;
         return {} as T;
       },
       connection: { subscribeMessage: async () => () => undefined },
@@ -1270,7 +1272,7 @@ describe("CircuitSetup panel", () => {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1,
         name: index === 0 ? "Main A" : `CT${index + 1}`, raw_gain_ct: 5500, reporting_multiplier: 1,
-        selected_model_id: "model", selection_verified_against_config: true, display_label: null,
+        selected_model_id: "model", selection_verified_against_config: true, display_label: null, stored_selection_present: false,
         address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3),
           phase: (["A", "B", "C"] as const)[index % 3]! } })),
       catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
@@ -1400,6 +1402,8 @@ describe("CircuitSetup panel", () => {
         reporting_multiplier: 1,
         selected_model_id: index === 3 ? null : "cs-ct-200a",
         selection_verified_against_config: false,
+        display_label: null,
+        stored_selection_present: false,
         address: {
           channel: index + 1,
           board_index: Math.floor(index / 6),
@@ -1465,6 +1469,8 @@ describe("CircuitSetup panel", () => {
         reporting_multiplier: 1,
         selected_model_id: null,
         selection_verified_against_config: false,
+        display_label: null,
+        stored_selection_present: false,
         address: { channel: index + 1, board_index: 0, group_index: index < 3 ? 0 : 1,
           phase: (["A", "B", "C"] as const)[index % 3] },
       })),
@@ -1494,6 +1500,8 @@ describe("CircuitSetup panel", () => {
         reporting_multiplier: 1,
         selected_model_id: null,
         selection_verified_against_config: false,
+        display_label: null,
+        stored_selection_present: false,
         address: { channel: 1, board_index: 0, group_index: 0, phase: "A" },
       }],
       catalog: {
@@ -1940,6 +1948,7 @@ describe("CircuitSetup panel", () => {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: [{ channel: 1, name: "CT1", raw_gain_ct: 5500, reporting_multiplier: 1,
         selected_model_id: "preset-burden", selection_verified_against_config: true,
+        display_label: null, stored_selection_present: false,
         address: { channel: 1, board_index: 0, group_index: 0, phase: "A" } }],
       catalog: { presets: [{ model_id: "preset-burden", label: "Burden model", rated_current_a: 100,
         secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: true, notes: "Cut jumper" }],
@@ -1979,6 +1988,7 @@ describe("CircuitSetup panel", () => {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: [{ channel: 1, name: "CT1", raw_gain_ct: 5500, reporting_multiplier: 1,
         selected_model_id: "model", selection_verified_against_config: true,
+        display_label: null, stored_selection_present: false,
         address: { channel: 1, board_index: 0, group_index: 0, phase: "A" } }],
       catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100,
         secondary: "50 mA", default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "" }],
@@ -1997,7 +2007,7 @@ describe("CircuitSetup panel", () => {
     const state = panel as unknown as Record<string, unknown>;
     state.transaction = { transaction_id: "tx", state: "previewed", source_sha256: "a".repeat(64),
       changes: [], redacted_diff: "- current_cal_ct1: 27518\n+ current_cal_ct1: 13759\n+     phase_a:",
-      rollback_available: false, evidence: [], progress: [] };
+      rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
 
     panel.showState("build"); await panel.updateComplete;
 
@@ -2015,7 +2025,7 @@ describe("CircuitSetup panel", () => {
       channels: Array.from({ length: 6 }, (_, index) => ({
         channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: index === 0 ? 16000 : 5500,
         reporting_multiplier: index === 0 ? 2 : 1, selected_model_id: index === 0 ? "custom" : "model",
-        selection_verified_against_config: true, display_label: index === 0 ? "Existing clamp" : null,
+        selection_verified_against_config: true, display_label: index === 0 ? "Existing clamp" : null, stored_selection_present: true,
         address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3),
           phase: (["A", "B", "C"] as const)[index % 3]! },
       })),
@@ -2056,7 +2066,7 @@ describe("CircuitSetup panel", () => {
     const inventory: CtInventory = {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: [{ channel: 1, name: "CT1", raw_gain_ct: 32000, reporting_multiplier: 2,
-        selected_model_id: "custom", selection_verified_against_config: true, display_label: "Existing clamp",
+        selected_model_id: "custom", selection_verified_against_config: true, display_label: "Existing clamp", stored_selection_present: true,
         address: { channel: 1, board_index: 0, group_index: 0, phase: "A" } }],
       catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
     };
@@ -2141,7 +2151,7 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(hass);
     const state = panel as unknown as Record<string, unknown>;
     state.selectedDeviceId = "meter-1";
-    state.transaction = { transaction_id: "tx", state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [] };
+    state.transaction = { transaction_id: "tx", state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
     panel.remove(); document.body.append(panel); await tick(); await panel.updateComplete;
     expect(operations).toEqual(["subscribe_setup", "subscribe_setup", "subscribe_config_transaction", "subscribe_session"]);
@@ -2155,7 +2165,7 @@ describe("CircuitSetup panel", () => {
     const session = { session_id: "session-active", device_id: "meter-1", state: "ready",
       safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
     const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>) => {
         const operation = String(message.type).split("/").at(-1) ?? "";
@@ -2202,13 +2212,13 @@ describe("CircuitSetup panel", () => {
     const generation = state.connectionGeneration as number;
     state.selectedDeviceId = "meter-1";
     state.transaction = { transaction_id: "tx-old", state: "previewed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     await state.subscribeTransaction(generation);
     state.transaction = { transaction_id: "tx-new", state: "previewed", source_sha256: "b".repeat(64),
-      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     await state.subscribeTransaction(generation);
     callbacks[1]?.({ transaction_id: "tx-old", state: "failed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false });
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false });
     expect((state.transaction as { transaction_id: string }).transaction_id).toBe("tx-new");
     expect(unsubscriptions).toContain(1);
 
@@ -2297,7 +2307,7 @@ describe("CircuitSetup panel", () => {
     const inventory: CtInventory = {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`,
-        raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model", selection_verified_against_config: true,
+        raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model", selection_verified_against_config: true, display_label: null, stored_selection_present: false,
         address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3),
           phase: (["A", "B", "C"] as const)[index % 3]! } })),
       catalog: { presets: [{ model_id: "model", label: "Model", rated_current_a: 100, secondary: "50 mA",
@@ -2366,7 +2376,7 @@ describe("CircuitSetup panel", () => {
   it("enters recovery after a rejected restart and only offers an available rollback", async () => {
     let rollbackCalls = 0;
     const failedTransaction = { transaction_id: "tx", state: "failed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [] };
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const rolledBack = { ...failedTransaction, state: "rolled_back", rollback_available: false };
     const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] },
       restart_and_verify: new Error("private backend detail"), rollback_ct_config: rolledBack });
@@ -2483,7 +2493,7 @@ describe("CircuitSetup panel", () => {
     state.transaction = { transaction_id: "tx", state: "rolled_back", source_sha256: "a".repeat(64),
       changes: [], redacted_diff: "", rollback_available: false, evidence: ["validation_failed"], progress: [],
       validation_detail: { code: 2, reported_error_count: null, reported_warning_count: null,
-        error_record_count: 0, warning_record_count: 0 } };
+        error_record_count: 0, warning_record_count: 0 }, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
 
     panel.showState("build"); await panel.updateComplete;
 
@@ -2505,7 +2515,7 @@ describe("CircuitSetup panel", () => {
     state.transaction = { transaction_id: "tx", state: "installing", source_sha256: "a".repeat(64), changes: [],
       redacted_diff: "", rollback_available: true, evidence: ["write_verified"], progress: ["firmware_compiled"],
       validation_detail: { code: 0, reported_error_count: 0, reported_warning_count: 1, error_record_count: 0, warning_record_count: 1 },
-      upload_progress: [{ stage: "uploading", progress: 65 }] };
+      upload_progress: [{ stage: "uploading", progress: 65 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     state.stabilityByTarget = new Map([["current:1", { target: "current", target_id: "1", stable: true,
       windows: [{ samples: [9.9, 10, 10.1], mean: 10, standard_deviation: 0.08, range_percent: 2 }] }]]);
     state.calibrationByTarget = new Map([["current:1", { state: "applied_pending_restart_verification", group_key: "meter_main1", phase: null,
@@ -2532,8 +2542,8 @@ describe("CircuitSetup panel", () => {
     const cancelled = { session_id: "session", device_id: "meter-1", state: "cancelled", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled,
       restart_and_verify: restartResult, preview_calibrated_gains: { transaction_id: "5".repeat(32), state: "previewed",
-        source_sha256: "a".repeat(64), changes: [], redacted_diff: "- old\n+ new", rollback_available: false,
-        evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } }));
+      source_sha256: "a".repeat(64), changes: [], redacted_diff: "- old\n+ new", rollback_available: false,
+        evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } }));
     const state = panel as unknown as Record<string, unknown> & { cancelSession(): Promise<void>; restart(): Promise<void> };
     state.session = { ...cancelled, state: "ready" };
     await state.cancelSession(); await panel.updateComplete;
@@ -2602,7 +2612,7 @@ describe("CircuitSetup panel", () => {
       evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] } as const;
     const transactionId = "2".repeat(32);
     const preview = { transaction_id: transactionId, state: "previewed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const restartResult = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
       topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
       topology_voltage_layout: "two_groups", connection_generation: 4,

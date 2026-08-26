@@ -76,8 +76,9 @@ function transaction(state: string, channel: number, options: { evidence?: strin
     changes: [{ key: `channel.${channel}.name`, old_value: `CT${channel}`, new_value: `Load ${channel}` }],
     redacted_diff: `- ct${channel}_name: <redacted>\n+ ct${channel}_name: <redacted>`,
     rollback_available: options.rollback ?? false, evidence: options.evidence ?? [], progress: options.progress ?? [],
-    ...(options.validation ? { validation_detail: { code: 1, reported_error_count: 1,
-      reported_warning_count: 0, error_record_count: 1, warning_record_count: 0 } } : {}) };
+    validation_detail: options.validation ? { code: 1, reported_error_count: 1,
+      reported_warning_count: 0, error_record_count: 1, warning_record_count: 0 } : null,
+    upload_progress: [] };
 }
 
 function offsetBoards(addons: number, stageState: "not_started" | "skipped" = "not_started") {
