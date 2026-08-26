@@ -115,6 +115,30 @@ describe("meter configuration review and summary", () => {
     expect(summary).toContain("Installed package scope");
     expect(summary).toContain("Main board");
     expect(summary).toContain("Reporting and entities");
+
+    render(summaryStep(meter.topology, null, null, new Map(), new Map(), null, true, "2026.8.0", () => undefined, () => undefined, meter, meter.configuration_impact), root);
+    expect(root.textContent).toContain("Installed electrical profile");
+    render(summaryStep(meter.topology, null, { ...transaction, state: "failed" }, new Map(), new Map(), null, false, "2026.8.0", () => undefined, () => undefined, null), root);
+    expect(root.textContent).not.toContain("Installed electrical profile");
+  });
+
+  it("uses the verified configuration for a no-change summary, never a pending edit", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const verified = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    const pending = { ...verified, configuration: { ...verified.configuration, meter: { ...verified.configuration.meter, line_frequency_hz: 50 as import("../src/types").LineFrequencyHz } } };
+    const state = panel as unknown as { verifiedMeterConfiguration: typeof verified | null; meterConfiguration: typeof verified | null; transaction: import("../src/types").TransactionStatus | null; completedWithoutChanges: boolean };
+    state.verifiedMeterConfiguration = verified;
+    state.meterConfiguration = pending;
+    state.transaction = null;
+    state.completedWithoutChanges = true;
+    panel.showState("summary"); await panel.updateComplete;
+    expect(text(panel)).toContain("60 Hz");
+    expect(text(panel)).not.toContain("50 Hz");
+
+    state.verifiedMeterConfiguration = null;
+    state.transaction = { transaction_id: "1".repeat(32), state: "failed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    panel.requestUpdate(); await panel.updateComplete;
+    expect(text(panel)).not.toContain("Installed electrical profile");
   });
 });
 

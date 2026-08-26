@@ -506,6 +506,21 @@ test("topology package choices stay in the canonical preview payload", async ({ 
   expect(preview.configuration).toMatchObject({ power_quality: [false], status_fields: [true] });
 });
 
+test("topology package choice survives the first meter configuration load", async ({ page }) => {
+  const frames = await mockHomeAssistant(page);
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
+  await expect(page.getByRole("heading", { name: "Topology evidence" })).toBeVisible();
+  await page.locator('[data-feature="status_fields"][data-board="0"]').check();
+  await page.locator('[data-action="continue"]').click();
+  await expect(page.getByRole("heading", { name: "Meter Settings" })).toBeVisible();
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
+  expect(preview.configuration).toMatchObject({ status_fields: [true] });
+});
+
 test("validation failure exposes evidence and performs only a user-requested rollback", async ({ page }) => {
   const frames = await mockHomeAssistant(page, { outcome: "validation" });
   await openInventory(page);

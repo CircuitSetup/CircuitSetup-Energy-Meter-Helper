@@ -232,27 +232,24 @@ def _grouped_review_diff(
     """Return semantic, line-oriented review data without YAML secrets or gains."""
     groups: list[tuple[str, list[str]]] = []
 
-    def add(name: str, old: dict[str, object], new: dict[str, object]) -> None:
-        if old != new:
-            keys = tuple(dict.fromkeys((*old, *new)))
-            groups.append(
-                (
-                    name,
-                    [
-                        f"- {key}: {json.dumps(old[key], ensure_ascii=False, sort_keys=True)}"
-                        for key in keys
-                        if old.get(key) != new.get(key) and key in old
-                    ]
-                    + [
-                        f"+ {key}: {json.dumps(new[key], ensure_ascii=False, sort_keys=True)}"
-                        for key in keys
-                        if old.get(key) != new.get(key) and key in new
-                    ],
-                )
-            )
+    def lines(old: dict[str, object], new: dict[str, object]) -> list[str]:
+        keys = tuple(dict.fromkeys((*old, *new)))
+        return [
+            f"- {key}: {json.dumps(old[key], ensure_ascii=False, sort_keys=True)}"
+            for key in keys
+            if old.get(key) != new.get(key) and key in old
+        ] + [
+            f"+ {key}: {json.dumps(new[key], ensure_ascii=False, sort_keys=True)}"
+            for key in keys
+            if old.get(key) != new.get(key) and key in new
+        ]
 
-    add("Meter", _meter_review_value(previous), _meter_review_value(requested))
-    add("Voltage reference", _reference_review_value(previous), _reference_review_value(requested))
+    meter_lines = lines(_meter_review_value(previous), _meter_review_value(requested))
+    if meter_lines:
+        groups.append(("Meter", meter_lines))
+    reference_lines = lines(
+        _reference_review_value(previous), _reference_review_value(requested)
+    )
     previous_gains = {
         reference.reference_id: reference.gain_voltage
         for reference in previous.meter.voltage_references
@@ -263,15 +260,36 @@ def _grouped_review_diff(
         if previous_gains.get(reference.reference_id) != reference.gain_voltage
     ]
     if gain_updates:
-        groups.append(
-            (
-                "Voltage reference",
-                [f"~ {reference}: calibration gain updated" for reference in gain_updates],
-            )
+        reference_lines.extend(
+            f"~ {reference}: calibration gain updated" for reference in gain_updates
         )
-    add("Channel", _channel_review_value(previous), _channel_review_value(requested))
-    add("Aggregate", _aggregate_review_value(previous), _aggregate_review_value(requested))
-    add("Package", _package_review_value(previous), _package_review_value(requested))
+    if reference_lines:
+        groups.append(("Voltage reference", reference_lines))
+    channel_lines = lines(
+        _channel_review_value(previous), _channel_review_value(requested)
+    )
+    custom_gain_updates = [
+        channel.channel
+        for channel, old in zip(
+            requested.channels, previous.channels, strict=True
+        )
+        if channel.custom_gain_ct != old.custom_gain_ct
+    ]
+    channel_lines.extend(
+        f"~ CT{channel}: calibration gain updated" for channel in custom_gain_updates
+    )
+    if channel_lines:
+        groups.append(("Channel", channel_lines))
+    aggregate_lines = lines(
+        _aggregate_review_value(previous), _aggregate_review_value(requested)
+    )
+    if aggregate_lines:
+        groups.append(("Aggregate", aggregate_lines))
+    package_lines = lines(
+        _package_review_value(previous), _package_review_value(requested)
+    )
+    if package_lines:
+        groups.append(("Package", package_lines))
     return "\n".join("\n".join((name, *lines)) for name, lines in groups)
 
 

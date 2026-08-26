@@ -2693,3 +2693,71 @@ def test_custom_needs_its_explicit_gain_label_and_acknowledgement() -> None:
     assert [change.key for change in plan.changes] == ["current_cal_ct1"]
     assert 'current_cal_ct1: "50"' in plan.proposed_content
     assert plan.proposed_content.count("multiply: 2") == 2
+
+
+def test_gain_only_review_lines_are_redacted_and_keep_one_group_heading() -> None:
+    snapshot = _snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    custom = replace(
+        current.configuration,
+        channels=tuple(
+            replace(
+                channel,
+                model_id="custom",
+                custom_gain_ct=100,
+                custom_label="Kitchen load",
+                burden_output_acknowledged=True,
+            )
+            if channel.channel == 1
+            else channel
+            for channel in current.configuration.channels
+        ),
+    )
+    first = build_meter_configuration_mutation(snapshot, topology, current, custom)
+    stored = StoredMeterConfiguration(
+        sha256(first.proposed_content.encode()).hexdigest(),
+        custom.meter,
+        custom.channels,
+        custom.aggregates,
+        custom.power_quality,
+        custom.status_fields,
+    )
+    configured_snapshot = replace(
+        snapshot, content=first.proposed_content, sha256=stored.config_sha256
+    )
+    configured = _inventory(configured_snapshot, topology, stored=stored)
+    gain_only = replace(
+        configured.configuration,
+        channels=tuple(
+            replace(channel, custom_gain_ct=200) if channel.channel == 1 else channel
+            for channel in configured.configuration.channels
+        ),
+    )
+
+    custom_plan = build_meter_configuration_mutation(
+        configured_snapshot, topology, configured, gain_only
+    )
+    voltage_plan = build_meter_configuration_mutation(
+        configured_snapshot,
+        topology,
+        configured,
+        replace(
+            configured.configuration,
+            meter=replace(
+                configured.configuration.meter,
+                voltage_references=(
+                    replace(
+                        configured.configuration.meter.voltage_references[0],
+                        gain_voltage=7306,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert custom_plan.redacted_diff == "Channel\n~ CT1: calibration gain updated"
+    assert "100" not in custom_plan.redacted_diff
+    assert "200" not in custom_plan.redacted_diff
+    assert voltage_plan.redacted_diff.count("Voltage reference") == 1
+    assert "7306" not in voltage_plan.redacted_diff

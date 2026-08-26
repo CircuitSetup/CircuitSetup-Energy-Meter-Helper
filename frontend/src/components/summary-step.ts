@@ -9,7 +9,7 @@ export function summaryStep(topology: MeterTopology | null, session: SessionStat
   const hasOffsets = Boolean(restart?.offset_groups?.length || restart?.power_offset_groups?.length);
   const handoffAction = restart?.source_authority === "saved_flash" && restart.config_filename
     && !hasOffsets && (restart.source_handoff_available || restart.source_handoff_firmware_installed);
-  const installedConfiguration = transaction?.state === "verified" ? meterConfiguration : null;
+  const installedConfiguration = meterConfiguration;
   const boards = (values: boolean[]) => values.flatMap((enabled, board) => enabled ? [board === 0 ? "Main board" : `Add-on ${board}`] : []);
   return html`
     <section class="step-content" aria-labelledby="step-heading">

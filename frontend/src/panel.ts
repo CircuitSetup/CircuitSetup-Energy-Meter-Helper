@@ -97,12 +97,14 @@ export class CircuitSetupPanel extends LitElement {
   private addonCount = 0;
   private packageOptions = newInstallPackageOptions(0);
   private sourcePackageOptions: BoardPackageOptions | null = newInstallPackageOptions(0);
+  private packageOptionsTouched = false;
   private connection: Exclude<ConnectionType, "unknown"> = "wifi";
   private electricalSystem: ElectricalSystem = "split_phase_120_240";
   private lineFrequencyHz: LineFrequencyHz | null = 60;
   private electricalProfileConfirmed = false;
   private meterSettingsDraft: MeterSettingsDraft | null = null;
   private meterConfiguration: MeterConfiguration | null = null;
+  private verifiedMeterConfiguration: MeterConfiguration | null = null;
   private multiReferencePreparationAcknowledged = false;
   private meterFrequencyTouched = false;
   private meterNominalVoltageTouched = new Set<string>();
@@ -398,6 +400,8 @@ export class CircuitSetupPanel extends LitElement {
     this.drafts = new Map();
     this.meterSettingsDraft = null;
     this.meterConfiguration = null;
+    this.verifiedMeterConfiguration = null;
+    this.packageOptionsTouched = false;
     this.multiReferencePreparationAcknowledged = false;
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = new Set();
@@ -690,15 +694,20 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private setMeterConfiguration(configuration: MeterConfiguration): void {
-    this.meterConfiguration = configuration;
-    this.packageOptions = {
-      power_quality: [...configuration.configuration.power_quality],
-      status_fields: [...configuration.configuration.status_fields],
-    };
+    this.verifiedMeterConfiguration = configuration;
     this.sourcePackageOptions = {
       power_quality: [...configuration.configuration.power_quality],
       status_fields: [...configuration.configuration.status_fields],
     };
+    this.meterConfiguration = this.packageOptionsTouched ? {
+      ...configuration,
+      configuration: { ...configuration.configuration, ...this.packageOptions },
+    } : configuration;
+    if (!this.packageOptionsTouched) this.packageOptions = {
+      power_quality: [...configuration.configuration.power_quality],
+      status_fields: [...configuration.configuration.status_fields],
+    };
+    this.canonicalConfigurationChanged = this.packageOptionsTouched;
     this.meterSettingsDraft = { ...configuration.configuration.meter,
       authoritative: configuration.capabilities.configuration_authoritative, warnings: configuration.warnings };
     this.multiReferencePreparationAcknowledged = configuration.configuration.multi_reference_preparation_acknowledged === true;
@@ -801,6 +810,7 @@ export class CircuitSetupPanel extends LitElement {
       power_quality: [...options.power_quality],
       status_fields: [...options.status_fields],
     };
+    this.packageOptionsTouched = true;
     this.packageOptions = packageOptions;
     if (this.meterConfiguration) this.updateCircuitConfiguration({
       ...this.meterConfiguration.configuration,
@@ -1069,6 +1079,7 @@ export class CircuitSetupPanel extends LitElement {
         this.restartResult = result;
         this.finishFlow("Calibration was saved to YAML, installed, verified, and cleared from flash.");
       } else if (action === "install" && transaction.state === "verified") {
+        if (this.meterConfiguration) this.verifiedMeterConfiguration = this.meterConfiguration;
         this.finishFlow("Configuration changes were installed and verified.");
       }
     }, action === "install" && this.calibrationHandoff
@@ -1650,8 +1661,8 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step === "summary") return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult,
       this.completedWithoutChanges, this.selectedProjectVersion(),
       () => void (this.restartResult?.source_handoff_firmware_installed
-        ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back(), this.meterConfiguration,
-      this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null);
+        ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back(), this.verifiedMeterConfiguration,
+      this.verifiedMeterConfiguration ? configurationImpact(this.verifiedMeterConfiguration.configuration, this.verifiedMeterConfiguration.topology) : null);
     return html`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct"
       ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;
