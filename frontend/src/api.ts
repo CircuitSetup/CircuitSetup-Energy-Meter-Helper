@@ -230,7 +230,11 @@ function meterConfiguration(value: unknown, label: string): MeterConfiguration {
   if (channels.length !== planTopology.ct_count) throw new Error(`${label} response is invalid`);
   channels.forEach((entry, index) => {
     const channel = record(entry, label); exactKeys(channel, ["channel", "enabled", "name", "model_id", "reporting_multiplier", "role", "voltage_reference_id", "custom_gain_ct", "custom_label", "burden_output_acknowledged"], label);
-    if (integer(channel.channel, label) !== index + 1 || ![1, 2, 4, 8].includes(number(channel.reporting_multiplier, label)) || !voltageReferences.some((reference) => reference.reference_id === id(channel.voltage_reference_id, label))) throw new Error(`${label} response is invalid`);
+    const referenceId = id(channel.voltage_reference_id, label);
+    const board = Math.floor(index / 6); const group = Math.floor(index % 6 / 3) + 1;
+    const groupKey = board === 0 ? `main_${group}` : `addon${board}_${group}`;
+    const owner = voltageReferences.find((reference) => reference.group_keys.includes(groupKey))?.reference_id;
+    if (integer(channel.channel, label) !== index + 1 || ![1, 2, 4, 8].includes(number(channel.reporting_multiplier, label)) || referenceId !== owner) throw new Error(`${label} response is invalid`);
     const enabled = boolean(channel.enabled, label); string(channel.name, label); id(channel.model_id, label); const role = enumeration(channel.role, CIRCUIT_ROLES, label); if ((enabled && role === "unused") || (!enabled && role !== "unused")) throw new Error(`${label} response is invalid`); if (channel.custom_gain_ct !== null && (integer(channel.custom_gain_ct, label) < 1 || integer(channel.custom_gain_ct, label) > 65535)) throw new Error(`${label} response is invalid`); if (channel.custom_label !== null) string(channel.custom_label, label); boolean(channel.burden_output_acknowledged, label);
   });
   const aggregateIds = new Set<string>(); const aggregateChannels = new Set<number>(); const aggregateParents = new Map<string, string | null>();

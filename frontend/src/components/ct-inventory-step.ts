@@ -30,6 +30,8 @@ export function ctInventoryStep(
   configuration: MeterConfigurationRequest | null = null,
   updateConfiguration: (configuration: MeterConfigurationRequest) => void = () => undefined,
   disableChannel: (channel: number) => void = () => undefined,
+  managedTotals = true,
+  managedTotalsReason = "",
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -124,7 +126,7 @@ export function ctInventoryStep(
       </div>
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
-      ${configuration ? circuitsEditor(configuration, updateConfiguration, disableChannel) : nothing}
+      ${configuration ? circuitsEditor(configuration, updateConfiguration, disableChannel, managedTotals, managedTotalsReason) : nothing}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
@@ -141,6 +143,8 @@ function circuitsEditor(
   configuration: MeterConfigurationRequest,
   update: (configuration: MeterConfigurationRequest) => void,
   disable: (channel: number) => void,
+  managedTotals: boolean,
+  managedTotalsReason: string,
 ): TemplateResult {
   const patchChannel = (channel: number, patch: Partial<ChannelSettings>) => update({ ...configuration,
     channels: configuration.channels.map((item) => item.channel === channel ? { ...item, ...patch } : item) });
@@ -152,6 +156,8 @@ function circuitsEditor(
       ? { ...item, aggregate_id: aggregateId } : item.parent_id === old ? { ...item, parent_id: aggregateId } : item) });
   };
   const references = configuration.meter.voltage_references;
+  const referenceByGroup = new Map(references.flatMap((reference) => reference.group_keys.map((group) => [group, reference] as const)));
+  const physicalReference = (channel: number) => referenceByGroup.get(`${channel <= 6 ? "main" : `addon${Math.floor((channel - 1) / 6)}`}_${Math.floor(((channel - 1) % 6) / 3) + 1}`);
   const available = configuration.channels.filter((channel) => channel.enabled && !configuration.aggregates.some((aggregate) => aggregate.channels.includes(channel.channel))).map((channel) => channel.channel);
   const warnings = configuration.aggregates.flatMap((aggregate) => [
     aggregate.role === "grid" && aggregate.channels.some((channel) => configuration.channels[channel - 1]?.role === "branch") ? `${aggregate.name}: keep branch loads out of the root-grid total.` : "",
@@ -171,13 +177,14 @@ function circuitsEditor(
       <label>Role <select aria-label=${`CT${channel.channel} role`} .value=${channel.role}
         ?disabled=${!channel.enabled}
         @change=${(event: Event) => patchChannel(channel.channel, { role: (event.target as HTMLSelectElement).value as ChannelSettings["role"] })}>${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${role.replaceAll("_", " ")}</option>`)}</select></label>
-      <label>Voltage reference <select aria-label=${`CT${channel.channel} voltage reference`} .value=${channel.voltage_reference_id}
-        @change=${(event: Event) => patchChannel(channel.channel, { voltage_reference_id: (event.target as HTMLSelectElement).value })}>${references.map((reference) => html`<option value=${reference.reference_id}>${reference.label || reference.reference_id}</option>`)}</select></label>
+      <label>Voltage reference <select aria-label=${`CT${channel.channel} voltage reference`} .value=${physicalReference(channel.channel)?.reference_id ?? channel.voltage_reference_id} disabled title="Determined by the physical ATM voltage group assignment">
+        ${(physicalReference(channel.channel) ? [physicalReference(channel.channel)!] : references).map((reference) => html`<option value=${reference.reference_id}>${reference.label || reference.reference_id}</option>`)}</select></label>
       <span>${channel.enabled ? `${channel.model_id || "No CT model"}; ${channel.role.replaceAll("_", " ")}` : "Unused"}</span>
     </section>`)}
     <h2>Aggregate totals</h2>
+    ${!managedTotals ? html`<p class="info-band" role="status">Aggregate editing unavailable: ${managedTotalsReason || "this meter does not expose managed totals."} Existing aggregates remain reviewable.</p>` : nothing}
     ${warnings.map((warning) => html`<p class="warning-band" role="status">${warning}</p>`)}
-    ${configuration.aggregates.map((aggregate, index) => html`<section class="ct-detail" aria-label=${`${aggregate.name} aggregate`}>
+    ${configuration.aggregates.map((aggregate, index) => html`<fieldset class="ct-detail" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!managedTotals}><legend>${aggregate.name}</legend>
       <label>ID <input aria-label=${`${aggregate.aggregate_id} aggregate id`} maxlength="64" .value=${aggregate.aggregate_id}
         @change=${(event: Event) => renameAggregate(index, (event.target as HTMLInputElement).value.trim())} /></label>
       <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
@@ -199,8 +206,8 @@ function circuitsEditor(
       <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose current`} .checked=${aggregate.expose_current}
         @change=${(event: Event) => patchAggregate(index, { expose_current: (event.target as HTMLInputElement).checked })} />Current</label>
       <button class="secondary" @click=${() => update({ ...configuration, aggregates: configuration.aggregates.filter((_item, itemIndex) => itemIndex !== index).map((item) => item.parent_id === aggregate.aggregate_id ? { ...item, parent_id: null } : item) })}>Delete aggregate</button>
-    </section>`)}
-    ${aggregateButtons(configuration, available, update)}
+    </fieldset>`)}
+    ${managedTotals ? aggregateButtons(configuration, available, update) : nothing}
   </section>`;
 }
 
@@ -216,7 +223,7 @@ function aggregateButtons(configuration: MeterConfigurationRequest, available: n
         name, role, channels, measurement_method: method, parent_id: null, energy_mode: energy, expose_power: true, expose_current: role === "grid" }] });
   };
   return html`<div class="action-footer"><label>Preset channels <select multiple data-preset-channels aria-label="Preset channels">${available.map((channel) => html`<option value=${channel}>CT${channel}</option>`)}</select></label>
-    <button class="secondary" @click=${(event: Event) => add(event, "New aggregate", "branch", "direct", 1, "consumption")}>Add aggregate</button>
+    <button class="secondary" data-action="add-aggregate" @click=${(event: Event) => add(event, "New aggregate", "branch", "direct", 1, "consumption")}>Add aggregate</button>
     <button class="secondary" @click=${(event: Event) => add(event, "Main service", "grid", "two_ct_sum", 2, "bidirectional")}>Main service</button>
     <button class="secondary" @click=${(event: Event) => add(event, "Solar / generator", "solar", "two_ct_sum", 2, "generation")}>Solar / generator</button>
     <button class="secondary" @click=${(event: Event) => add(event, "Two-pole circuit", "two_pole", "one_ct_double_power", 1, "consumption")}>Two-pole</button>
@@ -225,9 +232,11 @@ function aggregateButtons(configuration: MeterConfigurationRequest, available: n
 
 export function circuitConfigurationIsValid(configuration: MeterConfigurationRequest, ctCount: number): boolean {
   const references = new Set(configuration.meter.voltage_references.map((reference) => reference.reference_id));
+  const referenceByGroup = new Map(configuration.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference.reference_id] as const)));
   if (configuration.channels.length !== ctCount || new Set(configuration.channels.map((channel) => channel.channel)).size !== ctCount
     || configuration.channels.some((channel) => channel.channel < 1 || channel.channel > ctCount || !channel.name.trim()
-      || !references.has(channel.voltage_reference_id) || channel.enabled === (channel.role === "unused"))) return false;
+      || !references.has(channel.voltage_reference_id) || channel.enabled === (channel.role === "unused")
+      || referenceByGroup.get(`${channel.channel <= 6 ? "main" : `addon${Math.floor((channel.channel - 1) / 6)}`}_${Math.floor(((channel.channel - 1) % 6) / 3) + 1}`) !== channel.voltage_reference_id)) return false;
   const ids = new Set<string>(); const claimed = new Set<number>(); const parents = new Map<string, string | null>();
   for (const aggregate of configuration.aggregates) {
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(aggregate.aggregate_id) || ids.has(aggregate.aggregate_id)

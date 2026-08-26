@@ -10,7 +10,7 @@ from .config_blocks import (
     render_voltage_references,
     replace_managed_block,
 )
-from .config_document import ESPHomeConfigDocument
+from .config_document import ESPHomeConfigDocument, ManagedBlock
 from .config_mutator import (
     ConfigMutationError,
     ConfigSnapshot,
@@ -18,6 +18,7 @@ from .config_mutator import (
     _apply_changes,
     _build_ct_mutation,
     _canonical_meter_id,
+    _redacted_diff,
 )
 from .ct_inventory import _esphome_object_id
 from .meter_configuration import (
@@ -106,7 +107,10 @@ def build_meter_configuration_mutation(
         and not current.capabilities.multi_reference
     ):
         raise ConfigMutationError("multi-reference capability is unavailable")
-    if requested.aggregates and not current.capabilities.managed_totals:
+    if (
+        requested.aggregates != current.configuration.aggregates
+        and not current.capabilities.managed_totals
+    ):
         raise ConfigMutationError("managed totals capability is unavailable")
     if (
         replace(
@@ -129,6 +133,7 @@ def build_meter_configuration_mutation(
                 reporting_multiplier=new.reporting_multiplier,
                 enabled=new.enabled,
                 role=new.role,
+                voltage_reference_id=new.voltage_reference_id,
                 custom_gain_ct=new.custom_gain_ct,
                 custom_label=new.custom_label,
                 burden_output_acknowledged=new.burden_output_acknowledged,
@@ -216,7 +221,22 @@ def build_meter_configuration_mutation(
             if requested.aggregates
             else "",
         )
-    review_diff = _grouped_review_diff(previous, requested)
+    rendered_diff = "\n".join(
+        part for part in (plan.redacted_diff, _redacted_diff(changes)) if part
+    )
+    rendered_blocks: dict[str, list[str]] = {}
+    proposed_document = ESPHomeConfigDocument.parse(content)
+    if requested.meter != previous.meter:
+        rendered_blocks["Voltage reference"] = _managed_review_lines(
+            proposed_document.managed_blocks.get("voltage_references")
+        )
+    if requested.aggregates != previous.aggregates and requested.aggregates:
+        rendered_blocks["Aggregate"] = _managed_review_lines(
+            proposed_document.managed_blocks.get("aggregates")
+        )
+    review_diff = _grouped_review_diff(
+        previous, requested, rendered_diff, rendered_blocks
+    )
     return ConfigMutationPlan(
         plan.configuration,
         plan.source_sha256,
@@ -227,9 +247,31 @@ def build_meter_configuration_mutation(
 
 
 def _grouped_review_diff(
-    previous: MeterConfigurationRequest, requested: MeterConfigurationRequest
+    previous: MeterConfigurationRequest,
+    requested: MeterConfigurationRequest,
+    rendered_diff: str = "",
+    rendered_blocks: dict[str, list[str]] | None = None,
 ) -> str:
     """Return semantic, line-oriented review data without YAML secrets or gains."""
+    rendered: dict[str, list[str]] = {
+        "Meter": [], "Voltage reference": [], "Channel": [],
+        "Aggregate": [], "Package": [],
+    }
+    for group, lines_ in (rendered_blocks or {}).items():
+        rendered[group].extend(lines_)
+    for line in rendered_diff.splitlines():
+        value = line[2:] if line.startswith(("+ ", "- ", "~ ")) else line
+        if "current_cal" in value or "gain_voltage" in value:
+            continue
+        if value.startswith(("friendly_name:", "update_time:", "electric_freq:")):
+            group = "Meter"
+        elif value.startswith(("package.", "power_quality_", "status_fields_")):
+            group = "Package"
+        elif "calibrated voltage gains" in value:
+            group = "Voltage reference"
+        else:
+            group = "Channel"
+        rendered[group].append(line if line.startswith(("+", "-", "~")) else f"~ {line}")
     groups: list[tuple[str, list[str]]] = []
 
     def lines(old: dict[str, object], new: dict[str, object]) -> list[str]:
@@ -245,6 +287,7 @@ def _grouped_review_diff(
         ]
 
     meter_lines = lines(_meter_review_value(previous), _meter_review_value(requested))
+    meter_lines = [*rendered["Meter"], *meter_lines]
     if meter_lines:
         groups.append(("Meter", meter_lines))
     reference_lines = lines(
@@ -263,6 +306,7 @@ def _grouped_review_diff(
         reference_lines.extend(
             f"~ {reference}: calibration gain updated" for reference in gain_updates
         )
+    reference_lines = [*rendered["Voltage reference"], *reference_lines]
     if reference_lines:
         groups.append(("Voltage reference", reference_lines))
     channel_lines = lines(
@@ -278,19 +322,38 @@ def _grouped_review_diff(
     channel_lines.extend(
         f"~ CT{channel}: calibration gain updated" for channel in custom_gain_updates
     )
+    channel_lines = [*rendered["Channel"], *channel_lines]
     if channel_lines:
         groups.append(("Channel", channel_lines))
     aggregate_lines = lines(
         _aggregate_review_value(previous), _aggregate_review_value(requested)
     )
+    aggregate_lines = [*rendered["Aggregate"], *aggregate_lines]
     if aggregate_lines:
         groups.append(("Aggregate", aggregate_lines))
     package_lines = lines(
         _package_review_value(previous), _package_review_value(requested)
     )
+    package_lines = [*rendered["Package"], *package_lines]
     if package_lines:
         groups.append(("Package", package_lines))
-    return "\n".join("\n".join((name, *lines)) for name, lines in groups)
+    return "\n".join(
+        "\n".join((name, *dict.fromkeys(lines))) for name, lines in groups
+    )
+
+
+def _managed_review_lines(block: ManagedBlock | None) -> list[str]:
+    content = block.content if block is not None else ""
+    lines = []
+    gain_redacted = False
+    for line in content.splitlines():
+        if "gain_voltage:" in line:
+            gain_redacted = True
+        elif not line.startswith(("# CircuitSetup Energy Meter Helper", "# End CircuitSetup Energy Meter Helper")):
+            lines.append(f"+ {line}")
+    if gain_redacted:
+        lines.append("~ calibration gain updated")
+    return lines
 
 
 def _meter_review_value(configuration: MeterConfigurationRequest) -> dict[str, object]:

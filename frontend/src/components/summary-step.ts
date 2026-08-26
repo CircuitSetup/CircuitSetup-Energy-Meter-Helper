@@ -5,7 +5,8 @@ import { technicalDetails } from "./technical-details";
 export function summaryStep(topology: MeterTopology | null, session: SessionStatus | null, transaction: TransactionStatus | null,
   stability: Map<string, StabilityResult>, calibration: Map<string, CalibrationResult>, restart: RestartVerificationResult | null,
   completedWithoutChanges: boolean, projectVersion: string | null, saveCalibration: () => void,
-  back: () => void, meterConfiguration: MeterConfiguration | null = null, impact: ConfigurationImpact | null = null): TemplateResult {
+  back: () => void, meterConfiguration: MeterConfiguration | null = null, impact: ConfigurationImpact | null = null,
+  finish: () => void = () => undefined): TemplateResult {
   const hasOffsets = Boolean(restart?.offset_groups?.length || restart?.power_offset_groups?.length);
   const handoffAction = restart?.source_authority === "saved_flash" && restart.config_filename
     && !hasOffsets && (restart.source_handoff_available || restart.source_handoff_firmware_installed);
@@ -24,6 +25,7 @@ export function summaryStep(topology: MeterTopology | null, session: SessionStat
       ${technicalDetails(topology, session, transaction, stability, calibration, restart, completedWithoutChanges)}
       <footer class="action-footer"><button class="secondary" @click=${back}>Back</button>
         ${handoffAction ? html`<button class="primary" data-action="save-calibration" @click=${saveCalibration}>${restart?.source_handoff_firmware_installed ? "Retry clearing saved flash values" : "Save calibration to YAML"}</button>` : ""}
+        ${!handoffAction ? html`<button class="primary" data-action="finish" @click=${finish}>Finish</button>` : ""}
       </footer>
     </section>
   `;

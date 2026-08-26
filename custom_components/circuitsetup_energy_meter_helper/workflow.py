@@ -660,7 +660,7 @@ class EntryWorkflow:
             requested.power_quality,
             requested.status_fields,
             selections,
-            requested.multi_reference_preparation_acknowledged,
+            False,
         )
         expected = expected_meter_entity_evidence(requested, plan.topology)
         status = await manager.async_preview(

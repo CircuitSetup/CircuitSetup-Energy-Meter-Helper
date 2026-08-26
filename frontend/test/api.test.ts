@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { HelperApi, type HomeAssistant } from "../src/api";
+import { configurationImpact } from "../src/configuration-impact";
 import type { MeterConfiguration, MeterTopology, OffsetReadinessResult } from "../src/types";
 import sanitizerContract from "../../tests/fixtures/task20_sanitized_change.json";
 
@@ -224,9 +225,17 @@ describe("HelperApi", () => {
   it("rejects malformed full meter configuration nesting before rendering", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
+    const inconsistentReferences = { ...meterConfiguration.configuration,
+      meter: { ...meterConfiguration.configuration.meter, voltage_layout: "multi_reference" as const, voltage_references: [
+        { ...meterConfiguration.configuration.meter.voltage_references[0]!, group_keys: ["main_1"] },
+        { ...meterConfiguration.configuration.meter.voltage_references[0]!, reference_id: "reference-2", label: "Reference 2", group_keys: ["main_2"] },
+      ] } };
     for (const invalid of [
       { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, meter: { ...meterConfiguration.configuration.meter, voltage_references: [{ ...meterConfiguration.configuration.meter.voltage_references[0], gain_voltage: Number.NaN }] } } },
       { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, channels: [{ ...meterConfiguration.configuration.channels[0], role: "invented" }] } },
+      { ...meterConfiguration, configuration: inconsistentReferences,
+        configuration_impact: configurationImpact(inconsistentReferences, topology),
+        voltage_topology: { references: [["main", ["main_1"]], ["reference-2", ["main_2"]]], source: "helper" } },
       { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, aggregates: [{ ...meterConfiguration.configuration.aggregates[0], channels: ["1"] }] } },
       { ...meterConfiguration, voltage_transformer_catalog: { ...meterConfiguration.voltage_transformer_catalog, presets: [{ ...meterConfiguration.voltage_transformer_catalog.presets[0], default_gain_voltage: "7305" }] } },
       { ...meterConfiguration, configuration_impact: { enabled_channel_count: 6, numeric_entity_count: -1, text_entity_count: 0, energy_entity_count: 2, approximate_publications_per_second: 43 / 30 } },

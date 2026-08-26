@@ -325,6 +325,8 @@ async function openInventory(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "Topology evidence", exact: true })).toBeVisible();
   await page.locator('[data-action="continue"]').click();
   await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
+  const preparation = page.getByLabel("Multi-reference preparation acknowledgement");
+  if (await preparation.count()) await preparation.check();
   await page.locator('[data-action="continue-meter-settings"]').click();
   await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
 }
@@ -552,6 +554,44 @@ test("compile failure blocks upload after a distinct apply acknowledgement", asy
   expect(operations(frames).filter((value) => value === "apply_ct_config")).toHaveLength(1);
   expect(operations(frames).filter((value) => value === "compile_ct_config")).toHaveLength(1);
   expect(operations(frames)).not.toContain("install_ct_config");
+});
+
+test("verified configuration continues through calibration and finishes only from Summary", async ({ page }) => {
+  const frames = await mockHomeAssistant(page);
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
+  await page.locator('[data-action="continue"]').click();
+  await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
+  await page.getByLabel("Friendly name").fill("Installed Meter");
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await page.getByRole("button", { name: "Apply" }).click();
+  await page.getByRole("button", { name: "Compile" }).click();
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Setup Device" })).toHaveCount(0);
+  await page.locator('[data-action="continue"]').click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Skip offset calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Skip voltage calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Skip current calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "Summary", exact: true })).toBeVisible();
+  await expect(page.getByText("Installed electrical profile")).toBeVisible();
+  await expect(page.getByText("Authoritative configuration", { exact: true })).toBeVisible();
+  await page.locator('[data-action="finish"]').click();
+  await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
+  const ordered = operations(frames);
+  expect(ordered.indexOf("install_ct_config")).toBeLessThan(ordered.indexOf("start_session"));
+  expect(ordered.indexOf("start_session")).toBeLessThan(ordered.indexOf("complete_calibration_without_changes"));
 });
 
 test("42-channel separate install/rebind leads through main CT evidence and exact restart verification", async ({ page }) => {

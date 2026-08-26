@@ -1,5 +1,5 @@
 import { render } from "lit";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { meterSettingsStep } from "../src/components/meter-settings-step";
 import type { MeterSettingsDraft, VoltageTransformerCatalog } from "../src/types";
@@ -13,7 +13,10 @@ const draft: MeterSettingsDraft = { friendly_name: "Meter", electrical_system: "
   ] };
 
 describe("meterSettingsStep", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("moves a voltage group atomically and requires multi-reference acknowledgement", () => {
+    vi.stubGlobal("confirm", vi.fn(() => true));
     const root = document.createElement("div");
     let updated = draft;
     render(meterSettingsStep(draft, catalog, false, (value) => { updated = value; }, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
@@ -43,5 +46,39 @@ describe("meterSettingsStep", () => {
     root.querySelector<HTMLSelectElement>('[aria-label="main transformer"]')!.dispatchEvent(new Event("change"));
     expect(updated.voltage_references[0]).toMatchObject({ transformer_model_id: "default", gain_voltage: 7305 });
     expect(root.textContent).toContain("1–5 seconds: high traffic.");
+  });
+
+  it("adds and removes references by explicitly transferring physical groups", () => {
+    const root = document.createElement("div");
+    let updated = { ...draft, voltage_references: [{ ...draft.voltage_references[0]!, group_keys: ["main_1", "main_2"] }] };
+    let acknowledged = true;
+    const renderStep = () => render(meterSettingsStep(updated, catalog, acknowledged, (value) => { updated = value; }, () => undefined, () => undefined, () => undefined, (value) => { acknowledged = value; }, () => undefined, () => undefined), root);
+    renderStep();
+    const transfer = root.querySelector<HTMLSelectElement>('[aria-label="Group transferred to new reference"]')!;
+    transfer.value = "main_2";
+    root.querySelector<HTMLButtonElement>('[data-action="add-voltage-reference"]')!.click();
+    expect(updated.voltage_references).toHaveLength(2);
+    expect(updated.voltage_references[1]).toMatchObject({ reference_id: "reference-2", group_keys: ["main_2"] });
+    expect(acknowledged).toBe(false);
+
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderStep();
+    root.querySelector<HTMLButtonElement>('[aria-label="Remove reference-2 voltage reference"]')!.click();
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("main_2"));
+    expect(updated.voltage_references).toHaveLength(1);
+    expect(updated.voltage_references[0]!.group_keys).toEqual(["main_1", "main_2"]);
+  });
+
+  it("requires confirmation before swapping the last physical group", () => {
+    const root = document.createElement("div");
+    let updated = draft;
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    render(meterSettingsStep(draft, catalog, true, (value) => { updated = value; }, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    const group = root.querySelector<HTMLSelectElement>('[aria-label="main_2 voltage reference"]')!;
+    group.value = "main";
+    group.dispatchEvent(new Event("change"));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("swap"));
+    expect(updated).toBe(draft);
   });
 });

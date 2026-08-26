@@ -302,6 +302,11 @@ sensor:
     assert [line for line in plan.redacted_diff.splitlines() if not line.startswith(("+", "-", "~"))] == [
         "Meter", "Voltage reference", "Channel", "Aggregate", "Package",
     ]
+    assert "+ friendly_name: Kitchen meter" in plan.redacted_diff
+    assert "+ ct1_name: Kitchen mains" in plan.redacted_diff
+    assert "+ power_quality_main: enabled" in plan.redacted_diff
+    assert "+   - id: !extend meter_main1" in plan.redacted_diff
+    assert "+   - platform: template" in plan.redacted_diff
     assert "current_cal" not in plan.redacted_diff
     assert "gain_voltage" not in plan.redacted_diff
 
@@ -422,6 +427,12 @@ def test_generalized_mutation_uses_one_representative_per_reference() -> None:
                 ),
             ),
         ),
+        channels=tuple(
+            replace(channel, voltage_reference_id="secondary")
+            if channel.channel in (*range(4, 10),)
+            else channel
+            for channel in current.configuration.channels
+        ),
         multi_reference_preparation_acknowledged=True,
     )
 
@@ -472,6 +483,40 @@ def test_generalized_mutation_uses_one_representative_per_reference() -> None:
     )
     assert rehydrated.configuration.meter.voltage_references == requested.meter.voltage_references
     assert rehydrated.voltage_topology.fingerprint == expected.fingerprint
+
+
+def test_group_transfer_updates_channel_reference_metadata_without_fake_yaml() -> None:
+    snapshot = _contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    first = current.configuration.meter.voltage_references[0]
+    requested = replace(
+        current.configuration,
+        meter=replace(
+            current.configuration.meter,
+            voltage_layout=VoltageLayout.MULTI_REFERENCE,
+            voltage_references=(
+                replace(first, group_keys=("main_1",)),
+                VoltageReferenceConfig(
+                    "secondary", "Secondary", "B", 120.0, "default", 1,
+                    ("main_2",),
+                ),
+            ),
+        ),
+        channels=tuple(
+            replace(channel, voltage_reference_id="secondary")
+            if channel.channel >= 4
+            else channel
+            for channel in current.configuration.channels
+        ),
+        multi_reference_preparation_acknowledged=True,
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert "voltage_reference_id" not in plan.proposed_content
+    assert "Channel" in plan.redacted_diff
+    assert '"voltage_reference_id": "secondary"' in plan.redacted_diff
 
 
 def test_voltage_reference_preview_never_echoes_owned_block_content() -> None:
@@ -923,6 +968,12 @@ def test_generalized_mutation_requires_multi_reference_acknowledgement() -> None
                     ("addon1_1", "addon1_2"),
                 ),
             ),
+        ),
+        channels=tuple(
+            replace(channel, voltage_reference_id="secondary")
+            if channel.channel >= 7
+            else channel
+            for channel in current.configuration.channels
         ),
     )
 

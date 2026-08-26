@@ -205,6 +205,41 @@ def test_reference_and_role_rules() -> None:
     object.__setattr__(value, "channels", (replace(value.channels[0], voltage_reference_id="missing"),) + value.channels[1:])
     with pytest.raises(ValueError):
         validate_meter_configuration(value, topology())
+
+
+def test_channel_voltage_reference_must_own_its_physical_group() -> None:
+    value = request()
+    first = value.meter.voltage_references[0]
+    object.__setattr__(
+        value.meter,
+        "voltage_references",
+        (
+            replace(first, group_keys=("main_1",)),
+            VoltageReferenceConfig(
+                "secondary", "Secondary", "B", 120.0, "v", 1, ("main_2",)
+            ),
+        ),
+    )
+    object.__setattr__(
+        value,
+        "channels",
+        tuple(
+            replace(channel, voltage_reference_id="secondary")
+            if channel.channel >= 4
+            else channel
+            for channel in value.channels
+        ),
+    )
+    object.__setattr__(value, "multi_reference_preparation_acknowledged", True)
+    validate_meter_configuration(value, topology())
+
+    object.__setattr__(
+        value,
+        "channels",
+        (replace(value.channels[0], voltage_reference_id="secondary"), *value.channels[1:]),
+    )
+    with pytest.raises(ValueError, match="physical voltage group"):
+        validate_meter_configuration(value, topology())
     disabled = replace(value.channels[0], enabled=False, role=CircuitRole.UNUSED, voltage_reference_id="main")
     object.__setattr__(value, "channels", (disabled,) + value.channels[1:])
     validate_meter_configuration(value, topology())
@@ -307,6 +342,10 @@ def test_board_options_and_multi_reference_acknowledgement() -> None:
     first = value.meter.voltage_references[0]
     refs = (replace(first, group_keys=("main_1",)), replace(first, reference_id="alt", group_keys=("main_2",)))
     object.__setattr__(value.meter, "voltage_references", refs)
+    object.__setattr__(value, "channels", tuple(
+        replace(channel, voltage_reference_id="alt") if channel.channel >= 4 else channel
+        for channel in value.channels
+    ))
     object.__setattr__(value, "multi_reference_preparation_acknowledged", False)
     with pytest.raises(ValueError):
         validate_meter_configuration(value, topology())

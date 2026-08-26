@@ -7,7 +7,7 @@ import { configReview } from "../src/components/config-review-step";
 import { summaryStep } from "../src/components/summary-step";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
-import { changesFromDrafts, circuitConfigurationIsValid, type CtDraft } from "../src/components/ct-inventory-step";
+import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
 import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
 import type { CtInventory, MeterConfigurationRequest, MeterTopology } from "../src/types";
@@ -107,7 +107,8 @@ describe("meter configuration review and summary", () => {
     expect(review).toContain("Power quality");
     expect(review).not.toContain("threshold");
 
-    render(summaryStep(meter.topology, null, { ...transaction, state: "verified" }, new Map(), new Map(), null, false, "2026.8.0", () => undefined, () => undefined, meter, meter.configuration_impact), root);
+    const finish = vi.fn();
+    render(summaryStep(meter.topology, null, { ...transaction, state: "verified" }, new Map(), new Map(), null, false, "2026.8.0", () => undefined, () => undefined, meter, meter.configuration_impact, finish), root);
     const summary = root.textContent ?? "";
     expect(summary).toContain("Configuration authority");
     expect(summary).toContain("Installed electrical profile");
@@ -115,6 +116,8 @@ describe("meter configuration review and summary", () => {
     expect(summary).toContain("Installed package scope");
     expect(summary).toContain("Main board");
     expect(summary).toContain("Reporting and entities");
+    root.querySelector<HTMLButtonElement>('[data-action="finish"]')?.click();
+    expect(finish).toHaveBeenCalledOnce();
 
     render(summaryStep(meter.topology, null, null, new Map(), new Map(), null, true, "2026.8.0", () => undefined, () => undefined, meter, meter.configuration_impact), root);
     expect(root.textContent).toContain("Installed electrical profile");
@@ -248,6 +251,147 @@ describe("CircuitSetup panel", () => {
     expect(circuitConfigurationIsValid({ ...configuration, aggregates: [aggregate] }, 6)).toBe(true);
     expect(circuitConfigurationIsValid({ ...configuration, aggregates: [aggregate, { ...aggregate, aggregate_id: "duplicate", channels: [2, 3] }] }, 6)).toBe(false);
     expect(circuitConfigurationIsValid({ ...configuration, channels: [{ ...configuration.channels[0]!, enabled: false, role: "unused" }, ...configuration.channels.slice(1)], aggregates: [aggregate] }, 6)).toBe(false);
+  });
+
+  it("rejects a channel reference that does not own its physical ATM group", () => {
+    const configuration = meterResponse().configuration as MeterConfigurationRequest;
+    const references = [
+      { ...configuration.meter.voltage_references[0]!, group_keys: ["main_1"] },
+      { ...configuration.meter.voltage_references[0]!, reference_id: "secondary", label: "Secondary", group_keys: ["main_2"] },
+    ];
+    const channels = configuration.channels.map((channel) => ({ ...channel,
+      voltage_reference_id: channel.channel >= 4 ? "secondary" : "main" }));
+    expect(circuitConfigurationIsValid({ ...configuration, meter: { ...configuration.meter, voltage_references: references }, channels }, 6)).toBe(true);
+    expect(circuitConfigurationIsValid({ ...configuration, meter: { ...configuration.meter, voltage_references: references }, channels: [{ ...channels[0]!, voltage_reference_id: "secondary" }, ...channels.slice(1)] }, 6)).toBe(false);
+  });
+
+  it("keeps existing aggregates reviewable but disables edits without managed totals", () => {
+    const response = meterResponse();
+    const configuration = response.configuration as MeterConfigurationRequest;
+    configuration.aggregates = [{ aggregate_id: "main-service", name: "Main service", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true }];
+    const root = document.createElement("div");
+    render(ctInventoryStep(response as unknown as CtInventory, 0, new Map(), () => undefined, () => undefined, () => undefined, () => undefined, false, false, configuration, () => undefined, () => undefined, false, "unmanaged_total_present"), root);
+    expect(root.textContent).toContain("Aggregate editing unavailable");
+    expect(root.textContent).toContain("Main service");
+    expect(root.querySelector<HTMLFieldSetElement>('[aria-label="Main service aggregate"]')?.disabled).toBe(true);
+    expect(root.querySelector('[data-action="add-aggregate"]')).toBeNull();
+  });
+
+  it("reuses the canonical meter plan when advancing to CTs and preview", async () => {
+    const operations: Array<{ operation: string; planId: unknown }> = [];
+    let activePlan = "b".repeat(32);
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        operations.push({ operation, planId: message.plan_id });
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "get_ct_inventory") { activePlan = "c".repeat(32); return { ...meterResponse(), plan_id: activePlan } as T; }
+        if (operation === "preview_meter_configuration") {
+          if (message.plan_id !== activePlan) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
+          return preview as T;
+        }
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+      updateMeterSettings(draft: import("../src/types").MeterSettingsDraft): void;
+      continueFromMeterSettings(): Promise<void>;
+      continueFromCt(): Promise<void>;
+    };
+    state.selectedDeviceId = "meter-1";
+    const configuration = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    state.topology = configuration.topology;
+    state.setMeterConfiguration(configuration);
+    state.updateMeterSettings({ ...(state.meterSettingsDraft as import("../src/types").MeterSettingsDraft), friendly_name: "Kitchen meter" });
+    await state.continueFromMeterSettings();
+    await state.continueFromCt();
+    expect(operations.some(({ operation }) => operation === "get_ct_inventory")).toBe(false);
+    expect(operations.find(({ operation }) => operation === "preview_meter_configuration")?.planId).toBe("b".repeat(32));
+    expect((state.transaction as { state: string }).state).toBe("previewed");
+  });
+
+  it("moves channel references with physical groups and resets operation acknowledgement", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    response.configuration.multi_reference_preparation_acknowledged = true;
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+      updateMeterSettings(draft: import("../src/types").MeterSettingsDraft): void;
+    };
+    state.setMeterConfiguration(response);
+    expect(state.multiReferencePreparationAcknowledged).toBe(false);
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.multi_reference_preparation_acknowledged).toBe(false);
+    state.multiReferencePreparationAcknowledged = true;
+    const draft = state.meterSettingsDraft as import("../src/types").MeterSettingsDraft;
+    state.updateMeterSettings({ ...draft, voltage_layout: "multi_reference", voltage_references: [
+      { ...draft.voltage_references[0]!, group_keys: ["main_1"] },
+      { ...draft.voltage_references[0]!, reference_id: "secondary", label: "Secondary", group_keys: ["main_2"] },
+    ] });
+    const configuration = (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration;
+    expect(configuration.channels.map((channel) => channel.voltage_reference_id)).toEqual(["main", "main", "main", "secondary", "secondary", "secondary"]);
+    expect(configuration.multi_reference_preparation_acknowledged).toBe(false);
+    expect(state.multiReferencePreparationAcknowledged).toBe(false);
+  });
+
+  it("seeds standard imported meter settings from explicit installer intent", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+    };
+    state.electricalSystem = "single_phase_230";
+    state.lineFrequencyHz = 50;
+    state.electricalProfileConfirmed = true;
+    state.setMeterConfiguration(meterResponse() as unknown as import("../src/types").MeterConfiguration);
+    expect(state.meterSettingsDraft).toMatchObject({ electrical_system: "single_phase_230", line_frequency_hz: 50,
+      voltage_references: [{ nominal_voltage_v: 230 }] });
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.meter).toMatchObject({ electrical_system: "single_phase_230", line_frequency_hz: 50 });
+    expect(state.canonicalConfigurationChanged).toBe(true);
+  });
+
+  it("keeps a verified install on the selected meter until Continue starts safety", async () => {
+    const preview = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const operations: string[] = [];
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        operations.push(operation);
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "install_ct_config") return { ...preview, state: "verified", full_meter_configuration_verified: true } as T;
+        if (operation === "get_active_work") return { session: null, transaction: null, verified_calibration: null } as T;
+        if (operation === "start_session") return { session_id: "session", device_id: "meter-1", state: "safety_required", safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } } as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+      transactionAction(action: "install"): Promise<void>;
+    };
+    state.selectedDeviceId = "meter-1";
+    const configuration = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    state.topology = configuration.topology;
+    state.setMeterConfiguration(configuration);
+    state.transaction = preview;
+    panel.showState("build");
+    await state.transactionAction("install");
+    await panel.updateComplete;
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(state.verifiedMeterConfiguration).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Flash & Verify");
+    const continueButton = panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]');
+    expect(continueButton?.disabled).toBe(false);
+    expect(state.pendingAction).toBe("");
+    expect(state.sessionStarting).toBe(false);
+    continueButton?.click();
+    await tick(); await tick(); await panel.updateComplete;
+    expect(operations).toContain("start_session");
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
   });
   it("loads the firmware catalog once when the panel connects", async () => {
     const fetcher = vi.fn(() => Promise.resolve(firmwareResponse()));
@@ -1387,7 +1531,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
   });
 
-  it("loads CT verification for a configured device even when setup is runtime-only", async () => {
+  it("uses the full meter response for CT verification when setup is runtime-only", async () => {
     const operations: string[] = [];
     const configured = { ...device, importable: false, configuration: "meter.yaml" };
     const inventory: CtInventory = {
@@ -1424,9 +1568,9 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Meter Settings");
     panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue-meter-settings"]')?.click();
     await tick(); await tick(); await panel.updateComplete;
-    expect(operations).toContain("get_ct_inventory");
+    expect(operations).not.toContain("get_ct_inventory");
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Circuits & CTs");
-    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 name"]')?.value).toBe("Main A");
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 name"]')?.value).toBe("CT1");
     expect(text(panel)).toContain("If you expect to measure more than 65.535 A");
     expect(text(panel)).toContain("divides the gain and multiplies current and power output");
   });
@@ -1439,7 +1583,7 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("Restart verification is not complete");
   });
 
-  it("does not fabricate a topology mismatch when CT inventory loading fails", async () => {
+  it("does not call the redundant CT inventory route after a full meter response", async () => {
     const configured = { ...device, importable: false, configuration: "meter.yaml" };
     const panel = await mount(makeHass({
       setup_status: { state: "device_discovered", devices: [configured] },
@@ -1454,9 +1598,9 @@ describe("CircuitSetup panel", () => {
     panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue-meter-settings"]')?.click();
     await tick(); await panel.updateComplete;
 
-    expect(text(panel)).toContain("CT inventory could not be loaded");
+    expect(text(panel)).not.toContain("CT inventory could not be loaded");
     expect(text(panel)).not.toContain("Configuration and runtime evidence disagree");
-    expect(panel.shadowRoot?.querySelector('[data-action="continue-meter-settings"]')).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Circuits & CTs");
   });
 
   it("starts only one calibration session when Continue is clicked repeatedly", async () => {
