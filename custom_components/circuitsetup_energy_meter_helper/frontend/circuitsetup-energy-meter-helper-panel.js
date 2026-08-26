@@ -1621,7 +1621,7 @@ const ROLES = ["grid", "solar", "generator", "subpanel", "branch", "two_pole", "
 const METHODS = ["direct", "two_ct_sum", "one_ct_double_power", "both_conductors_one_ct"];
 const ENERGY = ["none", "consumption", "bidirectional", "generation"];
 const automaticAggregates = {
-  grid: { aggregate_id: "auto-mains", name: "Mains", energy_mode: "bidirectional", expose_current: true },
+  grid: { aggregate_id: "auto-mains", name: "Mains", energy_mode: "bidirectional", expose_current: false },
   solar: { aggregate_id: "auto-solar", name: "Solar", energy_mode: "generation", expose_current: false },
   subpanel: { aggregate_id: "auto-subpanel", name: "Subpanel", energy_mode: "consumption", expose_current: false },
   two_pole: { aggregate_id: "auto-two-pole", name: "Two-pole circuit", energy_mode: "consumption", expose_current: false }

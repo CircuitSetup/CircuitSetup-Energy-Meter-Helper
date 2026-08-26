@@ -67,10 +67,10 @@ def expected_meter_entity_evidence(
         elif aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
             aggregate_names.extend(
                 (
+                    f"{prefix} Return to Grid Power",
+                    f"{prefix} Return to Grid Energy",
                     f"{prefix} Import Power",
-                    f"{prefix} Export Power",
                     f"{prefix} Import Energy",
-                    f"{prefix} Export Energy",
                 )
             )
     names = (*voltage_names, *aggregate_names)
@@ -570,7 +570,7 @@ def _aggregate_entry(aggregate: CircuitAggregate) -> str:
             "current",
         )
     if aggregate.energy_mode is EnergyMode.CONSUMPTION:
-        lines += _lifetime_energy(
+        lines += _daily_energy(
             f"{identifier}_energy",
             f"${{friendly_name}} {aggregate.name} Energy",
             power_id,
@@ -581,31 +581,31 @@ def _aggregate_entry(aggregate: CircuitAggregate) -> str:
             f"{identifier}_export_power",
         )
         lines += _template_sensor(
+            export_power_id,
+            f"${{friendly_name}} {aggregate.name} Return to Grid Power",
+            f"std::max(0.0f, -id({power_id}).state)",
+            "W",
+            "power",
+        )
+        lines += _daily_energy(
+            f"{identifier}_export_energy",
+            f"${{friendly_name}} {aggregate.name} Return to Grid Energy",
+            export_power_id,
+        )
+        lines += _template_sensor(
             import_power_id,
             f"${{friendly_name}} {aggregate.name} Import Power",
             f"std::max(0.0f, id({power_id}).state)",
             "W",
             "power",
         )
-        lines += _template_sensor(
-            export_power_id,
-            f"${{friendly_name}} {aggregate.name} Export Power",
-            f"std::max(0.0f, -id({power_id}).state)",
-            "W",
-            "power",
-        )
-        lines += _lifetime_energy(
+        lines += _daily_energy(
             f"{identifier}_import_energy",
             f"${{friendly_name}} {aggregate.name} Import Energy",
             import_power_id,
         )
-        lines += _lifetime_energy(
-            f"{identifier}_export_energy",
-            f"${{friendly_name}} {aggregate.name} Export Energy",
-            export_power_id,
-        )
     elif aggregate.energy_mode is EnergyMode.GENERATION:
-        lines += _lifetime_energy(
+        lines += _daily_energy(
             f"{identifier}_energy",
             f"${{friendly_name}} {aggregate.name} Energy",
             power_id,
@@ -623,10 +623,8 @@ def _current_expression(aggregate: CircuitAggregate) -> str:
 
 
 def _energy_power_expression(aggregate: CircuitAggregate, expression: str) -> str:
-    if aggregate.energy_mode is EnergyMode.CONSUMPTION:
+    if aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
         return f"std::max(0.0f, {expression})"
-    if aggregate.energy_mode is EnergyMode.GENERATION:
-        return f"std::max(0.0f, -({expression}))"
     return expression
 
 
@@ -655,15 +653,13 @@ def _template_sensor(
     return "\n".join(lines) + "\n"
 
 
-def _lifetime_energy(entity_id: str, name: str, power_id: str) -> str:
+def _daily_energy(entity_id: str, name: str, power_id: str) -> str:
     return "\n".join(
         (
-            "  - platform: integration",
+            "  - platform: total_daily_energy",
             f"    id: {entity_id}",
             f"    name: {json.dumps(name)}",
-            f"    sensor: {power_id}",
-            "    time_unit: h",
-            "    restore: true",
+            f"    power_id: {power_id}",
             "    filters:",
             "      - multiply: 0.001",
             "    unit_of_measurement: kWh",

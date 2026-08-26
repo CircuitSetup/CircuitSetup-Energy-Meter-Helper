@@ -348,7 +348,7 @@ describe("CircuitSetup panel", () => {
       parent_id: null,
       energy_mode: "bidirectional",
       expose_power: true,
-      expose_current: true,
+      expose_current: false,
     });
     expect(configuration.aggregates).toContainEqual({
       aggregate_id: "auto-solar",
