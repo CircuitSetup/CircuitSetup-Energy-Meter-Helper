@@ -3420,6 +3420,7 @@ class CircuitSetupPanel extends i$2 {
   }
   async adopt(deviceId = this.selectedDeviceId) {
     if (!this.api || !deviceId || this.pendingAction) return;
+    this.newInstallDeviceId = deviceId;
     if (deviceId !== this.selectedDeviceId) this.selectDevice(deviceId);
     const api = this.api;
     const generation = ++this.operationGeneration;
@@ -3614,7 +3615,7 @@ class CircuitSetupPanel extends i$2 {
     const importedMeter = normalized.configuration.meter;
     const profileDefault = this.electricalSystem === "split_phase_120_240" ? 120 : this.electricalSystem === "single_phase_230" ? 230 : null;
     const defaultImport = importedMeter.voltage_layout === "standard" && importedMeter.electrical_system === "split_phase_120_240" && importedMeter.line_frequency_hz === 60 && importedMeter.voltage_references.every((reference) => reference.nominal_voltage_v === 120);
-    const seedInstallerIntent = this.electricalProfileConfirmed && this.lineFrequencyHz !== null && defaultImport;
+    const seedInstallerIntent = this.newInstallDeviceId !== null && this.selectedDeviceId === this.newInstallDeviceId && this.electricalProfileConfirmed && this.lineFrequencyHz !== null && defaultImport;
     const seededMeter = seedInstallerIntent ? {
       ...importedMeter,
       electrical_system: this.electricalSystem,
