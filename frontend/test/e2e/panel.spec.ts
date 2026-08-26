@@ -165,7 +165,7 @@ function restart(addons: number) {
 async function mockHomeAssistant(page: Page, options: { addons?: number; outcome?: Outcome;
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
-  firmwareRequests?: string[]; consumePlans?: boolean } = {}) {
+  firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
@@ -176,6 +176,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   let currentTransaction = transaction("previewed", addons ? 42 : 1);
   let currentSession = session("safety_required", false, addons);
   let activePlan: string | null = "b".repeat(32);
+  let activeSourceSha256 = hash;
   let pendingPreview = false;
   let freshPlanGeneration = 0;
   const setupDevices = options.setupEvent === "devices"
@@ -233,11 +234,17 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         },
       };
       else if (operation === "get_meter_configuration") {
+        const refreshingConsumedPlan = options.consumePlans && activePlan === null;
         if (options.consumePlans && activePlan === null) {
           activePlan = String.fromCharCode("c".charCodeAt(0) + freshPlanGeneration).repeat(32);
           freshPlanGeneration += 1;
+          if (options.freshSourceChanged) activeSourceSha256 = "f".repeat(64);
         }
-        result = { ...meterConfiguration(addons), plan_id: activePlan ?? "b".repeat(32) };
+        const live = meterConfiguration(addons);
+        result = { ...live, plan_id: activePlan ?? "b".repeat(32), source_sha256: activeSourceSha256,
+          configuration: refreshingConsumedPlan && options.freshSourceChanged
+            ? { ...live.configuration, meter: { ...live.configuration.meter, friendly_name: "External meter" } }
+            : live.configuration };
       }
       else if (operation === "get_ct_inventory") result = inventory(addons);
       else if (operation === "get_active_work") result = {
@@ -249,7 +256,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         if (outcome === "collision") return fail("CT_NAME_COLLISION", "Names resolve to the same entity ID");
         result = currentTransaction = transaction("previewed", Number((frame.changes as Array<{ channel: number }>)[0]?.channel ?? 1));
       } else if (operation === "preview_meter_configuration") {
-        if (options.consumePlans && (frame.plan_id !== activePlan || pendingPreview)) {
+        if (options.consumePlans && (frame.plan_id !== activePlan || frame.source_sha256 !== activeSourceSha256 || pendingPreview)) {
           return fail("stale_confirmation", "preview plan was already consumed");
         }
         result = currentTransaction = transaction("previewed", 1);
@@ -544,6 +551,31 @@ test("review Back abandons the consumed preview and reuses preserved edits with 
   expect(previews[1]?.configuration).toMatchObject({ meter: { friendly_name: "Corrected meter" },
     multi_reference_preparation_acknowledged: false });
   expect(operations(frames).filter((operation) => operation === "abandon_ct_config")).toHaveLength(1);
+});
+
+test("review Back rejects stale drafts when the source changed externally", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { consumePlans: true, freshSourceChanged: true });
+  await openInventory(page);
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.getByLabel("Friendly name").fill("Stale draft");
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Back" }).click();
+
+  await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
+  await expect(page.getByRole("alert")).toContainText("source changed");
+  await expect(page.getByRole("alert")).toContainText("drafts were not restored");
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByLabel("Friendly name")).toHaveValue("External meter");
+  await page.getByLabel("Friendly name").fill("Reviewed external meter");
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  const previews = frames.filter((frame) => frame.type.endsWith("/preview_meter_configuration"));
+  expect(previews).toHaveLength(2);
+  expect(previews[1]).toMatchObject({ plan_id: "c".repeat(32), source_sha256: "f".repeat(64),
+    configuration: { meter: { friendly_name: "Reviewed external meter" } } });
+  expect(JSON.stringify(previews[1]?.configuration)).not.toContain("Stale draft");
 });
 
 test("topology package choices stay in the canonical preview payload", async ({ page }) => {

@@ -406,6 +406,86 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("[role=alert]")?.textContent).toContain("The review could not be cancelled");
   });
 
+  it("rejects preserved review drafts when the source changes before reload", async () => {
+    const previews: Array<{ planId: unknown; sourceSha256: unknown; configuration: unknown }> = [];
+    let activePlan: string | null = "b".repeat(32);
+    let pendingTransaction = false;
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "preview_meter_configuration") {
+          previews.push({ planId: message.plan_id, sourceSha256: message.source_sha256, configuration: message.configuration });
+          if (message.plan_id !== activePlan || pendingTransaction) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
+          activePlan = null;
+          pendingTransaction = true;
+          return preview as T;
+        }
+        if (operation === "abandon_ct_config") {
+          pendingTransaction = false;
+          return { ...preview, state: "failed", evidence: ["cancelled"] } as T;
+        }
+        if (operation === "get_meter_configuration") {
+          activePlan = "c".repeat(32);
+          const fresh = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+          return { ...fresh, plan_id: activePlan, source_sha256: "f".repeat(64),
+            configuration: { ...fresh.configuration,
+              meter: { ...fresh.configuration.meter, friendly_name: "External meter" } } } as T;
+        }
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+      updateMeterSettings(draft: import("../src/types").MeterSettingsDraft): void;
+      updateDraft(channel: number, patch: Partial<CtDraft>): void;
+      updateCircuitConfiguration(configuration: import("../src/types").MeterConfigurationRequest): void;
+      setPackageOptions(options: import("../src/types").BoardPackageOptions): void;
+      continueFromMeterSettings(): Promise<void>;
+      continueFromCt(): Promise<void>;
+      backFromBuild(): Promise<void>;
+    };
+    state.selectedDeviceId = "meter-1";
+    const configuration = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    state.topology = configuration.topology;
+    state.setMeterConfiguration(configuration);
+    state.updateMeterSettings({ ...(state.meterSettingsDraft as import("../src/types").MeterSettingsDraft), friendly_name: "Stale draft" });
+    await state.continueFromMeterSettings();
+    state.updateDraft(1, { name: "Stale channel" });
+    const stale = (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration;
+    state.updateCircuitConfiguration({ ...stale, aggregates: [{ aggregate_id: "stale-total", name: "Stale total", role: "grid",
+      channels: [1], measurement_method: "direct", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true }] });
+    state.setPackageOptions({ power_quality: [false], status_fields: [true] });
+    await state.continueFromCt();
+
+    await state.backFromBuild();
+
+    const fresh = state.meterConfiguration as import("../src/types").MeterConfiguration;
+    expect(fresh.source_sha256).toBe("f".repeat(64));
+    expect(fresh.configuration.meter.friendly_name).toBe("External meter");
+    expect(fresh.configuration.channels[0]?.name).toBe("CT1");
+    expect(fresh.configuration.aggregates).toEqual([]);
+    expect(fresh.configuration.power_quality).toEqual([true]);
+    expect(fresh.configuration.status_fields).toEqual([false]);
+    expect((state.drafts as Map<number, CtDraft>).get(1)?.name).toBe("CT1");
+    expect(state.error).toContain("source changed");
+    expect(panel.shadowRoot?.querySelector("[role=alert]")?.textContent).toContain("drafts were not restored");
+    state.updateMeterSettings({ ...(state.meterSettingsDraft as import("../src/types").MeterSettingsDraft), friendly_name: "Reviewed external meter" });
+    await state.continueFromMeterSettings();
+    await state.continueFromCt();
+
+    expect(previews).toHaveLength(2);
+    expect(previews[1]).toMatchObject({ planId: "c".repeat(32), sourceSha256: "f".repeat(64),
+      configuration: { meter: { friendly_name: "Reviewed external meter" }, aggregates: [],
+        power_quality: [true], status_fields: [false] } });
+    expect(JSON.stringify(previews[1]?.configuration)).not.toContain("Stale draft");
+    expect(JSON.stringify(previews[1]?.configuration)).not.toContain("Stale channel");
+    expect(JSON.stringify(previews[1]?.configuration)).not.toContain("Stale total");
+  });
+
   it("moves channel references with physical groups and resets operation acknowledgement", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;

@@ -121,6 +121,7 @@ export class CircuitSetupPanel extends LitElement {
   private offsetRetryConfirmed = false;
   private drafts = new Map<number, CtDraft>();
   private reviewCorrection: {
+    sourceSha256: string;
     configuration: MeterConfigurationRequest;
     drafts: Map<number, CtDraft>;
     packageOptions: BoardPackageOptions;
@@ -727,6 +728,7 @@ export class CircuitSetupPanel extends LitElement {
       return;
     }
     const correction = this.reviewCorrection ?? (this.meterConfiguration ? {
+      sourceSha256: this.meterConfiguration.source_sha256,
       configuration: { ...this.meterConfiguration.configuration,
         multi_reference_preparation_acknowledged: false },
       drafts: new Map(this.drafts),
@@ -763,6 +765,34 @@ export class CircuitSetupPanel extends LitElement {
       this.reviewCorrection = correction;
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (fresh.source_sha256 !== correction!.sourceSha256) {
+        const normalizedFresh = { ...fresh, configuration: { ...fresh.configuration,
+          multi_reference_preparation_acknowledged: false } };
+        this.verifiedMeterConfiguration = fresh.capabilities.configuration_authoritative
+          ? normalizedFresh : null;
+        this.sourcePackageOptions = {
+          power_quality: [...fresh.configuration.power_quality],
+          status_fields: [...fresh.configuration.status_fields],
+        };
+        this.packageOptions = {
+          power_quality: [...fresh.configuration.power_quality],
+          status_fields: [...fresh.configuration.status_fields],
+        };
+        this.packageOptionsTouched = false;
+        this.meterConfiguration = normalizedFresh;
+        this.meterSettingsDraft = { ...fresh.configuration.meter,
+          authoritative: fresh.capabilities.configuration_authoritative,
+          warnings: fresh.warnings };
+        this.multiReferencePreparationAcknowledged = false;
+        this.meterFrequencyTouched = false;
+        this.meterNominalVoltageTouched = new Set();
+        this.canonicalConfigurationChanged = false;
+        this.showInventory(normalizedFresh);
+        this.reviewCorrection = null;
+        this.error = "The meter source changed while this review was open. Preserved drafts were not restored to avoid overwriting external edits; review the live configuration and reapply changes.";
+        this.announcement = this.error;
+        return;
+      }
       this.setMeterConfiguration(fresh);
       const restoredConfiguration = { ...correction!.configuration,
         multi_reference_preparation_acknowledged: false };
