@@ -98,6 +98,8 @@ export class CircuitSetupPanel extends LitElement {
   private meterSettingsDraft: MeterSettingsDraft | null = null;
   private meterConfiguration: MeterConfiguration | null = null;
   private multiReferencePreparationAcknowledged = false;
+  private meterFrequencyTouched = false;
+  private meterNominalVoltageTouched = new Set<string>();
   private board = 0;
   private group = 0;
   private channel = 1;
@@ -390,6 +392,8 @@ export class CircuitSetupPanel extends LitElement {
     this.meterSettingsDraft = null;
     this.meterConfiguration = null;
     this.multiReferencePreparationAcknowledged = false;
+    this.meterFrequencyTouched = false;
+    this.meterNominalVoltageTouched = new Set();
     this.board = 0;
     this.resetCalibrationRun();
   }
@@ -679,8 +683,38 @@ export class CircuitSetupPanel extends LitElement {
 
   private setMeterConfiguration(configuration: MeterConfiguration): void {
     this.meterConfiguration = configuration;
-    this.meterSettingsDraft = { ...configuration.configuration.meter, authoritative: true, warnings: configuration.warnings };
+    this.meterSettingsDraft = { ...configuration.configuration.meter,
+      authoritative: configuration.capabilities.configuration_authoritative, warnings: configuration.warnings };
     this.multiReferencePreparationAcknowledged = configuration.configuration.multi_reference_preparation_acknowledged === true;
+    this.meterFrequencyTouched = false;
+    this.meterNominalVoltageTouched = new Set();
+  }
+
+  private setMeterProfile(electricalSystem: ElectricalSystem): void {
+    if (!this.meterSettingsDraft) return;
+    const defaults = electricalSystem === "split_phase_120_240" ? { frequency: 60 as LineFrequencyHz, voltage: 120 }
+      : electricalSystem === "single_phase_230" ? { frequency: 50 as LineFrequencyHz, voltage: 230 } : null;
+    this.meterSettingsDraft = { ...this.meterSettingsDraft, electrical_system: electricalSystem,
+      ...(defaults && !this.meterFrequencyTouched ? { line_frequency_hz: defaults.frequency } : {}),
+      ...(defaults ? { voltage_references: this.meterSettingsDraft.voltage_references.map((reference) =>
+        this.meterNominalVoltageTouched.has(reference.reference_id) ? reference
+          : { ...reference, nominal_voltage_v: defaults.voltage }) } : {}) };
+    this.requestUpdate();
+  }
+
+  private setMeterFrequency(lineFrequencyHz: LineFrequencyHz): void {
+    if (!this.meterSettingsDraft) return;
+    this.meterFrequencyTouched = true;
+    this.meterSettingsDraft = { ...this.meterSettingsDraft, line_frequency_hz: lineFrequencyHz };
+    this.requestUpdate();
+  }
+
+  private setMeterNominalVoltage(referenceId: string, nominalVoltage: number): void {
+    if (!this.meterSettingsDraft) return;
+    this.meterNominalVoltageTouched = new Set(this.meterNominalVoltageTouched).add(referenceId);
+    this.meterSettingsDraft = { ...this.meterSettingsDraft, voltage_references: this.meterSettingsDraft.voltage_references.map((reference) =>
+      reference.reference_id === referenceId ? { ...reference, nominal_voltage_v: nominalVoltage } : reference) };
+    this.requestUpdate();
   }
 
   private async continueFromMeterSettings(): Promise<void> {
@@ -1472,6 +1506,8 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step === "meter" && this.meterSettingsDraft && this.meterConfiguration) return meterSettingsStep(
       this.meterSettingsDraft, this.meterConfiguration.voltage_transformer_catalog, this.multiReferencePreparationAcknowledged,
       (draft) => { this.meterSettingsDraft = draft; this.requestUpdate(); },
+      (value) => this.setMeterProfile(value), (value) => this.setMeterFrequency(value),
+      (referenceId, value) => this.setMeterNominalVoltage(referenceId, value),
       (value) => { this.multiReferencePreparationAcknowledged = value; this.requestUpdate(); },
       () => this.back(), () => void this.continueFromMeterSettings(),
     );

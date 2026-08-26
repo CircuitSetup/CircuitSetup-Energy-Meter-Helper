@@ -7,12 +7,20 @@ const SYSTEMS: Array<[ElectricalSystem, string]> = [
   ["three_phase", "Three phase"], ["custom", "Custom"],
 ];
 const INTERVALS = [1, 2, 5, 10, 30, 60] as const;
+const intervalImpact = (interval: number): string => interval <= 5
+  ? "1–5 seconds: high traffic."
+  : interval === 10 ? "10 seconds: standard."
+    : interval >= 30 ? "30–60 seconds: lower traffic; guided calibration takes longer."
+      : "This interval affects update traffic and guided calibration time.";
 
 export function meterSettingsStep(
   draft: MeterSettingsDraft,
   catalog: VoltageTransformerCatalog,
   acknowledged: boolean,
   update: (draft: MeterSettingsDraft) => void,
+  setProfile: (value: ElectricalSystem) => void,
+  setFrequency: (value: LineFrequencyHz) => void,
+  setNominalVoltage: (referenceId: string, value: number) => void,
   setAcknowledged: (value: boolean) => void,
   back: () => void,
   continueToCircuits: () => void,
@@ -42,13 +50,13 @@ export function meterSettingsStep(
         <label>Friendly name <input aria-label="Friendly name" maxlength="64" .value=${draft.friendly_name}
           @input=${(event: Event) => patch({ friendly_name: (event.target as HTMLInputElement).value })} /></label>
         <label>Electrical system <select aria-label="Electrical system" .value=${draft.electrical_system}
-          @change=${(event: Event) => patch({ electrical_system: (event.target as HTMLSelectElement).value as ElectricalSystem })}>${SYSTEMS.map(([value, label]) => html`<option value=${value}>${label}</option>`)}</select></label>
+          @change=${(event: Event) => setProfile((event.target as HTMLSelectElement).value as ElectricalSystem)}>${SYSTEMS.map(([value, label]) => html`<option value=${value}>${label}</option>`)}</select></label>
         <label>Line frequency <select aria-label="Line frequency" .value=${String(draft.line_frequency_hz)}
-          @change=${(event: Event) => patch({ line_frequency_hz: Number((event.target as HTMLSelectElement).value) as LineFrequencyHz })}>${[50, 60].map((value) => html`<option value=${value}>${value} Hz</option>`)}</select></label>
+          @change=${(event: Event) => setFrequency(Number((event.target as HTMLSelectElement).value) as LineFrequencyHz)}>${[50, 60].map((value) => html`<option value=${value}>${value} Hz</option>`)}</select></label>
         <label>Reporting interval <select aria-label="Reporting interval" .value=${String(draft.update_interval_s)}
           @change=${(event: Event) => patch({ update_interval_s: Number((event.target as HTMLSelectElement).value) as MeterSettingsDraft["update_interval_s"] })}>${INTERVALS.map((value) => html`<option value=${value}>${value} seconds</option>`)}</select></label>
       </div>
-      <p class="info-band" role="status">Longer reporting intervals reduce update traffic but make live checks and calibration take longer.</p>
+      <p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>
       <h3>Voltage references</h3>
       <div class="voltage-reference-cards">${draft.voltage_references.map((reference) => html`
         <section class="voltage-reference-card" aria-label=${`${reference.label} voltage reference`}>
@@ -58,11 +66,13 @@ export function meterSettingsStep(
             @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: (event.target as HTMLInputElement).value } : item) })} /></label>
           <label>Transformer <select aria-label=${`${reference.reference_id} transformer`} .value=${reference.transformer_model_id}
             @change=${(event: Event) => { const model = (event.target as HTMLSelectElement).value; const preset = catalog.presets.find((item) => item.model_id === model); patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, transformer_model_id: model, gain_voltage: preset?.default_gain_voltage ?? item.gain_voltage } : item) }); }}>
-            ${catalog.presets.map((preset) => html`<option value=${preset.model_id}>${preset.label}</option>`)}</select></label>
+            ${catalog.presets.map((preset) => html`<option value=${preset.model_id}>${preset.label}</option>`)}
+            <option value="custom">Custom starting gain</option>
+            ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? html`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>
           <label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
             @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number((event.target as HTMLInputElement).value) } : item) })} /></label>
           <label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
-            @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, nominal_voltage_v: Number((event.target as HTMLInputElement).value) } : item) })} /></label>
+            @input=${(event: Event) => setNominalVoltage(reference.reference_id, Number((event.target as HTMLInputElement).value))} /></label>
         </section>`)}
       </div>
       <h3>Voltage group assignment</h3>

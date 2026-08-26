@@ -476,6 +476,20 @@ describe("CircuitSetup panel", () => {
       .toMatchObject({ electrical_system: "single_phase_230", line_frequency_hz: 50, authoritative: true });
   });
 
+  it("uses profile defaults only until frequency and voltage are explicitly edited", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as { meterSettingsDraft: Record<string, unknown>; meterFrequencyTouched: boolean;
+      meterNominalVoltageTouched: Set<string>; setMeterProfile(system: string): void; setMeterFrequency(value: 50 | 60): void;
+      setMeterNominalVoltage(referenceId: string, value: number): void };
+    state.meterSettingsDraft = { ...meterResponse().configuration.meter, authoritative: true, warnings: [] };
+    state.setMeterProfile("single_phase_230");
+    expect(state.meterSettingsDraft).toMatchObject({ line_frequency_hz: 50, voltage_references: [{ nominal_voltage_v: 230 }] });
+    state.setMeterFrequency(60);
+    state.setMeterNominalVoltage("main", 208);
+    state.setMeterProfile("split_phase_120_240");
+    expect(state.meterSettingsDraft).toMatchObject({ line_frequency_hz: 60, voltage_references: [{ nominal_voltage_v: 208 }] });
+  });
+
   it("shows ordered setup guidance with Ethernet-only details", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     panel.shadowRoot?.querySelector<HTMLInputElement>('[name="connection-type"][value="ethernet_lilygo"]')?.click();
