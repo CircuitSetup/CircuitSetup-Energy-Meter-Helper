@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "../src/index";
 import { espWebInstaller } from "../src/components/esp-web-installer";
+import { configReview } from "../src/components/config-review-step";
+import { summaryStep } from "../src/components/summary-step";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
 import { changesFromDrafts, circuitConfigurationIsValid, type CtDraft } from "../src/components/ct-inventory-step";
@@ -88,6 +90,30 @@ beforeEach(() => vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(firmwareResp
 afterEach(() => {
   document.body.replaceChildren();
   vi.unstubAllGlobals();
+});
+
+describe("meter configuration review and summary", () => {
+  it("reviews physical, semantic, package, and entity details without threshold controls", () => {
+    const meter = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    meter.configuration.aggregates = [{ aggregate_id: "main-service", name: "Main service", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true }];
+    const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "Meter:\n+ interval: 5", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: true } as import("../src/types").TransactionStatus;
+    const root = document.createElement("div");
+    render(configReview(transaction, meter.configuration, meter.configuration_impact), root);
+    const review = root.textContent ?? "";
+    expect(review).toContain("Electrical profile");
+    expect(review).toContain("Voltage references");
+    expect(review).toContain("CT1 CT1: branch on main");
+    expect(review).toContain("Main service = CT1 + CT2");
+    expect(review).toContain("Power quality");
+    expect(review).not.toContain("threshold");
+
+    render(summaryStep(meter.topology, null, transaction, new Map(), new Map(), null, false, "2026.8.0", () => undefined, () => undefined, meter, meter.configuration_impact), root);
+    const summary = root.textContent ?? "";
+    expect(summary).toContain("Configuration authority");
+    expect(summary).toContain("Installed electrical profile");
+    expect(summary).toContain("Aggregate energy");
+    expect(summary).toContain("Reporting and entities");
+  });
 });
 
 describe("ESP Web Tools installer", () => {

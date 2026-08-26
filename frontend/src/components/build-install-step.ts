@@ -1,5 +1,5 @@
 import { html, type TemplateResult } from "lit";
-import type { TransactionStatus } from "../types";
+import type { ConfigurationImpact, MeterConfigurationRequest, TransactionStatus } from "../types";
 import { configReview } from "./config-review-step";
 
 export function buildInstallStep(
@@ -10,12 +10,14 @@ export function buildInstallStep(
   rollback: () => void,
   back: () => void,
   continueFlow: () => void,
+  configuration: MeterConfigurationRequest | null = null,
+  impact: ConfigurationImpact | null = null,
 ): TemplateResult {
   const state = status?.state ?? "previewed";
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   return html`
     <section class="step-content" aria-labelledby="step-heading">
-      ${configReview(status)}
+      ${configReview(status, configuration, impact)}
       ${state === "failed" ? html`
         <div class="recovery-panel" role="status">
           <strong>Build or install needs attention</strong>

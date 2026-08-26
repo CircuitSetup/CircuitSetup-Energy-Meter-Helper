@@ -1593,7 +1593,8 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step === "build") return buildInstallStep(this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => this.back(),
-      () => this.finishFlow("Configuration changes were installed and verified."));
+      () => this.finishFlow("Configuration changes were installed and verified."), this.meterConfiguration?.configuration ?? null,
+      this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology, this.packageOptions) : null);
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back(), this.pendingAction === "safety");
     if (this.step === "offset") return offsetStep(this.topology, this.session, this.board, this.offsetStage,
@@ -1628,7 +1629,8 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step === "summary") return summaryStep(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult,
       this.completedWithoutChanges, this.selectedProjectVersion(),
       () => void (this.restartResult?.source_handoff_firmware_installed
-        ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back());
+        ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back(), this.meterConfiguration,
+      this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology, this.packageOptions) : null);
     return html`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct"
       ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;
