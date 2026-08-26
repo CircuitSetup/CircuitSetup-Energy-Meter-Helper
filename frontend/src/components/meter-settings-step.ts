@@ -91,6 +91,7 @@ export function meterSettingsStep(
       </div>
       <p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>
       <h3>Voltage references</h3>
+      <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
       <div class="voltage-reference-cards">${draft.voltage_references.map((reference) => html`
         <section class="voltage-reference-card" aria-label=${`${reference.label} voltage reference`}>
           <label>Label <input aria-label=${`${reference.reference_id} label`} maxlength="64" .value=${reference.label}
