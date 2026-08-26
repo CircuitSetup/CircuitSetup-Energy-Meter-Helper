@@ -3418,7 +3418,7 @@ def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> N
         assert connection.results[-1] == (
             1,
             {
-                "integration_version": "0.2.1",
+                "integration_version": "0.3.0",
                 "home_assistant_version": HA_VERSION,
                 "config_entry_version": 1,
                 "setup_state": "no_device",
