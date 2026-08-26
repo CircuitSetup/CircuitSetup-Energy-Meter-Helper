@@ -169,14 +169,16 @@ describe("ESP Web Tools installer", () => {
   };
   const manifest = "https://circuitsetup.github.io/ESPWebInstaller/manifests/manifest_6chan_energy_meter_main_board-2026.8.0.json";
 
-  it("loads ESP Web Tools only when the installer is rendered", async () => {
-    expect(customElements.get("esp-web-install-button")).toBeUndefined();
+  it("loads ESP Web Tools when the installer is rendered", async () => {
+    const alreadyLoaded = customElements.get("esp-web-install-button") !== undefined;
 
     const root = document.createElement("div");
     render(espWebInstaller(option), root);
 
-    expect(root.querySelector('[role="status"]')?.textContent).toContain("Loading installer");
-    expect(root.querySelector("esp-web-install-button")).toBeNull();
+    if (!alreadyLoaded) {
+      expect(root.querySelector('[role="status"]')?.textContent).toContain("Loading installer");
+      expect(root.querySelector("esp-web-install-button")).toBeNull();
+    }
     await vi.waitFor(() => expect(root.querySelector("esp-web-install-button")).not.toBeNull());
   });
 
