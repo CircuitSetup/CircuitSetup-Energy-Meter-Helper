@@ -97,11 +97,13 @@ def device_builder_status(
     importable = matches(listing.get("importable", ()))
     import_data = None
     if len(importable) == 1:
-        import_data = {
+        candidate = {
             key: value
             for key in ("name", "friendly_name", "project_name", "package_import_url")
             if isinstance((value := importable[0].get(key)), str)
         }
+        if {"name", "package_import_url"} <= candidate.keys():
+            import_data = candidate
     return DeviceBuilderStatus(bool(importable), None, import_data)
 
 

@@ -584,6 +584,25 @@ def test_adopt_uses_builder_import_record_when_runtime_metadata_is_incomplete() 
     asyncio.run(run())
 
 
+def test_adopt_falls_back_when_builder_import_record_is_incomplete() -> None:
+    async def run() -> None:
+        workflow, builder = adoption_workflow(
+            listing={"configured": [], "importable": [{"name": "new-meter"}]}
+        )
+
+        assert await workflow.async_adopt_device("new-meter") == {
+            "device_id": "new-meter",
+            "configuration": "new-meter.yaml",
+        }
+        assert builder.imports == [{
+            "name": "new-meter",
+            "friendly_name": "New meter",
+            "package_import_url": "github://circuitsetup/package.yaml",
+        }]
+
+    asyncio.run(run())
+
+
 def test_adopt_reuses_existing_builder_configuration() -> None:
     async def run() -> None:
         workflow, builder = adoption_workflow(listing={
