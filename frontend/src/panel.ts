@@ -556,6 +556,10 @@ export class CircuitSetupPanel extends LitElement {
 
   private async configureDevice(deviceId: string): Promise<void> {
     if (this.pendingAction) return;
+    if (this.setup?.bound_device_id !== undefined && this.setup.bound_device_id !== deviceId) {
+      await this.adopt(deviceId);
+      return;
+    }
     this.newInstallDeviceId = null;
     this.selectDevice(deviceId);
     this.pendingAction = `topology:${deviceId}`;
@@ -629,7 +633,8 @@ export class CircuitSetupPanel extends LitElement {
 
   private async adopt(deviceId = this.selectedDeviceId): Promise<void> {
     if (!this.api || !deviceId || this.pendingAction) return;
-    this.newInstallDeviceId = deviceId;
+    this.newInstallDeviceId = this.setup?.devices.find((device) => device.entry_id === deviceId)?.configuration
+      ? null : deviceId;
     if (deviceId !== this.selectedDeviceId) this.selectDevice(deviceId);
     const api = this.api; const generation = ++this.operationGeneration;
     const connectionGeneration = this.connectionGeneration;
