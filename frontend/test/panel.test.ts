@@ -702,7 +702,7 @@ describe("CircuitSetup panel", () => {
     expect(state.multiReferencePreparationAcknowledged).toBe(false);
   });
 
-  it("seeds standard imported meter settings from explicit installer intent", async () => {
+  it("loads existing meter settings instead of installer intent", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const state = panel as unknown as Record<string, unknown> & {
       setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
@@ -710,10 +710,28 @@ describe("CircuitSetup panel", () => {
     state.electricalSystem = "single_phase_230";
     state.lineFrequencyHz = 50;
     state.electricalProfileConfirmed = true;
+    state.setMeterConfiguration(meterResponse("split_phase_120_240", 60, 30) as unknown as import("../src/types").MeterConfiguration);
+    expect(state.meterSettingsDraft).toMatchObject({ electrical_system: "split_phase_120_240", line_frequency_hz: 60,
+      update_interval_s: 30, voltage_references: [{ nominal_voltage_v: 120 }] });
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.meter).toMatchObject({
+      electrical_system: "split_phase_120_240", line_frequency_hz: 60, update_interval_s: 30,
+    });
+    expect(state.canonicalConfigurationChanged).toBe(false);
+  });
+
+  it("seeds a newly installed meter from explicit installer intent", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+    };
+    state.selectedDeviceId = "meter-1";
+    state.newInstallDeviceId = "meter-1";
+    state.electricalSystem = "single_phase_230";
+    state.lineFrequencyHz = 50;
+    state.electricalProfileConfirmed = true;
     state.setMeterConfiguration(meterResponse() as unknown as import("../src/types").MeterConfiguration);
     expect(state.meterSettingsDraft).toMatchObject({ electrical_system: "single_phase_230", line_frequency_hz: 50,
       voltage_references: [{ nominal_voltage_v: 230 }] });
-    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.meter).toMatchObject({ electrical_system: "single_phase_230", line_frequency_hz: 50 });
     expect(state.canonicalConfigurationChanged).toBe(true);
   });
 
@@ -1055,7 +1073,7 @@ describe("CircuitSetup panel", () => {
           ? { state: "device_discovered", devices: [{ ...device, configuration: "meter.yaml" }], bound_device_id: device.entry_id }
           : { state: "no_device", devices: [] }) as T;
         if (operation === "adopt_device") { adopted = true; return { device_id: device.entry_id, configuration: "meter.yaml" } as T; }
-        if (operation === "get_meter_configuration") return meterResponse("single_phase_230", 50) as T;
+        if (operation === "get_meter_configuration") return meterResponse("split_phase_120_240", 60) as T;
         if (operation === "get_topology") return { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
           connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
           evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] } as T;
@@ -1064,13 +1082,18 @@ describe("CircuitSetup panel", () => {
       connection: { subscribeMessage: async () => () => undefined },
     };
     const panel = await mount(hass);
-    (panel as unknown as { adopt: (id: string) => Promise<void> }).adopt(device.entry_id);
-    await tick(); await tick(); await panel.updateComplete;
+    const state = panel as unknown as Record<string, unknown> & { adopt: (id: string) => Promise<void> };
+    state.electricalSystem = "single_phase_230";
+    state.lineFrequencyHz = 50;
+    state.electricalProfileConfirmed = true;
+    await state.adopt(device.entry_id);
+    await panel.updateComplete;
 
+    expect(state.error).toBe("");
     expect(operations.indexOf("get_meter_configuration")).toBeGreaterThan(operations.indexOf("adopt_device"));
     expect(operations.indexOf("get_topology")).toBeGreaterThan(operations.indexOf("get_meter_configuration"));
-    expect((panel as unknown as { meterSettingsDraft: { electrical_system: string; line_frequency_hz: number; authoritative: boolean } }).meterSettingsDraft)
-      .toMatchObject({ electrical_system: "single_phase_230", line_frequency_hz: 50, authoritative: true });
+    expect(state.meterSettingsDraft).toMatchObject({ electrical_system: "single_phase_230", line_frequency_hz: 50,
+      update_interval_s: 5, voltage_references: [{ nominal_voltage_v: 230 }], authoritative: true });
   });
 
   it("uses profile defaults only until frequency and voltage are explicitly edited", async () => {
