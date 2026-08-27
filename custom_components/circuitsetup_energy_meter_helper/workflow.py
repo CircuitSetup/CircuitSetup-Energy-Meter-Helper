@@ -548,16 +548,19 @@ class EntryWorkflow:
         status = device_builder_status(entry, await builder.async_list_devices())
         if status.configuration is not None:
             return {"device_id": device_id, "configuration": status.configuration}
-        info = getattr(getattr(entry, "runtime_data", None), "device_info", None)
-        package_url = getattr(info, "package_import_url", None)
-        if not isinstance(package_url, str):
-            raise WorkflowCapabilityUnavailable("adoption metadata is unavailable")
-        configuration = await builder.async_import_device(
-            {
+        import_data = status.import_data
+        if import_data is None:
+            info = getattr(getattr(entry, "runtime_data", None), "device_info", None)
+            package_url = getattr(info, "package_import_url", None)
+            if not isinstance(package_url, str):
+                raise WorkflowCapabilityUnavailable("adoption metadata is unavailable")
+            import_data = {
                 "name": name,
                 "friendly_name": device.title,
                 "package_import_url": package_url,
             }
+        configuration = await builder.async_import_device(
+            import_data
         )
         return {"device_id": device_id, "configuration": configuration}
 

@@ -1096,6 +1096,43 @@ describe("CircuitSetup panel", () => {
       update_interval_s: 5, voltage_references: [{ nominal_voltage_v: 230 }], authoritative: true });
   });
 
+  it("takes control before configuring an unbound importable meter", async () => {
+    const operations: string[] = [];
+    let adopted = false;
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1)!;
+        operations.push(operation);
+        if (operation === "setup_status") return {
+          state: "device_discovered",
+          devices: [{ ...device, configuration: adopted ? "meter.yaml" : null }],
+          bound_device_id: adopted ? device.entry_id : null,
+        } as T;
+        if (operation === "adopt_device") {
+          adopted = true;
+          return { device_id: device.entry_id, configuration: "meter.yaml" } as T;
+        }
+        if (operation === "get_meter_configuration") return meterResponse() as T;
+        if (operation === "get_topology") {
+          if (!adopted) throw Object.assign(new Error("stale"), { code: "stale_handle" });
+          return { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+            connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
+            evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] } as T;
+        }
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=configure-device]")?.click();
+    await tick(); await panel.updateComplete;
+
+    expect(operations.indexOf("adopt_device")).toBeGreaterThan(operations.indexOf("setup_status"));
+    expect(operations.indexOf("get_topology")).toBeGreaterThan(operations.indexOf("adopt_device"));
+    expect(text(panel)).toContain("Topology evidence");
+    expect(text(panel)).not.toContain("The selected device changed or is no longer available");
+  });
+
   it("uses profile defaults only until frequency and voltage are explicitly edited", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     const state = panel as unknown as { meterSettingsDraft: Record<string, unknown>; meterFrequencyTouched: boolean;

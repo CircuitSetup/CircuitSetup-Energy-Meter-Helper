@@ -561,6 +561,29 @@ def test_adopt_imports_current_compatible_discovery_once() -> None:
     asyncio.run(run())
 
 
+def test_adopt_uses_builder_import_record_when_runtime_metadata_is_incomplete() -> None:
+    async def run() -> None:
+        import_data = {
+            "name": "new-meter",
+            "friendly_name": "Factory meter",
+            "project_name": "circuitsetup.6c-energy-meter",
+            "package_import_url": "github://circuitsetup/default-meter.yaml",
+        }
+        workflow, builder = adoption_workflow(
+            listing={"configured": [], "importable": [import_data]}
+        )
+        entry = workflow._hass.config_entries.async_get_entry("new-meter")
+        entry.runtime_data.device_info.package_import_url = None
+
+        assert await workflow.async_adopt_device("new-meter") == {
+            "device_id": "new-meter",
+            "configuration": "new-meter.yaml",
+        }
+        assert builder.imports == [import_data]
+
+    asyncio.run(run())
+
+
 def test_adopt_reuses_existing_builder_configuration() -> None:
     async def run() -> None:
         workflow, builder = adoption_workflow(listing={

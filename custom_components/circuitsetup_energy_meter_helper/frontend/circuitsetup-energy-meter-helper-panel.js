@@ -3348,6 +3348,10 @@ class CircuitSetupPanel extends i$2 {
   }
   async configureDevice(deviceId) {
     if (this.pendingAction) return;
+    if (this.setup?.bound_device_id !== void 0 && this.setup.bound_device_id !== deviceId) {
+      await this.adopt(deviceId);
+      return;
+    }
     this.newInstallDeviceId = null;
     this.selectDevice(deviceId);
     this.pendingAction = `topology:${deviceId}`;
@@ -3420,7 +3424,7 @@ class CircuitSetupPanel extends i$2 {
   }
   async adopt(deviceId = this.selectedDeviceId) {
     if (!this.api || !deviceId || this.pendingAction) return;
-    this.newInstallDeviceId = deviceId;
+    this.newInstallDeviceId = this.setup?.devices.find((device2) => device2.entry_id === deviceId)?.configuration ? null : deviceId;
     if (deviceId !== this.selectedDeviceId) this.selectDevice(deviceId);
     const api = this.api;
     const generation = ++this.operationGeneration;
