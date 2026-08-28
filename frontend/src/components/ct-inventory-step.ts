@@ -111,7 +111,7 @@ export function ctInventoryStep(
                   ${draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}
                 </button>
               </div>
-              ${draft.modelId === "custom" ? html`<div class="ct-detail custom-fields">
+              ${draft.modelId === "custom" && draft.expanded ? html`<div class="ct-detail custom-fields">
                 <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
                   ?disabled=${labelOnly}
                   .value=${draft.customGainCt === undefined ? "" : String(draft.customGainCt)}
@@ -119,7 +119,7 @@ export function ctInventoryStep(
                 <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} ?disabled=${labelOnly} .value=${draft.customLabel ?? ""}
                   @input=${(event: Event) => update(channel.channel, { customLabel: (event.target as HTMLInputElement).value })} /></label>
               </div>` : nothing}
-              ${draft.modelId === "custom" || preset?.requires_burden_jumper_cut ? html`<div class="warning-band">
+              ${draft.expanded && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<div class="warning-band">
                 <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
                   ?disabled=${labelOnly}
                   .checked=${draft.burdenAcknowledged}
@@ -192,7 +192,7 @@ export function reconcileSplitPhaseAggregates(
   const preserved = configuration.aggregates.filter((aggregate) => !isManaged(aggregate));
   const preservedIds = new Set(preserved.map((aggregate) => aggregate.aggregate_id));
   const claimed = new Set(preserved.flatMap((aggregate) => aggregate.channels));
-  const rebuilt = configuration.meter.electrical_system === "split_phase_120_240"
+  const rebuilt = ["split_phase_120_240", "custom"].includes(configuration.meter.electrical_system)
     ? (Object.keys(automaticAggregates) as Array<keyof typeof automaticAggregates>).flatMap((role) => {
       const channels = configuration.channels.filter((channel) => channel.enabled && channel.role === role && !claimed.has(channel.channel)).map((channel) => channel.channel);
       const definition = automaticAggregates[role];

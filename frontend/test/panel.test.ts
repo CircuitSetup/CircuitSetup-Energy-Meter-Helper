@@ -490,6 +490,22 @@ describe("CircuitSetup panel", () => {
     expect(current().aggregates).not.toContainEqual(expect.objectContaining({ aggregate_id: "auto-mains" }));
   });
 
+  it("rebuilds mains and solar totals for a custom electrical profile", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+    };
+    const response = meterResponse("custom") as unknown as import("../src/types").MeterConfiguration;
+    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2
+      ? { ...channel, role: "grid" } : [3, 4].includes(channel.channel) ? { ...channel, role: "solar" } : channel);
+
+    state.setMeterConfiguration(response);
+
+    const aggregates = (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.aggregates;
+    expect(aggregates).toContainEqual(expect.objectContaining({ aggregate_id: "auto-mains", role: "grid", channels: [1, 2], energy_mode: "bidirectional" }));
+    expect(aggregates).toContainEqual(expect.objectContaining({ aggregate_id: "auto-solar", role: "solar", channels: [3, 4], energy_mode: "generation" }));
+  });
+
   it("does not claim manual aggregate channels or build partial automatic pairs", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const state = panel as unknown as Record<string, unknown> & {
@@ -2807,6 +2823,10 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     panel.showInventory(inventory);
     await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom gain"]')).toBeNull();
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom label"]')).toBeNull();
+    panel.shadowRoot?.querySelector<HTMLButtonElement>(".row-toggle")?.click();
+    await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom gain"]')?.value).toBe("32000");
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom label"]')?.value).toBe("Existing clamp");
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 burden output acknowledgement"]')?.checked).toBe(true);
@@ -2848,6 +2868,8 @@ describe("CircuitSetup panel", () => {
     panel.showInventory(inventory);
     await panel.updateComplete;
     panel.shadowRoot?.querySelectorAll<HTMLInputElement>('[name="name-mode"]')[1]?.click();
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>(".row-toggle")?.click();
     await panel.updateComplete;
 
     for (const selector of ['[aria-label="CT1 model"]', '[aria-label="CT1 multiplier"]',

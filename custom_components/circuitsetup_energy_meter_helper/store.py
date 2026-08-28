@@ -727,8 +727,8 @@ def _verified_meter_record(
             raise ValueError("meter topology does not match the source")
         if (
             configuration.config_sha256 == expected_source_sha256
-            and _configuration_hash(raw_meter.get("meter_configuration"))
-            == expected_source_sha256
+            and _serialize_meter_configuration(configuration, record_topology)
+            == raw_meter.get("meter_configuration")
         ):
             raise ValueError("configuration replay is not permitted")
         next_meter = raw_meter

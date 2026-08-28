@@ -159,6 +159,45 @@ def test_verified_meter_configuration_creates_initial_record_after_reconnect() -
     asyncio.run(run())
 
 
+def test_verified_meter_configuration_allows_changed_roles_at_same_source_hash() -> None:
+    """Role edits are durable when the underlying YAML source is unchanged."""
+
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        configuration = _configuration()
+        changed = replace(
+            configuration,
+            channels=tuple(
+                replace(
+                    channel,
+                    role=(
+                        CircuitRole.GRID
+                        if channel.channel <= 2
+                        else CircuitRole.SOLAR
+                        if channel.channel <= 4
+                        else CircuitRole.BRANCH
+                    ),
+                )
+                for channel in configuration.channels
+            ),
+        )
+        await store.async_save_meter(_record())
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, configuration
+        )
+
+        await store.async_save_verified_meter_configuration(MAC, CONFIG_HASH, changed)
+
+        assert await store.async_get_meter_configuration(MAC) == changed
+        with pytest.raises(ValueError, match="replay"):
+            await store.async_save_verified_meter_configuration(MAC, CONFIG_HASH, changed)
+
+    asyncio.run(run())
+
+
 def test_stored_meter_configuration_rejects_custom_selection_raw_gain_mismatch() -> (
     None
 ):
