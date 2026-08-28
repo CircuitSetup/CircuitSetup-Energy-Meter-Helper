@@ -537,7 +537,8 @@ test("six-channel inventory routes canonical edits through Meter Settings and fu
     return Math.abs(input.y + input.height / 2 - row.y - row.height / 2);
   }));
   expect(alignment.every((difference) => difference < 1)).toBe(true);
-  await expect(page.getByLabel("CT4 model")).toHaveValue("");
+  await expect(page.getByLabel("CT4 model")).toHaveValue("custom");
+  await expect(page.getByLabel("CT4 custom gain")).toHaveCount(0);
   await page.getByLabel("Home Assistant labels only").check();
   await expect(page.getByLabel("CT1 model")).toBeDisabled();
   await expect(page.getByLabel("CT1 multiplier")).toBeDisabled();
