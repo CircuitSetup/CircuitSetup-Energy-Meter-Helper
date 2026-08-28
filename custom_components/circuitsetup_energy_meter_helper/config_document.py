@@ -232,6 +232,7 @@ class _DocumentParser:
             (index for index, _ in roots if index > start_index), len(self.lines)
         )
         item_indent: int | None = None
+        previous_root: tuple[int, _Mapping] | None = None
         for index, body in enumerate(self._bodies):
             if (
                 index in self._block_scalar_lines
@@ -240,8 +241,18 @@ class _DocumentParser:
             ):
                 continue
             mapping = self._mapping(index)
+            if mapping is not None and mapping.indent == 0:
+                previous_root = (index, mapping)
             if not start_index < index < end_index:
-                if mapping is None and not body.startswith(" "):
+                if (
+                    mapping is None
+                    and not body.startswith(" ")
+                    and not (
+                        self._safe_sensor_sequence_indent(index) == 0
+                        and previous_root is not None
+                        and not self._has_value(previous_root[1].rest)
+                    )
+                ):
                     return None
                 continue
             sequence_indent = self._safe_sensor_sequence_indent(index)

@@ -1845,6 +1845,26 @@ def test_indentless_contract_sensor_supports_phase_replacement_and_removal() -> 
     assert "phase overrides v1" not in reset.proposed_content
 
 
+def test_indentless_ota_sequence_does_not_block_phase_override() -> None:
+    """The official OTA list spelling is outside the writable sensor section."""
+    snapshot = _indentless_contract_snapshot()
+    content = snapshot.content.replace(
+        "sensor:\n", "ota:\n- platform: esphome\nsensor:\n", 1
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    plan = build_ct_mutation(
+        snapshot,
+        _topology(),
+        (CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 2),),
+    )
+
+    assert "phase_a: # CT1" in plan.proposed_content
+    assert "multiply: 2" in plan.proposed_content
+
+
 @pytest.mark.parametrize("indent", ("", "  "))
 @pytest.mark.parametrize(
     "entry",

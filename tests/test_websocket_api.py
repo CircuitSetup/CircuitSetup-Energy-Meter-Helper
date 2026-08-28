@@ -865,6 +865,57 @@ def test_adoption_rebinds_after_sending_the_success_result() -> None:
     asyncio.run(run())
 
 
+def test_adoption_rebind_keeps_the_live_panel_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Switching meters cannot remove the route that is displaying the helper."""
+
+    class Workflow:
+        async def async_adopt_device(self, device_id: str) -> dict[str, str]:
+            return {"device_id": device_id, "configuration": f"{device_id}.yaml"}
+
+    async def run() -> None:
+        panel_events: list[str] = []
+
+        async def register_panel(*_args: Any, **_kwargs: Any) -> None:
+            panel_events.append("register")
+
+        def unregister_panel(*_args: Any, **_kwargs: Any) -> None:
+            panel_events.append("unregister")
+
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.async_register_panel",
+            register_panel,
+        )
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.async_unregister_panel",
+            unregister_panel,
+        )
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "old-meter"})
+        hass = FakeHass((entry,))
+        hass.http = object()
+        assert await async_setup_entry(hass, entry)
+        hass.data[DOMAIN][entry.entry_id]["websocket_controller"].workflow = Workflow()
+
+        async def reload(entry_id: str) -> bool:
+            panel_events.append("reload")
+            assert entry_id == entry.entry_id
+            assert await async_unload_entry(hass, entry)
+            assert await async_setup_entry(hass, entry)
+            return True
+
+        hass.config_entries.async_reload = reload  # type: ignore[method-assign]
+        message = _message(f"{DOMAIN}/adopt_device")
+        message["device_id"] = "new-meter"
+
+        await _invoke(hass, FakeConnection(), message)
+
+        assert panel_events == ["register", "reload"]
+        assert entry.data == {CONF_ESPHOME_ENTRY_ID: "new-meter"}
+
+    asyncio.run(run())
+
+
 def test_adoption_failure_does_not_change_the_existing_binding() -> None:
     """A rejected adoption cannot update or reload the helper entry."""
 

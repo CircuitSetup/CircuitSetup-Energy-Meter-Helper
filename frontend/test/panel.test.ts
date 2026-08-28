@@ -317,6 +317,7 @@ describe("CircuitSetup panel", () => {
     const roleOptions = [...root.querySelectorAll<HTMLSelectElement>('select[aria-label="CT1 role"] option')].map((option) => option.textContent);
     expect(roleOptions).toContain("Mains");
     expect(roleOptions).toContain("Branch circuit");
+    expect(root.querySelector('[aria-label="Preset channels"]')).toBeNull();
   });
 
   it("reconciles split-phase role pairs without overwriting imported meter settings or manual aggregates", async () => {
