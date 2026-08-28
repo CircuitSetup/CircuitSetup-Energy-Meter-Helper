@@ -48,6 +48,18 @@ describe("meterSettingsStep", () => {
     expect(root.textContent).toContain("1–5 seconds: high traffic.");
   });
 
+  it("shows the reporting default and derives voltage for fixed profiles", () => {
+    const root = document.createElement("div");
+    const standard = { ...draft, update_interval_s: 10 as const };
+    render(meterSettingsStep(standard, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    expect(root.textContent).toContain("Reporting interval (default: 10 seconds)");
+    expect(root.textContent).not.toContain("10 seconds: standard");
+    expect(root.querySelector('[aria-label="main nominal voltage"]')).toBeNull();
+
+    render(meterSettingsStep({ ...standard, electrical_system: "custom" }, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    expect(root.querySelector('[aria-label="main nominal voltage"]')).not.toBeNull();
+  });
+
   it("adds and removes references by explicitly transferring physical groups", () => {
     const root = document.createElement("div");
     let updated = { ...draft, voltage_references: [{ ...draft.voltage_references[0]!, group_keys: ["main_1", "main_2"] }] };

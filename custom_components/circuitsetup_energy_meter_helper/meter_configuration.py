@@ -164,6 +164,9 @@ def validate_meter_configuration(
         _finite(ref.nominal_voltage_v, "nominal_voltage_v")
         if not 1 <= ref.nominal_voltage_v <= 600:
             raise ValueError("nominal_voltage_v must be 1-600")
+        profile = PROFILE_DEFAULTS.get(meter.electrical_system)
+        if profile is not None and ref.nominal_voltage_v != profile[1]:
+            raise ValueError("nominal_voltage_v must match electrical_system")
         if type(ref.gain_voltage) is not int or not 1 <= ref.gain_voltage <= 65535:
             raise ValueError("gain_voltage must be 1-65535")
         if not ref.group_keys or any(not isinstance(g, str) for g in ref.group_keys):
@@ -300,6 +303,6 @@ def default_meter_configuration(
         ),
     )
     channels = tuple(ChannelSettings(i, True, f"CT {i}", "default", 1.0, CircuitRole.BRANCH, "main") for i in range(1, topology.ct_count + 1))
-    result = MeterConfigurationRequest(MeterSettings("Energy meter", ElectricalSystem.SPLIT_PHASE_120_240, 60, 5, VoltageLayout.STANDARD, refs), channels, (), options["power_quality"], options["status_fields"])
+    result = MeterConfigurationRequest(MeterSettings("Energy meter", ElectricalSystem.SPLIT_PHASE_120_240, 60, 10, VoltageLayout.STANDARD, refs), channels, (), options["power_quality"], options["status_fields"])
     validate_meter_configuration(result, topology)
     return result

@@ -423,10 +423,14 @@ def test_generalized_mutation_renders_electrical_settings_and_references(
             electrical_system=ElectricalSystem.SINGLE_PHASE_230,
             line_frequency_hz=50,
             update_interval_s=5,
-            voltage_layout=VoltageLayout.STANDARD,
-            voltage_references=(
-                replace(current.configuration.meter.voltage_references[0], gain_voltage=7305),
-            ),
+                voltage_layout=VoltageLayout.STANDARD,
+                voltage_references=(
+                    replace(
+                        current.configuration.meter.voltage_references[0],
+                        gain_voltage=7305,
+                        nominal_voltage_v=230.0,
+                    ),
+                ),
         ),
     )
 

@@ -227,9 +227,11 @@ def test_legacy_inventory_keeps_yaml_ct_values_and_requires_electrical_confirmat
     ]
     assert all(channel.enabled for channel in inventory.configuration.channels)
     assert {channel.role for channel in inventory.configuration.channels} == {
-        CircuitRole.CUSTOM
+        CircuitRole.BRANCH
     }
     assert inventory.configuration.meter.electrical_system.value == "custom"
+    assert inventory.configuration.meter.line_frequency_hz == 60
+    assert inventory.configuration.meter.update_interval_s == 10
     assert inventory.voltage_topology.references == (("main", ("main_1", "main_2")),)
     assert inventory.configuration.aggregates == ()
     assert inventory.configuration.power_quality == (True,)
@@ -377,7 +379,7 @@ def test_single_reference_with_divergent_physical_gains_is_stale() -> None:
     inventory = _inventory(content, stored=stored)
 
     assert {channel.role for channel in inventory.configuration.channels} == {
-        CircuitRole.CUSTOM
+        CircuitRole.BRANCH
     }
     assert "stored_semantics_stale" in inventory.warnings
 
@@ -627,7 +629,7 @@ def test_invalid_matching_stored_semantics_fall_back_to_legacy_defaults() -> Non
     inventory = _inventory(content, stored=stored)
 
     assert {channel.role for channel in inventory.configuration.channels} == {
-        CircuitRole.CUSTOM
+        CircuitRole.BRANCH
     }
     assert "stored_semantics_stale" in inventory.warnings
 
@@ -648,7 +650,7 @@ def test_duplicate_matching_stored_channels_fall_back_to_legacy_defaults() -> No
     inventory = _inventory(content, stored=stored)
 
     assert {channel.role for channel in inventory.configuration.channels} == {
-        CircuitRole.CUSTOM
+        CircuitRole.BRANCH
     }
     assert "stored_semantics_stale" in inventory.warnings
 
@@ -669,7 +671,7 @@ def test_stale_stored_semantics_are_ignored_and_reported() -> None:
     inventory = _inventory(content, stored=stale)
 
     assert {channel.role for channel in inventory.configuration.channels} == {
-        CircuitRole.CUSTOM
+        CircuitRole.BRANCH
     }
     assert "stored_semantics_stale" in inventory.warnings
 

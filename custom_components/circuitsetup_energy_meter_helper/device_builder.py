@@ -314,10 +314,11 @@ class DeviceBuilderClient:
         )
         output: list[str] = []
         ninja_total = 0
-        last_percentage = -1
+        last_percentages: dict[JobProgressStage, int] = {}
+        last_stage: JobProgressStage | None = None
 
         def handle(event: dict[str, Any]) -> None:
-            nonlocal ninja_total, last_percentage
+            nonlocal ninja_total, last_stage
             if event["event"] == "output":
                 line = str(event.get("data", ""))
                 output.append(line)
@@ -329,11 +330,16 @@ class DeviceBuilderClient:
                         if done <= total and total >= 100 and total >= ninja_total:
                             ninja_total = total
                             update = JobProgress(JobProgressStage.TRANSFER, done * 100 // total)
-                    if update is not None and (
-                        update.percentage is None or update.percentage > last_percentage
-                    ):
-                        if update.percentage is not None:
-                            last_percentage = update.percentage
+                    if update is not None:
+                        previous = last_percentages.get(update.stage)
+                        if update.percentage is None:
+                            if previous is not None or update.stage is last_stage:
+                                return
+                        elif previous is not None and update.percentage <= previous:
+                            return
+                        else:
+                            last_percentages[update.stage] = update.percentage
+                        last_stage = update.stage
                         progress(update)
             elif event["event"] == "result" and not future.done():
                 data = event.get("data", {})
