@@ -110,6 +110,14 @@ class TransactionProgress(StrEnum):
     CONFIG_RESTORED = "config_restored"
 
 
+_RETRYABLE_INSTALL_EVIDENCE = {
+    TransactionEvidenceCode.RECONNECT_UNAVAILABLE,
+    TransactionEvidenceCode.ENTITY_MISMATCH,
+    TransactionEvidenceCode.SENSOR_COUNT_MISMATCH,
+}
+_RECONNECT_ATTEMPTS = 3
+
+
 class RollbackFailedError(RuntimeError):
     """The original configuration could not be safely restored."""
 
@@ -941,6 +949,7 @@ class ConfigTransactionManager:
             status = _status(transaction)
             self.publish_status(status)
             return status
+        transaction.upload_progress.clear()
         transaction.state = ConfigTransactionState.COMPILED
         _progress(transaction, TransactionProgress.FIRMWARE_COMPILED)
         transaction.state = ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
@@ -976,6 +985,12 @@ class ConfigTransactionManager:
                         "saved in flash"
                     )
             transaction.upload_progress.clear()
+            transaction.evidence[:] = [
+                code
+                for code in transaction.evidence
+                if code not in _RETRYABLE_INSTALL_EVIDENCE
+            ]
+            transaction.aggregate_entity_mismatch = False
             transaction.state = ConfigTransactionState.INSTALLING
             self.publish_status(_status(transaction))
             plan, _ = _sensitive(transaction)
@@ -1002,22 +1017,27 @@ class ConfigTransactionManager:
             _progress(transaction, TransactionProgress.OTA_UPLOADED)
             transaction.state = ConfigTransactionState.RECONNECTING
             self.publish_status(_status(transaction))
-            try:
-                verification = await self._verifier.async_verify(transaction.mac)
-            except asyncio.CancelledError:
-                self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.CANCELLED,
-                )
-                raise
-            except Exception:  # noqa: BLE001 - external verifier boundary
-                return self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.RECONNECT_UNAVAILABLE,
-                )
-            if error := _verify_reconnect(transaction, verification):
+            error: TransactionEvidenceCode | None = None
+            for _attempt in range(_RECONNECT_ATTEMPTS):
+                transaction.aggregate_entity_mismatch = False
+                try:
+                    verification = await self._verifier.async_verify(transaction.mac)
+                except asyncio.CancelledError:
+                    self._finish(
+                        transaction,
+                        ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.CANCELLED,
+                    )
+                    raise
+                except Exception:  # noqa: BLE001 - external verifier boundary
+                    error = TransactionEvidenceCode.RECONNECT_UNAVAILABLE
+                else:
+                    error = _verify_reconnect(transaction, verification)
+                if error is None or error not in _RETRYABLE_INSTALL_EVIDENCE:
+                    break
+            if error is not None:
+                if error in _RETRYABLE_INSTALL_EVIDENCE:
+                    return self._retain_install_retry(transaction, error)
                 return self._finish(transaction, ConfigTransactionState.FAILED, error)
             _progress(transaction, TransactionProgress.DEVICE_VERIFIED)
             self.publish_status(_status(transaction))
@@ -1127,14 +1147,27 @@ class ConfigTransactionManager:
         _upload_progress(transaction, progress)
         self.publish_status(_status(transaction))
 
+    def _retain_install_retry(
+        self,
+        transaction: _ConfigTransaction,
+        code: TransactionEvidenceCode,
+    ) -> TransactionStatus:
+        transaction.state = ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        transaction.rollback_available = True
+        self._refresh_deadline(transaction)
+        _evidence(transaction, code)
+        status = _status(transaction)
+        self.publish_status(status)
+        return status
+
     async def async_rollback(self, transaction_id: str) -> TransactionStatus:
         """Consume the one available rollback and restore through Device Builder once."""
         transaction = self._transaction(transaction_id)
         async with _operation(transaction):
-            if (
-                transaction.state is not ConfigTransactionState.FAILED
-                or not transaction.rollback_available
-            ):
+            if transaction.state not in {
+                ConfigTransactionState.FAILED,
+                ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
+            } or not transaction.rollback_available:
                 raise RuntimeError("rollback is not available in the current state")
             return await self._rollback_locked(transaction)
 

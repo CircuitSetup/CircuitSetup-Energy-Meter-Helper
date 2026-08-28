@@ -1461,14 +1461,16 @@ function configReview(status, configuration = null, impact = null) {
 function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "") {
   const state = status?.state ?? "previewed";
   const busy = Boolean(pendingAction);
-  const jobProgress = pendingAction === "install" && state === "install_confirmation_required" ? null : status?.upload_progress.at(-1) ?? null;
-  const progressAction = pendingAction === "compile" ? "Compile" : pendingAction === "install" ? "Install" : null;
+  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch"].includes(code)) === true;
+  const latestProgress = status?.upload_progress.slice().reverse().find((item) => item.percentage !== null) ?? status?.upload_progress.at(-1) ?? null;
+  const jobProgress = pendingAction === "install" && state === "install_confirmation_required" ? null : latestProgress;
+  const progressAction = pendingAction === "compile" ? "Compile" : pendingAction === "install" ? "Install" : status?.upload_progress.length ? status.progress.includes("firmware_compiled") ? "Install" : "Compile" : null;
   const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   return b`
     <section class="step-content" aria-labelledby="step-heading">
       ${configReview(status, configuration, impact)}
-      ${state === "failed" ? b`
+      ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
           <strong>Build or install needs attention</strong>
           <p>${status?.evidence.join(", ") || "The operation did not complete."}</p>
@@ -1479,7 +1481,7 @@ function buildInstallStep(status, apply, compile, install, rollback, back, conti
       <div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Apply"}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Compile"}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : "Install"}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : retryableInstall ? "Retry Install" : "Install"}</button>
       </div>
       ${status?.validation_detail ? b`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
@@ -1489,9 +1491,7 @@ function buildInstallStep(status, apply, compile, install, rollback, back, conti
       ${progressAction ? b`<div class="job-progress" role="status" aria-live="polite">
         <span>${progressAction} progress: ${percentage === null ? "in progress" : `${percentage}%`}</span>
         ${percentage === null ? b`<progress max="100" aria-label="${progressAction} progress: in progress"></progress>` : b`<progress max="100" value=${percentage} aria-label="${progressAction} progress: ${percentage}%"></progress>`}
-      </div>` : status?.upload_progress?.length ? b`<ul class="upload-progress">${status.upload_progress.map((item) => b`
-        <li>${item.stage}: ${item.percentage ?? "in progress"}${item.percentage != null ? "%" : ""}</li>
-      `)}</ul>` : ""}
+      </div>` : ""}
       <footer class="action-footer">
         <button class="secondary" @click=${back} ?disabled=${busy || reviewBackBusy}>${reviewBackBusy ? "Loading…" : "Back"}</button>
         <button class="primary" data-action="continue" @click=${continueFlow} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "verified"}>Continue</button>
@@ -1930,7 +1930,7 @@ const SYSTEMS = [
   ["custom", "Custom"]
 ];
 const INTERVALS = [1, 2, 5, 10, 30, 60];
-const intervalImpact = (interval) => interval <= 5 ? "1–5 seconds: high traffic." : interval === 10 ? "10 seconds: standard." : interval >= 30 ? "30–60 seconds: lower traffic; guided calibration takes longer." : "This interval affects update traffic and guided calibration time.";
+const intervalImpact = (interval) => interval <= 5 ? "1–5 seconds: high traffic." : interval === 10 ? null : interval >= 30 ? "30–60 seconds: lower traffic; guided calibration takes longer." : "This interval affects update traffic and guided calibration time.";
 function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, setFrequency, setNominalVoltage, setAcknowledged, back, continueToCircuits, boardPackages = null, setBoardPackages = () => void 0) {
   const multiReference = draft.voltage_references.length > 1;
   const valid = Boolean(draft.friendly_name.trim()) && draft.voltage_references.every((reference) => reference.label.trim() && reference.phase_label.trim() && Number.isFinite(reference.nominal_voltage_v) && reference.nominal_voltage_v >= 1 && reference.nominal_voltage_v <= 600 && Number.isInteger(reference.gain_voltage) && reference.gain_voltage >= 1 && reference.gain_voltage <= 65535 && reference.group_keys.length) && (!multiReference || acknowledged);
@@ -1985,10 +1985,10 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
           @change=${(event) => setProfile(event.target.value)}>${SYSTEMS.map(([value, label]) => b`<option value=${value}>${label}</option>`)}</select></label>
         <label>Line frequency <select aria-label="Line frequency" .value=${String(draft.line_frequency_hz)}
           @change=${(event) => setFrequency(Number(event.target.value))}>${[50, 60].map((value) => b`<option value=${value}>${value} Hz</option>`)}</select></label>
-        <label>Reporting interval <select aria-label="Reporting interval" .value=${String(draft.update_interval_s)}
+        <label>Reporting interval (default: 10 seconds) <select aria-label="Reporting interval" .value=${String(draft.update_interval_s)}
           @change=${(event) => patch({ update_interval_s: Number(event.target.value) })}>${INTERVALS.map((value) => b`<option value=${value}>${value} seconds</option>`)}</select></label>
       </div>
-      <p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>
+      ${intervalImpact(draft.update_interval_s) ? b`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : A}
       ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
       <h3>Voltage references</h3>
       <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
@@ -2009,8 +2009,8 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
             ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? b`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>
           <label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
             @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number(event.target.value) } : item) })} /></label>
-          <label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
-            @input=${(event) => setNominalVoltage(reference.reference_id, Number(event.target.value))} /></label>
+          ${["three_phase", "custom"].includes(draft.electrical_system) ? b`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
+            @input=${(event) => setNominalVoltage(reference.reference_id, Number(event.target.value))} /></label>` : A}
           ${draft.voltage_references.length > 1 ? b`<button class="secondary" aria-label=${`Remove ${reference.reference_id} voltage reference`} @click=${() => removeReference(reference.reference_id)}>Remove reference</button>` : ""}
         </section>`)}
       </div>
@@ -2871,6 +2871,7 @@ const REBIND_TIMEOUT_MS = 1e4;
 const REBIND_RETRY_MS = 250;
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const meterSettings = ({ authoritative: _authoritative, warnings: _warnings, ...meter }) => meter;
+const profileNominalVoltage = (system) => system === "split_phase_120_240" ? 120 : system === "single_phase_230" ? 230 : null;
 const ENTITY_COUNT_WARNING_THRESHOLD = 100;
 class CircuitSetupPanel extends i$2 {
   constructor() {
@@ -3592,16 +3593,19 @@ class CircuitSetupPanel extends i$2 {
       multi_reference_preparation_acknowledged: false
     } };
     const importedMeter = normalized.configuration.meter;
-    const profileDefault = this.electricalSystem === "split_phase_120_240" ? 120 : this.electricalSystem === "single_phase_230" ? 230 : null;
+    const profileDefault = profileNominalVoltage(this.electricalSystem);
     const defaultImport = importedMeter.voltage_layout === "standard" && importedMeter.electrical_system === "split_phase_120_240" && importedMeter.line_frequency_hz === 60 && importedMeter.voltage_references.every((reference) => reference.nominal_voltage_v === 120);
     const seedInstallerIntent = this.newInstallDeviceId !== null && this.selectedDeviceId === this.newInstallDeviceId && this.electricalProfileConfirmed && this.lineFrequencyHz !== null && defaultImport;
     const seededMeter = seedInstallerIntent ? {
       ...importedMeter,
       electrical_system: this.electricalSystem,
       line_frequency_hz: this.lineFrequencyHz,
-      voltage_references: importedMeter.voltage_references.map((reference) => profileDefault !== null && !this.meterNominalVoltageTouched.has(reference.reference_id) ? { ...reference, nominal_voltage_v: profileDefault } : reference)
+      voltage_references: importedMeter.voltage_references.map((reference) => profileDefault !== null ? { ...reference, nominal_voltage_v: profileDefault } : reference)
     } : importedMeter;
-    const seeded = { ...normalized, configuration: { ...normalized.configuration, meter: seededMeter } };
+    const fixedVoltage = profileNominalVoltage(seededMeter.electrical_system);
+    const voltageMismatch = fixedVoltage !== null && seededMeter.voltage_references.some((reference) => reference.nominal_voltage_v !== fixedVoltage);
+    const resolvedMeter = voltageMismatch ? { ...seededMeter, voltage_references: seededMeter.voltage_references.map((reference) => ({ ...reference, nominal_voltage_v: fixedVoltage })) } : seededMeter;
+    const seeded = { ...normalized, configuration: { ...normalized.configuration, meter: resolvedMeter } };
     this.verifiedMeterConfiguration = configuration.capabilities.configuration_authoritative ? normalized : null;
     this.sourcePackageOptions = {
       power_quality: [...normalized.configuration.power_quality],
@@ -3618,9 +3622,9 @@ class CircuitSetupPanel extends i$2 {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields]
     };
-    this.canonicalConfigurationChanged = this.packageOptionsTouched || seededMeter !== importedMeter || reconciliation?.changed === true;
+    this.canonicalConfigurationChanged = this.packageOptionsTouched || resolvedMeter !== importedMeter || reconciliation?.changed === true;
     this.meterSettingsDraft = {
-      ...seededMeter,
+      ...resolvedMeter,
       authoritative: configuration.capabilities.configuration_authoritative,
       warnings: configuration.warnings
     };
@@ -3635,7 +3639,7 @@ class CircuitSetupPanel extends i$2 {
       ...this.meterSettingsDraft,
       electrical_system: electricalSystem,
       ...defaults && !this.meterFrequencyTouched ? { line_frequency_hz: defaults.frequency } : {},
-      ...defaults ? { voltage_references: this.meterSettingsDraft.voltage_references.map((reference) => this.meterNominalVoltageTouched.has(reference.reference_id) ? reference : { ...reference, nominal_voltage_v: defaults.voltage }) } : {}
+      ...defaults ? { voltage_references: this.meterSettingsDraft.voltage_references.map((reference) => ({ ...reference, nominal_voltage_v: defaults.voltage })) } : {}
     };
     this.updateMeterSettings(this.meterSettingsDraft);
     this.requestUpdate();

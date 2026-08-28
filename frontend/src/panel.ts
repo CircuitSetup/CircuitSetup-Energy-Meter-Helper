@@ -60,6 +60,8 @@ const REBIND_TIMEOUT_MS = 10_000;
 const REBIND_RETRY_MS = 250;
 const wait = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 const meterSettings = ({ authoritative: _authoritative, warnings: _warnings, ...meter }: MeterSettingsDraft): MeterSettings => meter;
+const profileNominalVoltage = (system: ElectricalSystem): number | null => system === "split_phase_120_240" ? 120
+  : system === "single_phase_230" ? 230 : null;
 // UI capacity warning only; it does not configure the meter or firmware.
 const ENTITY_COUNT_WARNING_THRESHOLD = 100;
 
@@ -824,8 +826,7 @@ export class CircuitSetupPanel extends LitElement {
       ...configuration.configuration, multi_reference_preparation_acknowledged: false,
     } };
     const importedMeter = normalized.configuration.meter;
-    const profileDefault = this.electricalSystem === "split_phase_120_240" ? 120
-      : this.electricalSystem === "single_phase_230" ? 230 : null;
+    const profileDefault = profileNominalVoltage(this.electricalSystem);
     const defaultImport = importedMeter.voltage_layout === "standard"
       && importedMeter.electrical_system === "split_phase_120_240"
       && importedMeter.line_frequency_hz === 60
@@ -835,9 +836,14 @@ export class CircuitSetupPanel extends LitElement {
     const seededMeter = seedInstallerIntent ? { ...importedMeter,
       electrical_system: this.electricalSystem, line_frequency_hz: this.lineFrequencyHz!,
       voltage_references: importedMeter.voltage_references.map((reference) => profileDefault !== null
-        && !this.meterNominalVoltageTouched.has(reference.reference_id) ? { ...reference, nominal_voltage_v: profileDefault } : reference),
+        ? { ...reference, nominal_voltage_v: profileDefault } : reference),
     } : importedMeter;
-    const seeded = { ...normalized, configuration: { ...normalized.configuration, meter: seededMeter } };
+    const fixedVoltage = profileNominalVoltage(seededMeter.electrical_system);
+    const voltageMismatch = fixedVoltage !== null
+      && seededMeter.voltage_references.some((reference) => reference.nominal_voltage_v !== fixedVoltage);
+    const resolvedMeter = voltageMismatch ? { ...seededMeter, voltage_references: seededMeter.voltage_references.map((reference) =>
+      ({ ...reference, nominal_voltage_v: fixedVoltage })) } : seededMeter;
+    const seeded = { ...normalized, configuration: { ...normalized.configuration, meter: resolvedMeter } };
     this.verifiedMeterConfiguration = configuration.capabilities.configuration_authoritative
       ? normalized : null;
     this.sourcePackageOptions = {
@@ -856,8 +862,8 @@ export class CircuitSetupPanel extends LitElement {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields],
     };
-    this.canonicalConfigurationChanged = this.packageOptionsTouched || seededMeter !== importedMeter || reconciliation?.changed === true;
-    this.meterSettingsDraft = { ...seededMeter,
+    this.canonicalConfigurationChanged = this.packageOptionsTouched || resolvedMeter !== importedMeter || reconciliation?.changed === true;
+    this.meterSettingsDraft = { ...resolvedMeter,
       authoritative: configuration.capabilities.configuration_authoritative, warnings: configuration.warnings };
     this.multiReferencePreparationAcknowledged = false;
     this.meterFrequencyTouched = false;
@@ -871,8 +877,7 @@ export class CircuitSetupPanel extends LitElement {
     this.meterSettingsDraft = { ...this.meterSettingsDraft, electrical_system: electricalSystem,
       ...(defaults && !this.meterFrequencyTouched ? { line_frequency_hz: defaults.frequency } : {}),
       ...(defaults ? { voltage_references: this.meterSettingsDraft.voltage_references.map((reference) =>
-        this.meterNominalVoltageTouched.has(reference.reference_id) ? reference
-          : { ...reference, nominal_voltage_v: defaults.voltage }) } : {}) };
+        ({ ...reference, nominal_voltage_v: defaults.voltage })) } : {}) };
     this.updateMeterSettings(this.meterSettingsDraft);
     this.requestUpdate();
   }

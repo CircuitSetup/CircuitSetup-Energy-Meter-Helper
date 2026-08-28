@@ -41,6 +41,19 @@ it("does not relabel retained Compile progress while Install starts", () => {
   expect(progress?.getAttribute("aria-label")).toBe("Install progress: in progress");
 });
 
+it("shows only the latest determinate Install progress and allows entity retry", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: ["entity_mismatch"], progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 99 }, { stage: "uploading", percentage: 100 }, { stage: "uploading", percentage: null }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+  render(buildInstallStep(status, noop, noop, noop, noop, noop, noop), host);
+
+  expect(host.textContent).toContain("Build or install needs attention");
+  expect(host.querySelectorAll(".upload-progress li")).toHaveLength(0);
+  expect(host.querySelector<HTMLProgressElement>("progress")?.value).toBe(100);
+  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.disabled).toBe(false);
+  expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
+});
+
 const device = {
   entry_id: "meter-1",
   title: "Basement meter",
@@ -343,7 +356,7 @@ describe("CircuitSetup panel", () => {
     expect(root.querySelector('[aria-label="Preset channels"]')).toBeNull();
   });
 
-  it("reconciles split-phase role pairs without overwriting imported meter settings or manual aggregates", async () => {
+  it("reconciles split-phase role pairs and derives nominal voltage without overwriting other meter settings", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const state = panel as unknown as Record<string, unknown> & {
       setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
@@ -361,7 +374,7 @@ describe("CircuitSetup panel", () => {
 
     const configuration = (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration;
     expect(configuration.meter).toMatchObject({ friendly_name: "Garage meter", line_frequency_hz: 60, update_interval_s: 10,
-      voltage_references: [{ nominal_voltage_v: 240 }] });
+      voltage_references: [{ nominal_voltage_v: 120 }] });
     expect(configuration.aggregates).toContainEqual(manual);
     expect(configuration.aggregates).toContainEqual({
       aggregate_id: "auto-mains",
@@ -1193,7 +1206,7 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("The selected device changed or is no longer available");
   });
 
-  it("uses profile defaults only until frequency and voltage are explicitly edited", async () => {
+  it("always derives nominal voltage for fixed electrical profiles", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     const state = panel as unknown as { meterSettingsDraft: Record<string, unknown>; meterFrequencyTouched: boolean;
       meterNominalVoltageTouched: Set<string>; setMeterProfile(system: string): void; setMeterFrequency(value: 50 | 60): void;
@@ -1202,9 +1215,10 @@ describe("CircuitSetup panel", () => {
     state.setMeterProfile("single_phase_230");
     expect(state.meterSettingsDraft).toMatchObject({ line_frequency_hz: 50, voltage_references: [{ nominal_voltage_v: 230 }] });
     state.setMeterFrequency(60);
+    state.setMeterProfile("custom");
     state.setMeterNominalVoltage("main", 208);
     state.setMeterProfile("split_phase_120_240");
-    expect(state.meterSettingsDraft).toMatchObject({ line_frequency_hz: 60, voltage_references: [{ nominal_voltage_v: 208 }] });
+    expect(state.meterSettingsDraft).toMatchObject({ line_frequency_hz: 60, voltage_references: [{ nominal_voltage_v: 120 }] });
   });
 
   it("shows ordered setup guidance with Ethernet-only details", async () => {

@@ -549,7 +549,7 @@ def _legacy_request(
             channel.name,
             channel.selected_model_id or "custom",
             channel.reporting_multiplier,
-            CircuitRole.CUSTOM,
+            CircuitRole.BRANCH,
             _reference_for_channel(channel.channel, topology, voltage_topology),
             channel.raw_gain_ct if channel.selected_model_id is None else None,
             channel.name if channel.selected_model_id is None else None,
@@ -567,7 +567,7 @@ def _legacy_request(
             ),
             cast(
                 UpdateIntervalSeconds,
-                int(_value(document, "update_time", "5s").removesuffix("s")),
+                int(_value(document, "update_time", "10s").removesuffix("s")),
             ),
             VoltageLayout.MULTI_REFERENCE
             if len(references) > 1

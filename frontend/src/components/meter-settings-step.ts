@@ -1,4 +1,4 @@
-import { html, type TemplateResult } from "lit";
+import { html, nothing, type TemplateResult } from "lit";
 
 import type { BoardPackageOptions, ElectricalSystem, LineFrequencyHz, MeterSettingsDraft, VoltageTransformerCatalog } from "../types";
 import { packageOptions } from "./package-options";
@@ -8,9 +8,9 @@ const SYSTEMS: Array<[ElectricalSystem, string]> = [
   ["three_phase", "Three phase"], ["custom", "Custom"],
 ];
 const INTERVALS = [1, 2, 5, 10, 30, 60] as const;
-const intervalImpact = (interval: number): string => interval <= 5
+const intervalImpact = (interval: number): string | null => interval <= 5
   ? "1–5 seconds: high traffic."
-  : interval === 10 ? "10 seconds: standard."
+  : interval === 10 ? null
     : interval >= 30 ? "30–60 seconds: lower traffic; guided calibration takes longer."
       : "This interval affects update traffic and guided calibration time.";
 
@@ -89,10 +89,10 @@ export function meterSettingsStep(
           @change=${(event: Event) => setProfile((event.target as HTMLSelectElement).value as ElectricalSystem)}>${SYSTEMS.map(([value, label]) => html`<option value=${value}>${label}</option>`)}</select></label>
         <label>Line frequency <select aria-label="Line frequency" .value=${String(draft.line_frequency_hz)}
           @change=${(event: Event) => setFrequency(Number((event.target as HTMLSelectElement).value) as LineFrequencyHz)}>${[50, 60].map((value) => html`<option value=${value}>${value} Hz</option>`)}</select></label>
-        <label>Reporting interval <select aria-label="Reporting interval" .value=${String(draft.update_interval_s)}
+        <label>Reporting interval (default: 10 seconds) <select aria-label="Reporting interval" .value=${String(draft.update_interval_s)}
           @change=${(event: Event) => patch({ update_interval_s: Number((event.target as HTMLSelectElement).value) as MeterSettingsDraft["update_interval_s"] })}>${INTERVALS.map((value) => html`<option value=${value}>${value} seconds</option>`)}</select></label>
       </div>
-      <p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>
+      ${intervalImpact(draft.update_interval_s) ? html`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : nothing}
       ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
       <h3>Voltage references</h3>
       <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
@@ -109,8 +109,8 @@ export function meterSettingsStep(
             ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? html`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>
           <label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
             @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number((event.target as HTMLInputElement).value) } : item) })} /></label>
-          <label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
-            @input=${(event: Event) => setNominalVoltage(reference.reference_id, Number((event.target as HTMLInputElement).value))} /></label>
+          ${["three_phase", "custom"].includes(draft.electrical_system) ? html`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
+            @input=${(event: Event) => setNominalVoltage(reference.reference_id, Number((event.target as HTMLInputElement).value))} /></label>` : nothing}
           ${draft.voltage_references.length > 1 ? html`<button class="secondary" aria-label=${`Remove ${reference.reference_id} voltage reference`} @click=${() => removeReference(reference.reference_id)}>Remove reference</button>` : ""}
         </section>`)}
       </div>

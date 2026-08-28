@@ -263,14 +263,28 @@ class Persistence:
 
 
 class Verifier:
-    def __init__(self, evidence: ReconnectEvidence | BaseException) -> None:
+    def __init__(
+        self,
+        evidence: ReconnectEvidence
+        | BaseException
+        | list[ReconnectEvidence | BaseException],
+    ) -> None:
         self.evidence = evidence
+        self.calls = 0
 
     async def async_verify(self, mac: str) -> ReconnectEvidence:
         del mac
-        if isinstance(self.evidence, BaseException):
-            raise self.evidence
-        return self.evidence
+        self.calls += 1
+        evidence = (
+            self.evidence.pop(0)
+            if isinstance(self.evidence, list) and len(self.evidence) > 1
+            else self.evidence[-1]
+            if isinstance(self.evidence, list)
+            else self.evidence
+        )
+        if isinstance(evidence, BaseException):
+            raise evidence
+        return evidence
 
 
 def _topology(addons: int = 0) -> MeterTopology:
@@ -601,10 +615,10 @@ def test_calibration_handoff_saves_full_metadata_and_install_marker_together() -
     asyncio.run(run())
 
 
-def test_missing_full_reconnect_entity_drops_private_configuration_without_persisting() -> (
+def test_missing_full_reconnect_entity_retains_rollbackable_retry_without_persisting() -> (
     None
 ):
-    """Reconnect failure cannot retain requested YAML or full meter semantics."""
+    """Transient reconnect failure stays bounded, private, and rollbackable."""
 
     async def run() -> None:
         plan = _plan()
@@ -648,14 +662,19 @@ def test_missing_full_reconnect_entity_drops_private_configuration_without_persi
         await manager.async_compile(preview.transaction_id)
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
 
-        assert status.state is ConfigTransactionState.FAILED
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert TransactionEvidenceCode.ENTITY_MISMATCH in status.evidence
         assert not status.aggregate_entity_mismatch
         assert persistence.meter_configuration is None
-        assert internal.plan is None and internal.prior_content is None
-        assert internal.meter_configuration is None
-        assert not internal.expected_sensor_entities
+        assert internal.plan is not None and internal.prior_content is not None
+        assert internal.meter_configuration is not None
+        assert internal.expected_sensor_entities
+        assert status.rollback_available
+        assert manager.sessions.is_config_locked("aabbccddeeff")
         assert "top-secret" not in repr(status) and "top-secret" not in repr(internal)
+
+        rolled_back = await manager.async_rollback(preview.transaction_id)
+        assert rolled_back.state is ConfigTransactionState.ROLLED_BACK
 
     asyncio.run(run())
 
@@ -678,16 +697,36 @@ def test_verified_reconnect_marks_only_missing_aggregate_entities() -> None:
         )
         assert expected.aggregate_sensor_entities
         observed = expected.sensor_entities - expected.aggregate_sensor_entities
-        manager = _manager(
+        mismatch = ReconnectEvidence(
+            "aabbccddeeff",
+            _topology(),
+            {channel.channel: channel.name for channel in configuration.channels},
+            6,
+            observed,
+        )
+        verifier = Verifier(
+            [
+                mismatch,
+                mismatch,
+                mismatch,
+                mismatch,
+                ReconnectEvidence(
+                    "aabbccddeeff",
+                    _topology(),
+                    {
+                        channel.channel: channel.name
+                        for channel in configuration.channels
+                    },
+                    6,
+                    expected.sensor_entities,
+                ),
+            ]
+        )
+        manager = ConfigTransactionManager(
             Builder(),
+            verifier,
             Persistence(),
-            evidence=ReconnectEvidence(
-                "aabbccddeeff",
-                _topology(),
-                {channel.channel: channel.name for channel in configuration.channels},
-                6,
-                observed,
-            ),
+            SessionManager(),
         )
         preview = await manager.async_preview(
             "aabbccddeeff",
@@ -702,10 +741,14 @@ def test_verified_reconnect_marks_only_missing_aggregate_entities() -> None:
         await manager.async_compile(preview.transaction_id)
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
 
-        assert status.state is ConfigTransactionState.FAILED
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert TransactionEvidenceCode.ENTITY_MISMATCH in status.evidence
         assert status.aggregate_entity_mismatch
         assert not status.full_meter_configuration_verified
+
+        completed = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert completed.state is ConfigTransactionState.VERIFIED
+        assert not completed.aggregate_entity_mismatch
 
     asyncio.run(run())
 
@@ -755,7 +798,7 @@ def test_full_reconnect_requires_exact_sensor_object_id_name_pairs() -> None:
 
         assert (
             await manager.async_confirm_install(preview.transaction_id, "admin")
-        ).state is ConfigTransactionState.FAILED
+        ).state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
 
     asyncio.run(run())
 
@@ -802,7 +845,7 @@ def test_full_reconnect_rejects_duplicate_required_sensor_object_id() -> None:
 
         assert (
             await manager.async_confirm_install(preview.transaction_id, "admin")
-        ).state is ConfigTransactionState.FAILED
+        ).state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
 
     asyncio.run(run())
 
@@ -1896,9 +1939,36 @@ def test_compile_progress_is_live_and_structured() -> None:
         )
 
         release.set()
-        assert (
-            await compile_job
-        ).state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        completed = await compile_job
+        assert completed.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert completed.upload_progress == ()
+
+    asyncio.run(run())
+
+
+def test_entity_mismatch_retries_verification_then_preserves_install_retry() -> None:
+    async def run() -> None:
+        mismatch = ReconnectEvidence(
+            "aabbccddeeff", _topology(), {**_evidence().ct_names, 1: "Wrong"}, 6
+        )
+        verifier = Verifier([mismatch, mismatch, mismatch, _evidence()])
+        sessions = SessionManager()
+        manager = ConfigTransactionManager(
+            Builder(), verifier, Persistence(), sessions
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+
+        retry = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert verifier.calls == 3
+        assert retry.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert retry.evidence == (TransactionEvidenceCode.ENTITY_MISMATCH,)
+        assert sessions.is_config_locked("aabbccddeeff")
+
+        completed = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert completed.state is ConfigTransactionState.VERIFIED
+        assert completed.evidence == ()
 
     asyncio.run(run())
 
@@ -1938,11 +2008,18 @@ def test_reconnect_rejects_wrong_identity_topology_entities_or_count(
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
-        assert status.state is ConfigTransactionState.FAILED
-        assert status.evidence == (code,)
-        assert not persistence.saved and not manager.sessions.is_config_locked(
-            "aabbccddeeff"
+        retryable = code in {
+            TransactionEvidenceCode.ENTITY_MISMATCH,
+            TransactionEvidenceCode.SENSOR_COUNT_MISMATCH,
+        }
+        assert status.state is (
+            ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+            if retryable
+            else ConfigTransactionState.FAILED
         )
+        assert status.evidence == (code,)
+        assert not persistence.saved
+        assert manager.sessions.is_config_locked("aabbccddeeff") is retryable
 
     asyncio.run(run())
 

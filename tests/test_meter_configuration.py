@@ -69,6 +69,8 @@ def test_frequency_is_exactly_50_or_60(frequency: int) -> None:
 def test_default_profiles_and_topology_group_assignment() -> None:
     value = default_meter_configuration(topology(), {"power_quality": (False,), "status_fields": (True,)})
     assert value.meter.line_frequency_hz == 60
+    assert value.meter.update_interval_s == 10
+    assert {channel.role for channel in value.channels} == {CircuitRole.BRANCH}
     assert value.meter.voltage_references[0].group_keys == (group_key(0, 0), group_key(0, 1))
     validate_meter_configuration(value, topology())
 
@@ -378,6 +380,27 @@ def test_numeric_name_and_control_bounds(field: str, value: object) -> None:
         object.__setattr__(request_value.meter, "voltage_references", (reference,))
     with pytest.raises(ValueError):
         validate_meter_configuration(request_value, topology())
+
+
+@pytest.mark.parametrize(
+    ("system", "nominal_voltage"),
+    (
+        (ElectricalSystem.SPLIT_PHASE_120_240, 240.0),
+        (ElectricalSystem.SINGLE_PHASE_230, 120.0),
+    ),
+)
+def test_fixed_profiles_reject_conflicting_nominal_voltage(
+    system: ElectricalSystem, nominal_voltage: float
+) -> None:
+    value = request()
+    object.__setattr__(value.meter, "electrical_system", system)
+    object.__setattr__(
+        value.meter,
+        "voltage_references",
+        (replace(value.meter.voltage_references[0], nominal_voltage_v=nominal_voltage),),
+    )
+    with pytest.raises(ValueError, match="electrical_system"):
+        validate_meter_configuration(value, topology())
 
 
 @pytest.mark.parametrize("multiplier", [math.nan, 0, 3, True])

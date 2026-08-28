@@ -10,6 +10,7 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ConfigChangedError,
     DeviceBuilderClient,
     ESPHomeConfigSnapshot,
+    JobProgress,
     JobProgressStage,
     JobResult,
     RollbackError,
@@ -540,6 +541,41 @@ def test_compile_streams_trusted_progress_percentages() -> None:
 
         assert (await compile_task).success
         assert [item.percentage for item in progress] == [0, 17, 63]
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
+def test_job_progress_is_monotonic_per_stage_and_finishes_at_completed() -> None:
+    """A stage-only tail cannot replace 100%, and a new stage may restart low."""
+
+    async def run() -> None:
+        client, ws = await connected_client()
+        progress = []
+        upload_task = asyncio.create_task(
+            client.async_upload("meter.yaml", progress.append)
+        )
+        await asyncio.sleep(0)
+        await ws.send_result("1", {"job_id": "job-1"})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        for line in (
+            "Uploading: 99%",
+            "Uploading: 100%",
+            "Uploading firmware",
+            "Writing at 0x00010000... (10%)",
+            "Successfully uploaded program.",
+        ):
+            await ws.send_event("2", "output", line)
+        await ws.send_event("2", "result", {"status": "completed", "exit_code": 0})
+
+        assert (await upload_task).success
+        assert progress == [
+            JobProgress(JobProgressStage.UPLOADING, 99),
+            JobProgress(JobProgressStage.UPLOADING, 100),
+            JobProgress(JobProgressStage.WRITING, 10),
+            JobProgress(JobProgressStage.COMPLETED, 100),
+        ]
         await client.async_disconnect()
 
     asyncio.run(run())
