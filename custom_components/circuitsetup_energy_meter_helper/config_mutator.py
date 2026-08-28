@@ -252,6 +252,9 @@ def _apply_package_options(
         raise ConfigMutationError("package options require one state per installed board")
 
     lines = content.splitlines(keepends=True)
+    active_package_line = re.compile(
+        r"^(?P<indent> *)-\s+Software/ESPHome/.*\.yaml(?:\s*(?:#.*)?)?(?:\r?\n)?$"
+    )
     changes: list[SubstitutionChange] = []
     for feature, (directory, suffix) in _PACKAGE_FEATURES.items():
         for board_index, enabled in enumerate(desired[feature]):
@@ -274,8 +277,17 @@ def _apply_package_options(
             if not matches:
                 raise ConfigMutationError(f"{feature} package line is unavailable")
             index, match = matches[0]
+            indent = match.group("indent")
+            if enabled:
+                peers = [
+                    (abs(peer_index - index), peer.group("indent"))
+                    for peer_index, line in enumerate(lines)
+                    if (peer := active_package_line.fullmatch(line)) is not None
+                ]
+                if peers:
+                    indent = min(peers)[1]
             lines[index] = (
-                match.group("indent")
+                indent
                 + ("" if enabled else "#")
                 + match.group("entry")
                 + (match.group("newline") or "")

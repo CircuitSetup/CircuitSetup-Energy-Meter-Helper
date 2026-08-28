@@ -1186,6 +1186,38 @@ def test_board_package_options_reflect_active_lines_in_the_current_config() -> N
     }
 
 
+def test_board_package_options_support_indentless_remote_file_lists() -> None:
+    """Official configs align active list items with the ``files`` key."""
+    snapshot = _package_snapshot()
+    content = snapshot.content.replace(
+        "      - Software/ESPHome/status_fields/6chan_main_status.yaml\n",
+        "    - Software/ESPHome/status_fields/6chan_main_status.yaml\n",
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    assert config_mutator.package_options_from_document(
+        ESPHomeConfigDocument.parse(content), _two_board_topology()
+    )["status_fields"] == (True, False)
+
+    plan = build_ct_mutation(
+        snapshot,
+        _two_board_topology(),
+        (),
+        package_options={
+            "power_quality": (True, False),
+            "status_fields": (True, False),
+        },
+    )
+
+    assert (
+        "    - Software/ESPHome/power_quality/6chan_main_power_quality.yaml"
+        " # keep this note\n"
+        in plan.proposed_content
+    )
+
+
 def test_board_package_options_require_one_state_per_installed_board() -> None:
     """A short selection must not silently leave an installed board unchanged."""
     with pytest.raises(ConfigMutationError, match="installed board"):
