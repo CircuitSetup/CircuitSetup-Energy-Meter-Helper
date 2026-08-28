@@ -488,19 +488,27 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   public showInventory(inventory: CtInventory): void {
-    this.inventory = inventory;
-    this.drafts = new Map(inventory.channels.map((channel) => {
+    const configured = new Map(this.meterConfiguration?.configuration.channels.map((channel) => [channel.channel, channel]) ?? []);
+    this.inventory = { ...inventory, channels: inventory.channels.map((channel) => {
+      const settings = configured.get(channel.channel);
+      return settings ? { ...channel, name: settings.name, selected_model_id: settings.model_id,
+        reporting_multiplier: settings.reporting_multiplier, display_label: settings.custom_label,
+        selection_verified_against_config: true, stored_selection_present: true } : channel;
+    }) };
+    this.drafts = new Map(this.inventory.channels.map((channel) => {
+      const settings = configured.get(channel.channel);
       const modelId = channel.selected_model_id ?? "";
       const preset = inventory.catalog.presets.find((item) => item.model_id === modelId);
       return [channel.channel, {
         name: channel.name,
         modelId,
         multiplier: channel.reporting_multiplier,
-        customGainCt: modelId === "custom" || channel.selected_model_id === null
-          ? channel.raw_gain_ct * channel.reporting_multiplier : undefined,
+        customGainCt: modelId === "custom"
+          ? settings?.custom_gain_ct ?? channel.raw_gain_ct * channel.reporting_multiplier : undefined,
         customLabel: channel.display_label ?? undefined,
-        burdenAcknowledged: channel.selection_verified_against_config
-          && (modelId === "custom" || preset?.requires_burden_jumper_cut === true),
+        burdenAcknowledged: settings?.burden_output_acknowledged
+          ?? (channel.selection_verified_against_config
+            && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
         expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518,
       }];
     }));

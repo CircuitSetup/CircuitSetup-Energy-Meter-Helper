@@ -311,6 +311,31 @@ describe("CircuitSetup panel", () => {
     expect((panel as unknown as { meterConfiguration: typeof configuration }).meterConfiguration.configuration.channels[0]).toMatchObject({ enabled: false, role: "unused" });
   });
 
+  it("reloads role, model, and multiplier from the authoritative meter configuration", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+    };
+    const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;
+    const preset = { model_id: "saved-model", label: "Saved model", rated_current_a: 120,
+      secondary: "40 mA", default_gain_ct: 41788, requires_burden_jumper_cut: false, notes: "" };
+    response.catalog.presets = [preset];
+    response.ct_catalog.presets = [preset];
+    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel === 1
+      ? { ...channel, role: "grid", model_id: "saved-model", reporting_multiplier: 2 } : channel);
+    response.channels = response.channels.map((channel) => channel.channel === 1
+      ? { ...channel, selected_model_id: null, reporting_multiplier: 1, selection_verified_against_config: false } : channel);
+
+    state.setMeterConfiguration(response);
+    panel.showInventory(response as unknown as CtInventory);
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT1 role"]')?.value).toBe("grid");
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT1 model"]')?.value).toBe("saved-model");
+    expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT1 multiplier"]')?.value).toBe("2");
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1"] .row-toggle')?.textContent?.trim()).toBe("OK");
+  });
+
   it("rejects aggregate channels that overlap or include disabled circuits", () => {
     const configuration = meterResponse().configuration as MeterConfigurationRequest;
     const aggregate = { aggregate_id: "main-service", name: "Main service", role: "grid" as const, channels: [1, 2], measurement_method: "two_ct_sum" as const, parent_id: null, energy_mode: "bidirectional" as const, expose_power: true, expose_current: true };
@@ -343,6 +368,67 @@ describe("CircuitSetup panel", () => {
     expect(root.textContent).toContain("Main service");
     expect(root.querySelector<HTMLFieldSetElement>('[aria-label="Main service aggregate"]')?.disabled).toBe(true);
     expect(root.querySelector('[data-action="add-aggregate"]')).toBeNull();
+  });
+
+  it("creates a custom aggregate with safe consumption defaults", () => {
+    const response = meterResponse();
+    let updated = response.configuration as MeterConfigurationRequest;
+    const root = document.createElement("div");
+    render(ctInventoryStep(response as unknown as CtInventory, 0, new Map(), () => undefined, () => undefined,
+      () => undefined, () => undefined, false, false, updated, (configuration) => { updated = configuration; }), root);
+
+    root.querySelector<HTMLButtonElement>('[data-action="add-aggregate"]')?.click();
+
+    expect(updated.aggregates).toEqual([{
+      aggregate_id: "aggregate-1",
+      name: "Aggregate total 1",
+      role: "branch",
+      channels: [],
+      measurement_method: "two_ct_sum",
+      parent_id: null,
+      energy_mode: "consumption",
+      expose_power: true,
+      expose_current: false,
+    }]);
+  });
+
+  it("groups compact aggregate channels by board and follows live channel names", async () => {
+    const response = meterResponse();
+    const configuration = response.configuration as MeterConfigurationRequest;
+    response.topology = { ...response.topology, addon_count: 1, board_count: 2, ct_count: 12, group_count: 4 };
+    configuration.meter.voltage_references[0]!.group_keys.push("addon1_1", "addon1_2");
+    configuration.channels = Array.from({ length: 12 }, (_, index) => ({
+      ...configuration.channels[index % 6]!,
+      channel: index + 1,
+      name: index === 0 ? "Kitchen" : index === 6 ? "Garage" : `CT${index + 1}`,
+    }));
+    response.channels = Array.from({ length: 12 }, (_, index) => ({
+      ...response.channels[index % 6]!,
+      channel: index + 1,
+      name: index === 0 ? "Kitchen" : index === 6 ? "Garage" : `CT${index + 1}`,
+      address: { ...response.channels[index % 6]!.address, channel: index + 1, board_index: Math.floor(index / 6) },
+    }));
+    configuration.aggregates = [{ aggregate_id: "house-load", name: "House load", role: "branch", channels: [1, 7], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false }];
+    const panel = document.createElement("circuitsetup-energy-meter-helper-panel") as CircuitSetupPanel;
+    document.body.append(panel);
+    (panel as unknown as { meterConfiguration: typeof response }).meterConfiguration = response;
+    (panel as unknown as { showInventory: (value: CtInventory) => void }).showInventory(response as unknown as CtInventory);
+    await panel.updateComplete;
+
+    const aggregate = panel.shadowRoot?.querySelector('[aria-label="House load aggregate"]');
+    expect([...aggregate?.querySelectorAll(".aggregate-channel-group") ?? []].map((group) => group.querySelector("h4")?.textContent)).toEqual(["Main Board", "Add-on 1"]);
+    expect(aggregate?.textContent).toContain("CT1 · Kitchen");
+    expect(aggregate?.textContent).toContain("CT7 · Garage");
+    expect(aggregate?.querySelector('[aria-label="house-load aggregate channels"]')).toBeNull();
+    expect(aggregate?.textContent).toContain("platform: total_daily_energy");
+    expect(aggregate?.textContent).toContain("Two CT Sum adds exactly two CTs");
+
+    const channelName = panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 name"]');
+    if (!channelName) throw new Error("CT1 name control missing");
+    channelName.value = "Updated Kitchen";
+    channelName.dispatchEvent(new Event("input"));
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector('[aria-label="House load aggregate"]')?.textContent).toContain("CT1 · Updated Kitchen");
   });
 
   it("uses friendly labels for serialized circuit roles", () => {

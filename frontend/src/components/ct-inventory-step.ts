@@ -84,7 +84,7 @@ export function ctInventoryStep(
                 <span role="cell" data-voltage-reference><span class="mobile-label">Voltage reference</span>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span>
                 <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
                   @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
-                <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} ?disabled=${labelOnly}
+                <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} .value=${draft.modelId} ?disabled=${labelOnly}
                   @change=${(event: Event) => {
                     const modelId = (event.target as HTMLSelectElement).value;
                     const selectedPreset = inventory.catalog.presets.find((item) => item.model_id === modelId);
@@ -101,7 +101,7 @@ export function ctInventoryStep(
                   <option value="custom" ?selected=${draft.modelId === "custom"}>Custom</option>
                 </select></label>
                 <span role="cell"><span class="mobile-label">Current gain</span>${channel.raw_gain_ct}</span>
-                <label role="cell"><span class="mobile-label">Multiplier</span><select aria-label=${`CT${channel.channel} multiplier`} ?disabled=${labelOnly}
+                <label role="cell"><span class="mobile-label">Multiplier</span><select aria-label=${`CT${channel.channel} multiplier`} .value=${String(draft.multiplier)} ?disabled=${labelOnly}
                   @change=${(event: Event) => update(channel.channel, { multiplier: Number((event.target as HTMLSelectElement).value) })}>
                   ${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${draft.multiplier === value}>${value}</option>`)}
                 </select></label>
@@ -141,7 +141,7 @@ export function ctInventoryStep(
       </div>
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
-      ${configuration ? circuitsEditor(configuration, updateConfiguration, managedTotals, managedTotalsReason) : nothing}
+      ${configuration ? circuitsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason) : nothing}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
@@ -210,6 +210,7 @@ export function reconcileSplitPhaseAggregates(
 
 function circuitsEditor(
   configuration: MeterConfigurationRequest,
+  drafts: Map<number, CtDraft>,
   update: (configuration: MeterConfigurationRequest) => void,
   managedTotals: boolean,
   managedTotalsReason: string,
@@ -221,6 +222,19 @@ function circuitsEditor(
     update({ ...configuration, aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index
       ? { ...item, aggregate_id: aggregateId } : item.parent_id === old ? { ...item, parent_id: aggregateId } : item) });
   };
+  const addAggregate = () => {
+    const ids = new Set(configuration.aggregates.map((aggregate) => aggregate.aggregate_id));
+    let number = 1;
+    while (ids.has(`aggregate-${number}`)) number += 1;
+    update({ ...configuration, aggregates: [...configuration.aggregates, {
+      aggregate_id: `aggregate-${number}`, name: `Aggregate total ${number}`, role: "branch", channels: [],
+      measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false,
+    }] });
+  };
+  const channelGroups = Array.from({ length: Math.ceil(configuration.channels.length / 6) }, (_, board) => ({
+    board,
+    channels: configuration.channels.filter((channel) => channel.enabled && Math.floor((channel.channel - 1) / 6) === board),
+  })).filter((group) => group.channels.length);
   const warnings = configuration.aggregates.flatMap((aggregate) => [
     aggregate.role === "grid" && aggregate.channels.some((channel) => configuration.channels[channel - 1]?.role === "branch") ? `${aggregate.name}: keep branch loads out of the root-grid total.` : "",
     aggregate.measurement_method === "one_ct_double_power" && aggregate.channels.length !== 1 ? `${aggregate.name}: doubled-one-leg measurement requires exactly one CT.` : "",
@@ -231,29 +245,42 @@ function circuitsEditor(
     <h2 id="aggregates-heading">Aggregate totals</h2>
     ${!managedTotals ? html`<p class="info-band" role="status">Aggregate editing unavailable: ${managedTotalsReason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : nothing}
     ${warnings.map((warning) => html`<p class="warning-band" role="status">${warning}</p>`)}
-    ${configuration.aggregates.map((aggregate, index) => html`<fieldset class="ct-detail" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!managedTotals}><legend>${aggregate.name}</legend>
+    <div class="aggregate-list">
+    ${configuration.aggregates.map((aggregate, index) => html`<fieldset class="aggregate-card" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!managedTotals}><legend>${aggregate.name}</legend>
+      <div class="aggregate-fields">
       <label>ID <input aria-label=${`${aggregate.aggregate_id} aggregate id`} maxlength="64" .value=${aggregate.aggregate_id}
         @change=${(event: Event) => renameAggregate(index, (event.target as HTMLInputElement).value.trim())} /></label>
       <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
         @input=${(event: Event) => patchAggregate(index, { name: (event.target as HTMLInputElement).value })} /></label>
       <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
-        @change=${(event: Event) => patchAggregate(index, { role: (event.target as HTMLSelectElement).value as CircuitAggregate["role"] })}>${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${roleLabel(role)}</option>`)}</select></label>
+        @change=${(event: Event) => patchAggregate(index, { role: (event.target as HTMLSelectElement).value as CircuitAggregate["role"] })}>${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${roleLabel(role)}</option>`)}</select>
+        <small>Describes how this total is used, such as mains, solar, or a branch circuit.</small></label>
       <label>Method <select aria-label=${`${aggregate.aggregate_id} aggregate method`} .value=${aggregate.measurement_method}
-        @change=${(event: Event) => patchAggregate(index, { measurement_method: (event.target as HTMLSelectElement).value as CircuitAggregate["measurement_method"] })}>${METHODS.map((method) => html`<option value=${method}>${method.replaceAll("_", " ")}</option>`)}</select></label>
+        @change=${(event: Event) => patchAggregate(index, { measurement_method: (event.target as HTMLSelectElement).value as CircuitAggregate["measurement_method"] })}>${METHODS.map((method) => html`<option value=${method}>${method === "two_ct_sum" ? "Two CT Sum" : method.replaceAll("_", " ")}</option>`)}</select>
+        <small>Controls how CT readings are combined. Two CT Sum adds exactly two CTs.</small></label>
       <label>Energy <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
-        @change=${(event: Event) => patchAggregate(index, { energy_mode: (event.target as HTMLSelectElement).value as CircuitAggregate["energy_mode"] })}>${ENERGY.map((mode) => html`<option value=${mode}>${mode}</option>`)}</select></label>
-      <label>Channels <input aria-label=${`${aggregate.aggregate_id} aggregate channels`} .value=${aggregate.channels.join(",")}
-        @change=${(event: Event) => patchAggregate(index, { channels: (event.target as HTMLInputElement).value.split(",").map(Number).filter(Number.isInteger) })} /></label>
-      <fieldset><legend>Selected channels</legend>${configuration.channels.filter((channel) => channel.enabled).map((channel) => html`<label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} CT${channel.channel}`} .checked=${aggregate.channels.includes(channel.channel)}
-        @change=${(event: Event) => patchAggregate(index, { channels: (event.target as HTMLInputElement).checked ? [...aggregate.channels, channel.channel] : aggregate.channels.filter((item) => item !== channel.channel) })} />CT${channel.channel}</label>`)}</fieldset>
+        @change=${(event: Event) => patchAggregate(index, { energy_mode: (event.target as HTMLSelectElement).value as CircuitAggregate["energy_mode"] })}>${ENERGY.map((mode) => html`<option value=${mode}>${mode[0]!.toUpperCase()}${mode.slice(1)}</option>`)}</select>
+        <small>Any option except None adds ESPHome platform: total_daily_energy sensors in kWh.</small></label>
       <label>Parent <select aria-label=${`${aggregate.aggregate_id} aggregate parent`} .value=${aggregate.parent_id ?? ""}
         @change=${(event: Event) => patchAggregate(index, { parent_id: (event.target as HTMLSelectElement).value || null })}><option value="">None</option>${configuration.aggregates.filter((item) => item.aggregate_id !== aggregate.aggregate_id).map((item) => html`<option value=${item.aggregate_id}>${item.name}</option>`)}</select></label>
+      </div>
+      <fieldset class="aggregate-channels"><legend>Selected channels</legend>
+        <div class="aggregate-channel-groups">${channelGroups.map((group) => html`<section class="aggregate-channel-group" aria-label=${group.board === 0 ? "Main Board channels" : `Add-on ${group.board} channels`}>
+          <h4>${group.board === 0 ? "Main Board" : `Add-on ${group.board}`}</h4>
+          <div>${group.channels.map((channel) => html`<label class=${`aggregate-channel-option${aggregate.channels.includes(channel.channel) ? " selected" : ""}`}><input type="checkbox" aria-label=${`${aggregate.aggregate_id} CT${channel.channel}`} .checked=${aggregate.channels.includes(channel.channel)}
+            @change=${(event: Event) => patchAggregate(index, { channels: (event.target as HTMLInputElement).checked ? [...aggregate.channels, channel.channel].sort((first, second) => first - second) : aggregate.channels.filter((item) => item !== channel.channel) })} />CT${channel.channel} · ${drafts.get(channel.channel)?.name ?? channel.name}</label>`)}</div>
+        </section>`)}</div>
+      </fieldset>
+      <div class="aggregate-actions">
       <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose power`} .checked=${aggregate.expose_power}
         @change=${(event: Event) => patchAggregate(index, { expose_power: (event.target as HTMLInputElement).checked })} />Power</label>
       <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose current`} .checked=${aggregate.expose_current}
         @change=${(event: Event) => patchAggregate(index, { expose_current: (event.target as HTMLInputElement).checked })} />Current</label>
       <button class="secondary" @click=${() => update({ ...configuration, aggregates: configuration.aggregates.filter((_item, itemIndex) => itemIndex !== index).map((item) => item.parent_id === aggregate.aggregate_id ? { ...item, parent_id: null } : item) })}>Delete aggregate</button>
+      </div>
     </fieldset>`)}
+    </div>
+    ${managedTotals ? html`<button class="secondary" data-action="add-aggregate" @click=${addAggregate}>Create aggregate total</button>` : nothing}
   </section>`;
 }
 

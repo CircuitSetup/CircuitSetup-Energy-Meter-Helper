@@ -1561,7 +1561,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                 <span role="cell" data-voltage-reference><span class="mobile-label">Voltage reference</span>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span>
                 <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
                   @input=${(event) => update(channel.channel, { name: event.target.value })} /></label>
-                <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} ?disabled=${labelOnly}
+                <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} .value=${draft.modelId} ?disabled=${labelOnly}
                   @change=${(event) => {
       const modelId = event.target.value;
       const selectedPreset = inventory.catalog.presets.find((item) => item.model_id === modelId);
@@ -1576,7 +1576,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                   <option value="custom" ?selected=${draft.modelId === "custom"}>Custom</option>
                 </select></label>
                 <span role="cell"><span class="mobile-label">Current gain</span>${channel.raw_gain_ct}</span>
-                <label role="cell"><span class="mobile-label">Multiplier</span><select aria-label=${`CT${channel.channel} multiplier`} ?disabled=${labelOnly}
+                <label role="cell"><span class="mobile-label">Multiplier</span><select aria-label=${`CT${channel.channel} multiplier`} .value=${String(draft.multiplier)} ?disabled=${labelOnly}
                   @change=${(event) => update(channel.channel, { multiplier: Number(event.target.value) })}>
                   ${[1, 2, 4, 8].map((value) => b`<option value=${value} ?selected=${draft.multiplier === value}>${value}</option>`)}
                 </select></label>
@@ -1616,7 +1616,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       </div>
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
-      ${configuration ? circuitsEditor(configuration, updateConfiguration, managedTotals, managedTotalsReason) : A}
+      ${configuration ? circuitsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason) : A}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
@@ -1669,7 +1669,7 @@ function reconcileSplitPhaseAggregates(configuration, previousManaged = null) {
   const changed = aggregates.length !== configuration.aggregates.length || aggregates.some((aggregate, index) => !sameAggregate(aggregate, configuration.aggregates[index]));
   return { configuration: changed ? { ...configuration, aggregates } : configuration, managed: rebuilt, changed };
 }
-function circuitsEditor(configuration, update, managedTotals, managedTotalsReason) {
+function circuitsEditor(configuration, drafts, update, managedTotals, managedTotalsReason) {
   const patchAggregate = (index, patch) => update({
     ...configuration,
     aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item)
@@ -1678,6 +1678,26 @@ function circuitsEditor(configuration, update, managedTotals, managedTotalsReaso
     const old = configuration.aggregates[index].aggregate_id;
     update({ ...configuration, aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index ? { ...item, aggregate_id: aggregateId } : item.parent_id === old ? { ...item, parent_id: aggregateId } : item) });
   };
+  const addAggregate = () => {
+    const ids = new Set(configuration.aggregates.map((aggregate) => aggregate.aggregate_id));
+    let number2 = 1;
+    while (ids.has(`aggregate-${number2}`)) number2 += 1;
+    update({ ...configuration, aggregates: [...configuration.aggregates, {
+      aggregate_id: `aggregate-${number2}`,
+      name: `Aggregate total ${number2}`,
+      role: "branch",
+      channels: [],
+      measurement_method: "two_ct_sum",
+      parent_id: null,
+      energy_mode: "consumption",
+      expose_power: true,
+      expose_current: false
+    }] });
+  };
+  const channelGroups = Array.from({ length: Math.ceil(configuration.channels.length / 6) }, (_2, board) => ({
+    board,
+    channels: configuration.channels.filter((channel) => channel.enabled && Math.floor((channel.channel - 1) / 6) === board)
+  })).filter((group) => group.channels.length);
   const warnings = configuration.aggregates.flatMap((aggregate) => [
     aggregate.role === "grid" && aggregate.channels.some((channel) => configuration.channels[channel - 1]?.role === "branch") ? `${aggregate.name}: keep branch loads out of the root-grid total.` : "",
     aggregate.measurement_method === "one_ct_double_power" && aggregate.channels.length !== 1 ? `${aggregate.name}: doubled-one-leg measurement requires exactly one CT.` : "",
@@ -1688,29 +1708,42 @@ function circuitsEditor(configuration, update, managedTotals, managedTotalsReaso
     <h2 id="aggregates-heading">Aggregate totals</h2>
     ${!managedTotals ? b`<p class="info-band" role="status">Aggregate editing unavailable: ${managedTotalsReason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : A}
     ${warnings.map((warning) => b`<p class="warning-band" role="status">${warning}</p>`)}
-    ${configuration.aggregates.map((aggregate, index) => b`<fieldset class="ct-detail" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!managedTotals}><legend>${aggregate.name}</legend>
+    <div class="aggregate-list">
+    ${configuration.aggregates.map((aggregate, index) => b`<fieldset class="aggregate-card" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!managedTotals}><legend>${aggregate.name}</legend>
+      <div class="aggregate-fields">
       <label>ID <input aria-label=${`${aggregate.aggregate_id} aggregate id`} maxlength="64" .value=${aggregate.aggregate_id}
         @change=${(event) => renameAggregate(index, event.target.value.trim())} /></label>
       <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
         @input=${(event) => patchAggregate(index, { name: event.target.value })} /></label>
       <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
-        @change=${(event) => patchAggregate(index, { role: event.target.value })}>${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role}>${roleLabel(role)}</option>`)}</select></label>
+        @change=${(event) => patchAggregate(index, { role: event.target.value })}>${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role}>${roleLabel(role)}</option>`)}</select>
+        <small>Describes how this total is used, such as mains, solar, or a branch circuit.</small></label>
       <label>Method <select aria-label=${`${aggregate.aggregate_id} aggregate method`} .value=${aggregate.measurement_method}
-        @change=${(event) => patchAggregate(index, { measurement_method: event.target.value })}>${METHODS.map((method) => b`<option value=${method}>${method.replaceAll("_", " ")}</option>`)}</select></label>
+        @change=${(event) => patchAggregate(index, { measurement_method: event.target.value })}>${METHODS.map((method) => b`<option value=${method}>${method === "two_ct_sum" ? "Two CT Sum" : method.replaceAll("_", " ")}</option>`)}</select>
+        <small>Controls how CT readings are combined. Two CT Sum adds exactly two CTs.</small></label>
       <label>Energy <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
-        @change=${(event) => patchAggregate(index, { energy_mode: event.target.value })}>${ENERGY.map((mode) => b`<option value=${mode}>${mode}</option>`)}</select></label>
-      <label>Channels <input aria-label=${`${aggregate.aggregate_id} aggregate channels`} .value=${aggregate.channels.join(",")}
-        @change=${(event) => patchAggregate(index, { channels: event.target.value.split(",").map(Number).filter(Number.isInteger) })} /></label>
-      <fieldset><legend>Selected channels</legend>${configuration.channels.filter((channel) => channel.enabled).map((channel) => b`<label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} CT${channel.channel}`} .checked=${aggregate.channels.includes(channel.channel)}
-        @change=${(event) => patchAggregate(index, { channels: event.target.checked ? [...aggregate.channels, channel.channel] : aggregate.channels.filter((item) => item !== channel.channel) })} />CT${channel.channel}</label>`)}</fieldset>
+        @change=${(event) => patchAggregate(index, { energy_mode: event.target.value })}>${ENERGY.map((mode) => b`<option value=${mode}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`)}</select>
+        <small>Any option except None adds ESPHome platform: total_daily_energy sensors in kWh.</small></label>
       <label>Parent <select aria-label=${`${aggregate.aggregate_id} aggregate parent`} .value=${aggregate.parent_id ?? ""}
         @change=${(event) => patchAggregate(index, { parent_id: event.target.value || null })}><option value="">None</option>${configuration.aggregates.filter((item) => item.aggregate_id !== aggregate.aggregate_id).map((item) => b`<option value=${item.aggregate_id}>${item.name}</option>`)}</select></label>
+      </div>
+      <fieldset class="aggregate-channels"><legend>Selected channels</legend>
+        <div class="aggregate-channel-groups">${channelGroups.map((group) => b`<section class="aggregate-channel-group" aria-label=${group.board === 0 ? "Main Board channels" : `Add-on ${group.board} channels`}>
+          <h4>${group.board === 0 ? "Main Board" : `Add-on ${group.board}`}</h4>
+          <div>${group.channels.map((channel) => b`<label class=${`aggregate-channel-option${aggregate.channels.includes(channel.channel) ? " selected" : ""}`}><input type="checkbox" aria-label=${`${aggregate.aggregate_id} CT${channel.channel}`} .checked=${aggregate.channels.includes(channel.channel)}
+            @change=${(event) => patchAggregate(index, { channels: event.target.checked ? [...aggregate.channels, channel.channel].sort((first, second) => first - second) : aggregate.channels.filter((item) => item !== channel.channel) })} />CT${channel.channel} · ${drafts.get(channel.channel)?.name ?? channel.name}</label>`)}</div>
+        </section>`)}</div>
+      </fieldset>
+      <div class="aggregate-actions">
       <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose power`} .checked=${aggregate.expose_power}
         @change=${(event) => patchAggregate(index, { expose_power: event.target.checked })} />Power</label>
       <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose current`} .checked=${aggregate.expose_current}
         @change=${(event) => patchAggregate(index, { expose_current: event.target.checked })} />Current</label>
       <button class="secondary" @click=${() => update({ ...configuration, aggregates: configuration.aggregates.filter((_item, itemIndex) => itemIndex !== index).map((item) => item.parent_id === aggregate.aggregate_id ? { ...item, parent_id: null } : item) })}>Delete aggregate</button>
+      </div>
     </fieldset>`)}
+    </div>
+    ${managedTotals ? b`<button class="secondary" data-action="add-aggregate" @click=${addAggregate}>Create aggregate total</button>` : A}
   </section>`;
 }
 function circuitConfigurationIsValid(configuration, ctCount) {
@@ -2781,6 +2814,24 @@ const panelStyles = i$5`
   .row-toggle { color: var(--accent); border: 0; padding: 4px; }
   .mobile-label { display: none; }
   .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 16px 30px; background: var(--surface-alt); border-top: 1px solid var(--border); }
+  .aggregate-list { display: grid; gap: 16px; margin: 14px 0; }
+  .aggregate-card { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .aggregate-card > legend { padding: 0 8px; }
+  .aggregate-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 22px; }
+  .aggregate-fields label { display: grid; align-content: start; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
+  .aggregate-fields input, .aggregate-fields select { width: 100%; padding: 10px; border: 1px solid var(--border); }
+  .aggregate-fields small { color: var(--muted); font-weight: var(--ha-font-weight-normal, 400); }
+  .aggregate-channels { margin: 18px 0 14px; }
+  .aggregate-channels > legend { font-size: var(--ha-font-size-l, 16px); }
+  .aggregate-channel-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .aggregate-channel-group { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); }
+  .aggregate-channel-group h4 { margin: 0 0 8px; }
+  .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .aggregate-channel-option { display: flex; align-items: center; min-width: 0; min-height: 44px; gap: 7px; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface); cursor: pointer; overflow-wrap: anywhere; }
+  .aggregate-channel-option input { flex: 0 0 auto; min-height: auto; margin: 0; }
+  .aggregate-channel-option.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+  .aggregate-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+  .aggregate-actions button { margin-left: auto; }
   .row-count { color: var(--muted); padding-left: 12px; }
   pre { max-height: 260px; overflow: auto; padding: 16px; color: var(--text); background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius-small); white-space: pre-wrap; }
   .config-diff { white-space: pre; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
@@ -2846,7 +2897,9 @@ const panelStyles = i$5`
     .ct-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .ct-row > * { min-width: 0; }
     .mobile-label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; }
-    .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card { grid-template-columns: 1fr; }
+    .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card, .aggregate-fields, .aggregate-channel-groups { grid-template-columns: 1fr; }
+    .aggregate-channel-group > div { grid-template-columns: 1fr; }
+    .aggregate-actions button { width: 100%; margin-left: 0; }
     .progress-steps { grid-template-columns: 1fr; gap: 8px; }
     .action-footer { left: 0; padding: 12px 18px; }
     .offset-step { padding-bottom: 84px; }
@@ -3257,17 +3310,30 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
   }
   showInventory(inventory) {
-    this.inventory = inventory;
-    this.drafts = new Map(inventory.channels.map((channel) => {
+    const configured = new Map(this.meterConfiguration?.configuration.channels.map((channel) => [channel.channel, channel]) ?? []);
+    this.inventory = { ...inventory, channels: inventory.channels.map((channel) => {
+      const settings = configured.get(channel.channel);
+      return settings ? {
+        ...channel,
+        name: settings.name,
+        selected_model_id: settings.model_id,
+        reporting_multiplier: settings.reporting_multiplier,
+        display_label: settings.custom_label,
+        selection_verified_against_config: true,
+        stored_selection_present: true
+      } : channel;
+    }) };
+    this.drafts = new Map(this.inventory.channels.map((channel) => {
+      const settings = configured.get(channel.channel);
       const modelId = channel.selected_model_id ?? "";
       const preset = inventory.catalog.presets.find((item) => item.model_id === modelId);
       return [channel.channel, {
         name: channel.name,
         modelId,
         multiplier: channel.reporting_multiplier,
-        customGainCt: modelId === "custom" || channel.selected_model_id === null ? channel.raw_gain_ct * channel.reporting_multiplier : void 0,
+        customGainCt: modelId === "custom" ? settings?.custom_gain_ct ?? channel.raw_gain_ct * channel.reporting_multiplier : void 0,
         customLabel: channel.display_label ?? void 0,
-        burdenAcknowledged: channel.selection_verified_against_config && (modelId === "custom" || preset?.requires_burden_jumper_cut === true),
+        burdenAcknowledged: settings?.burden_output_acknowledged ?? (channel.selection_verified_against_config && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
         expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518
       }];
     }));
