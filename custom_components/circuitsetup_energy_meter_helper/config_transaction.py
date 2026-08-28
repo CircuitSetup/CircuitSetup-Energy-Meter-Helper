@@ -479,8 +479,21 @@ class ConfigTransactionManager:
                 ),
                 topology,
             )
-            expected_sensor_entities = expected.sensor_entities
-            expected_aggregate_sensor_entities = expected.aggregate_sensor_entities
+            managed_blocks = ESPHomeConfigDocument.parse(
+                plan.proposed_content
+            ).managed_blocks
+            expected_sensor_entities = frozenset()
+            if "voltage_references" in managed_blocks:
+                expected_sensor_entities |= (
+                    expected.sensor_entities - expected.aggregate_sensor_entities
+                )
+            if "aggregates" in managed_blocks:
+                expected_sensor_entities |= expected.aggregate_sensor_entities
+            expected_aggregate_sensor_entities = (
+                expected.aggregate_sensor_entities
+                if "aggregates" in managed_blocks
+                else frozenset()
+            )
             selections = ()
         else:
             merged = {

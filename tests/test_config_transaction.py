@@ -319,6 +319,21 @@ def _plan(
     )
 
 
+def _managed_entity_plan() -> ConfigMutationPlan:
+    plan = _plan()
+    return replace(
+        plan,
+        proposed_content=(
+            plan.proposed_content
+            + "sensor:\n"
+            + "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+            + "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+            + "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+            + "# End CircuitSetup Energy Meter Helper: aggregates v1\n"
+        ),
+    )
+
+
 def _selection() -> StoredCTSelection:
     return StoredCTSelection(1, "split-core-100a", "Kitchen", 27518, 1.0, "0" * 64)
 
@@ -492,7 +507,7 @@ def test_full_meter_configuration_persists_only_after_verified_reconnect(
     """Full meter metadata is not durable until the flashed device proves it."""
 
     async def run() -> None:
-        plan = _plan()
+        plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         if not with_aggregate:
             configuration = replace(configuration, aggregates=())
@@ -621,7 +636,7 @@ def test_missing_full_reconnect_entity_retains_rollbackable_retry_without_persis
     """Transient reconnect failure stays bounded, private, and rollbackable."""
 
     async def run() -> None:
-        plan = _plan()
+        plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
             MeterConfigurationRequest(
@@ -679,11 +694,46 @@ def test_missing_full_reconnect_entity_retains_rollbackable_retry_without_persis
     asyncio.run(run())
 
 
+def test_legacy_yaml_does_not_require_unmanaged_entity_names_after_install() -> None:
+    """CT-only changes must not invent helper-managed voltage or aggregate entities."""
+
+    async def run() -> None:
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        persistence = Persistence()
+        manager = _manager(
+            Builder(),
+            persistence,
+            evidence=ReconnectEvidence(
+                "aabbccddeeff",
+                _topology(),
+                {channel.channel: channel.name for channel in configuration.channels},
+                6,
+            ),
+        )
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+        )
+
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert persistence.meter_configuration == configuration
+
+    asyncio.run(run())
+
+
 def test_verified_reconnect_marks_only_missing_aggregate_entities() -> None:
     """Aggregate repair evidence comes from the verified post-install entity inventory."""
 
     async def run() -> None:
-        plan = _plan()
+        plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
             MeterConfigurationRequest(
@@ -757,7 +807,7 @@ def test_full_reconnect_requires_exact_sensor_object_id_name_pairs() -> None:
     """A different sensor or a non-sensor cannot satisfy a required object ID."""
 
     async def run() -> None:
-        plan = _plan()
+        plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
             MeterConfigurationRequest(
@@ -807,7 +857,7 @@ def test_full_reconnect_rejects_duplicate_required_sensor_object_id() -> None:
     """Duplicate native sensor IDs cannot satisfy a one-to-one reconnect proof."""
 
     async def run() -> None:
-        plan = _plan()
+        plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
             MeterConfigurationRequest(
