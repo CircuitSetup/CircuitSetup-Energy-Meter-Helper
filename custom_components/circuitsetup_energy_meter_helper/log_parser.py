@@ -58,6 +58,7 @@ _POWER_OFFSET_READBACK_RE = re.compile(
 _GAIN_SAVED = "Gain calibration saved to memory."
 _GAIN_SAVE_FAILED = "Failed to save gain calibration to memory!"
 _GAIN_COMPLETED = "Gain calibration completed and verified."
+_GAIN_SAVED_AND_COMPLETED = f"{_GAIN_SAVED} {_GAIN_COMPLETED}"
 _GAIN_FAILED = "Gain calibration failed; previous values restored."
 _GAIN_ROLLBACK_FAILED = (
     "Gain calibration failed; rollback readback verification failed."
@@ -66,6 +67,7 @@ _GAIN_RUN_TERMINALS = (
     _GAIN_SAVED,
     _GAIN_SAVE_FAILED,
     _GAIN_COMPLETED,
+    _GAIN_SAVED_AND_COMPLETED,
     _GAIN_FAILED,
     _GAIN_ROLLBACK_FAILED,
 )
@@ -328,7 +330,11 @@ def parse_gain_run(
                 int(row.group("new_current_gain")),
             )
         payload = _calibration_payload(item.line)
-        if payload == _GAIN_SAVED:
+        if payload == _GAIN_SAVED_AND_COMPLETED:
+            save_results.append(True)
+            final_results.append(_GAIN_COMPLETED)
+            terminal_seen = True
+        elif payload == _GAIN_SAVED:
             save_results.append(True)
             terminal_seen = True
         elif payload == _GAIN_SAVE_FAILED:
