@@ -9,6 +9,7 @@ import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
 import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
 import { meterSettingsStep } from "../src/components/meter-settings-step";
+import { buildInstallStep } from "../src/components/build-install-step";
 import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
 import type { CtInventory, MeterConfigurationRequest, MeterSettingsDraft, MeterTopology } from "../src/types";
@@ -85,6 +86,20 @@ const contrastRatio = (first: string, second: string): number => {
   const values = [luminance(first), luminance(second)];
   return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
 };
+
+it("offers install retry after reconnect verification is exhausted", () => {
+  const root = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: true, evidence: ["reconnect_unavailable"], progress: ["firmware_compiled", "ota_uploaded"],
+    validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+
+  render(buildInstallStep(status, noop, noop, noop, noop, noop, noop), root);
+
+  expect(root.textContent).toContain("Build or install needs attention");
+  expect([...root.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.disabled).toBe(false);
+  expect([...root.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
+});
 
 beforeEach(() => vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(firmwareResponse()))));
 

@@ -16,11 +16,13 @@ export function buildInstallStep(
   correctionPending = false,
 ): TemplateResult {
   const state = status?.state ?? "previewed";
+  const retryableInstall = state === "install_confirmation_required"
+    && status?.evidence.includes("reconnect_unavailable") === true;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   return html`
     <section class="step-content" aria-labelledby="step-heading">
       ${configReview(status, configuration, impact)}
-      ${state === "failed" ? html`
+      ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
           <strong>Build or install needs attention</strong>
           <p>${status?.evidence.join(", ") || "The operation did not complete."}</p>
@@ -31,7 +33,7 @@ export function buildInstallStep(
       <div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${reviewBackBusy || correctionPending || state !== "previewed"}>Apply</button>
         <button class="secondary" @click=${compile} ?disabled=${reviewBackBusy || correctionPending || state !== "validated"}>Compile</button>
-        <button class="primary" @click=${install} ?disabled=${reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>Install</button>
+        <button class="primary" @click=${install} ?disabled=${reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${retryableInstall ? "Retry Install" : "Install"}</button>
       </div>
       ${status?.validation_detail ? html`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>

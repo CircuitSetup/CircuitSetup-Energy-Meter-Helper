@@ -110,6 +110,9 @@ class TransactionProgress(StrEnum):
     CONFIG_RESTORED = "config_restored"
 
 
+_RECONNECT_ATTEMPTS = 3
+
+
 class RollbackFailedError(RuntimeError):
     """The original configuration could not be safely restored."""
 
@@ -966,6 +969,11 @@ class ConfigTransactionManager:
                         "YAML handoff is unavailable; offset calibration remains "
                         "saved in flash"
                     )
+            transaction.evidence[:] = [
+                code
+                for code in transaction.evidence
+                if code is not TransactionEvidenceCode.RECONNECT_UNAVAILABLE
+            ]
             transaction.state = ConfigTransactionState.INSTALLING
             self.publish_status(_status(transaction))
             plan, _ = _sensitive(transaction)
@@ -992,21 +1000,20 @@ class ConfigTransactionManager:
             _progress(transaction, TransactionProgress.OTA_UPLOADED)
             transaction.state = ConfigTransactionState.RECONNECTING
             self.publish_status(_status(transaction))
-            try:
-                verification = await self._verifier.async_verify(transaction.mac)
-            except asyncio.CancelledError:
-                self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.CANCELLED,
-                )
-                raise
-            except Exception:  # noqa: BLE001 - external verifier boundary
-                return self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.RECONNECT_UNAVAILABLE,
-                )
+            for attempt in range(_RECONNECT_ATTEMPTS):
+                try:
+                    verification = await self._verifier.async_verify(transaction.mac)
+                    break
+                except asyncio.CancelledError:
+                    self._finish(
+                        transaction,
+                        ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.CANCELLED,
+                    )
+                    raise
+                except Exception:  # noqa: BLE001 - external verifier boundary
+                    if attempt == _RECONNECT_ATTEMPTS - 1:
+                        return self._retain_install_retry(transaction)
             if error := _verify_reconnect(transaction, verification):
                 return self._finish(transaction, ConfigTransactionState.FAILED, error)
             _progress(transaction, TransactionProgress.DEVICE_VERIFIED)
@@ -1117,14 +1124,25 @@ class ConfigTransactionManager:
         _upload_progress(transaction, progress)
         self.publish_status(_status(transaction))
 
+    def _retain_install_retry(
+        self, transaction: _ConfigTransaction
+    ) -> TransactionStatus:
+        transaction.state = ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        transaction.rollback_available = True
+        self._refresh_deadline(transaction)
+        _evidence(transaction, TransactionEvidenceCode.RECONNECT_UNAVAILABLE)
+        status = _status(transaction)
+        self.publish_status(status)
+        return status
+
     async def async_rollback(self, transaction_id: str) -> TransactionStatus:
         """Consume the one available rollback and restore through Device Builder once."""
         transaction = self._transaction(transaction_id)
         async with _operation(transaction):
-            if (
-                transaction.state is not ConfigTransactionState.FAILED
-                or not transaction.rollback_available
-            ):
+            if transaction.state not in {
+                ConfigTransactionState.FAILED,
+                ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
+            } or not transaction.rollback_available:
                 raise RuntimeError("rollback is not available in the current state")
             return await self._rollback_locked(transaction)
 

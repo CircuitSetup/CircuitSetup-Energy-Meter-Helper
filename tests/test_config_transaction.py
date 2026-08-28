@@ -1873,6 +1873,67 @@ def test_upload_progress_is_live_structured_and_bounded() -> None:
     asyncio.run(run())
 
 
+def test_install_recovers_from_a_transient_reconnect_failure() -> None:
+    class RecoveringVerifier:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def async_verify(self, mac: str) -> ReconnectEvidence:
+            self.calls += 1
+            if self.calls == 1:
+                raise ConnectionError("device still booting")
+            return _evidence(mac)
+
+    async def run() -> None:
+        persistence = Persistence()
+        manager = ConfigTransactionManager(
+            Builder(), RecoveringVerifier(), persistence, SessionManager()
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert persistence.saved
+
+    asyncio.run(run())
+
+
+def test_install_keeps_the_transaction_available_after_reconnect_exhaustion() -> None:
+    class RecoveringVerifier:
+        def __init__(self) -> None:
+            self.failures = 3
+
+        async def async_verify(self, mac: str) -> ReconnectEvidence:
+            if self.failures:
+                self.failures -= 1
+                raise ConnectionError("device still booting")
+            return _evidence(mac)
+
+    async def run() -> None:
+        persistence = Persistence()
+        manager = ConfigTransactionManager(
+            Builder(), RecoveringVerifier(), persistence, SessionManager()
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+
+        retry = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert retry.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert retry.evidence == (TransactionEvidenceCode.RECONNECT_UNAVAILABLE,)
+        assert retry.rollback_available
+        assert (
+            await manager.async_confirm_install(preview.transaction_id, "admin")
+        ).state is ConfigTransactionState.VERIFIED
+        assert persistence.saved
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     ("evidence", "code"),
     (

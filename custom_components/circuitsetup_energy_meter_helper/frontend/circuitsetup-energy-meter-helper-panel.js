@@ -1460,11 +1460,12 @@ function configReview(status, configuration = null, impact = null) {
 }
 function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false) {
   const state = status?.state ?? "previewed";
+  const retryableInstall = state === "install_confirmation_required" && status?.evidence.includes("reconnect_unavailable") === true;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   return b`
     <section class="step-content" aria-labelledby="step-heading">
       ${configReview(status, configuration, impact)}
-      ${state === "failed" ? b`
+      ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
           <strong>Build or install needs attention</strong>
           <p>${status?.evidence.join(", ") || "The operation did not complete."}</p>
@@ -1475,7 +1476,7 @@ function buildInstallStep(status, apply, compile, install, rollback, back, conti
       <div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${reviewBackBusy || correctionPending || state !== "previewed"}>Apply</button>
         <button class="secondary" @click=${compile} ?disabled=${reviewBackBusy || correctionPending || state !== "validated"}>Compile</button>
-        <button class="primary" @click=${install} ?disabled=${reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>Install</button>
+        <button class="primary" @click=${install} ?disabled=${reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${retryableInstall ? "Retry Install" : "Install"}</button>
       </div>
       ${status?.validation_detail ? b`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
