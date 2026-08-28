@@ -1586,7 +1586,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                   ${draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}
                 </button>
               </div>
-              ${draft.modelId === "custom" ? b`<div class="ct-detail custom-fields">
+              ${draft.modelId === "custom" && draft.expanded ? b`<div class="ct-detail custom-fields">
                 <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
                   ?disabled=${labelOnly}
                   .value=${draft.customGainCt === void 0 ? "" : String(draft.customGainCt)}
@@ -1594,7 +1594,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                 <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} ?disabled=${labelOnly} .value=${draft.customLabel ?? ""}
                   @input=${(event) => update(channel.channel, { customLabel: event.target.value })} /></label>
               </div>` : A}
-              ${draft.modelId === "custom" || preset?.requires_burden_jumper_cut ? b`<div class="warning-band">
+              ${draft.expanded && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
                 <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
                   ?disabled=${labelOnly}
                   .checked=${draft.burdenAcknowledged}
@@ -1651,7 +1651,7 @@ function reconcileSplitPhaseAggregates(configuration, previousManaged = null) {
   const preserved = configuration.aggregates.filter((aggregate) => !isManaged(aggregate));
   const preservedIds = new Set(preserved.map((aggregate) => aggregate.aggregate_id));
   const claimed = new Set(preserved.flatMap((aggregate) => aggregate.channels));
-  const rebuilt = configuration.meter.electrical_system === "split_phase_120_240" ? Object.keys(automaticAggregates).flatMap((role) => {
+  const rebuilt = ["split_phase_120_240", "custom"].includes(configuration.meter.electrical_system) ? Object.keys(automaticAggregates).flatMap((role) => {
     const channels = configuration.channels.filter((channel) => channel.enabled && channel.role === role && !claimed.has(channel.channel)).map((channel) => channel.channel);
     const definition = automaticAggregates[role];
     return channels.length === 2 && !preservedIds.has(definition.aggregate_id) ? [{
@@ -1983,10 +1983,10 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
           @input=${(event) => patch({ friendly_name: event.target.value })} /></label>
         <label>Electrical system <select aria-label="Electrical system" .value=${draft.electrical_system}
           @change=${(event) => setProfile(event.target.value)}>${SYSTEMS.map(([value, label]) => b`<option value=${value}>${label}</option>`)}</select></label>
-        <label>Line frequency <select aria-label="Line frequency" .value=${String(draft.line_frequency_hz)}
-          @change=${(event) => setFrequency(Number(event.target.value))}>${[50, 60].map((value) => b`<option value=${value}>${value} Hz</option>`)}</select></label>
+        <label>Line frequency (N. America: 60Hz) <select aria-label="Line frequency" .value=${String(draft.line_frequency_hz)}
+          @change=${(event) => setFrequency(Number(event.target.value))}>${[50, 60].map((value) => b`<option value=${value} ?selected=${draft.line_frequency_hz === value}>${value} Hz</option>`)}</select></label>
         <label>Reporting interval (default: 10 seconds) <select aria-label="Reporting interval" .value=${String(draft.update_interval_s)}
-          @change=${(event) => patch({ update_interval_s: Number(event.target.value) })}>${INTERVALS.map((value) => b`<option value=${value}>${value} seconds</option>`)}</select></label>
+          @change=${(event) => patch({ update_interval_s: Number(event.target.value) })}>${INTERVALS.map((value) => b`<option value=${value} ?selected=${draft.update_interval_s === value}>${value} seconds</option>`)}</select></label>
       </div>
       ${intervalImpact(draft.update_interval_s) ? b`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : A}
       ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
