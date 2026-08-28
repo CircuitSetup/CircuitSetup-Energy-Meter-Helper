@@ -436,6 +436,43 @@ def _workflow(
     return workflow, handle, sessions, api
 
 
+def test_reconnect_evidence_reports_configured_ct_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The API exposes the configured CT label with its sensor suffix."""
+    workflow, handle, _sessions, api = _workflow()
+    sensors = tuple(
+        SimpleNamespace(object_id=f"ct{channel}amps", name=f"CT {channel} Amps")
+        for channel in range(1, 7)
+    )
+    channels = tuple(
+        SimpleNamespace(
+            channel=channel,
+            current_sensor=SimpleNamespace(descriptor=sensor),
+        )
+        for channel, sensor in enumerate(sensors, 1)
+    )
+    handle.binding = SimpleNamespace(
+        rebind=lambda *_args: SimpleNamespace(channels=channels)
+    )
+    api.entities = sensors
+
+    async def reconnect() -> None:
+        return None
+
+    api.async_reconnect = reconnect
+    monkeypatch.setattr(
+        "custom_components.circuitsetup_energy_meter_helper.workflow.EntityCatalog",
+        lambda *_args: SimpleNamespace(by_kind=lambda kind: sensors if kind == "sensor" else ()),
+    )
+
+    evidence = asyncio.run(workflow.async_verify(MAC))
+
+    assert evidence.ct_names == {
+        channel: f"CT {channel}" for channel in range(1, 7)
+    }
+
+
 def _pending(
     handle: _SessionHandle,
     *,

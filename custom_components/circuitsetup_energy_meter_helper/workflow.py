@@ -1412,7 +1412,9 @@ class EntryWorkflow:
             canonical_mac(mac),
             topology,
             {
-                channel.channel: channel.current_sensor.descriptor.name
+                channel.channel: channel.current_sensor.descriptor.name.removesuffix(
+                    " Amps"
+                )
                 for channel in binding.channels
             },
             len(binding.channels),
