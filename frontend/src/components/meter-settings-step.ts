@@ -87,10 +87,10 @@ export function meterSettingsStep(
           @input=${(event: Event) => patch({ friendly_name: (event.target as HTMLInputElement).value })} /></label>
         <label>Electrical system <select aria-label="Electrical system" .value=${draft.electrical_system}
           @change=${(event: Event) => setProfile((event.target as HTMLSelectElement).value as ElectricalSystem)}>${SYSTEMS.map(([value, label]) => html`<option value=${value}>${label}</option>`)}</select></label>
-        <label>Line frequency <select aria-label="Line frequency" .value=${String(draft.line_frequency_hz)}
-          @change=${(event: Event) => setFrequency(Number((event.target as HTMLSelectElement).value) as LineFrequencyHz)}>${[50, 60].map((value) => html`<option value=${value}>${value} Hz</option>`)}</select></label>
+        <label>Line frequency (N. America: 60Hz) <select aria-label="Line frequency" .value=${String(draft.line_frequency_hz)}
+          @change=${(event: Event) => setFrequency(Number((event.target as HTMLSelectElement).value) as LineFrequencyHz)}>${[50, 60].map((value) => html`<option value=${value} ?selected=${draft.line_frequency_hz === value}>${value} Hz</option>`)}</select></label>
         <label>Reporting interval (default: 10 seconds) <select aria-label="Reporting interval" .value=${String(draft.update_interval_s)}
-          @change=${(event: Event) => patch({ update_interval_s: Number((event.target as HTMLSelectElement).value) as MeterSettingsDraft["update_interval_s"] })}>${INTERVALS.map((value) => html`<option value=${value}>${value} seconds</option>`)}</select></label>
+          @change=${(event: Event) => patch({ update_interval_s: Number((event.target as HTMLSelectElement).value) as MeterSettingsDraft["update_interval_s"] })}>${INTERVALS.map((value) => html`<option value=${value} ?selected=${draft.update_interval_s === value}>${value} seconds</option>`)}</select></label>
       </div>
       ${intervalImpact(draft.update_interval_s) ? html`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : nothing}
       ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}

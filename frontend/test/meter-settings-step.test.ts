@@ -60,6 +60,20 @@ describe("meterSettingsStep", () => {
     expect(root.querySelector('[aria-label="main nominal voltage"]')).not.toBeNull();
   });
 
+  it("renders authoritative frequency and interval selections", () => {
+    const root = document.createElement("div");
+    const renderStep = (value: MeterSettingsDraft) => render(meterSettingsStep(value, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+
+    renderStep({ ...draft, line_frequency_hz: 60, update_interval_s: 10 });
+    expect(root.querySelector<HTMLSelectElement>('[aria-label="Line frequency"] option:checked')?.value).toBe("60");
+    expect(root.querySelector<HTMLSelectElement>('[aria-label="Reporting interval"] option:checked')?.value).toBe("10");
+    expect(root.textContent).toContain("Line frequency (N. America: 60Hz)");
+
+    renderStep({ ...draft, line_frequency_hz: 50, update_interval_s: 30 });
+    expect(root.querySelector<HTMLSelectElement>('[aria-label="Line frequency"] option:checked')?.value).toBe("50");
+    expect(root.querySelector<HTMLSelectElement>('[aria-label="Reporting interval"] option:checked')?.value).toBe("30");
+  });
+
   it("adds and removes references by explicitly transferring physical groups", () => {
     const root = document.createElement("div");
     let updated = { ...draft, voltage_references: [{ ...draft.voltage_references[0]!, group_keys: ["main_1", "main_2"] }] };
