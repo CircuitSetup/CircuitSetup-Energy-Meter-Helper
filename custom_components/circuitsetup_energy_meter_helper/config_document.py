@@ -725,8 +725,18 @@ class _DocumentParser:
             indent = len(body) - len(body.lstrip(" "))
             if indent <= section_indent:
                 break
-            if files_indent is not None and indent <= files_indent:
-                files_indent = None
+            if files_indent is not None:
+                sequence = _SEQUENCE_RE.match(body)
+                if sequence and indent >= files_indent:
+                    scalar = self._scalar_parts(
+                        index,
+                        sequence.group("rest"),
+                        sequence.start("rest"),
+                    )
+                    paths.append(self._normalize_file_path(scalar.value, index + 1))
+                    continue
+                if indent <= files_indent:
+                    files_indent = None
 
             mapping = self._mapping(index) or self._sequence_mapping(index)
             if mapping and mapping.key == "files":
@@ -735,17 +745,6 @@ class _DocumentParser:
                         "inline package file lists are unsupported", index + 1
                     )
                 files_indent = mapping.indent
-                continue
-
-            if files_indent is not None and indent > files_indent:
-                sequence = _SEQUENCE_RE.match(body)
-                if sequence:
-                    scalar = self._scalar_parts(
-                        index,
-                        sequence.group("rest"),
-                        sequence.start("rest"),
-                    )
-                    paths.append(self._normalize_file_path(scalar.value, index + 1))
                 continue
 
             if mapping and mapping.key == "file":
