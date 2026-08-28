@@ -373,8 +373,10 @@ class StateTracker:
                 event = self._state_event
                 present = {
                     (device_id, key)
-                    for state_type, device_id, key in self._cache
+                    for (state_type, device_id, key), record in self._cache.items()
                     if state_type.__name__ == state_type_name
+                    and not record.stale
+                    and not bool(getattr(record.state, "missing_state", False))
                 }
                 if keys <= present:
                     return
