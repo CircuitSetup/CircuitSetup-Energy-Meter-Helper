@@ -21,7 +21,7 @@ from homeassistant.core import HomeAssistant
 
 from .config_mutator import ConfigMutationError
 from .config_transaction import RollbackFailedError
-from .const import CONF_ESPHOME_ENTRY_ID, DOMAIN
+from .const import CONF_ESPHOME_ENTRY_ID, DATA_PANEL_REBIND_ENTRY_ID, DOMAIN
 from .ct_catalog import REPORTING_MULTIPLIERS
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
@@ -800,8 +800,14 @@ class _Router:
                 entry,
                 data={**entry.data, CONF_ESPHOME_ENTRY_ID: device_id},
             )
-        if not await self.hass.config_entries.async_reload(entry_id):
-            raise RuntimeError("helper rebind failed")
+        domain_data = self.hass.data.setdefault(DOMAIN, {})
+        domain_data[DATA_PANEL_REBIND_ENTRY_ID] = entry_id
+        try:
+            if not await self.hass.config_entries.async_reload(entry_id):
+                raise RuntimeError("helper rebind failed")
+        finally:
+            if domain_data.get(DATA_PANEL_REBIND_ENTRY_ID) == entry_id:
+                domain_data.pop(DATA_PANEL_REBIND_ENTRY_ID)
         replacement = self.controllers.get(entry_id)
         if replacement is None or replacement.esphome_entry_id != device_id:
             raise RuntimeError("helper rebind did not publish the adopted device")

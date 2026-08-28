@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .config_transaction import ConfigTransactionManager
-from .const import CONF_ESPHOME_ENTRY_ID, DOMAIN
+from .const import CONF_ESPHOME_ENTRY_ID, DATA_PANEL_REBIND_ENTRY_ID, DOMAIN
 from .ct_catalog import CTPresetCatalog
 from .device_builder import _wait_for_owned_cleanup
 from .diagnostics import async_get_config_entry_diagnostics
@@ -99,7 +99,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             runtime["esphome_api"] = api_session
         async_register_entry(hass, entry.entry_id, controller)
         registered = True
-        if getattr(hass, "http", None) is not None:
+        if (
+            getattr(hass, "http", None) is not None
+            and domain_data.get(DATA_PANEL_REBIND_ENTRY_ID) != entry.entry_id
+        ):
             await async_register_panel(hass, entry.entry_id)
             panel_registered = True
         domain_data[entry.entry_id] = runtime
@@ -223,7 +226,10 @@ async def _async_unload_owned(
     hass: HomeAssistant, entry_id: str, data: dict[str, Any]
 ) -> None:
     errors: list[BaseException] = []
-    if getattr(hass, "http", None) is not None:
+    if (
+        getattr(hass, "http", None) is not None
+        and hass.data.get(DOMAIN, {}).get(DATA_PANEL_REBIND_ENTRY_ID) != entry_id
+    ):
         try:
             async_unregister_panel(hass)
         except BaseException as error:  # noqa: BLE001 - finish teardown
