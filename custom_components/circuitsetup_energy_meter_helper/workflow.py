@@ -70,8 +70,11 @@ from .offset_readiness import (
 )
 from .preflight import PreflightResult, async_preflight
 from .provisioning import (
+    BASE_PROJECT,
     DiscoveredDevice,
     ProvisioningCoordinator,
+    _project_name,
+    _project_version,
     device_builder_status,
 )
 from .session_manager import CalibrationBusyError, SessionManager
@@ -1605,7 +1608,20 @@ class EntryWorkflow:
             None,
         )
         if device is None:
-            raise WorkflowHandleError("device is not available")
+            entry = self._entry(device_id)
+            project_name = _project_name(entry)
+            if (
+                getattr(entry, "domain", None) != "esphome"
+                or not isinstance(project_name, str)
+                or not project_name.startswith(BASE_PROJECT)
+            ):
+                raise WorkflowHandleError("device is not available")
+            device = DiscoveredDevice(
+                device_id,
+                entry.title,
+                project_name,
+                _project_version(entry),
+            )
         return device
 
     def _assert_rebind_idle(self, device_id: str) -> None:

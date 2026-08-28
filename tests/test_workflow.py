@@ -484,6 +484,7 @@ def adoption_workflow(
 
     entries = {
         "new-meter": SimpleNamespace(
+            domain="esphome",
             title="New meter",
             unique_id="aabbccddeeff",
             data={} if device_name is None else {"device_name": device_name},
@@ -609,6 +610,23 @@ def test_adopt_reuses_existing_builder_configuration() -> None:
             "configured": [{"name": "new-meter", "configuration": "existing.yaml"}],
             "importable": [],
         })
+
+        assert await workflow.async_adopt_device("new-meter") == {
+            "device_id": "new-meter",
+            "configuration": "existing.yaml",
+        }
+        assert builder.imports == []
+
+    asyncio.run(run())
+
+
+def test_adopt_reuses_configured_meter_after_discovery_snapshot_changes() -> None:
+    async def run() -> None:
+        workflow, builder = adoption_workflow(listing={
+            "configured": [{"name": "new-meter", "configuration": "existing.yaml"}],
+            "importable": [],
+        })
+        workflow._provisioning.snapshot.devices = ()
 
         assert await workflow.async_adopt_device("new-meter") == {
             "device_id": "new-meter",
