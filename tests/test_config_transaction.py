@@ -2023,6 +2023,53 @@ def test_entity_mismatch_retries_verification_then_preserves_install_retry() -> 
     asyncio.run(run())
 
 
+def test_transient_reconnect_error_recovers_during_install_verification() -> None:
+    async def run() -> None:
+        verifier = Verifier([ConnectionError("device still booting"), _evidence()])
+        persistence = Persistence()
+        manager = ConfigTransactionManager(
+            Builder(), verifier, persistence, SessionManager()
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+
+        completed = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert completed.state is ConfigTransactionState.VERIFIED
+        assert verifier.calls == 2
+        assert persistence.saved
+
+    asyncio.run(run())
+
+
+def test_reconnect_exhaustion_preserves_manual_install_retry() -> None:
+    async def run() -> None:
+        unavailable = ConnectionError("device still booting")
+        verifier = Verifier([unavailable, unavailable, unavailable, _evidence()])
+        sessions = SessionManager()
+        manager = ConfigTransactionManager(
+            Builder(), verifier, Persistence(), sessions
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+
+        retry = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert verifier.calls == 3
+        assert retry.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert retry.evidence == (TransactionEvidenceCode.RECONNECT_UNAVAILABLE,)
+        assert retry.rollback_available
+        assert sessions.is_config_locked("aabbccddeeff")
+
+        completed = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert completed.state is ConfigTransactionState.VERIFIED
+        assert completed.evidence == ()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     ("evidence", "code"),
     (
