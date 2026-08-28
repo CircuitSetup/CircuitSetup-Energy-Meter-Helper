@@ -816,6 +816,25 @@ def test_setup_status_exposes_the_runtime_bound_device_id() -> None:
     asyncio.run(run())
 
 
+def test_setup_subscription_preserves_the_runtime_bound_device_id() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "meter-1"})
+        assert await async_setup_entry(hass, entry)
+        controller = hass.data[DOMAIN][entry.entry_id]["websocket_controller"]
+        connection = FakeConnection()
+
+        await _invoke(hass, connection, _message(f"{DOMAIN}/subscribe_setup"))
+        controller.provisioning._publish()
+
+        assert [event["bound_device_id"] for _, event in connection.events] == [
+            "meter-1",
+            "meter-1",
+        ]
+
+    asyncio.run(run())
+
+
 def test_adoption_rebinds_after_sending_the_success_result() -> None:
     """A successful adoption persists and reloads only after its browser response."""
 
@@ -841,6 +860,57 @@ def test_adoption_rebinds_after_sending_the_success_result() -> None:
             ("update", "new-meter"),
             ("reload", "helper"),
         ]
+        assert entry.data == {CONF_ESPHOME_ENTRY_ID: "new-meter"}
+
+    asyncio.run(run())
+
+
+def test_adoption_rebind_keeps_the_live_panel_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Switching meters cannot remove the route that is displaying the helper."""
+
+    class Workflow:
+        async def async_adopt_device(self, device_id: str) -> dict[str, str]:
+            return {"device_id": device_id, "configuration": f"{device_id}.yaml"}
+
+    async def run() -> None:
+        panel_events: list[str] = []
+
+        async def register_panel(*_args: Any, **_kwargs: Any) -> None:
+            panel_events.append("register")
+
+        def unregister_panel(*_args: Any, **_kwargs: Any) -> None:
+            panel_events.append("unregister")
+
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.async_register_panel",
+            register_panel,
+        )
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.async_unregister_panel",
+            unregister_panel,
+        )
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "old-meter"})
+        hass = FakeHass((entry,))
+        hass.http = object()
+        assert await async_setup_entry(hass, entry)
+        hass.data[DOMAIN][entry.entry_id]["websocket_controller"].workflow = Workflow()
+
+        async def reload(entry_id: str) -> bool:
+            panel_events.append("reload")
+            assert entry_id == entry.entry_id
+            assert await async_unload_entry(hass, entry)
+            assert await async_setup_entry(hass, entry)
+            return True
+
+        hass.config_entries.async_reload = reload  # type: ignore[method-assign]
+        message = _message(f"{DOMAIN}/adopt_device")
+        message["device_id"] = "new-meter"
+
+        await _invoke(hass, FakeConnection(), message)
+
+        assert panel_events == ["register", "reload"]
         assert entry.data == {CONF_ESPHOME_ENTRY_ID: "new-meter"}
 
     asyncio.run(run())
@@ -3418,7 +3488,7 @@ def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> N
         assert connection.results[-1] == (
             1,
             {
-                "integration_version": "0.3.1",
+                "integration_version": "0.3.2",
                 "home_assistant_version": HA_VERSION,
                 "config_entry_version": 1,
                 "setup_state": "no_device",
@@ -3949,7 +4019,7 @@ def test_failed_snapshot_disables_callback_and_retains_throwing_unsubscribe() ->
         controller.provisioning.subscribe = subscribe  # type: ignore[method-assign]
         connection = FakeConnection()
         await _invoke(hass, connection, _message(f"{DOMAIN}/subscribe_setup"))
-        callback({"seq": 1})
+        callback(controller.provisioning.snapshot)
 
         router = hass.data[DOMAIN]["_websocket_router"]
         assert connection.events == []

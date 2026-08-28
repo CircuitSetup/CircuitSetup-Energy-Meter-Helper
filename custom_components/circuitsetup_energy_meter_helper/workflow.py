@@ -70,8 +70,11 @@ from .offset_readiness import (
 )
 from .preflight import PreflightResult, async_preflight
 from .provisioning import (
+    BASE_PROJECT,
     DiscoveredDevice,
     ProvisioningCoordinator,
+    _project_name,
+    _project_version,
     device_builder_status,
 )
 from .session_manager import CalibrationBusyError, SessionManager
@@ -548,16 +551,19 @@ class EntryWorkflow:
         status = device_builder_status(entry, await builder.async_list_devices())
         if status.configuration is not None:
             return {"device_id": device_id, "configuration": status.configuration}
-        info = getattr(getattr(entry, "runtime_data", None), "device_info", None)
-        package_url = getattr(info, "package_import_url", None)
-        if not isinstance(package_url, str):
-            raise WorkflowCapabilityUnavailable("adoption metadata is unavailable")
-        configuration = await builder.async_import_device(
-            {
+        import_data = status.import_data
+        if import_data is None:
+            info = getattr(getattr(entry, "runtime_data", None), "device_info", None)
+            package_url = getattr(info, "package_import_url", None)
+            if not isinstance(package_url, str):
+                raise WorkflowCapabilityUnavailable("adoption metadata is unavailable")
+            import_data = {
                 "name": name,
                 "friendly_name": device.title,
                 "package_import_url": package_url,
             }
+        configuration = await builder.async_import_device(
+            import_data
         )
         return {"device_id": device_id, "configuration": configuration}
 
@@ -1602,7 +1608,20 @@ class EntryWorkflow:
             None,
         )
         if device is None:
-            raise WorkflowHandleError("device is not available")
+            entry = self._entry(device_id)
+            project_name = _project_name(entry)
+            if (
+                getattr(entry, "domain", None) != "esphome"
+                or not isinstance(project_name, str)
+                or not project_name.startswith(BASE_PROJECT)
+            ):
+                raise WorkflowHandleError("device is not available")
+            device = DiscoveredDevice(
+                device_id,
+                entry.title,
+                project_name,
+                _project_version(entry),
+            )
         return device
 
     def _assert_rebind_idle(self, device_id: str) -> None:

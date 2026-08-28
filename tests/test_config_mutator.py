@@ -1654,6 +1654,19 @@ def _aggregate_request(
     return replace(current.configuration, aggregates=(aggregate,))
 
 
+def _assert_daily_energy(block: str, power_id: str) -> None:
+    for line in (
+        "  - platform: total_daily_energy",
+        f"    power_id: {power_id}",
+        "    filters:",
+        "      - multiply: 0.001",
+        "    unit_of_measurement: kWh",
+        "    device_class: energy",
+        "    state_class: total_increasing",
+    ):
+        assert line in block
+
+
 def test_aggregate_preview_renders_bidirectional_grid_and_hides_contract_totals() -> None:
     """Contract-2 totals are internal before deterministic grid entities appear."""
     snapshot = _contract_snapshot(generic_totals=True)
@@ -1688,10 +1701,61 @@ def test_aggregate_preview_renders_bidirectional_grid_and_hides_contract_totals(
     assert "lambda: return id(ct1Watts).state + id(ct2Watts).state;" in block
     assert "lambda: return std::max(0.0f, id(csemh_grid_power).state);" in block
     assert "lambda: return std::max(0.0f, -id(csemh_grid_power).state);" in block
-    assert "power_id: csemh_grid_import_power" in block
-    assert "power_id: csemh_grid_export_power" in block
+    _assert_daily_energy(block, "csemh_grid_import_power")
+    _assert_daily_energy(block, "csemh_grid_export_power")
+    assert "  - platform: integration" not in block
     for total_id in ("totalEnergyDaily",):
         assert f"- id: !extend {total_id}\n    internal: true" in block
+    ESPHomeConfigDocument.parse(plan.proposed_content)
+
+
+def test_mains_and_solar_templates_split_grid_import_from_export() -> None:
+    """Solar export remains a positive Home Assistant return-to-grid total."""
+    snapshot = _contract_snapshot(generic_totals=True)
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        aggregates=(
+            CircuitAggregate(
+                "auto-mains", "Mains", CircuitRole.GRID, (1, 2),
+                MeasurementMethod.TWO_CT_SUM, None, EnergyMode.BIDIRECTIONAL,
+            ),
+            CircuitAggregate(
+                "auto-solar", "Solar", CircuitRole.SOLAR, (3, 4),
+                MeasurementMethod.TWO_CT_SUM, None, EnergyMode.GENERATION,
+            ),
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    block = plan.proposed_content.split(
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n", 1
+    )[1].split("# End CircuitSetup", 1)[0]
+    assert "lambda: return id(ct1Watts).state + id(ct2Watts).state;" in block
+    assert (
+        "lambda: return std::max(0.0f, id(csemh_auto_mains_power).state);"
+        in block
+    )
+    assert (
+        "lambda: return std::max(0.0f, -id(csemh_auto_mains_power).state);"
+        in block
+    )
+    _assert_daily_energy(block, "csemh_auto_mains_import_power")
+    _assert_daily_energy(block, "csemh_auto_mains_export_power")
+    assert "csemh_auto_mains_current" not in block
+    assert 'name: "${friendly_name} Mains Import Energy"' in block
+    assert 'name: "${friendly_name} Mains Return to Grid Power"' in block
+    assert 'name: "${friendly_name} Mains Return to Grid Energy"' in block
+    assert block.index("Mains Return to Grid Power") < block.index("Mains Import Power")
+    assert block.index("Mains Return to Grid Energy") < block.index("Mains Import Power")
+    assert (
+        "lambda: return std::max(0.0f, "
+        "id(ct3Watts).state + id(ct4Watts).state);"
+        in block
+    )
+    _assert_daily_energy(block, "csemh_auto_solar_power")
     ESPHomeConfigDocument.parse(plan.proposed_content)
 
 
@@ -1781,6 +1845,26 @@ def test_indentless_contract_sensor_supports_phase_replacement_and_removal() -> 
     assert "phase overrides v1" not in reset.proposed_content
 
 
+def test_indentless_ota_sequence_does_not_block_phase_override() -> None:
+    """The official OTA list spelling is outside the writable sensor section."""
+    snapshot = _indentless_contract_snapshot()
+    content = snapshot.content.replace(
+        "sensor:\n", "ota:\n- platform: esphome\nsensor:\n", 1
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    plan = build_ct_mutation(
+        snapshot,
+        _topology(),
+        (CTChangeRequest(1, "CT 1", "sct_006_20a_25ma", 2),),
+    )
+
+    assert "phase_a: # CT1" in plan.proposed_content
+    assert "multiply: 2" in plan.proposed_content
+
+
 @pytest.mark.parametrize("indent", ("", "  "))
 @pytest.mark.parametrize(
     "entry",
@@ -1845,8 +1929,11 @@ def test_aggregate_energy_signs_and_one_ct_power_multiplier_are_semantic_only() 
     assert "lambda: return std::max(0.0f, id(ct1Watts).state * 2.0);" in block
     assert "lambda: return id(ct1Amps).state;" in block
     assert "power_id: csemh_load_power" in block
-    assert "lambda: return std::max(0.0f, -id(ct2Watts).state);" in block
+    assert "lambda: return std::max(0.0f, id(ct2Watts).state);" in block
     assert "power_id: csemh_solar_power" in block
+    _assert_daily_energy(block, "csemh_load_power")
+    _assert_daily_energy(block, "csemh_solar_power")
+    assert "  - platform: integration" not in block
     assert "id(ct1Amps).state * 2.0" not in block
 
 

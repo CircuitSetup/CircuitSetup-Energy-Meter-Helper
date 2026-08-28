@@ -42,6 +42,7 @@ class DeviceBuilderStatus:
 
     importable: bool | None
     configuration: str | None
+    import_data: dict[str, str] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -93,7 +94,17 @@ def device_builder_status(
         return DeviceBuilderStatus(False, str(configured[0]["configuration"]))
     if len(configured) > 1:
         return DeviceBuilderStatus(None, None)
-    return DeviceBuilderStatus(bool(matches(listing.get("importable", ()))), None)
+    importable = matches(listing.get("importable", ()))
+    import_data = None
+    if len(importable) == 1:
+        candidate = {
+            key: value
+            for key in ("name", "friendly_name", "project_name", "package_import_url")
+            if isinstance((value := importable[0].get(key)), str)
+        }
+        if {"name", "package_import_url"} <= candidate.keys():
+            import_data = candidate
+    return DeviceBuilderStatus(bool(importable), None, import_data)
 
 
 class ProvisioningCoordinator:

@@ -1550,7 +1550,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                   @change=${(event) => event.target.checked ? patchChannel(channel.channel, { enabled: true, role: circuit.role === "unused" ? "branch" : circuit.role }) : disableChannel(channel.channel)} /></label>` : b`<span role="cell"><span class="mobile-label">Used</span>—</span>`}
                 ${circuit ? b`<label role="cell"><span class="mobile-label">Role</span><select aria-label=${`CT${channel.channel} role`} .value=${circuit.role} ?disabled=${!circuit.enabled}
                   @change=${(event) => patchChannel(channel.channel, { role: event.target.value })}>
-                  ${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role}>${role.replaceAll("_", " ")}</option>`)}</select></label>` : b`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
+                  ${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role}>${roleLabel(role)}</option>`)}</select></label>` : b`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
                 <span role="cell" data-voltage-reference><span class="mobile-label">Voltage reference</span>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span>
                 <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
                   @input=${(event) => update(channel.channel, { name: event.target.value })} /></label>
@@ -1620,6 +1620,48 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
 const ROLES = ["grid", "solar", "generator", "subpanel", "branch", "two_pole", "custom", "unused"];
 const METHODS = ["direct", "two_ct_sum", "one_ct_double_power", "both_conductors_one_ct"];
 const ENERGY = ["none", "consumption", "bidirectional", "generation"];
+const automaticAggregates = {
+  grid: { aggregate_id: "auto-mains", name: "Mains", energy_mode: "bidirectional", expose_current: false },
+  solar: { aggregate_id: "auto-solar", name: "Solar", energy_mode: "generation", expose_current: false },
+  subpanel: { aggregate_id: "auto-subpanel", name: "Subpanel", energy_mode: "consumption", expose_current: false },
+  two_pole: { aggregate_id: "auto-two-pole", name: "Two-pole circuit", energy_mode: "consumption", expose_current: false }
+};
+function roleLabel(role) {
+  return role === "grid" ? "Mains" : role === "branch" ? "Branch circuit" : role.replaceAll("_", " ");
+}
+function sameAggregate(first, second) {
+  return first.aggregate_id === second.aggregate_id && first.name === second.name && first.role === second.role && first.measurement_method === second.measurement_method && first.parent_id === second.parent_id && first.energy_mode === second.energy_mode && first.expose_power === second.expose_power && first.expose_current === second.expose_current && first.channels.length === second.channels.length && first.channels.every((channel, index) => channel === second.channels[index]);
+}
+function reconcileSplitPhaseAggregates(configuration, previousManaged = null) {
+  const definitionFor = (aggregate) => Object.entries(automaticAggregates).find(([, definition]) => definition.aggregate_id === aggregate.aggregate_id);
+  const isManaged = (aggregate) => {
+    if (previousManaged !== null) return previousManaged.some((item) => sameAggregate(item, aggregate));
+    const definition = definitionFor(aggregate);
+    const channels = definition === void 0 ? [] : configuration.channels.filter((channel) => channel.enabled && channel.role === definition[0]).map((channel) => channel.channel);
+    return definition !== void 0 && aggregate.role === definition[0] && aggregate.name === definition[1].name && aggregate.measurement_method === "two_ct_sum" && aggregate.parent_id === null && aggregate.energy_mode === definition[1].energy_mode && aggregate.expose_power && aggregate.expose_current === definition[1].expose_current && aggregate.channels.length === 2 && aggregate.channels.every((channel, index) => channel === channels[index]);
+  };
+  const managed = configuration.aggregates.filter(isManaged);
+  const preserved = configuration.aggregates.filter((aggregate) => !isManaged(aggregate));
+  const preservedIds = new Set(preserved.map((aggregate) => aggregate.aggregate_id));
+  const claimed = new Set(preserved.flatMap((aggregate) => aggregate.channels));
+  const rebuilt = configuration.meter.electrical_system === "split_phase_120_240" ? Object.keys(automaticAggregates).flatMap((role) => {
+    const channels = configuration.channels.filter((channel) => channel.enabled && channel.role === role && !claimed.has(channel.channel)).map((channel) => channel.channel);
+    const definition = automaticAggregates[role];
+    return channels.length === 2 && !preservedIds.has(definition.aggregate_id) ? [{
+      ...definition,
+      role,
+      channels,
+      measurement_method: "two_ct_sum",
+      parent_id: null,
+      expose_power: true
+    }] : [];
+  }) : [];
+  const rebuiltIds = new Set(rebuilt.map((aggregate) => aggregate.aggregate_id));
+  const removedIds = new Set(managed.map((aggregate) => aggregate.aggregate_id));
+  const aggregates = [...preserved.map((aggregate) => aggregate.parent_id !== null && removedIds.has(aggregate.parent_id) && !rebuiltIds.has(aggregate.parent_id) ? { ...aggregate, parent_id: null } : aggregate), ...rebuilt];
+  const changed = aggregates.length !== configuration.aggregates.length || aggregates.some((aggregate, index) => !sameAggregate(aggregate, configuration.aggregates[index]));
+  return { configuration: changed ? { ...configuration, aggregates } : configuration, managed: rebuilt, changed };
+}
 function circuitsEditor(configuration, update, managedTotals, managedTotalsReason) {
   const patchAggregate = (index, patch) => update({
     ...configuration,
@@ -1629,7 +1671,6 @@ function circuitsEditor(configuration, update, managedTotals, managedTotalsReaso
     const old = configuration.aggregates[index].aggregate_id;
     update({ ...configuration, aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index ? { ...item, aggregate_id: aggregateId } : item.parent_id === old ? { ...item, parent_id: aggregateId } : item) });
   };
-  const available = configuration.channels.filter((channel) => channel.enabled && !configuration.aggregates.some((aggregate) => aggregate.channels.includes(channel.channel))).map((channel) => channel.channel);
   const warnings = configuration.aggregates.flatMap((aggregate) => [
     aggregate.role === "grid" && aggregate.channels.some((channel) => configuration.channels[channel - 1]?.role === "branch") ? `${aggregate.name}: keep branch loads out of the root-grid total.` : "",
     aggregate.measurement_method === "one_ct_double_power" && aggregate.channels.length !== 1 ? `${aggregate.name}: doubled-one-leg measurement requires exactly one CT.` : "",
@@ -1646,7 +1687,7 @@ function circuitsEditor(configuration, update, managedTotals, managedTotalsReaso
       <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
         @input=${(event) => patchAggregate(index, { name: event.target.value })} /></label>
       <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
-        @change=${(event) => patchAggregate(index, { role: event.target.value })}>${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role}>${role.replaceAll("_", " ")}</option>`)}</select></label>
+        @change=${(event) => patchAggregate(index, { role: event.target.value })}>${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role}>${roleLabel(role)}</option>`)}</select></label>
       <label>Method <select aria-label=${`${aggregate.aggregate_id} aggregate method`} .value=${aggregate.measurement_method}
         @change=${(event) => patchAggregate(index, { measurement_method: event.target.value })}>${METHODS.map((method) => b`<option value=${method}>${method.replaceAll("_", " ")}</option>`)}</select></label>
       <label>Energy <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
@@ -1663,40 +1704,7 @@ function circuitsEditor(configuration, update, managedTotals, managedTotalsReaso
         @change=${(event) => patchAggregate(index, { expose_current: event.target.checked })} />Current</label>
       <button class="secondary" @click=${() => update({ ...configuration, aggregates: configuration.aggregates.filter((_item, itemIndex) => itemIndex !== index).map((item) => item.parent_id === aggregate.aggregate_id ? { ...item, parent_id: null } : item) })}>Delete aggregate</button>
     </fieldset>`)}
-    ${managedTotals ? aggregateButtons(configuration, available, update) : A}
   </section>`;
-}
-function aggregateButtons(configuration, available, update) {
-  const add = (event, name, role, method, count, energy) => {
-    const select = event.currentTarget.parentElement?.querySelector("[data-preset-channels]");
-    const channels = [...select?.selectedOptions ?? []].map((option) => Number(option.value));
-    if (channels.length !== count) return;
-    const base = role.replaceAll("_", "-");
-    let suffix = configuration.aggregates.length + 1;
-    const ids = new Set(configuration.aggregates.map((aggregate) => aggregate.aggregate_id));
-    while (ids.has(`${base}-${suffix}`)) suffix++;
-    update({
-      ...configuration,
-      channels: role === "grid" ? configuration.channels.map((channel) => channels.includes(channel.channel) ? { ...channel, role: "grid" } : channel) : configuration.channels,
-      aggregates: [...configuration.aggregates, {
-        aggregate_id: `${base}-${suffix}`,
-        name,
-        role,
-        channels,
-        measurement_method: method,
-        parent_id: null,
-        energy_mode: energy,
-        expose_power: true,
-        expose_current: role === "grid"
-      }]
-    });
-  };
-  return b`<div class="action-footer"><label>Preset channels <select multiple data-preset-channels aria-label="Preset channels">${available.map((channel) => b`<option value=${channel}>CT${channel}</option>`)}</select></label>
-    <button class="secondary" data-action="add-aggregate" @click=${(event) => add(event, "New aggregate", "branch", "direct", 1, "consumption")}>Add aggregate</button>
-    <button class="secondary" @click=${(event) => add(event, "Main service", "grid", "two_ct_sum", 2, "bidirectional")}>Main service</button>
-    <button class="secondary" @click=${(event) => add(event, "Solar / generator", "solar", "two_ct_sum", 2, "generation")}>Solar / generator</button>
-    <button class="secondary" @click=${(event) => add(event, "Two-pole circuit", "two_pole", "one_ct_double_power", 1, "consumption")}>Two-pole</button>
-    <button class="secondary" @click=${(event) => add(event, "Subpanel", "subpanel", "two_ct_sum", 2, "consumption")}>Subpanel</button></div>`;
 }
 function circuitConfigurationIsValid(configuration, ctCount) {
   const references = new Set(configuration.meter.voltage_references.map((reference) => reference.reference_id));
@@ -2890,6 +2898,7 @@ class CircuitSetupPanel extends i$2 {
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
     this.canonicalConfigurationChanged = false;
+    this.managedAutomaticAggregates = [];
     this.board = 0;
     this.group = 0;
     this.channel = 1;
@@ -3181,6 +3190,7 @@ class CircuitSetupPanel extends i$2 {
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
     this.canonicalConfigurationChanged = false;
+    this.managedAutomaticAggregates = [];
     this.board = 0;
     this.resetCalibrationRun();
   }
@@ -3304,6 +3314,10 @@ class CircuitSetupPanel extends i$2 {
   }
   async configureDevice(deviceId) {
     if (this.pendingAction) return;
+    if (this.setup?.bound_device_id !== void 0 && this.setup.bound_device_id !== deviceId) {
+      await this.adopt(deviceId);
+      return;
+    }
     this.newInstallDeviceId = null;
     this.selectDevice(deviceId);
     this.pendingAction = `topology:${deviceId}`;
@@ -3376,6 +3390,7 @@ class CircuitSetupPanel extends i$2 {
   }
   async adopt(deviceId = this.selectedDeviceId) {
     if (!this.api || !deviceId || this.pendingAction) return;
+    this.newInstallDeviceId = this.setup?.devices.find((device2) => device2.entry_id === deviceId)?.configuration ? null : deviceId;
     if (deviceId !== this.selectedDeviceId) this.selectDevice(deviceId);
     const api = this.api;
     const generation = ++this.operationGeneration;
@@ -3517,31 +3532,11 @@ class CircuitSetupPanel extends i$2 {
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       if (fresh.source_sha256 !== correction.sourceSha256) {
-        const normalizedFresh = { ...fresh, configuration: {
-          ...fresh.configuration,
-          multi_reference_preparation_acknowledged: false
-        } };
-        this.verifiedMeterConfiguration = fresh.capabilities.configuration_authoritative ? normalizedFresh : null;
-        this.sourcePackageOptions = {
-          power_quality: [...fresh.configuration.power_quality],
-          status_fields: [...fresh.configuration.status_fields]
-        };
-        this.packageOptions = {
-          power_quality: [...fresh.configuration.power_quality],
-          status_fields: [...fresh.configuration.status_fields]
-        };
         this.packageOptionsTouched = false;
-        this.meterConfiguration = normalizedFresh;
-        this.meterSettingsDraft = {
-          ...fresh.configuration.meter,
-          authoritative: fresh.capabilities.configuration_authoritative,
-          warnings: fresh.warnings
-        };
-        this.multiReferencePreparationAcknowledged = false;
         this.meterFrequencyTouched = false;
         this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
-        this.canonicalConfigurationChanged = false;
-        this.showInventory(normalizedFresh);
+        this.setMeterConfiguration(fresh);
+        this.showInventory(this.meterConfiguration);
         this.reviewCorrection = null;
         this.error = "The meter source changed while this review was open. Preserved drafts were not restored to avoid overwriting external edits; review the live configuration and reapply changes.";
         this.announcement = this.error;
@@ -3590,7 +3585,7 @@ class CircuitSetupPanel extends i$2 {
     const importedMeter = normalized.configuration.meter;
     const profileDefault = this.electricalSystem === "split_phase_120_240" ? 120 : this.electricalSystem === "single_phase_230" ? 230 : null;
     const defaultImport = importedMeter.voltage_layout === "standard" && importedMeter.electrical_system === "split_phase_120_240" && importedMeter.line_frequency_hz === 60 && importedMeter.voltage_references.every((reference) => reference.nominal_voltage_v === 120);
-    const seedInstallerIntent = this.electricalProfileConfirmed && this.lineFrequencyHz !== null && defaultImport;
+    const seedInstallerIntent = this.newInstallDeviceId !== null && this.selectedDeviceId === this.newInstallDeviceId && this.electricalProfileConfirmed && this.lineFrequencyHz !== null && defaultImport;
     const seededMeter = seedInstallerIntent ? {
       ...importedMeter,
       electrical_system: this.electricalSystem,
@@ -3607,11 +3602,14 @@ class CircuitSetupPanel extends i$2 {
       ...seeded,
       configuration: { ...seeded.configuration, ...this.packageOptions }
     } : seeded;
+    const reconciliation = this.meterConfiguration.capabilities.managed_totals ? reconcileSplitPhaseAggregates(this.meterConfiguration.configuration) : null;
+    this.managedAutomaticAggregates = reconciliation?.managed ?? [];
+    if (reconciliation) this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation.configuration };
     if (!this.packageOptionsTouched) this.packageOptions = {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields]
     };
-    this.canonicalConfigurationChanged = this.packageOptionsTouched || seededMeter !== importedMeter;
+    this.canonicalConfigurationChanged = this.packageOptionsTouched || seededMeter !== importedMeter || reconciliation?.changed === true;
     this.meterSettingsDraft = {
       ...seededMeter,
       authoritative: configuration.capabilities.configuration_authoritative,
@@ -3701,7 +3699,9 @@ class CircuitSetupPanel extends i$2 {
   }
   updateCircuitConfiguration(configuration, changed = true) {
     if (!this.meterConfiguration) return;
-    this.meterConfiguration = { ...this.meterConfiguration, configuration };
+    const reconciliation = this.meterConfiguration.capabilities.managed_totals ? reconcileSplitPhaseAggregates(configuration, this.managedAutomaticAggregates) : null;
+    this.managedAutomaticAggregates = reconciliation?.managed ?? [];
+    this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation?.configuration ?? configuration };
     this.canonicalConfigurationChanged ||= changed;
     this.requestUpdate();
   }
