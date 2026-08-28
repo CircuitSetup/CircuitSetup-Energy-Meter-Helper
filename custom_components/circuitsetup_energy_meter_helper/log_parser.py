@@ -484,6 +484,7 @@ def _parse_offset_operation(
         if power
         else "Offset calibration completed and verified."
     )
+    saved_and_completed = f"{saved} {completed}"
     failed = (
         "Power offset calibration failed; previous values restored."
         if power
@@ -579,7 +580,7 @@ def _parse_offset_operation(
         index
         for index in range(header_index, len(matching))
         if _calibration_payload(matching[index].line)
-        in (completed, failed, rollback_failed)
+        in (completed, saved_and_completed, failed, rollback_failed)
     ]
     if len(final_indices) != 1:
         raise LogEvidenceError(f"{kind} terminal result is missing or multiple")
@@ -608,7 +609,7 @@ def _parse_offset_operation(
     save_success_indices = [
         index
         for index in range(header_index, len(matching))
-        if _calibration_payload(matching[index].line) == saved
+        if _calibration_payload(matching[index].line) in (saved, saved_and_completed)
     ]
     save_failures = [
         item
@@ -639,9 +640,12 @@ def _parse_offset_operation(
         header_index,
         column_index,
         *(phase_indices[phase] for phase in ("A", "B", "C")),
-        save_success_indices[0],
-        final_index,
     ]
+    event_indices.extend(
+        (final_index,)
+        if save_success_indices[0] == final_index
+        else (save_success_indices[0], final_index)
+    )
     if event_indices != sorted(event_indices) or len(set(event_indices)) != len(
         event_indices
     ):

@@ -399,6 +399,46 @@ def test_parses_exact_signed_offset_tables_and_verified_terminals() -> None:
     assert power.flash_saved and power.register_verified
 
 
+def test_parses_combined_offset_save_and_verification_terminals() -> None:
+    for fixture, parser, button, name in (
+        (
+            "offset_success.log",
+            parse_offset_run,
+            "1. Run Main Meter 1 Offset Cal",
+            "Offset",
+        ),
+        (
+            "power_offset_success.log",
+            parse_power_offset_run,
+            "2. Run Main Meter 1 Power Offset Cal",
+            "Power offset",
+        ),
+    ):
+        saved = f"{name} calibration saved to memory."
+        completed = f"{name} calibration completed and verified."
+        lines = [
+            CalibrationLogLine(
+                item.connection_generation,
+                item.operation_sequence,
+                item.arrived_at,
+                item.line.replace(saved, f"{saved} {completed}"),
+            )
+            for item in log_lines(fixture)
+            if completed not in item.line
+        ]
+
+        evidence = parser(
+            lines,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name=button,
+            dispatched_after=10.0,
+        )
+
+        assert evidence.flash_saved and evidence.register_verified
+
+
 @pytest.mark.parametrize(
     ("generation", "sequence", "start"),
     [(2, 8, 11.0), (3, 7, 11.0), (3, 8, 0.0)],
