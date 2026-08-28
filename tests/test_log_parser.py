@@ -84,6 +84,33 @@ def test_parses_exact_gain_phase_rows_and_success() -> None:
     assert evidence.immediate_apply_acceptable
 
 
+def test_parses_combined_gain_save_and_verification_terminal() -> None:
+    lines = [
+        CalibrationLogLine(
+            item.connection_generation,
+            item.operation_sequence,
+            item.arrived_at,
+            item.line.replace(
+                "Gain calibration saved to memory.",
+                "Gain calibration saved to memory. Gain calibration completed and verified.",
+            ),
+        )
+        for item in log_lines("gain_success.log")
+        if "Gain calibration completed and verified." not in item.line
+    ]
+
+    evidence = parse_gain_run(
+        lines,
+        connection_generation=3,
+        operation_sequence=8,
+        target_instance_id="meter_main1",
+        button_name="3. Run Main Meter 1 Gain Cal",
+        dispatched_after=10.0,
+    )
+
+    assert evidence.flash_saved and evidence.immediate_apply_acceptable
+
+
 def test_parses_save_failure_and_register_mismatch() -> None:
     failure = parse_gain_run(
         log_lines("gain_save_failure.log"),
