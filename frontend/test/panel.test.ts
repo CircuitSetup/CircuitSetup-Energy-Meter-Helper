@@ -777,6 +777,37 @@ describe("CircuitSetup panel", () => {
     expect(state.selectedDeviceId).toBe("meter-1");
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
   });
+
+  it("shows Compile as busy while the firmware build is pending", async () => {
+    let finishCompile!: (value: unknown) => void;
+    const pendingCompile = new Promise((resolve) => { finishCompile = resolve; });
+    const validated = { transaction_id: "1".repeat(32), state: "validated", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: ["write_verified"], progress: ["config_validated"], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "compile_ct_config") return pendingCompile as Promise<T>;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown>;
+    state.selectedDeviceId = "meter-1";
+    state.transaction = validated;
+    panel.showState("build");
+    await panel.updateComplete;
+
+    const compile = [...panel.shadowRoot!.querySelectorAll("button")].find((button) => button.textContent === "Compile");
+    compile?.click();
+    await tick(); await panel.updateComplete;
+
+    const compiling = [...panel.shadowRoot!.querySelectorAll("button")].find((button) => button.textContent === "Compiling…");
+    expect(compiling?.disabled).toBe(true);
+    finishCompile({ ...validated, state: "install_confirmation_required", progress: ["config_validated", "firmware_compiled"] });
+    await tick(); await panel.updateComplete;
+  });
+
   it("loads the firmware catalog once when the panel connects", async () => {
     const fetcher = vi.fn(() => Promise.resolve(firmwareResponse()));
     vi.stubGlobal("fetch", fetcher);

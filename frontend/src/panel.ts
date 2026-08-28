@@ -1181,9 +1181,11 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async transactionAction(action: "apply" | "compile" | "install" | "rollback"): Promise<void> {
-    if (!this.api || !this.transaction || !this.selectedDeviceId) return;
+    if (!this.api || !this.transaction || !this.selectedDeviceId || this.pendingAction) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const current = this.transaction;
     const generation = ++this.operationGeneration;
+    this.pendingAction = action;
+    this.requestUpdate();
     await this.run(async () => {
       const args = [deviceId, current.transaction_id, current.source_sha256] as const;
       let transaction: TransactionStatus;
@@ -1250,6 +1252,8 @@ export class CircuitSetupPanel extends LitElement {
       ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values."
       : "This confirmation is stale. Reload the CT inventory before making another change.",
     () => this.ownsOperation(generation, api, deviceId));
+    if (this.pendingAction === action) this.pendingAction = "";
+    this.requestUpdate();
   }
 
   private async startSession(): Promise<void> {
@@ -1791,7 +1795,7 @@ export class CircuitSetupPanel extends LitElement {
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => void this.backFromBuild(),
       () => void this.startSession(), this.meterConfiguration?.configuration ?? null,
       this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null,
-      this.pendingAction === "review-back", this.reviewCorrection !== null);
+      this.pendingAction === "review-back", this.reviewCorrection !== null, this.pendingAction);
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back(), this.pendingAction === "safety");
     if (this.step === "offset") return offsetStep(this.topology, this.session, this.board, this.offsetStage,

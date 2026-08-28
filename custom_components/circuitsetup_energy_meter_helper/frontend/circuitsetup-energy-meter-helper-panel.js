@@ -1458,8 +1458,9 @@ function configReview(status, configuration = null, impact = null) {
     </section>
   `;
 }
-function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false) {
+function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "") {
   const state = status?.state ?? "previewed";
+  const busy = Boolean(pendingAction);
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   return b`
     <section class="step-content" aria-labelledby="step-heading">
@@ -1468,14 +1469,14 @@ function buildInstallStep(status, apply, compile, install, rollback, back, conti
         <div class="recovery-panel" role="status">
           <strong>Build or install needs attention</strong>
           <p>${status?.evidence.join(", ") || "The operation did not complete."}</p>
-          ${status?.rollback_available ? b`<button class="danger" @click=${rollback}>Rollback</button>` : ""}
+          ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
       ${validationFailed ? b`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>The original config was restored. Review the config changes and open ESPHome Device Builder logs for the exact validation error.</p></div>` : ""}
       <div class="confirmation-actions">
-        <button class="primary" @click=${apply} ?disabled=${reviewBackBusy || correctionPending || state !== "previewed"}>Apply</button>
-        <button class="secondary" @click=${compile} ?disabled=${reviewBackBusy || correctionPending || state !== "validated"}>Compile</button>
-        <button class="primary" @click=${install} ?disabled=${reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>Install</button>
+        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Apply"}</button>
+        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Compile"}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : "Install"}</button>
       </div>
       ${status?.validation_detail ? b`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
@@ -1486,8 +1487,8 @@ function buildInstallStep(status, apply, compile, install, rollback, back, conti
         <li>${item.stage}: ${item.percentage ?? "in progress"}${item.percentage != null ? "%" : ""}</li>
       `)}</ul>` : ""}
       <footer class="action-footer">
-        <button class="secondary" @click=${back} ?disabled=${reviewBackBusy}>${reviewBackBusy ? "Loading…" : "Back"}</button>
-        <button class="primary" data-action="continue" @click=${continueFlow} ?disabled=${reviewBackBusy || correctionPending || state !== "verified"}>Continue</button>
+        <button class="secondary" @click=${back} ?disabled=${busy || reviewBackBusy}>${reviewBackBusy ? "Loading…" : "Back"}</button>
+        <button class="primary" data-action="continue" @click=${continueFlow} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "verified"}>Continue</button>
       </footer>
     </section>
   `;
@@ -3945,11 +3946,13 @@ class CircuitSetupPanel extends i$2 {
     );
   }
   async transactionAction(action) {
-    if (!this.api || !this.transaction || !this.selectedDeviceId) return;
+    if (!this.api || !this.transaction || !this.selectedDeviceId || this.pendingAction) return;
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
     const generation = ++this.operationGeneration;
+    this.pendingAction = action;
+    this.requestUpdate();
     await this.run(
       async () => {
         const args = [deviceId, current.transaction_id, current.source_sha256];
@@ -4013,6 +4016,8 @@ class CircuitSetupPanel extends i$2 {
       action === "install" && this.calibrationHandoff ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values." : "This confirmation is stale. Reload the CT inventory before making another change.",
       () => this.ownsOperation(generation, api, deviceId)
     );
+    if (this.pendingAction === action) this.pendingAction = "";
+    this.requestUpdate();
   }
   async startSession() {
     if (!this.api || !this.selectedDeviceId || this.sessionStarting || this.pendingAction) return;
@@ -4611,7 +4616,8 @@ class CircuitSetupPanel extends i$2 {
       this.meterConfiguration?.configuration ?? null,
       this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null,
       this.pendingAction === "review-back",
-      this.reviewCorrection !== null
+      this.reviewCorrection !== null,
+      this.pendingAction
     );
     if (this.step === "safety") return safetyStep(
       this.session,
