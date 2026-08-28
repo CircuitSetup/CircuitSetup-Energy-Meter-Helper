@@ -714,9 +714,9 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.locator('[data-feature="status_fields"][data-board="0"]').check();
   await page.getByLabel("Reporting interval").selectOption("10");
   await page.locator('[data-action="continue-meter-settings"]').click();
-  await page.getByLabel("Preset channels").selectOption(["1", "2"]);
-  await page.getByRole("button", { name: "Main service" }).dispatchEvent("click");
-  await expect(page.getByLabel("Main service aggregate")).toBeVisible();
+  await page.getByLabel("CT1 role").selectOption("grid");
+  await page.getByLabel("CT2 role").selectOption("grid");
+  await expect(page.getByRole("group", { name: "Mains aggregate", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
@@ -732,7 +732,7 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
       { channel: 5, enabled: true, name: "CT5", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
       { channel: 6, enabled: true, name: "CT6", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
     ],
-    aggregates: [{ aggregate_id: "grid-1", name: "Main service", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true }],
+    aggregates: [{ aggregate_id: "auto-mains", name: "Mains", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: false }],
     power_quality: [false], status_fields: [true], multi_reference_preparation_acknowledged: false,
   });
   await page.getByRole("button", { name: "Apply" }).click();
@@ -769,14 +769,12 @@ test("one-add-on 230 V configuration preserves scaled PQ circuit semantics witho
   await expect(page.getByLabel("CT7 multiplier")).toHaveValue("4");
   await expect(page.locator(".ct-step")).toContainText("multiplies current and power output by the same amount");
   await expect(page.locator(".ct-step")).not.toContainText(/harmonic|peak/i);
-  await page.getByLabel("Preset channels").selectOption("7");
-  await page.getByRole("button", { name: "Add aggregate" }).dispatchEvent("click");
-  await expect(page.getByLabel("New aggregate aggregate")).toBeVisible();
+  await page.getByLabel("CT7 name").fill("Scaled CT7");
   await page.getByRole("button", { name: "Continue" }).click();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
   expect(preview.configuration).toEqual(expect.objectContaining({ meter: expect.objectContaining({ electrical_system: "single_phase_230", line_frequency_hz: 50 }),
     power_quality: [false, true], channels: expect.arrayContaining([expect.objectContaining({ channel: 7, reporting_multiplier: 4 })]),
-    aggregates: expect.arrayContaining([expect.objectContaining({ channels: [7], energy_mode: "consumption" })]) }));
+    aggregates: [] }));
   expect((preview.configuration as { meter: { voltage_references: Array<{ reference_id: string; nominal_voltage_v: number }> } }).meter.voltage_references
     .map(({ reference_id, nominal_voltage_v }) => ({ reference_id, nominal_voltage_v })))
     .toEqual([{ reference_id: "main", nominal_voltage_v: 230 }, { reference_id: "addon1", nominal_voltage_v: 230 }]);
@@ -829,34 +827,34 @@ test("three voltage references cover each three-phase board exactly once and cal
   expect(calibrations.every((frame) => frame.confirm_iteration === true && frame.reference_voltage === 230)).toBe(true);
 });
 
-test("unused channels and two-pole aggregates remain distinct from the grid total", async ({ page }) => {
+test("automatic role pairs remain distinct without preset aggregate controls", async ({ page }) => {
   const frames = await mockHomeAssistant(page);
   await openInventory(page);
-  await page.getByLabel("CT6 used").uncheck();
-  await page.getByLabel("Preset channels").selectOption("1");
-  await page.getByRole("button", { name: "Two-pole" }).dispatchEvent("click");
-  await expect(page.getByLabel("Two-pole circuit aggregate")).toBeVisible();
-  await page.getByLabel("Preset channels").selectOption(["2", "3"]);
-  await page.getByRole("button", { name: "Subpanel" }).dispatchEvent("click");
-  await expect(page.getByLabel("Subpanel aggregate")).toBeVisible();
-  await page.getByLabel("Preset channels").selectOption(["4", "5"]);
-  await page.getByRole("button", { name: "Main service" }).dispatchEvent("click");
-  await expect(page.getByLabel("Main service aggregate")).toBeVisible();
+  await expect(page.getByLabel("Preset channels")).toHaveCount(0);
+  await page.getByLabel("CT1 role").selectOption("two_pole");
+  await page.getByLabel("CT2 role").selectOption("two_pole");
+  await expect(page.getByRole("group", { name: "Two-pole circuit aggregate", exact: true })).toBeVisible();
+  await page.getByLabel("CT3 role").selectOption("subpanel");
+  await page.getByLabel("CT4 role").selectOption("subpanel");
+  await expect(page.getByRole("group", { name: "Subpanel aggregate", exact: true })).toBeVisible();
+  await page.getByLabel("CT5 role").selectOption("grid");
+  await page.getByLabel("CT6 role").selectOption("grid");
+  await expect(page.getByRole("group", { name: "Mains aggregate", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
   expect(preview.configuration).toEqual(expect.objectContaining({
     channels: expect.arrayContaining([
-      expect.objectContaining({ channel: 1, enabled: true, role: "branch" }),
-      expect.objectContaining({ channel: 2, enabled: true, role: "branch" }),
-      expect.objectContaining({ channel: 3, enabled: true, role: "branch" }),
-      expect.objectContaining({ channel: 4, enabled: true, role: "grid" }),
+      expect.objectContaining({ channel: 1, enabled: true, role: "two_pole" }),
+      expect.objectContaining({ channel: 2, enabled: true, role: "two_pole" }),
+      expect.objectContaining({ channel: 3, enabled: true, role: "subpanel" }),
+      expect.objectContaining({ channel: 4, enabled: true, role: "subpanel" }),
       expect.objectContaining({ channel: 5, enabled: true, role: "grid" }),
-      expect.objectContaining({ channel: 6, enabled: false, role: "unused" }),
+      expect.objectContaining({ channel: 6, enabled: true, role: "grid" }),
     ]),
     aggregates: [
-      { aggregate_id: "two-pole-1", name: "Two-pole circuit", role: "two_pole", channels: [1], measurement_method: "one_ct_double_power", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false },
-      { aggregate_id: "subpanel-2", name: "Subpanel", role: "subpanel", channels: [2, 3], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false },
-      { aggregate_id: "grid-3", name: "Main service", role: "grid", channels: [4, 5], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true },
+      { aggregate_id: "auto-mains", name: "Mains", role: "grid", channels: [5, 6], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: false },
+      { aggregate_id: "auto-subpanel", name: "Subpanel", role: "subpanel", channels: [3, 4], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false },
+      { aggregate_id: "auto-two-pole", name: "Two-pole circuit", role: "two_pole", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false },
     ],
   }));
 });
