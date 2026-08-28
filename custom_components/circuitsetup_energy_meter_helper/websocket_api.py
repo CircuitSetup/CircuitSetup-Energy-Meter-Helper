@@ -341,6 +341,19 @@ class EntryWebsocketController:
         """Install Task 21's future enrichment seam without changing the command."""
         self._diagnostics_provider = provider
 
+    def _setup_payload(self, snapshot: Any) -> dict[str, Any]:
+        result: dict[str, Any] = _dataclass_mapping(snapshot)
+        result["bound_device_id"] = self.esphome_entry_id
+        if self.provisioning.installer_intent is not None:
+            result["installer_intent"] = {
+                key: value
+                for key, value in _dataclass_mapping(
+                    self.provisioning.installer_intent
+                ).items()
+                if value is not None
+            }
+        return result
+
     async def async_call(
         self, command: str, msg: Mapping[str, Any], user_id: str | None
     ) -> Any:
@@ -349,17 +362,7 @@ class EntryWebsocketController:
             raise CapabilityUnavailable
         operation = command.removeprefix(_PREFIX)
         if operation == "setup_status":
-            result: dict[str, Any] = _dataclass_mapping(self.provisioning.snapshot)
-            result["bound_device_id"] = self.esphome_entry_id
-            if self.provisioning.installer_intent is not None:
-                result["installer_intent"] = {
-                    key: value
-                    for key, value in _dataclass_mapping(
-                        self.provisioning.installer_intent
-                    ).items()
-                    if value is not None
-                }
-            return result
+            return self._setup_payload(self.provisioning.snapshot)
         if operation == "list_meters":
             return self.provisioning.snapshot.devices
         workflow = self.workflow
@@ -565,7 +568,7 @@ class EntryWebsocketController:
     async def async_snapshot(self, command: str, msg: Mapping[str, Any]) -> Any:
         operation = command.removeprefix(_PREFIX)
         if operation == "subscribe_setup":
-            return self.provisioning.snapshot
+            return self._setup_payload(self.provisioning.snapshot)
         owner = self.transactions
         if operation == "subscribe_config_transaction" and owner is not None:
             owner.assert_confirmation(
@@ -590,7 +593,9 @@ class EntryWebsocketController:
         """Attach only to an existing bounded backend event source."""
         operation = command.removeprefix(_PREFIX)
         if operation == "subscribe_setup":
-            unsubscribe = self.provisioning.subscribe(callback)
+            unsubscribe = self.provisioning.subscribe(
+                lambda snapshot: callback(self._setup_payload(snapshot))
+            )
         elif operation == "subscribe_config_transaction" and self.transactions:
             self.transactions.assert_confirmation(
                 msg["transaction_id"],

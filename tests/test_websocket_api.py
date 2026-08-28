@@ -816,6 +816,25 @@ def test_setup_status_exposes_the_runtime_bound_device_id() -> None:
     asyncio.run(run())
 
 
+def test_setup_subscription_preserves_the_runtime_bound_device_id() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        entry = FakeEntry(data={CONF_ESPHOME_ENTRY_ID: "meter-1"})
+        assert await async_setup_entry(hass, entry)
+        controller = hass.data[DOMAIN][entry.entry_id]["websocket_controller"]
+        connection = FakeConnection()
+
+        await _invoke(hass, connection, _message(f"{DOMAIN}/subscribe_setup"))
+        controller.provisioning._publish()
+
+        assert [event["bound_device_id"] for _, event in connection.events] == [
+            "meter-1",
+            "meter-1",
+        ]
+
+    asyncio.run(run())
+
+
 def test_adoption_rebinds_after_sending_the_success_result() -> None:
     """A successful adoption persists and reloads only after its browser response."""
 
@@ -3949,7 +3968,7 @@ def test_failed_snapshot_disables_callback_and_retains_throwing_unsubscribe() ->
         controller.provisioning.subscribe = subscribe  # type: ignore[method-assign]
         connection = FakeConnection()
         await _invoke(hass, connection, _message(f"{DOMAIN}/subscribe_setup"))
-        callback({"seq": 1})
+        callback(controller.provisioning.snapshot)
 
         router = hass.data[DOMAIN]["_websocket_router"]
         assert connection.events == []
