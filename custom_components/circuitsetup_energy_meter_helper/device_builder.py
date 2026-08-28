@@ -314,7 +314,7 @@ class DeviceBuilderClient:
         )
         output: list[str] = []
         ninja_total = 0
-        last_percentage = 0
+        last_percentage = -1
 
         def handle(event: dict[str, Any]) -> None:
             nonlocal ninja_total, last_percentage

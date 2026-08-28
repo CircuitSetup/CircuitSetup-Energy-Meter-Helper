@@ -533,12 +533,13 @@ def test_compile_streams_trusted_progress_percentages() -> None:
         await ws.send_result("1", {"job_id": "job-1"})
         await asyncio.sleep(0)
         await asyncio.sleep(0)
+        await ws.send_event("2", "output", "[  0%] Compiling main.cpp.o")
         await ws.send_event("2", "output", "[ 17%] Compiling foo.cpp.o")
         await ws.send_event("2", "output", "[907/1424] Building C object")
         await ws.send_event("2", "result", {"status": "completed", "exit_code": 0})
 
         assert (await compile_task).success
-        assert [item.percentage for item in progress] == [17, 63]
+        assert [item.percentage for item in progress] == [0, 17, 63]
         await client.async_disconnect()
 
     asyncio.run(run())

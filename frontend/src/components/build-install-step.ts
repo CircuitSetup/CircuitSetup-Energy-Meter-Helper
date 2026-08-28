@@ -18,7 +18,9 @@ export function buildInstallStep(
 ): TemplateResult {
   const state = status?.state ?? "previewed";
   const busy = Boolean(pendingAction);
-  const jobProgress = status?.upload_progress.at(-1) ?? null;
+  const jobProgress = pendingAction === "install" && state === "install_confirmation_required"
+    ? null
+    : status?.upload_progress.at(-1) ?? null;
   const progressAction = pendingAction === "compile" ? "Compile" : pendingAction === "install" ? "Install" : null;
   const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
