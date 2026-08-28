@@ -326,8 +326,10 @@ class LazyDeviceBuilder:
     async def async_validate(self, configuration: str) -> Any:
         return await (await self._ready()).async_validate(configuration)
 
-    async def async_compile(self, configuration: str) -> Any:
-        return await (await self._ready()).async_compile(configuration)
+    async def async_compile(
+        self, configuration: str, progress: Callable[[Any], None] | None = None
+    ) -> Any:
+        return await (await self._ready()).async_compile(configuration, progress)
 
     async def async_upload(
         self, configuration: str, progress: Callable[[Any], None] | None = None

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/index";
 import { espWebInstaller } from "../src/components/esp-web-installer";
 import { configReview } from "../src/components/config-review-step";
+import { buildInstallStep } from "../src/components/build-install-step";
 import { summaryStep } from "../src/components/summary-step";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
@@ -17,6 +18,28 @@ const tick = async () => {
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
+
+it("renders the live Install percentage", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "installing", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 48 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+  render(buildInstallStep(status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
+
+  const progress = host.querySelector<HTMLProgressElement>("progress");
+  expect(progress?.value).toBe(48);
+  expect(progress?.getAttribute("aria-label")).toBe("Install progress: 48%");
+});
+
+it("does not relabel retained Compile progress while Install starts", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled"], validation_detail: null, upload_progress: [{ stage: "transfer", percentage: 65 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+  render(buildInstallStep(status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
+
+  const progress = host.querySelector<HTMLProgressElement>("progress");
+  expect(progress?.hasAttribute("value")).toBe(false);
+  expect(progress?.getAttribute("aria-label")).toBe("Install progress: in progress");
+});
 
 const device = {
   entry_id: "meter-1",
@@ -777,6 +800,42 @@ describe("CircuitSetup panel", () => {
     expect(state.selectedDeviceId).toBe("meter-1");
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
   });
+
+  it("shows Compile as busy while the firmware build is pending", async () => {
+    let finishCompile!: (value: unknown) => void;
+    const pendingCompile = new Promise((resolve) => { finishCompile = resolve; });
+    const validated = { transaction_id: "1".repeat(32), state: "validated", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: ["write_verified"], progress: ["config_validated"], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "compile_ct_config") return pendingCompile as Promise<T>;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown>;
+    state.selectedDeviceId = "meter-1";
+    state.transaction = validated;
+    panel.showState("build");
+    await panel.updateComplete;
+
+    const compile = [...panel.shadowRoot!.querySelectorAll("button")].find((button) => button.textContent === "Compile");
+    compile?.click();
+    await tick(); await panel.updateComplete;
+
+    const compiling = [...panel.shadowRoot!.querySelectorAll("button")].find((button) => button.textContent === "Compiling…");
+    expect(compiling?.disabled).toBe(true);
+    state.transaction = { ...validated, upload_progress: [{ stage: "transfer", percentage: 65 }] };
+    panel.requestUpdate(); await panel.updateComplete;
+    const progress = panel.shadowRoot!.querySelector<HTMLProgressElement>("progress");
+    expect(progress?.value).toBe(65);
+    expect(progress?.getAttribute("aria-label")).toBe("Compile progress: 65%");
+    finishCompile({ ...validated, state: "install_confirmation_required", progress: ["config_validated", "firmware_compiled"] });
+    await tick(); await panel.updateComplete;
+  });
+
   it("loads the firmware catalog once when the panel connects", async () => {
     const fetcher = vi.fn(() => Promise.resolve(firmwareResponse()));
     vi.stubGlobal("fetch", fetcher);
