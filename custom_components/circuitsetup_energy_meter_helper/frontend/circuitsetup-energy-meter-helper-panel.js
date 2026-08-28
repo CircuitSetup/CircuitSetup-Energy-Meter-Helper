@@ -1461,6 +1461,9 @@ function configReview(status, configuration = null, impact = null) {
 function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "") {
   const state = status?.state ?? "previewed";
   const busy = Boolean(pendingAction);
+  const jobProgress = status?.upload_progress.at(-1) ?? null;
+  const progressAction = pendingAction === "compile" ? "Compile" : pendingAction === "install" ? "Install" : null;
+  const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   return b`
     <section class="step-content" aria-labelledby="step-heading">
@@ -1483,7 +1486,10 @@ function buildInstallStep(status, apply, compile, install, rollback, back, conti
         <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>
         <div><dt>Warnings</dt><dd>${status.validation_detail.warning_record_count} records (${status.validation_detail.reported_warning_count === null ? "unreported" : `${status.validation_detail.reported_warning_count} reported`})</dd></div>
       </dl>` : ""}
-      ${status?.upload_progress?.length ? b`<ul class="upload-progress">${status.upload_progress.map((item) => b`
+      ${progressAction ? b`<div class="job-progress" role="status" aria-live="polite">
+        <span>${progressAction} progress: ${percentage === null ? "in progress" : `${percentage}%`}</span>
+        ${percentage === null ? b`<progress max="100" aria-label="${progressAction} progress: in progress"></progress>` : b`<progress max="100" value=${percentage} aria-label="${progressAction} progress: ${percentage}%"></progress>`}
+      </div>` : status?.upload_progress?.length ? b`<ul class="upload-progress">${status.upload_progress.map((item) => b`
         <li>${item.stage}: ${item.percentage ?? "in progress"}${item.percentage != null ? "%" : ""}</li>
       `)}</ul>` : ""}
       <footer class="action-footer">
@@ -2817,6 +2823,8 @@ const panelStyles = i$5`
   .measurement-evidence { margin: 14px 0; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-alt); }
   .measurement-evidence h3 { margin-top: 0; }
   .measurement-evidence dl, .evidence-list, .upload-progress { display: grid; gap: 6px; }
+  .job-progress { display: grid; gap: 6px; margin-top: 12px; }
+  .job-progress progress { width: 100%; }
   details { margin-top: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
   summary { display: flex; align-items: center; padding: 12px 16px; cursor: pointer; font-weight: var(--ha-font-weight-bold, 700); }
   .technical-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 28px; padding: 0 16px 16px; }

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/index";
 import { espWebInstaller } from "../src/components/esp-web-installer";
 import { configReview } from "../src/components/config-review-step";
+import { buildInstallStep } from "../src/components/build-install-step";
 import { summaryStep } from "../src/components/summary-step";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
@@ -17,6 +18,17 @@ const tick = async () => {
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
+
+it("renders the live Install percentage", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "installing", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 48 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+  render(buildInstallStep(status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
+
+  const progress = host.querySelector<HTMLProgressElement>("progress");
+  expect(progress?.value).toBe(48);
+  expect(progress?.getAttribute("aria-label")).toBe("Install progress: 48%");
+});
 
 const device = {
   entry_id: "meter-1",
@@ -804,6 +816,11 @@ describe("CircuitSetup panel", () => {
 
     const compiling = [...panel.shadowRoot!.querySelectorAll("button")].find((button) => button.textContent === "Compiling…");
     expect(compiling?.disabled).toBe(true);
+    state.transaction = { ...validated, upload_progress: [{ stage: "transfer", percentage: 65 }] };
+    panel.requestUpdate(); await panel.updateComplete;
+    const progress = panel.shadowRoot!.querySelector<HTMLProgressElement>("progress");
+    expect(progress?.value).toBe(65);
+    expect(progress?.getAttribute("aria-label")).toBe("Compile progress: 65%");
     finishCompile({ ...validated, state: "install_confirmation_required", progress: ["config_validated", "firmware_compiled"] });
     await tick(); await panel.updateComplete;
   });

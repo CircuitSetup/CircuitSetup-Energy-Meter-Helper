@@ -18,6 +18,9 @@ export function buildInstallStep(
 ): TemplateResult {
   const state = status?.state ?? "previewed";
   const busy = Boolean(pendingAction);
+  const jobProgress = status?.upload_progress.at(-1) ?? null;
+  const progressAction = pendingAction === "compile" ? "Compile" : pendingAction === "install" ? "Install" : null;
+  const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   return html`
     <section class="step-content" aria-labelledby="step-heading">
@@ -40,7 +43,12 @@ export function buildInstallStep(
         <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>
         <div><dt>Warnings</dt><dd>${status.validation_detail.warning_record_count} records (${status.validation_detail.reported_warning_count === null ? "unreported" : `${status.validation_detail.reported_warning_count} reported`})</dd></div>
       </dl>` : ""}
-      ${status?.upload_progress?.length ? html`<ul class="upload-progress">${status.upload_progress.map((item) => html`
+      ${progressAction ? html`<div class="job-progress" role="status" aria-live="polite">
+        <span>${progressAction} progress: ${percentage === null ? "in progress" : `${percentage}%`}</span>
+        ${percentage === null
+          ? html`<progress max="100" aria-label="${progressAction} progress: in progress"></progress>`
+          : html`<progress max="100" value=${percentage} aria-label="${progressAction} progress: ${percentage}%"></progress>`}
+      </div>` : status?.upload_progress?.length ? html`<ul class="upload-progress">${status.upload_progress.map((item) => html`
         <li>${item.stage}: ${item.percentage ?? "in progress"}${item.percentage != null ? "%" : ""}</li>
       `)}</ul>` : ""}
       <footer class="action-footer">

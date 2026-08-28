@@ -9,6 +9,6 @@
     {"command": "firmware/compile", "result": {"job_id": "compile-1"}},
     {"command": "firmware/follow_job", "events": [{"event": "result", "data": {"status": "completed", "exit_code": 0}}]},
     {"command": "firmware/upload", "result": {"job_id": "upload-1"}},
-    {"command": "firmware/follow_job", "events": [{"event": "output", "data": "Uploading 42%"}, {"event": "result", "data": {"status": "completed", "exit_code": 0}}]}
+    {"command": "firmware/follow_job", "events": [{"event": "output", "data": "Uploading: [====] 42%"}, {"event": "result", "data": {"status": "completed", "exit_code": 0}}]}
   ]
 }

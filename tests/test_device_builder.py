@@ -13,6 +13,7 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     JobProgressStage,
     JobResult,
     RollbackError,
+    _job_progress,
 )
 
 
@@ -514,6 +515,35 @@ def test_compile_follows_singular_job_with_bounded_tail() -> None:
     asyncio.run(run())
 
 
+def test_compile_progress_ignores_memory_utilization_percentages() -> None:
+    """RAM and flash utilization are not compile completion progress."""
+
+    assert _job_progress("RAM:   [====      ]  39.3% (used 128760 bytes)") is None
+    assert _job_progress("Flash: [=======   ]  72.1% (used 945120 bytes)") is None
+
+
+def test_compile_streams_trusted_progress_percentages() -> None:
+    async def run() -> None:
+        client, ws = await connected_client()
+        progress = []
+        compile_task = asyncio.create_task(
+            client.async_compile("meter.yaml", progress.append)
+        )
+        await asyncio.sleep(0)
+        await ws.send_result("1", {"job_id": "job-1"})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await ws.send_event("2", "output", "[ 17%] Compiling foo.cpp.o")
+        await ws.send_event("2", "output", "[907/1424] Building C object")
+        await ws.send_event("2", "result", {"status": "completed", "exit_code": 0})
+
+        assert (await compile_task).success
+        assert [item.percentage for item in progress] == [17, 63]
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
 def test_failed_job_uses_pinned_terminal_fields() -> None:
     """Pinned follow-job failures map status, exit_code, and error."""
 
@@ -599,7 +629,7 @@ def test_upload_reports_only_live_structured_progress() -> None:
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         await ws.send_event(
-            "2", "output", "Uploading token=top-secret password=hunter2 42%"
+            "2", "output", "Uploading: [====] 42% token=top-secret password=hunter2"
         )
         await asyncio.sleep(0)
 

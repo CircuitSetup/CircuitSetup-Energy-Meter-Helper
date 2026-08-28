@@ -123,7 +123,11 @@ class DeviceBuilder(Protocol):
 
     async def async_validate(self, configuration: str) -> JobResult: ...
 
-    async def async_compile(self, configuration: str) -> JobResult: ...
+    async def async_compile(
+        self,
+        configuration: str,
+        progress: Callable[[JobProgress], None] | None = None,
+    ) -> JobResult: ...
 
     async def async_upload(
         self,
@@ -918,8 +922,13 @@ class ConfigTransactionManager:
         if transaction.state is not ConfigTransactionState.VALIDATED:
             raise RuntimeError("compile is not legal in the current state")
         plan, _ = _sensitive(transaction)
+        transaction.upload_progress.clear()
+        self.publish_status(_status(transaction))
         try:
-            result = await self._device_builder.async_compile(plan.configuration)
+            result = await self._device_builder.async_compile(
+                plan.configuration,
+                lambda update: self._publish_upload_progress(transaction, update),
+            )
         except asyncio.CancelledError:
             await self._rollback_after_cancellation(transaction)
             raise
@@ -966,6 +975,7 @@ class ConfigTransactionManager:
                         "YAML handoff is unavailable; offset calibration remains "
                         "saved in flash"
                     )
+            transaction.upload_progress.clear()
             transaction.state = ConfigTransactionState.INSTALLING
             self.publish_status(_status(transaction))
             plan, _ = _sensitive(transaction)

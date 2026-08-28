@@ -116,8 +116,14 @@ class Builder:
             raise result
         return result
 
-    async def async_compile(self, configuration: str) -> Job:
+    async def async_compile(
+        self,
+        configuration: str,
+        progress: Callable[[JobProgress], None] | None = None,
+    ) -> Job:
         del configuration
+        if progress is not None:
+            progress(JobProgress(JobProgressStage.TRANSFER, 65))
         await self._enter("compile")
         if isinstance(self.compile, BaseException):
             raise self.compile
@@ -1869,6 +1875,30 @@ def test_upload_progress_is_live_structured_and_bounded() -> None:
 
         release.set()
         assert (await install).state is ConfigTransactionState.VERIFIED
+
+    asyncio.run(run())
+
+
+def test_compile_progress_is_live_and_structured() -> None:
+    async def run() -> None:
+        builder = Builder()
+        release = builder.pause("compile")
+        manager = _manager(builder, Persistence())
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        compile_job = asyncio.create_task(manager.async_compile(preview.transaction_id))
+        await asyncio.wait_for(builder.started["compile"].wait(), 1)
+
+        live = manager.status(preview.transaction_id)
+        assert live.state is ConfigTransactionState.VALIDATED
+        assert live.upload_progress == (
+            JobProgress(JobProgressStage.TRANSFER, 65),
+        )
+
+        release.set()
+        assert (
+            await compile_job
+        ).state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
 
     asyncio.run(run())
 
