@@ -64,7 +64,7 @@ const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
 const FIRMWARE_PRODUCT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const ESPHOME_VERSION = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$/;
-const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_configuration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
+const TRANSACTION_OPERATIONS = new Set(["get_active_work", "preview_ct_config", "preview_meter_configuration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
 const OFFSET_CAPABILITIES = new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
@@ -629,11 +629,16 @@ export class HelperApi {
       if (key.toLowerCase() !== "raw_gain_ct" && PRIVATE_FIELD.test(key)) {
         throw new Error(`private field ${key} refused`);
       }
-      if (transactionStatus && depth === 0 && key === "changes" && Array.isArray(item)) {
+      if (transactionStatus && key === "changes" && Array.isArray(item)) {
         if (item.length > 100) throw new Error("unsafe collection changes refused");
         for (const change of item) this.assertPublicPayload(change, false, depth + 2, "", true);
       } else {
-        this.assertPublicPayload(item, false, depth + 1, key.toLowerCase());
+        this.assertPublicPayload(
+          item,
+          transactionStatus && depth === 0 && key === "transaction",
+          depth + 1,
+          key.toLowerCase(),
+        );
       }
     }
   }

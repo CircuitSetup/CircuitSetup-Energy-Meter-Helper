@@ -428,16 +428,20 @@ describe("HelperApi", () => {
 
   it("loads the authoritative active work for one device", async () => {
     const hass = new FakeHass();
+    const activeTransaction = {
+      ...transaction,
+      changes: [{ key: "channel.1.name", old_value: "CT1", new_value: "Main load" }],
+    };
     hass.responses.get_active_work = {
       session,
-      transaction,
+      transaction: activeTransaction,
       verified_calibration: restart,
     };
     const api = new HelperApi(hass, "entry-1");
 
     const active = await api.getActiveWork("meter-1", topology);
 
-    expect(active).toEqual({ session, transaction, verified_calibration: restart });
+    expect(active).toEqual({ session, transaction: activeTransaction, verified_calibration: restart });
     expect(hass.messages).toEqual([{
       type: "circuitsetup_energy_meter_helper/get_active_work",
       entry_id: "entry-1",
