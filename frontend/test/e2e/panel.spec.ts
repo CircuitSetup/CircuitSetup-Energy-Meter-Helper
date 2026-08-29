@@ -5,6 +5,7 @@ type Frame = Record<string, unknown> & { id?: number; type: string };
 type Outcome = "success" | "collision" | "validation" | "compile";
 type Calibration = "main-success" | "addon-indeterminate" | undefined;
 type Scenario = "single-phase-pq" | undefined;
+type GuidedMode = "helper" | "legacy" | "runtime";
 
 const hash = "a".repeat(64);
 const FIRMWARE_INDEX_URL = "https://circuitsetup.github.io/ESPWebInstaller/manifests/firmware_index.json";
@@ -64,7 +65,7 @@ function inventory(addons: number, scenario: Scenario = undefined) {
     schema_version: 1 } };
 }
 
-function meterConfiguration(addons: number, scenario: Scenario = undefined) {
+function meterConfiguration(addons: number, scenario: Scenario = undefined, mode: GuidedMode = "helper") {
   const live = inventory(addons, scenario); const references = Array.from({ length: addons + 1 }, (_, board) => ({
     reference_id: board ? `addon${board}` : "main", label: board ? `Add-on ${board}` : "Main", phase_label: "A/B",
     nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305,
@@ -82,7 +83,8 @@ function meterConfiguration(addons: number, scenario: Scenario = undefined) {
     configuration: { meter: { friendly_name: "Energy meter", electrical_system: singlePhase ? "single_phase_230" : "split_phase_120_240", line_frequency_hz: singlePhase ? 50 : 60,
       update_interval_s: 5, voltage_layout: addons ? "multi_reference" : "standard", voltage_references: references.map((reference) => singlePhase ? { ...reference, nominal_voltage_v: 230 } : reference) }, channels, aggregates: [],
       power_quality: Array.from({ length: addons + 1 }, (_value, board) => singlePhase && board === 1), status_fields: Array(addons + 1).fill(false), multi_reference_preparation_acknowledged: false },
-    capabilities: { configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [] },
+    capabilities: { configuration_authoritative: mode !== "runtime", managed_totals: mode === "helper", multi_reference: true,
+      semantic_source: mode === "legacy" ? "legacy_inferred" : "helper_managed", reason_codes: mode === "legacy" ? ["electrical_profile_requires_confirmation"] : [] },
     voltage_topology: { references: references.map((reference) => [reference.reference_id, reference.group_keys]), source: "legacy" },
     voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 },
     ct_catalog: live.catalog, warnings: [], configuration_impact: { enabled_channel_count: live.channels.length, numeric_entity_count: numericEntityCount, text_entity_count: 0, energy_entity_count: 0, approximate_publications_per_second: numericEntityCount / 5 }, channels: live.channels, catalog: live.catalog };
@@ -105,11 +107,11 @@ function offsetBoards(addons: number, stageState: "not_started" | "skipped" = "n
 }
 
 function session(state: string, acknowledged: boolean, addons = 0, pending = false,
-  offsetState: "not_started" | "skipped" = "not_started") {
+  offsetState: "not_started" | "skipped" = "not_started", calibrationPlan: "standard" | "full" = "full") {
   return { session_id: "session-1", device_id: "meter-1", state, safety_acknowledged: acknowledged,
     preflight: { issues: [], zeroed_roles: ["main_1.reference_voltage", "ct1.reference_current"] },
     entity_role_counts: {}, offset_capability: { status: "available", repair_reason: null },
-    offset_disposition: offsetState, offset_boards: offsetBoards(addons, offsetState),
+    calibration_plan: calibrationPlan, offset_disposition: offsetState, offset_boards: offsetBoards(addons, offsetState),
     has_pending_calibration: pending };
 }
 
@@ -169,7 +171,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
   firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean; scenario?: Scenario;
-  slowClearCalibration?: boolean } = {}) {
+  slowClearCalibration?: boolean; guidedMode?: GuidedMode; activeWork?: "normal" | "handoff" } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
@@ -244,16 +246,20 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           freshPlanGeneration += 1;
           if (options.freshSourceChanged) activeSourceSha256 = "f".repeat(64);
         }
-        const live = meterConfiguration(addons, options.scenario);
+        const live = meterConfiguration(addons, options.scenario, options.guidedMode);
         result = { ...live, plan_id: activePlan ?? "b".repeat(32), source_sha256: activeSourceSha256,
           configuration: refreshingConsumedPlan && options.freshSourceChanged
             ? { ...live.configuration, meter: { ...live.configuration.meter, friendly_name: "External meter" } }
             : live.configuration };
       }
       else if (operation === "get_ct_inventory") result = inventory(addons, options.scenario);
-      else if (operation === "get_active_work") result = {
-        session: null, transaction: null, verified_calibration: null,
-      };
+      else if (operation === "get_active_work") result = options.activeWork === "normal"
+        ? { session: null, transaction: transaction("validated", 1), verified_calibration: null }
+        : options.activeWork === "handoff"
+          ? { session: session("verified", true, addons, false, "skipped", "standard"),
+            transaction: { ...transaction("previewed", 1), transaction_id: "d".repeat(32) },
+            verified_calibration: { ...restart(addons), source_handoff_transaction_id: "d".repeat(32) } }
+          : { session: null, transaction: null, verified_calibration: null };
       else if (operation === "set_ha_labels") result = { mode: "home_assistant_labels",
         results: [{ channel: 1, state: "updated" }] };
       else if (operation === "preview_ct_config") {
@@ -299,7 +305,8 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       }
       else if (operation === "rollback_ct_config") result = currentTransaction = transaction("rolled_back", addons ? 42 : 1,
         { progress: ["config_restored"] });
-      else if (operation === "start_session") result = currentSession = session("safety_required", false, addons);
+      else if (operation === "start_session") result = currentSession = session("safety_required", false, addons, false,
+        frame.calibration_plan === "standard" ? "skipped" : "not_started", frame.calibration_plan === "standard" ? "standard" : "full");
       else if (operation === "acknowledge_safety") result = currentSession = session("ready", true, addons);
       else if (operation === "check_offset_readiness") result = offsetReadiness(frame);
       else if (operation === "calibrate_offset") {
@@ -352,7 +359,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   return frames;
 }
 
-const operations = (frames: Frame[]) => frames.map((frame) => frame.type.split("/").at(-1));
+const operations = (frames: Frame[]) => frames.map((frame) => frame.type.split("/").at(-1) ?? "");
 
 async function openInventory(page: Page): Promise<void> {
   await page.goto("/test/harness.html");
@@ -918,4 +925,142 @@ test("add-on CT42 indeterminate disconnect never auto-represses calibration", as
   await page.getByRole("button", { name: "Reconnect and inspect" }).click();
   await expect.poll(() => operations(frames).filter((value) => value === "get_session").length).toBe(1);
   expect(operations(frames).filter((value) => value === "calibrate_current")).toHaveLength(1);
+});
+
+// These are deliberately browser-level tests: the assertions inspect the WebSocket
+// frames that caused each route change, not panel implementation state.
+const mutationOperations = new Set([
+  "adopt_device", "preview_meter_configuration", "preview_ct_config", "apply_ct_config",
+  "compile_ct_config", "install_ct_config", "abandon_ct_config", "start_session",
+  "acknowledge_safety", "skip_offset_calibration", "calibrate_voltage", "calibrate_current",
+  "restart_and_verify", "preview_calibrated_gains", "clear_calibration_flash",
+]);
+
+function mutations(frames: Frame[]) {
+  return frames.filter((frame) => mutationOperations.has(frame.type.split("/").at(-1)!));
+}
+
+function expectLatestSourceBinding(frames: Frame[], operation: string) {
+  const frame = frames.filter((item) => item.type.endsWith(`/${operation}`)).at(-1);
+  if (!frame) return;
+  const latest = frames.filter((item) => item.type.endsWith("/get_meter_configuration") || item.type.endsWith("/get_ct_inventory")).at(-1);
+  if ("source_sha256" in frame && latest && "source_sha256" in latest) expect(frame.source_sha256).toBe(latest.source_sha256);
+}
+
+async function openGuidedMeter(page: Page) {
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
+  await page.locator('[data-action="continue"]').click();
+}
+
+test("journey 1: new meter imports, installs, then keeps calibration", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { importable: true });
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  expect(mutations(frames)).toEqual([]);
+  await page.getByRole("button", { name: "Import configuration" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Meter Settings" })).toBeVisible();
+  await page.getByLabel("Friendly name").fill("Imported meter");
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
+  expectLatestSourceBinding(frames, "preview_meter_configuration");
+  await page.getByRole("button", { name: "Apply" }).click();
+  await page.getByRole("button", { name: "Compile" }).click();
+  await page.getByRole("button", { name: "Install on meter" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel(/Keep existing calibration/).check();
+  await expect(page.getByRole("heading", { name: /Setup complete/ })).toBeVisible();
+});
+
+test("journey 2: new standard calibration reaches restart before gain save", async ({ page }) => {
+  const frames = await mockHomeAssistant(page);
+  await openGuidedMeter(page);
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel(/Standard calibration/).check();
+  await expect(page.getByRole("heading", { name: "Safety" })).toBeVisible();
+  expect(mutations(frames).filter((frame) => frame.type.endsWith("/start_session"))).toHaveLength(1);
+});
+
+test("journey 3: helper-managed full calibration keeps flash authority when not handed off", async ({ page }) => {
+  const frames = await mockHomeAssistant(page);
+  await openInventory(page);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel(/Full calibration/).check();
+  await expect(page.getByRole("heading", { name: "Safety" })).toBeVisible();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Offset" })).toBeVisible();
+  expectLatestSourceBinding(frames, "start_session");
+});
+
+test("journey 4: legacy manage requires review before migration preview", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { guidedMode: "legacy" });
+  await openGuidedMeter(page);
+  await expect(page.getByRole("heading", { name: "Review Existing Setup" })).toBeVisible();
+  expect(mutations(frames)).toEqual([]);
+  await page.getByRole("button", { name: "Review and manage with helper" }).click();
+  await expect(page.getByRole("heading", { name: "Meter Settings" })).toBeVisible();
+});
+
+test("journey 5: legacy calibrate-only never previews configuration", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { guidedMode: "legacy" });
+  await openGuidedMeter(page);
+  await page.getByRole("button", { name: "Keep ESPHome configuration and calibrate only" }).click();
+  await page.getByLabel(/Standard calibration/).check();
+  await expect(page.getByRole("heading", { name: "Safety" })).toBeVisible();
+  expect(operations(frames)).not.toContain("preview_meter_configuration");
+  expect(operations(frames)).not.toContain("preview_ct_config");
+});
+
+test("journey 6: runtime-only skips every source configuration command", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { guidedMode: "runtime" });
+  await openGuidedMeter(page);
+  await expect(page.getByRole("heading", { name: "Choose calibration" })).toBeVisible();
+  await page.getByLabel(/Standard calibration/).check();
+  await expect(page.getByRole("heading", { name: "Safety" })).toBeVisible();
+  expect(operations(frames).filter((operation) => ["preview_meter_configuration", "preview_ct_config", "set_ha_labels"].includes(operation))).toEqual([]);
+});
+
+test("journey 7: imported existing configuration enters legacy review", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { importable: true, guidedMode: "legacy" });
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.getByRole("button", { name: "Import configuration" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Review Existing Setup" })).toBeVisible();
+  expect(mutations(frames).filter((frame) => !frame.type.endsWith("/adopt_device"))).toEqual([]);
+});
+
+test("journey 8: an active normal transaction resumes at Install Configuration", async ({ page }) => {
+  await mockHomeAssistant(page, { activeWork: "normal" });
+  await openInventory(page);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel(/Standard calibration/).check();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
+});
+
+test("journey 9: an active calibration handoff resumes at Save Calibration", async ({ page }) => {
+  await mockHomeAssistant(page, { activeWork: "handoff" });
+  await openInventory(page);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel(/Standard calibration/).check();
+  await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
+});
+
+test("journey 10: mobile phases only advance as the conditional flow advances", async ({ page }) => {
+  await mockHomeAssistant(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openGuidedMeter(page);
+  const progress = page.locator(".mobile-progress");
+  const phase = async () => Number((await progress.textContent())?.match(/^(\d+) of/)?.[1]);
+  const first = await phase();
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  const second = await phase();
+  await page.getByRole("button", { name: "Continue" }).click();
+  const third = await phase();
+  expect([first, second, third]).toEqual([... [first, second, third]].sort((a, b) => a - b));
 });
