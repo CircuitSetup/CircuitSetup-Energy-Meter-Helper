@@ -447,6 +447,17 @@ describe("HelperApi", () => {
       entry_id: "entry-1",
       device_id: "meter-1",
     }]);
+
+    for (const invalid of [
+      { session: null, transaction: null, verified_calibration: null,
+        changes: [{ key: "channel.1.name", old_value: "CT1", new_value: "Main load" }] },
+      { session: null, transaction: { ...activeTransaction,
+        nested: { changes: [{ key: "channel.1.name", old_value: "CT1", new_value: "Main load" }] } },
+      verified_calibration: null },
+    ]) {
+      hass.responses.get_active_work = invalid;
+      await expect(api.getActiveWork("meter-1", topology)).rejects.toThrow("private field key refused");
+    }
   });
 
   it("sends the exact Task 19 command identifiers and confirmation handles", async () => {

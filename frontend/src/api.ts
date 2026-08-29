@@ -64,7 +64,7 @@ const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
 const FIRMWARE_PRODUCT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const ESPHOME_VERSION = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$/;
-const TRANSACTION_OPERATIONS = new Set(["get_active_work", "preview_ct_config", "preview_meter_configuration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
+const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_configuration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
 const OFFSET_CAPABILITIES = new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
@@ -607,6 +607,7 @@ export class HelperApi {
     depth = 0,
     field = "",
     allowChangeKey = false,
+    activeWork = false,
   ): void {
     if (depth > 8) throw new Error("payload nesting is too deep");
     if (Array.isArray(value)) {
@@ -635,7 +636,7 @@ export class HelperApi {
       } else {
         this.assertPublicPayload(
           item,
-          transactionStatus && depth === 0 && key === "transaction",
+          activeWork && depth === 0 && key === "transaction",
           depth + 1,
           key.toLowerCase(),
         );
@@ -649,7 +650,14 @@ export class HelperApi {
       entry_id: this.entryId,
       ...data,
     });
-    HelperApi.assertPublicPayload(result, TRANSACTION_OPERATIONS.has(operation));
+    HelperApi.assertPublicPayload(
+      result,
+      TRANSACTION_OPERATIONS.has(operation),
+      0,
+      "",
+      false,
+      operation === "get_active_work",
+    );
     return validator(result);
   }
 
