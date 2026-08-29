@@ -139,7 +139,7 @@ export class CircuitSetupPanel extends LitElement {
   private meterConfiguration: MeterConfiguration | null = null;
   private verifiedMeterConfiguration: MeterConfiguration | null = null;
   private multiReferencePreparationAcknowledged = false;
-  private meterProfileConfirmed = true;
+  private meterProfileConfirmed = false;
   private meterFrequencyTouched = false;
   private meterNominalVoltageTouched = new Set<string>();
   private canonicalConfigurationChanged = false;
@@ -989,7 +989,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async continueFromMeterSettings(): Promise<void> {
-    if (!this.api || !this.selectedDeviceId || !this.meterSettingsDraft || this.pendingAction) return;
+    if (!this.api || !this.selectedDeviceId || !this.meterSettingsDraft || this.pendingAction || !this.meterProfileConfirmed) return;
     this.pendingAction = "inventory";
     this.requestUpdate();
     const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
@@ -1887,7 +1887,7 @@ export class CircuitSetupPanel extends LitElement {
         multi_reference_preparation_acknowledged: value }, false); this.requestUpdate(); },
       () => this.back(), () => void this.continueFromMeterSettings(),
       this.packageOptions, (options) => this.setPackageOptions(options),
-      this.configurationMode === "helper_managed" || this.configurationMode === null ? true : this.meterProfileConfirmed,
+      this.meterProfileConfirmed,
       (value) => { this.meterProfileConfirmed = value; this.requestUpdate(); },
       this.configurationMode ?? "helper_managed",
     );
