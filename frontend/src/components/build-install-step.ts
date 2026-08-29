@@ -20,12 +20,13 @@ export function buildInstallStep(
   const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
     ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch"].includes(code)) === true;
+  const waitingForStartup = state === "reconnecting";
   const latestProgress = status?.upload_progress.slice().reverse().find((item) => item.percentage !== null)
     ?? status?.upload_progress.at(-1) ?? null;
   const jobProgress = pendingAction === "install" && state === "install_confirmation_required"
     ? null
     : latestProgress;
-  const progressAction = pendingAction === "compile" ? "Compile" : pendingAction === "install" ? "Install"
+  const progressAction = waitingForStartup ? null : pendingAction === "compile" ? "Compile" : pendingAction === "install" ? "Install"
     : status?.upload_progress.length ? status.progress.includes("firmware_compiled") ? "Install" : "Compile" : null;
   const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
@@ -40,6 +41,10 @@ export function buildInstallStep(
         </div>
       ` : ""}
       ${validationFailed ? html`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>The original config was restored. Review the config changes and open ESPHome Device Builder logs for the exact validation error.</p></div>` : ""}
+      ${waitingForStartup ? html`<div class="job-progress" role="status" aria-live="polite">
+        <span>Meter is rebooting. Waiting for startup verification.</span>
+        <progress max="100" aria-label="Waiting for meter startup"></progress>
+      </div>` : ""}
       <div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Apply"}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Compile"}</button>

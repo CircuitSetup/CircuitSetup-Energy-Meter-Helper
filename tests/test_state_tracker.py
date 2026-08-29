@@ -48,6 +48,27 @@ def test_cache_uses_state_type_device_and_key_and_disconnect_marks_stale() -> No
         tracker.current(SensorState, 11, device_id=7)
 
 
+def test_wait_current_states_requires_usable_records() -> None:
+    async def run() -> None:
+        tracker = StateTracker()
+        tracker.connect(1)
+        keys = frozenset({(0, 3), (7, 11)})
+        tracker.record(SensorState(3, 0.0, missing_state=True), received_at=1.0)
+        tracker.record(
+            SensorState(11, 0.0, device_id=7, missing_state=True), received_at=1.0
+        )
+
+        waiting = asyncio.create_task(tracker.wait_current_states("SensorState", keys))
+        await asyncio.sleep(0)
+        assert not waiting.done()
+
+        tracker.record(SensorState(3, 1.0), received_at=2.0)
+        tracker.record(SensorState(11, 1.0, device_id=7), received_at=2.0)
+        await waiting
+
+    asyncio.run(run())
+
+
 def test_fresh_window_excludes_boundary_and_calculates_range_percent() -> None:
     tracker = StateTracker()
     tracker.connect(1)
