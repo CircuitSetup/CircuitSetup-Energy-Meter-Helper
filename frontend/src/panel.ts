@@ -143,6 +143,7 @@ export class CircuitSetupPanel extends LitElement {
   private meterFrequencyTouched = false;
   private meterNominalVoltageTouched = new Set<string>();
   private canonicalConfigurationChanged = false;
+  private legacyCircuitSemanticsConfirmed = false;
   private managedAutomaticAggregates: CircuitAggregate[] = [];
   private board = 0;
   private group = 0;
@@ -499,7 +500,7 @@ export class CircuitSetupPanel extends LitElement {
     const configured = new Map(this.meterConfiguration?.configuration.channels.map((channel) => [channel.channel, channel]) ?? []);
     this.inventory = { ...inventory, channels: inventory.channels.map((channel) => {
       const settings = configured.get(channel.channel);
-      return settings ? { ...channel, name: settings.name, selected_model_id: settings.model_id,
+      return settings && this.configurationMode !== "legacy_editable" ? { ...channel, name: settings.name, selected_model_id: settings.model_id,
         reporting_multiplier: settings.reporting_multiplier, display_label: settings.custom_label,
         selection_verified_against_config: true, stored_selection_present: true } : channel;
     }) };
@@ -518,6 +519,8 @@ export class CircuitSetupPanel extends LitElement {
           ?? (channel.selection_verified_against_config
             && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
         expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518,
+        preserveExistingGain: this.configurationMode === "legacy_editable" && !channel.selection_verified_against_config && channel.raw_gain_ct > 0,
+        multiplierMode: "automatic" as const,
       }];
     }));
     this.error = "";
@@ -903,6 +906,7 @@ export class CircuitSetupPanel extends LitElement {
       semanticSource: configuration.capabilities.semantic_source,
       runtimeOnly: !configuration.capabilities.configuration_authoritative,
     });
+    this.legacyCircuitSemanticsConfirmed = false;
     this.meterProfileConfirmed = this.journeyOrigin === "existing_meter" && this.configurationMode === "helper_managed";
     const normalized = { ...configuration, configuration: {
       ...configuration.configuration, multi_reference_preparation_acknowledged: false,
@@ -1029,6 +1033,7 @@ export class CircuitSetupPanel extends LitElement {
     this.drafts = new Map(this.drafts).set(channel, { ...current, ...patch });
     if (this.meterConfiguration && !this.labelOnly) {
       const draft = { ...current, ...patch };
+      if (draft.preserveExistingGain) return this.requestUpdate();
       this.updateCircuitConfiguration({ ...this.meterConfiguration.configuration,
         channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel ? {
           ...item, name: draft.name, model_id: draft.modelId,
@@ -1043,7 +1048,8 @@ export class CircuitSetupPanel extends LitElement {
 
   private updateCircuitConfiguration(configuration: MeterConfigurationRequest, changed = true): void {
     if (!this.meterConfiguration) return;
-    const reconciliation = this.meterConfiguration.capabilities.managed_totals
+    const reconciliation = (this.configurationMode === "helper_managed" || this.legacyCircuitSemanticsConfirmed)
+      && this.meterConfiguration.capabilities.managed_totals
       ? reconcileSplitPhaseAggregates(configuration, this.managedAutomaticAggregates) : null;
     this.managedAutomaticAggregates = reconciliation?.managed ?? [];
     this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation?.configuration ?? configuration };
@@ -1196,6 +1202,9 @@ export class CircuitSetupPanel extends LitElement {
 
   private async continueFromCt(): Promise<void> {
     if (!this.api || !this.inventory || !this.selectedDeviceId || this.pendingAction) return;
+    if (!this.labelOnly && this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.legacyCircuitSemanticsConfirmed) {
+      return this.fail(new Error(), "Confirm that you reviewed used and unused channels and circuit roles before continuing.");
+    }
     if (this.meterConfiguration && !this.labelOnly && this.canonicalConfigurationChanged) return this.previewCanonicalConfiguration();
     const changes = changesFromDrafts(this.inventory, this.drafts);
     if (this.labelOnly && changes.length) {
@@ -1896,7 +1905,7 @@ export class CircuitSetupPanel extends LitElement {
       (board) => { this.board = board; this.requestUpdate(); },
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session",
       this.labelOnly ? null : this.meterConfiguration?.configuration ?? null, (configuration) => this.updateCircuitConfiguration(configuration), (channel) => this.disableCircuit(channel),
-      this.meterConfiguration?.capabilities.managed_totals ?? true, this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "")}`; }
+      this.meterConfiguration?.capabilities.managed_totals ?? true, this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "", this.configurationMode === "legacy_editable")}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
     if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep(this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => void this.backFromBuild(),

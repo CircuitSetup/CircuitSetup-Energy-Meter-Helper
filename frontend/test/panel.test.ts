@@ -8,7 +8,7 @@ import { buildInstallStep } from "../src/components/build-install-step";
 import { summaryStep } from "../src/components/summary-step";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
-import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, draftsAreValid, type CtDraft } from "../src/components/ct-inventory-step";
+import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, draftsAreValid, recommendedReportingMultiplier, type CtDraft } from "../src/components/ct-inventory-step";
 import { meterSettingsStep } from "../src/components/meter-settings-step";
 import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
@@ -126,6 +126,44 @@ afterEach(() => {
 });
 
 describe("meter configuration review and summary", () => {
+  it.each([
+    [50, 1], [65.535, 1], [100, 2], [131.07, 2], [200, 4], [262.14, 4], [400, 8], [524.28, 8], [524.281, null],
+  ] as const)("recommends the minimum safe reporting multiplier for %s A", (ratedCurrentA, expected) => {
+    expect(recommendedReportingMultiplier(ratedCurrentA)).toBe(expected);
+  });
+
+  it("uses the safe multiplier for automatic presets but keeps a manual override", () => {
+    const response = meterResponse() as unknown as CtInventory;
+    const preset = { model_id: "ct-100", label: "100 A CT", rated_current_a: 100, secondary: "40 mA", default_gain_ct: 41788, requires_burden_jumper_cut: false, notes: "" };
+    response.channels = [response.channels[0]!];
+    response.catalog.presets = [preset];
+    const update = vi.fn();
+    const root = document.createElement("div");
+    render(ctInventoryStep(response, 0, new Map(), () => undefined, update, () => undefined, () => undefined), root);
+    const model = root.querySelector<HTMLSelectElement>('[aria-label="CT1 model"]')!;
+    model.value = "ct-100";
+    model.dispatchEvent(new Event("change"));
+    expect(update).toHaveBeenCalledWith(1, expect.objectContaining({ modelId: "ct-100", multiplier: 2, multiplierMode: "automatic" }));
+
+    const drafts = new Map<number, CtDraft>([[1, { name: "CT1", modelId: "", multiplier: 1, multiplierMode: "manual", preserveExistingGain: false, burdenAcknowledged: false, expanded: false }]]);
+    render(ctInventoryStep(response, 0, drafts, () => undefined, update, () => undefined, () => undefined), root);
+    root.querySelector<HTMLSelectElement>('[aria-label="CT1 model"]')!.value = "ct-100";
+    root.querySelector<HTMLSelectElement>('[aria-label="CT1 model"]')!.dispatchEvent(new Event("change"));
+    expect(update).toHaveBeenLastCalledWith(1, expect.objectContaining({ multiplier: 1, multiplierMode: "manual" }));
+  });
+
+  it("blocks undersized CT ranges and preserves an unknown legacy gain without a change", () => {
+    const response = meterResponse() as unknown as CtInventory;
+    const preset = { model_id: "ct-200", label: "200 A CT", rated_current_a: 200, secondary: "40 mA", default_gain_ct: 41788, requires_burden_jumper_cut: false, notes: "" };
+    response.channels = [{ ...response.channels[0]!, selected_model_id: null, selection_verified_against_config: false }];
+    response.catalog.presets = [preset];
+    const tooSmall = new Map<number, CtDraft>([[1, { name: "CT1", modelId: "ct-200", multiplier: 2, multiplierMode: "automatic", preserveExistingGain: false, burdenAcknowledged: false, expanded: false }]]);
+    expect(draftsAreValid(response, tooSmall)).toBe(false);
+    const preserved = new Map<number, CtDraft>([[1, { name: "CT1", modelId: "", multiplier: 1, multiplierMode: "automatic", preserveExistingGain: true, burdenAcknowledged: false, expanded: false }]]);
+    expect(draftsAreValid(response, preserved)).toBe(true);
+    expect(changesFromDrafts(response, preserved)).toEqual([]);
+  });
+
   it("reviews physical, semantic, package, and entity details without threshold controls", () => {
     const meter = meterResponse() as unknown as import("../src/types").MeterConfiguration;
     meter.configuration.aggregates = [{ aggregate_id: "main-service", name: "Main service", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true }];
@@ -3062,7 +3100,7 @@ describe("CircuitSetup panel", () => {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: Array.from({ length: 6 }, (_, index) => ({
         channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: index === 0 ? 16000 : 5500,
-        reporting_multiplier: index === 0 ? 2 : 1, selected_model_id: index === 0 ? "custom" : "model",
+        reporting_multiplier: 2, selected_model_id: index === 0 ? "custom" : "model",
         selection_verified_against_config: true, display_label: index === 0 ? "Existing clamp" : null, stored_selection_present: true,
         address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3),
           phase: (["A", "B", "C"] as const)[index % 3]! },
@@ -3088,7 +3126,7 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     const state = panel as unknown as { drafts: Map<number, CtDraft> };
     expect(changesFromDrafts(inventory, state.drafts)).toEqual([{
-      channel: 2, name: "Unrelated rename", model_id: "model", reporting_multiplier: 1,
+      channel: 2, name: "Unrelated rename", model_id: "model", reporting_multiplier: 2,
     }]);
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
   });

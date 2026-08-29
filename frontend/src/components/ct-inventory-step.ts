@@ -10,6 +10,14 @@ export interface CtDraft {
   customLabel?: string | undefined;
   burdenAcknowledged: boolean;
   expanded: boolean;
+  preserveExistingGain?: boolean;
+  multiplierMode?: "automatic" | "manual";
+}
+
+export function recommendedReportingMultiplier(ratedCurrentA: number): 1 | 2 | 4 | 8 | null {
+  if (!Number.isFinite(ratedCurrentA) || ratedCurrentA < 0) return null;
+  return ratedCurrentA <= 65.535 ? 1 : ratedCurrentA <= 131.07 ? 2
+    : ratedCurrentA <= 262.14 ? 4 : ratedCurrentA <= 524.28 ? 8 : null;
 }
 
 const resultingGain = (preset: CtPreset | undefined, multiplier: number, customGain?: number) =>
@@ -32,6 +40,7 @@ export function ctInventoryStep(
   disableChannel: (channel: number) => void = () => undefined,
   managedTotals = true,
   managedTotalsReason = "",
+  allowPreserveExistingGain = false,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -50,12 +59,11 @@ export function ctInventoryStep(
             @click=${() => setBoard(index)}>${index === 0 ? "Main Board" : `Add-on ${index}`}</button>
         `)}
       </div>
-      <p>Configure each CT on this board. Select its model, adjust the multiplier, and review the resulting gain.</p>
-      <p class="info-band">If you expect to measure more than 65.535 A on a CT, use a multiplier of 2 for a 120 A CT or 4 for a 200 A CT. The multiplier divides the gain and multiplies current and power output by the same amount.</p>
+      <p>Choose the CT model and confirm each circuit. The helper selects the smallest safe reporting range automatically.</p>
       <div id="board-panel" role="tabpanel" aria-labelledby=${`board-tab-${board}`}>
       <div class="ct-table" role="table" aria-rowcount=${inventory.channels.length + 1}>
         <div class="ct-header" role="row" aria-rowindex="1">
-          <span role="columnheader">CT</span><span role="columnheader">Used</span><span role="columnheader">Role</span><span role="columnheader">Voltage reference</span><span role="columnheader">Name</span><span role="columnheader">Model</span><span role="columnheader">Current gain</span><span role="columnheader">Multiplier</span><span role="columnheader">Resulting gain</span><span role="columnheader">Burden</span><span role="columnheader">Status</span>
+          <span role="columnheader">CT</span><span role="columnheader">Used</span><span role="columnheader">Circuit name</span><span role="columnheader">Circuit type</span><span role="columnheader">CT model / rating</span><span role="columnheader">Range status</span>
         </div>
         <div class="ct-window" aria-label="Current transformers">
           ${rows.map((channel) => {
@@ -69,6 +77,8 @@ export function ctInventoryStep(
             const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
             const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : undefined);
             const dirty = isDirty(channel, draft);
+            const recommendation = preset ? recommendedReportingMultiplier(preset.rated_current_a) : null;
+            const effectiveRange = draft.multiplier * 65.535;
             const circuit = configuration?.channels.find((item) => item.channel === channel.channel);
             const reference = referenceByGroup.get(`${channel.address.board_index === 0 ? "main" : `addon${channel.address.board_index}`}_${channel.address.group_index + 1}`);
             return html`
@@ -78,18 +88,20 @@ export function ctInventoryStep(
                   @change=${(event: Event) => (event.target as HTMLInputElement).checked
                     ? patchChannel(channel.channel, { enabled: true, role: circuit.role === "unused" ? "branch" : circuit.role })
                     : disableChannel(channel.channel)} /></label>` : html`<span role="cell"><span class="mobile-label">Used</span>—</span>`}
-                ${circuit ? html`<label role="cell"><span class="mobile-label">Role</span><select aria-label=${`CT${channel.channel} role`} .value=${circuit.role} ?disabled=${!circuit.enabled}
+                <label role="cell"><span class="mobile-label">Circuit name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
+                  @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
+                ${circuit ? html`<label role="cell"><span class="mobile-label">Circuit type</span><select aria-label=${`CT${channel.channel} role`} .value=${circuit.role} ?disabled=${!circuit.enabled}
                   @change=${(event: Event) => patchChannel(channel.channel, { role: (event.target as HTMLSelectElement).value as ChannelSettings["role"] })}>
                   ${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${roleLabel(role)}</option>`)}</select></label>` : html`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
-                <span role="cell" data-voltage-reference><span class="mobile-label">Voltage reference</span>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span>
-                <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
-                  @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
-                <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} .value=${draft.modelId} ?disabled=${labelOnly}
+                <label role="cell"><span class="mobile-label">CT model / rating</span><select aria-label=${`CT${channel.channel} model`} .value=${draft.modelId} ?disabled=${labelOnly || draft.preserveExistingGain}
                   @change=${(event: Event) => {
                     const modelId = (event.target as HTMLSelectElement).value;
                     const selectedPreset = inventory.catalog.presets.find((item) => item.model_id === modelId);
                     update(channel.channel, {
                       modelId,
+                      preserveExistingGain: false,
+                      multiplier: draft.multiplierMode === "manual" ? draft.multiplier : selectedPreset ? recommendedReportingMultiplier(selectedPreset.rated_current_a) ?? draft.multiplier : draft.multiplier,
+                      multiplierMode: draft.multiplierMode ?? "automatic",
                       burdenAcknowledged: channel.selection_verified_against_config
                         && modelId === channel.selected_model_id
                         && (modelId === "custom" || selectedPreset?.requires_burden_jumper_cut === true),
@@ -99,18 +111,11 @@ export function ctInventoryStep(
                   <option value="" ?selected=${draft.modelId === ""}>Choose model</option>
                   ${inventory.catalog.presets.map((item) => html`<option value=${item.model_id} ?selected=${draft.modelId === item.model_id}>${item.label}</option>`)}
                   <option value="custom" ?selected=${draft.modelId === "custom"}>Custom</option>
-                </select></label>
-                <span role="cell"><span class="mobile-label">Current gain</span>${channel.raw_gain_ct}</span>
-                <label role="cell"><span class="mobile-label">Multiplier</span><select aria-label=${`CT${channel.channel} multiplier`} .value=${String(draft.multiplier)} ?disabled=${labelOnly}
-                  @change=${(event: Event) => update(channel.channel, { multiplier: Number((event.target as HTMLSelectElement).value) })}>
-                  ${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${draft.multiplier === value}>${value}</option>`)}
-                </select></label>
-                <span role="cell"><span class="mobile-label">Resulting gain</span>${gain ?? "—"}</span>
-                <span role="cell"><span class="mobile-label">Burden</span>${preset?.requires_burden_jumper_cut ? "Check jumper" : "—"}</span>
-                <button role="cell" class="row-toggle" aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>
-                  ${draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}
-                </button>
+                </select>${preset ? html`<small>${preset.rated_current_a} A</small>` : nothing}<button class="row-toggle" aria-label=${`CT${channel.channel} technical details`} aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>${draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}</button><span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
+                <span role="cell"><span class="mobile-label">Range status</span>${draft.preserveExistingGain ? "Existing gain kept" : recommendation === null && preset ? "Rating exceeds ×8 range" : effectiveRange < (preset?.rated_current_a ?? 0) ? `Too small: ${effectiveRange} A` : `Up to ${effectiveRange} A`}</span>
               </div>
+              ${allowPreserveExistingGain && !channel.selection_verified_against_config && channel.raw_gain_ct > 0 ? html`<label class="check-row preserve-gain"><input type="checkbox" aria-label=${`CT${channel.channel} keep existing gain`} ?disabled=${labelOnly} .checked=${draft.preserveExistingGain === true}
+                @change=${(event: Event) => update(channel.channel, { preserveExistingGain: (event.target as HTMLInputElement).checked, expanded: true })} />Keep existing gain; CT model not recorded.</label>` : nothing}
               ${draft.modelId === "custom" && draft.expanded ? html`<div class="ct-detail custom-fields">
                 <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
                   ?disabled=${labelOnly}
@@ -126,15 +131,22 @@ export function ctInventoryStep(
                   @change=${(event: Event) => update(channel.channel, { burdenAcknowledged: (event.target as HTMLInputElement).checked })} />
                   I checked the burden-output requirement for CT${channel.channel}</label>
               </div>` : nothing}
-              ${preset && preset.rated_current_a > 65.535 && draft.multiplier === 1 ? html`<div class="warning-band" role="status">CT${channel.channel}: rated current exceeds the unscaled 65.535 A register range.</div>` : nothing}
-              ${draft.expanded && preset ? html`
+              ${!draft.preserveExistingGain && preset && (recommendation === null || effectiveRange < preset.rated_current_a) ? html`<div class="warning-band" role="status">CT${channel.channel}: this selection needs a range of at least ${preset.rated_current_a} A. Continue is blocked.</div>` : nothing}
+              <details class="technical-details" ?open=${draft.expanded}><summary>Technical details</summary>
                 <dl class="ct-detail">
-                  <div><dt>Rated current</dt><dd>${preset.rated_current_a} A</dd></div>
-                  <div><dt>Output</dt><dd>${preset.secondary}</dd></div>
-                  <div><dt>Official default gain</dt><dd>${preset.default_gain_ct ?? "Custom"}</dd></div>
-                  <div><dt>Burden note</dt><dd>${preset.notes || (preset.requires_burden_jumper_cut ? "Review burden jumper." : "No special burden change.")}</dd></div>
+                  <div><dt>Raw gain</dt><dd>${channel.raw_gain_ct}</dd></div>
+                  <div><dt>Divided gain</dt><dd>${gain ?? "—"}</dd></div>
+                  <div><dt>Voltage reference</dt><dd data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</dd></div>
+                  <div><dt>Reporting multiplier</dt><dd><label><input type="checkbox" aria-label=${`CT${channel.channel} manual multiplier`} ?checked=${draft.multiplierMode === "manual"} ?disabled=${labelOnly || draft.preserveExistingGain}
+                    @change=${(event: Event) => update(channel.channel, { multiplierMode: (event.target as HTMLInputElement).checked ? "manual" : "automatic", multiplier: (event.target as HTMLInputElement).checked ? draft.multiplier : recommendation ?? draft.multiplier })} /> Manual override</label>
+                    <select aria-label=${`CT${channel.channel} multiplier`} .value=${String(draft.multiplier)} ?disabled=${labelOnly || draft.preserveExistingGain || draft.multiplierMode !== "manual"}
+                      @change=${(event: Event) => update(channel.channel, { multiplier: Number((event.target as HTMLSelectElement).value), multiplierMode: "manual" })}>${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${draft.multiplier === value}>×${value}</option>`)}</select></dd></div>
+                  <div><dt>Rated current</dt><dd>${preset?.rated_current_a ?? "Custom"}${preset ? " A" : ""}</dd></div>
+                  <div><dt>Output</dt><dd>${preset?.secondary ?? "Custom"}</dd></div>
+                  <div><dt>Official default gain</dt><dd>${preset?.default_gain_ct ?? "Custom"}</dd></div>
+                  <div><dt>Burden note</dt><dd>${preset?.notes || (preset?.requires_burden_jumper_cut ? "Review burden jumper." : "No special burden change.")}</dd></div>
                 </dl>
-              ` : nothing}
+              </details>
             `;
           })}
         </div>
@@ -241,8 +253,13 @@ function circuitsEditor(
     aggregate.role === "two_pole" && !["one_ct_double_power", "both_conductors_one_ct", "two_ct_sum"].includes(aggregate.measurement_method) ? `${aggregate.name}: select a two-pole measurement method.` : "",
     aggregate.role === "two_pole" && aggregate.channels.some((channel) => configuration.aggregates.filter((item) => item.role === "two_pole" && item.channels.includes(channel)).length > 1) ? `${aggregate.name}: a CT cannot belong to two two-pole aggregates.` : "",
   ].filter(Boolean));
+  const automaticPreview = configuration.aggregates
+    .filter((aggregate) => aggregate.aggregate_id.startsWith("auto-"))
+    .map((aggregate) => `${aggregate.name} total = ${aggregate.channels.map((channel) => `CT${channel}`).join(" + ")}`);
   return html`<section class="step-content" aria-labelledby="aggregates-heading">
-    <h2 id="aggregates-heading">Aggregate totals</h2>
+    <h2 id="aggregates-heading">Automatic totals</h2>
+    <p class="info-band">${automaticPreview.length ? automaticPreview.join(" · ") : "No automatic totals are configured."}</p>
+    <details><summary>Advanced totals</summary>
     ${!managedTotals ? html`<p class="info-band" role="status">Aggregate editing unavailable: ${managedTotalsReason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : nothing}
     ${warnings.map((warning) => html`<p class="warning-band" role="status">${warning}</p>`)}
     <div class="aggregate-list">
@@ -281,6 +298,7 @@ function circuitsEditor(
     </fieldset>`)}
     </div>
     ${managedTotals ? html`<button class="secondary" data-action="add-aggregate" @click=${addAggregate}>Create aggregate total</button>` : nothing}
+    </details>
   </section>`;
 }
 
@@ -331,25 +349,30 @@ export function changesFromDrafts(inventory: CtInventory, drafts: Map<number, Ct
 }
 
 function isDirty(channel: CtInventory["channels"][number], draft: CtDraft): boolean {
+  if (draft.preserveExistingGain) return false;
   return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier
     || draft.modelId === "custom" && (resultingGain(undefined, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct
       || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));
 }
 
 function validDraft(inventory: CtInventory, draft: CtDraft): boolean {
+  if (draft.preserveExistingGain) return true;
   if (!draft.name.trim() || !draft.modelId || ![1, 2, 4, 8].includes(draft.multiplier)) return false;
   if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt! >= 1 && draft.customGainCt! <= 65535
     && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel!) && draft.burdenAcknowledged;
   const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
-  return Boolean(preset) && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged);
+  return Boolean(preset) && effectiveRangeIsSafe(preset!, draft.multiplier)
+    && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged);
+}
+
+function effectiveRangeIsSafe(preset: CtPreset, multiplier: number): boolean {
+  return multiplier * 65.535 >= preset.rated_current_a;
 }
 
 export function draftsAreValid(inventory: CtInventory, drafts: Map<number, CtDraft>, labelOnly = false): boolean {
   if (labelOnly) return [...drafts].every(([channel, draft]) => {
     const current = inventory.channels.find((item) => item.channel === channel);
-    return Boolean(current) && Boolean(draft.name.trim())
-      && draft.modelId === (current!.selected_model_id ?? "")
-      && draft.multiplier === current!.reporting_multiplier;
+    return Boolean(current) && Boolean(draft.name.trim());
   });
   for (const channel of inventory.channels) {
     const draft = drafts.get(channel.channel);
