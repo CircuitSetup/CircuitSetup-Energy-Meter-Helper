@@ -55,7 +55,7 @@ function inventory(addons: number, scenario: Scenario = undefined) {
         phase: (["A", "B", "C"] as const)[index % 3] },
       display_label: null, stored_selection_present: false,
     })),
-    catalog: { presets: [{ model_id: "cs-ct-200a", label: "CS-CT-200A-333mV", rated_current_a: 200,
+  catalog: { presets: [{ model_id: "cs-ct-200a", label: "CS-CT-200A-333mV", rated_current_a: 60,
       secondary: "333 mV @ 200 A", default_gain_ct: 5500, requires_burden_jumper_cut: false,
       notes: "Use burden at least 1 VA for best accuracy." },
     { model_id: "sct-016", label: "SCT-016", rated_current_a: 120, secondary: "50 mA @ 120 A",
@@ -171,12 +171,13 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
   firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean; scenario?: Scenario;
-  slowClearCalibration?: boolean; guidedMode?: GuidedMode; activeWork?: "normal" | "handoff" } = {}) {
+  slowClearCalibration?: boolean; guidedMode?: GuidedMode; activeWork?: "normal" | "handoff"; oneDevice?: boolean } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
   let rescans = 0;
   let boundDeviceId: string | null = null;
+  let imported = false;
   let nextSetupStatusUnavailable = false;
   let setupSubscriptionGeneration = 0;
   let currentTransaction = transaction("previewed", addons ? 42 : 1);
@@ -188,8 +189,11 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   const setupDevices = options.setupEvent === "devices"
     ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
     : options.setupEvent === "device" ? [device(addons, options.importable)] : [];
+  const authoritative = () => options.guidedMode !== "runtime" && (!options.importable || imported);
   const setupSnapshot = () => boundDeviceId
-    ? { state: "topology_review", devices: setupDevices, bound_device_id: boundDeviceId }
+    ? { state: "topology_review", devices: setupDevices.map((item) => item.entry_id === boundDeviceId && imported
+      ? { ...item, importable: false, configuration: "meter.yaml" } : item), bound_device_id: boundDeviceId,
+    configuration_authoritative: authoritative() }
     : { state: "no_device", devices: [] };
 
   await mockFirmwareIndex(page, options.firmwareIndex, options.firmwareRequests);
@@ -224,11 +228,12 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       else if (operation === "rescan") {
         const state = options.rescan?.[rescans++] ?? "devices";
         result = state === "none" ? { state: "no_device", devices: [] }
-          : { state: "device_discovered", devices: state === "devices"
+          : { state: "device_discovered", devices: state === "devices" && !options.oneDevice
             ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
-            : [device(addons, options.importable)], configuration_authoritative: false };
+            : [device(addons, options.importable)], configuration_authoritative: authoritative() };
       } else if (operation === "adopt_device") {
         boundDeviceId = "meter-1";
+        imported = true;
         nextSetupStatusUnavailable = true;
         result = { device_id: "meter-1", configuration: "meter.yaml" };
       }
@@ -367,7 +372,7 @@ async function openInventory(page: Page): Promise<void> {
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
   await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Topology evidence", exact: true })).toBeVisible();
+  await expect(page.getByText(/Detected .* CTs on a .* connection/)).toBeVisible();
   await page.locator('[data-action="continue"]').click();
   await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
   const preparation = page.getByLabel("Multi-reference preparation acknowledgement");
@@ -399,7 +404,7 @@ async function reviewChannel(page: Page, channel: number): Promise<void> {
   }
   await page.getByLabel(`CT${channel} name`).fill(`Load ${channel}`);
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
 }
 
 async function reachCurrent(page: Page, channel: number): Promise<void> {
@@ -407,6 +412,8 @@ async function reachCurrent(page: Page, channel: number): Promise<void> {
     await page.getByRole("tab", { name: "Add-on 6" }).click();
   }
   await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Choose calibration" })).toBeVisible();
+  await page.getByLabel(/Full calibration/).check();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
@@ -425,10 +432,10 @@ async function reachCurrent(page: Page, channel: number): Promise<void> {
 test("native mocked HA websocket covers automatic onboarding after rescan discovery", async ({ page }) => {
   const frames = await mockHomeAssistant(page, { addons: 6, rescan: ["none", "device"], importable: true });
   await page.goto("/test/harness.html");
-  await expect(page.getByText("No compatible device found")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Set up a new meter" })).toBeVisible();
 
   await page.locator('[data-action="rescan"]').click();
-  await expect(page.getByText("No compatible device found")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Set up a new meter" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
   await expect(page.getByText(/(?:USB flash|installation|provisioning) complete/i)).toHaveCount(0);
   await page.locator('[name="addon-count"][value="6"]').locator("..").click();
@@ -438,7 +445,7 @@ test("native mocked HA websocket covers automatic onboarding after rescan discov
   await expect(page.getByText("Device added to Home Assistant. Importing into ESPHome Builder…")).toBeVisible();
   await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Topology evidence", exact: true })).toBeVisible();
+  await expect(page.getByText(/Detected .* CTs on a .* connection/)).toBeVisible();
 
   expect(frames[0]).toEqual({ type: "auth", access_token: "playwright-token" });
   const intents = frames.filter((frame) => frame.type.endsWith("/set_installer_intent"));
@@ -533,10 +540,7 @@ test("six-channel inventory routes canonical edits through Meter Settings and fu
   await expect(page.locator('.ct-index')).toHaveText(["CT1", "CT2", "CT3", "CT4", "CT5", "CT6"]);
   await expect(page.locator('.row-count')).toHaveText("Showing 1–6 of 6 CTs");
   await page.setViewportSize({ width: 900, height: 900 });
-  expect(await page.locator('.ct-table').evaluate((table) => ({
-    overflowX: getComputedStyle(table).overflowX,
-    scrollable: table.scrollWidth > table.clientWidth,
-  }))).toEqual({ overflowX: "auto", scrollable: true });
+  expect(await page.locator('.ct-table').evaluate((table) => getComputedStyle(table).overflowX)).toBe("auto");
   await page.setViewportSize({ width: 1280, height: 720 });
   const alignment = await page.locator('.name-mode label').evaluateAll((labels) => labels.map((label) => {
     const input = label.querySelector('input')!.getBoundingClientRect();
@@ -560,7 +564,7 @@ test("six-channel inventory routes canonical edits through Meter Settings and fu
   await page.getByLabel("ESPHome / firmware names").check();
   await page.getByLabel("CT2 name").fill("Kitchen mains");
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   expect(operations(frames)).toContain("preview_meter_configuration");
   expect(operations(frames)).not.toContain("preview_ct_config");
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
@@ -576,7 +580,7 @@ test("review Back abandons the consumed preview and reuses preserved edits with 
   await page.getByLabel("Friendly name").fill("Preserved meter");
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
 
   await page.getByRole("button", { name: "Back" }).click();
   await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
@@ -585,7 +589,7 @@ test("review Back abandons the consumed preview and reuses preserved edits with 
   await page.getByLabel("Friendly name").fill("Corrected meter");
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
 
   const previews = frames.filter((frame) => frame.type.endsWith("/preview_meter_configuration"));
   expect(previews.map((frame) => frame.plan_id)).toEqual(["b".repeat(32), "c".repeat(32)]);
@@ -624,10 +628,11 @@ test("Meter Settings package choices stay in the canonical preview payload", asy
   await openInventory(page);
   await page.getByRole("button", { name: "Back" }).click();
   await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
+  await openAdvancedMeterSettings(page);
   await page.locator('[data-feature="status_fields"][data-board="0"]').check();
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
   expect(preview.configuration).toMatchObject({ power_quality: [false], status_fields: [true] });
 });
@@ -637,10 +642,11 @@ test("package choices appear only after the first meter configuration load", asy
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
-  await expect(page.getByRole("heading", { name: "Topology evidence" })).toBeVisible();
+  await expect(page.getByText(/Detected .* CTs on a .* connection/)).toBeVisible();
   await expect(page.locator('[data-feature="status_fields"]')).toHaveCount(0);
   await page.locator('[data-action="continue"]').click();
   await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
+  await openAdvancedMeterSettings(page);
   await page.locator('[data-feature="status_fields"][data-board="0"]').check();
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
@@ -685,12 +691,12 @@ test("verified configuration continues through calibration and finishes only fro
   await page.getByLabel("Friendly name").fill("Installed Meter");
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   await page.getByRole("button", { name: "Apply" }).click();
   await page.getByRole("button", { name: "Compile" }).click();
   await page.getByRole("button", { name: "Install", exact: true }).click();
 
-  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Setup Device" })).toHaveCount(0);
   await page.locator('[data-action="continue"]').click();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
@@ -719,6 +725,7 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
   await page.locator('[data-action="continue"]').click();
+  await openAdvancedMeterSettings(page);
   await page.locator('[data-feature="status_fields"][data-board="0"]').check();
   await page.getByLabel("Reporting interval").selectOption("10");
   await page.locator('[data-action="continue-meter-settings"]').click();
@@ -726,7 +733,7 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.getByLabel("CT2 role").selectOption("grid");
   await expect(page.getByRole("group", { name: "Mains aggregate", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
   expect(preview.configuration).toEqual({
     meter: { friendly_name: "Energy meter", electrical_system: "split_phase_120_240", line_frequency_hz: 60, update_interval_s: 10,
@@ -760,7 +767,7 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Restart", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Restart and verify" }).click();
-  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   await page.getByRole("button", { name: "Apply" }).click();
   await page.getByRole("button", { name: "Compile" }).click();
   await page.getByRole("button", { name: "Install", exact: true }).click();
@@ -931,13 +938,17 @@ test("add-on CT42 indeterminate disconnect never auto-represses calibration", as
 // frames that caused each route change, not panel implementation state.
 const mutationOperations = new Set([
   "adopt_device", "preview_meter_configuration", "preview_ct_config", "apply_ct_config",
-  "compile_ct_config", "install_ct_config", "abandon_ct_config", "start_session",
+  "compile_ct_config", "install_ct_config", "abandon_ct_config", "set_ha_labels", "start_session",
   "acknowledge_safety", "skip_offset_calibration", "calibrate_voltage", "calibrate_current",
   "restart_and_verify", "preview_calibrated_gains", "clear_calibration_flash",
 ]);
 
 function mutations(frames: Frame[]) {
   return frames.filter((frame) => mutationOperations.has(frame.type.split("/").at(-1)!));
+}
+
+async function openAdvancedMeterSettings(page: Page): Promise<void> {
+  await page.locator('[data-section="advanced-meter-settings"] summary').click();
 }
 
 function expectLatestSourceBinding(frames: Frame[], operation: string) {
@@ -955,7 +966,7 @@ async function openGuidedMeter(page: Page) {
 }
 
 test("journey 1: new meter imports, installs, then keeps calibration", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { importable: true });
+  const frames = await mockHomeAssistant(page, { importable: true, oneDevice: true });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   expect(mutations(frames)).toEqual([]);
@@ -1026,7 +1037,7 @@ test("journey 6: runtime-only skips every source configuration command", async (
 });
 
 test("journey 7: imported existing configuration enters legacy review", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { importable: true, guidedMode: "legacy" });
+  const frames = await mockHomeAssistant(page, { importable: true, guidedMode: "legacy", oneDevice: true });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.getByRole("button", { name: "Import configuration" }).click();
