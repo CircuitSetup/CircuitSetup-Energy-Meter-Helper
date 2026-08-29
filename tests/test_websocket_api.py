@@ -1091,7 +1091,9 @@ def test_adoption_rebind_blocks_work_creation_until_the_live_controller_exists(
             await self.release_adoption.wait()
             return {"device_id": "new-meter", "configuration": "new-meter.yaml"}
 
-        async def async_start_session(self, _device_id: str) -> dict[str, str]:
+        async def async_start_session(
+            self, _device_id: str, _calibration_plan: str
+        ) -> dict[str, str]:
             self.calls.append((self.label, "start_session"))
             return {"created_by": self.label}
 
