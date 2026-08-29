@@ -259,11 +259,13 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       }
       else if (operation === "get_ct_inventory") result = inventory(addons, options.scenario);
       else if (operation === "get_active_work") result = options.activeWork === "normal"
-        ? { session: null, transaction: transaction("validated", 1), verified_calibration: null }
+        ? { session: null, transaction: { ...transaction("validated", 1), changes: [] }, verified_calibration: null }
         : options.activeWork === "handoff"
           ? { session: session("verified", true, addons, false, "skipped", "standard"),
-            transaction: { ...transaction("previewed", 1), transaction_id: "d".repeat(32) },
-            verified_calibration: { ...restart(addons), source_handoff_transaction_id: "d".repeat(32) } }
+            transaction: { ...transaction("previewed", 1), transaction_id: "d".repeat(32), changes: [] },
+            verified_calibration: { ...restart(addons), source_authority: "configuration",
+              source_handoff_available: false, source_handoff_transaction_id: "d".repeat(32),
+              source_handoff_firmware_installed: true } }
           : { session: null, transaction: null, verified_calibration: null };
       else if (operation === "set_ha_labels") result = { mode: "home_assistant_labels",
         results: [{ channel: 1, state: "updated" }] };
@@ -907,15 +909,19 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await page.getByRole("button", { name: "Calibrate current" }).click();
   await expect(page.getByLabel("Calibration evidence").first()).toContainText("Saved in flash: Yes");
   await expect(page.getByText("Current calibration complete for CT1–CT3.")).toBeVisible();
+  await page.getByRole("button", { name: "Skip current calibration" }).click();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Restart and verify" }).click();
   await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
+  await page.getByRole("region", { name: "Review changes" }).getByText("Technical details", { exact: true }).click();
   await expect(page.getByLabel("Redacted substitution diff")).toBeVisible();
-  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Write verified gains to ESPHome" }).click();
   await page.getByRole("button", { name: "Build firmware" }).click();
-  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
+  await page.getByRole("button", { name: "Install calibrated firmware" }).click();
+  await expect(page.getByRole("heading", { name: "Setup complete", exact: true })).toBeVisible();
   await expect(page.getByText(/Calibration was saved to YAML/)).toBeVisible();
+  await page.getByRole("button", { name: "Finish" }).click();
+  await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
 
   const ordered = operations(frames);
   expect(ordered.indexOf("apply_ct_config")).toBeLessThan(ordered.indexOf("compile_ct_config"));
@@ -990,8 +996,9 @@ test("journey 1: new meter imports, installs, then keeps calibration", async ({ 
   await page.getByRole("button", { name: "Import" }).first().click();
   await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Meter Settings" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Meter Settings", exact: true }).first()).toBeVisible();
   await page.getByLabel("Friendly name").fill("Imported meter");
+  await page.getByLabel("Confirm electrical profile").check();
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
@@ -1000,7 +1007,7 @@ test("journey 1: new meter imports, installs, then keeps calibration", async ({ 
   await page.getByRole("button", { name: "Build firmware" }).click();
   await page.getByRole("button", { name: "Install on meter" }).click();
   await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Keep existing calibration/).check();
+  await page.getByLabel(/Keep existing calibration/).click();
   await expect(page.getByRole("heading", { name: /Setup complete/ })).toBeVisible();
 });
 
@@ -1032,7 +1039,7 @@ test("journey 4: legacy manage requires review before migration preview", async 
   await expect(page.getByRole("heading", { name: "Review Existing Setup", exact: true }).first()).toBeVisible();
   expect(mutations(frames)).toEqual([]);
   await page.getByRole("button", { name: "Review and manage with helper" }).click();
-  await expect(page.getByRole("heading", { name: "Meter Settings" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Meter Settings", exact: true }).first()).toBeVisible();
 });
 
 test("journey 5: legacy calibrate-only never previews configuration", async ({ page }) => {
@@ -1060,6 +1067,8 @@ test("journey 7: imported existing configuration enters legacy review", async ({
   await page.locator('[data-action="rescan"]').click();
   await page.getByRole("button", { name: "Import" }).first().click();
   await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: "Open setup" }).first().click();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Review Existing Setup", exact: true }).first()).toBeVisible();
   expect(mutations(frames).filter((frame) => !frame.type.endsWith("/adopt_device"))).toEqual([]);
@@ -1068,16 +1077,26 @@ test("journey 7: imported existing configuration enters legacy review", async ({
 test("journey 8: an active normal transaction resumes at Install Configuration", async ({ page }) => {
   await mockHomeAssistant(page, { activeWork: "normal" });
   await openInventory(page);
+  await page.getByLabel("CT1 name").fill("Load 1");
   await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Standard calibration/).check();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel(/Standard calibration/).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
 });
 
 test("journey 9: an active calibration handoff resumes at Save Calibration", async ({ page }) => {
   await mockHomeAssistant(page, { activeWork: "handoff" });
   await openInventory(page);
+  await page.getByLabel("CT1 name").fill("Load 1");
   await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Standard calibration/).check();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel(/Standard calibration/).click();
   await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
 });
 
