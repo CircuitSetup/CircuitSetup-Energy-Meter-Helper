@@ -818,7 +818,7 @@ export class CircuitSetupPanel extends LitElement {
       ? active.verified_calibration : null;
     if (this.configurationMode === "legacy_editable"
       && this.existingConfigurationChoice === null
-      && (this.calibrationHandoff || this.restartResult)) this.existingConfigurationChoice = "calibrate_only";
+      && (this.session || this.calibrationHandoff || this.restartResult)) this.existingConfigurationChoice = "calibrate_only";
     if (!this.transaction && !this.session && !this.restartResult) return;
     this.navigate(resumeWorkflowRoute(this.workflowContext()));
     if (this.transaction) await this.subscribeTransaction(this.connectionGeneration);
@@ -1286,29 +1286,38 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async reviewCalibrationHandoff(): Promise<void> {
-    if (!this.api || !this.session || !this.restartResult?.source_handoff_available) return;
+    if (!this.api || !this.session || !this.restartResult?.source_handoff_available || this.pendingAction) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const verificationId = this.restartResult.verification_id; const generation = ++this.operationGeneration;
     this.clearSubscription("transaction");
     this.transaction = null;
     this.transactionPurpose = "save_calibration";
-    await this.run(async () => {
-      const changes = this.calibrationDraftChanges();
-      const transaction = await api.previewCalibratedGains(
-        sessionId,
-        verificationId,
-        changes,
-        this.sourcePackageOptions ? this.packageOptions : undefined,
-      );
-      if (!this.ownsOperation(generation, api, deviceId)
-        || this.session?.session_id !== sessionId
-        || this.restartResult?.verification_id !== verificationId) return;
-      this.calibrationHandoff = true;
-      this.transaction = transaction;
-      this.navigate("save-calibration");
-      await this.subscribeTransaction(this.connectionGeneration);
-    }, "Calibration gains could not be prepared for YAML review.",
-    () => this.ownsOperation(generation, api, deviceId));
+    this.pendingAction = "calibration-handoff";
+    this.requestUpdate();
+    try {
+      await this.run(async () => {
+        const changes = this.calibrationDraftChanges();
+        const transaction = await api.previewCalibratedGains(
+          sessionId,
+          verificationId,
+          changes,
+          this.sourcePackageOptions ? this.packageOptions : undefined,
+        );
+        if (!this.ownsOperation(generation, api, deviceId)
+          || this.session?.session_id !== sessionId
+          || this.restartResult?.verification_id !== verificationId) return;
+        this.calibrationHandoff = true;
+        this.transaction = transaction;
+        this.navigate("save-calibration");
+        await this.subscribeTransaction(this.connectionGeneration);
+      }, "Calibration gains could not be prepared for YAML review.",
+      () => this.ownsOperation(generation, api, deviceId));
+    } finally {
+      if (this.pendingAction === "calibration-handoff") {
+        this.pendingAction = "";
+        this.requestUpdate();
+      }
+    }
   }
 
   private async clearCalibrationHandoff(): Promise<void> {
@@ -1710,6 +1719,10 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private keepCalibrationInFlash(): void {
+    ++this.operationGeneration;
+    if (this.pendingAction === "calibration-handoff") this.pendingAction = "";
+    this.clearSubscription("transaction");
+    this.transaction = null;
     this.handoffDeclined = true;
     this.announcement = "Calibration remains in meter flash. Installing firmware may replace it.";
     this.navigate("summary");
@@ -1973,7 +1986,7 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return html`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
       <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
       <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>
-      <footer class="action-footer"><button class="secondary" data-action="keep-calibration-flash" @click=${() => this.keepCalibrationInFlash()}>Keep calibration in meter flash</button><button class="primary" data-action="review-calibration-handoff" @click=${() => void this.reviewCalibrationHandoff()}>Review and save calibration to YAML</button></footer>
+      <footer class="action-footer"><button class="secondary" data-action="keep-calibration-flash" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => this.keepCalibrationInFlash()}>Keep calibration in meter flash</button><button class="primary" data-action="review-calibration-handoff" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => void this.reviewCalibrationHandoff()}>${this.pendingAction === "calibration-handoff" ? "Preparing YAML review…" : "Review and save calibration to YAML"}</button></footer>
     </section>`;
     if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep(this.step === "save-calibration" ? "save_calibration" : "install_configuration", this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),

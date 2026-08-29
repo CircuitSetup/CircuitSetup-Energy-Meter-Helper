@@ -3959,6 +3959,54 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("Installing firmware may replace it");
   });
 
+  it("guards handoff preview reentry and ignores a late preview after keeping flash", async () => {
+    let resolvePreview!: (value: unknown) => void;
+    const pendingPreview = new Promise((resolve) => { resolvePreview = resolve; });
+    let previewCalls = 0;
+    const preview = { transaction_id: "5".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [],
+      validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const restart = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
+      topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
+      topology_voltage_layout: "two_groups", connection_generation: 4, groups: [], verification_id: "1".repeat(32),
+      source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null,
+      source_handoff_firmware_installed: false };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "preview_calibrated_gains") { previewCalls += 1; return pendingPreview as Promise<T>; }
+        return {} as T;
+      }, connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & {
+      reviewCalibrationHandoff(): Promise<void>;
+      keepCalibrationInFlash(): void;
+    };
+    state.selectedDeviceId = "meter-1";
+    state.topology = meterResponse().topology;
+    state.session = { session_id: "session", device_id: "meter-1", state: "verified",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+    state.restartResult = restart;
+    panel.showState("save-calibration"); await panel.updateComplete;
+
+    const first = state.reviewCalibrationHandoff();
+    const second = state.reviewCalibrationHandoff();
+    await tick(); await panel.updateComplete;
+    expect(previewCalls).toBe(1);
+    const buttons = [...panel.shadowRoot!.querySelectorAll<HTMLButtonElement>(".action-footer button")];
+    expect(buttons).toHaveLength(2);
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+
+    state.keepCalibrationInFlash();
+    resolvePreview(preview);
+    await Promise.all([first, second]); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup complete");
+    expect(state.transaction).toBeNull();
+    expect(state.pendingAction).toBe("");
+  });
+
   it("reconnect assigns the returned live session instead of discarding it", async () => {
     const live = { session_id: "session", device_id: "meter-1", state: "unstable", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, get_session: live }));

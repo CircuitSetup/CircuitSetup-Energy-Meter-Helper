@@ -172,7 +172,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
   firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean; scenario?: Scenario;
-  slowClearCalibration?: boolean; guidedMode?: GuidedMode; activeWork?: "normal" | "handoff"; oneDevice?: boolean } = {}) {
+  slowClearCalibration?: boolean; guidedMode?: GuidedMode; activeWork?: "normal" | "handoff" | "safety" | "ready"; oneDevice?: boolean } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
@@ -280,6 +280,10 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
             verified_calibration: { ...restart(addons), source_authority: "configuration",
               source_handoff_available: false, source_handoff_transaction_id: "d".repeat(32),
               source_handoff_firmware_installed: true } }
+          : options.activeWork === "safety"
+            ? { session: session("safety_required", false, addons, false, "skipped", "standard"), transaction: null, verified_calibration: null }
+          : options.activeWork === "ready"
+            ? { session: session("ready", true, addons, false, "skipped", "standard"), transaction: null, verified_calibration: null }
           : { session: null, transaction: null, verified_calibration: null };
       else if (operation === "set_ha_labels") result = { mode: "home_assistant_labels",
         results: [{ channel: 1, state: "updated" }] };
@@ -1285,6 +1289,18 @@ test("a legacy migration transaction resumes without repeating the branch choice
   await expect(page.getByRole("heading", { name: "Install reviewed helper configuration" })).toBeVisible();
   expect(mutations(frames)).toEqual([]);
 });
+
+for (const [activeWork, heading] of [["safety", "Safety"], ["ready", "Voltage"]] as const) {
+  test(`a legacy calibration-only ${activeWork} session resumes at ${heading}`, async ({ page }) => {
+    const frames = await mockHomeAssistant(page, { activeWork, guidedMode: "legacy" });
+    await page.goto("/test/harness.html");
+    await page.locator('[data-action="rescan"]').click();
+    await page.locator('[data-action="configure-device"]').first().click();
+
+    await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+    expect(mutations(frames)).toEqual([]);
+  });
+}
 
 test("journey 9: an active calibration handoff resumes at Save Calibration", async ({ page }) => {
   const frames = await mockHomeAssistant(page, { activeWork: "handoff" });
