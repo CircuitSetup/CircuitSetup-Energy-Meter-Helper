@@ -2048,9 +2048,12 @@ def test_builder_session_uses_legacy_snapshot_configuration_for_calibration(
             Api(),  # type: ignore[arg-type]
             Builder(),  # type: ignore[arg-type]
         )
-        with pytest.raises(WorkflowHandleError, match="stored meter configuration is stale"):
-            await mismatched.async_start_session("meter")
-        assert preflight_calls == []
+        stale_session = await mismatched.async_start_session("meter")
+        stale_handle = mismatched._sessions[stale_session.session_id]
+
+        assert stale_handle.meter_configuration is not None
+        assert stale_handle.meter_configuration.meter.update_interval_s == 60
+        assert len(preflight_calls) == 1
         await mismatched.async_close()
 
     asyncio.run(run())
