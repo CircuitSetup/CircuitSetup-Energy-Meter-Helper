@@ -139,6 +139,7 @@ export class CircuitSetupPanel extends LitElement {
   private meterConfiguration: MeterConfiguration | null = null;
   private verifiedMeterConfiguration: MeterConfiguration | null = null;
   private multiReferencePreparationAcknowledged = false;
+  private meterProfileConfirmed = true;
   private meterFrequencyTouched = false;
   private meterNominalVoltageTouched = new Set<string>();
   private canonicalConfigurationChanged = false;
@@ -444,6 +445,7 @@ export class CircuitSetupPanel extends LitElement {
     this.verifiedMeterConfiguration = null;
     this.packageOptionsTouched = false;
     this.multiReferencePreparationAcknowledged = false;
+    this.meterProfileConfirmed = this.configurationMode === "helper_managed";
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = new Set();
     this.canonicalConfigurationChanged = false;
@@ -956,6 +958,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private setMeterProfile(electricalSystem: ElectricalSystem): void {
     if (!this.meterSettingsDraft) return;
+    this.meterProfileConfirmed = false;
     const defaults = electricalSystem === "split_phase_120_240" ? { frequency: 60 as LineFrequencyHz, voltage: 120 }
       : electricalSystem === "single_phase_230" ? { frequency: 50 as LineFrequencyHz, voltage: 230 } : null;
     this.meterSettingsDraft = { ...this.meterSettingsDraft, electrical_system: electricalSystem,
@@ -968,6 +971,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private setMeterFrequency(lineFrequencyHz: LineFrequencyHz): void {
     if (!this.meterSettingsDraft) return;
+    this.meterProfileConfirmed = false;
     this.meterFrequencyTouched = true;
     this.meterSettingsDraft = { ...this.meterSettingsDraft, line_frequency_hz: lineFrequencyHz };
     this.updateMeterSettings(this.meterSettingsDraft);
@@ -976,6 +980,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private setMeterNominalVoltage(referenceId: string, nominalVoltage: number): void {
     if (!this.meterSettingsDraft) return;
+    this.meterProfileConfirmed = false;
     this.meterNominalVoltageTouched = new Set(this.meterNominalVoltageTouched).add(referenceId);
     this.meterSettingsDraft = { ...this.meterSettingsDraft, voltage_references: this.meterSettingsDraft.voltage_references.map((reference) =>
       reference.reference_id === referenceId ? { ...reference, nominal_voltage_v: nominalVoltage } : reference) };

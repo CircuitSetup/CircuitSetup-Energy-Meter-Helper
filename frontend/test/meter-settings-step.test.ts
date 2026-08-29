@@ -74,6 +74,14 @@ describe("meterSettingsStep", () => {
     expect(root.querySelector<HTMLSelectElement>('[aria-label="Reporting interval"] option:checked')?.value).toBe("30");
   });
 
+  it("collapses advanced settings and only shows editable gain for custom transformers", () => {
+    const root = document.createElement("div");
+    render(meterSettingsStep(draft, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    expect(root.querySelector("details[data-section=advanced-meter-settings]")).not.toBeNull();
+    expect(root.querySelector('[aria-label="main custom voltage gain"]')).toBeNull();
+    expect(root.textContent).toContain("Starting gain: 7305");
+  });
+
   it("adds and removes references by explicitly transferring physical groups", () => {
     const root = document.createElement("div");
     let updated = { ...draft, voltage_references: [{ ...draft.voltage_references[0]!, group_keys: ["main_1", "main_2"] }] };
