@@ -7,10 +7,11 @@ export function calibrationProgress(
   referenceReady: boolean,
   stability: StabilityResult | null,
   result: CalibrationResult | null,
+  plan: "standard" | "full" | null = "full",
 ): TemplateResult {
   const complete = [referenceReady, Boolean(stability?.stable), Boolean(result), Boolean(result?.gain_evidence), Boolean(result)];
   const active = complete.findIndex((value) => !value);
-  const labels = ["Set reference", "Check stability", "Run calibration", "Verify gain", "Zero reference"];
+  const labels = ["Set reference", "Check stability", "Run calibration", "Verify gain"];
   return html`<ol class="progress-steps">${labels.map((label, index) => html`<li
     class=${complete[index] ? "complete" : index === active ? "active" : "pending"}><span
       class="progress-number">${index + 1}</span><span>${label}</span></li>`)}</ol>`;
@@ -49,7 +50,7 @@ export function calibrationEvidence(result: CalibrationResult | null): TemplateR
   return html`<section class="measurement-evidence" aria-label="Calibration evidence">
     <h3>Calibration iteration ${result.iteration}</h3>
     <dl>
-      <div><dt>State</dt><dd>${result.state}</dd></div>
+        <details><summary>Technical details</summary><div><dt>Backend state</dt><dd>${result.state}</dd></div></details>
       <div><dt>Changed channels</dt><dd>${result.changed_channels.join(", ") || "None"}</dd></div>
       <div><dt>Before</dt><dd>${result.before_values.map(formatNumber).join(", ") || "Unavailable"}</dd></div>
       <div><dt>After</dt><dd>${result.after_values.map(formatNumber).join(", ") || "Unavailable"}</dd></div>

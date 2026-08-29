@@ -30,7 +30,7 @@ export function voltageStep(
   const boardLabel = board === 0 ? "Main Board" : `Add-on ${board}`;
   return html`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
-      ${calibrationProgress(referenceReady, stability, complete ? results[0] ?? null : null)}
+      ${calibrationProgress(referenceReady, stability, complete ? results[0] ?? null : null, session?.calibration_plan ?? "full")}
       <div class="board-tabs" role="tablist" aria-label="Voltage calibration boards">
         ${Array.from({ length: topology?.board_count ?? 1 }, (_, index) => html`<button role="tab" data-voltage-board
           id=${`voltage-board-tab-${index}`} aria-controls="voltage-board-panel"

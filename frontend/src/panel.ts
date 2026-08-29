@@ -1574,13 +1574,13 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async checkStability(target: "voltage" | "current"): Promise<void> {
-    if (!this.api || !this.session || (target === "voltage" && this.voltageBusy)) return;
+    if (!this.api || !this.session || this.pendingAction === "session" || (target === "voltage" && this.voltageBusy)) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
     const targetIds = target === "voltage" ? this.voltageReferenceIds()
       : this.currentReferenceEntries().map((item) => String(item.channel));
     if (!targetIds.length) return;
-    if (target === "voltage") { this.voltageBusy = true; this.requestUpdate(); }
+    this.pendingAction = "session"; if (target === "voltage") this.voltageBusy = true; this.requestUpdate();
     try {
       await this.run(async () => {
         if (target === "voltage") {
@@ -1602,13 +1602,13 @@ export class CircuitSetupPanel extends LitElement {
         }
       }, "Stable samples could not be collected.", () => this.ownsOperation(generation, api, deviceId));
     } finally {
-      if (target === "voltage") { this.voltageBusy = false; this.requestUpdate(); }
+      if (target === "voltage") this.voltageBusy = false; this.pendingAction = ""; this.requestUpdate();
     }
   }
 
   private async calibrate(target: "voltage" | "current"): Promise<void> {
-    if (!this.api || !this.session || (target === "voltage" && this.voltageBusy)) return;
-    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
+    if (!this.api || !this.session || this.pendingAction === "session" || (target === "voltage" && this.voltageBusy)) return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id; this.pendingAction = "session"; this.requestUpdate();
     const generation = ++this.operationGeneration;
     const targetIds = target === "voltage" ? this.voltageReferenceIds()
       : this.currentReferenceEntries().map((item) => String(item.channel));
