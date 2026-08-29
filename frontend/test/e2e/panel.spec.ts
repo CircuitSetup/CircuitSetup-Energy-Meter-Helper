@@ -376,7 +376,10 @@ async function openInventory(page: Page): Promise<void> {
   await page.locator('[data-action="continue"]').click();
   await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
   const preparation = page.getByLabel("Multi-reference preparation acknowledgement");
-  if (await preparation.count()) await preparation.check();
+  if (await preparation.count()) {
+    await page.locator('[data-section="advanced-meter-settings"] summary').click();
+    await preparation.check();
+  }
   await page.locator('[data-action="continue-meter-settings"]').click();
   await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
 }
@@ -804,7 +807,9 @@ test("three voltage references cover each three-phase board exactly once and cal
   await expect(page.getByLabel("Multi-reference preparation acknowledgement")).not.toBeChecked();
   await page.getByLabel("Electrical system").selectOption("three_phase");
   await page.getByLabel("Line frequency").selectOption("50");
+  await page.locator('[data-section="advanced-voltage-options"] summary').click();
   await expect(page.locator(".voltage-reference-card")).toHaveCount(3);
+  await page.locator('[data-section="advanced-meter-settings"] summary').click();
   await page.getByLabel("Multi-reference preparation acknowledgement").check();
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
