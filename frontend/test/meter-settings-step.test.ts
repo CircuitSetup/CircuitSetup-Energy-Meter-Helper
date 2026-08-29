@@ -82,6 +82,55 @@ describe("meterSettingsStep", () => {
     expect(root.textContent).toContain("Starting gain: 7305");
   });
 
+  it("keeps only the five guided fields outside collapsed advanced controls", () => {
+    const root = document.createElement("div");
+    render(meterSettingsStep(draft, catalog, true, () => undefined, () => undefined, () => undefined,
+      () => undefined, () => undefined, () => undefined, () => undefined, null, () => undefined, false), root);
+
+    const advanced = [...root.querySelectorAll<HTMLDetailsElement>("details")];
+    expect(advanced.map((section) => section.open)).toEqual([false, false]);
+    expect([...root.querySelectorAll(".step-content > .meter-settings-grid > label")].map((label) => label.childNodes[0]?.textContent?.trim()))
+      .toEqual(["Friendly name", "Electrical system", "Line frequency (N. America: 60Hz)",
+        "Reporting interval (default: 10 seconds)", "Transformer"]);
+    expect(root.querySelector('[aria-label="main transformer"]')?.closest("details")).toBeNull();
+    expect(root.querySelector('[aria-label="main phase label"]')?.closest("details")?.dataset.section)
+      .toBe("advanced-meter-settings");
+    expect(root.querySelector('[aria-label="main_1 voltage reference"]')?.closest("details")?.dataset.section)
+      .toBe("advanced-meter-settings");
+    expect(root.querySelector<HTMLInputElement>('[aria-label="Confirm electrical profile"]')?.checked).toBe(false);
+    expect(root.querySelector<HTMLButtonElement>('[data-action="continue-meter-settings"]')?.disabled).toBe(true);
+  });
+
+  it.each(["new install", "legacy management"])("requires electrical-profile confirmation for %s", (_mode) => {
+    const root = document.createElement("div");
+    render(meterSettingsStep(draft, catalog, true, () => undefined, () => undefined, () => undefined,
+      () => undefined, () => undefined, () => undefined, () => undefined, null, () => undefined, false,
+      () => undefined, "legacy_editable"), root);
+
+    expect(root.querySelector<HTMLButtonElement>('[data-action="continue-meter-settings"]')?.disabled).toBe(true);
+  });
+
+  it("allows an unchanged helper-managed profile to continue", () => {
+    const root = document.createElement("div");
+    render(meterSettingsStep(draft, catalog, true, () => undefined, () => undefined, () => undefined,
+      () => undefined, () => undefined, () => undefined, () => undefined, null, () => undefined, true,
+      () => undefined, "helper_managed"), root);
+
+    expect(root.querySelector<HTMLButtonElement>('[data-action="continue-meter-settings"]')?.disabled).toBe(false);
+  });
+
+  it("keeps package and multi-reference wiring controls in advanced sections", () => {
+    const root = document.createElement("div");
+    render(meterSettingsStep({ ...draft, electrical_system: "custom" }, catalog, true, () => undefined,
+      () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined,
+      { power_quality: [false], status_fields: [true] }, () => undefined), root);
+
+    expect(root.querySelector(".package-options")?.closest("details")?.dataset.section).toBe("advanced-meter-settings");
+    expect(root.querySelector('[aria-label="main phase label"]')?.closest("details")?.dataset.section).toBe("advanced-meter-settings");
+    expect(root.querySelector('[aria-label="main_1 voltage reference"]')?.closest("details")?.dataset.section).toBe("advanced-meter-settings");
+    expect(root.querySelector('[aria-label="main nominal voltage"]')?.closest("details")?.dataset.section).toBe("advanced-voltage-options");
+  });
+
   it("adds and removes references by explicitly transferring physical groups", () => {
     const root = document.createElement("div");
     let updated = { ...draft, voltage_references: [{ ...draft.voltage_references[0]!, group_keys: ["main_1", "main_2"] }] };

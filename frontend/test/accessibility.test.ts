@@ -4,11 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
 import { currentStep } from "../src/components/current-step";
 import { espWebInstaller } from "../src/components/esp-web-installer";
+import { meterSettingsStep } from "../src/components/meter-settings-step";
 import { setupDeviceStep } from "../src/components/setup-device-step";
 import { panelStyles } from "../src/styles";
 import { voltageStep } from "../src/components/voltage-step";
 import type { CtInventory, MeterTopology } from "../src/types";
-import { newInstallScenario } from "./workflow-scenarios";
+import { meterResponse, newInstallScenario } from "./workflow-scenarios";
 
 const topology: MeterTopology = {
   addon_count: 1,
@@ -83,6 +84,31 @@ it("keeps Setup Device free of legacy installer and IO0 controls", () => {
   expect([...container.querySelectorAll("input")].some((input) =>
     [input.getAttribute("name"), input.getAttribute("aria-label"), input.getAttribute("autocomplete"), input.getAttribute("data-testid")]
       .some((value) => /ssid|network password|wifi password|passphrase/i.test(value ?? "")))).toBe(false);
+});
+
+it("opens advanced meter settings and confirms the profile with keyboard focus", () => {
+  container = document.createElement("div");
+  document.body.append(container);
+  const response = meterResponse();
+  let confirmed = false;
+  render(meterSettingsStep({ ...response.configuration.meter, authoritative: true, warnings: [] }, response.voltage_transformer_catalog, false,
+    noop, noop, noop, noop, noop, noop, noop, null, noop, false,
+    (value) => { confirmed = value; }), container);
+
+  const advanced = container.querySelector<HTMLDetailsElement>('[data-section="advanced-meter-settings"]')!;
+  const summary = advanced.querySelector<HTMLElement>("summary")!;
+  summary.focus();
+  summary.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  summary.click();
+  expect(document.activeElement).toBe(summary);
+  expect(advanced.open).toBe(true);
+
+  const confirmation = container.querySelector<HTMLInputElement>('[aria-label="Confirm electrical profile"]')!;
+  confirmation.focus();
+  confirmation.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+  confirmation.click();
+  expect(document.activeElement).toBe(confirmation);
+  expect(confirmed).toBe(true);
 });
 
 describe("calibration tab semantics", () => {

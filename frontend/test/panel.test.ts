@@ -657,6 +657,45 @@ describe("CircuitSetup panel", () => {
     expect((state.transaction as { state: string }).state).toBe("previewed");
   });
 
+  it("initializes confirmation by journey and blocks unconfirmed meter transitions", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
+      continueFromMeterSettings(): Promise<void>;
+      setMeterProfile(value: import("../src/types").ElectricalSystem): void;
+      setMeterFrequency(value: import("../src/types").LineFrequencyHz): void;
+      setMeterNominalVoltage(referenceId: string, value: number): void;
+    };
+    const configuration = meterResponse() as import("../src/types").MeterConfiguration;
+    state.selectedDeviceId = "meter-1";
+    state.step = "meter";
+
+    state.journeyOrigin = "new_install";
+    state.setMeterConfiguration(configuration);
+    expect(state.meterProfileConfirmed).toBe(false);
+    await state.continueFromMeterSettings();
+    expect(state.step).toBe("meter");
+
+    state.journeyOrigin = "existing_meter";
+    state.setMeterConfiguration({ ...configuration, capabilities: { ...configuration.capabilities,
+      semantic_source: "legacy_inferred", managed_totals: false } });
+    expect(state.meterProfileConfirmed).toBe(false);
+    await state.continueFromMeterSettings();
+    expect(state.step).toBe("meter");
+
+    state.setMeterConfiguration(configuration);
+    expect(state.meterProfileConfirmed).toBe(true);
+    for (const change of [
+      () => state.setMeterProfile("single_phase_230"),
+      () => { state.meterProfileConfirmed = true; state.setMeterFrequency(50); },
+      () => { state.meterProfileConfirmed = true; state.setMeterNominalVoltage("main", 230); },
+    ]) {
+      state.meterProfileConfirmed = true;
+      change();
+      expect(state.meterProfileConfirmed).toBe(false);
+    }
+  });
+
   it("abandons a consumed review and preserves edits on a fresh plan", async () => {
     const operations: Array<{ operation: string; planId: unknown }> = [];
     let activePlan: string | null = "b".repeat(32);
