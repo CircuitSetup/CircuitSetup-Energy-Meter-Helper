@@ -1609,6 +1609,75 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Offset");
   });
 
+  it.each([
+    ["standard", "Voltage"],
+    ["full", "Offset"],
+  ] as const)("routes explicit %s safety plans to %s", async (plan, heading) => {
+    const ready = { session_id: "session", device_id: "meter-1", state: "ready", calibration_plan: plan,
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
+      offset_capability: { status: "unavailable", repair_reason: null }, offset_disposition: "not_started",
+      offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] }],
+      has_pending_calibration: false };
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] },
+      acknowledge_safety: ready }));
+    const state = panel as unknown as Record<string, unknown> & { acknowledgeSafety(): Promise<void> };
+    state.session = { ...ready, state: "safety_required", safety_acknowledged: false };
+
+    await state.acknowledgeSafety(); await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe(heading);
+  });
+
+  it("serializes current stability and calibration requests and releases the guard", async () => {
+    let resolveCheck!: (value: unknown) => void;
+    let resolveCalibration!: (value: unknown) => void;
+    const pendingCheck = new Promise<unknown>((resolve) => { resolveCheck = resolve; });
+    const pendingCalibration = new Promise<unknown>((resolve) => { resolveCalibration = resolve; });
+    const operations: string[] = [];
+    const panel = await mount({
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        operations.push(operation);
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "check_stability") return await pendingCheck as T;
+        if (operation === "calibrate_current") return await pendingCalibration as T;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    });
+    const state = panel as unknown as Record<string, unknown> & {
+      checkStability(target: "current"): Promise<void>;
+      calibrate(target: "current"): Promise<void>;
+    };
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] }, calibration_sources: {} };
+    state.currentReferences = new Map([[1, 5]]);
+    state.inventory = { channels: [{ channel: 1, reporting_multiplier: 1 }] };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [] };
+    panel.showState("current"); await panel.updateComplete;
+
+    const checking = state.checkStability("current");
+    await tick();
+    const blocked = state.calibrate("current");
+    expect(operations.filter((operation) => operation === "calibrate_current")).toHaveLength(0);
+    resolveCheck({ target: "current", target_id: "1", stable: true,
+      windows: [{ samples: [5], mean: 5, standard_deviation: 0, range_percent: 0 }] });
+    await Promise.all([checking, blocked]);
+
+    const first = state.calibrate("current");
+    const duplicate = state.calibrate("current");
+    await tick();
+    expect(operations.filter((operation) => operation === "calibrate_current")).toHaveLength(1);
+    resolveCalibration({ state: "applied_pending_restart_verification", group_key: "main_1", phase: null,
+      changed_channels: [1], iteration: 1, before_values: [5], after_values: [5], error_percent_values: [0],
+      gain_evidence: null, restore_evidence: null, retry_allowed: false });
+    await Promise.all([first, duplicate]); await panel.updateComplete;
+
+    expect(state.pendingAction).toBe("");
+    expect(panel.shadowRoot?.querySelector(".sr-status")?.textContent).not.toContain("applied_pending_restart_verification");
+  });
+
   it("renders ordered offset preparation, gates Stage 2, and bounds seven-board tabs", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     const state = panel as unknown as Record<string, unknown>;
@@ -2796,6 +2865,23 @@ describe("CircuitSetup panel", () => {
     const continueButton = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []]
       .find((button) => button.textContent?.trim() === "Continue");
     expect(continueButton?.disabled).toBe(true);
+  });
+
+  it("allows current completion only after every enabled target is calibrated", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    const complete = (channel: number) => ({ state: "applied_pending_restart_verification", group_key: "main_1", phase: null,
+      changed_channels: [channel], iteration: 1, before_values: [5], after_values: [5], error_percent_values: [0],
+      gain_evidence: null, restore_evidence: null, retry_allowed: false });
+    state.session = { session_id: "session", device_id: device.entry_id, state: "applied_pending_restart_verification",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] }, has_pending_calibration: true };
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 2, group_count: 1,
+      connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [] };
+    state.meterConfiguration = { configuration: { channels: [{ channel: 1, enabled: true }, { channel: 2, enabled: true }] } };
+    state.calibrationByTarget = new Map([["current:1", complete(1)], ["current:2", complete(2)]]);
+
+    expect((state as unknown as { hasCompletedCalibration(target: "current"): boolean })
+      .hasCompletedCalibration("current")).toBe(true);
   });
 
   it("keeps topology review inline on Setup Device", async () => {

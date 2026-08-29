@@ -8,6 +8,8 @@ import { meterSettingsStep } from "../src/components/meter-settings-step";
 import { setupDeviceStep } from "../src/components/setup-device-step";
 import { panelStyles } from "../src/styles";
 import { voltageStep } from "../src/components/voltage-step";
+import { calibrationEvidence, calibrationProgress } from "../src/components/measurement-evidence";
+import { safetyStep } from "../src/components/safety-step";
 import type { CtInventory, MeterTopology } from "../src/types";
 import { meterResponse, newInstallScenario } from "./workflow-scenarios";
 
@@ -277,4 +279,72 @@ it("gives the CT inventory table explicit header and data-cell semantics", () =>
   expect(Array.from(table?.querySelectorAll('[data-ct-row]') ?? []).map((row) => row.getAttribute("aria-rowindex"))).toEqual([
     "2", "3", "4", "5", "6", "7",
   ]);
+});
+
+describe("guided calibration copy", () => {
+  it("makes units, circuit identity, and blank-gain preservation visible", () => {
+    const root = mount(currentStep(topology, { plan_id: "plan", source_sha256: "a".repeat(64), channels: [{
+      channel: 1, name: "Kitchen range", raw_gain_ct: 5500, reporting_multiplier: 1,
+      selected_model_id: "preset", selection_verified_against_config: true, display_label: null,
+      stored_selection_present: false, address: { channel: 1, board_index: 0, group_index: 0, phase: "A" },
+    }], catalog: { presets: [], source_repository: "repo", source_ref: "ref", schema_version: 1 } }, null,
+    1, new Map(), 1, null, null, new Set(), noop, noop, noop, noop, noop, noop, noop));
+    const voltage = mount(voltageStep(topology, null, 0, [120], [], null, [], false, noop, noop, noop, noop, noop, noop));
+
+    expect(voltage.querySelector<HTMLInputElement>("input")?.getAttribute("aria-label")).toContain("(V)");
+    expect(root.querySelector<HTMLInputElement>("[data-current-reference=\"1\"]")?.closest("label")?.textContent)
+      .toContain("CT1 · Kitchen range reference (A)");
+    expect(root.textContent).toContain("Blank entries keep the existing gains.");
+  });
+
+  it("explains runtime-only multiplier selection", () => {
+    const root = mount(currentStep(topology, null, null, 1, new Map([[1, 5]]), null, null, null,
+      new Set(), noop, noop, noop, noop, noop, noop, noop));
+
+    expect(root.querySelector("[data-role=reporting-multiplier]")).not.toBeNull();
+    expect(root.textContent).toContain("ESPHome source editing is unavailable");
+  });
+
+  it("shows plan-specific subprogress and user-facing stability states", () => {
+    const standard = mount(calibrationProgress(false, null, null, "standard"));
+    const full = mount(calibrationProgress(false, null, null, "full"));
+    const waiting = mount(voltageStep(topology, null, 0, [120], [], { target: "voltage", target_id: "main", stable: false, windows: [] }, [], false, noop, noop, noop, noop, noop, noop));
+    const changing = mount(currentStep(topology, null, null, 1, new Map([[1, 5]]), 1, { target: "current", target_id: "1", stable: false, windows: [{ samples: [4, 6], mean: 5, standard_deviation: 1, range_percent: 40 }] }, null, new Set(), noop, noop, noop, noop, noop, noop, noop));
+    const stable = mount(voltageStep(topology, null, 0, [120], [], { target: "voltage", target_id: "main", stable: true, windows: [{ samples: [120], mean: 120, standard_deviation: 0, range_percent: 0 }] }, [], false, noop, noop, noop, noop, noop, noop));
+
+    expect(standard.querySelectorAll(".progress-steps li")).toHaveLength(4);
+    expect(standard.textContent).not.toContain("Zero reference");
+    expect(full.querySelectorAll(".progress-steps li")).toHaveLength(5);
+    expect(full.textContent).toContain("Zero reference");
+    expect(waiting.textContent).toContain("Waiting for live data");
+    expect(changing.textContent).toContain("Data is changing too much");
+    expect(stable.textContent).toContain("Stable and ready for calibration");
+  });
+
+  it("keeps raw backend state inside Technical details", () => {
+    container = document.createElement("div"); document.body.append(container);
+    render(calibrationEvidence({ state: "applied_pending_restart_verification", group_key: "main_1", phase: null,
+      changed_channels: [1], iteration: 1, before_values: [1], after_values: [2], error_percent_values: [0],
+      gain_evidence: null, restore_evidence: null, retry_allowed: false }), container);
+
+    expect(container.querySelector("details > summary")?.textContent).toBe("Technical details");
+    expect(container.querySelector("details")?.textContent).toContain("Backend state");
+    expect(container.querySelector("dl > div > dt")?.textContent).not.toBe("State");
+  });
+
+  it("warns that CT inventory needs physical work", () => {
+    const inventory = { plan_id: "plan", source_sha256: "a".repeat(64), channels: [],
+      catalog: { presets: [], source_repository: "repo", source_ref: "ref", schema_version: 1 } } as CtInventory;
+    container = document.createElement("div"); document.body.append(container);
+    render(ctInventoryStep(inventory, 0, new Map(), noop, noop, noop, noop), container);
+
+    expect(container.textContent).toContain("Physical work required");
+  });
+
+  it.each(["standard", "full"] as const)("describes the %s calibration roadmap", (plan) => {
+    const root = mount(safetyStep({ session_id: "session", device_id: "meter", state: "safety_required", safety_acknowledged: false,
+      calibration_plan: plan, preflight: { issues: [], zeroed_roles: [] } }, false, noop, noop, noop, noop));
+
+    expect(root.textContent).toContain(plan === "full" ? "offsets, voltage, and current" : "voltage and current");
+  });
 });

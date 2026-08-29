@@ -1652,11 +1652,13 @@ export class CircuitSetupPanel extends LitElement {
         currentReferences.forEach((item) => updated.set(`current:${item.channel}`, result));
         this.calibrationByTarget = updated;
         this.session = { ...this.session!, has_pending_calibration: true };
-        this.announcement = `Calibration iteration ${result.iteration} finished with state ${result.state}.`;
+        this.announcement = `Current calibration iteration ${result.iteration} finished. Review the result before continuing.`;
       }, "Calibration did not complete. Reconnect and inspect before another attempt.",
       () => this.ownsOperation(generation, api, deviceId));
     } finally {
       if (target === "voltage") { this.voltageBusy = false; this.requestUpdate(); }
+      this.pendingAction = "";
+      this.requestUpdate();
     }
   }
 
