@@ -426,10 +426,10 @@ export class CircuitSetupPanel extends LitElement {
     ++this.operationGeneration;
     this.clearSubscription("transaction");
     this.clearSubscription("session");
+    const isNewInstall = deviceId !== null && deviceId === this.newInstallDeviceId;
     this.selectedDeviceId = deviceId;
     if (deviceId !== this.newInstallDeviceId) this.newInstallDeviceId = null;
-    this.journeyOrigin = deviceId !== null && deviceId === this.newInstallDeviceId
-      ? "new_install" : "existing_meter";
+    this.journeyOrigin = isNewInstall ? "new_install" : "existing_meter";
     this.configurationMode = null;
     this.existingConfigurationChoice = null;
     this.calibrationPlan = null;
@@ -903,6 +903,7 @@ export class CircuitSetupPanel extends LitElement {
       semanticSource: configuration.capabilities.semantic_source,
       runtimeOnly: !configuration.capabilities.configuration_authoritative,
     });
+    this.meterProfileConfirmed = this.journeyOrigin === "existing_meter" && this.configurationMode === "helper_managed";
     const normalized = { ...configuration, configuration: {
       ...configuration.configuration, multi_reference_preparation_acknowledged: false,
     } };
