@@ -2103,6 +2103,26 @@ def test_cancellation_during_reboot_wait_finishes_the_transaction(
     asyncio.run(run())
 
 
+def test_transient_reconnect_error_recovers_during_install_verification() -> None:
+    async def run() -> None:
+        verifier = Verifier([ConnectionError("device still booting"), _evidence()])
+        persistence = Persistence()
+        manager = ConfigTransactionManager(
+            Builder(), verifier, persistence, SessionManager()
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+
+        completed = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert completed.state is ConfigTransactionState.VERIFIED
+        assert verifier.calls == 2
+        assert persistence.saved
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     ("reconnect_timeout", "reconnect_backoff_initial"),
     ((float("nan"), 1.0), (1.0, float("inf"))),
@@ -2119,6 +2139,41 @@ def test_reconnect_timing_must_be_finite(
             reconnect_timeout=reconnect_timeout,
             reconnect_backoff_initial=reconnect_backoff_initial,
         )
+
+
+def test_reconnect_exhaustion_preserves_manual_install_retry() -> None:
+    async def run() -> None:
+        unavailable = ConnectionError("device still booting")
+        verifier = Verifier(unavailable)
+        sessions = SessionManager()
+        manager = ConfigTransactionManager(
+            Builder(),
+            verifier,
+            Persistence(),
+            sessions,
+            reconnect_timeout=0.01,
+            reconnect_backoff_initial=0.001,
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+
+        retry = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert verifier.calls >= 1
+        assert retry.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert retry.evidence == (TransactionEvidenceCode.RECONNECT_UNAVAILABLE,)
+        assert retry.rollback_available
+        assert sessions.is_config_locked("aabbccddeeff")
+
+        exhausted_calls = verifier.calls
+        verifier.evidence = _evidence()
+        completed = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert completed.state is ConfigTransactionState.VERIFIED
+        assert completed.evidence == ()
+        assert verifier.calls == exhausted_calls + 1
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize(
