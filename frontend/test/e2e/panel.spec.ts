@@ -701,24 +701,34 @@ test("verified configuration continues through calibration and finishes only fro
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Setup Device" })).toHaveCount(0);
   await page.locator('[data-action="continue"]').click();
+  await expect(page.getByRole("heading", { name: "Calibration Plan", exact: true })).toBeVisible();
+  await page.getByRole("radio", { name: /Full calibration/ }).check();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByRole("button", { name: "Skip voltage calibration" }).click();
+  await page.locator('.reference-block input').fill("120");
+  await page.getByRole("button", { name: "Check stability" }).click();
+  await page.getByRole("button", { name: "Calibrate voltage" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Skip current calibration" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Restart", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Restart and verify" }).click();
+  await expect(page.getByRole("heading", { name: "Save Calibration", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Write verified gains to ESPHome" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install calibrated firmware" }).click();
 
-  await expect(page.getByRole("heading", { name: "Summary", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Setup complete", exact: true })).toBeVisible();
   await expect(page.getByText("Installed electrical profile")).toBeVisible();
-  await expect(page.getByText("Authoritative configuration", { exact: true })).toBeVisible();
+  await expect(page.getByText("Configuration installed in ESPHome.", { exact: true })).toBeVisible();
   await page.locator('[data-action="finish"]').click();
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
   const ordered = operations(frames);
   expect(ordered.indexOf("install_ct_config")).toBeLessThan(ordered.indexOf("start_session"));
-  expect(ordered.indexOf("start_session")).toBeLessThan(ordered.indexOf("complete_calibration_without_changes"));
+  expect(ordered.indexOf("start_session")).toBeLessThan(ordered.indexOf("restart_and_verify"));
 });
 
 test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidirectional main service", async ({ page }) => {
@@ -733,7 +743,7 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByLabel("CT1 role").selectOption("grid");
   await page.getByLabel("CT2 role").selectOption("grid");
-  await expect(page.getByRole("group", { name: "Mains aggregate", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Automatic totals", exact: true })).toContainText("Mains total = CT1 + CT2");
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
@@ -756,6 +766,7 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.getByRole("button", { name: "Build firmware" }).click();
   await page.getByRole("button", { name: "Install on meter", exact: true }).click();
   await page.locator('[data-action="continue"]').click();
+  await page.getByRole("radio", { name: /Full calibration/ }).check();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
@@ -769,12 +780,13 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Restart", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Restart and verify" }).click();
-  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
-  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await expect(page.getByRole("heading", { name: "Save Calibration", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Write verified gains to ESPHome" }).click();
   await page.getByRole("button", { name: "Build firmware" }).click();
-  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Summary", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Install calibrated firmware" }).click();
+  await expect(page.getByRole("heading", { name: "Setup complete", exact: true })).toBeVisible();
   await expect(page.getByText("Installed electrical profile")).toBeVisible();
+  await page.getByRole("button", { name: "Finish" }).click();
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
   expect(operations(frames)).toEqual(expect.arrayContaining(["restart_and_verify", "preview_calibrated_gains", "clear_calibration_flash"]));
 });
@@ -784,7 +796,7 @@ test("one-add-on 230 V configuration preserves scaled PQ circuit semantics witho
   await openInventory(page);
   await page.getByRole("tab", { name: "Add-on 1" }).click();
   await expect(page.getByLabel("CT7 multiplier")).toHaveValue("4");
-  await expect(page.locator(".ct-step")).toContainText("multiplies current and power output by the same amount");
+  await expect(page.locator(".ct-step")).toContainText("Divided gain1375");
   await expect(page.locator(".ct-step")).not.toContainText(/harmonic|peak/i);
   await page.getByLabel("CT7 name").fill("Scaled CT7");
   await page.getByRole("button", { name: "Continue" }).click();
@@ -811,6 +823,7 @@ test("three voltage references cover each three-phase board exactly once and cal
   await expect(page.locator(".voltage-reference-card")).toHaveCount(3);
   await page.locator('[data-section="advanced-meter-settings"] summary').click();
   await page.getByLabel("Multi-reference preparation acknowledgement").check();
+  await page.getByLabel("Confirm electrical profile").check();
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
@@ -829,6 +842,7 @@ test("three voltage references cover each three-phase board exactly once and cal
   await page.getByRole("button", { name: "Build firmware" }).click();
   await page.getByRole("button", { name: "Install on meter", exact: true }).click();
   await page.locator('[data-action="continue"]').click();
+  await page.getByLabel(/Full calibration/).check();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
@@ -852,13 +866,12 @@ test("automatic role pairs remain distinct without preset aggregate controls", a
   await expect(page.getByLabel("Preset channels")).toHaveCount(0);
   await page.getByLabel("CT1 role").selectOption("two_pole");
   await page.getByLabel("CT2 role").selectOption("two_pole");
-  await expect(page.getByRole("group", { name: "Two-pole circuit aggregate", exact: true })).toBeVisible();
   await page.getByLabel("CT3 role").selectOption("subpanel");
   await page.getByLabel("CT4 role").selectOption("subpanel");
-  await expect(page.getByRole("group", { name: "Subpanel aggregate", exact: true })).toBeVisible();
   await page.getByLabel("CT5 role").selectOption("grid");
   await page.getByLabel("CT6 role").selectOption("grid");
-  await expect(page.getByRole("group", { name: "Mains aggregate", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Automatic totals", exact: true }))
+    .toContainText("Mains total = CT5 + CT6 · Subpanel total = CT3 + CT4 · Two-pole circuit total = CT1 + CT2");
   await page.getByRole("button", { name: "Continue" }).click();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
   expect(preview.configuration).toEqual(expect.objectContaining({
@@ -970,11 +983,12 @@ async function openGuidedMeter(page: Page) {
 }
 
 test("journey 1: new meter imports, installs, then keeps calibration", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { importable: true, oneDevice: true });
+  const frames = await mockHomeAssistant(page, { importable: true, setupEvent: "devices" });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   expect(mutations(frames)).toEqual([]);
-  await page.getByRole("button", { name: "Import configuration" }).click();
+  await page.getByRole("button", { name: "Import" }).first().click();
+  await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Meter Settings" })).toBeVisible();
   await page.getByLabel("Friendly name").fill("Imported meter");
@@ -996,7 +1010,7 @@ test("journey 2: new standard calibration reaches restart before gain save", asy
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByLabel(/Standard calibration/).check();
-  await expect(page.getByRole("heading", { name: "Safety" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   expect(mutations(frames).filter((frame) => frame.type.endsWith("/start_session"))).toHaveLength(1);
 });
 
@@ -1005,17 +1019,17 @@ test("journey 3: helper-managed full calibration keeps flash authority when not 
   await openInventory(page);
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByLabel(/Full calibration/).check();
-  await expect(page.getByRole("heading", { name: "Safety" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Offset" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Offset", exact: true }).first()).toBeVisible();
   expectLatestSourceBinding(frames, "start_session");
 });
 
 test("journey 4: legacy manage requires review before migration preview", async ({ page }) => {
   const frames = await mockHomeAssistant(page, { guidedMode: "legacy" });
   await openGuidedMeter(page);
-  await expect(page.getByRole("heading", { name: "Review Existing Setup" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review Existing Setup", exact: true }).first()).toBeVisible();
   expect(mutations(frames)).toEqual([]);
   await page.getByRole("button", { name: "Review and manage with helper" }).click();
   await expect(page.getByRole("heading", { name: "Meter Settings" })).toBeVisible();
@@ -1026,7 +1040,7 @@ test("journey 5: legacy calibrate-only never previews configuration", async ({ p
   await openGuidedMeter(page);
   await page.getByRole("button", { name: "Keep ESPHome configuration and calibrate only" }).click();
   await page.getByLabel(/Standard calibration/).check();
-  await expect(page.getByRole("heading", { name: "Safety" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   expect(operations(frames)).not.toContain("preview_meter_configuration");
   expect(operations(frames)).not.toContain("preview_ct_config");
 });
@@ -1036,17 +1050,18 @@ test("journey 6: runtime-only skips every source configuration command", async (
   await openGuidedMeter(page);
   await expect(page.getByRole("heading", { name: "Choose calibration" })).toBeVisible();
   await page.getByLabel(/Standard calibration/).check();
-  await expect(page.getByRole("heading", { name: "Safety" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   expect(operations(frames).filter((operation) => ["preview_meter_configuration", "preview_ct_config", "set_ha_labels"].includes(operation))).toEqual([]);
 });
 
 test("journey 7: imported existing configuration enters legacy review", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { importable: true, guidedMode: "legacy", oneDevice: true });
+  const frames = await mockHomeAssistant(page, { importable: true, guidedMode: "legacy", setupEvent: "devices" });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
-  await page.getByRole("button", { name: "Import configuration" }).click();
+  await page.getByRole("button", { name: "Import" }).first().click();
+  await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Review Existing Setup" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review Existing Setup", exact: true }).first()).toBeVisible();
   expect(mutations(frames).filter((frame) => !frame.type.endsWith("/adopt_device"))).toEqual([]);
 });
 
