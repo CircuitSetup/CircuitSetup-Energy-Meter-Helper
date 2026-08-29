@@ -29,6 +29,7 @@ export function meterSettingsStep(
   setBoardPackages: (options: BoardPackageOptions) => void = () => undefined,
   profileConfirmed = true,
   setProfileConfirmed: (value: boolean) => void = () => undefined,
+  mode: "helper_managed" | "legacy_editable" | "runtime_only" = "helper_managed",
 ): TemplateResult {
   const multiReference = draft.voltage_references.length > 1;
   const valid = profileConfirmed && Boolean(draft.friendly_name.trim()) && draft.voltage_references.every((reference) =>
@@ -83,7 +84,8 @@ export function meterSettingsStep(
   return html`
     <section class="step-content meter-settings-step" aria-labelledby="step-heading">
       <h2>Meter settings</h2>
-      <p>These values are written to the meter configuration. Setup Device choices remain onboarding suggestions.</p>
+      <p>These authoritative values will be installed on the meter configuration.</p>
+      ${mode === "legacy_editable" ? html`<p class="warning-band" role="status">The existing profile identity was not recorded. Confirm it before continuing.</p>` : nothing}
       <div class="meter-settings-grid">
         <label>Friendly name <input aria-label="Friendly name" maxlength="64" .value=${draft.friendly_name}
           @input=${(event: Event) => patch({ friendly_name: (event.target as HTMLInputElement).value })} /></label>
