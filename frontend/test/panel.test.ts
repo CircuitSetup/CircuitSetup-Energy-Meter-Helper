@@ -13,7 +13,7 @@ import { meterSettingsStep } from "../src/components/meter-settings-step";
 import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
 import type { CtInventory, MeterConfigurationRequest, MeterSettingsDraft, MeterTopology } from "../src/types";
-import { activeCalibrationHandoffScenario, activeConfigurationTransactionScenario, device, meterResponse, newInstallScenario, runtimeOnlyScenario } from "./workflow-scenarios";
+import { activeCalibrationHandoffScenario, activeConfigurationTransactionScenario, device, legacyEditableScenario, meterResponse, newInstallScenario, runtimeOnlyScenario } from "./workflow-scenarios";
 
 const tick = async () => {
   await Promise.resolve();
@@ -1209,8 +1209,84 @@ describe("CircuitSetup panel", () => {
     expect(rows[1]?.textContent).toContain("Import available");
     expect(rows[1]?.querySelector("button")?.textContent).toContain("Import configuration");
     expect(rows[2]?.textContent).toContain("Calibration only — no editable source.");
+    expect(rows[2]?.textContent).toContain("ESPHome source editing is unavailable");
+    expect(rows[2]?.textContent).toContain("meter flash");
     expect(rows[2]?.querySelector("button")?.textContent).toContain("Open calibration");
     expect(text(panel).indexOf("Existing meters")).toBeLessThan(text(panel).indexOf("Set up a new meter"));
+  });
+
+  it("reviews legacy configuration without mutation before either explicit branch", async () => {
+    const legacy = structuredClone(legacyEditableScenario.meterConfiguration!);
+    legacy.configuration.channels[0]!.role = "grid";
+    legacy.configuration.channels[1]!.role = "grid";
+    const operations: string[] = [];
+    const hass = makeHass({
+      setup_status: legacyEditableScenario.setup,
+      get_meter_configuration: legacy,
+    });
+    const callWS = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      operations.push(String(message.type).split("/").at(-1) ?? "");
+      return callWS<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & {
+      calibrationDraftChanges(): unknown[];
+    };
+    panel.showTopology(legacy.topology); await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]")?.click();
+    await tick(); await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Review Existing Setup");
+    expect(state.inventory).not.toBeNull();
+    expect((state.meterConfiguration as typeof legacy).configuration).toEqual(legacy.configuration);
+    expect(state.verifiedMeterConfiguration).toBe(legacy);
+    expect(state.canonicalConfigurationChanged).toBe(false);
+    expect(state.managedAutomaticAggregates).toEqual([]);
+    expect(state.transaction).toBeNull();
+    const beforeChoice = [...operations];
+
+    [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("button") ?? []]
+      .find((button) => button.textContent?.trim() === "Back")?.click();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+    expect((state.meterConfiguration as typeof legacy).configuration).toEqual(legacy.configuration);
+    expect(state.managedAutomaticAggregates).toEqual([]);
+    expect(state.transaction).toBeNull();
+    expect(operations).toEqual(beforeChoice);
+
+    panel.showState("legacy-review"); await panel.updateComplete;
+
+    [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("button") ?? []]
+      .find((button) => button.textContent?.trim() === "Review and manage with helper")?.click();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Meter Settings");
+    expect(operations).toEqual(beforeChoice);
+
+    state.existingConfigurationChoice = null;
+    panel.showState("legacy-review"); await panel.updateComplete;
+    [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("button") ?? []]
+      .find((button) => button.textContent?.trim() === "Keep ESPHome configuration and calibrate only")?.click();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
+    expect(state.calibrationDraftChanges()).toEqual([]);
+    expect(operations).toEqual(beforeChoice);
+    expect(operations.some((operation) => operation.startsWith("preview_") || operation === "set_ha_labels" || operation === "start_session")).toBe(false);
+  });
+
+  it("routes helper-managed configuration directly to Meter Settings", async () => {
+    const configured = { ...device, configuration: "meter.yaml", importable: false };
+    const helper = meterResponse();
+    const panel = await mount(makeHass({
+      setup_status: { state: "device_discovered", devices: [configured], configuration_authoritative: true },
+      get_meter_configuration: helper,
+    }));
+    panel.showTopology(helper.topology); await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]")?.click();
+    await tick(); await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Meter Settings");
+    expect(panel.shadowRoot?.querySelector(".existing-configuration")).toBeNull();
   });
 
   it("loads imported meter configuration before topology after adoption", async () => {
@@ -2078,7 +2154,7 @@ describe("CircuitSetup panel", () => {
     }
   });
 
-  it("starts runtime-only calibration directly from authoritative native topology", async () => {
+  it("routes runtime-only meters to Calibration Plan without reading or writing configuration", async () => {
     const operations: string[] = [];
     const setup = { state: "device_discovered", devices: [device], configuration_authoritative: false };
     const hass: HomeAssistant = {
@@ -2100,12 +2176,13 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]")?.click();
     await tick(); await panel.updateComplete;
-    expect(operations).toContain("start_session");
+    expect(operations).not.toContain("start_session");
+    expect(operations).not.toContain("get_meter_configuration");
     expect(operations).not.toContain("get_ct_inventory");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
   });
 
-  it("uses the full meter response for CT verification when setup is runtime-only", async () => {
+  it("does not read configuration even when runtime-only setup reports a stale source name", async () => {
     const operations: string[] = [];
     const configured = { ...device, importable: false, configuration: "meter.yaml" };
     const inventory: CtInventory = {
@@ -2137,16 +2214,10 @@ describe("CircuitSetup panel", () => {
     panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]")?.click();
     await tick(); await tick(); await panel.updateComplete;
 
-    expect(operations).toContain("get_meter_configuration");
-    expect(operations).not.toContain("start_session");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Meter Settings");
-    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue-meter-settings"]')?.click();
-    await tick(); await tick(); await panel.updateComplete;
+    expect(operations).not.toContain("get_meter_configuration");
     expect(operations).not.toContain("get_ct_inventory");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Circuits & CTs");
-    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 name"]')?.value).toBe("CT1");
-    expect(text(panel)).toContain("If you expect to measure more than 65.535 A");
-    expect(text(panel)).toContain("divides the gain and multiplies current and power output");
+    expect(operations).not.toContain("start_session");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
   });
 
   it("never substitutes restart verification for missing CT inventory", async () => {
@@ -2193,20 +2264,20 @@ describe("CircuitSetup panel", () => {
       connection: { subscribeMessage: async () => () => undefined },
     };
     const panel = await mount(hass);
+    const state = panel as unknown as { startSession(): Promise<void> };
     panel.showTopology({ addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
       connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
       evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime project metadata" }] });
     await panel.updateComplete;
-    const continueButton = panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]");
-    continueButton?.click();
-    continueButton?.click();
+    const first = state.startSession();
+    const second = state.startSession();
     await tick();
 
     expect(starts).toBe(1);
 
     resolveStart({ session_id: "native-session", device_id: "meter-1", state: "safety_required",
       safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } });
-    await tick(); await panel.updateComplete;
+    await Promise.all([first, second]); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
   });
 
@@ -3026,7 +3097,8 @@ describe("CircuitSetup panel", () => {
 
     expect(messages.map((message) => String(message.type).split("/").at(-1))).toContain("set_ha_labels");
     expect(messages.map((message) => String(message.type).split("/").at(-1))).not.toContain("preview_ct_config");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
+    expect(messages.map((message) => String(message.type).split("/").at(-1))).not.toContain("start_session");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
   });
 
   it("owns late subscriptions by connection generation and resubscribes live handles", async () => {

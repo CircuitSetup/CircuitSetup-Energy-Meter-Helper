@@ -200,6 +200,7 @@ const newDevice = { ...device };
 const helperDevice = configuredDevice();
 const helperConfiguration = meterResponse();
 const legacyConfiguration = meterResponse();
+legacyConfiguration.capabilities.semantic_source = "legacy_inferred";
 legacyConfiguration.capabilities.managed_totals = false;
 legacyConfiguration.capabilities.reason_codes = ["electrical_profile_requires_confirmation"];
 legacyConfiguration.warnings = ["electrical_profile_requires_confirmation"];
