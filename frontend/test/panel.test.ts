@@ -3861,7 +3861,8 @@ describe("CircuitSetup panel", () => {
       source_handoff_transaction_id: null, source_handoff_firmware_installed: false };
     const completed = { ...restartResult, source_authority: "configuration", source_handoff_available: false,
       source_handoff_transaction_id: transactionId, source_handoff_firmware_installed: true };
-    let clearResponse: unknown = new Error("disconnect");
+    let rejectClear!: (reason: Error) => void;
+    let clearResponse: unknown = new Promise<never>((_resolve, reject) => { rejectClear = reject; });
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
@@ -3893,11 +3894,16 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Save Calibration");
 
     state.transaction = { ...preview, state: "install_confirmation_required" };
-    await state.transactionAction("install"); await panel.updateComplete;
+    const install = state.transactionAction("install");
+    await tick(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Save Calibration");
+    rejectClear(new Error("disconnect"));
+    await install; await panel.updateComplete;
     expect(operations.slice(-2)).toEqual(["install_ct_config", "clear_calibration_flash"]);
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
-    const retry = panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=save-calibration]");
-    expect(retry?.textContent).toContain("Retry clearing saved flash values");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Save Calibration");
+    const retry = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>("button") ?? []]
+      .find((button) => button.textContent?.includes("Retry clearing saved flash values"));
+    expect(retry?.disabled).toBe(false);
     clearResponse = completed;
     retry?.click(); await tick(); await panel.updateComplete;
     expect(operations.filter((operation) => operation === "install_ct_config")).toHaveLength(1);
