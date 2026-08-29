@@ -1531,10 +1531,18 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
     </section>
   `;
 }
-function calibrationPlanStep(selected, choose, back) {
+function calibrationPlanStep(selected, choose, back, runtimeOnly = false) {
   return b`<section class="step-content" aria-labelledby="calibration-plan-heading">
     <h2 id="calibration-plan-heading">Choose calibration</h2>
     <p>Calibration values stay in meter flash until a verified ESPHome handoff is available.</p>
+    ${runtimeOnly ? b`<section class="info-band" aria-label="Runtime-only capabilities">
+      <strong>The meter is connected to Home Assistant.</strong>
+      <p>ESPHome source editing is unavailable.</p>
+      <p>Circuit names, CT models, roles, multipliers, entities, and totals cannot be changed by this helper in this mode.</p>
+      <p>Supported calibration is saved in meter flash. Installing firmware later may replace flash-only calibration.</p>
+      <p>Importing the meter into ESPHome Device Builder, when available, is the path to editable configuration.</p>
+      <p>Current calibration requires confirmation of the reporting multiplier because no authoritative CT inventory is available.</p>
+    </section>` : ""}
     <fieldset><legend>Calibration plan</legend>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "keep_existing"} @change=${() => choose("keep_existing")}> Keep existing calibration — no live session or safety acknowledgement.</label>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "standard"} @change=${() => choose("standard")}> Standard calibration — preserve existing offset values, then calibrate voltage and current.</label>
@@ -2415,18 +2423,28 @@ function espWebInstaller(option) {
 const warningCopy = {
   electrical_profile_requires_confirmation: "The electrical profile was inferred and must be reviewed before migration.",
   legacy_generic_totals_unmanaged: "Existing generic totals will be preserved unless the reviewed migration explicitly replaces them.",
-  stored_semantics_stale: "The ESPHome source changed after the last helper save, so the live source was read again."
+  stored_semantics_stale: "The ESPHome source changed after the last helper save, so the live source was read again.",
+  config_contract_upgrade_required: "This configuration uses an older helper contract and requires reviewed migration."
 };
-function existingConfigurationStep(configuration, onManage, onCalibrateOnly, onBack) {
+function existingConfigurationStep(configuration, metadata, onManage, onCalibrateOnly, onBack) {
   if (!configuration.capabilities.configuration_authoritative || configuration.capabilities.semantic_source !== "legacy_inferred") return b``;
   const warnings = [.../* @__PURE__ */ new Set([...configuration.warnings, ...configuration.capabilities.reason_codes])];
   return b`<section class="existing-configuration" aria-labelledby="existing-configuration-heading">
     <h2 id="existing-configuration-heading">Review Existing Setup</h2>
     <p>This meter already has an ESPHome configuration. Choose whether to manage its configuration with this helper or leave it unchanged.</p>
     <dl class="status-list">
+      <div><dt>ESPHome configuration</dt><dd>${metadata.configurationFilename}</dd></div>
+      <div><dt>Project</dt><dd>${metadata.projectName} · ${metadata.projectVersion}</dd></div>
+      <div><dt>Detected hardware</dt><dd>${metadata.boardCount} ${metadata.boardCount === 1 ? "board" : "boards"} · ${metadata.ctCount} CT inputs</dd></div>
+    </dl>
+    <dl class="status-list">
       <div><dt>Read directly</dt><dd>Names, substitutions, current gains, line frequency, reporting interval, package state, and physical topology.</dd></div>
       <div><dt>Inferred or not recorded</dt><dd>Electrical profile, transformer and CT identity, used channels, circuit roles, and aggregate intent.</dd></div>
       <div><dt>Preserved if you do not migrate</dt><dd>The existing ESPHome configuration and unowned YAML remain unchanged.</dd></div>
+    </dl>
+    <dl class="status-list">
+      <div><dt>What migration changes</dt><dd>The reviewed meter profile, circuit settings, helper-owned totals, and package options become helper-managed.</dd></div>
+      <div><dt>What migration preserves</dt><dd>Unowned YAML and unmanaged totals remain intact unless the reviewed migration explicitly replaces them.</dd></div>
     </dl>
     ${warnings.length ? b`<div class="warning-band" role="note"><strong>Review notes</strong><ul>${warnings.map((warning) => b`<li>${warningCopy[warning] ?? "Some legacy settings could not be identified and must be reviewed."}</li>`)}</ul><details><summary>Technical details</summary><code>${warnings.join(", ")}</code></details></div>` : A}
     <div class="action-footer"><button class="primary" @click=${onManage}>Review and manage with helper</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="secondary" @click=${onBack}>Back</button></div>
@@ -2685,21 +2703,22 @@ function summaryOutcome(input) {
   const warnings = input.unmanagedLegacyItems?.length ? [`Unmanaged legacy items: ${input.unmanagedLegacyItems.join(", ")}.`] : [];
   const heading = input.legacyChoice !== null ? "Review complete" : "Setup complete";
   if (offset) return { heading, configurationStatus: calibrationOnly ? "ESPHome configuration was left untouched." : "Configuration authority is unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Offset calibration remains stored in meter flash by design.", authorityMessage: "Offset calibration remains stored in meter flash by design.", warnings: [...warnings, "Offset calibration remains stored in meter flash by design."] };
-  if (input.completedWithoutChanges) return { heading, configurationStatus: input.configurationMode === "runtime_only" ? "ESPHome source was not changed because no authoritative configuration was available." : calibrationOnly ? "ESPHome configuration was left untouched." : input.verifiedConfiguration ? "Helper-managed configuration was left unchanged." : "Configuration was left unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Existing calibration was kept unchanged.", authorityMessage: "No restart-verified calibration record was required.", warnings };
+  if (input.completedWithoutChanges) return { heading, configurationStatus: input.configurationInstalled ? "Configuration installed in ESPHome." : input.configurationMode === "runtime_only" ? "ESPHome source was not changed because no authoritative configuration was available." : calibrationOnly ? "ESPHome configuration was left untouched." : input.verifiedConfiguration ? "Helper-managed configuration was left unchanged." : "Configuration was left unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Existing calibration was kept unchanged.", authorityMessage: "No restart-verified calibration record was required.", warnings };
   if (input.configurationMode === "runtime_only") return { heading: "Setup complete", configurationStatus: "ESPHome source was not changed because no authoritative configuration was available.", migrationStatus: null, calibrationStatus: "Calibration is stored in meter flash. Installing firmware may replace it.", authorityMessage: "No authoritative ESPHome source is available.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
   if (calibrationOnly && input.restart?.source_authority === "configuration") return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "Calibration gains were saved; the remaining legacy configuration was not migrated.", authorityMessage: "Calibration gains are installed in ESPHome.", warnings };
   if (calibrationOnly) return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "ESPHome configuration was left untouched.", authorityMessage: "Calibration is stored in meter flash.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
   if (input.restart?.source_authority === "configuration") return { heading, configurationStatus: "Configuration installed in ESPHome.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Configuration and calibration are installed in ESPHome.", authorityMessage: "Calibration is stored in ESPHome.", warnings };
   return { heading, configurationStatus: input.verifiedConfiguration ? "Configuration authority is available." : "Configuration authority is unavailable.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Calibration is stored in meter flash. Installing firmware may replace it.", authorityMessage: "Calibration is stored in meter flash.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
 }
-function summaryStep(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges, projectVersion, saveCalibration, back, meterConfiguration2 = null, impact = null, finish = () => void 0, keepCalibrationInFlash = () => void 0, configurationMode = "helper_managed", legacyChoice = null) {
+function summaryStep(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges, projectVersion, saveCalibration, back, meterConfiguration2 = null, impact = null, finish = () => void 0, keepCalibrationInFlash = () => void 0, configurationMode = "helper_managed", legacyChoice = null, configurationInstalled = false, handoffDeclined = false) {
   const hasOffsets = Boolean(restart2?.offset_groups?.length || restart2?.power_offset_groups?.length);
-  const handoffAction = restart2?.source_authority === "saved_flash" && restart2.config_filename && !hasOffsets && (restart2.source_handoff_available || restart2.source_handoff_firmware_installed);
+  const handoffAction = !handoffDeclined && restart2?.source_authority === "saved_flash" && restart2.config_filename && !hasOffsets && (restart2.source_handoff_available || restart2.source_handoff_firmware_installed);
   const unmanagedLegacyItems = meterConfiguration2?.warnings.filter((warning) => warning.includes("unmanaged"));
   const outcome = summaryOutcome({
     configurationMode,
     legacyChoice,
     completedWithoutChanges,
+    configurationInstalled,
     restart: restart2,
     verifiedConfiguration: meterConfiguration2 !== null,
     ...unmanagedLegacyItems ? { unmanagedLegacyItems } : {}
@@ -2816,7 +2835,7 @@ function workflowProgress(phases, mobileOpen, toggle, navigateToSetup) {
       </nav>
     </aside>
     <div class="mobile-progress">
-      <span>${current ? `${current.index + 1} of ${phases.length} — ${LABELS[current.id]}` : "Workflow complete"}</span>
+      <span>${current ? `Phase ${current.index + 1} of ${phases.length} — ${LABELS[current.id]}` : "Workflow complete"}</span>
       <button aria-label="Show setup steps" aria-expanded=${mobileOpen} @click=${toggle}>Steps</button>
     </div>
   `;
@@ -3203,9 +3222,11 @@ class CircuitSetupPanel extends i$2 {
     this.calibrationByTarget = /* @__PURE__ */ new Map();
     this.restartResult = null;
     this.completedWithoutChanges = false;
+    this.configurationInstalled = false;
     this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
     this.offsetResultByTarget = /* @__PURE__ */ new Map();
     this.calibrationHandoff = false;
+    this.handoffDeclined = false;
     this.addonCount = 0;
     this.packageOptions = newInstallPackageOptions(0);
     this.sourcePackageOptions = newInstallPackageOptions(0);
@@ -3470,6 +3491,7 @@ class CircuitSetupPanel extends i$2 {
     this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
     this.offsetResultByTarget = /* @__PURE__ */ new Map();
     this.calibrationHandoff = false;
+    this.handoffDeclined = false;
     this.group = 0;
     this.channel = 1;
     this.voltageReferences = /* @__PURE__ */ new Map();
@@ -3510,6 +3532,7 @@ class CircuitSetupPanel extends i$2 {
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
     this.canonicalConfigurationChanged = false;
+    this.configurationInstalled = false;
     this.managedAutomaticAggregates = [];
     this.board = 0;
     this.resetCalibrationRun();
@@ -3756,8 +3779,6 @@ class CircuitSetupPanel extends i$2 {
   }
   async adopt(deviceId = this.selectedDeviceId) {
     if (!this.api || !deviceId || this.pendingAction) return;
-    this.newInstallDeviceId = this.setup?.devices.find((device2) => device2.entry_id === deviceId)?.configuration ? null : deviceId;
-    this.journeyOrigin = this.newInstallDeviceId === deviceId ? "new_install" : "existing_meter";
     if (deviceId !== this.selectedDeviceId) this.selectDevice(deviceId);
     const api = this.api;
     const generation = ++this.operationGeneration;
@@ -3784,6 +3805,7 @@ class CircuitSetupPanel extends i$2 {
       this.importFailedDeviceId = null;
       this.announcement = "Meter imported into ESPHome Builder.";
       this.showTopologyResult(result);
+      await this.restoreActiveWork(api, deviceId, generation);
     } catch (error) {
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = deviceId;
@@ -3826,7 +3848,32 @@ class CircuitSetupPanel extends i$2 {
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.showTopologyResult(result);
+      if (this.setup?.configuration_authoritative === false) {
+        this.configurationMode = "runtime_only";
+      } else {
+        const configuration = await api.getMeterConfiguration(deviceId);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.setMeterConfiguration(configuration);
+      }
+      await this.restoreActiveWork(api, deviceId, generation);
     }, "Topology evidence could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
+  }
+  async restoreActiveWork(api, deviceId, generation) {
+    if (!this.topology) return;
+    const active = await api.getActiveWork(deviceId, this.topology);
+    if (!this.ownsOperation(generation, api, deviceId)) return;
+    this.session = active.session?.state === "cancelled" ? null : active.session;
+    this.transaction = active.transaction;
+    this.safetyAcknowledged = this.session?.safety_acknowledged ?? false;
+    this.calibrationHandoff = Boolean(this.transaction && active.verified_calibration && active.verified_calibration.source_handoff_transaction_id === this.transaction.transaction_id);
+    this.transactionPurpose = this.transaction ? this.calibrationHandoff ? "save_calibration" : "install_configuration" : null;
+    if (this.transactionPurpose === "install_configuration" && this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === null) this.existingConfigurationChoice = "manage_with_helper";
+    this.restartResult = this.calibrationHandoff || this.session?.state === "verified" ? active.verified_calibration : null;
+    if (this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === null && (this.session || this.calibrationHandoff || this.restartResult)) this.existingConfigurationChoice = "calibrate_only";
+    if (!this.transaction && !this.session && !this.restartResult) return;
+    this.navigate(resumeWorkflowRoute(this.workflowContext()));
+    if (this.transaction) await this.subscribeTransaction(this.connectionGeneration);
+    if (this.session) await this.subscribeSession(this.connectionGeneration);
   }
   async loadInventory() {
     if (!this.api || !this.selectedDeviceId || this.pendingAction) return;
@@ -3994,6 +4041,7 @@ class CircuitSetupPanel extends i$2 {
   chooseExistingConfiguration(choice) {
     this.existingConfigurationChoice = choice;
     this.canonicalConfigurationChanged = false;
+    this.configurationInstalled = false;
     if (choice === "manage_with_helper") this.navigate("meter");
     else if (choice === "calibrate_only") {
       this.labelOnly = false;
@@ -4290,7 +4338,7 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
   }
   async reviewCalibrationHandoff() {
-    if (!this.api || !this.session || !this.restartResult?.source_handoff_available) return;
+    if (!this.api || !this.session || !this.restartResult?.source_handoff_available || this.pendingAction) return;
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const sessionId = this.session.session_id;
@@ -4299,24 +4347,33 @@ class CircuitSetupPanel extends i$2 {
     this.clearSubscription("transaction");
     this.transaction = null;
     this.transactionPurpose = "save_calibration";
-    await this.run(
-      async () => {
-        const changes = this.calibrationDraftChanges();
-        const transaction2 = await api.previewCalibratedGains(
-          sessionId,
-          verificationId,
-          changes,
-          this.sourcePackageOptions ? this.packageOptions : void 0
-        );
-        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId || this.restartResult?.verification_id !== verificationId) return;
-        this.calibrationHandoff = true;
-        this.transaction = transaction2;
-        this.navigate("save-calibration");
-        await this.subscribeTransaction(this.connectionGeneration);
-      },
-      "Calibration gains could not be prepared for YAML review.",
-      () => this.ownsOperation(generation, api, deviceId)
-    );
+    this.pendingAction = "calibration-handoff";
+    this.requestUpdate();
+    try {
+      await this.run(
+        async () => {
+          const changes = this.calibrationDraftChanges();
+          const transaction2 = await api.previewCalibratedGains(
+            sessionId,
+            verificationId,
+            changes,
+            this.sourcePackageOptions ? this.packageOptions : void 0
+          );
+          if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId || this.restartResult?.verification_id !== verificationId) return;
+          this.calibrationHandoff = true;
+          this.transaction = transaction2;
+          this.navigate("save-calibration");
+          await this.subscribeTransaction(this.connectionGeneration);
+        },
+        "Calibration gains could not be prepared for YAML review.",
+        () => this.ownsOperation(generation, api, deviceId)
+      );
+    } finally {
+      if (this.pendingAction === "calibration-handoff") {
+        this.pendingAction = "";
+        this.requestUpdate();
+      }
+    }
   }
   async clearCalibrationHandoff() {
     const restart2 = this.restartResult;
@@ -4401,6 +4458,7 @@ class CircuitSetupPanel extends i$2 {
           this.announcement = "Calibration was saved to YAML, installed, verified, and cleared from flash.";
           this.navigate("summary");
         } else if (action === "install" && transaction2.state === "verified") {
+          this.configurationInstalled = true;
           if (this.meterConfiguration) this.verifiedMeterConfiguration = {
             ...this.meterConfiguration,
             capabilities: this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" ? { ...this.meterConfiguration.capabilities, semantic_source: "helper_managed" } : this.meterConfiguration.capabilities,
@@ -4751,6 +4809,11 @@ class CircuitSetupPanel extends i$2 {
     }
   }
   keepCalibrationInFlash() {
+    ++this.operationGeneration;
+    if (this.pendingAction === "calibration-handoff") this.pendingAction = "";
+    this.clearSubscription("transaction");
+    this.transaction = null;
+    this.handoffDeclined = true;
     this.announcement = "Calibration remains in meter flash. Installing firmware may replace it.";
     this.navigate("summary");
   }
@@ -4822,7 +4885,7 @@ class CircuitSetupPanel extends i$2 {
     }
     const restartResult = this.restartResult;
     if (restartResult?.source_handoff_available) {
-      await this.reviewCalibrationHandoff();
+      this.navigate("save-calibration");
     } else if (restartResult) {
       this.navigate("summary");
     }
@@ -4965,6 +5028,13 @@ class CircuitSetupPanel extends i$2 {
     ) : A}`;
     if (this.step === "legacy-review" && this.meterConfiguration) return existingConfigurationStep(
       this.meterConfiguration,
+      {
+        configurationFilename: this.setup?.devices.find((device2) => device2.entry_id === this.selectedDeviceId)?.configuration ?? "Unavailable",
+        projectName: this.selectedProjectName() ?? this.meterConfiguration.topology.project_name,
+        projectVersion: this.selectedProjectVersion() ?? "Unavailable",
+        boardCount: this.meterConfiguration.topology.board_count,
+        ctCount: this.meterConfiguration.topology.ct_count
+      },
       () => this.chooseExistingConfiguration("manage_with_helper"),
       () => this.chooseExistingConfiguration("calibrate_only"),
       () => this.back()
@@ -5030,6 +5100,11 @@ class CircuitSetupPanel extends i$2 {
         else this.requestUpdate();
       }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : A}` : A}`;
     }
+    if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return b`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
+      <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
+      <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>
+      <footer class="action-footer"><button class="secondary" data-action="keep-calibration-flash" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => this.keepCalibrationInFlash()}>Keep calibration in meter flash</button><button class="primary" data-action="review-calibration-handoff" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => void this.reviewCalibrationHandoff()}>${this.pendingAction === "calibration-handoff" ? "Preparing YAML review…" : "Review and save calibration to YAML"}</button></footer>
+    </section>`;
     if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep(
       this.step === "save-calibration" ? "save_calibration" : "install_configuration",
       this.transaction,
@@ -5065,7 +5140,7 @@ class CircuitSetupPanel extends i$2 {
         this.navigate("summary");
       } else void this.startSession(plan);
       this.requestUpdate();
-    }, () => this.back());
+    }, () => this.back(), this.workflowContext().configurationMode === "runtime_only");
     if (this.step === "offset") return offsetStep(
       this.topology,
       this.session,
@@ -5197,7 +5272,9 @@ class CircuitSetupPanel extends i$2 {
       () => this.finishFlow("Meter configuration and calibration are complete."),
       () => this.keepCalibrationInFlash(),
       this.workflowContext().configurationMode,
-      this.existingConfigurationChoice
+      this.existingConfigurationChoice,
+      this.configurationInstalled,
+      this.handoffDeclined
     );
     return b`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct" ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;
@@ -5243,6 +5320,7 @@ class CircuitSetupPanel extends i$2 {
       configurationMode: this.workflowContext().configurationMode,
       legacyChoice: this.existingConfigurationChoice,
       completedWithoutChanges: this.completedWithoutChanges,
+      configurationInstalled: this.configurationInstalled,
       restart: this.restartResult,
       verifiedConfiguration: this.verifiedMeterConfiguration !== null
     }).heading : ROUTE_LABELS[this.step]}</h1>
