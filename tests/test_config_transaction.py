@@ -396,6 +396,7 @@ def _manager(
     evidence: ReconnectEvidence | BaseException | None = None,
     sessions: SessionManager | None = None,
     reconciliation_timeout: float = 30,
+    reconnect_timeout: float = 0.01,
 ) -> ConfigTransactionManager:
     return ConfigTransactionManager(
         builder,
@@ -403,6 +404,8 @@ def _manager(
         persistence,
         sessions or SessionManager(),
         reconciliation_timeout=reconciliation_timeout,
+        reconnect_timeout=reconnect_timeout,
+        reconnect_backoff_initial=0.001,
     )
 
 
@@ -777,6 +780,8 @@ def test_verified_reconnect_marks_only_missing_aggregate_entities() -> None:
             verifier,
             Persistence(),
             SessionManager(),
+            reconnect_timeout=1,
+            reconnect_backoff_initial=0.001,
         )
         preview = await manager.async_preview(
             "aabbccddeeff",
@@ -791,14 +796,9 @@ def test_verified_reconnect_marks_only_missing_aggregate_entities() -> None:
         await manager.async_compile(preview.transaction_id)
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
 
-        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
-        assert TransactionEvidenceCode.ENTITY_MISMATCH in status.evidence
-        assert status.aggregate_entity_mismatch
-        assert not status.full_meter_configuration_verified
-
-        completed = await manager.async_confirm_install(preview.transaction_id, "admin")
-        assert completed.state is ConfigTransactionState.VERIFIED
-        assert not completed.aggregate_entity_mismatch
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert verifier.calls == 5
+        assert not status.aggregate_entity_mismatch
 
     asyncio.run(run())
 
@@ -1996,31 +1996,129 @@ def test_compile_progress_is_live_and_structured() -> None:
     asyncio.run(run())
 
 
-def test_entity_mismatch_retries_verification_then_preserves_install_retry() -> None:
+def test_persistent_entity_mismatch_preserves_install_retry() -> None:
     async def run() -> None:
         mismatch = ReconnectEvidence(
             "aabbccddeeff", _topology(), {**_evidence().ct_names, 1: "Wrong"}, 6
         )
-        verifier = Verifier([mismatch, mismatch, mismatch, _evidence()])
+        verifier = Verifier(mismatch)
         sessions = SessionManager()
         manager = ConfigTransactionManager(
-            Builder(), verifier, Persistence(), sessions
+            Builder(),
+            verifier,
+            Persistence(),
+            sessions,
+            reconnect_timeout=0.01,
+            reconnect_backoff_initial=0.001,
         )
         preview = await _preview(manager)
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
 
         retry = await manager.async_confirm_install(preview.transaction_id, "admin")
-        assert verifier.calls == 3
         assert retry.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert retry.evidence == (TransactionEvidenceCode.ENTITY_MISMATCH,)
         assert sessions.is_config_locked("aabbccddeeff")
 
+    asyncio.run(run())
+
+
+def test_rebooting_meter_waits_and_verifies_without_second_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        delays: list[float] = []
+
+        async def wait(delay: float) -> None:
+            delays.append(delay)
+
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.config_transaction.asyncio.sleep",
+            wait,
+        )
+        verifier = Verifier(
+            [
+                OSError("meter is rebooting"),
+                OSError("meter is rebooting"),
+                OSError("meter is rebooting"),
+                _evidence(),
+            ]
+        )
+        builder = Builder()
+        manager = ConfigTransactionManager(
+            builder, verifier, Persistence(), SessionManager()
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+
         completed = await manager.async_confirm_install(preview.transaction_id, "admin")
+
         assert completed.state is ConfigTransactionState.VERIFIED
-        assert completed.evidence == ()
+        assert verifier.calls == 4
+        assert delays
+        assert builder.calls.count("upload") == 1
 
     asyncio.run(run())
+
+
+def test_cancellation_during_reboot_wait_finishes_the_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        waiting = asyncio.Event()
+
+        async def wait(_delay: float) -> None:
+            waiting.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.config_transaction.asyncio.sleep",
+            wait,
+        )
+        manager = ConfigTransactionManager(
+            Builder(),
+            Verifier(OSError("meter is rebooting")),
+            Persistence(),
+            SessionManager(),
+        )
+        preview = await _preview(manager)
+        statuses: list[TransactionStatus] = []
+        manager.subscribe(preview.transaction_id, statuses.append)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        install = asyncio.create_task(
+            manager.async_confirm_install(preview.transaction_id, "admin")
+        )
+        await waiting.wait()
+
+        install.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await install
+
+        assert statuses[-1].state is ConfigTransactionState.FAILED
+        assert statuses[-1].evidence == (TransactionEvidenceCode.CANCELLED,)
+        assert manager.active_status("aabbccddeeff") is None
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("reconnect_timeout", "reconnect_backoff_initial"),
+    ((float("nan"), 1.0), (1.0, float("inf"))),
+)
+def test_reconnect_timing_must_be_finite(
+    reconnect_timeout: float, reconnect_backoff_initial: float
+) -> None:
+    with pytest.raises(ValueError, match="reconnect timing"):
+        ConfigTransactionManager(
+            Builder(),
+            Verifier(_evidence()),
+            Persistence(),
+            SessionManager(),
+            reconnect_timeout=reconnect_timeout,
+            reconnect_backoff_initial=reconnect_backoff_initial,
+        )
 
 
 @pytest.mark.parametrize(
