@@ -11,4 +11,19 @@ describe("calibrationPlanStep", () => {
     expect(root.textContent).to.contain("Standard calibration");
     expect(root.textContent).to.contain("Full calibration");
   });
+
+  it("discloses runtime-only limitations before calibration", () => {
+    const root = document.createElement("div");
+    render(calibrationPlanStep(null, vi.fn(), vi.fn(), true), root);
+
+    for (const copy of [
+      "connected to Home Assistant",
+      "ESPHome source editing is unavailable",
+      "Circuit names, CT models, roles, multipliers, entities, and totals cannot be changed",
+      "saved in meter flash",
+      "Installing firmware later may replace",
+      "ESPHome Device Builder",
+      "reporting multiplier",
+    ]) expect(root.textContent).toContain(copy);
+  });
 });

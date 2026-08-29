@@ -162,7 +162,8 @@ afterEach(() => {
 describe("meter configuration review and summary", () => {
   it.each([
     ["helper YAML", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: true }, "Configuration and calibration are installed in ESPHome.", []],
-    ["helper unchanged", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: true, restart: null, verifiedConfiguration: true }, "Existing calibration was kept unchanged.", []],
+    ["helper unchanged", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: true, configurationInstalled: false, restart: null, verifiedConfiguration: true }, "Existing calibration was kept unchanged.", []],
+    ["new install with calibration kept", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: true, configurationInstalled: true, restart: null, verifiedConfiguration: true }, "Existing calibration was kept unchanged.", []],
     ["runtime unchanged", { configurationMode: "runtime_only", legacyChoice: null, completedWithoutChanges: true, restart: null, verifiedConfiguration: false }, "Existing calibration was kept unchanged.", []],
     ["legacy unchanged", { configurationMode: "legacy_editable", legacyChoice: "calibrate_only", completedWithoutChanges: true, restart: null, verifiedConfiguration: false }, "Existing calibration was kept unchanged.", []],
     ["legacy migration", { configurationMode: "helper_managed", legacyChoice: "manage_with_helper", completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: true, unmanagedLegacyItems: ["legacy_generic_totals_unmanaged"] }, "Configuration and calibration are installed in ESPHome.", ["Unmanaged legacy items: legacy_generic_totals_unmanaged."]],
@@ -175,6 +176,7 @@ describe("meter configuration review and summary", () => {
 
     expect(outcome.calibrationStatus).toBe(calibration);
     expect(outcome.warnings).toEqual(warnings);
+    if (_name === "new install with calibration kept") expect(outcome.configurationStatus).toBe("Configuration installed in ESPHome.");
   });
 
   it.each([
@@ -1432,6 +1434,7 @@ describe("CircuitSetup panel", () => {
         if (operation === "get_topology") return { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
           connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
           evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] } as T;
+        if (operation === "get_active_work") return { session: null, transaction: null, verified_calibration: null } as T;
         return { state: "installer_guide", devices: [] } as T;
       },
       connection: { subscribeMessage: async () => () => undefined },

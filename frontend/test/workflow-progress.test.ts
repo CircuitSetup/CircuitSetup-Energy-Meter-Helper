@@ -18,6 +18,7 @@ describe("workflowProgress", () => {
     expect(host.querySelector(".completed")?.textContent).toContain("Device");
     expect(host.querySelector(".upcoming")?.textContent).toContain("Complete");
     expect(host.querySelector(".mobile-progress button")?.getAttribute("aria-expanded")).toBe("false");
+    expect(host.querySelector(".mobile-progress span")?.textContent).toContain("Phase 2 of 3");
     (host.querySelector(".completed button") as HTMLButtonElement).click();
     expect(navigate).toHaveBeenCalledOnce();
     expect(host.querySelectorAll("li button")).toHaveLength(1);

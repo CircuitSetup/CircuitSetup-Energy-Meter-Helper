@@ -39,7 +39,7 @@ export function workflowProgress(
     </aside>
     <div class="mobile-progress">
       <span>${current
-        ? `${current.index + 1} of ${phases.length} — ${LABELS[current.id]}`
+        ? `Phase ${current.index + 1} of ${phases.length} — ${LABELS[current.id]}`
         : "Workflow complete"}</span>
       <button aria-label="Show setup steps" aria-expanded=${mobileOpen} @click=${toggle}>Steps</button>
     </div>

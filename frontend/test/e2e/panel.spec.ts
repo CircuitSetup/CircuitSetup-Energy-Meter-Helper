@@ -762,6 +762,7 @@ test("verified configuration continues through calibration and finishes only fro
   await expect(page.getByRole("heading", { name: "Restart", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Restart and verify" }).click();
   await expect(page.getByRole("heading", { name: "Save Calibration", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Review and save calibration to YAML" }).click();
   await page.getByRole("button", { name: "Write verified gains to ESPHome" }).click();
   await page.getByRole("button", { name: "Build firmware" }).click();
   await page.getByRole("button", { name: "Install calibrated firmware" }).click();
@@ -826,6 +827,7 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await expect(page.getByRole("heading", { name: "Restart", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Restart and verify" }).click();
   await expect(page.getByRole("heading", { name: "Save Calibration", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Review and save calibration to YAML" }).click();
   await page.getByRole("button", { name: "Write verified gains to ESPHome" }).click();
   await page.getByRole("button", { name: "Build firmware" }).click();
   await page.getByRole("button", { name: "Install calibrated firmware" }).click();
@@ -955,6 +957,8 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await page.getByRole("button", { name: "Skip current calibration" }).click();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Restart and verify" }).click();
+  await expect(page.getByRole("heading", { name: "Save Calibration", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Review and save calibration to YAML" }).click();
   await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
   await page.getByRole("region", { name: "Review changes" }).getByText("Technical details", { exact: true }).click();
   await expect(page.getByLabel("Redacted substitution diff")).toBeVisible();
@@ -1090,11 +1094,8 @@ async function reopenAtCalibrationPlan(page: Page) {
 }
 
 test("journey 1: new meter imports, installs, then keeps calibration", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { importable: true, setupEvent: "devices" });
+  const frames = await mockHomeAssistant(page, { importable: true, setupEvent: "device", oneDevice: true });
   await page.goto("/test/harness.html");
-  await page.locator('[data-action="rescan"]').click();
-  expect(mutations(frames)).toEqual([]);
-  await page.getByRole("button", { name: "Import" }).first().click();
   await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Meter Settings", exact: true }).first()).toBeVisible();
@@ -1108,6 +1109,8 @@ test("journey 1: new meter imports, installs, then keeps calibration", async ({ 
   await installConfiguration(page);
   await page.getByLabel(/Keep existing calibration/).click();
   await expect(page.getByRole("heading", { name: "Setup complete", exact: true })).toBeVisible();
+  await expect(page.getByText("Configuration installed in ESPHome.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Existing calibration was kept unchanged.").first()).toBeVisible();
   for (const operation of ["apply_ct_config", "compile_ct_config", "install_ct_config"]) expectLatestSourceBinding(frames, operation);
   await page.getByRole("button", { name: "Finish" }).click();
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
@@ -1123,6 +1126,9 @@ test("journey 2: new standard calibration reaches restart before gain save", asy
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await calibrateVoltageToRestart(page);
   await page.getByRole("button", { name: "Restart and verify" }).click();
+  await expect(page.getByRole("heading", { name: "Save Calibration", exact: true })).toBeVisible();
+  expect(operations(frames)).not.toContain("preview_calibrated_gains");
+  await page.getByRole("button", { name: "Review and save calibration to YAML" }).click();
   await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
   expectLatestSourceBinding(frames, "preview_calibrated_gains");
   await installVerifiedGains(page);
@@ -1131,6 +1137,24 @@ test("journey 2: new standard calibration reaches restart before gain save", asy
     expectLatestSourceBinding(frames, operation);
   await page.getByRole("button", { name: "Finish" }).click();
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
+});
+
+test("restart handoff can be kept in flash before any YAML preview", async ({ page }) => {
+  const frames = await mockHomeAssistant(page);
+  await openGuidedMeter(page);
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel(/Standard calibration/).click();
+  await calibrateVoltageToRestart(page);
+  await page.getByRole("button", { name: "Restart and verify" }).click();
+
+  await expect(page.getByRole("heading", { name: "Save Calibration", exact: true })).toBeVisible();
+  expect(operations(frames)).not.toContain("preview_calibrated_gains");
+  await page.getByRole("button", { name: "Keep calibration in meter flash" }).click();
+  await expect(page.getByRole("heading", { name: "Setup complete", exact: true })).toBeVisible();
+  await expect(page.getByText("Calibration is stored in meter flash. Installing firmware may replace it.").first()).toBeVisible();
+  expect(operations(frames)).not.toContain("preview_calibrated_gains");
+  expect(operations(frames)).not.toContain("clear_calibration_flash");
 });
 
 test("journey 3: helper-managed full calibration keeps flash authority when not handed off", async ({ page }) => {
@@ -1193,6 +1217,8 @@ test("journey 5: legacy calibrate-only never previews configuration", async ({ p
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await calibrateVoltageToRestart(page);
   await page.getByRole("button", { name: "Restart and verify" }).click();
+  await expect(page.getByRole("heading", { name: "Save Calibration", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Review and save calibration to YAML" }).click();
   await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
   await installVerifiedGains(page);
   await expect(page.getByRole("heading", { name: "Review complete", exact: true })).toBeVisible();
@@ -1208,6 +1234,8 @@ test("journey 6: runtime-only skips every source configuration command", async (
   const frames = await mockHomeAssistant(page, { guidedMode: "runtime" });
   await openGuidedMeter(page);
   await expect(page.getByRole("heading", { name: "Choose calibration" })).toBeVisible();
+  await expect(page.getByText("ESPHome source editing is unavailable.")).toBeVisible();
+  await expect(page.getByText(/Circuit names, CT models, roles, multipliers, entities, and totals cannot be changed/)).toBeVisible();
   expect(mutations(frames)).toEqual([]);
   const classifiedAt = frames.length;
   await page.getByLabel(/Standard calibration/).check();
@@ -1229,48 +1257,57 @@ test("journey 7: imported existing configuration enters legacy review", async ({
   expect(mutations(frames)).toEqual([]);
   await page.getByRole("button", { name: "Import" }).first().click();
   await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
-  await page.reload();
-  await page.getByRole("button", { name: "Open setup" }).first().click();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Review Existing Setup", exact: true }).first()).toBeVisible();
   expect(mutations(frames).filter((frame) => !frame.type.endsWith("/adopt_device"))).toEqual([]);
 });
 
 test("journey 8: an active normal transaction resumes at Install Configuration", async ({ page }) => {
-  const frames = await mockHomeAssistant(page);
-  await openInventory(page);
-  await page.getByLabel("CT1 name").fill("Load 1");
+  const frames = await mockHomeAssistant(page, { activeWork: "normal" });
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   expect(mutations(frames)).toEqual([]);
-  await page.getByRole("button", { name: "Continue" }).click();
+  await page.reload();
+  await page.getByRole("button", { name: "Open setup" }).first().click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
-  expectLatestSourceBinding(frames, "preview_meter_configuration");
-  const mutationCount = mutations(frames).length;
-  await reopenAtCalibrationPlan(page);
-  expect(mutations(frames)).toHaveLength(mutationCount);
-  await page.getByLabel(/Standard calibration/).click();
-  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
-  expect(mutations(frames)).toHaveLength(mutationCount);
-  expect(operations(frames).filter((operation) => operation === "get_active_work")).toHaveLength(1);
+  expect(mutations(frames)).toEqual([]);
+  expect(operations(frames).filter((operation) => operation === "get_active_work").length).toBeGreaterThan(1);
+});
+
+test("a legacy migration transaction resumes without repeating the branch choice", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { activeWork: "normal", guidedMode: "legacy" });
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
+
+  await expect(page.getByRole("heading", { name: "Install reviewed helper configuration" })).toBeVisible();
+  expect(mutations(frames)).toEqual([]);
 });
 
 test("journey 9: an active calibration handoff resumes at Save Calibration", async ({ page }) => {
-  const frames = await mockHomeAssistant(page);
-  await openInventory(page);
+  const frames = await mockHomeAssistant(page, { activeWork: "handoff" });
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
+  await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
   expect(mutations(frames)).toEqual([]);
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Standard calibration/).click();
-  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
-  await calibrateVoltageToRestart(page);
-  await page.getByRole("button", { name: "Restart and verify" }).click();
+  await page.reload();
+  await page.getByRole("button", { name: "Open setup" }).first().click();
   await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
-  expectLatestSourceBinding(frames, "preview_calibrated_gains");
-  const mutationCount = mutations(frames).length;
-  await reopenAtCalibrationPlan(page);
-  expect(mutations(frames)).toHaveLength(mutationCount);
-  await page.getByLabel(/Standard calibration/).click();
-  await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
-  expect(mutations(frames)).toHaveLength(mutationCount);
+  expect(mutations(frames)).toEqual([]);
   expect(operations(frames).filter((operation) => operation === "get_active_work").length).toBeGreaterThan(1);
+});
+
+test("a legacy calibration-only handoff resumes without repeating the branch choice", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { activeWork: "handoff", guidedMode: "legacy" });
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
+
+  await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
+  expect(mutations(frames)).toEqual([]);
 });
 
 test("journey 10: mobile phases only advance as the conditional flow advances", async ({ page }) => {
@@ -1278,7 +1315,8 @@ test("journey 10: mobile phases only advance as the conditional flow advances", 
   await page.setViewportSize({ width: 390, height: 844 });
   await openGuidedMeter(page);
   const progress = page.locator(".mobile-progress");
-  const phase = async () => Number((await progress.textContent())?.match(/(\d+) of/)?.[1]);
+  await expect(progress).toContainText(/Phase \d+ of \d+/);
+  const phase = async () => Number((await progress.textContent())?.match(/Phase (\d+) of/)?.[1]);
   const first = await phase();
   expect(mutations(frames)).toEqual([]);
   await page.getByRole("button", { name: "Review and manage with helper" }).click();

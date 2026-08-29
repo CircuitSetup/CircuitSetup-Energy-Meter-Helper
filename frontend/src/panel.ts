@@ -128,9 +128,11 @@ export class CircuitSetupPanel extends LitElement {
   private calibrationByTarget = new Map<string, CalibrationResult>();
   private restartResult: RestartVerificationResult | null = null;
   private completedWithoutChanges = false;
+  private configurationInstalled = false;
   private offsetReadinessByTarget = new Map<string, OffsetReadinessResult>();
   private offsetResultByTarget = new Map<string, OffsetCalibrationResult>();
   private calibrationHandoff = false;
+  private handoffDeclined = false;
   private addonCount = 0;
   private packageOptions = newInstallPackageOptions(0);
   private sourcePackageOptions: BoardPackageOptions | null = newInstallPackageOptions(0);
@@ -410,6 +412,7 @@ export class CircuitSetupPanel extends LitElement {
     this.offsetReadinessByTarget = new Map();
     this.offsetResultByTarget = new Map();
     this.calibrationHandoff = false;
+    this.handoffDeclined = false;
     this.group = 0;
     this.channel = 1;
     this.voltageReferences = new Map();
@@ -451,6 +454,7 @@ export class CircuitSetupPanel extends LitElement {
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = new Set();
     this.canonicalConfigurationChanged = false;
+    this.configurationInstalled = false;
     this.managedAutomaticAggregates = [];
     this.board = 0;
     this.resetCalibrationRun();
@@ -714,10 +718,6 @@ export class CircuitSetupPanel extends LitElement {
 
   private async adopt(deviceId = this.selectedDeviceId): Promise<void> {
     if (!this.api || !deviceId || this.pendingAction) return;
-    this.newInstallDeviceId = this.setup?.devices.find((device) => device.entry_id === deviceId)?.configuration
-      ? null : deviceId;
-    this.journeyOrigin = this.newInstallDeviceId === deviceId
-      ? "new_install" : "existing_meter";
     if (deviceId !== this.selectedDeviceId) this.selectDevice(deviceId);
     const api = this.api; const generation = ++this.operationGeneration;
     const connectionGeneration = this.connectionGeneration;
@@ -743,6 +743,7 @@ export class CircuitSetupPanel extends LitElement {
       this.importFailedDeviceId = null;
       this.announcement = "Meter imported into ESPHome Builder.";
       this.showTopologyResult(result);
+      await this.restoreActiveWork(api, deviceId, generation);
     } catch (error) {
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = deviceId;
@@ -787,7 +788,41 @@ export class CircuitSetupPanel extends LitElement {
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.showTopologyResult(result);
+      if (this.setup?.configuration_authoritative === false) {
+        this.configurationMode = "runtime_only";
+      } else {
+        const configuration = await api.getMeterConfiguration(deviceId);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.setMeterConfiguration(configuration);
+      }
+      await this.restoreActiveWork(api, deviceId, generation);
     }, "Topology evidence could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
+  }
+
+  private async restoreActiveWork(api: HelperApi, deviceId: string, generation: number): Promise<void> {
+    if (!this.topology) return;
+    const active = await api.getActiveWork(deviceId, this.topology);
+    if (!this.ownsOperation(generation, api, deviceId)) return;
+    this.session = active.session?.state === "cancelled" ? null : active.session;
+    this.transaction = active.transaction;
+    this.safetyAcknowledged = this.session?.safety_acknowledged ?? false;
+    this.calibrationHandoff = Boolean(this.transaction && active.verified_calibration
+      && active.verified_calibration.source_handoff_transaction_id === this.transaction.transaction_id);
+    this.transactionPurpose = this.transaction
+      ? this.calibrationHandoff ? "save_calibration" : "install_configuration"
+      : null;
+    if (this.transactionPurpose === "install_configuration"
+      && this.configurationMode === "legacy_editable"
+      && this.existingConfigurationChoice === null) this.existingConfigurationChoice = "manage_with_helper";
+    this.restartResult = this.calibrationHandoff || this.session?.state === "verified"
+      ? active.verified_calibration : null;
+    if (this.configurationMode === "legacy_editable"
+      && this.existingConfigurationChoice === null
+      && (this.calibrationHandoff || this.restartResult)) this.existingConfigurationChoice = "calibrate_only";
+    if (!this.transaction && !this.session && !this.restartResult) return;
+    this.navigate(resumeWorkflowRoute(this.workflowContext()));
+    if (this.transaction) await this.subscribeTransaction(this.connectionGeneration);
+    if (this.session) await this.subscribeSession(this.connectionGeneration);
   }
 
   private async loadInventory(): Promise<void> {
@@ -954,6 +989,7 @@ export class CircuitSetupPanel extends LitElement {
   private chooseExistingConfiguration(choice: ExistingConfigurationChoice): void {
     this.existingConfigurationChoice = choice;
     this.canonicalConfigurationChanged = false;
+    this.configurationInstalled = false;
     if (choice === "manage_with_helper") this.navigate("meter");
     else if (choice === "calibrate_only") {
       this.labelOnly = false;
@@ -1356,6 +1392,7 @@ export class CircuitSetupPanel extends LitElement {
         this.announcement = "Calibration was saved to YAML, installed, verified, and cleared from flash.";
         this.navigate("summary");
       } else if (action === "install" && transaction.state === "verified") {
+        this.configurationInstalled = true;
         if (this.meterConfiguration) this.verifiedMeterConfiguration = { ...this.meterConfiguration,
           capabilities: this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper"
             ? { ...this.meterConfiguration.capabilities, semantic_source: "helper_managed" }
@@ -1673,6 +1710,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private keepCalibrationInFlash(): void {
+    this.handoffDeclined = true;
     this.announcement = "Calibration remains in meter flash. Installing firmware may replace it.";
     this.navigate("summary");
   }
@@ -1752,7 +1790,7 @@ export class CircuitSetupPanel extends LitElement {
     }
     const restartResult = this.restartResult as RestartVerificationResult | null;
     if (restartResult?.source_handoff_available) {
-      await this.reviewCalibrationHandoff();
+      this.navigate("save-calibration");
     } else if (restartResult) {
       this.navigate("summary");
     }
@@ -1904,7 +1942,13 @@ export class CircuitSetupPanel extends LitElement {
         () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.setup?.configuration_authoritative !== false
           && this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
           ? this.loadInventory() : this.navigate("calibration-plan")), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session") : nothing}`;
-    if (this.step === "legacy-review" && this.meterConfiguration) return existingConfigurationStep(this.meterConfiguration,
+    if (this.step === "legacy-review" && this.meterConfiguration) return existingConfigurationStep(this.meterConfiguration, {
+      configurationFilename: this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration ?? "Unavailable",
+      projectName: this.selectedProjectName() ?? this.meterConfiguration.topology.project_name,
+      projectVersion: this.selectedProjectVersion() ?? "Unavailable",
+      boardCount: this.meterConfiguration.topology.board_count,
+      ctCount: this.meterConfiguration.topology.ct_count,
+    },
       () => this.chooseExistingConfiguration("manage_with_helper"),
       () => this.chooseExistingConfiguration("calibrate_only"),
       () => this.back());
@@ -1926,6 +1970,11 @@ export class CircuitSetupPanel extends LitElement {
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session",
       this.labelOnly ? null : this.meterConfiguration?.configuration ?? null, (configuration) => this.updateCircuitConfiguration(configuration), (channel) => this.disableCircuit(channel),
       this.meterConfiguration?.capabilities.managed_totals ?? true, this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "", this.configurationMode === "legacy_editable")}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
+    if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return html`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
+      <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
+      <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>
+      <footer class="action-footer"><button class="secondary" data-action="keep-calibration-flash" @click=${() => this.keepCalibrationInFlash()}>Keep calibration in meter flash</button><button class="primary" data-action="review-calibration-handoff" @click=${() => void this.reviewCalibrationHandoff()}>Review and save calibration to YAML</button></footer>
+    </section>`;
     if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep(this.step === "save-calibration" ? "save_calibration" : "install_configuration", this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
       () => void (this.calibrationHandoff && this.transaction?.state === "verified" && this.restartResult?.source_handoff_firmware_installed
@@ -1943,7 +1992,7 @@ export class CircuitSetupPanel extends LitElement {
         this.navigate("summary");
       } else void this.startSession(plan as "standard" | "full");
       this.requestUpdate();
-    }, () => this.back());
+    }, () => this.back(), this.workflowContext().configurationMode === "runtime_only");
     if (this.step === "offset") return offsetStep(this.topology, this.session, this.board, this.offsetStage,
       this.offsetAcknowledged[this.offsetStage - 1] ?? false, this.offsetRetryConfirmed,
       this.offsetReadinessByTarget.get(this.offsetKey()) ?? null, this.offsetResultByTarget.get(this.offsetKey()) ?? null,
@@ -1979,7 +2028,7 @@ export class CircuitSetupPanel extends LitElement {
         ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back(), this.verifiedMeterConfiguration,
       this.verifiedMeterConfiguration ? configurationImpact(this.verifiedMeterConfiguration.configuration, this.verifiedMeterConfiguration.topology) : null,
       () => this.finishFlow("Meter configuration and calibration are complete."), () => this.keepCalibrationInFlash(),
-      this.workflowContext().configurationMode, this.existingConfigurationChoice);
+      this.workflowContext().configurationMode, this.existingConfigurationChoice, this.configurationInstalled, this.handoffDeclined);
     return html`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct"
       ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;
@@ -2021,7 +2070,7 @@ export class CircuitSetupPanel extends LitElement {
           <h1 id="step-heading" tabindex="-1">${this.step === "summary"
             ? summaryOutcome({ configurationMode: this.workflowContext().configurationMode,
               legacyChoice: this.existingConfigurationChoice, completedWithoutChanges: this.completedWithoutChanges,
-              restart: this.restartResult, verifiedConfiguration: this.verifiedMeterConfiguration !== null }).heading
+              configurationInstalled: this.configurationInstalled, restart: this.restartResult, verifiedConfiguration: this.verifiedMeterConfiguration !== null }).heading
             : ROUTE_LABELS[this.step]}</h1>
           ${substeps.length ? html`<nav class="calibration-subprogress" aria-label="Calibration progress"><ol>
             ${substeps.map((substep, index) => html`<li class=${substep.status}
