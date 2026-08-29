@@ -5,7 +5,7 @@ import "../src/index";
 import { espWebInstaller } from "../src/components/esp-web-installer";
 import { configReview } from "../src/components/config-review-step";
 import { buildInstallStep } from "../src/components/build-install-step";
-import { summaryStep } from "../src/components/summary-step";
+import { summaryOutcome, summaryStep } from "../src/components/summary-step";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
 import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, draftsAreValid, recommendedReportingMultiplier, type CtDraft } from "../src/components/ct-inventory-step";
@@ -160,6 +160,21 @@ afterEach(() => {
 });
 
 describe("meter configuration review and summary", () => {
+  it.each([
+    ["helper YAML", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: true }, "Configuration and calibration are installed in ESPHome.", []],
+    ["helper unchanged", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: true, restart: null, verifiedConfiguration: true }, "Existing calibration was kept unchanged.", []],
+    ["legacy migration", { configurationMode: "helper_managed", legacyChoice: "manage_with_helper", completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: true, unmanagedLegacyItems: ["legacy_generic_totals_unmanaged"] }, "Configuration and calibration are installed in ESPHome.", ["Unmanaged legacy items: legacy_generic_totals_unmanaged."]],
+    ["legacy handoff", { configurationMode: "legacy_editable", legacyChoice: "calibrate_only", completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: false }, "Calibration gains were saved; the remaining legacy configuration was not migrated.", []],
+    ["legacy flash", { configurationMode: "legacy_editable", legacyChoice: "calibrate_only", completedWithoutChanges: false, restart: { source_authority: "saved_flash" }, verifiedConfiguration: false }, "ESPHome configuration was left untouched.", ["Calibration is stored in meter flash. Installing firmware may replace it."]],
+    ["runtime only", { configurationMode: "runtime_only", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "saved_flash" }, verifiedConfiguration: false }, "Calibration is stored in meter flash. Installing firmware may replace it.", ["Calibration is stored in meter flash. Installing firmware may replace it."]],
+    ["offset", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "saved_flash", offset_groups: [{}] }, verifiedConfiguration: true }, "Offset calibration remains stored in meter flash by design.", ["Offset calibration remains stored in meter flash by design."]],
+  ] as const)("derives the %s completion outcome", (_name, input, calibration, warnings) => {
+    const outcome = summaryOutcome(input);
+
+    expect(outcome.calibrationStatus).toBe(calibration);
+    expect(outcome.warnings).toEqual(warnings);
+  });
+
   it.each([
     [50, 1], [65.535, 1], [100, 2], [131.07, 2], [200, 4], [262.14, 4], [400, 8], [524.28, 8], [524.281, null],
   ] as const)("recommends the minimum safe reporting multiplier for %s A", (ratedCurrentA, expected) => {
@@ -1910,7 +1925,7 @@ describe("CircuitSetup panel", () => {
 
     expect(calls).toContain("complete_calibration_without_changes");
     expect(calls).not.toContain("restart_and_verify");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup complete");
     expect(text(panel)).toContain("Completed without calibration changes");
   });
 
@@ -3040,7 +3055,7 @@ describe("CircuitSetup panel", () => {
 
     expect(sent.filter((message) => String(message.type).endsWith("complete_calibration_without_changes"))).toHaveLength(1);
     expect(sent.filter((message) => String(message.type).endsWith("cancel_session"))).toHaveLength(0);
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup complete");
     expect(text(panel)).toContain("Completed without calibration changes");
   });
 
@@ -3085,7 +3100,7 @@ describe("CircuitSetup panel", () => {
       ["voltage", ["Voltage", "reference", "check stability"]],
       ["current", ["Current", "calibration"]],
       ["restart", ["Restart", "restart verification"]],
-      ["summary", ["Summary", "authority source", "Technical details"]],
+      ["summary", ["Setup complete", "Calibration authority", "Technical details"]],
     ] as const) {
       panel.showState(step);
       await panel.updateComplete;
@@ -3818,7 +3833,7 @@ describe("CircuitSetup panel", () => {
     await state.restart(); await panel.updateComplete;
 
     expect(state.restartResult).toEqual(restart);
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup complete");
   });
 
   it("keeps mixed gain and offset calibration flash-backed in Summary", async () => {
@@ -3840,7 +3855,7 @@ describe("CircuitSetup panel", () => {
 
     panel.showState("summary"); await panel.updateComplete;
 
-    expect(text(panel)).toContain("Offset calibration remains saved in flash");
+    expect(text(panel)).toContain("Offset calibration remains stored in meter flash by design");
     expect(text(panel)).not.toContain("flash values cleared");
     expect(panel.shadowRoot?.querySelector("[data-action=save-calibration]")).toBeNull();
   });
@@ -3908,7 +3923,7 @@ describe("CircuitSetup panel", () => {
     retry?.click(); await tick(); await panel.updateComplete;
     expect(operations.filter((operation) => operation === "install_ct_config")).toHaveLength(1);
     expect(operations.filter((operation) => operation === "clear_calibration_flash")).toHaveLength(2);
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup complete");
     expect(text(panel)).toContain("Calibration was saved to YAML");
   });
 
@@ -3935,7 +3950,7 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(operations).not.toContain("preview_calibrated_gains");
     expect(operations).not.toContain("clear_calibration_flash");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup complete");
     expect(text(panel)).toContain("Installing firmware may replace it");
   });
 

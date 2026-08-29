@@ -13,7 +13,7 @@ import { newInstallPackageOptions, resizePackageOptions } from "./components/pac
 import { restartStep } from "./components/restart-step";
 import { safetyStep } from "./components/safety-step";
 import { setupDeviceStep } from "./components/setup-device-step";
-import { summaryStep } from "./components/summary-step";
+import { summaryOutcome, summaryStep } from "./components/summary-step";
 import { technicalDetails } from "./components/technical-details";
 import { topologyMismatch, topologyStep } from "./components/topology-step";
 import { voltageStep } from "./components/voltage-step";
@@ -1978,7 +1978,8 @@ export class CircuitSetupPanel extends LitElement {
       () => void (this.restartResult?.source_handoff_firmware_installed
         ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back(), this.verifiedMeterConfiguration,
       this.verifiedMeterConfiguration ? configurationImpact(this.verifiedMeterConfiguration.configuration, this.verifiedMeterConfiguration.topology) : null,
-      () => this.finishFlow("Meter configuration and calibration are complete."), () => this.keepCalibrationInFlash());
+      () => this.finishFlow("Meter configuration and calibration are complete."), () => this.keepCalibrationInFlash(),
+      this.workflowContext().configurationMode, this.existingConfigurationChoice);
     return html`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct"
       ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;
@@ -2017,7 +2018,11 @@ export class CircuitSetupPanel extends LitElement {
           () => this.returnToSetup())}
         <main>
           <div class="product-title">CircuitSetup Energy Meter Helper</div>
-          <h1 id="step-heading" tabindex="-1">${ROUTE_LABELS[this.step]}</h1>
+          <h1 id="step-heading" tabindex="-1">${this.step === "summary"
+            ? summaryOutcome({ configurationMode: this.workflowContext().configurationMode,
+              legacyChoice: this.existingConfigurationChoice, completedWithoutChanges: this.completedWithoutChanges,
+              restart: this.restartResult, verifiedConfiguration: this.verifiedMeterConfiguration !== null }).heading
+            : ROUTE_LABELS[this.step]}</h1>
           ${substeps.length ? html`<nav class="calibration-subprogress" aria-label="Calibration progress"><ol>
             ${substeps.map((substep, index) => html`<li class=${substep.status}
               aria-current=${substep.status === "current" ? "step" : nothing}>
