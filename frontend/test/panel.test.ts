@@ -2647,7 +2647,7 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("Gain evidence · meter_main2");
     expect(text(panel)).toContain("Voltage calibration complete for Main Board");
     expect(text(panel)).toContain("Voltage calibrated this session");
-    expect(panel.shadowRoot?.querySelector("details")).toBeNull();
+    expect(panel.shadowRoot?.querySelector("details")?.textContent).toContain("Backend state");
   });
 
   it("keeps the installed slow-interval calibration warning visible after CT inventory loads", async () => {

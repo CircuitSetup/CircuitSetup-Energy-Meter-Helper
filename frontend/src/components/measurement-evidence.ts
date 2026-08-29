@@ -9,10 +9,9 @@ export function calibrationProgress(
   result: CalibrationResult | null,
   plan: "standard" | "full" | null = "full",
 ): TemplateResult {
-  const complete = [referenceReady, Boolean(stability?.stable), Boolean(result), Boolean(result?.gain_evidence), Boolean(result)];
-  const active = complete.findIndex((value) => !value);
   const labels = plan === "standard" ? ["Set reference", "Check stability", "Run calibration", "Verify gain"] : ["Set reference", "Check stability", "Run calibration", "Verify gain", "Zero reference"];
   const complete = labels.map((_, index) => index < 4 ? [referenceReady, Boolean(stability?.stable), Boolean(result), Boolean(result?.gain_evidence)][index]! : Boolean(result));
+  const active = complete.findIndex((value) => !value);
   return html`<ol class="progress-steps">${labels.map((label, index) => html`<li
     class=${complete[index] ? "complete" : index === active ? "active" : "pending"}><span
       class="progress-number">${index + 1}</span><span>${label}</span></li>`)}</ol>`;
