@@ -858,9 +858,6 @@ describe("CircuitSetup panel", () => {
     const state = panel as unknown as Record<string, unknown> & {
       setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
     };
-    state.electricalSystem = "single_phase_230";
-    state.lineFrequencyHz = 50;
-    state.electricalProfileConfirmed = true;
     state.setMeterConfiguration(meterResponse("split_phase_120_240", 60, 30) as unknown as import("../src/types").MeterConfiguration);
     expect(state.meterSettingsDraft).toMatchObject({ electrical_system: "split_phase_120_240", line_frequency_hz: 60,
       update_interval_s: 30, voltage_references: [{ nominal_voltage_v: 120 }] });
@@ -870,20 +867,17 @@ describe("CircuitSetup panel", () => {
     expect(state.canonicalConfigurationChanged).toBe(false);
   });
 
-  it("seeds a newly installed meter from explicit installer intent", async () => {
+  it("does not seed a newly installed meter from installer intent", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const state = panel as unknown as Record<string, unknown> & {
       setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
     };
     state.selectedDeviceId = "meter-1";
     state.newInstallDeviceId = "meter-1";
-    state.electricalSystem = "single_phase_230";
-    state.lineFrequencyHz = 50;
-    state.electricalProfileConfirmed = true;
     state.setMeterConfiguration(meterResponse() as unknown as import("../src/types").MeterConfiguration);
-    expect(state.meterSettingsDraft).toMatchObject({ electrical_system: "single_phase_230", line_frequency_hz: 50,
-      voltage_references: [{ nominal_voltage_v: 230 }] });
-    expect(state.canonicalConfigurationChanged).toBe(true);
+    expect(state.meterSettingsDraft).toMatchObject({ electrical_system: "split_phase_120_240", line_frequency_hz: 60,
+      voltage_references: [{ nominal_voltage_v: 120 }] });
+    expect(state.canonicalConfigurationChanged).toBe(false);
   });
 
   it("keeps a verified install on the selected meter until Continue starts safety", async () => {
@@ -1125,15 +1119,16 @@ describe("CircuitSetup panel", () => {
     expect(steps.join(" ")).not.toContain("Topology");
     expect(panel.shadowRoot?.querySelector(".mobile-progress")?.textContent).not.toContain("of 10");
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
-    expect(text(panel)).toContain("Configure an existing device");
+    expect(text(panel)).toContain("Existing meters");
     expect(text(panel)).toContain("Basement meter");
-    expect(text(panel)).toContain("Device Builder: Yes — import available");
-    expect(text(panel)).toContain("Set up a new device");
+    expect(text(panel)).toContain("Import available");
+    expect(text(panel)).toContain("Import configuration");
+    expect(text(panel)).toContain("Set up a new meter");
     expect(panel.shadowRoot?.querySelectorAll('[name="addon-count"]')).toHaveLength(7);
     expect(panel.shadowRoot?.querySelectorAll('[name="connection-type"]')).toHaveLength(3);
-    expect(panel.shadowRoot?.querySelectorAll('[name="electrical-system"]')).toHaveLength(4);
-    expect(panel.shadowRoot?.querySelector('[name="line-frequency"]')).not.toBeNull();
-    expect(panel.shadowRoot?.querySelector('[data-action="confirm-electrical-profile"]')).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector('[name="electrical-system"]')).toBeNull();
+    expect(panel.shadowRoot?.querySelector('[name="line-frequency"]')).toBeNull();
+    expect(text(panel)).toContain("Add-on address jumper settings");
     expect(text(panel)).toContain("Install firmware");
     expect(Array.from(panel.shadowRoot?.querySelectorAll(".next-steps li") ?? [], (item) => item.textContent?.trim())).toEqual([
       "Install the selected firmware and select Next in ESP Web Tools.",
@@ -1151,7 +1146,6 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("details")).toBeNull();
     const setupOrder = [
       panel.shadowRoot?.querySelector('[name="addon-count"]')?.closest("fieldset"),
-      panel.shadowRoot?.querySelector('[name="electrical-system"]')?.closest("fieldset"),
       panel.shadowRoot?.querySelector('[name="connection-type"]')?.closest("fieldset"),
       panel.shadowRoot?.querySelector('[aria-labelledby="jumper-heading"]'),
       panel.shadowRoot?.querySelector('[data-action="firmware-version"]'),
@@ -1171,7 +1165,7 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("(15, 26)");
   });
 
-  it("does not send suggested electrical values until the user confirms them", async () => {
+  it("keeps electrical profile values out of new-meter setup and installer intent", async () => {
     const messages: Record<string, unknown>[] = [];
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
@@ -1191,67 +1185,32 @@ describe("CircuitSetup panel", () => {
     expect(initial).not.toHaveProperty("electrical_system");
     expect(initial).not.toHaveProperty("line_frequency_hz");
 
-    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[name="electrical-system"][value="split_phase_120_240"]')?.checked).toBe(true);
-    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[name="line-frequency"][value="60"]')?.checked).toBe(true);
-
-    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="electrical-system"][value="single_phase_230"]')?.click();
-    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="line-frequency"][value="50"]')?.click();
-    panel.shadowRoot?.querySelector<HTMLInputElement>('[data-action="confirm-electrical-profile"]')?.click();
-    await panel.updateComplete;
-    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
-    await tick();
-    expect(messages.filter((message) => String(message.type).endsWith("set_installer_intent")).at(-1)).toMatchObject({
-      electrical_system: "single_phase_230",
-      line_frequency_hz: 50,
-    });
+    expect(panel.shadowRoot?.querySelector('[name="electrical-system"]')).toBeNull();
+    expect(panel.shadowRoot?.querySelector('[name="line-frequency"]')).toBeNull();
+    expect(text(panel)).toContain("Add-on address jumper settings");
   });
 
-  it.each([
-    ["split_phase_120_240", "60"],
-    ["single_phase_230", "50"],
-  ] as const)("confirms the %s frequency suggestion", async (system, frequency) => {
-    const messages: Record<string, unknown>[] = [];
-    const hass: HomeAssistant = {
-      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
-        messages.push(message);
-        return { state: "installer_guide", devices: [] } as T;
-      },
-      connection: { subscribeMessage: async () => () => undefined },
-    };
-    const panel = await mount(hass);
-    panel.shadowRoot?.querySelector<HTMLInputElement>(`[name="electrical-system"][value="${system}"]`)?.click();
-    await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector<HTMLInputElement>(`[name="line-frequency"][value="${frequency}"]`)?.checked).toBe(true);
-    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="confirm-electrical-profile"]')?.click();
-    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
-    await tick();
+  it("shows new-meter setup without a passive no-device error", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
 
-    expect(messages.filter((message) => String(message.type).endsWith("set_installer_intent")).at(-1)).toMatchObject({
-      electrical_system: system,
-      line_frequency_hz: Number(frequency),
-    });
+    expect(panel.shadowRoot?.querySelector(".setup-step h2")?.textContent).toBe("Set up a new meter");
+    expect(text(panel)).not.toContain("No compatible device found");
   });
 
-  it.each(["custom", "three_phase"] as const)("requires an explicit frequency for %s", async (system) => {
-    const messages: Record<string, unknown>[] = [];
-    const hass: HomeAssistant = {
-      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
-        messages.push(message);
-        return { state: "installer_guide", devices: [] } as T;
-      },
-      connection: { subscribeMessage: async () => () => undefined },
-    };
-    const panel = await mount(hass);
-    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="confirm-electrical-profile"]')?.click();
-    panel.shadowRoot?.querySelector<HTMLInputElement>(`[name="electrical-system"][value="${system}"]`)?.click();
-    await panel.updateComplete;
+  it("classifies existing meter cards from source availability", async () => {
+    const managed = { ...device, entry_id: "managed", title: "Managed", configuration: "managed.yaml", importable: false };
+    const importable = { ...device, entry_id: "importable", title: "Importable", configuration: null, importable: true };
+    const calibrationOnly = { ...device, entry_id: "runtime", title: "Runtime", configuration: null, importable: false };
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [managed, importable, calibrationOnly] } }));
+    const rows = [...panel.shadowRoot?.querySelectorAll(".meter-row") ?? []];
 
-    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="confirm-electrical-profile"]')?.disabled).toBe(true);
-    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=rescan]")?.click();
-    await tick();
-    const intent = messages.filter((message) => String(message.type).endsWith("set_installer_intent")).at(-1);
-    expect(intent).not.toHaveProperty("electrical_system");
-    expect(intent).not.toHaveProperty("line_frequency_hz");
+    expect(rows[0]?.textContent).toContain("Managed in ESPHome Device Builder");
+    expect(rows[0]?.querySelector("button")?.textContent).toContain("Open setup");
+    expect(rows[1]?.textContent).toContain("Import available");
+    expect(rows[1]?.querySelector("button")?.textContent).toContain("Import configuration");
+    expect(rows[2]?.textContent).toContain("Calibration only — no editable source.");
+    expect(rows[2]?.querySelector("button")?.textContent).toContain("Open calibration");
+    expect(text(panel).indexOf("Existing meters")).toBeLessThan(text(panel).indexOf("Set up a new meter"));
   });
 
   it("loads imported meter configuration before topology after adoption", async () => {
@@ -1275,17 +1234,14 @@ describe("CircuitSetup panel", () => {
     };
     const panel = await mount(hass);
     const state = panel as unknown as Record<string, unknown> & { adopt: (id: string) => Promise<void> };
-    state.electricalSystem = "single_phase_230";
-    state.lineFrequencyHz = 50;
-    state.electricalProfileConfirmed = true;
     await state.adopt(device.entry_id);
     await panel.updateComplete;
 
     expect(state.error).toBe("");
     expect(operations.indexOf("get_meter_configuration")).toBeGreaterThan(operations.indexOf("adopt_device"));
     expect(operations.indexOf("get_topology")).toBeGreaterThan(operations.indexOf("get_meter_configuration"));
-    expect(state.meterSettingsDraft).toMatchObject({ electrical_system: "single_phase_230", line_frequency_hz: 50,
-      update_interval_s: 5, voltage_references: [{ nominal_voltage_v: 230 }], authoritative: true });
+    expect(state.meterSettingsDraft).toMatchObject({ electrical_system: "split_phase_120_240", line_frequency_hz: 60,
+      update_interval_s: 5, voltage_references: [{ nominal_voltage_v: 120 }], authoritative: true });
   });
 
   it("takes control before configuring an unbound importable meter", async () => {
@@ -1316,12 +1272,12 @@ describe("CircuitSetup panel", () => {
       connection: { subscribeMessage: async () => () => undefined },
     };
     const panel = await mount(hass);
-    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=configure-device]")?.click();
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=import-device]")?.click();
     await tick(); await panel.updateComplete;
 
     expect(operations.indexOf("adopt_device")).toBeGreaterThan(operations.indexOf("setup_status"));
     expect(operations.indexOf("get_topology")).toBeGreaterThan(operations.indexOf("adopt_device"));
-    expect(text(panel)).toContain("Topology evidence");
+    expect(text(panel)).toContain("The detected hardware agrees");
     expect(text(panel)).not.toContain("The selected device changed or is no longer available");
   });
 
@@ -2033,7 +1989,7 @@ describe("CircuitSetup panel", () => {
     const state = panel as unknown as { selectedDeviceId: string | null; topology: unknown };
     expect(state.selectedDeviceId).toBe("meter-1");
     expect(state.topology).toBe(topology);
-    expect(text(panel)).toContain("Topology evidence");
+    expect(text(panel)).toContain("The detected hardware agrees");
   });
 
   it("keeps the current Setup Device selection when Rescan returns the same compatible device", async () => {
@@ -2433,7 +2389,7 @@ describe("CircuitSetup panel", () => {
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
-        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "setup_status") return { state: "device_discovered", devices: [{ ...device, configuration: "meter.yaml", importable: false }] } as T;
         if (operation === "check_stability") {
           const targetId = message.target_id as string;
           targets.push(targetId);
@@ -2700,7 +2656,7 @@ describe("CircuitSetup panel", () => {
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
-        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "setup_status") return { state: "device_discovered", devices: [{ ...device, configuration: "meter.yaml", importable: false }] } as T;
         if (operation === "get_topology") return await pending as T;
         return {} as T;
       },
@@ -2712,14 +2668,21 @@ describe("CircuitSetup panel", () => {
     await tick(); await panel.updateComplete;
 
     expect(configure?.disabled).toBe(true);
-    expect(configure?.textContent).toContain("Loading topology");
+    expect(configure?.textContent).toContain("Loading meter");
 
     resolveTopology({ addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
       connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
       evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] });
     await tick(); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
-    expect(text(panel)).toContain("Topology evidence");
+    const summary = panel.shadowRoot?.querySelector<HTMLElement>(".step-content > .info-band");
+    expect(summary?.textContent).toContain("Detected 1 boards with 6 CTs on a wifi connection");
+    expect(summary?.textContent).toContain("The detected hardware agrees");
+    expect(summary?.textContent).not.toContain(device.project_name);
+    const details = panel.shadowRoot?.querySelector<HTMLDetailsElement>(".step-content > details");
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector("summary")?.textContent).toBe("Technical details");
+    expect(details?.querySelector(".evidence-table")).not.toBeNull();
     expect(panel.shadowRoot?.querySelector("[data-action=continue]")).not.toBeNull();
   });
 
@@ -2742,7 +2705,7 @@ describe("CircuitSetup panel", () => {
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
-        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "setup_status") return { state: "device_discovered", devices: [{ ...device, configuration: "meter.yaml", importable: false }] } as T;
         if (operation === "get_topology") throw Object.assign(new Error("stale"), { code: "stale_handle" });
         return {} as T;
       },
