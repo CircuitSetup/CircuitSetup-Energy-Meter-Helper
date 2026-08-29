@@ -1615,6 +1615,7 @@ export class CircuitSetupPanel extends LitElement {
     const currentReferences = this.currentReferenceEntries();
     if (target === "current" && !currentReferences.length) {
       this.fail(new Error(), "Confirm the reporting multiplier before calibration.");
+      this.pendingAction = "";
       return;
     }
     if (target === "voltage") { this.voltageBusy = true; this.requestUpdate(); }

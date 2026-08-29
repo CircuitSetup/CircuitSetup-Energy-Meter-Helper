@@ -51,6 +51,7 @@ export function ctInventoryStep(
   return html`
     <section class="step-content ct-step" aria-labelledby="step-heading">
       <p class="info-band">CT numbering starts at the top-left connector on each board and continues counterclockwise, then continues upward through the board stack. A circuit's voltage reference is determined by the physical voltage setup and cannot be changed in software.</p>
+      <p class="warning-band" role="note"><strong>Physical work required:</strong> CT wiring and panel changes must be performed safely; the helper cannot verify them.</p>
       <div class="board-tabs" role="tablist" aria-label="Meter boards" aria-orientation="horizontal">
         ${Array.from({ length: boardCount }, (_, index) => html`
           <button role="tab" id=${`board-tab-${index}`} data-board-tab=${index} aria-selected=${index === board}
