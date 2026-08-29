@@ -785,7 +785,7 @@ def test_offset_status_starts_with_capability_board_stages_and_no_pending() -> N
 
 def test_session_status_exposes_plan_and_standard_skips_offset() -> None:
     """Standard calibration must retain flash offsets instead of resetting them."""
-    workflow, handle, _sessions, _api = _workflow()
+    _workflow_instance, handle, _sessions, _api = _workflow()
     handle.calibration_plan = "standard"
     handle.offset_skipped = True
 
