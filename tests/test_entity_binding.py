@@ -656,6 +656,24 @@ def test_group_pattern_matches_exact_phase_for_main_and_addon(
         assert entity.descriptor.object_id == f"legacy_{key}_voltage_{phase}_input"
 
 
+def test_main_phase_a_voltage_accepts_helper_managed_name() -> None:
+    entities = synthetic_entities(0)
+    voltage = next(entity for entity in entities if entity.object_id == "ic1volts")
+    values = substitutions(0)
+    values["friendly_name"] = "CircuitSetup Energy Meter 36x 777e3c"
+    entities[entities.index(voltage)] = replace(
+        voltage,
+        object_id="circuitsetup_energy_meter_36x_777e3c_main_voltage",
+        name="CircuitSetup Energy Meter 36x 777e3c Main Voltage",
+        disabled_by_default=False,
+    )
+
+    binding = bind_meter(EntityCatalog(entities, 1), topology(0), values)
+
+    entity = binding.role("main_1.voltage_a")
+    assert entity.descriptor.object_id.endswith("_main_voltage")
+
+
 def test_main_group_pattern_accepts_official_name_form() -> None:
     entities = synthetic_entities(0)
     reference = next(
