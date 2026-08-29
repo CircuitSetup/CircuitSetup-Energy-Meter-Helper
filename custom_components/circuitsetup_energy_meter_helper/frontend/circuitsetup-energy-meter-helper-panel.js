@@ -4008,9 +4008,10 @@ class CircuitSetupPanel extends i$2 {
     const importedMeter = normalized.configuration.meter;
     const fixedVoltage = profileNominalVoltage(importedMeter.electrical_system);
     const voltageMismatch = fixedVoltage !== null && importedMeter.voltage_references.some((reference) => reference.nominal_voltage_v !== fixedVoltage);
-    const resolvedMeter = voltageMismatch ? { ...importedMeter, voltage_references: importedMeter.voltage_references.map((reference) => ({ ...reference, nominal_voltage_v: fixedVoltage })) } : importedMeter;
+    const existingReadOnly = this.journeyOrigin === "existing_meter";
+    const resolvedMeter = !existingReadOnly && voltageMismatch ? { ...importedMeter, voltage_references: importedMeter.voltage_references.map((reference) => ({ ...reference, nominal_voltage_v: fixedVoltage })) } : importedMeter;
     const seeded = { ...normalized, configuration: { ...normalized.configuration, meter: resolvedMeter } };
-    this.verifiedMeterConfiguration = configuration.capabilities.configuration_authoritative ? configuration : null;
+    this.verifiedMeterConfiguration = existingReadOnly && this.configurationMode === "helper_managed" && configuration.capabilities.configuration_authoritative ? configuration : null;
     this.sourcePackageOptions = {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields]
@@ -4020,14 +4021,14 @@ class CircuitSetupPanel extends i$2 {
       ...editable,
       configuration: { ...editable.configuration, ...this.packageOptions }
     } : editable;
-    const reconciliation = this.configurationMode === "helper_managed" && this.meterConfiguration.capabilities.managed_totals ? reconcileSplitPhaseAggregates(this.meterConfiguration.configuration) : null;
+    const reconciliation = !existingReadOnly && this.configurationMode === "helper_managed" && this.meterConfiguration.capabilities.managed_totals ? reconcileSplitPhaseAggregates(this.meterConfiguration.configuration) : null;
     this.managedAutomaticAggregates = reconciliation?.managed ?? [];
     if (reconciliation) this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation.configuration };
     if (!this.packageOptionsTouched) this.packageOptions = {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields]
     };
-    this.canonicalConfigurationChanged = this.packageOptionsTouched || this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter || reconciliation?.changed === true;
+    this.canonicalConfigurationChanged = !existingReadOnly && (this.packageOptionsTouched || this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter || reconciliation?.changed === true);
     this.meterSettingsDraft = {
       ...this.meterConfiguration.configuration.meter,
       authoritative: configuration.capabilities.configuration_authoritative,
@@ -4135,10 +4136,10 @@ class CircuitSetupPanel extends i$2 {
   }
   updateCircuitConfiguration(configuration, changed = true) {
     if (!this.meterConfiguration) return;
-    const reconciliation = (this.configurationMode === "helper_managed" || this.legacyCircuitSemanticsConfirmed) && this.meterConfiguration.capabilities.managed_totals ? reconcileSplitPhaseAggregates(configuration, this.managedAutomaticAggregates) : null;
+    const reconciliation = changed && (this.configurationMode === "helper_managed" || this.legacyCircuitSemanticsConfirmed) && this.meterConfiguration.capabilities.managed_totals ? reconcileSplitPhaseAggregates(configuration, this.managedAutomaticAggregates.length ? this.managedAutomaticAggregates : null) : null;
     this.managedAutomaticAggregates = reconciliation?.managed ?? [];
     this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation?.configuration ?? configuration };
-    this.canonicalConfigurationChanged ||= changed;
+    this.canonicalConfigurationChanged ||= changed || reconciliation?.changed === true;
     this.requestUpdate();
   }
   setPackageOptions(options) {
