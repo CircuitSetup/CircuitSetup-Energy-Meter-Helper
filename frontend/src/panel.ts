@@ -553,7 +553,7 @@ export class CircuitSetupPanel extends LitElement {
     else if (this.step === "current") this.navigate("voltage");
     else if (this.step === "restart") this.navigate("current");
     else if (this.step === "build") void this.backFromBuild();
-    else if (this.step === "summary") this.navigate("build");
+    else if (this.step === "summary") this.navigate(this.transaction ? "build" : this.restartResult ? "restart" : "current");
   }
 
   private returnToSetup(): void {
@@ -1639,6 +1639,8 @@ export class CircuitSetupPanel extends LitElement {
     const restartResult = this.restartResult as RestartVerificationResult | null;
     if (restartResult?.source_handoff_available) {
       await this.reviewCalibrationHandoff();
+    } else if (restartResult) {
+      this.navigate("summary");
     }
   }
 
@@ -1720,8 +1722,12 @@ export class CircuitSetupPanel extends LitElement {
   private hasCompletedCalibration(target: "voltage" | "current"): boolean {
     if (target === "voltage") return this.voltageGroupKeys().every((targetId) =>
       this.calibrationByTarget.get(`voltage:${targetId}`)?.state === "applied_pending_restart_verification");
-    return [...this.calibrationByTarget.entries()].some(([key, result]) =>
-      key.startsWith(`${target}:`) && result.state === "applied_pending_restart_verification");
+    const channels = this.meterConfiguration?.configuration.channels
+      .filter((channel) => channel.enabled).map((channel) => channel.channel)
+      ?? this.inventory?.channels.map((channel) => channel.channel)
+      ?? [];
+    return channels.length > 0 && channels.every((channel) =>
+      this.calibrationByTarget.get(`current:${channel}`)?.state === "applied_pending_restart_verification");
   }
 
   private stabilityFor(target: "voltage" | "current"): StabilityResult | null {

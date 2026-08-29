@@ -8,11 +8,12 @@ import { buildInstallStep } from "../src/components/build-install-step";
 import { summaryStep } from "../src/components/summary-step";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
-import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
+import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, draftsAreValid, type CtDraft } from "../src/components/ct-inventory-step";
 import { meterSettingsStep } from "../src/components/meter-settings-step";
 import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
 import type { CtInventory, MeterConfigurationRequest, MeterSettingsDraft, MeterTopology } from "../src/types";
+import { activeCalibrationHandoffScenario, device, meterResponse } from "./workflow-scenarios";
 
 const tick = async () => {
   await Promise.resolve();
@@ -37,6 +38,7 @@ it("reports that the meter is rebooting while startup is verified", () => {
   render(buildInstallStep(status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
 
   expect(host.textContent).toContain("Meter is rebooting. Waiting for startup verification.");
+  expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
 });
 
 it("does not relabel retained Compile progress while Install starts", () => {
@@ -62,15 +64,6 @@ it.each(["entity_mismatch", "reconnect_unavailable"] as const)("shows only the l
   expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.disabled).toBe(false);
   expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
 });
-
-const device = {
-  entry_id: "meter-1",
-  title: "Basement meter",
-  project_name: "circuitsetup.6c-energy-meter",
-  project_version: "2026.8.0",
-  importable: true,
-  configuration: null,
-};
 
 const firmwareIndex = [
   { productId: "6chan_energy_meter_main_board", name: "Main board", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
@@ -99,12 +92,6 @@ const makeHass = (responses: Record<string, unknown>): HomeAssistant => ({
   connection: {
     subscribeMessage: async () => () => undefined,
   },
-});
-
-const meterResponse = (electrical_system = "split_phase_120_240", line_frequency_hz = 60, update_interval_s = 5) => ({
-  plan_id: "b".repeat(32), source_sha256: "a".repeat(64), topology: { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2, connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] },
-  configuration: { meter: { friendly_name: "Energy meter", electrical_system, line_frequency_hz, update_interval_s, voltage_layout: "standard", voltage_references: [{ reference_id: "main", label: "Main", phase_label: "A", nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305, group_keys: ["main_1", "main_2"] }] }, channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, enabled: true, name: `CT${index + 1}`, model_id: "model", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false })), aggregates: [], power_quality: [true], status_fields: [false], multi_reference_preparation_acknowledged: false },
-  capabilities: { configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [] }, voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" }, voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 }, ct_catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 }, warnings: [], configuration_impact: { enabled_channel_count: 6, numeric_entity_count: 38, text_entity_count: 0, energy_entity_count: 0, approximate_publications_per_second: 7.6 }, channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model", selection_verified_against_config: true, address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3), phase: (["A", "B", "C"] as const)[index % 3] }, display_label: null, stored_selection_present: false })), catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
 });
 
 const mount = async (hass: HomeAssistant) => {
@@ -205,6 +192,22 @@ describe("meter configuration review and summary", () => {
     panel.showState("summary"); await panel.updateComplete;
 
     expect(text(panel)).not.toContain("Installed electrical profile");
+  });
+
+  it("never opens an empty configuration transaction from Summary Back", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & { step: string };
+    state.completedWithoutChanges = true;
+    state.topology = meterResponse().topology;
+    state.transaction = null;
+    panel.showState("summary"); await panel.updateComplete;
+
+    [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []]
+      .find((button) => button.textContent?.trim() === "Back")?.click();
+    await panel.updateComplete;
+
+    expect(state.step).not.toBe("build");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).not.toBe("Flash & Verify");
   });
 });
 
@@ -2626,6 +2629,26 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Restart");
   });
 
+  it("does not complete current calibration while enabled channels remain unresolved", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    const configuration = meterResponse();
+    state.session = { session_id: "session", device_id: device.entry_id, state: "applied_pending_restart_verification",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] }, has_pending_calibration: true };
+    state.topology = configuration.topology;
+    state.inventory = configuration;
+    state.calibrationByTarget = new Map([["current:1", { state: "applied_pending_restart_verification",
+      group_key: "main_1", phase: null, changed_channels: [1], iteration: 1,
+      before_values: [5500], after_values: [5600], error_percent_values: [0.4],
+      gain_evidence: null, restore_evidence: null, retry_allowed: false }]]);
+
+    panel.showState("current"); await panel.updateComplete;
+
+    const continueButton = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []]
+      .find((button) => button.textContent?.trim() === "Continue");
+    expect(continueButton?.disabled).toBe(true);
+  });
+
   it("keeps topology review inline on Setup Device", async () => {
     let resolveTopology!: (value: unknown) => void;
     const pending = new Promise<unknown>((resolve) => { resolveTopology = resolve; });
@@ -2863,6 +2886,21 @@ describe("CircuitSetup panel", () => {
     if (label) { label.value = "Clamp"; label.dispatchEvent(new Event("input")); }
     burden?.click(); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
+  });
+
+  it("rejects an unchanged enabled channel whose CT model is unresolved", () => {
+    const configuration = meterResponse();
+    const inventory: CtInventory = {
+      plan_id: configuration.plan_id,
+      source_sha256: configuration.source_sha256,
+      channels: [{ ...configuration.channels[0]!, selected_model_id: null, selection_verified_against_config: false }],
+      catalog: configuration.catalog,
+    };
+    const drafts = new Map<number, CtDraft>([[1, {
+      name: "CT1", modelId: "", multiplier: 1, burdenAcknowledged: false, expanded: false,
+    }]]);
+
+    expect(draftsAreValid(inventory, drafts)).toBe(false);
   });
 
   it("offers only the supported CT reporting multipliers", async () => {
@@ -3467,6 +3505,29 @@ describe("CircuitSetup panel", () => {
     panel.showState("restart"); await panel.updateComplete;
     expect(text(panel)).toContain("Source handoff");
     expect(text(panel)).toContain("Unavailable in runtime-only mode");
+  });
+
+  it("routes verified restart without source handoff directly to Summary", async () => {
+    const restart = {
+      ...activeCalibrationHandoffScenario.restartVerification!,
+      config_filename: null,
+      config_sha256: null,
+      source_handoff_available: false,
+      source_handoff_transaction_id: null,
+    };
+    const panel = await mount(makeHass({
+      setup_status: activeCalibrationHandoffScenario.setup,
+      restart_and_verify: restart,
+    }));
+    const state = panel as unknown as Record<string, unknown> & { restart(): Promise<void> };
+    state.session = { ...activeCalibrationHandoffScenario.session!, state: "ready" };
+    state.topology = activeCalibrationHandoffScenario.topology;
+    panel.showState("restart");
+
+    await state.restart(); await panel.updateComplete;
+
+    expect(state.restartResult).toEqual(restart);
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
   });
 
   it("keeps mixed gain and offset calibration flash-backed in Summary", async () => {

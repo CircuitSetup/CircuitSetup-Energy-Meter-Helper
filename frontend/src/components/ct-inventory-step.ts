@@ -354,9 +354,7 @@ export function draftsAreValid(inventory: CtInventory, drafts: Map<number, CtDra
   for (const channel of inventory.channels) {
     const draft = drafts.get(channel.channel);
     if (!draft) return false;
-    if (isDirty(channel, draft)) {
-      if (!validDraft(inventory, draft)) return false;
-    }
+    if (!validDraft(inventory, draft)) return false;
   }
   return true;
 }
