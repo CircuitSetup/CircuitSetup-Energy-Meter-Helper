@@ -598,8 +598,10 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
             "transaction_id": "transaction",
             "source_sha256": "a" * 64,
         }
-    elif suffix in {"get_active_work", "start_session"}:
+    elif suffix == "get_active_work":
         base["device_id"] = "meter"
+    elif suffix == "start_session":
+        base |= {"device_id": "meter", "calibration_plan": "standard"}
     elif suffix == "preview_calibrated_gains":
         base |= {"session_id": "3" * 32, "verification_id": "1" * 32}
     elif suffix == "clear_calibration_flash":
@@ -3103,6 +3105,25 @@ def test_controller_routes_full_meter_configuration_without_browser_changes() ->
         ) == "previewed"
         assert received and received[0][:3] == ("meter", "plan", "a" * 64)
         assert type(received[0][3]).__name__ == "MeterConfigurationRequest"
+
+    asyncio.run(run())
+
+
+def test_start_session_persists_standard_or_full_calibration_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        standard = await workflow.async_start_session("meter", "standard")
+        assert standard.calibration_plan == "standard"
+        assert standard.offset_disposition == "skipped"
+        await workflow.async_cancel_session(standard.session_id)
+        full = await workflow.async_start_session("meter", "full")
+        assert full.calibration_plan == "full"
+        assert full.offset_disposition == "not_started"
+        with pytest.raises(WorkflowHandleError, match="calibration plan"):
+            await workflow.async_start_session("other", "invalid")  # type: ignore[arg-type]
+        await workflow.async_close()
 
     asyncio.run(run())
 

@@ -783,6 +783,18 @@ def test_offset_status_starts_with_capability_board_stages_and_no_pending() -> N
     asyncio.run(run())
 
 
+def test_session_status_exposes_plan_and_standard_skips_offset() -> None:
+    """Standard calibration must retain flash offsets instead of resetting them."""
+    workflow, handle, _sessions, _api = _workflow()
+    handle.calibration_plan = "standard"
+    handle.offset_skipped = True
+
+    status = handle.status()
+
+    assert status.calibration_plan == "standard"
+    assert status.offset_disposition == "skipped"
+
+
 def test_gain_only_binding_without_offset_capability_reports_unavailable() -> None:
     async def run() -> None:
         workflow, handle, _sessions, _api = _workflow()

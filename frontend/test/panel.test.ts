@@ -957,7 +957,7 @@ describe("CircuitSetup panel", () => {
     expect(state.canonicalConfigurationChanged).toBe(false);
   });
 
-  it("keeps a verified install on the selected meter until Continue starts safety", async () => {
+  it("keeps a verified install on the selected meter until Continue opens calibration plan", async () => {
     const preview = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const operations: string[] = [];
     const hass: HomeAssistant = {
@@ -994,9 +994,9 @@ describe("CircuitSetup panel", () => {
     expect(state.sessionStarting).toBe(false);
     continueButton?.click();
     await tick(); await tick(); await panel.updateComplete;
-    expect(operations).toContain("start_session");
+    expect(operations).not.toContain("start_session");
     expect(state.selectedDeviceId).toBe("meter-1");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
   });
 
   it("shows Compile as busy while the firmware build is pending", async () => {

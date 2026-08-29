@@ -12,7 +12,7 @@ from http.cookies import SimpleCookie
 from statistics import pstdev
 from threading import RLock
 from time import monotonic
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from aioesphomeapi.model import build_device_unique_id
@@ -88,6 +88,7 @@ from .topology import (
 from .voltage_transformer_catalog import VoltageTransformerCatalog
 
 DEFAULT_HANDLE_TTL = 15 * 60.0
+CalibrationPlan = Literal["standard", "full"]
 MAX_HANDLE_TTL = 60 * 60.0
 MAX_PLAN_HANDLES = 8
 ESPHOME_DEVICE_BUILDER_SLUG = "5c53de3b_esphome"
@@ -147,6 +148,7 @@ class SessionStatus:
     offset_disposition: str = "not_started"
     offset_boards: tuple[dict[str, Any], ...] = ()
     has_pending_calibration: bool = False
+    calibration_plan: CalibrationPlan = "full"
 
 
 @dataclass(slots=True)
@@ -178,6 +180,7 @@ class _SessionHandle:
     timing_policy: CalibrationTimingPolicy = field(
         default_factory=lambda: CalibrationTimingPolicy(5, 3)
     )
+    calibration_plan: CalibrationPlan = "full"
 
     def status(self) -> SessionStatus:
         capability = getattr(self.binding, "offset_capability", None)
@@ -232,6 +235,7 @@ class _SessionHandle:
             },
             disposition,
             boards,
+            calibration_plan=self.calibration_plan,
         )
 
     def _offset_stage_state(self, board_index: int, stage: int) -> str:
@@ -736,7 +740,11 @@ class EntryWorkflow:
             results.append({"channel": channel, "state": "unchanged" if previous == label else "updated"})
         return {"mode": "home_assistant_labels", "results": results}
 
-    async def async_start_session(self, device_id: str) -> SessionStatus:
+    async def async_start_session(
+        self, device_id: str, calibration_plan: CalibrationPlan = "full"
+    ) -> SessionStatus:
+        if calibration_plan not in {"standard", "full"}:
+            raise WorkflowHandleError("calibration plan is invalid")
         device = self._device(device_id)
         api = self._require_api()
         await api.async_connect()
@@ -850,6 +858,8 @@ class EntryWorkflow:
                 ),
                 3,
             ),
+            offset_skipped=calibration_plan == "standard",
+            calibration_plan=calibration_plan,
         )
         with self._guard(mac):
             self._prune_device_sessions_locked(mac)

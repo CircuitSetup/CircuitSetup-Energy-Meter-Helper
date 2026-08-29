@@ -2,6 +2,7 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 
 import { HelperApi, type HomeAssistant } from "./api";
 import { buildInstallStep } from "./components/build-install-step";
+import { calibrationPlanStep } from "./components/calibration-plan-step";
 import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, reconcileSplitPhaseAggregates, type CtDraft } from "./components/ct-inventory-step";
 import { currentStep } from "./components/current-step";
 import { meterSettingsStep } from "./components/meter-settings-step";
@@ -566,7 +567,7 @@ export class CircuitSetupPanel extends LitElement {
       configurationMode: mode,
       legacyChoice: this.existingConfigurationChoice
         ?? (this.configurationMode === null && mode === "legacy_editable" ? "manage_with_helper" : null),
-      calibrationPlan: this.calibrationPlan ?? "full",
+      calibrationPlan: this.session?.calibration_plan ?? this.calibrationPlan ?? "full",
       canonicalConfigurationChanged: this.canonicalConfigurationChanged,
       normalTransactionRequired: this.canonicalConfigurationChanged || normalTransaction !== null,
       normalTransactionActive: normalTransaction !== null
@@ -1226,8 +1227,7 @@ export class CircuitSetupPanel extends LitElement {
       if (this.error) return;
     }
     if (this.meterConfiguration && this.canonicalConfigurationChanged) return this.previewCanonicalConfiguration();
-    if (this.labelOnly) this.navigate("calibration-plan");
-    else await this.startSession();
+    this.navigate("calibration-plan");
   }
 
   private async previewCanonicalConfiguration(): Promise<void> {
@@ -1366,7 +1366,7 @@ export class CircuitSetupPanel extends LitElement {
     this.requestUpdate();
   }
 
-  private async startSession(): Promise<void> {
+  private async startSession(plan: Exclude<CalibrationPlan, "keep_existing" | null>): Promise<void> {
     if (!this.api || !this.selectedDeviceId || this.sessionStarting || this.pendingAction) return;
     this.sessionStarting = true;
     this.pendingAction = "session";
@@ -1401,10 +1401,11 @@ export class CircuitSetupPanel extends LitElement {
           await this.subscribeSession(this.connectionGeneration);
           return;
         }
-        const session = await api.startSession(deviceId);
+        const session = await api.startSession(deviceId, plan);
         if (!this.ownsOperation(generation, api, deviceId) || session.device_id !== deviceId) return;
         this.session = session;
-        this.navigate("safety");
+        this.calibrationPlan = session.calibration_plan ?? plan;
+        this.navigate(resumeWorkflowRoute(this.workflowContext()));
         await this.subscribeSession(this.connectionGeneration);
       }, "Calibration session could not be started.", () => this.ownsOperation(generation, api, deviceId));
     } finally {
@@ -1453,7 +1454,8 @@ export class CircuitSetupPanel extends LitElement {
       const session = await api.acknowledgeSafety(sessionId);
       if (!this.ownsOperation(generation, api, deviceId) || session.session_id !== sessionId) return;
       this.session = session;
-      this.navigate("offset");
+      this.calibrationPlan = session.calibration_plan ?? this.calibrationPlan;
+      this.navigate(resumeWorkflowRoute(this.workflowContext()));
     }, "Safety acknowledgement could not be accepted.", () => this.ownsOperation(generation, api, deviceId));
     this.pendingAction = "";
     this.requestUpdate();
@@ -1909,11 +1911,19 @@ export class CircuitSetupPanel extends LitElement {
     if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep(this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => void this.backFromBuild(),
-      () => void this.startSession(), this.meterConfiguration?.configuration ?? null,
+      () => this.navigate("calibration-plan"), this.meterConfiguration?.configuration ?? null,
       this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null,
       this.pendingAction === "review-back", this.reviewCorrection !== null, this.pendingAction);
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back(), this.pendingAction === "safety");
+    if (this.step === "calibration-plan") return calibrationPlanStep(this.calibrationPlan, (plan) => {
+      this.calibrationPlan = plan;
+      if (plan === "keep_existing") {
+        this.completedWithoutChanges = true;
+        this.navigate("summary");
+      } else void this.startSession(plan as "standard" | "full");
+      this.requestUpdate();
+    }, () => this.back());
     if (this.step === "offset") return offsetStep(this.topology, this.session, this.board, this.offsetStage,
       this.offsetAcknowledged[this.offsetStage - 1] ?? false, this.offsetRetryConfirmed,
       this.offsetReadinessByTarget.get(this.offsetKey()) ?? null, this.offsetResultByTarget.get(this.offsetKey()) ?? null,
