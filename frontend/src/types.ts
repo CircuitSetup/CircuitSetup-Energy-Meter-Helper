@@ -219,8 +219,13 @@ export interface MeterConfigurationCapabilities {
   configuration_authoritative: boolean;
   managed_totals: boolean;
   multi_reference: boolean;
+  semantic_source: ConfigurationSemanticSource;
   reason_codes: string[];
 }
+
+export type ConfigurationSemanticSource =
+  | "helper_managed"
+  | "legacy_inferred";
 
 export interface ConfigurationImpact {
   enabled_channel_count: number;

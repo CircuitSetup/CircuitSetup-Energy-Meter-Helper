@@ -82,6 +82,7 @@ export const meterResponse = (
     configuration_authoritative: true,
     managed_totals: true,
     multi_reference: true,
+    semantic_source: "helper_managed",
     reason_codes: [],
   },
   voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" },

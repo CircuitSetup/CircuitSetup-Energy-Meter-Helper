@@ -462,8 +462,6 @@ class EntryWorkflow:
         )
         selections = await self._store.async_get_ct_selections(mac)
         stored_read = await self._store.async_get_meter_configuration_read(mac)
-        if stored_read.stale:
-            raise WorkflowHandleError("stored meter configuration is stale")
         plan_id = uuid4().hex
         inventory = MeterConfigurationInventory.from_document(
             plan_id,
@@ -472,12 +470,14 @@ class EntryWorkflow:
             ct_catalog,
             voltage_catalog,
             snapshot.sha256,
-            stored_configuration=stored_read.configuration,
+            stored_configuration=(
+                None if stored_read.stale else stored_read.configuration
+            ),
             stored_ct_selections=selections,
             reporting_multipliers=_stored_reporting_multipliers(
                 selections, snapshot.sha256
             ),
-            stored_semantics_stale=False,
+            stored_semantics_stale=stored_read.stale,
         )
         self._discard_device_plans(mac)
         while len(self._plans) >= MAX_PLAN_HANDLES:

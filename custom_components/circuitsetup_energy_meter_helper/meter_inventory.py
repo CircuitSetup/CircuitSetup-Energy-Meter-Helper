@@ -7,7 +7,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from hashlib import sha256
-from typing import cast
+from typing import Literal, cast
 
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import package_options_from_document
@@ -45,6 +45,8 @@ _GENERIC_TOTAL_ID = re.compile(
     r"^\s*(?:-\s*)?id:\s*[\"']?(?:totalAmps|totalWatts|totalEnergyDaily)[\"']?\s*$"
 )
 
+ConfigurationSemanticSource = Literal["helper_managed", "legacy_inferred"]
+
 
 class VoltageReferenceMismatchError(ValueError):
     """Hash-bound stored voltage references disagree with owned YAML evidence."""
@@ -57,6 +59,7 @@ class MeterConfigurationCapabilities:
     configuration_authoritative: bool
     managed_totals: bool
     multi_reference: bool
+    semantic_source: ConfigurationSemanticSource
     reason_codes: tuple[str, ...]
 
 
@@ -70,12 +73,16 @@ def meter_configuration_capabilities(
         raise TypeError("config_contract must be an int or None")
     if not configuration_authoritative:
         return MeterConfigurationCapabilities(
-            False, False, False, ("configuration_not_authoritative",)
+            False,
+            False,
+            False,
+            "legacy_inferred",
+            ("configuration_not_authoritative",),
         )
     if config_contract == 2:
-        return MeterConfigurationCapabilities(True, True, True, ())
+        return MeterConfigurationCapabilities(True, True, True, "legacy_inferred", ())
     return MeterConfigurationCapabilities(
-        True, False, True, ("config_contract_upgrade_required",)
+        True, False, True, "legacy_inferred", ("config_contract_upgrade_required",)
     )
 
 
@@ -124,6 +131,7 @@ class MeterConfigurationInventory:
             configuration_authoritative=configuration_authoritative,
             config_contract=_contract(document),
         )
+        semantic_source: ConfigurationSemanticSource = "legacy_inferred"
         matching = (
             stored_configuration
             if stored_configuration is not None
@@ -159,6 +167,7 @@ class MeterConfigurationInventory:
                     topology,
                     require_multi_reference_acknowledgement=False,
                 )
+                semantic_source = "helper_managed"
                 voltage_topology = voltage_reference_topology_from_configuration(
                     topology, configuration
                 )
@@ -168,6 +177,7 @@ class MeterConfigurationInventory:
                 configuration = _legacy_request(document, topology, ct_inventory)
                 voltage_topology = voltage_reference_topology_from_legacy(topology)
                 stale = True
+        capabilities = replace(capabilities, semantic_source=semantic_source)
         warnings = list(capabilities.reason_codes)
         if configuration.meter.electrical_system is ElectricalSystem.CUSTOM:
             warnings.append("electrical_profile_requires_confirmation")

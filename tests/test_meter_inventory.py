@@ -43,11 +43,12 @@ def test_capability_model_has_exact_frozen_slots_contract() -> None:
         "configuration_authoritative",
         "managed_totals",
         "multi_reference",
+        "semantic_source",
         "reason_codes",
     )
     assert hasattr(MeterConfigurationCapabilities, "__slots__")
     assert not hasattr(
-        MeterConfigurationCapabilities(True, True, True, ()), "__dict__"
+        MeterConfigurationCapabilities(True, True, True, "helper_managed", ()), "__dict__"
     )
 
 
@@ -166,6 +167,10 @@ def test_inventory_has_server_plan_and_catalog_fields() -> None:
     assert inventory.ct_catalog is inventory.ct_inventory.catalog
 
 
+def test_inventory_without_stored_configuration_is_legacy_inferred() -> None:
+    assert _inventory(_document()).capabilities.semantic_source == "legacy_inferred"
+
+
 @pytest.mark.parametrize("interval", (1, 2, 5, 10, 30, 60))
 def test_inventory_warns_only_for_installed_slow_calibration_intervals(
     interval: int,
@@ -185,9 +190,26 @@ def test_inventory_warns_only_for_installed_slow_calibration_intervals(
 
     inventory = _inventory(content, stored=stored)
 
+    assert inventory.capabilities.semantic_source == "helper_managed"
+
     assert ("slow_interval_extends_calibration" in inventory.warnings) is (
         interval in (30, 60)
     )
+
+
+def test_invalid_stored_configuration_falls_back_to_legacy_inferred() -> None:
+    content = _document()
+    baseline = _inventory(content).configuration
+    invalid = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        baseline.meter,
+        baseline.channels[:-1],
+        baseline.aggregates,
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+    inventory = _inventory(content, stored=invalid)
+    assert inventory.capabilities.semantic_source == "legacy_inferred"
 
 
 @pytest.mark.parametrize("interval", (1, 10, 30, 60))

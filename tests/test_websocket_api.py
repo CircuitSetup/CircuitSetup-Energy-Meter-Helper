@@ -56,6 +56,9 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     VoltageReferenceConfig,
 )
+from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
+    MeterConfigurationCapabilities,
+)
 from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
     MeterTopology,
@@ -3102,6 +3105,32 @@ def test_controller_routes_full_meter_configuration_without_browser_changes() ->
         assert type(received[0][3]).__name__ == "MeterConfigurationRequest"
 
     asyncio.run(run())
+
+
+def test_get_meter_configuration_serializes_only_public_semantic_provenance() -> None:
+    """Semantic provenance is a bounded literal without stored configuration data."""
+    payload = sanitize_payload(
+        {
+            "capabilities": MeterConfigurationCapabilities(
+                True, True, True, "helper_managed", ()
+            )
+        }
+    )
+
+    assert payload == {
+        "capabilities": {
+            "configuration_authoritative": True,
+            "managed_totals": True,
+            "multi_reference": True,
+            "semantic_source": "helper_managed",
+            "reason_codes": [],
+        }
+    }
+    assert payload["capabilities"]["semantic_source"] in {
+        "helper_managed",
+        "legacy_inferred",
+    }
+    assert "stored" not in repr(payload).casefold()
 
 
 def test_new_session_waits_for_same_meter_cancellation_cleanup(

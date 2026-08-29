@@ -70,7 +70,8 @@ const meterConfiguration: MeterConfiguration = {
     power_quality: [true], status_fields: [false], multi_reference_preparation_acknowledged: false,
   },
   capabilities: {
-    configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [],
+    configuration_authoritative: true, managed_totals: true, multi_reference: true,
+    semantic_source: "helper_managed", reason_codes: [],
   },
   voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" },
   voltage_transformer_catalog: {

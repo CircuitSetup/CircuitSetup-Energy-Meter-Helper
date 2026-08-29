@@ -63,9 +63,7 @@ OFFSET_TABLE = ((1, 2), (3, 4), (5, 6))
 POWER_OFFSET_TABLE = ((7, 8), (9, 10), (11, 12))
 
 
-def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper() -> (
-    None
-):
+def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() -> None:
     """A foreign device or CT-only handle would bypass the server-owned plan boundary."""
     content = (
         "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
@@ -318,11 +316,10 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert transactions.calls[2][1]["meter_configuration"] == wrapper_configuration
         plan_ids = set(workflow._plans)
         store.stale = True
-        with pytest.raises(WorkflowHandleError, match="stored meter configuration"):
-            await workflow.async_get_meter_configuration("meter")
-        with pytest.raises(WorkflowHandleError, match="stored meter configuration"):
-            await workflow.async_get_ct_inventory("meter")
-        assert set(workflow._plans) == plan_ids
+        stale_result = await workflow.async_get_meter_configuration("meter")
+        assert "stored_semantics_stale" in stale_result["warnings"]
+        assert stale_result["capabilities"].semantic_source == "legacy_inferred"
+        assert set(workflow._plans) != plan_ids
         await workflow.async_close()
 
     asyncio.run(run())
