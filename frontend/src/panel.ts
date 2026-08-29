@@ -536,7 +536,7 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.inventory) return;
     this.inventory = { ...this.inventory, channels: this.inventory.channels.map((channel) => {
       const draft = this.drafts.get(channel.channel);
-      if (!draft) return channel;
+      if (!draft || draft.preserveExistingGain) return channel;
       const preset = this.inventory!.catalog.presets.find((item) => item.model_id === draft.modelId);
       const gain = preset?.default_gain_ct ?? draft.customGainCt;
       return { ...channel, name: draft.name.trim(), selected_model_id: draft.modelId,

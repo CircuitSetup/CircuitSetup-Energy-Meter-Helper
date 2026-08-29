@@ -3131,6 +3131,22 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
   });
 
+  it("keeps an untouched preserved legacy CT unknown after installation", () => {
+    const inventory = meterResponse() as unknown as CtInventory;
+    inventory.channels = [{ ...inventory.channels[0]!, selected_model_id: null,
+      selection_verified_against_config: false, stored_selection_present: false }];
+    const panel = document.createElement("circuitsetup-energy-meter-helper-panel") as CircuitSetupPanel;
+    const state = panel as unknown as { inventory: CtInventory; drafts: Map<number, CtDraft>; acceptInstalledDrafts(): void };
+    state.inventory = inventory;
+    state.drafts = new Map([[1, { name: "CT1", modelId: "", multiplier: 1,
+      preserveExistingGain: true, multiplierMode: "automatic", burdenAcknowledged: false, expanded: false }]]);
+
+    state.acceptInstalledDrafts();
+
+    expect(state.inventory.channels[0]).toMatchObject({ selected_model_id: null,
+      selection_verified_against_config: false, stored_selection_present: false });
+  });
+
   it("keeps label-only edits out of every firmware control and preview route", async () => {
     const messages: Record<string, unknown>[] = [];
     const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] },
