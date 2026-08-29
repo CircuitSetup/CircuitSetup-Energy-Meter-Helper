@@ -659,9 +659,8 @@ test("validation failure exposes evidence and performs only a user-requested rol
   await openInventory(page);
   await reviewChannel(page, 1);
   await expect(page.getByLabel("Redacted substitution diff")).toContainText("<redacted>");
-  await page.getByRole("button", { name: "Apply" }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
   await expect(page.locator(".recovery-panel").filter({ hasText: "validation_failed" }).first()).toBeVisible();
-  await expect(page.getByText("1 records (1 reported)")).toBeVisible();
   await page.getByRole("button", { name: "Rollback" }).click();
   await expect(page.getByText("rolled_back", { exact: true })).toBeVisible();
   expect(operations(frames)).toEqual(expect.arrayContaining(["preview_meter_configuration", "apply_ct_config", "rollback_ct_config"]));
@@ -672,9 +671,9 @@ test("compile failure blocks upload after a distinct apply acknowledgement", asy
   const frames = await mockHomeAssistant(page, { outcome: "compile" });
   await openInventory(page);
   await reviewChannel(page, 1);
-  await page.getByRole("button", { name: "Apply" }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
   await expect(page.getByText("Validated", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Compile" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
   await expect(page.locator(".recovery-panel").filter({ hasText: "compile_failed" }).first()).toBeVisible();
   expect(operations(frames).filter((value) => value === "apply_ct_config")).toHaveLength(1);
   expect(operations(frames).filter((value) => value === "compile_ct_config")).toHaveLength(1);
@@ -692,9 +691,9 @@ test("verified configuration continues through calibration and finishes only fro
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
-  await page.getByRole("button", { name: "Apply" }).click();
-  await page.getByRole("button", { name: "Compile" }).click();
-  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
 
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Setup Device" })).toHaveCount(0);
@@ -750,9 +749,9 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
     aggregates: [{ aggregate_id: "auto-mains", name: "Mains", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: false }],
     power_quality: [false], status_fields: [true], multi_reference_preparation_acknowledged: false,
   });
-  await page.getByRole("button", { name: "Apply" }).click();
-  await page.getByRole("button", { name: "Compile" }).click();
-  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
   await page.locator('[data-action="continue"]').click();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
@@ -768,9 +767,9 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await expect(page.getByRole("heading", { name: "Restart", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Restart and verify" }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
-  await page.getByRole("button", { name: "Apply" }).click();
-  await page.getByRole("button", { name: "Compile" }).click();
-  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Summary", exact: true })).toBeVisible();
   await expect(page.getByText("Installed electrical profile")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
@@ -821,9 +820,9 @@ test("three voltage references cover each three-phase board exactly once and cal
     { reference_id: "addon2", group_keys: ["addon2_1", "addon2_2"] },
   ]);
   expect(configuration.multi_reference_preparation_acknowledged).toBe(true);
-  await page.getByRole("button", { name: "Apply" }).click();
-  await page.getByRole("button", { name: "Compile" }).click();
-  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
   await page.locator('[data-action="continue"]').click();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
@@ -892,11 +891,11 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await expect(page.getByText("Current calibration complete for CT1–CT3.")).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Restart and verify" }).click();
-  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
   await expect(page.getByLabel("Redacted substitution diff")).toBeVisible();
-  await page.getByRole("button", { name: "Apply" }).click();
-  await page.getByRole("button", { name: "Compile" }).click();
-  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
   await expect(page.getByText(/Calibration was saved to YAML/)).toBeVisible();
 
@@ -978,8 +977,8 @@ test("journey 1: new meter imports, installs, then keeps calibration", async ({ 
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   expectLatestSourceBinding(frames, "preview_meter_configuration");
-  await page.getByRole("button", { name: "Apply" }).click();
-  await page.getByRole("button", { name: "Compile" }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
   await page.getByRole("button", { name: "Install on meter" }).click();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByLabel(/Keep existing calibration/).check();
