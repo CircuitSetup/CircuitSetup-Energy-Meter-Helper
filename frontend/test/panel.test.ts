@@ -20,11 +20,45 @@ const tick = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
+it("renders purpose-specific configuration installation controls", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "- old\n+ new", rollback_available: true, evidence: ["source_checked"], progress: [], validation_detail: { code: null, error_record_count: 0, reported_error_count: 0, warning_record_count: 1, reported_warning_count: 1 }, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Install meter configuration");
+  expect(host.textContent).toContain("Save and validate configuration");
+  expect(host.textContent).toContain("Build firmware");
+  expect(host.textContent).toContain("Install on meter");
+  expect(host.querySelector("details pre")?.getAttribute("aria-label")).toBe("Redacted substitution diff");
+  expect(host.querySelector("details")?.textContent).toContain("source_checked");
+
+  render(buildInstallStep("save_calibration", status, noop, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Save verified calibration");
+  expect(host.textContent).toContain("Write verified gains to ESPHome");
+  expect(host.textContent).toContain("Install calibrated firmware");
+
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop, null, null, false, false, "", true), host);
+  expect(host.textContent).toContain("Install reviewed helper configuration");
+});
+
+it("blocks an install route without an active review", () => {
+  const host = document.createElement("div");
+  const back = vi.fn();
+  const noop = () => undefined;
+  render(buildInstallStep("install_configuration", null, noop, noop, noop, noop, back, noop), host);
+
+  expect(host.textContent).toContain("No active review");
+  expect([...host.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Back"]);
+  host.querySelector<HTMLButtonElement>("button")?.click();
+  expect(back).toHaveBeenCalledOnce();
+});
+
 it("renders the live Install percentage", () => {
   const host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "installing", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 48 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
-  render(buildInstallStep(status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
 
   const progress = host.querySelector<HTMLProgressElement>("progress");
   expect(progress?.value).toBe(48);
@@ -35,7 +69,7 @@ it("reports that the meter is rebooting while startup is verified", () => {
   const host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "reconnecting", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 100 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
-  render(buildInstallStep(status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
 
   expect(host.textContent).toContain("Meter is rebooting. Waiting for startup verification.");
   expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
@@ -45,7 +79,7 @@ it("does not relabel retained Compile progress while Install starts", () => {
   const host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled"], validation_detail: null, upload_progress: [{ stage: "transfer", percentage: 65 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
-  render(buildInstallStep(status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
 
   const progress = host.querySelector<HTMLProgressElement>("progress");
   expect(progress?.hasAttribute("value")).toBe(false);
@@ -56,7 +90,7 @@ it.each(["entity_mismatch", "reconnect_unavailable"] as const)("shows only the l
   const host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [evidence], progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 99 }, { stage: "uploading", percentage: 100 }, { stage: "uploading", percentage: null }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
-  render(buildInstallStep(status, noop, noop, noop, noop, noop, noop), host);
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
 
   expect(host.textContent).toContain("Build or install needs attention");
   expect(host.querySelectorAll(".upload-progress li")).toHaveLength(0);
@@ -1019,7 +1053,7 @@ describe("CircuitSetup panel", () => {
     panel.showState("install-configuration");
     await panel.updateComplete;
 
-    const compile = [...panel.shadowRoot!.querySelectorAll("button")].find((button) => button.textContent === "Compile");
+    const compile = [...panel.shadowRoot!.querySelectorAll("button")].find((button) => button.textContent === "Build firmware");
     compile?.click();
     await tick(); await panel.updateComplete;
 
@@ -3046,7 +3080,7 @@ describe("CircuitSetup panel", () => {
       makeHass({ setup_status: { state: "device_discovered", devices: [device] } }),
     );
     for (const [step, required] of [
-      ["install-configuration", ["Install Configuration", "Apply", "Install", "rename/entity-key"]],
+      ["install-configuration", ["Install Configuration", "No active review", "Back"]],
       ["safety", ["Safety", "acknowledge", "Cancel session"]],
       ["voltage", ["Voltage", "reference", "check stability"]],
       ["current", ["Current", "calibration"]],
@@ -3681,8 +3715,7 @@ describe("CircuitSetup panel", () => {
 
     panel.showState("install-configuration"); await panel.updateComplete;
 
-    expect(text(panel)).toContain("0 records (unreported)");
-    expect(text(panel)).not.toContain("unreported reported");
+    expect(text(panel)).toContain("0 errors; 0 warnings");
     expect(text(panel)).toContain("ESPHome rejected the config (code 2)");
     expect(text(panel)).toContain("original config was restored");
   });
@@ -3869,8 +3902,35 @@ describe("CircuitSetup panel", () => {
     retry?.click(); await tick(); await panel.updateComplete;
     expect(operations.filter((operation) => operation === "install_ct_config")).toHaveLength(1);
     expect(operations.filter((operation) => operation === "clear_calibration_flash")).toHaveLength(2);
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
     expect(text(panel)).toContain("Calibration was saved to YAML");
+  });
+
+  it("keeps verified calibration in flash without opening a YAML transaction", async () => {
+    const operations: string[] = [];
+    const restart = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
+      topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
+      topology_voltage_layout: "two_groups", connection_generation: 4, groups: [], verification_id: "1".repeat(32),
+      source_authority: "saved_flash", source_handoff_available: true, source_handoff_transaction_id: null,
+      source_handoff_firmware_installed: false };
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        operations.push(String(message.type).split("/").at(-1) ?? "");
+        if (String(message.type).endsWith("/setup_status")) return { state: "device_discovered", devices: [device] } as T;
+        return {} as T;
+      }, connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown>;
+    state.restartResult = restart;
+    panel.showState("summary"); await panel.updateComplete;
+
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=keep-calibration-flash]")?.click();
+    await panel.updateComplete;
+    expect(operations).not.toContain("preview_calibrated_gains");
+    expect(operations).not.toContain("clear_calibration_flash");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Summary");
+    expect(text(panel)).toContain("Installing firmware may replace it");
   });
 
   it("reconnect assigns the returned live session instead of discarding it", async () => {
