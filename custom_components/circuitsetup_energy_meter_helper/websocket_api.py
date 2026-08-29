@@ -45,7 +45,11 @@ from .repairs import async_reconcile_issues, signals_from_result
 from .session_manager import CalibrationBusyError, SessionManager
 from .store import HelperStore
 from .topology import topology_from_native
-from .workflow import WorkflowCapabilityUnavailable, WorkflowHandleError
+from .workflow import (
+    CalibrationPlan,
+    WorkflowCapabilityUnavailable,
+    WorkflowHandleError,
+)
 
 _PREFIX = f"{DOMAIN}/"
 READ_COMMANDS = (
@@ -236,7 +240,9 @@ class WorkflowOwner(Protocol):
         self, device_id: str, plan_id: str, source_sha256: str, changes: tuple[Mapping[str, Any], ...]
     ) -> Any: ...
 
-    async def async_start_session(self, device_id: str, calibration_plan: str) -> Any: ...
+    async def async_start_session(
+        self, device_id: str, calibration_plan: CalibrationPlan
+    ) -> Any: ...
 
     async def async_acknowledge_safety(
         self, session_id: str, acknowledged: bool
