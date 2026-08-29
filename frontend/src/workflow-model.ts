@@ -183,7 +183,8 @@ export function resumeWorkflowRoute(context: WorkflowContext): WorkflowRoute {
     return "safety";
   }
   if (context.sessionState !== null) {
-    if (context.calibrationPlan === "full" && context.offsetDisposition !== "skipped") {
+    if (context.calibrationPlan === "full"
+      && !["completed", "skipped"].includes(context.offsetDisposition ?? "")) {
       return "offset";
     }
     return "voltage";

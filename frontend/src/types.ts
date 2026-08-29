@@ -455,15 +455,3 @@ interface RestartVerificationBase {
 }
 
 export type RestartVerificationResult = RestartVerificationBase;
-
-export type PanelStep =
-  | "setup"
-  | "meter"
-  | "ct"
-  | "build"
-  | "safety"
-  | "offset"
-  | "voltage"
-  | "current"
-  | "restart"
-  | "summary";

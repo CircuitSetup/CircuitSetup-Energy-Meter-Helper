@@ -42,13 +42,14 @@ export const panelStyles = css`
   .app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
   aside.workflow { background: var(--surface); color: var(--text); padding: 24px 16px; border-right: 1px solid var(--border); }
   .brand { color: var(--text); font-size: var(--ha-font-size-xl, 20px); font-weight: var(--ha-font-weight-medium, 500); margin: 0 8px 28px; }
-  nav ol { list-style: none; margin: 0; padding: 0; }
-  nav li { position: relative; min-height: 60px; }
-  nav li:not(:last-child)::after { content: ""; position: absolute; left: 25px; top: 42px; width: 1px; height: 20px; background: var(--border); }
+  aside.workflow nav ol { list-style: none; margin: 0; padding: 0; }
+  aside.workflow nav li { position: relative; min-height: 60px; }
+  aside.workflow nav li:not(:last-child)::after { content: ""; position: absolute; left: 25px; top: 42px; width: 1px; height: 20px; background: var(--border); }
   .step-button { display: grid; grid-template-columns: 36px 1fr; gap: 10px; align-items: center; width: 100%; padding: 4px 8px; border: 0; background: transparent; color: inherit; text-align: left; font-weight: var(--ha-font-weight-medium, 500); }
   .step-button .number { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--border); border-radius: 50%; }
   li.current .step-button { color: var(--accent); background: var(--surface-alt); font-weight: var(--ha-font-weight-bold, 700); }
   li.current .number { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+  li.completed .step-button { color: var(--muted); }
   main { min-width: 0; padding: 32px 40px 88px; }
   .mobile-progress { display: none; }
   .product-title { font-size: var(--ha-font-size-3xl, 28px); line-height: var(--ha-line-height-condensed, 1.2); font-weight: var(--ha-font-weight-normal, 400); margin: 0 0 24px; }
@@ -157,6 +158,11 @@ export const panelStyles = css`
   .progress-steps .complete { color: var(--muted); background: var(--surface-alt); }
   .progress-steps .active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); font-weight: var(--ha-font-weight-bold, 700); }
   .progress-steps .pending { color: var(--text); }
+  .calibration-subprogress { max-width: 900px; margin: 0 0 20px; }
+  .calibration-subprogress ol { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+  .calibration-subprogress li { min-height: auto; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-small); }
+  .calibration-subprogress li.current { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+  .calibration-subprogress li.completed { color: var(--success); border-color: var(--success); }
   .offset-stage-stepper { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 0 0 20px; padding: 0; list-style: none; }
   .offset-stage-stepper button { width: 100%; text-align: left; }
   .offset-stage-stepper .active button { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }

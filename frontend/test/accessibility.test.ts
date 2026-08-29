@@ -1,4 +1,5 @@
 import { render } from "lit";
+import "../src/index";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
 import { currentStep } from "../src/components/current-step";
@@ -7,6 +8,7 @@ import { setupDeviceStep } from "../src/components/setup-device-step";
 import { panelStyles } from "../src/styles";
 import { voltageStep } from "../src/components/voltage-step";
 import type { CtInventory, MeterTopology } from "../src/types";
+import { newInstallScenario } from "./workflow-scenarios";
 
 const topology: MeterTopology = {
   addon_count: 1,
@@ -30,6 +32,26 @@ const mount = (template: ReturnType<typeof currentStep>) => {
   render(template, container);
   return container;
 };
+
+it("marks exactly the active workflow step and exposes mobile progress state", async () => {
+  const panel = document.createElement("circuitsetup-energy-meter-helper-panel") as import("../src/panel").CircuitSetupPanel;
+  panel.panel = { config: { entry_id: "entry-1" } };
+  panel.hass = {
+    callWS: async <T>() => newInstallScenario.setup as T,
+    connection: { subscribeMessage: async () => () => undefined },
+  };
+  document.body.append(panel);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await panel.updateComplete;
+
+  expect(panel.shadowRoot?.querySelectorAll("nav [aria-current=step]")).toHaveLength(1);
+  const heading = panel.shadowRoot?.querySelector<HTMLElement>("#step-heading");
+  expect(heading?.getAttribute("tabindex")).toBe("-1");
+  expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".mobile-progress button")?.getAttribute("aria-expanded")).toBe("false");
+  panel.shadowRoot?.querySelector<HTMLButtonElement>(".mobile-progress button")?.click();
+  await panel.updateComplete;
+  expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".mobile-progress button")?.getAttribute("aria-expanded")).toBe("true");
+});
 
 it("gives the firmware activation control the panel target size and focus treatment", async () => {
   container = document.createElement("div");
