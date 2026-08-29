@@ -1947,7 +1947,7 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.channel = value; this.requestUpdate(); },
       (channel, value) => { const references = new Map(this.currentReferences); if (value === null || !Number.isFinite(value) || value <= 0) references.delete(channel); else references.set(channel, value); this.currentReferences = references; this.requestUpdate(); },
       (value) => { this.reportingMultiplier = value; this.requestUpdate(); },
-      () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession())}
+      () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession(), this.finishBusy || this.pendingAction === "session")}
       <footer class="action-footer offset-footer"><button class="secondary" @click=${() => this.back()}>Back</button>
         <button class="secondary" ?disabled=${this.finishBusy || this.currentSkipped} @click=${() => { this.currentSkipped = true; this.announcement = "Remaining current calibration was skipped; completed gains were preserved."; this.requestUpdate(); }}>Skip current calibration</button>
         <button class="primary" ?disabled=${this.finishBusy || !this.currentSkipped && !this.hasCompletedCalibration("current")} @click=${() => void this.finishCurrent()}>${this.finishBusy ? "Finishing…" : "Continue"}</button></footer>`;

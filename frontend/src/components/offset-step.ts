@@ -66,7 +66,8 @@ export function offsetStep(
           `)}
         </div>
         <div id="offset-board-panel" role="tabpanel" aria-labelledby=${`offset-board-tab-${board}`}>
-          <h2>Stage ${stage} · ${boardLabel(board)}</h2>
+          <h2>Optional offset calibration · Stage ${stage} · ${boardLabel(board)}</h2>
+          <p>Offset calibration is optional and requires changing the power and wiring state as described below. Offset values remain stored in meter flash.</p>
           <div class="warning-band"><strong>Warning:</strong> An open-circuit current-output CT on a live conductor can be hazardous. De-energize conductors before unplugging any CT.</div>
           ${stage === 1 ? html`
             <p>First, de-energize all conductors. Then unplug the voltage transformer/AC voltage input and CT inputs, power the meter from USB only, then check that every voltage/current phase reads near zero.</p>
