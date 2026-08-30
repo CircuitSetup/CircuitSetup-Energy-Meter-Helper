@@ -304,6 +304,7 @@ def validate_meter_configuration(
     if (
         not isinstance(boards, tuple)
         or any(not isinstance(board, BoardTotalSettings) for board in boards)
+        or any(type(board.board_index) is not int for board in boards)
         or tuple(board.board_index for board in boards) != expected_boards
     ):
         raise ValueError("default total boards must cover topology exactly")

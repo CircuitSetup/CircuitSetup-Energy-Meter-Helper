@@ -128,6 +128,20 @@ def test_default_total_board_settings_follow_topology() -> None:
     assert tuple(board.board_index for board in request(addons=1).default_totals.boards) == (0, 1)
 
 
+@pytest.mark.parametrize("index", [0.0, 1.0, True, False])
+def test_default_total_board_indexes_require_exact_integers(index: object) -> None:
+    value = request(addons=1)
+    defaults = replace(
+        value.default_totals,
+        boards=(
+            BoardTotalSettings(index, TotalOutputSettings(True, True, True)),
+            BoardTotalSettings(1, TotalOutputSettings(True, True, True)),
+        ),
+    )
+    with pytest.raises(ValueError, match="board"):
+        validate_meter_configuration(replace(value, default_totals=defaults), topology(1))
+
+
 def test_automatic_candidate_ids_are_safe_strings() -> None:
     value = replace(
         request(),
