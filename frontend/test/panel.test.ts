@@ -476,7 +476,7 @@ describe("CircuitSetup panel", () => {
   it("summarizes every detected existing total regardless of its identifier", () => {
     const response = meterResponse();
     const configuration = response.configuration as MeterConfigurationRequest;
-    configuration.aggregates = [{ aggregate_id: "mains1", name: "Mains", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false }];
+    configuration.aggregates = [{ aggregate_id: "mains1", name: "Mains", role: "custom", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false }];
     const root = document.createElement("div");
 
     render(ctInventoryStep(response as unknown as CtInventory, 0, new Map(), () => undefined, () => undefined,
@@ -484,6 +484,9 @@ describe("CircuitSetup panel", () => {
 
     expect(root.textContent).toContain("Mains total = CT1 + CT2");
     expect(root.textContent).not.toContain("No automatic totals are configured.");
+    expect((root.querySelector('[aria-label="mains1 aggregate role"]') as HTMLSelectElement).value).toBe("custom");
+    expect((root.querySelector('[aria-label="mains1 aggregate method"]') as HTMLSelectElement).value).toBe("two_ct_sum");
+    expect((root.querySelector('[aria-label="mains1 aggregate energy"]') as HTMLSelectElement).value).toBe("consumption");
   });
 
   it("creates a custom aggregate with safe consumption defaults", () => {

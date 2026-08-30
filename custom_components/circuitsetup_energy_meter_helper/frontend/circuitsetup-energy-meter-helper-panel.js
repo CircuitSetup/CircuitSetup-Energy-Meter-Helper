@@ -1779,16 +1779,16 @@ function circuitsEditor(configuration, drafts, update, managedTotals, managedTot
       <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
         @input=${(event) => patchAggregate(index, { name: event.target.value })} /></label>
       <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
-        @change=${(event) => patchAggregate(index, { role: event.target.value })}>${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role}>${roleLabel(role)}</option>`)}</select>
+        @change=${(event) => patchAggregate(index, { role: event.target.value })}>${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role} ?selected=${role === aggregate.role}>${roleLabel(role)}</option>`)}</select>
         <small>Describes how this total is used, such as mains, solar, or a branch circuit.</small></label>
       <label>Method <select aria-label=${`${aggregate.aggregate_id} aggregate method`} .value=${aggregate.measurement_method}
-        @change=${(event) => patchAggregate(index, { measurement_method: event.target.value })}>${METHODS.map((method) => b`<option value=${method}>${method === "two_ct_sum" ? "Two CT Sum" : method.replaceAll("_", " ")}</option>`)}</select>
+        @change=${(event) => patchAggregate(index, { measurement_method: event.target.value })}>${METHODS.map((method) => b`<option value=${method} ?selected=${method === aggregate.measurement_method}>${method === "two_ct_sum" ? "Two CT Sum" : method.replaceAll("_", " ")}</option>`)}</select>
         <small>Controls how CT readings are combined. Two CT Sum adds exactly two CTs.</small></label>
       <label>Energy <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
-        @change=${(event) => patchAggregate(index, { energy_mode: event.target.value })}>${ENERGY.map((mode) => b`<option value=${mode}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`)}</select>
+        @change=${(event) => patchAggregate(index, { energy_mode: event.target.value })}>${ENERGY.map((mode) => b`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`)}</select>
         <small>Any option except None adds ESPHome platform: total_daily_energy sensors in kWh.</small></label>
       <label>Parent <select aria-label=${`${aggregate.aggregate_id} aggregate parent`} .value=${aggregate.parent_id ?? ""}
-        @change=${(event) => patchAggregate(index, { parent_id: event.target.value || null })}><option value="">None</option>${configuration.aggregates.filter((item) => item.aggregate_id !== aggregate.aggregate_id).map((item) => b`<option value=${item.aggregate_id}>${item.name}</option>`)}</select></label>
+        @change=${(event) => patchAggregate(index, { parent_id: event.target.value || null })}><option value="" ?selected=${aggregate.parent_id === null}>None</option>${configuration.aggregates.filter((item) => item.aggregate_id !== aggregate.aggregate_id).map((item) => b`<option value=${item.aggregate_id} ?selected=${item.aggregate_id === aggregate.parent_id}>${item.name}</option>`)}</select></label>
       </div>
       <fieldset class="aggregate-channels"><legend>Selected channels</legend>
         <div class="aggregate-channel-groups">${channelGroups.map((group) => b`<section class="aggregate-channel-group" aria-label=${group.board === 0 ? "Main Board channels" : `Add-on ${group.board} channels`}>
