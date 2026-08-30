@@ -1015,7 +1015,9 @@ def _default_daily_energy_power_ids(
             if candidate_indent != indent + 2 or ":" not in candidate:
                 continue
             key, value = candidate.strip().split(":", 1)
-            if not re.fullmatch(r"[a-z][a-z0-9_]*", key) or key in fields:
+            if not re.fullmatch(r"[a-z][a-z0-9_]*", key):
+                continue
+            if key in fields:
                 fields = {}
                 break
             fields[key] = value.strip()

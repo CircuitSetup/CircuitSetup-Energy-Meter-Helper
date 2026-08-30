@@ -392,6 +392,8 @@ def test_global_daily_energy_is_detected_in_a_later_root_sensor_section() -> Non
         "- platform: total_daily_energy\n"
         "  id: totalEnergyDaily\n"
         "  power_id: totalWatts\n"
+        "  filters:\n"
+        "  - multiply: 0.001\n"
         "  unit_of_measurement: kWh\n"
     )
 
