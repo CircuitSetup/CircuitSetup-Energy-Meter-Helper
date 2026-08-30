@@ -639,6 +639,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private returnToSetup(): void {
+    if (this.pendingAction === "session") return;
     if (this.session && this.session.state !== "cancelled") void this.cancelSession("setup");
     else {
       this.selectDevice(null);
@@ -2095,7 +2096,7 @@ export class CircuitSetupPanel extends LitElement {
       <div class="app">
         ${workflowProgress(phases, this.mobileStepsOpen,
           () => { this.mobileStepsOpen = !this.mobileStepsOpen; this.requestUpdate(); },
-          () => this.returnToSetup())}
+          () => this.returnToSetup(), this.pendingAction === "session")}
         <main>
           <div class="product-title">CircuitSetup Energy Meter Helper</div>
           <h1 id="step-heading" tabindex="-1">${this.step === "summary"

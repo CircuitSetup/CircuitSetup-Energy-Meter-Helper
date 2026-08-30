@@ -18,6 +18,7 @@ export function workflowProgress(
   mobileOpen: boolean,
   toggle: () => void,
   navigateToSetup: () => void,
+  busy: boolean,
 ): TemplateResult {
   const current = phases.find((phase) => phase.status === "current");
   return html`
@@ -27,7 +28,7 @@ export function workflowProgress(
         <ol>${phases.map((phase) => html`
           <li class=${phase.status}>
             ${phase.id === "device" && phase.status === "completed"
-              ? html`<button class="step-button" @click=${navigateToSetup}>
+              ? html`<button class="step-button" ?disabled=${busy} @click=${navigateToSetup}>
                   <span class="number">${phase.index + 1}</span><span>${LABELS[phase.id]}</span>
                 </button>`
               : html`<div class="step-button" aria-current=${phase.status === "current" ? "step" : nothing}>

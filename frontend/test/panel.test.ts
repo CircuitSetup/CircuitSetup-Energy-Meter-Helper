@@ -2568,7 +2568,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Circuits & CTs");
   });
 
-  it("starts only one calibration session when Continue is clicked repeatedly", async () => {
+  it("locks calibration-plan navigation while starting one session", async () => {
     let starts = 0;
     let resolveStart!: (value: unknown) => void;
     const start = new Promise<unknown>((resolve) => { resolveStart = resolve; });
@@ -2588,17 +2588,25 @@ describe("CircuitSetup panel", () => {
     panel.showTopology({ addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
       connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name,
       evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime project metadata" }] });
+    panel.showState("calibration-plan");
     await panel.updateComplete;
     const first = state.startSession();
     const second = state.startSession();
     await tick();
 
     expect(starts).toBe(1);
+    await panel.updateComplete;
+    expect(text(panel)).toContain("Loading calibration…");
+    const setupButton = panel.shadowRoot?.querySelector<HTMLButtonElement>(".workflow .completed button");
+    expect(setupButton?.disabled).toBe(true);
+    setupButton?.click();
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
 
     resolveStart({ session_id: "native-session", device_id: "meter-1", state: "safety_required",
       safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } });
     await Promise.all([first, second]); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".workflow .completed button")?.disabled).toBe(false);
   });
 
   it("requires an explicit bounded multiplier for runtime-only current calibration", async () => {

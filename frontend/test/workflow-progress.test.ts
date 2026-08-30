@@ -13,7 +13,7 @@ describe("workflowProgress", () => {
       { id: "meter", index: 1, status: "current" },
       { id: "complete", index: 2, status: "upcoming" },
     ];
-    render(workflowProgress(phases, false, toggle, navigate), host);
+    render(workflowProgress(phases, false, toggle, navigate, false), host);
     expect(host.querySelector("[aria-current=step]")?.textContent).toContain("Meter");
     expect(host.querySelector(".completed")?.textContent).toContain("Device");
     expect(host.querySelector(".upcoming")?.textContent).toContain("Complete");

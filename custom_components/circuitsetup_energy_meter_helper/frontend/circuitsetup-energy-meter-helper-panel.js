@@ -2819,7 +2819,7 @@ const LABELS = {
   "save-calibration": "Save Calibration",
   complete: "Complete"
 };
-function workflowProgress(phases, mobileOpen, toggle, navigateToSetup) {
+function workflowProgress(phases, mobileOpen, toggle, navigateToSetup, busy) {
   const current = phases.find((phase) => phase.status === "current");
   return b`
     <aside class=${mobileOpen ? "workflow mobile-open" : "workflow"}>
@@ -2827,7 +2827,7 @@ function workflowProgress(phases, mobileOpen, toggle, navigateToSetup) {
       <nav aria-label="Setup progress">
         <ol>${phases.map((phase) => b`
           <li class=${phase.status}>
-            ${phase.id === "device" && phase.status === "completed" ? b`<button class="step-button" @click=${navigateToSetup}>
+            ${phase.id === "device" && phase.status === "completed" ? b`<button class="step-button" ?disabled=${busy} @click=${navigateToSetup}>
                   <span class="number">${phase.index + 1}</span><span>${LABELS[phase.id]}</span>
                 </button>` : b`<div class="step-button" aria-current=${phase.status === "current" ? "step" : A}>
                   <span class="number">${phase.index + 1}</span><span>${LABELS[phase.id]}</span>
@@ -3704,6 +3704,7 @@ class CircuitSetupPanel extends i$2 {
     } else this.navigate(previous);
   }
   returnToSetup() {
+    if (this.pendingAction === "session") return;
     if (this.session && this.session.state !== "cancelled") void this.cancelSession("setup");
     else {
       this.selectDevice(null);
@@ -5329,7 +5330,8 @@ class CircuitSetupPanel extends i$2 {
         this.mobileStepsOpen = !this.mobileStepsOpen;
         this.requestUpdate();
       },
-      () => this.returnToSetup()
+      () => this.returnToSetup(),
+      this.pendingAction === "session"
     )}
         <main>
           <div class="product-title">CircuitSetup Energy Meter Helper</div>
