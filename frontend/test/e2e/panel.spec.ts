@@ -899,7 +899,8 @@ test("three voltage references cover each three-phase board exactly once and cal
   await page.getByRole("button", { name: "Build firmware" }).click();
   await page.getByRole("button", { name: "Install on meter", exact: true }).click();
   await page.locator('[data-action="continue"]').click();
-  await page.getByLabel(/Full calibration/).check();
+  await page.getByLabel(/Full calibration/).click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
