@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    ChannelTotalSource,
     ChannelSettings,
     CircuitAggregate,
     CircuitRole,
@@ -16,8 +17,11 @@ from custom_components.circuitsetup_energy_meter_helper.meter_configuration impo
     MeterSettings,
     VoltageLayout,
     VoltageReferenceConfig,
+    TotalOrigin,
+    TotalOutputSettings,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import (
+    MeterTopology,
     StoredCTSelection,
     StoredInterruptedSession,
     StoredMeterRecord,
@@ -25,6 +29,7 @@ from custom_components.circuitsetup_energy_meter_helper.models import (
     StoredTopologyEvidence,
 )
 from custom_components.circuitsetup_energy_meter_helper.store import (
+    LegacyParentLink,
     STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
     HelperStore,
@@ -33,16 +38,49 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
     VerifiedCalibrationRecord,
     VerifiedGainGroup,
     _HelperStorage,
+    _deserialize_meter_configuration_payload,
     migrate_storage,
     serialize_meter_record,
 )
 from custom_components.circuitsetup_energy_meter_helper.topology import (
     legacy_voltage_reference_topology,
 )
+from custom_components.circuitsetup_energy_meter_helper.total_graph import default_total_settings
 
 MAC = "aabbccddeeff"
 CONFIG_HASH = "a" * 64
 PROPOSED_HASH = "b" * 64
+
+
+V14_PARENT_FIXTURE = {
+    "config_sha256": "a" * 64,
+    "meter": {"friendly_name": "Kitchen meter", "electrical_system": "split_phase_120_240", "line_frequency_hz": 60, "update_interval_s": 5, "voltage_layout": "standard", "voltage_references": [{"reference_id": "main", "label": "Main", "phase_label": "A", "nominal_voltage_v": 120.0, "transformer_model_id": "vt", "gain_voltage": 1, "group_keys": ["main_1", "main_2"]}]},
+    "channels": [{"channel": channel, "enabled": True, "name": f"CT {channel}", "model_id": "ct", "reporting_multiplier": 1.0, "role": "grid" if channel < 3 else "branch", "voltage_reference_id": "main", "custom_gain_ct": None, "custom_label": None} for channel in range(1, 7)],
+    "aggregates": [
+        {"aggregate_id": "child", "name": "Child", "role": "branch", "channels": [1], "measurement_method": "direct", "parent_id": "parent", "energy_mode": "none", "expose_power": True, "expose_current": False},
+        {"aggregate_id": "parent", "name": "Parent", "role": "branch", "channels": [2], "measurement_method": "direct", "parent_id": None, "energy_mode": "consumption", "expose_power": True, "expose_current": True},
+    ],
+    "power_quality": [False], "status_fields": [True],
+}
+
+
+def _meter_topology() -> MeterTopology:
+    return MeterTopology(0, 1, 6, 2, "wifi", "standard", "meter", ())
+
+
+def test_v14_parent_metadata_does_not_change_runtime_formula() -> None:
+    """Changing legacy parent metadata into a source would alter installed readings."""
+    configuration = _deserialize_meter_configuration_payload(V14_PARENT_FIXTURE, _meter_topology())
+
+    child, parent = configuration.aggregates
+    assert child.sources == (ChannelTotalSource("channel", 1),)
+    assert parent.sources == (ChannelTotalSource("channel", 2),)
+    assert configuration.totals_migration is not None
+    assert configuration.totals_migration.legacy_parent_links == (LegacyParentLink("child", "parent"),)
+    assert configuration.totals_migration.parent_review_required is True
+    assert configuration.automatic_totals[0].candidate_id == "grid-ct1-ct2"
+    assert configuration.automatic_totals[0].enabled is False
+    assert configuration.totals_migration.native_visibility_confirmation_required is True
 
 
 def _topology() -> StoredTopology:
@@ -78,13 +116,15 @@ def _configuration() -> StoredMeterConfiguration:
         "grid",
         "Grid",
         CircuitRole.GRID,
-        (1, 2),
+        (ChannelTotalSource("channel", 1), ChannelTotalSource("channel", 2)),
         MeasurementMethod.TWO_CT_SUM,
-        None,
         EnergyMode.CONSUMPTION,
+        TotalOutputSettings(True, False, True),
+        TotalOrigin.MIGRATED,
     )
     return StoredMeterConfiguration(
-        CONFIG_HASH, meter, channels, (aggregate,), (False,), (True,)
+        CONFIG_HASH, meter, channels, default_total_settings(_meter_topology()), (),
+        (aggregate,), (False,), (True,)
     )
 
 
@@ -229,6 +269,8 @@ def test_stored_meter_configuration_rejects_custom_selection_raw_gain_mismatch()
             CONFIG_HASH,
             configuration.meter,
             channels,
+            configuration.default_totals,
+            configuration.automatic_totals,
             configuration.aggregates,
             configuration.power_quality,
             configuration.status_fields,
@@ -290,7 +332,7 @@ def test_storage_1_1_migrates_without_rewriting_gain_only_records() -> None:
 
     migrated = migrate_storage(1, 1, deepcopy(legacy))
 
-    assert STORAGE_MINOR_VERSION == 4
+    assert STORAGE_MINOR_VERSION == 5
     assert migrated == legacy
     assert (
         "offset_groups"
@@ -562,11 +604,14 @@ def test_verified_meter_configuration_round_trips_without_operation_acknowledgem
             "config_sha256",
             "meter",
             "channels",
+            "default_totals",
+            "automatic_totals",
             "aggregates",
             "power_quality",
             "status_fields",
             "ct_selections",
             "multi_reference_preparation_acknowledged",
+            "totals_migration",
         }
         assert raw["multi_reference_preparation_acknowledged"] is False  # type: ignore[index]
 
@@ -864,7 +909,7 @@ def test_storage_1_3_migrates_without_fabricating_meter_configuration() -> None:
 
     migrated = migrate_storage(1, 3, deepcopy(legacy))
 
-    assert STORAGE_MINOR_VERSION == 4
+    assert STORAGE_MINOR_VERSION == 5
     assert migrated == legacy
     assert "meter_configuration" not in migrated["meters"][MAC]
 

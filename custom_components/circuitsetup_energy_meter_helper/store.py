@@ -13,18 +13,27 @@ from homeassistant.helpers.storage import Store
 
 from .ct_catalog import REPORTING_MULTIPLIERS
 from .meter_configuration import (
+    AggregateTotalSource,
+    AutomaticTotalSettings,
+    BoardTotalSettings,
     ChannelSettings,
+    ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
+    DefaultTotalsSettings,
     ElectricalSystem,
     EnergyMode,
     MeasurementMethod,
     MeterConfigurationRequest,
     MeterSettings,
+    NativeTotalSource,
+    TotalOrigin,
+    TotalOutputSettings,
     VoltageLayout,
     VoltageReferenceConfig,
     validate_meter_configuration,
 )
+from .total_graph import automatic_total_candidates, default_total_settings
 from .models import (
     ConnectionType,
     MeterTopology,
@@ -40,7 +49,7 @@ from .models import (
 from .topology import legacy_voltage_reference_topology
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 4
+STORAGE_MINOR_VERSION = 5
 STORAGE_KEY = "circuitsetup_energy_meter_helper"
 
 
@@ -267,7 +276,7 @@ def migrate_storage(
                     )
                 ]
         return data
-    if (version, minor_version) == (1, 3):
+    if (version, minor_version) in {(1, 3), (1, 4)}:
         return data
     if (version, minor_version) != (STORAGE_VERSION, STORAGE_MINOR_VERSION):
         raise ValueError(f"Storage version {version} cannot be migrated")
@@ -517,17 +526,44 @@ def serialize_meter_record(record: StoredMeterRecord) -> dict[str, Any]:
 
 
 @dataclass(frozen=True, slots=True)
+class LegacyParentLink:
+    """One non-functional legacy relationship requiring an explicit review."""
+
+    child_id: str
+    proposed_parent_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class TotalsMigrationRecord:
+    """Pending review data retained across storage and inventory reads."""
+
+    parent_review_required: bool
+    legacy_parent_links: tuple[LegacyParentLink, ...]
+    native_visibility_confirmation_required: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.parent_review_required) is not bool or type(self.native_visibility_confirmation_required) is not bool or (
+            type(self.legacy_parent_links) is not tuple
+            or any(not isinstance(link, LegacyParentLink) for link in self.legacy_parent_links)
+        ):
+            raise TypeError("totals migration record is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class StoredMeterConfiguration:
     """Verified configuration semantics bound to one configuration digest."""
 
     config_sha256: str
     meter: MeterSettings
     channels: tuple[ChannelSettings, ...]
+    default_totals: DefaultTotalsSettings
+    automatic_totals: tuple[AutomaticTotalSettings, ...]
     aggregates: tuple[CircuitAggregate, ...]
     power_quality: tuple[bool, ...]
     status_fields: tuple[bool, ...]
     ct_selections: tuple[StoredCTSelection, ...] = ()
     multi_reference_preparation_acknowledged: bool = False
+    totals_migration: TotalsMigrationRecord | None = None
 
     def __post_init__(self) -> None:
         if re.fullmatch(r"[0-9a-f]{64}", self.config_sha256) is None:
@@ -542,6 +578,12 @@ class StoredMeterConfiguration:
             not isinstance(item, CircuitAggregate) for item in self.aggregates
         ):
             raise TypeError("aggregates must be a tuple of CircuitAggregate")
+        if not isinstance(self.default_totals, DefaultTotalsSettings):
+            raise TypeError("default_totals must be DefaultTotalsSettings")
+        if type(self.automatic_totals) is not tuple or any(
+            not isinstance(item, AutomaticTotalSettings) for item in self.automatic_totals
+        ):
+            raise TypeError("automatic_totals must be a tuple of AutomaticTotalSettings")
         for field, value in (
             ("power_quality", self.power_quality),
             ("status_fields", self.status_fields),
@@ -556,6 +598,10 @@ class StoredMeterConfiguration:
             raise TypeError("ct_selections must be a tuple of StoredCTSelection")
         if type(self.multi_reference_preparation_acknowledged) is not bool:
             raise TypeError("multi-reference acknowledgement must be boolean")
+        if self.totals_migration is not None and not isinstance(
+            self.totals_migration, TotalsMigrationRecord
+        ):
+            raise TypeError("totals_migration must be TotalsMigrationRecord or None")
         channels = {channel.channel: channel for channel in self.channels}
         if self.ct_selections and (
             len(self.ct_selections) != len(channels)
@@ -676,6 +722,8 @@ def _validate_configuration(
         MeterConfigurationRequest(
             configuration.meter,
             configuration.channels,
+            configuration.default_totals,
+            configuration.automatic_totals,
             configuration.aggregates,
             configuration.power_quality,
             configuration.status_fields,
@@ -783,17 +831,31 @@ def _serialize_meter_configuration(
             }
             for channel in configuration.channels
         ],
+        "default_totals": {
+            "overall": _serialize_outputs(configuration.default_totals.overall),
+            "boards": [
+                {"board_index": board.board_index, "outputs": _serialize_outputs(board.outputs)}
+                for board in configuration.default_totals.boards
+            ],
+        },
+        "automatic_totals": [
+            {
+                "candidate_id": total.candidate_id,
+                "enabled": total.enabled,
+                "outputs": _serialize_outputs(total.outputs),
+            }
+            for total in configuration.automatic_totals
+        ],
         "aggregates": [
             {
                 "aggregate_id": aggregate.aggregate_id,
                 "name": aggregate.name,
                 "role": aggregate.role.value,
-                "channels": list(aggregate.channels),
+                "sources": [_serialize_total_source(source) for source in aggregate.sources],
                 "measurement_method": aggregate.measurement_method.value,
-                "parent_id": aggregate.parent_id,
                 "energy_mode": aggregate.energy_mode.value,
-                "expose_power": aggregate.expose_power,
-                "expose_current": aggregate.expose_current,
+                "outputs": _serialize_outputs(aggregate.outputs),
+                "origin": aggregate.origin.value,
             }
             for aggregate in configuration.aggregates
         ],
@@ -804,12 +866,44 @@ def _serialize_meter_configuration(
             for selection in configuration.ct_selections
         ],
         "multi_reference_preparation_acknowledged": False,
+        "totals_migration": _serialize_totals_migration(configuration.totals_migration),
+    }
+
+
+def _serialize_outputs(outputs: TotalOutputSettings) -> dict[str, bool]:
+    return {"watts": outputs.watts, "amps": outputs.amps, "kwh": outputs.kwh}
+
+
+def _serialize_total_source(source: object) -> dict[str, object]:
+    if isinstance(source, ChannelTotalSource):
+        return {"kind": "channel", "channel": source.channel}
+    if isinstance(source, NativeTotalSource):
+        return {"kind": "native_total", "source_id": source.source_id}
+    if isinstance(source, AggregateTotalSource):
+        return {"kind": "aggregate", "aggregate_id": source.aggregate_id}
+    raise TypeError("aggregate source is invalid")
+
+
+def _serialize_totals_migration(
+    migration: TotalsMigrationRecord | None,
+) -> dict[str, object] | None:
+    if migration is None:
+        return None
+    return {
+        "parent_review_required": migration.parent_review_required,
+        "legacy_parent_links": [
+            {"child_id": link.child_id, "proposed_parent_id": link.proposed_parent_id}
+            for link in migration.legacy_parent_links
+        ],
+        "native_visibility_confirmation_required": migration.native_visibility_confirmation_required,
     }
 
 
 def _deserialize_meter_configuration_payload(
     raw: object, topology: MeterTopology
 ) -> StoredMeterConfiguration:
+    if isinstance(raw, dict) and "default_totals" in raw:
+        return _deserialize_v15_meter_configuration(raw, topology)
     required = {
         "config_sha256",
         "meter",
@@ -919,6 +1013,7 @@ def _deserialize_meter_configuration_payload(
             )
         )
     aggregates: list[CircuitAggregate] = []
+    parent_links: list[LegacyParentLink] = []
     for raw_aggregate in data["aggregates"]:
         item = _exact_mapping(
             raw_aggregate,
@@ -940,17 +1035,23 @@ def _deserialize_meter_configuration_payload(
             or len(item["channels"]) > topology.ct_count
         ):
             raise TypeError("stored meter configuration aggregate is invalid")
+        if item["parent_id"] is not None:
+            if type(item["parent_id"]) is not str:
+                raise TypeError("stored meter configuration aggregate parent is invalid")
+            parent_links.append(LegacyParentLink(item["aggregate_id"], item["parent_id"]))
         aggregates.append(
             CircuitAggregate(
                 item["aggregate_id"],
                 item["name"],
                 CircuitRole(item["role"]),
-                tuple(item["channels"]),
+                tuple(ChannelTotalSource("channel", channel) for channel in item["channels"]),
                 MeasurementMethod(item["measurement_method"]),
-                item["parent_id"],
                 EnergyMode(item["energy_mode"]),
-                item["expose_power"],
-                item["expose_current"],
+                TotalOutputSettings(
+                    item["expose_power"], item["expose_current"],
+                    item["energy_mode"] != EnergyMode.NONE.value,
+                ),
+                TotalOrigin.MIGRATED,
             )
         )
     if (
@@ -981,26 +1082,140 @@ def _deserialize_meter_configuration_payload(
         for item in raw_selections
     )
     try:
+        meter = MeterSettings(
+            raw_meter["friendly_name"],
+            ElectricalSystem(raw_meter["electrical_system"]),
+            raw_meter["line_frequency_hz"],
+            raw_meter["update_interval_s"],
+            VoltageLayout(raw_meter["voltage_layout"]),
+            tuple(references),
+        )
+        candidate_request = MeterConfigurationRequest(
+            meter, tuple(channels), default_total_settings(topology), (), (),
+            tuple(data["power_quality"]), tuple(data["status_fields"]),
+        )
+        candidates = automatic_total_candidates(candidate_request)
+        linked_ids = {link.child_id for link in parent_links}
+        candidate_by_aggregate = {candidate.aggregate_id: candidate for candidate in candidates}
+        automatic: list[AutomaticTotalSettings] = []
+        advanced: list[CircuitAggregate] = []
+        matched: set[str] = set()
+        for aggregate in aggregates:
+            candidate = candidate_by_aggregate.get(aggregate.aggregate_id)
+            if candidate is not None and aggregate.aggregate_id not in linked_ids and (
+                aggregate.name, aggregate.role, aggregate.sources,
+                aggregate.measurement_method, aggregate.energy_mode, aggregate.outputs,
+            ) == (
+                candidate.name, candidate.role, candidate.sources,
+                candidate.measurement_method, candidate.energy_mode, candidate.recommended_outputs,
+            ):
+                automatic.append(AutomaticTotalSettings(candidate.candidate_id, True, aggregate.outputs))
+                matched.add(candidate.candidate_id)
+            else:
+                advanced.append(aggregate)
+        automatic.extend(
+            AutomaticTotalSettings(candidate.candidate_id, False, candidate.recommended_outputs)
+            for candidate in candidates if candidate.candidate_id not in matched
+        )
         configuration = StoredMeterConfiguration(
             data["config_sha256"],
-            MeterSettings(
-                raw_meter["friendly_name"],
-                ElectricalSystem(raw_meter["electrical_system"]),
-                raw_meter["line_frequency_hz"],
-                raw_meter["update_interval_s"],
-                VoltageLayout(raw_meter["voltage_layout"]),
-                tuple(references),
-            ),
+            meter,
             tuple(channels),
-            tuple(aggregates),
+            default_total_settings(topology),
+            tuple(automatic),
+            tuple(advanced),
             tuple(data["power_quality"]),
             tuple(data["status_fields"]),
             selections,
             False,
+            TotalsMigrationRecord(bool(parent_links), tuple(parent_links), bool(aggregates)),
         )
         _validate_configuration(configuration, topology)
     except (TypeError, ValueError) as error:
         raise ValueError("stored meter configuration is invalid") from error
+    return configuration
+
+
+def _outputs(raw: object, label: str) -> TotalOutputSettings:
+    item = _exact_mapping(raw, {"watts", "amps", "kwh"}, label)
+    if any(type(value) is not bool for value in item.values()):
+        raise TypeError(f"{label} is invalid")
+    return TotalOutputSettings(**item)
+
+
+def _total_source(raw: object) -> ChannelTotalSource | NativeTotalSource | AggregateTotalSource:
+    if not isinstance(raw, dict) or not isinstance(raw.get("kind"), str):
+        raise TypeError("aggregate source is invalid")
+    if raw["kind"] == "channel":
+        item = _exact_mapping(raw, {"kind", "channel"}, "aggregate source")
+        return ChannelTotalSource("channel", item["channel"])
+    if raw["kind"] == "native_total":
+        item = _exact_mapping(raw, {"kind", "source_id"}, "aggregate source")
+        return NativeTotalSource("native_total", item["source_id"])
+    if raw["kind"] == "aggregate":
+        item = _exact_mapping(raw, {"kind", "aggregate_id"}, "aggregate source")
+        return AggregateTotalSource("aggregate", item["aggregate_id"])
+    raise ValueError("aggregate source is invalid")
+
+
+def _deserialize_v15_meter_configuration(
+    data: dict[str, Any], topology: MeterTopology
+) -> StoredMeterConfiguration:
+    required = {"config_sha256", "meter", "channels", "default_totals", "automatic_totals", "aggregates", "power_quality", "status_fields", "totals_migration"}
+    optional = {"ct_selections", "multi_reference_preparation_acknowledged"}
+    if not required <= set(data) <= required | optional or any(not isinstance(key, str) for key in data):
+        raise ValueError("stored meter configuration payload is invalid")
+    # Reuse the strict legacy-shaped decoder for meter/channel validation, then replace totals.
+    legacy = {key: data[key] for key in ("config_sha256", "meter", "channels", "power_quality", "status_fields")}
+    legacy["ct_selections"] = data.get("ct_selections", [])
+    legacy["multi_reference_preparation_acknowledged"] = data.get("multi_reference_preparation_acknowledged", False)
+    legacy["aggregates"] = []
+    base = _deserialize_meter_configuration_payload(legacy, topology)
+    totals = _exact_mapping(data["default_totals"], {"overall", "boards"}, "default totals")
+    if not isinstance(totals["boards"], list):
+        raise TypeError("default totals boards are invalid")
+    defaults = DefaultTotalsSettings(
+        _outputs(totals["overall"], "default total outputs"),
+        tuple(
+            BoardTotalSettings(
+                _exact_mapping(item, {"board_index", "outputs"}, "default total board")["board_index"],
+                _outputs(_exact_mapping(item, {"board_index", "outputs"}, "default total board")["outputs"], "default total board outputs"),
+            ) for item in totals["boards"]
+        ),
+    )
+    if not isinstance(data["automatic_totals"], list) or not isinstance(data["aggregates"], list):
+        raise TypeError("stored meter configuration totals are invalid")
+    automatic = tuple(
+        AutomaticTotalSettings(
+            _exact_mapping(item, {"candidate_id", "enabled", "outputs"}, "automatic total")["candidate_id"],
+            _exact_mapping(item, {"candidate_id", "enabled", "outputs"}, "automatic total")["enabled"],
+            _outputs(_exact_mapping(item, {"candidate_id", "enabled", "outputs"}, "automatic total")["outputs"], "automatic outputs"),
+        ) for item in data["automatic_totals"]
+    )
+    aggregates = tuple(
+        CircuitAggregate(
+            _exact_mapping(item, {"aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "outputs", "origin"}, "aggregate")["aggregate_id"],
+            _exact_mapping(item, {"aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "outputs", "origin"}, "aggregate")["name"],
+            CircuitRole(_exact_mapping(item, {"aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "outputs", "origin"}, "aggregate")["role"]),
+            tuple(_total_source(source) for source in _exact_mapping(item, {"aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "outputs", "origin"}, "aggregate")["sources"]),
+            MeasurementMethod(_exact_mapping(item, {"aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "outputs", "origin"}, "aggregate")["measurement_method"]),
+            EnergyMode(_exact_mapping(item, {"aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "outputs", "origin"}, "aggregate")["energy_mode"]),
+            _outputs(_exact_mapping(item, {"aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "outputs", "origin"}, "aggregate")["outputs"], "aggregate outputs"),
+            TotalOrigin(_exact_mapping(item, {"aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "outputs", "origin"}, "aggregate")["origin"]),
+        ) for item in data["aggregates"]
+    )
+    migration = None
+    if data["totals_migration"] is not None:
+        raw_migration = _exact_mapping(data["totals_migration"], {"parent_review_required", "legacy_parent_links", "native_visibility_confirmation_required"}, "totals migration")
+        if not isinstance(raw_migration["legacy_parent_links"], list):
+            raise TypeError("totals migration links are invalid")
+        migration = TotalsMigrationRecord(
+            raw_migration["parent_review_required"],
+            tuple(LegacyParentLink(**_exact_mapping(link, {"child_id", "proposed_parent_id"}, "legacy parent link")) for link in raw_migration["legacy_parent_links"]),
+            raw_migration["native_visibility_confirmation_required"],
+        )
+    configuration = replace(base, default_totals=defaults, automatic_totals=automatic, aggregates=aggregates, totals_migration=migration)
+    _validate_configuration(configuration, topology)
     return configuration
 
 

@@ -15,8 +15,10 @@ from .config_mutator import package_options_from_document
 from .ct_catalog import CTPresetCatalog
 from .ct_inventory import CTInventory
 from .meter_configuration import (
+    AggregateTotalSource,
     AutomaticTotalSettings,
     ChannelSettings,
+    ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
     ElectricalSystem,
@@ -28,6 +30,8 @@ from .meter_configuration import (
     UpdateIntervalSeconds,
     VoltageLayout,
     VoltageReferenceConfig,
+    TotalOrigin,
+    TotalOutputSettings,
     validate_meter_configuration,
 )
 from .models import (
@@ -36,7 +40,7 @@ from .models import (
     StoredCTSelection,
     VoltageReferenceTopology,
 )
-from .store import StoredMeterConfiguration
+from .store import LegacyParentLink, StoredMeterConfiguration, TotalsMigrationRecord
 from .topology import (
     TopologyFingerprintMismatch,
     addon_count_from_packages,
@@ -52,6 +56,7 @@ from .total_graph import (
     default_total_settings,
     resolve_automatic_totals,
     stale_automatic_total_settings,
+    native_total_sources,
 )
 from .voltage_transformer_catalog import VoltageTransformerCatalog
 
@@ -126,6 +131,8 @@ class MeterConfigurationInventory:
     automatic_candidates: tuple[AutomaticTotalCandidate, ...]
     automatic_totals: tuple[ResolvedAutomaticTotal, ...]
     stale_automatic_total_settings: tuple[AutomaticTotalSettings, ...]
+    totals_parent_review_required: bool
+    legacy_parent_links: tuple[LegacyParentLink, ...]
 
     @classmethod
     def from_document(
@@ -193,6 +200,14 @@ class MeterConfigurationInventory:
                     topology,
                     require_multi_reference_acknowledgement=False,
                 )
+                if (
+                    matching.totals_migration is not None
+                    and matching.totals_migration.native_visibility_confirmation_required
+                    and configuration_authoritative
+                ):
+                    normalized_defaults = _source_normalized_default_totals(document, topology)
+                    if normalized_defaults is not None:
+                        configuration = replace(configuration, default_totals=normalized_defaults)
                 semantic_source = "helper_managed"
                 voltage_topology = voltage_reference_topology_from_configuration(
                     topology, configuration
@@ -203,7 +218,7 @@ class MeterConfigurationInventory:
                 configuration = _legacy_request(document, topology, ct_inventory)
                 voltage_topology = voltage_reference_topology_from_legacy(topology)
                 stale = True
-        aggregates, aggregate_warnings = _detected_aggregates(
+        aggregates, aggregate_warnings, detected_parent_links = _detected_aggregates(
             document, configuration.channels, configuration.aggregates
         )
         configuration = replace(configuration, aggregates=aggregates)
@@ -235,7 +250,12 @@ class MeterConfigurationInventory:
             warnings.append("stored_semantics_stale")
         if configuration.meter.update_interval_s in (30, 60):
             warnings.append("slow_interval_extends_calibration")
-        automatic_candidates = automatic_total_candidates(configuration)
+        automatic_candidates = () if stale else automatic_total_candidates(configuration)
+        migration = matching.totals_migration if matching is not None else None
+        parent_links = (
+            migration.legacy_parent_links if migration is not None and not stale
+            else detected_parent_links if not stale else ()
+        )
         return cls(
             plan_id=plan_id,
             source_sha256=actual_sha256,
@@ -254,7 +274,58 @@ class MeterConfigurationInventory:
             stale_automatic_total_settings=stale_automatic_total_settings(
                 automatic_candidates, configuration.automatic_totals
             ),
+            totals_parent_review_required=(
+                bool(parent_links)
+            ),
+            legacy_parent_links=(
+                parent_links
+            ),
         )
+
+
+def _source_normalized_default_totals(
+    document: ESPHomeConfigDocument, topology: MeterTopology
+) -> DefaultTotalsSettings | None:
+    """Read effective native visibility without changing legacy migration state."""
+    items = _managed_sensor_items(document.content, document.sensor_item_indent)
+    native_ids = {
+        sensor_id
+        for definition in native_total_sources(topology)
+        for sensor_id in (definition.power_id, definition.current_id, definition.existing_energy_id)
+        if sensor_id is not None
+    }
+    overrides: dict[str, bool] = {}
+    for item in items:
+        raw_id = item.get("id", "")
+        sensor_id = _plain_sensor_scalar(raw_id.removeprefix("!extend "))
+        if sensor_id not in native_ids or "internal" not in item:
+            continue
+        if item["internal"] not in {"true", "false"}:
+            return None
+        overrides[sensor_id] = item["internal"] == "false"
+    def visible(sensor_id: str, upstream: bool) -> bool:
+        return overrides.get(sensor_id, upstream)
+    definitions = native_total_sources(topology)
+    overall = next(item for item in definitions if item.source_id == "overall")
+    overall_outputs = TotalOutputSettings(
+        visible(overall.power_id, overall.upstream_defaults.watts),
+        visible(overall.current_id, overall.upstream_defaults.amps),
+        bool(overall.existing_energy_id and visible(overall.existing_energy_id, overall.upstream_defaults.kwh)),
+    )
+    boards = tuple(
+        BoardTotalSettings(
+            index,
+            TotalOutputSettings(
+                visible(definition.power_id, definition.upstream_defaults.watts),
+                visible(definition.current_id, definition.upstream_defaults.amps),
+                False,
+            ),
+        )
+        for index, definition in enumerate(
+            item for item in definitions if item.source_id != "overall"
+        )
+    )
+    return DefaultTotalsSettings(overall_outputs, boards)
 
 
 def _contract(document: ESPHomeConfigDocument) -> int | None:
@@ -311,8 +382,8 @@ def _stored_request(
             voltage_references=references,
         ),
         tuple(channels),
-        default_total_settings(topology),
-        (),
+        stored.default_totals,
+        stored.automatic_totals,
         stored.aggregates,
         stored.power_quality,
         stored.status_fields,
@@ -687,14 +758,15 @@ def _detected_aggregates(
     document: ESPHomeConfigDocument,
     channels: tuple[ChannelSettings, ...],
     stored: tuple[CircuitAggregate, ...],
-) -> tuple[tuple[CircuitAggregate, ...], tuple[str, ...]]:
+) -> tuple[tuple[CircuitAggregate, ...], tuple[str, ...], tuple[LegacyParentLink, ...]]:
     block = document.managed_blocks.get("aggregates")
     detected: tuple[CircuitAggregate, ...] = ()
     warnings: tuple[str, ...] = ()
     hidden_ids: frozenset[str] = frozenset()
+    metadata_links: tuple[LegacyParentLink, ...] = ()
     if block is not None:
         try:
-            metadata = _aggregate_metadata(block.content)
+            metadata, metadata_links = _aggregate_metadata(block.content)
             decoded = _decode_aggregate_block(document, channels, metadata or ())
             hidden_ids = frozenset(
                 _plain_sensor_scalar(item["id"].removeprefix("!extend "))
@@ -712,7 +784,7 @@ def _detected_aggregates(
                 detected = decoded
                 warnings = (("aggregate_semantics_inferred",) if decoded else ())
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            return (), ("aggregate_semantics_unreadable",)
+            return (), ("aggregate_semantics_unreadable",), ()
     elif stored:
         detected = stored
 
@@ -743,12 +815,11 @@ def _detected_aggregates(
                 "meter-total",
                 "Meter total",
                 CircuitRole.CUSTOM,
-                enabled,
+                tuple(ChannelTotalSource("channel", channel) for channel in enabled),
                 MeasurementMethod.DIRECT,
-                None,
                 energy_mode,
-                expose_power,
-                expose_current,
+                TotalOutputSettings(expose_power, expose_current, energy_mode is not EnergyMode.NONE),
+                TotalOrigin.MIGRATED,
             )
         )
     defaults.extend(
@@ -756,16 +827,15 @@ def _detected_aggregates(
             f"{group_id}-total",
             f"{label} total",
             CircuitRole.CUSTOM,
-            group_channels,
+            tuple(ChannelTotalSource("channel", channel) for channel in group_channels),
             MeasurementMethod.DIRECT,
-            None,
             (
                 EnergyMode.CONSUMPTION
                 if power_id in energy_power_ids
                 else EnergyMode.NONE
             ),
-            False,
-            False,
+            TotalOutputSettings(False, False, power_id in energy_power_ids),
+            TotalOrigin.MIGRATED,
         )
         for group_id, label, group_channels, power_id in default_groups
         if power_id not in hidden_ids
@@ -780,24 +850,25 @@ def _detected_aggregates(
     added = tuple(aggregate for aggregate in inferred if aggregate.aggregate_id not in existing_ids)
     if added:
         warnings = tuple(dict.fromkeys((*warnings, "builtin_total_semantics_inferred")))
-    aggregates = tuple(
-        replace(aggregate, parent_id=parent_links[aggregate.aggregate_id])
-        if aggregate.parent_id is None and aggregate.aggregate_id in parent_links
-        else aggregate
-        for aggregate in (*detected, *added)
+    # Legacy parent links are diagnostic-only and must never change formulas here.
+    inferred_links = tuple(
+        LegacyParentLink(child, parent) for child, parent in parent_links.items()
     )
-    return aggregates, warnings
+    return (*detected, *added), warnings, tuple(dict.fromkeys((*metadata_links, *inferred_links)))
 
 
-def _aggregate_metadata(content: str) -> tuple[CircuitAggregate, ...] | None:
+def _aggregate_metadata(
+    content: str,
+) -> tuple[tuple[CircuitAggregate, ...] | None, tuple[LegacyParentLink, ...]]:
     payloads = [
         line.strip()[len(_AGGREGATE_METADATA_PREFIX) :]
         for line in content.replace("\r\n", "\n").splitlines()
         if line.strip().startswith(_AGGREGATE_METADATA_PREFIX)
     ]
     if not payloads:
-        return None
+        return None, ()
     aggregates: list[tuple[int, CircuitAggregate]] = []
+    parent_links: list[LegacyParentLink] = []
     for payload in payloads:
         data = json.loads(
             urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode()
@@ -817,6 +888,8 @@ def _aggregate_metadata(content: str) -> tuple[CircuitAggregate, ...] | None:
             raise TypeError("aggregate metadata text fields are invalid")
         if data["parent_id"] is not None and type(data["parent_id"]) is not str:
             raise TypeError("aggregate metadata parent is invalid")
+        if data["parent_id"] is not None:
+            parent_links.append(LegacyParentLink(data["aggregate_id"], data["parent_id"]))
         channels = data["channels"]
         if not isinstance(channels, list) or any(type(item) is not int for item in channels):
             raise TypeError("aggregate metadata channels are invalid")
@@ -831,18 +904,20 @@ def _aggregate_metadata(content: str) -> tuple[CircuitAggregate, ...] | None:
                     data["aggregate_id"],
                     data["name"],
                     CircuitRole(data["role"]),
-                    tuple(channels),
+                    tuple(ChannelTotalSource("channel", channel) for channel in channels),
                     MeasurementMethod(data["measurement_method"]),
-                    data["parent_id"],
                     EnergyMode(data["energy_mode"]),
-                    data["expose_power"],
-                    data["expose_current"],
+                    TotalOutputSettings(
+                        data["expose_power"], data["expose_current"],
+                        data["energy_mode"] != EnergyMode.NONE.value,
+                    ),
+                    TotalOrigin.MIGRATED,
                 ),
             )
         )
     if {order for order, _aggregate in aggregates} != set(range(len(aggregates))):
         raise ValueError("aggregate metadata order is incomplete")
-    return tuple(aggregate for _order, aggregate in sorted(aggregates))
+    return tuple(aggregate for _order, aggregate in sorted(aggregates)), tuple(parent_links)
 
 
 def _decode_aggregate_block(
@@ -909,13 +984,15 @@ def _decode_aggregate_block(
                 base.replace("_", "-"),
                 name,
                 role,
-                aggregate_channels,
+                tuple(ChannelTotalSource("channel", channel) for channel in aggregate_channels),
                 method,
-                None,
                 energy_mode,
-                item.get("internal") != "true",
-                f"{prefix}current" in related
-                and related[f"{prefix}current"].get("internal") != "true",
+                TotalOutputSettings(
+                    item.get("internal") != "true",
+                    f"{prefix}current" in related and related[f"{prefix}current"].get("internal") != "true",
+                    energy_mode is not EnergyMode.NONE,
+                ),
+                TotalOrigin.MIGRATED,
             )
         )
     return tuple(aggregates)
@@ -1266,20 +1343,19 @@ def _legacy_aggregates(
                 aggregate_id,
                 _legacy_aggregate_name(label, outputs),
                 CircuitRole.CUSTOM,
-                first,
+                tuple(ChannelTotalSource("channel", channel) for channel in first),
                 MeasurementMethod.TWO_CT_SUM
                 if len(first) == 2
                 else MeasurementMethod.DIRECT,
-                None,
                 EnergyMode.CONSUMPTION
                 if power is not None and power[0] in energy_power_ids
                 else EnergyMode.NONE,
-                power is not None
-                and power[0] not in hidden_ids
-                and _plain_sensor_scalar(power[1].get("internal", "")) != "true",
-                current is not None
-                and current[0] not in hidden_ids
-                and _plain_sensor_scalar(current[1].get("internal", "")) != "true",
+                TotalOutputSettings(
+                    power is not None and power[0] not in hidden_ids and _plain_sensor_scalar(power[1].get("internal", "")) != "true",
+                    current is not None and current[0] not in hidden_ids and _plain_sensor_scalar(current[1].get("internal", "")) != "true",
+                    power is not None and power[0] in energy_power_ids,
+                ),
+                TotalOrigin.MIGRATED,
             )
         )
         if dependencies_by_output and all(
