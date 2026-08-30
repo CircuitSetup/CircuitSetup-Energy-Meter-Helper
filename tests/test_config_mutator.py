@@ -86,8 +86,12 @@ def _contract_snapshot(*, generic_totals: bool = False) -> ESPHomeConfigSnapshot
     if generic_totals:
         content = content.replace(
             "logger:\n",
+            "  - platform: template\n"
+            "    id: totalWatts\n"
             "  - platform: total_daily_energy\n"
             "    id: totalEnergyDaily\n"
+            "    power_id: totalWatts\n"
+            "    unit_of_measurement: kWh\n"
             "logger:\n",
         )
     return ESPHomeConfigSnapshot(
@@ -104,6 +108,23 @@ def _indentless_contract_snapshot() -> ESPHomeConfigSnapshot:
         line.removeprefix("  ") for line in sensor.split("\n")
     )
     content = prefix + "sensor:\n" + sensor + "logger:\n" + suffix
+    return replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+
+
+def _default_totals_snapshot() -> ESPHomeConfigSnapshot:
+    snapshot = _contract_snapshot()
+    content = snapshot.content.replace(
+        "sensor:\n",
+        "packages:\n"
+        "  remote:\n"
+        "    files:\n"
+        "      - Software/ESPHome/meter_sensors/6chan_main_sensor.yaml\n"
+        "sensor:\n"
+        "  - platform: total_daily_energy\n"
+        "    id: totalEnergyDaily\n"
+        "    power_id: totalWattsMain\n"
+        "    unit_of_measurement: kWh\n",
+    )
     return replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
 
 
@@ -1738,6 +1759,56 @@ def _assert_daily_energy(block: str, power_id: str) -> None:
         assert line in block
 
 
+def test_default_total_controls_replace_each_builtin_entity() -> None:
+    """Turning all Main total outputs off hides defaults without deleting them."""
+    snapshot = _default_totals_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    default = current.configuration.aggregates[0]
+    requested = replace(
+        current.configuration,
+        aggregates=(
+            replace(
+                default,
+                energy_mode=EnergyMode.NONE,
+                expose_power=False,
+                expose_current=False,
+            ),
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    block = plan.proposed_content.split("aggregates v1\n", 1)[1].split(
+        "# End CircuitSetup", 1
+    )[0]
+
+    for total_id in ("totalAmpsMain", "totalWattsMain", "totalEnergyDaily"):
+        assert f"- id: !extend {total_id}\n    internal: true" in block
+    assert "id: csemh_main_total_power" in block
+    assert "id: csemh_main_total_current" not in block
+    assert "id: csemh_main_total_energy" not in block
+
+
+def test_custom_daily_energy_id_is_not_hidden_with_default_totals() -> None:
+    """A familiar ID is not enough to take ownership of an unrelated kWh sensor."""
+    snapshot = _default_totals_snapshot()
+    content = snapshot.content.replace("power_id: totalWattsMain", "power_id: totalWatts")
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        aggregates=(replace(current.configuration.aggregates[0], expose_power=False),),
+    )
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert "id: !extend totalWattsMain" in plan.proposed_content
+    assert "id: !extend totalEnergyDaily" not in plan.proposed_content
+
+
 def test_aggregate_preview_renders_bidirectional_grid_and_hides_contract_totals() -> None:
     """Contract-2 totals are internal before deterministic grid entities appear."""
     snapshot = _contract_snapshot(generic_totals=True)
@@ -2089,6 +2160,33 @@ def test_removing_last_aggregate_restores_official_totals(
     """An empty request removes the owned block rather than retaining its extends."""
     topology = _topology_for_addons(addon_count)
     snapshot = _contract_snapshot_for(topology)
+    content = snapshot.content.replace(
+        "sensor:\n",
+        "sensor:\n"
+        + "".join(
+            f"  - id: {total_id}\n"
+            for total_id in hidden_totals
+            if total_id != "totalEnergyDaily"
+        )
+        + (
+            "  - platform: template\n"
+            "    id: totalWatts\n"
+            if "totalEnergyDaily" in hidden_totals and "totalWatts" not in hidden_totals
+            else ""
+        )
+        + (
+            "  - platform: total_daily_energy\n"
+            "    id: totalEnergyDaily\n"
+            "    power_id: totalWatts\n"
+            "    unit_of_measurement: kWh\n"
+            if "totalEnergyDaily" in hidden_totals
+            else ""
+        ),
+        1,
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
     current = _inventory(snapshot, topology)
     aggregate = CircuitAggregate(
         "load", "Load", CircuitRole.BRANCH, (topology.ct_count,),
@@ -2252,6 +2350,8 @@ def test_sparse_addon_aggregates_hide_each_effective_official_total_once() -> No
         "    id: totalWatts\n"
         "  - platform: total_daily_energy\n"
         "    id: totalEnergyDaily\n"
+        "    power_id: totalWatts\n"
+        "    unit_of_measurement: kWh\n"
         ,
         1,
     )

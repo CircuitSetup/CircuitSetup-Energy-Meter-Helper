@@ -32,9 +32,19 @@ from .meter_configuration import (
     VoltageReferenceConfig,
     validate_meter_configuration,
 )
-from .meter_inventory import MeterConfigurationInventory
+from .meter_inventory import (
+    MeterConfigurationInventory,
+    _default_daily_energy_power_ids,
+)
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import VerifiedCalibrationRecord
+from .topology import addon_count_from_packages
+
+_OFFICIAL_TOTAL_ID = re.compile(
+    r"^\s*(?:-\s*)?id:\s*(?:!extend\s+)?[\"']?"
+    r"(?P<id>total(?:Amps|Watts)(?:Main|AddOn[1-6])?|totalEnergyDaily)"
+    r"[\"']?\s*$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,10 +241,11 @@ def build_meter_configuration_mutation(
             content = _apply_changes(
                 document, [contract_change], {"csemh_config_contract": "2"}
             )
+        document = ESPHomeConfigDocument.parse(content)
         content = replace_managed_block(
             content,
             "aggregates",
-            _render_aggregates(requested.aggregates, topology)
+            _render_aggregates(requested.aggregates, document)
             if requested.aggregates
             else "",
         )
@@ -535,11 +546,11 @@ def _render_voltage_references(
 
 
 def _render_aggregates(
-    aggregates: tuple[CircuitAggregate, ...], topology: MeterTopology
+    aggregates: tuple[CircuitAggregate, ...], document: ESPHomeConfigDocument
 ) -> str:
     entries = {
         f"00_{total_id}": _internal_total(total_id)
-        for total_id in _official_total_ids(topology)
+        for total_id in _official_total_ids(document)
     }
     for order, aggregate in enumerate(aggregates):
         metadata = urlsafe_b64encode(json.dumps(
@@ -564,12 +575,28 @@ def _render_aggregates(
     return render_aggregates(entries)
 
 
-def _official_total_ids(topology: MeterTopology) -> tuple[str, ...]:
-    return (
-        ("totalEnergyDaily",)
-        if topology.addon_count == 0
-        else ("totalAmps", "totalWatts", "totalEnergyDaily")
-    )
+def _official_total_ids(document: ESPHomeConfigDocument) -> tuple[str, ...]:
+    total_ids: list[str] = []
+    addon_count = addon_count_from_packages(document.package_files)
+    if addon_count is not None:
+        for board in range(addon_count + 1):
+            suffix = "Main" if board == 0 else f"AddOn{board}"
+            total_ids.extend((f"totalAmps{suffix}", f"totalWatts{suffix}"))
+    explicit_ids = [
+        match["id"]
+        for line in document.code_lines
+        if (match := _OFFICIAL_TOTAL_ID.fullmatch(line.rstrip())) is not None
+    ]
+    total_ids.extend(total_id for total_id in explicit_ids if total_id != "totalEnergyDaily")
+    official_power_ids = {
+        total_id for total_id in total_ids if total_id.startswith("totalWatts")
+    }
+    if (
+        "totalEnergyDaily" in explicit_ids
+        and _default_daily_energy_power_ids(document) & official_power_ids
+    ):
+        total_ids.append("totalEnergyDaily")
+    return tuple(dict.fromkeys(total_ids))
 
 
 def _internal_total(total_id: str) -> str:

@@ -266,7 +266,9 @@ def test_malformed_owned_total_metadata_fails_closed() -> None:
 
 def test_builtin_meter_totals_are_exposed_as_one_editable_aggregate() -> None:
     """Dropping official total IDs would leave an installed total invisible."""
-    content = _document(contract=True) + (
+    content = _document(contract=True).replace(
+        "    - Software/ESPHome/meter_sensors/6chan_main_sensor.yaml\n", ""
+    ) + (
         "sensor:\n"
         "  - id: totalAmps\n"
         "  - id: totalWatts\n"
@@ -289,6 +291,63 @@ def test_builtin_meter_totals_are_exposed_as_one_editable_aggregate() -> None:
         ),
     )
     assert "builtin_total_semantics_inferred" in inventory.warnings
+
+
+def test_default_main_totals_are_detected_with_independent_energy() -> None:
+    """Package totals and the root kWh sensor become one editable Main total."""
+    content = _document(contract=True) + (
+        "sensor:\n"
+        "  - platform: total_daily_energy\n"
+        "    id: totalEnergyDaily\n"
+        "    power_id: totalWattsMain\n"
+        "    unit_of_measurement: kWh\n"
+    )
+
+    inventory = _inventory(content)
+
+    assert inventory.configuration.aggregates == (
+        CircuitAggregate(
+            "main-total",
+            "Main total",
+            CircuitRole.CUSTOM,
+            (1, 2, 3, 4, 5, 6),
+            MeasurementMethod.DIRECT,
+            None,
+            EnergyMode.CONSUMPTION,
+            True,
+            True,
+        ),
+    )
+
+
+def test_default_totals_are_grouped_by_board_and_kwh_power_id() -> None:
+    """A daily-energy item belongs only to the board power total it references."""
+    content = _document(contract=True, addon_count=1) + (
+        "sensor:\n"
+        "  - platform: total_daily_energy\n"
+        "    id: totalEnergyDaily\n"
+        "    power_id: totalWattsAddOn1\n"
+        "    unit_of_measurement: kWh\n"
+        "  - platform: total_daily_energy\n"
+        "    id: unrelatedEnergyDaily\n"
+        "    power_id: customWatts\n"
+        "    unit_of_measurement: kWh\n"
+    )
+
+    inventory = _inventory(content)
+
+    assert inventory.configuration.aggregates == (
+        CircuitAggregate(
+            "main-total", "Main total", CircuitRole.CUSTOM,
+            (1, 2, 3, 4, 5, 6), MeasurementMethod.DIRECT,
+            None, EnergyMode.NONE, True, True,
+        ),
+        CircuitAggregate(
+            "addon1-total", "Add-on 1 total", CircuitRole.CUSTOM,
+            (7, 8, 9, 10, 11, 12), MeasurementMethod.DIRECT,
+            None, EnergyMode.CONSUMPTION, True, True,
+        ),
+    )
 
 
 @pytest.mark.parametrize("interval", (1, 2, 5, 10, 30, 60))
@@ -349,7 +408,10 @@ def test_legacy_inventory_keeps_yaml_ct_values_and_requires_electrical_confirmat
     None
 ):
     """Changing legacy names into inferred circuit roles must fail this contract."""
-    inventory = _inventory(_document(generic_totals=True))
+    content = _document(generic_totals=True).replace(
+        "    - Software/ESPHome/meter_sensors/6chan_main_sensor.yaml\n", ""
+    )
+    inventory = _inventory(content)
 
     assert [channel.name for channel in inventory.ct_inventory.channels] == [
         "Grid",

@@ -38,6 +38,7 @@ from .models import (
 from .store import StoredMeterConfiguration
 from .topology import (
     TopologyFingerprintMismatch,
+    addon_count_from_packages,
     channel_address,
     voltage_reference_topology_from_config,
     voltage_reference_topology_from_configuration,
@@ -676,6 +677,30 @@ def _detected_aggregates(
             return (), ("aggregate_semantics_unreadable",)
     if stored:
         return stored, ()
+    default_groups = _default_total_groups(document, channels)
+    if default_groups:
+        energy_power_ids = _default_daily_energy_power_ids(document)
+        return (
+            tuple(
+                CircuitAggregate(
+                    f"{group_id}-total",
+                    f"{label} total",
+                    CircuitRole.CUSTOM,
+                    group_channels,
+                    MeasurementMethod.DIRECT,
+                    None,
+                    (
+                        EnergyMode.CONSUMPTION
+                        if power_id in energy_power_ids
+                        else EnergyMode.NONE
+                    ),
+                    True,
+                    True,
+                )
+                for group_id, label, group_channels, power_id in default_groups
+            ),
+            ("builtin_total_semantics_inferred",),
+        )
     total_ids = _generic_total_ids(document)
     enabled = tuple(channel.channel for channel in channels if channel.enabled)
     if not total_ids:
@@ -921,6 +946,61 @@ def _generic_total_ids(document: ESPHomeConfigDocument) -> frozenset[str]:
         for line in document.code_lines
         if (match := _GENERIC_TOTAL_ID.fullmatch(line.rstrip())) is not None
     )
+
+
+def _default_total_groups(
+    document: ESPHomeConfigDocument, channels: tuple[ChannelSettings, ...]
+) -> tuple[tuple[str, str, tuple[int, ...], str], ...]:
+    addon_count = addon_count_from_packages(document.package_files)
+    if addon_count is None:
+        return ()
+    enabled = {channel.channel for channel in channels if channel.enabled}
+    groups = []
+    for board in range(addon_count + 1):
+        suffix = "Main" if board == 0 else f"AddOn{board}"
+        group_channels = tuple(
+            channel for channel in range(board * 6 + 1, board * 6 + 7)
+            if channel in enabled
+        )
+        if group_channels:
+            groups.append(
+                (
+                    "main" if board == 0 else f"addon{board}",
+                    "Main" if board == 0 else f"Add-on {board}",
+                    group_channels,
+                    f"totalWatts{suffix}",
+                )
+            )
+    return tuple(groups)
+
+
+def _default_daily_energy_power_ids(
+    document: ESPHomeConfigDocument,
+) -> frozenset[str]:
+    sensor = document.writable_sensor_span
+    if sensor is None:
+        return frozenset()
+    try:
+        items = _managed_sensor_items(
+            document.content[sensor.start:sensor.end], document.sensor_item_indent
+        )
+    except ValueError:
+        return frozenset()
+    matches = [
+        _plain_sensor_scalar(item.get("power_id", ""))
+        for item in items
+        if _plain_sensor_scalar(item.get("platform", "")) == "total_daily_energy"
+        and _plain_sensor_scalar(item.get("id", "")) == "totalEnergyDaily"
+        and _plain_sensor_scalar(item.get("unit_of_measurement", "")) == "kWh"
+    ]
+    return frozenset(matches) if len(matches) == 1 and matches[0] else frozenset()
+
+
+def _plain_sensor_scalar(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return value if re.fullmatch(r"[A-Za-z0-9_]+", value) else ""
 
 
 def _stored_channels_by_number(
