@@ -9,13 +9,20 @@ from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator imp
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     ChannelSettings,
+    ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
+    BoardTotalSettings,
+    AutomaticTotalSettings,
+    AggregateTotalSource,
+    DefaultTotalsSettings,
     ElectricalSystem,
     EnergyMode,
     MeasurementMethod,
     MeterConfigurationRequest,
     MeterSettings,
+    NativeTotalSource,
+    TotalOutputSettings,
     UpdateIntervalSeconds,
     VoltageLayout,
     VoltageReferenceConfig,
@@ -50,8 +57,104 @@ def request(*, addons: int = 0, interval: int = 5) -> MeterConfigurationRequest:
         for i in range(1, 6 * (addons + 1) + 1)
     )
     return MeterConfigurationRequest(
-        meter, channels, (), (False,) * (addons + 1), (True,) + (False,) * addons
+        meter,
+        channels,
+        DefaultTotalsSettings(
+            TotalOutputSettings(True, True, True),
+            () if addons == 0 else tuple(
+                BoardTotalSettings(board, TotalOutputSettings(True, True, True))
+                for board in range(addons + 1)
+            ),
+        ),
+        (),
+        (),
+        (False,) * (addons + 1),
+        (True,) + (False,) * addons,
     )
+
+
+def total_aggregate(
+    aggregate_id: str,
+    name: str,
+    role: CircuitRole,
+    channels: tuple[int, ...],
+    method: MeasurementMethod,
+    energy_mode: EnergyMode,
+    outputs: TotalOutputSettings = TotalOutputSettings(True, False, True),
+) -> CircuitAggregate:
+    return CircuitAggregate(
+        aggregate_id,
+        name,
+        role,
+        tuple(ChannelTotalSource("channel", channel) for channel in channels),
+        method,
+        energy_mode,
+        outputs,
+    )
+
+
+def test_advanced_total_can_use_native_board_sources() -> None:
+    value = request(addons=1)
+    value = replace(
+        value,
+        aggregates=(
+            CircuitAggregate(
+                "whole-building",
+                "Whole building",
+                CircuitRole.CUSTOM,
+                (
+                    NativeTotalSource("native_total", "board-main"),
+                    NativeTotalSource("native_total", "board-addon-1"),
+                ),
+                MeasurementMethod.DIRECT,
+                EnergyMode.CONSUMPTION,
+                TotalOutputSettings(True, True, True),
+            ),
+        ),
+    )
+    validate_meter_configuration(value, topology(1))
+
+
+@pytest.mark.parametrize("output", [TotalOutputSettings(1, False, False), TotalOutputSettings(True, 0, False)])
+def test_total_outputs_require_strict_booleans(output: TotalOutputSettings) -> None:
+    value = request()
+    aggregate = total_aggregate("grid", "Grid", CircuitRole.GRID, (1,), MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION, output)
+    with pytest.raises(ValueError, match="total output"):
+        validate_meter_configuration(replace(value, aggregates=(aggregate,)), topology())
+
+
+def test_default_total_board_settings_follow_topology() -> None:
+    assert request().default_totals.boards == ()
+    assert tuple(board.board_index for board in request(addons=1).default_totals.boards) == (0, 1)
+
+
+def test_automatic_candidate_ids_are_safe_strings() -> None:
+    value = replace(
+        request(),
+        automatic_totals=(AutomaticTotalSettings("Grid CT1", True, TotalOutputSettings(True, False, True)),),
+    )
+    with pytest.raises(ValueError, match="candidate_id"):
+        validate_meter_configuration(value, topology())
+
+
+def test_native_and_aggregate_sources_are_direct_only() -> None:
+    for source in (NativeTotalSource("native_total", "overall"), AggregateTotalSource("aggregate", "child")):
+        aggregate = CircuitAggregate(
+            "grid", "Grid", CircuitRole.GRID, (source,),
+            MeasurementMethod.TWO_CT_SUM, EnergyMode.CONSUMPTION,
+            TotalOutputSettings(True, False, True),
+        )
+        with pytest.raises(ValueError, match="special measurement"):
+            validate_meter_configuration(replace(request(), aggregates=(aggregate,)), topology())
+
+
+def test_kwh_requires_an_energy_mode() -> None:
+    aggregate = total_aggregate(
+        "grid", "Grid", CircuitRole.GRID, (1,), MeasurementMethod.DIRECT,
+        EnergyMode.NONE, TotalOutputSettings(True, False, True),
+    )
+    with pytest.raises(ValueError, match="kwh"):
+        validate_meter_configuration(replace(request(), aggregates=(aggregate,)), topology())
 
 
 @pytest.mark.parametrize("interval", [1, 2, 5, 10, 30, 60])
@@ -91,16 +194,10 @@ def test_expected_reconnect_entities_use_rendered_names_and_skip_internal_power(
         value,
         "aggregates",
         (
-            CircuitAggregate(
-                "grid",
-                "Grid feed",
-                CircuitRole.GRID,
-                (1, 2),
-                MeasurementMethod.DIRECT,
-                None,
-                EnergyMode.CONSUMPTION,
-                expose_power=False,
-                expose_current=True,
+            total_aggregate(
+                "grid", "Grid feed", CircuitRole.GRID, (1, 2),
+                MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION,
+                TotalOutputSettings(False, True, True),
             ),
         ),
     )
@@ -123,24 +220,8 @@ def test_expected_reconnect_entities_reject_native_object_id_collision() -> None
         value,
         "aggregates",
         (
-            CircuitAggregate(
-                "first",
-                "Grid!",
-                CircuitRole.GRID,
-                (1, 2),
-                MeasurementMethod.DIRECT,
-                None,
-                EnergyMode.NONE,
-            ),
-            CircuitAggregate(
-                "second",
-                "Grid?",
-                CircuitRole.SOLAR,
-                (3, 4),
-                MeasurementMethod.DIRECT,
-                None,
-                EnergyMode.NONE,
-            ),
+            total_aggregate("first", "Grid!", CircuitRole.GRID, (1, 2), MeasurementMethod.DIRECT, EnergyMode.NONE, TotalOutputSettings(True, False, False)),
+            total_aggregate("second", "Grid?", CircuitRole.SOLAR, (3, 4), MeasurementMethod.DIRECT, EnergyMode.NONE, TotalOutputSettings(True, False, False)),
         ),
     )
 
@@ -150,10 +231,7 @@ def test_expected_reconnect_entities_reject_native_object_id_collision() -> None
 
 def test_direct_accepts_multiple_enabled_channels() -> None:
     value = request()
-    aggregate = CircuitAggregate(
-        "grid", "Grid", CircuitRole.GRID, (1, 2), MeasurementMethod.DIRECT,
-        None, EnergyMode.CONSUMPTION,
-    )
+    aggregate = total_aggregate("grid", "Grid", CircuitRole.GRID, (1, 2), MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION)
     object.__setattr__(value, "aggregates", (aggregate,))
     validate_meter_configuration(value, topology())
 
@@ -266,14 +344,14 @@ def _with_aggregate(value: MeterConfigurationRequest, aggregate: CircuitAggregat
 ])
 def test_special_aggregate_cardinalities(method: MeasurementMethod, channels: tuple[int, ...]) -> None:
     value = request()
-    aggregate = CircuitAggregate("grid", "Grid", CircuitRole.GRID, channels, method, None, EnergyMode.CONSUMPTION)
+    aggregate = total_aggregate("grid", "Grid", CircuitRole.GRID, channels, method, EnergyMode.CONSUMPTION)
     with pytest.raises(ValueError):
         validate_meter_configuration(_with_aggregate(value, aggregate), topology())
 
 
 def test_aggregate_invariants_and_direct_multi() -> None:
     value = request()
-    valid = CircuitAggregate("grid", "Grid", CircuitRole.GRID, (1, 2), MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION)
+    valid = total_aggregate("grid", "Grid", CircuitRole.GRID, (1, 2), MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION)
     validate_meter_configuration(_with_aggregate(value, valid), topology())
     for bad_id in ("Grid", "grid_value", "grid--x", ""):
         with pytest.raises(ValueError):
@@ -281,14 +359,14 @@ def test_aggregate_invariants_and_direct_multi() -> None:
     with pytest.raises(ValueError):
         validate_meter_configuration(_with_aggregate(request(), replace(valid, role="grid")), topology())
     with pytest.raises(ValueError):
-        validate_meter_configuration(_with_aggregate(request(), replace(valid, channels=(1, 1))), topology())
+        validate_meter_configuration(_with_aggregate(request(), replace(valid, sources=(ChannelTotalSource("channel", 1), ChannelTotalSource("channel", 1)))), topology())
     with pytest.raises(ValueError):
-        validate_meter_configuration(_with_aggregate(request(), replace(valid, channels=(99,))), topology())
+        validate_meter_configuration(_with_aggregate(request(), replace(valid, sources=(ChannelTotalSource("channel", 99),))), topology())
     disabled = replace(request().channels[0], enabled=False, role=CircuitRole.UNUSED)
     broken = request()
     object.__setattr__(broken, "channels", (disabled,) + broken.channels[1:])
     with pytest.raises(ValueError):
-        validate_meter_configuration(_with_aggregate(broken, replace(valid, channels=(1,))), topology())
+        validate_meter_configuration(_with_aggregate(broken, replace(valid, sources=(ChannelTotalSource("channel", 1),))), topology())
     duplicate = request()
     object.__setattr__(duplicate, "aggregates", (valid, replace(valid, name="Other")))
     with pytest.raises(ValueError):
@@ -299,10 +377,7 @@ def test_aggregates_reject_unused_channels_without_changing_ct_scaling() -> None
     value = request()
     unused = replace(value.channels[2], enabled=False, role=CircuitRole.UNUSED)
     object.__setattr__(value, "channels", (*value.channels[:2], unused, *value.channels[3:]))
-    aggregate = CircuitAggregate(
-        "dryer", "Dryer", CircuitRole.TWO_POLE, (3,),
-        MeasurementMethod.ONE_CT_DOUBLE_POWER, None, EnergyMode.CONSUMPTION,
-    )
+    aggregate = total_aggregate("dryer", "Dryer", CircuitRole.TWO_POLE, (3,), MeasurementMethod.ONE_CT_DOUBLE_POWER, EnergyMode.CONSUMPTION)
 
     with pytest.raises(ValueError, match="enabled channels"):
         validate_meter_configuration(_with_aggregate(value, aggregate), topology())
@@ -317,17 +392,14 @@ def test_aggregates_reject_unused_channels_without_changing_ct_scaling() -> None
 def test_special_aggregate_cardinalities_accept_valid_enabled_channels(
     method: MeasurementMethod, channels: tuple[int, ...]
 ) -> None:
-    aggregate = CircuitAggregate("grid", "Grid", CircuitRole.GRID, channels, method, None, EnergyMode.CONSUMPTION)
+    aggregate = total_aggregate("grid", "Grid", CircuitRole.GRID, channels, method, EnergyMode.CONSUMPTION)
     validate_meter_configuration(_with_aggregate(request(), aggregate), topology())
 
 
-def test_parent_existence_and_cycles() -> None:
-    child = CircuitAggregate("child", "Child", CircuitRole.BRANCH, (1,), MeasurementMethod.DIRECT, "missing", EnergyMode.CONSUMPTION)
-    with pytest.raises(ValueError):
-        validate_meter_configuration(_with_aggregate(request(), child), topology())
-    cycle = replace(child, parent_id="child")
-    with pytest.raises(ValueError):
-        validate_meter_configuration(_with_aggregate(request(), cycle), topology())
+def test_aggregate_uses_sources_without_parent_id() -> None:
+    child = total_aggregate("child", "Child", CircuitRole.BRANCH, (1,), MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION)
+    assert "parent_id" not in CircuitAggregate.__slots__
+    validate_meter_configuration(_with_aggregate(request(), child), topology())
 
 
 def test_board_options_and_multi_reference_acknowledgement() -> None:
@@ -417,3 +489,5 @@ def test_custom_gain_bounds(gain: object) -> None:
     object.__setattr__(value, "channels", (replace(value.channels[0], custom_gain_ct=gain),) + value.channels[1:])
     with pytest.raises(ValueError):
         validate_meter_configuration(value, topology())
+    NativeTotalSource,
+    TotalOutputSettings,

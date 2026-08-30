@@ -17,6 +17,7 @@ export type VoltageLayout = "standard" | "multi_reference" | "custom";
 export type CircuitRole = "grid" | "solar" | "generator" | "subpanel" | "branch" | "two_pole" | "custom" | "unused";
 export type MeasurementMethod = "direct" | "two_ct_sum" | "one_ct_double_power" | "both_conductors_one_ct";
 export type EnergyMode = "none" | "consumption" | "bidirectional" | "generation";
+export type TotalOrigin = "advanced" | "migrated";
 
 export type SetupState =
   | "no_device"
@@ -98,17 +99,45 @@ export interface CircuitAggregate {
   aggregate_id: string;
   name: string;
   role: CircuitRole;
-  channels: number[];
+  sources: TotalSource[];
   measurement_method: MeasurementMethod;
-  parent_id: string | null;
   energy_mode: EnergyMode;
-  expose_power: boolean;
-  expose_current: boolean;
+  outputs: TotalOutputSettings;
+  origin: TotalOrigin;
+}
+
+export interface TotalOutputSettings {
+  watts: boolean;
+  amps: boolean;
+  kwh: boolean;
+}
+
+export interface BoardTotalSettings {
+  board_index: number;
+  outputs: TotalOutputSettings;
+}
+
+export interface DefaultTotalsSettings {
+  overall: TotalOutputSettings;
+  boards: BoardTotalSettings[];
+}
+
+export type TotalSource =
+  | { kind: "channel"; channel: number }
+  | { kind: "native_total"; source_id: string }
+  | { kind: "aggregate"; aggregate_id: string };
+
+export interface AutomaticTotalSettings {
+  candidate_id: string;
+  enabled: boolean;
+  outputs: TotalOutputSettings;
 }
 
 export interface MeterConfigurationRequest {
   meter: MeterSettings;
   channels: ChannelSettings[];
+  default_totals: DefaultTotalsSettings;
+  automatic_totals: AutomaticTotalSettings[];
   aggregates: CircuitAggregate[];
   power_quality: boolean[];
   status_fields: boolean[];
