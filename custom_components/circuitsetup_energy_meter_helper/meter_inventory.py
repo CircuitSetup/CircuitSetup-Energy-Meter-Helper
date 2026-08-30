@@ -986,15 +986,41 @@ def _default_total_groups(
 def _default_daily_energy_power_ids(
     document: ESPHomeConfigDocument,
 ) -> frozenset[str]:
-    sensor = document.writable_sensor_span
-    if sensor is None:
-        return frozenset()
-    try:
-        items = _managed_sensor_items(
-            document.content[sensor.start:sensor.end], document.sensor_item_indent
+    items: list[dict[str, str]] = []
+    for index, line in enumerate(document.code_lines):
+        match = re.fullmatch(r"(?P<indent> *)-\s+platform:\s*(?P<value>.+)", line)
+        if (
+            match is None
+            or _plain_sensor_scalar(match["value"]) != "total_daily_energy"
+        ):
+            continue
+        root = next(
+            (
+                candidate
+                for candidate in reversed(document.code_lines[:index])
+                if re.match(r"^[a-z][a-z0-9_-]*\s*:", candidate)
+            ),
+            "",
         )
-    except ValueError:
-        return frozenset()
+        if not re.match(r"^sensor\s*:", root):
+            continue
+        indent = len(match["indent"])
+        fields = {"platform": match["value"].strip()}
+        for candidate in document.code_lines[index + 1 :]:
+            if not candidate.strip():
+                continue
+            candidate_indent = len(candidate) - len(candidate.lstrip(" "))
+            if candidate_indent <= indent:
+                break
+            if candidate_indent != indent + 2 or ":" not in candidate:
+                continue
+            key, value = candidate.strip().split(":", 1)
+            if not re.fullmatch(r"[a-z][a-z0-9_]*", key) or key in fields:
+                fields = {}
+                break
+            fields[key] = value.strip()
+        if fields:
+            items.append(fields)
     matches = [
         _plain_sensor_scalar(item.get("power_id", ""))
         for item in items

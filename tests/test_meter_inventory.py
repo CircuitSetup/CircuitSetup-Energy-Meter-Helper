@@ -379,6 +379,30 @@ def test_helper_and_official_totals_populate_together_with_global_visibility() -
         assert aggregates[aggregate_id].energy_mode is EnergyMode.NONE
 
 
+def test_global_daily_energy_is_detected_in_a_later_root_sensor_section() -> None:
+    """ESPHome accepts repeated root sensor sections in existing meter files."""
+    content = _document(contract=True) + (
+        "sensor:\n"
+        "  - id: unrelatedPower\n"
+        "binary_sensor:\n"
+        "  - platform: template\n"
+        "    id: online\n"
+        "sensor:\n"
+        "- id: totalWatts\n"
+        "- platform: total_daily_energy\n"
+        "  id: totalEnergyDaily\n"
+        "  power_id: totalWatts\n"
+        "  unit_of_measurement: kWh\n"
+    )
+
+    aggregates = {
+        aggregate.aggregate_id: aggregate
+        for aggregate in _inventory(content).configuration.aggregates
+    }
+
+    assert aggregates["meter-total"].energy_mode is EnergyMode.CONSUMPTION
+
+
 @pytest.mark.parametrize("interval", (1, 2, 5, 10, 30, 60))
 def test_inventory_warns_only_for_installed_slow_calibration_intervals(
     interval: int,
