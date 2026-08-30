@@ -1763,10 +1763,16 @@ function circuitsEditor(configuration, drafts, update, managedTotals, managedTot
     aggregate.role === "two_pole" && !["one_ct_double_power", "both_conductors_one_ct", "two_ct_sum"].includes(aggregate.measurement_method) ? `${aggregate.name}: select a two-pole measurement method.` : "",
     aggregate.role === "two_pole" && aggregate.channels.some((channel) => configuration.aggregates.filter((item) => item.role === "two_pole" && item.channels.includes(channel)).length > 1) ? `${aggregate.name}: a CT cannot belong to two two-pole aggregates.` : ""
   ].filter(Boolean));
-  const automaticPreview = configuration.aggregates.map((aggregate) => `${aggregate.name} total = ${aggregate.channels.map((channel) => `CT${channel}`).join(" + ")}`);
   return b`<section class="step-content" aria-labelledby="aggregates-heading">
     <h2 id="aggregates-heading">Automatic totals</h2>
-    <p class="info-band">${automaticPreview.length ? automaticPreview.join(" · ") : "No automatic totals are configured."}</p>
+    <table aria-label="Automatic totals"><thead><tr><th>Name</th><th>CTs / meter</th><th>Outputs</th></tr></thead><tbody>
+      ${configuration.aggregates.length ? configuration.aggregates.map((aggregate) => {
+    const children = configuration.aggregates.filter((item) => item.parent_id === aggregate.aggregate_id);
+    const source = children.length ? children.map((child) => child.name).join(" + ") : aggregate.channels.map((channel) => `CT${channel}`).join(" + ");
+    const outputs = [aggregate.expose_power ? "Power" : "Power (internal)", aggregate.expose_current ? "Current" : "Current (internal)", aggregate.energy_mode === "none" ? "" : "Energy"].filter(Boolean).join(" · ");
+    return b`<tr><td>${aggregate.name}</td><td>${source}</td><td>${outputs}</td></tr>`;
+  }) : b`<tr><td colspan="3">No automatic totals are configured.</td></tr>`}
+    </tbody></table>
     <details><summary>Advanced totals</summary>
     ${!managedTotals ? b`<p class="info-band" role="status">Aggregate editing unavailable: ${managedTotalsReason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : A}
     ${warnings.map((warning) => b`<p class="warning-band" role="status">${warning}</p>`)}
