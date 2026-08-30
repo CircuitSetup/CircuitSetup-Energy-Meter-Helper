@@ -139,6 +139,13 @@ def test_graph_allows_nested_only_parent_and_rejects_mixed_or_special_nested() -
         validate_total_graph(configuration(child, special), topology(0))
 
 
+def test_graph_rejects_native_and_child_overlap_without_direct_channels() -> None:
+    child = advanced("child", sources=(channel_source(1),))
+    parent = advanced("whole", sources=(native_source("overall"), aggregate_source("child")))
+    with pytest.raises(ValueError, match="overlap"):
+        validate_total_graph(configuration(child, parent), topology(0))
+
+
 def test_disabled_or_unknown_automatic_settings_are_rejected_and_hidden_watts_still_required() -> None:
     baseline = request()
     grid = replace(
@@ -158,12 +165,26 @@ def test_disabled_or_unknown_automatic_settings_are_rejected_and_hidden_watts_st
         plan.leaf_channels["hidden"] = frozenset()
 
 
-def test_parent_requirements_keep_hidden_child_watts_and_amps_internal() -> None:
+@pytest.mark.parametrize(
+    ("root_outputs", "power_required", "current_required"),
+    (
+        (TotalOutputSettings(True, False, False), True, False),
+        (TotalOutputSettings(False, True, False), False, True),
+        (TotalOutputSettings(False, False, True), True, False),
+    ),
+)
+def test_root_requirements_propagate_through_all_hidden_descendants(
+    root_outputs: TotalOutputSettings, power_required: bool, current_required: bool,
+) -> None:
     child = advanced("child", sources=(channel_source(1),), outputs=TotalOutputSettings(False, False, False))
-    parent = advanced("parent", sources=(aggregate_source("child"),), outputs=TotalOutputSettings(True, True, False))
-    plan = plan_total_graph(configuration(child, parent), topology(0))
-    assert plan.ordered_nodes[0].power_required is True
-    assert plan.ordered_nodes[0].current_required is True
+    parent = advanced("parent", sources=(aggregate_source("child"),), outputs=TotalOutputSettings(False, False, False))
+    root = advanced("root", sources=(aggregate_source("parent"),), outputs=root_outputs)
+    plan = plan_total_graph(configuration(child, parent, root), topology(0))
+    assert [(node.aggregate.aggregate_id, node.power_required, node.current_required) for node in plan.ordered_nodes] == [
+        ("child", power_required, current_required),
+        ("parent", power_required, current_required),
+        ("root", power_required, current_required),
+    ]
 
 
 def test_catalog_covers_all_topologies() -> None:

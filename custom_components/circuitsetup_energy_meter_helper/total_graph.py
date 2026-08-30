@@ -355,6 +355,7 @@ def plan_total_graph(
     for aggregate in aggregates:
         resolve(aggregate)
     for node in reversed(ordered):
+        node = planned[node.aggregate.aggregate_id]
         for source in node.aggregate.sources:
             if isinstance(source, AggregateTotalSource):
                 child = planned[source.aggregate_id]
