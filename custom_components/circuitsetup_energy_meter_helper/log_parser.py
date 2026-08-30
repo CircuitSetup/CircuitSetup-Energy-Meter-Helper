@@ -214,11 +214,13 @@ def parse_calibration_sources(
             f"{kind} mismatch: using flash values",
         )
         configuration_terms = (
-            "No stored power offsets found"
+            (
+                "No stored power offsets found",
+                "No stored power offset calibrations found. Using default values.",
+            )
             if offset_stage == 2
-            else "No stored offset calibrations found",
-            "Power & Voltage/Current offset calibration is disabled",
-        )
+            else ("No stored offset calibrations found",)
+        ) + ("Power & Voltage/Current offset calibration is disabled",)
     sources: dict[str, Literal["flash", "configuration", "unknown"]] = {
         instance_id: "unknown" for instance_id in expected_instance_ids
     }

@@ -61,6 +61,19 @@ def test_detects_current_flash_and_configuration_calibration_sources() -> None:
     }
 
 
+def test_detects_firmware_power_offset_configuration_fallback() -> None:
+    assert parse_calibration_sources(
+        (
+            (
+                "[W][atm90e32:1071] [CALIBRATION][meter_main1] "
+                "No stored power offset calibrations found. Using default values."
+            ),
+        ),
+        {"meter_main1"},
+        offset_stage=2,
+    ) == {"meter_main1": "configuration"}
+
+
 def test_detects_verified_gain_config_fallback_as_configuration() -> None:
     sources = parse_calibration_sources(
         (
