@@ -1849,6 +1849,43 @@ def test_custom_daily_energy_id_is_not_hidden_with_default_totals() -> None:
     assert "id: !extend totalEnergyDaily" not in plan.proposed_content
 
 
+@pytest.mark.parametrize("current_channel", (2, 7))
+@pytest.mark.parametrize("label", ("Custom", ""))
+def test_rejected_custom_totals_stay_visible_during_unrelated_aggregate_edit(
+    current_channel: int, label: str,
+) -> None:
+    """Unmatched W/A channels or out-of-range CTs must not be silently hidden."""
+    snapshot = _contract_snapshot()
+    custom = "".join(
+        "  - platform: template\n"
+        f"    id: total{label}{kind}\n"
+        f"    name: Custom {kind}\n"
+        f"    lambda: return id(ct{channel}{kind}).state;\n"
+        f"    unit_of_measurement: {unit}\n"
+        f"    device_class: {device_class}\n"
+        for kind, channel, unit, device_class in (
+            ("Watts", 1, "W", "power"),
+            ("Amps", current_channel, "A", "current"),
+        )
+    )
+    content = snapshot.content.replace("sensor:\n", "sensor:\n" + custom, 1)
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    assert not current.configuration.aggregates
+    requested = _aggregate_request(current, CircuitAggregate(
+        "load", "Load", CircuitRole.BRANCH, (3,),
+        MeasurementMethod.DIRECT, None, EnergyMode.NONE,
+    ))
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert custom in plan.proposed_content
+    assert f"!extend total{label}Watts" not in plan.proposed_content
+    assert f"!extend total{label}Amps" not in plan.proposed_content
+    assert "id: csemh_load_power" in plan.proposed_content
+
+
 def test_aggregate_preview_renders_bidirectional_grid_and_hides_contract_totals() -> None:
     """Contract-2 totals are internal before deterministic grid entities appear."""
     snapshot = _contract_snapshot(generic_totals=True)
@@ -2159,16 +2196,25 @@ def test_aggregate_preview_upgrades_legacy_contract_and_never_invents_default_to
     ).proposed_content == legacy.content
 
 
-def test_rendered_aggregate_metadata_is_lossless_without_storage() -> None:
+@pytest.mark.parametrize("parent_energy", (EnergyMode.NONE, EnergyMode.BIDIRECTIONAL))
+@pytest.mark.parametrize("parent_method, parent_channels", (
+    (MeasurementMethod.BOTH_CONDUCTORS_ONE_CT, (1,)),
+    (MeasurementMethod.DIRECT, (1, 2)),
+))
+def test_rendered_aggregate_metadata_is_lossless_without_storage(
+    parent_energy: EnergyMode,
+    parent_method: MeasurementMethod,
+    parent_channels: tuple[int, ...],
+) -> None:
     """Owned YAML must recover semantics that sensor expressions cannot encode."""
     snapshot = _contract_snapshot()
     topology = _topology()
     current = _inventory(snapshot, topology)
     aggregates = (
         CircuitAggregate(
-            "parent-total", "Parent", CircuitRole.CUSTOM, (1,),
-            MeasurementMethod.BOTH_CONDUCTORS_ONE_CT, None,
-            EnergyMode.BIDIRECTIONAL, False, False,
+            "parent-total", "Parent", CircuitRole.CUSTOM, parent_channels,
+            parent_method, None,
+            parent_energy, False, False,
         ),
         CircuitAggregate(
             "child-total", "Child", CircuitRole.SOLAR, (2,),
@@ -2188,6 +2234,13 @@ def test_rendered_aggregate_metadata_is_lossless_without_storage() -> None:
 
     assert recovered.configuration.aggregates == aggregates
     assert "aggregate_semantics_inferred" not in recovered.warnings
+    for original, tampered in (
+        ("id(ct1Watts).state", "id(ct3Watts).state"),
+        ("internal: true", "internal: false"),
+    ):
+        content = installed.content.replace(original, tampered, 1)
+        corrupted = replace(installed, content=content, sha256=sha256(content.encode()).hexdigest())
+        assert "aggregate_semantics_unreadable" in _inventory(corrupted, topology).warnings
 
 
 @pytest.mark.parametrize(

@@ -340,6 +340,8 @@ export function changesFromDrafts(inventory: CtInventory, drafts: Map<number, Ct
   return inventory.channels.flatMap((channel) => {
     const draft = drafts.get(channel.channel);
     if (!draft || !isDirty(channel, draft)) return [];
+    if (draft.preserveExistingGain) return [{ channel: channel.channel, name: draft.name.trim(),
+      model_id: channel.selected_model_id ?? "", reporting_multiplier: channel.reporting_multiplier }];
     const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
     const change: CtChange = { channel: channel.channel, name: draft.name.trim(), model_id: draft.modelId, reporting_multiplier: draft.multiplier };
     if (draft.modelId === "custom") {
@@ -354,7 +356,7 @@ export function changesFromDrafts(inventory: CtInventory, drafts: Map<number, Ct
 }
 
 function isDirty(channel: CtInventory["channels"][number], draft: CtDraft): boolean {
-  if (draft.preserveExistingGain) return false;
+  if (draft.preserveExistingGain) return draft.name !== channel.name;
   return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier
     || draft.modelId === "custom" && (resultingGain(undefined, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct
       || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));

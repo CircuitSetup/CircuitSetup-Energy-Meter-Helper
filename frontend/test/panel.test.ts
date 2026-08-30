@@ -3399,19 +3399,54 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
   });
 
-  it("keeps an untouched preserved legacy CT unknown after installation", () => {
+  it("emits renamed preserved CTs without changing their CT settings", () => {
+    const inventory = meterResponse() as CtInventory;
+    inventory.channels = [{ ...inventory.channels[0]!, selected_model_id: null,
+      selection_verified_against_config: false, reporting_multiplier: 2 }];
+    const drafts = new Map<number, CtDraft>([[1, { name: " Kitchen ", modelId: "custom", multiplier: 8,
+      customGainCt: 12345, customLabel: "Discarded selection", preserveExistingGain: true,
+      burdenAcknowledged: true, expanded: false }]]);
+
+    expect(changesFromDrafts(inventory, drafts)).toEqual([
+      { channel: 1, name: "Kitchen", model_id: "", reporting_multiplier: 2 },
+    ]);
+    drafts.get(1)!.name = "CT1";
+    expect(changesFromDrafts(inventory, drafts)).toEqual([]);
+  });
+
+  it("copies a preserved CT name into firmware configuration without replacing its gain settings", () => {
+    const meter = meterResponse();
+    meter.configuration.channels[0] = { ...meter.configuration.channels[0]!, model_id: "custom",
+      reporting_multiplier: 2, custom_gain_ct: 32123, custom_label: "Installed clamp", burden_output_acknowledged: true };
+    const original = structuredClone(meter.configuration.channels[0]!);
+    const panel = document.createElement("circuitsetup-energy-meter-helper-panel") as CircuitSetupPanel;
+    const state = panel as unknown as { meterConfiguration: typeof meter; drafts: Map<number, CtDraft>;
+      canonicalConfigurationChanged: boolean; updateDraft(channel: number, patch: Partial<CtDraft>): void };
+    state.meterConfiguration = meter;
+    state.drafts = new Map([[1, { name: "CT1", modelId: "", multiplier: 1,
+      preserveExistingGain: true, burdenAcknowledged: false, expanded: false }]]);
+
+    state.updateDraft(1, { expanded: true });
+    expect(state.canonicalConfigurationChanged).toBe(false);
+    state.updateDraft(1, { name: "Kitchen" });
+
+    expect(state.meterConfiguration.configuration.channels[0]).toEqual({ ...original, name: "Kitchen" });
+    expect(state.canonicalConfigurationChanged).toBe(true);
+  });
+
+  it.each(["CT1", "Kitchen"])("accepts the installed preserved CT name %s without recording a model", (name) => {
     const inventory = meterResponse() as unknown as CtInventory;
     inventory.channels = [{ ...inventory.channels[0]!, selected_model_id: null,
       selection_verified_against_config: false, stored_selection_present: false }];
     const panel = document.createElement("circuitsetup-energy-meter-helper-panel") as CircuitSetupPanel;
     const state = panel as unknown as { inventory: CtInventory; drafts: Map<number, CtDraft>; acceptInstalledDrafts(): void };
     state.inventory = inventory;
-    state.drafts = new Map([[1, { name: "CT1", modelId: "", multiplier: 1,
+    state.drafts = new Map([[1, { name, modelId: "", multiplier: 1,
       preserveExistingGain: true, multiplierMode: "automatic", burdenAcknowledged: false, expanded: false }]]);
 
     state.acceptInstalledDrafts();
 
-    expect(state.inventory.channels[0]).toMatchObject({ selected_model_id: null,
+    expect(state.inventory.channels[0]).toMatchObject({ name, selected_model_id: null,
       selection_verified_against_config: false, stored_selection_present: false });
   });
 

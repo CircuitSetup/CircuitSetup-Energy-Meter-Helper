@@ -1841,6 +1841,12 @@ function changesFromDrafts(inventory, drafts) {
   return inventory.channels.flatMap((channel) => {
     const draft = drafts.get(channel.channel);
     if (!draft || !isDirty(channel, draft)) return [];
+    if (draft.preserveExistingGain) return [{
+      channel: channel.channel,
+      name: draft.name.trim(),
+      model_id: channel.selected_model_id ?? "",
+      reporting_multiplier: channel.reporting_multiplier
+    }];
     const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
     const change = { channel: channel.channel, name: draft.name.trim(), model_id: draft.modelId, reporting_multiplier: draft.multiplier };
     if (draft.modelId === "custom") {
@@ -1854,7 +1860,7 @@ function changesFromDrafts(inventory, drafts) {
   });
 }
 function isDirty(channel, draft) {
-  if (draft.preserveExistingGain) return false;
+  if (draft.preserveExistingGain) return draft.name !== channel.name;
   return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier || draft.modelId === "custom" && (resultingGain(void 0, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));
 }
 function validDraft(inventory, draft) {
@@ -3621,7 +3627,8 @@ class CircuitSetupPanel extends i$2 {
     if (!this.inventory) return;
     this.inventory = { ...this.inventory, channels: this.inventory.channels.map((channel) => {
       const draft = this.drafts.get(channel.channel);
-      if (!draft || draft.preserveExistingGain) return channel;
+      if (!draft) return channel;
+      if (draft.preserveExistingGain) return { ...channel, name: draft.name.trim() };
       const preset = this.inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
       const gain = preset?.default_gain_ct ?? draft.customGainCt;
       return {
@@ -4134,10 +4141,10 @@ class CircuitSetupPanel extends i$2 {
     this.drafts = new Map(this.drafts).set(channel, { ...current, ...patch });
     if (this.meterConfiguration && !this.labelOnly) {
       const draft = { ...current, ...patch };
-      if (draft.preserveExistingGain) return this.requestUpdate();
+      if (draft.preserveExistingGain && this.meterConfiguration.configuration.channels.find((item) => item.channel === channel)?.name === draft.name) return this.requestUpdate();
       this.updateCircuitConfiguration({
         ...this.meterConfiguration.configuration,
-        channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel ? {
+        channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel ? draft.preserveExistingGain ? { ...item, name: draft.name } : {
           ...item,
           name: draft.name,
           model_id: draft.modelId,

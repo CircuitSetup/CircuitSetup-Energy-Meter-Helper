@@ -25,6 +25,7 @@ from .config_mutator import (
 )
 from .ct_inventory import _esphome_object_id
 from .meter_configuration import (
+    ChannelSettings,
     CircuitAggregate,
     EnergyMode,
     MeasurementMethod,
@@ -35,6 +36,7 @@ from .meter_configuration import (
 from .meter_inventory import (
     MeterConfigurationInventory,
     _default_daily_energy_power_ids,
+    _explicit_total_calculation_ids,
     _legacy_template_total_ids,
 )
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
@@ -246,7 +248,7 @@ def build_meter_configuration_mutation(
         content = replace_managed_block(
             content,
             "aggregates",
-            _render_aggregates(requested.aggregates, document)
+            _render_aggregates(requested.aggregates, document, previous.channels)
             if requested.aggregates
             else "",
         )
@@ -547,11 +549,13 @@ def _render_voltage_references(
 
 
 def _render_aggregates(
-    aggregates: tuple[CircuitAggregate, ...], document: ESPHomeConfigDocument
+    aggregates: tuple[CircuitAggregate, ...],
+    document: ESPHomeConfigDocument,
+    channels: tuple[ChannelSettings, ...],
 ) -> str:
     entries = {
         f"00_{total_id}": _internal_total(total_id)
-        for total_id in _official_total_ids(document)
+        for total_id in _official_total_ids(document, channels)
     }
     for order, aggregate in enumerate(aggregates):
         metadata = urlsafe_b64encode(json.dumps(
@@ -576,7 +580,9 @@ def _render_aggregates(
     return render_aggregates(entries)
 
 
-def _official_total_ids(document: ESPHomeConfigDocument) -> tuple[str, ...]:
+def _official_total_ids(
+    document: ESPHomeConfigDocument, channels: tuple[ChannelSettings, ...]
+) -> tuple[str, ...]:
     total_ids: list[str] = []
     addon_count = addon_count_from_packages(document.package_files)
     if addon_count is not None:
@@ -588,8 +594,12 @@ def _official_total_ids(document: ESPHomeConfigDocument) -> tuple[str, ...]:
         for line in document.code_lines
         if (match := _OFFICIAL_TOTAL_ID.fullmatch(line.rstrip())) is not None
     ]
-    total_ids.extend(total_id for total_id in explicit_ids if total_id != "totalEnergyDaily")
-    total_ids.extend(_legacy_template_total_ids(document))
+    calculations = _explicit_total_calculation_ids(document)
+    total_ids.extend(
+        total_id for total_id in explicit_ids
+        if total_id != "totalEnergyDaily" and total_id not in calculations
+    )
+    total_ids.extend(_legacy_template_total_ids(document, channels))
     official_power_ids = {
         total_id for total_id in total_ids if total_id.startswith("totalWatts")
     }

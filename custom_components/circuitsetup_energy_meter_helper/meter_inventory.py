@@ -669,8 +669,8 @@ def _detected_aggregates(
     warnings: tuple[str, ...] = ()
     if block is not None:
         try:
-            decoded = _decode_aggregate_block(document, channels)
             metadata = _aggregate_metadata(block.content)
+            decoded = _decode_aggregate_block(document, channels, metadata or ())
             if metadata is not None:
                 if not _metadata_matches_rendered(metadata, decoded):
                     raise ValueError("aggregate metadata does not match rendered sensors")
@@ -685,7 +685,8 @@ def _detected_aggregates(
     elif stored:
         detected = stored
 
-    total_ids = _generic_total_ids(document)
+    explicit_calculations = _explicit_total_calculation_ids(document)
+    total_ids = _generic_total_ids(document) - explicit_calculations
     enabled = tuple(channel.channel for channel in channels if channel.enabled)
     default_groups = _default_total_groups(document, channels)
     if (total_ids or default_groups) and not enabled:
@@ -699,7 +700,7 @@ def _detected_aggregates(
     expose_current = "totalAmps" in total_ids
     energy_mode = (
         EnergyMode.CONSUMPTION
-        if "totalWatts" in energy_power_ids
+        if "totalWatts" in energy_power_ids and "totalWatts" not in explicit_calculations
         else EnergyMode.NONE
     )
     if expose_power or expose_current or energy_mode is not EnergyMode.NONE:
@@ -808,11 +809,14 @@ def _aggregate_metadata(content: str) -> tuple[CircuitAggregate, ...] | None:
 
 
 def _decode_aggregate_block(
-    document: ESPHomeConfigDocument, channels: tuple[ChannelSettings, ...]
+    document: ESPHomeConfigDocument,
+    channels: tuple[ChannelSettings, ...],
+    metadata: tuple[CircuitAggregate, ...] = (),
 ) -> tuple[CircuitAggregate, ...]:
     block = document.managed_blocks["aggregates"]
     items = _managed_sensor_items(block.content, document.sensor_item_indent)
     channel_roles = {channel.channel: channel.role for channel in channels}
+    names = {aggregate.aggregate_id.replace("_", "-"): aggregate.name for aggregate in metadata}
     aggregates: list[CircuitAggregate] = []
     for item in items:
         sensor_id = item.get("id", "")
@@ -832,7 +836,7 @@ def _decode_aggregate_block(
             role = CircuitRole.CUSTOM
         prefix = f"csemh_{base}_"
         related = {candidate.get("id", ""): candidate for candidate in items if candidate.get("id", "").startswith(prefix)}
-        name = _aggregate_name(item, related)
+        name = _aggregate_name(item, related, names.get(base.replace("_", "-")))
         bidirectional = all(
             f"{prefix}{suffix}" in related
             for suffix in ("import_power", "import_energy", "export_power", "export_energy")
@@ -911,7 +915,11 @@ def _aggregate_expression(value: str) -> tuple[tuple[int, ...], MeasurementMetho
     return channels, method, clamped
 
 
-def _aggregate_name(item: dict[str, str], related: Mapping[str, dict[str, str]]) -> str:
+def _aggregate_name(
+    item: dict[str, str],
+    related: Mapping[str, dict[str, str]],
+    internal_name: str | None = None,
+) -> str:
     values = [item.get("name"), *(candidate.get("name") for candidate in related.values())]
     suffixes = (
         " Return to Grid Power",
@@ -929,6 +937,11 @@ def _aggregate_name(item: dict[str, str], related: Mapping[str, dict[str, str]])
         for suffix in suffixes:
             if decoded.endswith(suffix):
                 return decoded[len("${friendly_name} ") : -len(suffix)]
+    if internal_name is not None and all(
+        candidate.get("internal") == "true" and "name" not in candidate
+        for candidate in related.values()
+    ):
+        return internal_name
     raise ValueError("aggregate name is unavailable")
 
 
@@ -954,7 +967,10 @@ def _metadata_matches_rendered(
             return False
         if aggregate.measurement_method != actual.measurement_method and {
             aggregate.measurement_method, actual.measurement_method
-        } != {MeasurementMethod.DIRECT, MeasurementMethod.BOTH_CONDUCTORS_ONE_CT}:
+        } not in (
+            {MeasurementMethod.DIRECT, MeasurementMethod.BOTH_CONDUCTORS_ONE_CT},
+            {MeasurementMethod.DIRECT, MeasurementMethod.TWO_CT_SUM},
+        ):
             return False
         if aggregate.energy_mode != actual.energy_mode and {
             aggregate.energy_mode, actual.energy_mode
@@ -1064,33 +1080,29 @@ def _root_sensor_items(
     return tuple(items)
 
 
-def _legacy_template_total_ids(document: ESPHomeConfigDocument) -> tuple[str, ...]:
-    """Return root template W/A totals safe to replace with managed equivalents."""
-    items = _legacy_template_total_items(document)
-    addon_count = addon_count_from_packages(document.package_files)
-    official = (
-        {
-            f"total{kind}{'Main' if board == 0 else f'AddOn{board}'}"
-            for board in range(addon_count + 1)
-            for kind in ("Watts", "Amps")
-        }
-        if addon_count is not None
-        else set()
+def _explicit_total_calculation_ids(document: ESPHomeConfigDocument) -> frozenset[str]:
+    """Root formulas must not be replaced by ID-only default assumptions."""
+    return frozenset(
+        sensor_id for item in _root_sensor_items(document)
+        if "lambda" in item
+        and _LEGACY_TOTAL_ID.fullmatch(sensor_id := _plain_sensor_scalar(item.get("id", "")))
     )
 
-    def supported(sensor_id: str) -> bool:
-        match = _LEGACY_TOTAL_ID.fullmatch(sensor_id)
-        if match is None:
-            return False
-        references = _sum_references(items[sensor_id].get("lambda", "")) or ()
-        kind = match["kind"]
-        return bool(references) and all(
-            re.fullmatch(rf"ct[1-9][0-9]*{kind}", reference)
-            or reference in official and kind in reference
-            for reference in references
-        )
 
-    return tuple(sensor_id for sensor_id in items if supported(sensor_id))
+def _legacy_template_total_ids(
+    document: ESPHomeConfigDocument, channels: tuple[ChannelSettings, ...]
+) -> tuple[str, ...]:
+    """Return root template W/A totals safe to replace with managed equivalents."""
+    items = _legacy_template_total_items(document)
+    aggregates, _parents = _legacy_aggregates(
+        document, channels, _default_total_groups(document, channels), frozenset()
+    )
+    accepted = {aggregate.aggregate_id for aggregate in aggregates}
+    return tuple(
+        sensor_id for sensor_id in items
+        if (match := _LEGACY_TOTAL_ID.fullmatch(sensor_id)) is not None
+        and _legacy_aggregate_id(match["label"]) in accepted
+    )
 
 
 def _legacy_template_total_items(

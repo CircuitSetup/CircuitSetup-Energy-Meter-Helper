@@ -548,7 +548,8 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.inventory) return;
     this.inventory = { ...this.inventory, channels: this.inventory.channels.map((channel) => {
       const draft = this.drafts.get(channel.channel);
-      if (!draft || draft.preserveExistingGain) return channel;
+      if (!draft) return channel;
+      if (draft.preserveExistingGain) return { ...channel, name: draft.name.trim() };
       const preset = this.inventory!.catalog.presets.find((item) => item.model_id === draft.modelId);
       const gain = preset?.default_gain_ct ?? draft.customGainCt;
       return { ...channel, name: draft.name.trim(), selected_model_id: draft.modelId,
@@ -1093,9 +1094,11 @@ export class CircuitSetupPanel extends LitElement {
     this.drafts = new Map(this.drafts).set(channel, { ...current, ...patch });
     if (this.meterConfiguration && !this.labelOnly) {
       const draft = { ...current, ...patch };
-      if (draft.preserveExistingGain) return this.requestUpdate();
+      if (draft.preserveExistingGain && this.meterConfiguration.configuration.channels
+        .find((item) => item.channel === channel)?.name === draft.name) return this.requestUpdate();
       this.updateCircuitConfiguration({ ...this.meterConfiguration.configuration,
-        channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel ? {
+        channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel ? draft.preserveExistingGain
+          ? { ...item, name: draft.name } : {
           ...item, name: draft.name, model_id: draft.modelId,
           reporting_multiplier: draft.multiplier,
           custom_gain_ct: draft.modelId === "custom" ? draft.customGainCt ?? null : null,
