@@ -322,10 +322,18 @@ function session(value: unknown, label: string): SessionStatus {
 }
 
 function offsetReadiness(value: unknown, label: string, expectedBoard: number, expectedStage: 1 | 2): OffsetReadinessResult {
-  const item = record(value, label); exactKeys(item, ["stage", "ready", "connection_generation", "entities", "reasons", "thresholds"], label);
+  const item = record(value, label); exactKeys(item, ["stage", "ready", "connection_generation", "entities", "reasons", "thresholds", "saved_offset_sources"], label);
   if (integer(item.stage, label) !== expectedStage || expectedBoard < 0 || expectedBoard > 6) throw new Error(`${label} response is invalid`);
   const ready = boolean(item.ready, label); const generation = integer(item.connection_generation, label);
   if (generation < 1) throw new Error(`${label} response is invalid`);
+  const sourceGroups = expectedBoard === 0 ? ["main_1", "main_2"] : [`addon${expectedBoard}_1`, `addon${expectedBoard}_2`];
+  const sources = array(item.saved_offset_sources, label, 2);
+  if (sources.length !== 2) throw new Error(`${label} response is invalid`);
+  sources.forEach((entry, index) => {
+    const pair = array(entry, label, 2);
+    if (pair.length !== 2 || pair[0] !== sourceGroups[index]) throw new Error(`${label} response is invalid`);
+    enumeration(pair[1], new Set(["flash", "configuration", "unknown"]), label);
+  });
   const thresholds = record(item.thresholds, label);
   exactKeys(thresholds, ["sample_count", "zero_voltage_peak_volts", "zero_voltage_spread_volts", "zero_current_peak_amps", "zero_current_spread_amps", "voltage_present_minimum_volts", "voltage_present_spread_volts"], label);
   const sampleCount = integer(thresholds.sample_count, label);

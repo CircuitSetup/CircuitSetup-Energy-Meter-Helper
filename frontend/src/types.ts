@@ -371,6 +371,7 @@ export interface OffsetReadinessResult {
   }>;
   reasons: string[];
   thresholds: OffsetReadinessThresholds;
+  saved_offset_sources: Array<[string, "flash" | "configuration" | "unknown"]>;
 }
 
 export type OffsetTable = [[number, number], [number, number], [number, number]];

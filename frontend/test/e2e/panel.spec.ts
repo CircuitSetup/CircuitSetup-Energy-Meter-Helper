@@ -130,7 +130,11 @@ function offsetReadiness(frame: Frame) {
           mean: 0, minimum: 0, maximum: 0, absolute_peak: 0, absolute_spread: 0 } })),
     ];
   });
-  return { stage, ready: true, connection_generation: 2, entities, reasons: [], thresholds: {
+  const saved_offset_sources = [0, 1].map((index) => [
+    board === 0 ? `main_${index + 1}` : `addon${board}_${index + 1}`,
+    index === 0 ? "flash" : "unknown",
+  ]);
+  return { stage, ready: true, connection_generation: 2, entities, saved_offset_sources, reasons: [], thresholds: {
     sample_count: 3, zero_voltage_peak_volts: 1, zero_voltage_spread_volts: 0.5,
     zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
     voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2,
@@ -1185,6 +1189,9 @@ test("journey 3: helper-managed full calibration keeps flash authority when not 
   await expect(page.getByRole("heading", { name: "Offset", exact: true }).first()).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Check measured readiness" }).click();
+  await expect(page.getByText("Saved offsets detected; this run will recalibrate this chip.")).toBeVisible();
+  await expect(page.getByText("Saved-offset status unknown; this run still requires fresh calibration.")).toBeVisible();
+  expect(operations(frames)).not.toContain("calibrate_offset");
   await page.getByRole("button", { name: "Run Stage 1 calibration" }).click();
   await page.getByRole("button", { name: /2\. Active\/reactive power offset/ }).click();
   await page.getByRole("checkbox").check();

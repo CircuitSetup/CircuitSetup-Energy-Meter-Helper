@@ -846,6 +846,13 @@ def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
         workflow, handle, _sessions, api = _workflow()
         calls: list[tuple[Any, ...]] = []
 
+        async def sources(instance_ids: set[str], **kwargs: Any) -> dict[str, str]:
+            assert instance_ids == {"meter_main1", "meter_main2"}
+            assert kwargs == {"offset_stage": 1}
+            return {"meter_main1": "flash", "meter_main2": "unknown"}
+
+        api.async_calibration_sources = sources
+
         async def readiness(
             session: Any, binding: Any, board_index: int, stage: int, **kwargs: Any
         ) -> OffsetReadinessResult:
@@ -860,6 +867,11 @@ def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
         )
         result = await workflow.async_check_offset_readiness(handle.session_id, 0, 1)
         assert result.ready
+        assert result.saved_offset_sources == (
+            ("main_1", "flash"),
+            ("main_2", "unknown"),
+        )
+        assert handle.offset_results == {}
         assert calls == [
             (
                 api,

@@ -138,6 +138,7 @@ const readinessEntities = (board: number, voltage = 0): OffsetReadinessResult["e
   ];
 });
 const readiness = { stage: 1, ready: true, connection_generation: 4,
+  saved_offset_sources: [["main_1", "flash"], ["main_2", "unknown"]],
   entities: readinessEntities(0), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
     zero_voltage_spread_volts: 0.5, zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
     voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2 } };
@@ -655,9 +656,22 @@ describe("HelperApi", () => {
   it("accepts Stage 2 present-voltage evidence for the exact requested board", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
-    hass.responses.check_offset_readiness = { ...readiness, stage: 2, entities: readinessEntities(1, 120) };
+    hass.responses.check_offset_readiness = { ...readiness, stage: 2, entities: readinessEntities(1, 120),
+      saved_offset_sources: [["addon1_1", "configuration"], ["addon1_2", "flash"]] };
 
     await expect(api.checkOffsetReadiness("session-1", 1, 2)).resolves.toMatchObject({ stage: 2, ready: true });
+  });
+
+  it.each([
+    [["main_1", "flash"], ["main_1", "unknown"]],
+    [["addon1_1", "flash"], ["main_2", "unknown"]],
+    [["main_1", "verified"], ["main_2", "unknown"]],
+    [["main_1", "flash"]],
+  ])("rejects invalid per-chip saved-offset source observations: %j", async (...sources) => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    hass.responses.check_offset_readiness = { ...readiness, saved_offset_sources: sources };
+    await expect(api.checkOffsetReadiness("session-1", 0, 1)).rejects.toThrow("check_offset_readiness");
   });
 
   it("accepts backend-coherent Stage 1 voltage-present failure evidence", async () => {

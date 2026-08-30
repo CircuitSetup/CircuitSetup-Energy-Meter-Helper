@@ -37,6 +37,7 @@ export function offsetStep(
   const unavailable = capability?.status !== "available";
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
+  const savedSources = new Map(readiness?.saved_offset_sources ?? []);
 
   return html`
     <section class="step-content offset-step" aria-labelledby="step-heading">
@@ -110,8 +111,14 @@ export function offsetStep(
           ` : nothing}
           <section class="measurement-evidence" aria-label="Per-chip offset progress" aria-live="polite">
             <h3>Per-chip progress</h3>
-            <table><thead><tr><th>Chip</th><th>State</th><th>Backend evidence</th></tr></thead><tbody>
-              ${keys.map((key) => html`<tr><td>${key}</td><td>${tableByGroup.has(key) || stageState === "completed" ? "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
+            <table><thead><tr><th>Chip</th><th>Previously saved offsets</th><th>This run</th><th>Backend evidence</th></tr></thead><tbody>
+              ${keys.map((key) => html`<tr><td>${key}</td>
+                <td>${!readiness ? "Check measured readiness to inspect saved offsets."
+                  : tableByGroup.has(key) || stageState === "completed" ? "Fresh calibration saved during this session."
+                    : savedSources.get(key) === "flash" ? "Saved offsets detected; this run will recalibrate this chip."
+                      : savedSources.get(key) === "configuration" ? "Configuration offsets reported; this run will calibrate this chip."
+                        : "Saved-offset status unknown; this run still requires fresh calibration."}</td>
+                <td>${tableByGroup.has(key) || stageState === "completed" ? "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
                 <td>${tableByGroup.has(key) ? tableByGroup.get(key)!.map(([first, second]) => `${first}/${second}`).join(", ") : "—"}</td></tr>`)}
             </tbody></table>
           </section>

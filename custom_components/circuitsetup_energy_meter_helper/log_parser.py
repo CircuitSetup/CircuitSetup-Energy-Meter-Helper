@@ -189,9 +189,36 @@ class RestoreEvidence:
 
 
 def parse_calibration_sources(
-    lines: tuple[str, ...], expected_instance_ids: set[str]
+    lines: tuple[str, ...],
+    expected_instance_ids: set[str],
+    *,
+    offset_stage: Literal[1, 2] | None = None,
 ) -> dict[str, Literal["flash", "configuration", "unknown"]]:
-    """Detect the currently active gain source from ATM90E32 status logs."""
+    """Read reported calibration sources, not proof of a new run or restart."""
+    if offset_stage not in (None, 1, 2):
+        raise ValueError("offset stage must be 1 or 2")
+    flash_terms: tuple[str, ...] = (
+        "Gain calibration loaded and verified successfully.",
+        "Gain mismatch: using flash values",
+        "Restoring saved gain calibrations to registers",
+    )
+    configuration_terms: tuple[str, ...] = (
+        "No stored gain calibrations found",
+        "Gain calibration is disabled",
+        _GAIN_CONFIG_FALLBACK,
+    )
+    if offset_stage is not None:
+        kind = "Power offset" if offset_stage == 2 else "Offset"
+        flash_terms = (
+            f"Restored {kind.lower()} calibration from memory",
+            f"{kind} mismatch: using flash values",
+        )
+        configuration_terms = (
+            "No stored power offsets found"
+            if offset_stage == 2
+            else "No stored offset calibrations found",
+            "Power & Voltage/Current offset calibration is disabled",
+        )
     sources: dict[str, Literal["flash", "configuration", "unknown"]] = {
         instance_id: "unknown" for instance_id in expected_instance_ids
     }
@@ -199,20 +226,9 @@ def parse_calibration_sources(
         instance_id = _instance(line)
         if instance_id not in sources:
             continue
-        if any(
-            term in line
-            for term in (
-                "Gain calibration loaded and verified successfully.",
-                "Gain mismatch: using flash values",
-                "Restoring saved gain calibrations to registers",
-            )
-        ):
+        if any(term in line for term in flash_terms):
             sources[instance_id] = "flash"
-        elif (
-            "No stored gain calibrations found" in line
-            or "Gain calibration is disabled" in line
-            or _GAIN_CONFIG_FALLBACK in line
-        ):
+        elif any(term in line for term in configuration_terms):
             sources[instance_id] = "configuration"
     return dict(sorted(sources.items()))
 
@@ -511,6 +527,13 @@ def _parse_offset_operation(
             if item.connection_generation == connection_generation
             and item.operation_sequence == operation_sequence
             and item.arrived_at > dispatched_after
+            # The button component also emits operator guidance, not button presses.
+            and not (
+                (button := _BUTTON_RE.search(item.line)) is not None
+                and button["button"].startswith(
+                    ("[CALIBRATION] **NOTE:", "[CALIBRATION] Use ")
+                )
+            )
         ),
         key=lambda item: item.arrived_at,
     )

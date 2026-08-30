@@ -1897,6 +1897,7 @@ describe("CircuitSetup panel", () => {
     const messages: Record<string, unknown>[] = [];
     let runs = 0;
     const readiness = { stage: 1, ready: true, connection_generation: 4,
+      saved_offset_sources: [["main_1", "flash"], ["main_2", "unknown"]],
       entities: offsetReadinessEntities(), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
         zero_voltage_spread_volts: 0.5, zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
         voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2 } };
@@ -1936,6 +1937,10 @@ describe("CircuitSetup panel", () => {
     await tick(); await panel.updateComplete;
     expect(text(panel)).toContain("Measured readiness passed");
     expect(text(panel)).toContain("Zero current peak0.25 A");
+    expect(text(panel)).toContain("Saved offsets detected; this run will recalibrate this chip.");
+    expect(text(panel)).toContain("Saved-offset status unknown; this run still requires fresh calibration.");
+    expect(text(panel)).not.toContain("Saved; restart verification required.");
+    expect(runs).toBe(0);
 
     panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.click();
     await tick(); await panel.updateComplete;

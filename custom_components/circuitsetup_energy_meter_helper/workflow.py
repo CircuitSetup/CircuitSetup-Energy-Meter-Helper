@@ -965,6 +965,19 @@ class EntryWorkflow:
         try:
             self._validate_offset_target(handle, board_index, stage)
             api = self._require_api()
+            group_keys = tuple(
+                group.key
+                for group in handle.binding.groups[
+                    board_index * 2 : board_index * 2 + 2
+                ]
+            )
+            instance_ids = {key.replace("main_", "meter_main") for key in group_keys}
+            source_reader = getattr(api, "async_calibration_sources", None)
+            sources = (
+                await source_reader(instance_ids, offset_stage=stage)
+                if source_reader is not None
+                else {}
+            )
             result = await async_check_offset_readiness(
                 api,
                 handle.binding,
@@ -980,7 +993,13 @@ class EntryWorkflow:
             ):
                 raise WorkflowHandleError("offset readiness evidence is stale")
             self._refresh(handle)
-            return result
+            return replace(
+                result,
+                saved_offset_sources=tuple(
+                    (key, sources.get(key.replace("main_", "meter_main"), "unknown"))
+                    for key in group_keys
+                ),
+            )
         finally:
             self._release_claim(handle, revision)
 
