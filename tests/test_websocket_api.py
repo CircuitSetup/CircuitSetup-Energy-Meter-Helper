@@ -18,7 +18,7 @@ import voluptuous as vol
 from aioesphomeapi import ButtonInfo as ApiButtonInfo
 from aioesphomeapi import NumberInfo as ApiNumberInfo
 from aioesphomeapi import SensorInfo as ApiSensorInfo
-from aiohttp import ClientConnectionError
+from aiohttp import ClientConnectionError, WSMessage, WSMsgType
 from homeassistant.components.hassio import HassIO
 from homeassistant.components.hassio.const import DATA_COMPONENT
 from homeassistant.const import __version__ as HA_VERSION
@@ -456,6 +456,12 @@ class BuilderTransportWebSocket:
 
     async def receive_json(self) -> dict[str, Any] | None:
         return await self.received.get()
+
+    async def receive(self) -> WSMessage:
+        message = await self.receive_json()
+        if message is None:
+            return WSMessage(WSMsgType.CLOSED, None, None)
+        return WSMessage(WSMsgType.TEXT, json.dumps(message), None)
 
     async def close(self) -> None:
         await self.received.put(None)
