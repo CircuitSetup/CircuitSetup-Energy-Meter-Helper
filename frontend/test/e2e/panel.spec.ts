@@ -66,7 +66,7 @@ function inventory(addons: number, scenario: Scenario = undefined) {
     schema_version: 1 } };
 }
 
-function meterConfiguration(addons: number, scenario: Scenario = undefined, mode: GuidedMode = "helper") {
+function meterConfiguration(addons: number, scenario: Scenario = undefined, mode: GuidedMode = "helper", builtinTotals = false) {
   const live = inventory(addons, scenario); const references = Array.from({ length: addons + 1 }, (_, board) => ({
     reference_id: board ? `addon${board}` : "main", label: board ? `Add-on ${board}` : "Main", phase_label: "A/B",
     nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305,
@@ -79,16 +79,21 @@ function meterConfiguration(addons: number, scenario: Scenario = undefined, mode
     custom_label: channel.selected_model_id === null ? "Custom CT" : null,
     burden_output_acknowledged: channel.selected_model_id === null }));
   const singlePhase = scenario === "single-phase-pq";
-  const numericEntityCount = live.channels.length * 2 + 2 * (addons + 1) + (singlePhase ? 24 : 0);
+  const numericEntityCount = live.channels.length * 2 + 2 * (addons + 1) + (singlePhase ? 24 : 0) + (builtinTotals ? 1 : 0);
   return { plan_id: "b".repeat(32), source_sha256: live.source_sha256, topology: { ...topology(addons), voltage_layout: "standard" },
     configuration: { meter: { friendly_name: "Energy meter", electrical_system: singlePhase ? "single_phase_230" : "split_phase_120_240", line_frequency_hz: singlePhase ? 50 : 60,
-      update_interval_s: 5, voltage_layout: addons ? "multi_reference" : "standard", voltage_references: references.map((reference) => singlePhase ? { ...reference, nominal_voltage_v: 230 } : reference) }, channels, aggregates: [],
+      update_interval_s: 5, voltage_layout: addons ? "multi_reference" : "standard", voltage_references: references.map((reference) => singlePhase ? { ...reference, nominal_voltage_v: 230 } : reference) }, channels,
+      aggregates: builtinTotals ? Array.from({ length: addons + 1 }, (_, board) => ({
+        aggregate_id: board ? `addon${board}-total` : "main-total", name: board ? `Add-on ${board} total` : "Main total",
+        role: "custom", channels: channels.filter((channel) => Math.floor((channel.channel - 1) / 6) === board).map((channel) => channel.channel),
+        measurement_method: "direct", parent_id: null, energy_mode: board ? "none" : "consumption", expose_power: false, expose_current: false,
+      })) : [],
       power_quality: Array.from({ length: addons + 1 }, (_value, board) => singlePhase && board === 1), status_fields: Array(addons + 1).fill(false), multi_reference_preparation_acknowledged: false },
     capabilities: { configuration_authoritative: mode !== "runtime", managed_totals: mode === "helper", multi_reference: true,
       semantic_source: mode === "legacy" ? "legacy_inferred" : "helper_managed", reason_codes: mode === "legacy" ? ["electrical_profile_requires_confirmation"] : [] },
     voltage_topology: { references: references.map((reference) => [reference.reference_id, reference.group_keys]), source: "legacy" },
     voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 },
-    ct_catalog: live.catalog, warnings: [], configuration_impact: { enabled_channel_count: live.channels.length, numeric_entity_count: numericEntityCount, text_entity_count: 0, energy_entity_count: 0, approximate_publications_per_second: numericEntityCount / 5 }, channels: live.channels, catalog: live.catalog };
+    ct_catalog: live.catalog, warnings: [], configuration_impact: { enabled_channel_count: live.channels.length, numeric_entity_count: numericEntityCount, text_entity_count: 0, energy_entity_count: builtinTotals ? 1 : 0, approximate_publications_per_second: numericEntityCount / 5 }, channels: live.channels, catalog: live.catalog };
 }
 
 function transaction(state: string, channel: number, options: { evidence?: string[]; progress?: string[];
@@ -176,7 +181,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
   firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean; scenario?: Scenario;
-  slowClearCalibration?: boolean; guidedMode?: GuidedMode; activeWork?: "normal" | "handoff" | "safety" | "ready"; oneDevice?: boolean } = {}) {
+  slowClearCalibration?: boolean; guidedMode?: GuidedMode; activeWork?: "normal" | "handoff" | "safety" | "ready"; oneDevice?: boolean; builtinTotals?: boolean } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
@@ -270,7 +275,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           freshPlanGeneration += 1;
           if (options.freshSourceChanged) activeSourceSha256 = "f".repeat(64);
         }
-        const live = meterConfiguration(addons, options.scenario, options.guidedMode);
+        const live = meterConfiguration(addons, options.scenario, options.guidedMode, options.builtinTotals);
         result = { ...live, plan_id: activePlan ?? "b".repeat(32), source_sha256: activeSourceSha256,
           configuration: refreshingConsumedPlan && options.freshSourceChanged
             ? { ...live.configuration, meter: { ...live.configuration.meter, friendly_name: "External meter" } }
@@ -790,7 +795,7 @@ test("verified configuration continues through calibration and finishes only fro
 });
 
 test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidirectional main service", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { slowClearCalibration: true });
+  const frames = await mockHomeAssistant(page, { slowClearCalibration: true, builtinTotals: true });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
@@ -799,8 +804,10 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.locator('[data-feature="status_fields"][data-board="0"]').check();
   await page.getByLabel("Reporting interval").selectOption("10");
   await page.locator('[data-action="continue-meter-settings"]').click();
+  await expect(page.getByLabel("CT1 role")).toHaveValue("branch");
   await page.getByLabel("CT1 role").selectOption("grid");
   await page.getByLabel("CT2 role").selectOption("grid");
+  await expect(page.getByLabel("CT3 role")).toHaveValue("branch");
   await expect(page.getByRole("region", { name: "Automatic totals", exact: true }).getByRole("row", {
     name: "Mains CT1 + CT2 Power · Current (internal) · Energy", exact: true,
   })).toBeVisible();
@@ -819,7 +826,10 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
       { channel: 5, enabled: true, name: "CT5", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
       { channel: 6, enabled: true, name: "CT6", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
     ],
-    aggregates: [{ aggregate_id: "auto-mains", name: "Mains", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: false }],
+    aggregates: [
+      { aggregate_id: "main-total", name: "Main total", role: "custom", channels: [1, 2, 3, 4, 5, 6], measurement_method: "direct", parent_id: null, energy_mode: "consumption", expose_power: false, expose_current: false },
+      { aggregate_id: "auto-mains", name: "Mains", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: false },
+    ],
     power_quality: [false], status_fields: [true], multi_reference_preparation_acknowledged: false,
   });
   await page.getByRole("button", { name: "Save and validate configuration" }).click();

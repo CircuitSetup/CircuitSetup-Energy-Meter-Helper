@@ -94,7 +94,7 @@ export function ctInventoryStep(
                   @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
                 ${circuit ? html`<label role="cell"><span class="mobile-label">Circuit type</span><select aria-label=${`CT${channel.channel} role`} .value=${circuit.role} ?disabled=${!circuit.enabled}
                   @change=${(event: Event) => patchChannel(channel.channel, { role: (event.target as HTMLSelectElement).value as ChannelSettings["role"] })}>
-                  ${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role}>${roleLabel(role)}</option>`)}</select></label>` : html`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
+                  ${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role} ?selected=${role === circuit.role}>${roleLabel(role)}</option>`)}</select></label>` : html`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
                 <label role="cell"><span class="mobile-label">CT model / rating</span><select aria-label=${`CT${channel.channel} model`} .value=${draft.modelId} ?disabled=${labelOnly || draft.preserveExistingGain}
                   @change=${(event: Event) => {
                     const modelId = (event.target as HTMLSelectElement).value;
@@ -205,7 +205,19 @@ export function reconcileSplitPhaseAggregates(
   const managed = configuration.aggregates.filter(isManaged);
   const preserved = configuration.aggregates.filter((aggregate) => !isManaged(aggregate));
   const preservedIds = new Set(preserved.map((aggregate) => aggregate.aggregate_id));
-  const claimed = new Set(preserved.flatMap((aggregate) => aggregate.channels));
+  // Whole-board/meter summaries overlap circuits; output visibility does not claim CTs.
+  const isDefaultTotal = (aggregate: CircuitAggregate) => {
+    const match = /^(main|addon([1-6])|meter)-total$/.exec(aggregate.aggregate_id);
+    if (!match || aggregate.role !== "custom" || aggregate.measurement_method !== "direct"
+      || !["none", "consumption"].includes(aggregate.energy_mode)) return false;
+    const board = Number(match[2] ?? 0);
+    const name = match[1] === "meter" ? "Meter total" : board === 0 ? "Main total" : `Add-on ${board} total`;
+    const channels = configuration.channels.filter((channel) => channel.enabled
+      && (match[1] === "meter" || Math.floor((channel.channel - 1) / 6) === board)).map((channel) => channel.channel);
+    return aggregate.name === name && aggregate.channels.length === channels.length
+      && aggregate.channels.every((channel, index) => channel === channels[index]);
+  };
+  const claimed = new Set(preserved.filter((aggregate) => !isDefaultTotal(aggregate)).flatMap((aggregate) => aggregate.channels));
   const rebuilt = ["split_phase_120_240", "custom"].includes(configuration.meter.electrical_system)
     ? (Object.keys(automaticAggregates) as Array<keyof typeof automaticAggregates>).flatMap((role) => {
       const channels = configuration.channels.filter((channel) => channel.enabled && channel.role === role && !claimed.has(channel.channel)).map((channel) => channel.channel);

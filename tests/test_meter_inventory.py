@@ -352,7 +352,7 @@ def test_default_totals_are_grouped_by_board_and_kwh_power_id() -> None:
 
 
 def test_helper_and_official_totals_populate_together_with_global_visibility() -> None:
-    """Owned totals must not suppress board or global package totals."""
+    """Only explicitly hidden outputs disappear when owned and official totals coexist."""
     content = _document(contract=True, addon_count=1) + _helper_mains_total() + (
         "  - id: totalAmps\n"
         "  - id: totalWatts\n"
@@ -371,7 +371,7 @@ def test_helper_and_official_totals_populate_together_with_global_visibility() -
     assert aggregates["meter-total"] == CircuitAggregate(
         "meter-total", "Meter total", CircuitRole.CUSTOM,
         tuple(range(1, 13)), MeasurementMethod.DIRECT,
-        None, EnergyMode.CONSUMPTION, True, True,
+        None, EnergyMode.NONE, True, True,
     )
     for aggregate_id in ("main-total", "addon1-total"):
         assert aggregates[aggregate_id].expose_power is False

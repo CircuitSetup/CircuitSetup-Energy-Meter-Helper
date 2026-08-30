@@ -23,6 +23,7 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
     build_meter_configuration_mutation,
+    expected_meter_entity_evidence,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     CircuitAggregate,
@@ -1886,6 +1887,133 @@ def test_rejected_custom_totals_stay_visible_during_unrelated_aggregate_edit(
     assert "id: csemh_load_power" in plan.proposed_content
 
 
+@pytest.mark.parametrize("label", ("Custom", ""))
+@pytest.mark.parametrize(("expression", "filters"), (
+    pytest.param(
+        "id(ct1Watts).state + id(ct2Watts).state",
+        "    filters:\n      - multiply: -1\n", id="sign-filter",
+    ),
+    pytest.param(
+        "id(ct1Watts).state + id(ct2Watts).state",
+        "    filters:\n      - multiply: 2\n", id="scaling-filter",
+    ),
+    pytest.param(
+        "id(ct1Watts).state + id(ct1Watts).state", "", id="repeated-ct",
+    ),
+    pytest.param(
+        "id(totalWattsMain).state + id(ct1Watts).state", "", id="overlapping-board",
+    ),
+))
+def test_filtered_or_weighted_legacy_totals_remain_user_owned(
+    label: str, expression: str, filters: str,
+) -> None:
+    """An unrelated edit must not replace calculations the aggregate model loses."""
+    snapshot = _default_totals_snapshot()
+    sensor_id = f"total{label}Watts"
+    custom = (
+        "  - platform: template\n"
+        f"    id: {sensor_id}\n"
+        "    name: Custom power\n"
+        f"    lambda: return {expression};\n"
+        "    unit_of_measurement: W\n"
+        "    device_class: power\n"
+        + filters
+    )
+    content = snapshot.content.replace("sensor:\n", "sensor:\n" + custom, 1).replace(
+        "power_id: totalWattsMain", f"power_id: {sensor_id}",
+    )
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(current.configuration, aggregates=(*current.configuration.aggregates,
+        CircuitAggregate("load", "Load", CircuitRole.BRANCH, (3,),
+                         MeasurementMethod.DIRECT, None, EnergyMode.NONE),
+    ))
+
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+    assert custom in plan.proposed_content
+    assert f"!extend {sensor_id}\n" not in plan.proposed_content
+    assert "!extend totalEnergyDaily\n" not in plan.proposed_content
+    assert {item.aggregate_id for item in current.configuration.aggregates} == {"main-total"}
+    assert "id: csemh_load_power" in plan.proposed_content
+
+
+@pytest.mark.parametrize("with_storage", (False, True))
+@pytest.mark.parametrize("source", ("board", "generic", "template"))
+def test_replaced_totals_do_not_return_after_reload_or_unrelated_edit(
+    source: str, with_storage: bool,
+) -> None:
+    """Owned internal overrides must also apply to inventory and reconnect evidence."""
+    snapshot = (
+        _contract_snapshot(generic_totals=True)
+        if source == "generic"
+        else _default_totals_snapshot()
+    )
+    if source == "template":
+        content = snapshot.content.replace(
+            "sensor:\n",
+            "sensor:\n"
+            "  - platform: template\n"
+            "    id: totalCustomWatts\n"
+            "    name: Custom Power\n"
+            "    lambda: return id(ct1Watts).state + id(ct2Watts).state;\n"
+            "    unit_of_measurement: W\n"
+            "    device_class: power\n",
+        ).replace("power_id: totalWattsMain", "power_id: totalCustomWatts")
+        snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        aggregates=(CircuitAggregate(
+            "mains", "Mains", CircuitRole.GRID, (1, 2),
+            MeasurementMethod.TWO_CT_SUM, None, EnergyMode.BIDIRECTIONAL,
+        ),),
+    )
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    installed = replace(
+        snapshot, content=plan.proposed_content,
+        sha256=sha256(plan.proposed_content.encode()).hexdigest(),
+    )
+    stored = StoredMeterConfiguration(
+        installed.sha256, requested.meter, requested.channels, requested.aggregates,
+        requested.power_quality, requested.status_fields,
+    ) if with_storage else None
+
+    recovered = _inventory(installed, topology, stored=stored)
+
+    assert recovered.configuration.aggregates == requested.aggregates
+    renamed = replace(
+        recovered.configuration,
+        channels=tuple(
+            replace(channel, name="Renamed CT") if channel.channel == 3 else channel
+            for channel in recovered.configuration.channels
+        ),
+    )
+    edited = build_meter_configuration_mutation(installed, topology, recovered, renamed)
+    owned = ESPHomeConfigDocument.parse(installed.content).managed_blocks["aggregates"].content
+    assert ESPHomeConfigDocument.parse(edited.proposed_content).managed_blocks["aggregates"].content == owned
+    evidence = expected_meter_entity_evidence(renamed, topology)
+    assert {name for _object_id, name in evidence.aggregate_sensor_entities} == {
+        f"{requested.meter.friendly_name} Mains {suffix}"
+        for suffix in (
+            "Power", "Import Power", "Import Energy",
+            "Return to Grid Power", "Return to Grid Energy",
+        )
+    }
+    updated = replace(requested, aggregates=(replace(requested.aggregates[0], name="Updated Mains"),))
+    rewritten = build_meter_configuration_mutation(installed, topology, recovered, updated)
+    assert all(
+        line in rewritten.proposed_content for line in owned.splitlines()
+        if "!extend total" in line
+    )
+    assert _inventory(replace(
+        installed, content=rewritten.proposed_content,
+        sha256=sha256(rewritten.proposed_content.encode()).hexdigest(),
+    ), topology).configuration.aggregates == updated.aggregates
+
+
 def test_aggregate_preview_renders_bidirectional_grid_and_hides_contract_totals() -> None:
     """Contract-2 totals are internal before deterministic grid entities appear."""
     snapshot = _contract_snapshot(generic_totals=True)
@@ -2020,11 +2148,7 @@ def test_indentless_contract_sensor_supports_voltage_aggregate_preview_and_readb
     configured = _inventory(configured_snapshot, topology, stored=stored)
 
     assert configured.configuration.meter == requested.meter
-    assert configured.configuration.aggregates[0] == requested.aggregates[0]
-    assert [item.aggregate_id for item in configured.configuration.aggregates] == [
-        "load",
-        "meter-total",
-    ]
+    assert configured.configuration.aggregates == requested.aggregates
     removed = build_meter_configuration_mutation(
         configured_snapshot,
         topology,
@@ -2241,6 +2365,50 @@ def test_rendered_aggregate_metadata_is_lossless_without_storage(
         content = installed.content.replace(original, tampered, 1)
         corrupted = replace(installed, content=content, sha256=sha256(content.encode()).hexdigest())
         assert "aggregate_semantics_unreadable" in _inventory(corrupted, topology).warnings
+
+
+@pytest.mark.parametrize("with_metadata", (False, True))
+@pytest.mark.parametrize("energy_mode", (EnergyMode.NONE, EnergyMode.CONSUMPTION, EnergyMode.BIDIRECTIONAL))
+def test_directional_words_in_aggregate_ids_round_trip(
+    with_metadata: bool, energy_mode: EnergyMode,
+) -> None:
+    """Import/export primary totals are distinct from generated directional sensors."""
+    snapshot = _contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    aggregates = (
+        CircuitAggregate(
+            "grid", "Grid", CircuitRole.BRANCH, (1,),
+            MeasurementMethod.DIRECT, None, EnergyMode.NONE,
+            expose_power=not with_metadata,
+        ),
+        CircuitAggregate(
+            "grid-import", "Import circuit", CircuitRole.BRANCH, (2,),
+            MeasurementMethod.DIRECT, None, energy_mode,
+        ),
+        CircuitAggregate(
+            "grid-export", "Export circuit", CircuitRole.BRANCH, (3,),
+            MeasurementMethod.DIRECT, None, energy_mode,
+        ),
+        CircuitAggregate(
+            "mains", "Mains", CircuitRole.BRANCH, (4,),
+            MeasurementMethod.DIRECT, None, EnergyMode.BIDIRECTIONAL,
+        ),
+    )
+    requested = replace(current.configuration, aggregates=aggregates)
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    content = "".join(
+        line for line in plan.proposed_content.splitlines(keepends=True)
+        if with_metadata or "# csemh-aggregate:" not in line
+    )
+    installed = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    recovered = _inventory(installed, topology)
+
+    assert "aggregate_semantics_unreadable" not in recovered.warnings
+    assert {item.aggregate_id: item for item in recovered.configuration.aggregates} == {
+        item.aggregate_id: item for item in aggregates
+    }
 
 
 @pytest.mark.parametrize(

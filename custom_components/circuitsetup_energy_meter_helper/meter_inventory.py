@@ -667,10 +667,17 @@ def _detected_aggregates(
     block = document.managed_blocks.get("aggregates")
     detected: tuple[CircuitAggregate, ...] = ()
     warnings: tuple[str, ...] = ()
+    hidden_ids: frozenset[str] = frozenset()
     if block is not None:
         try:
             metadata = _aggregate_metadata(block.content)
             decoded = _decode_aggregate_block(document, channels, metadata or ())
+            hidden_ids = frozenset(
+                _plain_sensor_scalar(item["id"].removeprefix("!extend "))
+                for item in _managed_sensor_items(block.content, document.sensor_item_indent)
+                if item.get("id", "").startswith("!extend ")
+                and item.get("internal") == "true"
+            )
             if metadata is not None:
                 if not _metadata_matches_rendered(metadata, decoded):
                     raise ValueError("aggregate metadata does not match rendered sensors")
@@ -686,14 +693,17 @@ def _detected_aggregates(
         detected = stored
 
     explicit_calculations = _explicit_total_calculation_ids(document)
-    total_ids = _generic_total_ids(document) - explicit_calculations
+    total_ids = _generic_total_ids(document) - explicit_calculations - hidden_ids
     enabled = tuple(channel.channel for channel in channels if channel.enabled)
     default_groups = _default_total_groups(document, channels)
     if (total_ids or default_groups) and not enabled:
         return (), ("builtin_total_semantics_unreadable",)
-    energy_power_ids = _default_daily_energy_power_ids(document)
+    energy_power_ids = (
+        frozenset() if "totalEnergyDaily" in hidden_ids
+        else _default_daily_energy_power_ids(document)
+    )
     legacy, parent_links = _legacy_aggregates(
-        document, channels, default_groups, energy_power_ids
+        document, channels, default_groups, energy_power_ids, hidden_ids
     )
     defaults: list[CircuitAggregate] = []
     expose_power = "totalWatts" in total_ids
@@ -734,6 +744,9 @@ def _detected_aggregates(
             False,
         )
         for group_id, label, group_channels, power_id in default_groups
+        if power_id not in hidden_ids
+        or power_id.replace("Watts", "Amps") not in hidden_ids
+        or power_id in energy_power_ids
     )
     existing_ids = {aggregate.aggregate_id for aggregate in detected}
     inferred = (*legacy, *(
@@ -815,6 +828,15 @@ def _decode_aggregate_block(
 ) -> tuple[CircuitAggregate, ...]:
     block = document.managed_blocks["aggregates"]
     items = _managed_sensor_items(block.content, document.sensor_item_indent)
+    by_id = {item.get("id", ""): item for item in items}
+    directional_ids = {
+        f"{sensor_id[:-6]}_{direction}_power"
+        for sensor_id in by_id
+        if sensor_id.startswith("csemh_") and sensor_id.endswith("_power")
+        for direction, sign in (("import", ""), ("export", "-"))
+        if by_id.get(f"{sensor_id[:-6]}_{direction}_power", {}).get("lambda")
+        == f"return std::max(0.0f, {sign}id({sensor_id}).state);"
+    }
     channel_roles = {channel.channel: channel.role for channel in channels}
     names = {aggregate.aggregate_id.replace("_", "-"): aggregate.name for aggregate in metadata}
     aggregates: list[CircuitAggregate] = []
@@ -823,7 +845,7 @@ def _decode_aggregate_block(
         if not sensor_id.startswith("csemh_") or not sensor_id.endswith("_power"):
             continue
         base = sensor_id[6:-6]
-        if base.endswith(("_import", "_export")):
+        if sensor_id in directional_ids:
             continue
         if not re.fullmatch(r"[a-z0-9_]+", base):
             raise ValueError("aggregate sensor ID is invalid")
@@ -835,7 +857,14 @@ def _decode_aggregate_block(
         if role is None or role is CircuitRole.UNUSED:
             role = CircuitRole.CUSTOM
         prefix = f"csemh_{base}_"
-        related = {candidate.get("id", ""): candidate for candidate in items if candidate.get("id", "").startswith(prefix)}
+        suffixes = ["power", "current", "energy"]
+        for direction in ("import", "export"):
+            if f"{prefix}{direction}_power" in directional_ids:
+                suffixes.extend((f"{direction}_power", f"{direction}_energy"))
+        related = {
+            candidate_id: by_id[candidate_id] for suffix in suffixes
+            if (candidate_id := f"{prefix}{suffix}") in by_id
+        }
         name = _aggregate_name(item, related, names.get(base.replace("_", "-")))
         bidirectional = all(
             f"{prefix}{suffix}" in related
@@ -1122,6 +1151,7 @@ def _legacy_template_total_items(
             != ("W" if kind == "Watts" else "A")
             or _plain_sensor_scalar(item.get("device_class", ""))
             != ("power" if kind == "Watts" else "current")
+            or "filters" in item
             or _sum_references(item.get("lambda", "")) is None
         ):
             continue
@@ -1139,6 +1169,7 @@ def _legacy_aggregates(
     channels: tuple[ChannelSettings, ...],
     default_groups: tuple[tuple[str, str, tuple[int, ...], str], ...],
     energy_power_ids: frozenset[str],
+    hidden_ids: frozenset[str] = frozenset(),
 ) -> tuple[tuple[CircuitAggregate, ...], dict[str, str]]:
     items = _legacy_template_total_items(document)
     if not items:
@@ -1168,6 +1199,11 @@ def _legacy_aggregates(
     for label, outputs in grouped.items():
         if _legacy_aggregate_id(label) in ambiguous_ids:
             continue
+        if all(
+            sensor_id in hidden_ids and sensor_id not in energy_power_ids
+            for sensor_id, _item in outputs.values()
+        ):
+            continue
         channels_by_output: list[tuple[int, ...]] = []
         dependencies_by_output: list[set[str]] = []
         for kind, (_sensor_id, item) in outputs.items():
@@ -1188,9 +1224,10 @@ def _legacy_aggregates(
                     break
             if not members:
                 break
-            channels_by_output.append(
-                tuple(dict.fromkeys(channel for member in members for channel in member))
-            )
+            output_channels = tuple(channel for member in members for channel in member)
+            if len(output_channels) != len(set(output_channels)):
+                break
+            channels_by_output.append(output_channels)
             dependencies_by_output.append(dependencies)
         if len(channels_by_output) != len(outputs):
             continue
@@ -1214,8 +1251,10 @@ def _legacy_aggregates(
                 if power is not None and power[0] in energy_power_ids
                 else EnergyMode.NONE,
                 power is not None
+                and power[0] not in hidden_ids
                 and _plain_sensor_scalar(power[1].get("internal", "")) != "true",
                 current is not None
+                and current[0] not in hidden_ids
                 and _plain_sensor_scalar(current[1].get("internal", "")) != "true",
             )
         )

@@ -8,11 +8,11 @@ import { buildInstallStep } from "../src/components/build-install-step";
 import { summaryOutcome, summaryStep } from "../src/components/summary-step";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
-import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, draftsAreValid, recommendedReportingMultiplier, type CtDraft } from "../src/components/ct-inventory-step";
+import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, draftsAreValid, recommendedReportingMultiplier, reconcileSplitPhaseAggregates, type CtDraft } from "../src/components/ct-inventory-step";
 import { meterSettingsStep } from "../src/components/meter-settings-step";
 import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
-import type { CtInventory, MeterConfigurationRequest, MeterSettingsDraft, MeterTopology } from "../src/types";
+import type { CircuitAggregate, CtInventory, MeterConfigurationRequest, MeterSettingsDraft, MeterTopology } from "../src/types";
 import { activeCalibrationHandoffScenario, activeConfigurationTransactionScenario, device, legacyEditableScenario, meterResponse, newInstallScenario, runtimeOnlyScenario } from "./workflow-scenarios";
 
 const tick = async () => {
@@ -569,6 +569,56 @@ describe("CircuitSetup panel", () => {
     expect(roleOptions).toContain("Mains");
     expect(roleOptions).toContain("Branch circuit");
     expect(root.querySelector('[aria-label="Preset channels"]')).toBeNull();
+  });
+
+  it.each([
+    ["grid", "auto-mains", [1, 2], "bidirectional"],
+    ["solar", "auto-solar", [7, 8], "generation"],
+    ["subpanel", "auto-subpanel", [1, 8], "consumption"],
+    ["two_pole", "auto-two-pole", [7, 8], "consumption"],
+  ] as const)("pairs %s CTs without treating board and meter totals as manual claims", (role, aggregateId, pair, energyMode) => {
+    const configuration = meterResponse().configuration;
+    configuration.channels = Array.from({ length: 12 }, (_, index) => ({
+      ...configuration.channels[index % 6]!, channel: index + 1, name: `CT${index + 1}`,
+      enabled: index % 6 !== 5,
+      role: index % 6 === 5 ? "unused" : pair.some((channel) => channel === index + 1) ? role : "branch",
+    }));
+    configuration.meter.voltage_references[0]!.group_keys.push("addon1_1", "addon1_2");
+    configuration.power_quality.push(false);
+    configuration.status_fields.push(false);
+    const defaults: CircuitAggregate[] = [
+      { aggregate_id: "main-total", name: "Main total", role: "custom", channels: [1, 2, 3, 4, 5], measurement_method: "direct", parent_id: "meter-total", energy_mode: "consumption", expose_power: false, expose_current: false },
+      { aggregate_id: "addon1-total", name: "Add-on 1 total", role: "custom", channels: [7, 8, 9, 10, 11], measurement_method: "direct", parent_id: "meter-total", energy_mode: "none", expose_power: false, expose_current: false },
+      { aggregate_id: "meter-total", name: "Meter total", role: "custom", channels: [1, 2, 3, 4, 5, 7, 8, 9, 10, 11], measurement_method: "direct", parent_id: null, energy_mode: "none", expose_power: true, expose_current: true },
+    ];
+    configuration.aggregates = defaults;
+
+    const result = reconcileSplitPhaseAggregates(configuration);
+
+    expect(result.configuration.aggregates).toEqual([...defaults, expect.objectContaining({
+      aggregate_id: aggregateId, role, channels: [...pair], energy_mode: energyMode, measurement_method: "two_ct_sum",
+    })]);
+    expect(circuitConfigurationIsValid(result.configuration, 12)).toBe(true);
+    expect(reconcileSplitPhaseAggregates(result.configuration, result.managed).changed).toBe(false);
+    const visible = { ...result.configuration, aggregates: result.configuration.aggregates.map((aggregate) =>
+      defaults.includes(aggregate) ? { ...aggregate, expose_power: true, expose_current: true } : aggregate) };
+    expect(reconcileSplitPhaseAggregates(visible, result.managed).configuration.aggregates).toEqual(visible.aggregates);
+  });
+
+  it.each([
+    { aggregate_id: "manual-total" },
+    { name: "Manual service" },
+    { role: "grid" },
+    { energy_mode: "bidirectional" },
+    { channels: [1, 2] },
+  ] satisfies Partial<CircuitAggregate>[])("keeps customized default totals as manual channel claims: %j", (patch) => {
+    const configuration = meterResponse().configuration;
+    configuration.channels = configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel);
+    const manual: CircuitAggregate = { aggregate_id: "main-total", name: "Main total", role: "custom", channels: [1, 2, 3, 4, 5, 6],
+      measurement_method: "direct", parent_id: null, energy_mode: "consumption", expose_power: false, expose_current: false, ...patch };
+    configuration.aggregates = [manual];
+
+    expect(reconcileSplitPhaseAggregates(configuration).configuration.aggregates).toEqual([manual]);
   });
 
   it("reconciles split-phase role pairs and derives nominal voltage without overwriting other meter settings", async () => {

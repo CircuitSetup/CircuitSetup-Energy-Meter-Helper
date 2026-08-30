@@ -601,7 +601,8 @@ def _official_total_ids(
     )
     total_ids.extend(_legacy_template_total_ids(document, channels))
     official_power_ids = {
-        total_id for total_id in total_ids if total_id.startswith("totalWatts")
+        total_id for total_id in total_ids
+        if total_id.startswith("totalWatts") or total_id.endswith("Watts")
     }
     if (
         "totalEnergyDaily" in explicit_ids
