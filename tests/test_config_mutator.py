@@ -2008,18 +2008,27 @@ def test_aggregate_energy_signs_and_one_ct_power_multiplier_are_semantic_only() 
     assert "id(ct1Amps).state * 2.0" not in block
 
 
-def test_aggregate_preview_requires_contract_totals_and_never_invents_default_total() -> None:
-    """Legacy sources refuse replacement totals; an empty request adds no block."""
+def test_aggregate_preview_upgrades_legacy_contract_and_never_invents_default_total() -> None:
+    """An explicit aggregate edit upgrades authoritative legacy source in one review."""
     aggregate = CircuitAggregate(
         "load", "Load", CircuitRole.BRANCH, (1,),
         MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION,
     )
     legacy = _snapshot()
-    with pytest.raises(ConfigMutationError, match="managed totals"):
-        build_meter_configuration_mutation(
-            legacy, _topology(), _inventory(legacy, _topology()),
-            _aggregate_request(_inventory(legacy, _topology()), aggregate),
-        )
+    migrated = build_meter_configuration_mutation(
+        legacy, _topology(), _inventory(legacy, _topology()),
+        _aggregate_request(_inventory(legacy, _topology()), aggregate),
+    )
+    assert 'csemh_config_contract: "2"' in migrated.proposed_content
+    assert "CircuitSetup Energy Meter Helper: aggregates v1" in migrated.proposed_content
+    assert "csemh_load_power" in migrated.proposed_content
+    assert "csemh_config_contract" in migrated.redacted_diff
+    upgraded = replace(
+        legacy,
+        content=migrated.proposed_content,
+        sha256=sha256(migrated.proposed_content.encode()).hexdigest(),
+    )
+    assert _inventory(upgraded, _topology()).capabilities.managed_totals
 
     snapshot = _contract_snapshot()
     current = _inventory(snapshot, _topology())

@@ -3606,7 +3606,8 @@ class CircuitSetupPanel extends i$2 {
   }
   showInventory(inventory) {
     this.initializeInventory(inventory);
-    this.navigate("ct");
+    const routes = workflowRoutes(this.workflowContext());
+    this.navigate(routes.includes("ct") ? "ct" : this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === null ? "legacy-review" : "calibration-plan");
   }
   acceptInstalledDrafts() {
     if (!this.inventory) return;
@@ -4136,7 +4137,7 @@ class CircuitSetupPanel extends i$2 {
   }
   updateCircuitConfiguration(configuration, changed = true) {
     if (!this.meterConfiguration) return;
-    const reconciliation = changed && (this.configurationMode === "helper_managed" || this.legacyCircuitSemanticsConfirmed) && this.meterConfiguration.capabilities.managed_totals ? reconcileSplitPhaseAggregates(configuration, this.managedAutomaticAggregates.length ? this.managedAutomaticAggregates : null) : null;
+    const reconciliation = changed && (this.configurationMode === "helper_managed" || this.legacyCircuitSemanticsConfirmed) && this.configurationMode !== "runtime_only" && this.meterConfiguration.capabilities.configuration_authoritative ? reconcileSplitPhaseAggregates(configuration, this.managedAutomaticAggregates.length ? this.managedAutomaticAggregates : null) : null;
     this.managedAutomaticAggregates = reconciliation?.managed ?? [];
     this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation?.configuration ?? configuration };
     this.canonicalConfigurationChanged ||= changed || reconciliation?.changed === true;
@@ -5092,7 +5093,7 @@ class CircuitSetupPanel extends i$2 {
         this.labelOnly ? null : this.meterConfiguration?.configuration ?? null,
         (configuration) => this.updateCircuitConfiguration(configuration),
         (channel) => this.disableCircuit(channel),
-        this.meterConfiguration?.capabilities.managed_totals ?? true,
+        this.configurationMode !== "runtime_only" && (this.meterConfiguration?.capabilities.configuration_authoritative ?? true),
         this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "",
         this.configurationMode === "legacy_editable"
       )}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? b`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event) => {

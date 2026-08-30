@@ -108,16 +108,15 @@ def build_meter_configuration_mutation(
     voltage_references_changed = (
         requested.meter.voltage_references != previous.meter.voltage_references
     )
+    aggregates_changed = requested.aggregates != previous.aggregates
+    managed_totals_upgrade_required = (
+        aggregates_changed and not current.capabilities.managed_totals
+    )
     if (
         len(requested.meter.voltage_references) > 1
         and not current.capabilities.multi_reference
     ):
         raise ConfigMutationError("multi-reference capability is unavailable")
-    if (
-        requested.aggregates != current.configuration.aggregates
-        and not current.capabilities.managed_totals
-    ):
-        raise ConfigMutationError("managed totals capability is unavailable")
     if (
         replace(
             previous,
@@ -220,7 +219,17 @@ def build_meter_configuration_mutation(
                     requested.meter.voltage_references, topology, document
                 ),
             )
-    if requested.aggregates != previous.aggregates:
+    if aggregates_changed:
+        if managed_totals_upgrade_required:
+            document = ESPHomeConfigDocument.parse(content)
+            scalar = document.substitutions.get("csemh_config_contract")
+            contract_change = SubstitutionChange(
+                "csemh_config_contract", scalar.value if scalar else None, "2"
+            )
+            changes.append(contract_change)
+            content = _apply_changes(
+                document, [contract_change], {"csemh_config_contract": "2"}
+            )
         content = replace_managed_block(
             content,
             "aggregates",
@@ -246,7 +255,7 @@ def build_meter_configuration_mutation(
                 for reference in requested.meter.voltage_references
             ),
         )
-    if requested.aggregates != previous.aggregates:
+    if aggregates_changed:
         rendered_blocks["Aggregate"] = _managed_block_diff(
             source_document.managed_blocks.get("aggregates"),
             proposed_document.managed_blocks.get("aggregates")
@@ -282,7 +291,7 @@ def _grouped_review_diff(
             continue
         if value.startswith(("friendly_name:", "update_time:", "electric_freq:")):
             group = "Meter"
-        elif value.startswith(("package.", "power_quality_", "status_fields_")):
+        elif value.startswith(("package.", "power_quality_", "status_fields_", "csemh_config_contract:")):
             group = "Package"
         elif "calibrated voltage gains" in value:
             group = "Voltage reference"

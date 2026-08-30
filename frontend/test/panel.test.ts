@@ -1433,6 +1433,48 @@ describe("CircuitSetup panel", () => {
     expect(operations.some((operation) => operation.startsWith("preview_") || operation === "set_ha_labels" || operation === "start_session")).toBe(false);
   });
 
+  it("routes legacy inventory through review before exposing editable settings", async () => {
+    const legacy = structuredClone(legacyEditableScenario.meterConfiguration!);
+    const panel = await mount(makeHass({
+      setup_status: legacyEditableScenario.setup,
+      get_meter_configuration: legacy,
+    }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(value: typeof legacy): void;
+    };
+
+    state.setMeterConfiguration(legacy);
+    panel.showInventory(legacy as unknown as CtInventory);
+    await panel.updateComplete;
+
+    expect(state.step).toBe("legacy-review");
+    expect(state.error).toBe("");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Review Existing Setup");
+    expect(text(panel)).not.toContain("That workflow step is not available for the selected meter.");
+  });
+
+  it("allows aggregate and voltage assignment edits during an explicit legacy migration", async () => {
+    const legacy = structuredClone(legacyEditableScenario.meterConfiguration!);
+    const panel = await mount(makeHass({
+      setup_status: legacyEditableScenario.setup,
+      get_meter_configuration: legacy,
+    }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(value: typeof legacy): void;
+    };
+
+    state.setMeterConfiguration(legacy);
+    state.existingConfigurationChoice = "manage_with_helper";
+    panel.showState("meter");
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector('[aria-label="main_1 voltage reference"]')).not.toBeNull();
+
+    panel.showInventory(legacy as unknown as CtInventory);
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector('[data-action="add-aggregate"]')).not.toBeNull();
+    expect(text(panel)).not.toContain("Aggregate editing unavailable");
+  });
+
   it("routes helper-managed configuration directly to Meter Settings", async () => {
     const configured = { ...device, configuration: "meter.yaml", importable: false };
     const helper = meterResponse();
