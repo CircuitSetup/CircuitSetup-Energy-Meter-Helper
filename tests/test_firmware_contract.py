@@ -78,6 +78,47 @@ def _calibration_package(prefix: str, first_channel: int) -> str:
     return "button:\n" + "".join(groups[::2]) + "number:\n" + "".join(groups[1::2])
 
 
+def _sensor_package(board: int) -> str:
+    first = board * 6 + 1
+    suffix = "Main" if board == 0 else f"AddOn{board}"
+    amps = " + ".join(f"id(ct{channel}Amps).state" for channel in range(first, first + 6))
+    watts = " + ".join(f"id(ct{channel}Watts).state" for channel in range(first, first + 6))
+    return (
+        "sensor:\n"
+        "  - platform: template\n"
+        f"    id: totalAmps{suffix}\n"
+        f"    lambda: return {amps} ;\n"
+        "  - platform: template\n"
+        f"    id: totalWatts{suffix}\n"
+        f"    lambda: return {watts} ;\n"
+    )
+
+
+def _root_totals(addon_count: int) -> str:
+    suffixes = ["Main"] + [f"AddOn{board}" for board in range(1, addon_count + 1)]
+    amps = " + ".join(f"id(totalAmps{suffix}).state" for suffix in suffixes)
+    watts = " + ".join(f"id(totalWatts{suffix}).state" for suffix in suffixes)
+    power_id = "totalWatts" if addon_count else "totalWattsMain"
+    totals = ""
+    if addon_count:
+        totals = (
+            "sensor:\n"
+            "- platform: template\n"
+            "  id: totalAmps\n"
+            f"  lambda: return {amps} ;\n"
+            "- platform: template\n"
+            "  id: totalWatts\n"
+            f"  lambda: return {watts} ;\n"
+        )
+    return (
+        totals
+        + "sensor:\n"
+        + "- platform: total_daily_energy\n"
+        + "  id: totalEnergyDaily\n"
+        + f"  power_id: {power_id}\n"
+    )
+
+
 def _contract_fixture(tmp_path: Path, *, api_ready: bool = True) -> tuple[Path, Path]:
     helper_root = tmp_path / "helper"
     firmware_root = tmp_path / "firmware"
@@ -111,7 +152,7 @@ def _contract_fixture(tmp_path: Path, *, api_ready: bool = True) -> tuple[Path, 
             )
             sensor = "main_sensor" if board == 0 else prefix
             (sensors / f"6chan_{sensor}.yaml").write_text(
-                "sensor: []\n", encoding="utf-8"
+                _sensor_package(board), encoding="utf-8"
             )
 
     variants = ["main_board", "main_ethernet", "main_ethernet_waveshare"]
@@ -173,6 +214,7 @@ def _contract_fixture(tmp_path: Path, *, api_ready: bool = True) -> tuple[Path, 
                 f"    - Software/ESPHome/calibration/6chan_addon{board}_calibration.yaml\n"
                 for board in range(1, addon_count + 1)
             )
+            source += _root_totals(addon_count)
         (firmware_data / f"6chan_energy_meter_{variant}.yaml").write_text(
             source, encoding="utf-8"
         )

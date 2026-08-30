@@ -97,6 +97,8 @@ jobs:
           repository: CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
           ref: 3820c5e395379cc4de16fdcac41cabc13788eb8b
           path: firmware
+      - name: Test pinned firmware total hierarchy
+        run: uvx --python 3.12 --from pytest==9.0.2 pytest -q tests/test_firmware_total_contract.py
       - name: Verify catalog schema and supported project patterns
         run: python scripts/verify_firmware_contract.py . firmware
       - name: Run pinned firmware topology and calibration tests
