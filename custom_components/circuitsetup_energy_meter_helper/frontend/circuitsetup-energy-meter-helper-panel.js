@@ -540,7 +540,7 @@ const UPDATE_INTERVALS = /* @__PURE__ */ new Set([1, 2, 5, 10, 30, 60]);
 const EVIDENCE_SOURCES = /* @__PURE__ */ new Set(["config_project", "config_packages", "dashboard_import", "native_project", "native_entity_counts"]);
 const PHASES = /* @__PURE__ */ new Set(["A", "B", "C"]);
 const JOB_STAGES = /* @__PURE__ */ new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
-const TRANSACTION_EVIDENCE = /* @__PURE__ */ new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
+const TRANSACTION_EVIDENCE = /* @__PURE__ */ new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
 const TRANSACTION_PROGRESS = /* @__PURE__ */ new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
 const PREFLIGHT_CODES = /* @__PURE__ */ new Set(["count_mismatch", "invalid_kind", "invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
 const AUTHORITATIVE_EVIDENCE = /* @__PURE__ */ new Set(["config_project", "config_packages", "native_project"]);
@@ -878,7 +878,7 @@ function ctInventory(value, label) {
 }
 function transaction(value, label) {
   const item = record(value, label);
-  exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified"], label);
+  exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ..."communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []], label);
   string(item.transaction_id, label);
   enumeration(item.state, TRANSACTION_STATES, label);
   if (!SHA256.test(string(item.source_sha256, label))) throw new Error(`${label} response is invalid`);
@@ -913,6 +913,12 @@ function transaction(value, label) {
   });
   boolean(item.aggregate_entity_mismatch, label);
   boolean(item.full_meter_configuration_verified, label);
+  if ("communication_failed_cs_pins" in item) {
+    const pins = array(item.communication_failed_cs_pins, label, 14).map((pin) => integer(pin, label));
+    if (pins.some((pin) => pin < 0 || pin > 63) || new Set(pins).size !== pins.length || pins.length && !item.evidence.includes("meter_communication_failed")) {
+      throw new Error(`${label} response is invalid`);
+    }
+  }
   return value;
 }
 function session(value, label) {
@@ -1461,7 +1467,9 @@ function configReview(status, configuration = null, impact = null) {
 function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "") {
   const state = status?.state ?? "previewed";
   const busy = Boolean(pendingAction);
-  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch"].includes(code)) === true;
+  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
+  const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
+  const failedPins = status?.communication_failed_cs_pins ?? [];
   const waitingForStartup = state === "reconnecting";
   const latestProgress = status?.upload_progress.slice().reverse().find((item) => item.percentage !== null) ?? status?.upload_progress.at(-1) ?? null;
   const jobProgress = pendingAction === "install" && state === "install_confirmation_required" ? null : latestProgress;
@@ -1473,8 +1481,19 @@ function buildInstallStep(status, apply, compile, install, rollback, back, conti
       ${configReview(status, configuration, impact)}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
-          <strong>Build or install needs attention</strong>
-          <p>${status?.evidence.join(", ") || "The operation did not complete."}</p>
+          <strong>${communicationFailure ? "Meter chip communication failed" : "Build or install needs attention"}</strong>
+          ${communicationFailure ? b`<p>The ESP32 reconnected, but reported that it could not establish SPI communication with
+            ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
+            This is the connection between the ESP32 and the meter chip, not a Wi-Fi or Home Assistant connection problem.</p>
+            <ol>
+              <li>Power down the meter and ESP32 before touching boards or changing jumpers. Do not touch exposed mains wiring.</li>
+              <li>Confirm the correct ESP32 model for your meter board and firmware is installed. Check its orientation, make sure both header rows are fully seated and aligned, and look for bent pins or poor contact.</li>
+              <li>If an add-on board is affected, check its CS jumpers: each jumper must be in the correct position and make firm contact. Match the default CS-pin assignments for your board and connection type, or the explicit overrides in your configuration. Main-board CS pins should also match the configuration.</li>
+              <li>If the ESP32 model, seating, and CS assignments are correct, try another known-good ESP32 with the correct firmware.</li>
+              <li>If an add-on still fails, move its CS jumper to a different unused, supported CS pin and update the configuration to match before rebuilding and installing. A fault that follows the GPIO points to the ESP32 pin or its connection; a fault that stays with the same add-on on a known-good GPIO points to that add-on board or meter chip.</li>
+            </ol>
+            <p>After correcting the hardware or configuration, power up and use Retry Install. This uploads the firmware again and repeats startup verification.</p>
+          ` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}

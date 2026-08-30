@@ -19,6 +19,38 @@ const tick = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
+it("shows affected SPI pins and hardware troubleshooting without allowing Continue", () => {
+  const host = document.createElement("div");
+  const retry = vi.fn();
+  const noop = () => undefined;
+  const status = {
+    transaction_id: "tx", state: "install_confirmation_required", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: true,
+    evidence: ["meter_communication_failed"], communication_failed_cs_pins: [0, 16],
+    progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [],
+    aggregate_entity_mismatch: false, full_meter_configuration_verified: false,
+  } as import("../src/types").TransactionStatus;
+  render(buildInstallStep(status, noop, noop, retry, noop, noop, noop), host);
+  const warning = host.querySelector(".recovery-panel");
+  expect(warning?.textContent).toContain("Meter chip communication failed");
+  expect(warning?.textContent).toContain("GPIO0, GPIO16");
+  expect(warning?.textContent).toContain("SPI");
+  expect(warning?.textContent).toContain("Power down");
+  expect(warning?.textContent).toContain("correct ESP32");
+  expect(warning?.textContent).toContain("default CS-pin assignments");
+  expect(warning?.textContent).toContain("known-good ESP32");
+  expect(warning?.textContent).toContain("update the configuration to match");
+  expect(warning?.textContent).toContain("stays with the same add-on");
+  expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+  [...host.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.click();
+  expect(retry).toHaveBeenCalledOnce();
+
+  render(buildInstallStep({ ...status, state: "verified", evidence: [], communication_failed_cs_pins: [] },
+    noop, noop, noop, noop, noop, noop), host);
+  expect(host.querySelector(".recovery-panel")).toBeNull();
+  expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
+});
+
 it("renders the live Install percentage", () => {
   const host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "installing", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 48 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
