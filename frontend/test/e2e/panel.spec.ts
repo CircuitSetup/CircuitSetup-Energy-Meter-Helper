@@ -468,7 +468,7 @@ async function reachCurrent(page: Page, channel: number): Promise<void> {
   }
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Choose calibration" })).toBeVisible();
-  await page.getByLabel(/Full calibration/).check();
+  await page.getByLabel(/Full calibration/).click();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
@@ -755,7 +755,7 @@ test("verified configuration continues through calibration and finishes only fro
   await expect(page.getByRole("heading", { name: "Setup Device" })).toHaveCount(0);
   await page.locator('[data-action="continue"]').click();
   await expect(page.getByRole("heading", { name: "Calibration Plan", exact: true })).toBeVisible();
-  await page.getByRole("radio", { name: /Full calibration/ }).check();
+  await page.getByRole("radio", { name: /Full calibration/ }).click();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
@@ -822,7 +822,8 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.getByRole("button", { name: "Build firmware" }).click();
   await page.getByRole("button", { name: "Install on meter", exact: true }).click();
   await page.locator('[data-action="continue"]').click();
-  await page.getByRole("radio", { name: /Full calibration/ }).check();
+  await page.getByRole("radio", { name: /Full calibration/ }).click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
@@ -1177,7 +1178,7 @@ test("journey 3: helper-managed full calibration keeps flash authority when not 
   await openInventory(page);
   expect(mutations(frames)).toEqual([]);
   await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Full calibration/).check();
+  await page.getByLabel(/Full calibration/).click();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
@@ -1253,7 +1254,7 @@ test("journey 6: runtime-only skips every source configuration command", async (
   await expect(page.getByText(/Circuit names, CT models, roles, multipliers, entities, and totals cannot be changed/)).toBeVisible();
   expect(mutations(frames)).toEqual([]);
   const classifiedAt = frames.length;
-  await page.getByLabel(/Standard calibration/).check();
+  await page.getByLabel(/Standard calibration/).click();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await calibrateVoltageToRestart(page);
   await page.getByRole("button", { name: "Restart and verify" }).click();
