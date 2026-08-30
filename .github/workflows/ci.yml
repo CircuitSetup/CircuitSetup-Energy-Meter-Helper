@@ -99,6 +99,8 @@ jobs:
           path: firmware
       - name: Test pinned firmware total hierarchy
         run: uvx --python 3.12 --from pytest==9.0.2 pytest -q tests/test_firmware_total_contract.py
+        env:
+          FIRMWARE_ROOT: firmware
       - name: Verify catalog schema and supported project patterns
         run: python scripts/verify_firmware_contract.py . firmware
       - name: Run pinned firmware topology and calibration tests
