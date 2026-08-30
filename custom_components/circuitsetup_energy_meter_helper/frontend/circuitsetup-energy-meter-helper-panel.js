@@ -735,7 +735,6 @@ function meterConfiguration(value, label) {
     boolean(channel.burden_output_acknowledged, label);
   });
   const aggregateIds = /* @__PURE__ */ new Set();
-  const aggregateChannels = /* @__PURE__ */ new Set();
   const aggregateParents = /* @__PURE__ */ new Map();
   array(configuration.aggregates, label, 32).forEach((entry) => {
     const aggregate = record(entry, label);
@@ -748,8 +747,7 @@ function meterConfiguration(value, label) {
     const members = array(aggregate.channels, label, 42).map((channel) => integer(channel, label));
     const method = enumeration(aggregate.measurement_method, MEASUREMENT_METHODS, label);
     const count = method === "two_ct_sum" ? 2 : method === "one_ct_double_power" || method === "both_conductors_one_ct" ? 1 : void 0;
-    if (!members.length || new Set(members).size !== members.length || members.some((channel) => channel < 1 || channel > planTopology.ct_count || aggregateChannels.has(channel) || !boolean(record(channels[channel - 1], label).enabled, label)) || count !== void 0 && members.length !== count) throw new Error(`${label} response is invalid`);
-    members.forEach((channel) => aggregateChannels.add(channel));
+    if (!members.length || new Set(members).size !== members.length || members.some((channel) => channel < 1 || channel > planTopology.ct_count || !boolean(record(channels[channel - 1], label).enabled, label)) || count !== void 0 && members.length !== count) throw new Error(`${label} response is invalid`);
     const parent = aggregate.parent_id === null ? null : id(aggregate.parent_id, label);
     aggregateParents.set(aggregateId, parent);
     enumeration(aggregate.energy_mode, ENERGY_MODES, label);

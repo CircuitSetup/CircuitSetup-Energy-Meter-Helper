@@ -211,6 +211,31 @@ describe("HelperApi", () => {
     });
   });
 
+  it("accepts overlapping aggregate memberships from the meter configuration API", async () => {
+    const hass = new FakeHass();
+    const configuration = {
+      ...meterConfiguration.configuration,
+      aggregates: [
+        ...meterConfiguration.configuration.aggregates,
+        {
+          ...meterConfiguration.configuration.aggregates[0]!,
+          aggregate_id: "meter-total",
+          name: "Meter total",
+          channels: [1, 2, 3, 4, 5, 6],
+          measurement_method: "direct" as const,
+        },
+      ],
+    };
+    hass.responses.get_meter_configuration = {
+      ...meterConfiguration,
+      configuration,
+      configuration_impact: configurationImpact(configuration, topology),
+    };
+
+    await expect(new HelperApi(hass, "entry-1").getMeterConfiguration("meter-1"))
+      .resolves.toMatchObject({ configuration: { aggregates: [{ aggregate_id: "main-load" }, { aggregate_id: "meter-total" }] } });
+  });
+
   it("sends the exact full meter preview payload", async () => {
     const hass = new FakeHass();
     hass.responses.preview_meter_configuration = transaction;
