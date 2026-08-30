@@ -313,14 +313,34 @@ class DeviceBuilderClient:
             asyncio.get_running_loop().create_future()
         )
         output: list[str] = []
+        ninja_total = 0
+        last_percentages: dict[JobProgressStage, int] = {}
+        last_stage: JobProgressStage | None = None
 
         def handle(event: dict[str, Any]) -> None:
+            nonlocal ninja_total, last_stage
             if event["event"] == "output":
                 line = str(event.get("data", ""))
                 output.append(line)
                 del output[: -self._output_tail_size]
-                if progress is not None and (update := _job_progress(line)) is not None:
-                    progress(update)
+                if progress is not None:
+                    update = _job_progress(line)
+                    if match := _NINJA_PROGRESS_RE.match(line):
+                        done, total = int(match.group(1)), int(match.group(2))
+                        if done <= total and total >= 100 and total >= ninja_total:
+                            ninja_total = total
+                            update = JobProgress(JobProgressStage.TRANSFER, done * 100 // total)
+                    if update is not None:
+                        previous = last_percentages.get(update.stage)
+                        if update.percentage is None:
+                            if previous is not None or update.stage is last_stage:
+                                return
+                        elif previous is not None and update.percentage <= previous:
+                            return
+                        else:
+                            last_percentages[update.stage] = update.percentage
+                        last_stage = update.stage
+                        progress(update)
             elif event["event"] == "result" and not future.done():
                 data = event.get("data", {})
                 future.set_result(data if isinstance(data, dict) else {})
@@ -371,11 +391,15 @@ class DeviceBuilderClient:
         )
         return self._validation_result(terminal, output)
 
-    async def async_compile(self, configuration: str) -> JobResult:
+    async def async_compile(
+        self,
+        configuration: str,
+        progress: Callable[[JobProgress], None] | None = None,
+    ) -> JobResult:
         result = await self.async_command(
             "firmware/compile", {"configuration": configuration}
         )
-        return await self._async_follow_job(result)
+        return await self._async_follow_job(result, progress)
 
     async def async_upload(
         self,
@@ -509,7 +533,15 @@ class DeviceBuilderClient:
                 future.set_exception(ConnectionError("Device Builder disconnected"))
 
 
-_PERCENT_RE = re.compile(r"(?<!\d)(100|[1-9]?\d)\s*%")
+_PROGRESS_PERCENT_RES = (
+    re.compile(r"^\s*\[\s*(\d{1,3})\s*%\s*\]"),
+    re.compile(r"\(\s*(\d{1,3})\s*%\s*\)"),
+    re.compile(r"Writing at\b.*?(\d{1,3})(?:\.\d+)?\s*%"),
+    re.compile(r"^\s*Uploading:.*?\b(\d{1,3})\s*%"),
+)
+_NINJA_PROGRESS_RE = re.compile(
+    r"^(?:\x1b\[[0-9;]*[A-Za-z])*\s*\[\s*(\d+)\s*/\s*(\d+)\s*\] "
+)
 
 
 def _job_progress(line: str) -> JobProgress | None:
@@ -529,8 +561,12 @@ def _job_progress(line: str) -> JobProgress | None:
         ),
         None,
     )
-    match = _PERCENT_RE.search(line)
-    percentage = int(match.group(1)) if match else None
+    percentage = next(
+        (int(match.group(1)) for pattern in _PROGRESS_PERCENT_RES if (match := pattern.search(line))),
+        None,
+    )
+    if percentage is not None and not 0 <= percentage <= 100:
+        percentage = None
     if stage is None and percentage is not None:
         stage = JobProgressStage.TRANSFER
     if stage is None:

@@ -84,6 +84,33 @@ def test_parses_exact_gain_phase_rows_and_success() -> None:
     assert evidence.immediate_apply_acceptable
 
 
+def test_parses_combined_gain_save_and_verification_terminal() -> None:
+    lines = [
+        CalibrationLogLine(
+            item.connection_generation,
+            item.operation_sequence,
+            item.arrived_at,
+            item.line.replace(
+                "Gain calibration saved to memory.",
+                "Gain calibration saved to memory. Gain calibration completed and verified.",
+            ),
+        )
+        for item in log_lines("gain_success.log")
+        if "Gain calibration completed and verified." not in item.line
+    ]
+
+    evidence = parse_gain_run(
+        lines,
+        connection_generation=3,
+        operation_sequence=8,
+        target_instance_id="meter_main1",
+        button_name="3. Run Main Meter 1 Gain Cal",
+        dispatched_after=10.0,
+    )
+
+    assert evidence.flash_saved and evidence.immediate_apply_acceptable
+
+
 def test_parses_save_failure_and_register_mismatch() -> None:
     failure = parse_gain_run(
         log_lines("gain_save_failure.log"),
@@ -397,6 +424,46 @@ def test_parses_exact_signed_offset_tables_and_verified_terminals() -> None:
     ] == [("A", -101, 201), ("B", -32768, 32767), ("C", 103, -203)]
     assert offset.flash_saved and offset.register_verified
     assert power.flash_saved and power.register_verified
+
+
+def test_parses_combined_offset_save_and_verification_terminals() -> None:
+    for fixture, parser, button, name in (
+        (
+            "offset_success.log",
+            parse_offset_run,
+            "1. Run Main Meter 1 Offset Cal",
+            "Offset",
+        ),
+        (
+            "power_offset_success.log",
+            parse_power_offset_run,
+            "2. Run Main Meter 1 Power Offset Cal",
+            "Power offset",
+        ),
+    ):
+        saved = f"{name} calibration saved to memory."
+        completed = f"{name} calibration completed and verified."
+        lines = [
+            CalibrationLogLine(
+                item.connection_generation,
+                item.operation_sequence,
+                item.arrived_at,
+                item.line.replace(saved, f"{saved} {completed}"),
+            )
+            for item in log_lines(fixture)
+            if completed not in item.line
+        ]
+
+        evidence = parser(
+            lines,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name=button,
+            dispatched_after=10.0,
+        )
+
+        assert evidence.flash_saved and evidence.register_verified
 
 
 @pytest.mark.parametrize(

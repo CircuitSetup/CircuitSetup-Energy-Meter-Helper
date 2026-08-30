@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from hashlib import sha256
+from math import isfinite
 from time import monotonic
 from typing import Any, Protocol
 from uuid import uuid4
@@ -58,6 +59,8 @@ MAX_UPLOAD_PROGRESS_BYTES = 2_048
 MAX_UPLOAD_PROGRESS_LINES = 32
 DEFAULT_CONFIRMATION_TTL = 15 * 60.0
 MAX_CONFIRMATION_TTL = 60 * 60.0
+DEFAULT_RECONNECT_TIMEOUT = 120.0
+DEFAULT_RECONNECT_BACKOFF_INITIAL = 0.5
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -110,7 +113,11 @@ class TransactionProgress(StrEnum):
     CONFIG_RESTORED = "config_restored"
 
 
-_RECONNECT_ATTEMPTS = 3
+_RETRYABLE_INSTALL_EVIDENCE = {
+    TransactionEvidenceCode.RECONNECT_UNAVAILABLE,
+    TransactionEvidenceCode.ENTITY_MISMATCH,
+    TransactionEvidenceCode.SENSOR_COUNT_MISMATCH,
+}
 
 
 class RollbackFailedError(RuntimeError):
@@ -126,7 +133,11 @@ class DeviceBuilder(Protocol):
 
     async def async_validate(self, configuration: str) -> JobResult: ...
 
-    async def async_compile(self, configuration: str) -> JobResult: ...
+    async def async_compile(
+        self,
+        configuration: str,
+        progress: Callable[[JobProgress], None] | None = None,
+    ) -> JobResult: ...
 
     async def async_upload(
         self,
@@ -355,16 +366,25 @@ class ConfigTransactionManager:
         sessions: SessionManager,
         *,
         reconciliation_timeout: float = 30.0,
+        reconnect_timeout: float = DEFAULT_RECONNECT_TIMEOUT,
+        reconnect_backoff_initial: float = DEFAULT_RECONNECT_BACKOFF_INITIAL,
         confirmation_ttl: float = DEFAULT_CONFIRMATION_TTL,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         if not 1.0 <= confirmation_ttl <= MAX_CONFIRMATION_TTL:
             raise ValueError("confirmation TTL must be between 1 and 3600 seconds")
+        if not all(
+            isfinite(value) and value > 0
+            for value in (reconnect_timeout, reconnect_backoff_initial)
+        ):
+            raise ValueError("reconnect timing must be positive")
         self._device_builder = device_builder
         self._verifier = verifier
         self._persistence = persistence
         self.sessions = sessions
         self._reconciliation_timeout = reconciliation_timeout
+        self._reconnect_timeout = reconnect_timeout
+        self._reconnect_backoff_initial = reconnect_backoff_initial
         self._confirmation_ttl = confirmation_ttl
         self._clock = clock
         self._subscribers: dict[str, set[Callable[[TransactionStatus], None]]] = {}
@@ -470,8 +490,21 @@ class ConfigTransactionManager:
                 ),
                 topology,
             )
-            expected_sensor_entities = expected.sensor_entities
-            expected_aggregate_sensor_entities = expected.aggregate_sensor_entities
+            managed_blocks = ESPHomeConfigDocument.parse(
+                plan.proposed_content
+            ).managed_blocks
+            expected_sensor_entities = frozenset()
+            if "voltage_references" in managed_blocks:
+                expected_sensor_entities |= (
+                    expected.sensor_entities - expected.aggregate_sensor_entities
+                )
+            if "aggregates" in managed_blocks:
+                expected_sensor_entities |= expected.aggregate_sensor_entities
+            expected_aggregate_sensor_entities = (
+                expected.aggregate_sensor_entities
+                if "aggregates" in managed_blocks
+                else frozenset()
+            )
             selections = ()
         else:
             merged = {
@@ -921,8 +954,13 @@ class ConfigTransactionManager:
         if transaction.state is not ConfigTransactionState.VALIDATED:
             raise RuntimeError("compile is not legal in the current state")
         plan, _ = _sensitive(transaction)
+        transaction.upload_progress.clear()
+        self.publish_status(_status(transaction))
         try:
-            result = await self._device_builder.async_compile(plan.configuration)
+            result = await self._device_builder.async_compile(
+                plan.configuration,
+                lambda update: self._publish_upload_progress(transaction, update),
+            )
         except asyncio.CancelledError:
             await self._rollback_after_cancellation(transaction)
             raise
@@ -935,6 +973,7 @@ class ConfigTransactionManager:
             status = _status(transaction)
             self.publish_status(status)
             return status
+        transaction.upload_progress.clear()
         transaction.state = ConfigTransactionState.COMPILED
         _progress(transaction, TransactionProgress.FIRMWARE_COMPILED)
         transaction.state = ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
@@ -969,11 +1008,13 @@ class ConfigTransactionManager:
                         "YAML handoff is unavailable; offset calibration remains "
                         "saved in flash"
                     )
+            transaction.upload_progress.clear()
             transaction.evidence[:] = [
                 code
                 for code in transaction.evidence
-                if code is not TransactionEvidenceCode.RECONNECT_UNAVAILABLE
+                if code not in _RETRYABLE_INSTALL_EVIDENCE
             ]
+            transaction.aggregate_entity_mismatch = False
             transaction.state = ConfigTransactionState.INSTALLING
             self.publish_status(_status(transaction))
             plan, _ = _sensitive(transaction)
@@ -1000,21 +1041,41 @@ class ConfigTransactionManager:
             _progress(transaction, TransactionProgress.OTA_UPLOADED)
             transaction.state = ConfigTransactionState.RECONNECTING
             self.publish_status(_status(transaction))
-            for attempt in range(_RECONNECT_ATTEMPTS):
-                try:
-                    verification = await self._verifier.async_verify(transaction.mac)
-                    break
-                except asyncio.CancelledError:
-                    self._finish(
-                        transaction,
-                        ConfigTransactionState.FAILED,
-                        TransactionEvidenceCode.CANCELLED,
+            error: TransactionEvidenceCode | None = None
+            deadline = self._clock() + self._reconnect_timeout
+            attempt = 0
+            try:
+                while (remaining := deadline - self._clock()) > 0:
+                    transaction.aggregate_entity_mismatch = False
+                    try:
+                        async with asyncio.timeout(remaining):
+                            verification = await self._verifier.async_verify(
+                                transaction.mac
+                            )
+                    except Exception:  # noqa: BLE001 - external verifier boundary
+                        error = TransactionEvidenceCode.RECONNECT_UNAVAILABLE
+                    else:
+                        error = _verify_reconnect(transaction, verification)
+                    if error is None or error not in _RETRYABLE_INSTALL_EVIDENCE:
+                        break
+                    delay = min(
+                        self._reconnect_backoff_initial * (2**attempt),
+                        5.0,
+                        max(0.0, deadline - self._clock()),
                     )
-                    raise
-                except Exception:  # noqa: BLE001 - external verifier boundary
-                    if attempt == _RECONNECT_ATTEMPTS - 1:
-                        return self._retain_install_retry(transaction)
-            if error := _verify_reconnect(transaction, verification):
+                    attempt += 1
+                    if delay:
+                        await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                self._finish(
+                    transaction,
+                    ConfigTransactionState.FAILED,
+                    TransactionEvidenceCode.CANCELLED,
+                )
+                raise
+            if error is not None:
+                if error in _RETRYABLE_INSTALL_EVIDENCE:
+                    return self._retain_install_retry(transaction, error)
                 return self._finish(transaction, ConfigTransactionState.FAILED, error)
             _progress(transaction, TransactionProgress.DEVICE_VERIFIED)
             self.publish_status(_status(transaction))
@@ -1125,12 +1186,14 @@ class ConfigTransactionManager:
         self.publish_status(_status(transaction))
 
     def _retain_install_retry(
-        self, transaction: _ConfigTransaction
+        self,
+        transaction: _ConfigTransaction,
+        code: TransactionEvidenceCode,
     ) -> TransactionStatus:
         transaction.state = ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         transaction.rollback_available = True
         self._refresh_deadline(transaction)
-        _evidence(transaction, TransactionEvidenceCode.RECONNECT_UNAVAILABLE)
+        _evidence(transaction, code)
         status = _status(transaction)
         self.publish_status(status)
         return status

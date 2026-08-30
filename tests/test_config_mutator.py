@@ -423,10 +423,14 @@ def test_generalized_mutation_renders_electrical_settings_and_references(
             electrical_system=ElectricalSystem.SINGLE_PHASE_230,
             line_frequency_hz=50,
             update_interval_s=5,
-            voltage_layout=VoltageLayout.STANDARD,
-            voltage_references=(
-                replace(current.configuration.meter.voltage_references[0], gain_voltage=7305),
-            ),
+                voltage_layout=VoltageLayout.STANDARD,
+                voltage_references=(
+                    replace(
+                        current.configuration.meter.voltage_references[0],
+                        gain_voltage=7305,
+                        nominal_voltage_v=230.0,
+                    ),
+                ),
         ),
     )
 
@@ -1213,8 +1217,43 @@ def test_board_package_options_support_indentless_remote_file_lists() -> None:
 
     assert (
         "    - Software/ESPHome/power_quality/6chan_main_power_quality.yaml"
-        " # keep this note\n"
-        in plan.proposed_content
+        " # keep this note"
+        in plan.proposed_content.splitlines()
+    )
+
+
+def test_package_option_indentation_comes_from_its_own_files_list() -> None:
+    snapshot = _package_snapshot()
+    content = snapshot.content.replace(
+        "    files:\n",
+        "    files:\n"
+        "    - Software/ESPHome/meter_sensors/6chan_main_sensor.yaml\n",
+    ).replace(
+        "      - Software/ESPHome/status_fields/6chan_main_status.yaml\n",
+        "      #- Software/ESPHome/status_fields/6chan_main_status.yaml\n",
+    ).replace(
+        "sensor:\n",
+        "  unrelated:\n"
+        "    files:\n"
+        "      - Software/ESPHome/meter_sensors/unrelated.yaml\n"
+        "sensor:\n",
+    )
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+    plan = build_ct_mutation(
+        snapshot,
+        _two_board_topology(),
+        (),
+        package_options={
+            "power_quality": (False, False),
+            "status_fields": (False, True),
+        },
+    )
+
+    assert "    - Software/ESPHome/status_fields/6chan_addon1_status.yaml" in (
+        plan.proposed_content.splitlines()
     )
 
 

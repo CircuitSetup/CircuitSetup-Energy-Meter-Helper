@@ -58,6 +58,7 @@ _POWER_OFFSET_READBACK_RE = re.compile(
 _GAIN_SAVED = "Gain calibration saved to memory."
 _GAIN_SAVE_FAILED = "Failed to save gain calibration to memory!"
 _GAIN_COMPLETED = "Gain calibration completed and verified."
+_GAIN_SAVED_AND_COMPLETED = f"{_GAIN_SAVED} {_GAIN_COMPLETED}"
 _GAIN_FAILED = "Gain calibration failed; previous values restored."
 _GAIN_ROLLBACK_FAILED = (
     "Gain calibration failed; rollback readback verification failed."
@@ -66,6 +67,7 @@ _GAIN_RUN_TERMINALS = (
     _GAIN_SAVED,
     _GAIN_SAVE_FAILED,
     _GAIN_COMPLETED,
+    _GAIN_SAVED_AND_COMPLETED,
     _GAIN_FAILED,
     _GAIN_ROLLBACK_FAILED,
 )
@@ -328,7 +330,11 @@ def parse_gain_run(
                 int(row.group("new_current_gain")),
             )
         payload = _calibration_payload(item.line)
-        if payload == _GAIN_SAVED:
+        if payload == _GAIN_SAVED_AND_COMPLETED:
+            save_results.append(True)
+            final_results.append(_GAIN_COMPLETED)
+            terminal_seen = True
+        elif payload == _GAIN_SAVED:
             save_results.append(True)
             terminal_seen = True
         elif payload == _GAIN_SAVE_FAILED:
@@ -484,6 +490,7 @@ def _parse_offset_operation(
         if power
         else "Offset calibration completed and verified."
     )
+    saved_and_completed = f"{saved} {completed}"
     failed = (
         "Power offset calibration failed; previous values restored."
         if power
@@ -579,7 +586,7 @@ def _parse_offset_operation(
         index
         for index in range(header_index, len(matching))
         if _calibration_payload(matching[index].line)
-        in (completed, failed, rollback_failed)
+        in (completed, saved_and_completed, failed, rollback_failed)
     ]
     if len(final_indices) != 1:
         raise LogEvidenceError(f"{kind} terminal result is missing or multiple")
@@ -608,7 +615,7 @@ def _parse_offset_operation(
     save_success_indices = [
         index
         for index in range(header_index, len(matching))
-        if _calibration_payload(matching[index].line) == saved
+        if _calibration_payload(matching[index].line) in (saved, saved_and_completed)
     ]
     save_failures = [
         item
@@ -639,9 +646,12 @@ def _parse_offset_operation(
         header_index,
         column_index,
         *(phase_indices[phase] for phase in ("A", "B", "C")),
-        save_success_indices[0],
-        final_index,
     ]
+    event_indices.extend(
+        (final_index,)
+        if save_success_indices[0] == final_index
+        else (save_success_indices[0], final_index)
+    )
     if event_indices != sorted(event_indices) or len(set(event_indices)) != len(
         event_indices
     ):

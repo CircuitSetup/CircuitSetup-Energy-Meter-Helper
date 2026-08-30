@@ -205,6 +205,7 @@ class _RoleSpec:
     name: str
     unit: str
     pattern_terms: tuple[str, ...]
+    alternate_names: tuple[str, ...] = ()
 
 
 def group_key(board_index: int, group_index: int) -> str:
@@ -311,6 +312,7 @@ def bind_meter(
 ) -> MeterBinding:
     """Bind every required role, refusing missing, reused, or ambiguous entities."""
     stored = stored_mapping or {}
+    friendly_name = substitutions.get("friendly_name")
     used: set[RawEntityKey] = set()
     groups: list[GroupBinding] = []
     channels: list[ChannelBinding] = []
@@ -353,7 +355,11 @@ def bind_meter(
             ),
             (
                 ResolutionSource.NAME_UNIT,
-                catalog.by_name_unit(spec.kind, spec.name, spec.unit),
+                tuple(
+                    candidate
+                    for name in (spec.name, *spec.alternate_names)
+                    for candidate in catalog.by_name_unit(spec.kind, name, spec.unit)
+                ),
             ),
             (
                 ResolutionSource.PATTERN,
@@ -480,14 +486,17 @@ def bind_meter(
                         )
                     )
                 )
+                primary_voltage = (
+                    board_index == 0 and group_index == 0 and phase == "a"
+                )
                 voltage_name = (
                     "Voltage 1"
-                    if board_index == 0 and group_index == 0 and phase == "a"
+                    if primary_voltage
                     else f"{group_name} Voltage {phase.upper()} Calibration"
                 )
                 voltage_id = (
                     "ic1volts"
-                    if board_index == 0 and group_index == 0 and phase == "a"
+                    if primary_voltage
                     else (
                         f"meter_main{group_index + 1}_voltage_{phase}_calibration"
                         if board_index == 0
@@ -503,6 +512,11 @@ def bind_meter(
                             voltage_name,
                             "V",
                             (key, "voltage", phase),
+                            (
+                                (f"{friendly_name} Main Voltage",)
+                                if primary_voltage and friendly_name
+                                else ()
+                            ),
                         )
                     )
                 )

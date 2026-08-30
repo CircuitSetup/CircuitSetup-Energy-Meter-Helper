@@ -299,21 +299,29 @@ def test_preflight_checks_units_and_device_lock() -> None:
     asyncio.run(run())
 
 
-def test_preflight_rejects_missing_native_sensor_state() -> None:
+def test_preflight_does_not_block_on_unavailable_sensor_state() -> None:
+    class UnavailableSession(FakeSession):
+        waited = False
+
+        async def async_wait_for_sensor_states(
+            self, _keys: frozenset[tuple[int, int]], **_: Any
+        ) -> None:
+            self.waited = True
+
     async def run() -> None:
         meter = binding(0)
-        session = session_for(meter)
+        session = UnavailableSession()
+        session.state_cache.update(session_for(meter).state_cache)
         missing = meter.role("main_1.voltage_b").descriptor
-        session.state_cache.pop((SensorState, missing.device_id, missing.key))
+        state = session.state_cache[(SensorState, missing.device_id, missing.key)]
+        assert isinstance(state, SensorState)
+        state.missing_state = True
 
         result = await async_preflight(session, meter, asyncio.Lock())
 
-        assert not result.ok
-        assert any(
-            issue.code == "unavailable" and issue.role == "main_1.voltage_b"
-            for issue in result.issues
-        )
-        assert session.number_calls == []
+        assert result.ok
+        assert not session.waited
+        assert len(session.number_calls) == 8
 
     asyncio.run(run())
 
@@ -330,25 +338,6 @@ def test_preflight_uses_zero_ack_when_reference_has_no_initial_state() -> None:
         assert result.ok
         assert "main_1.reference_voltage" in result.zeroed_roles
 
-    asyncio.run(run())
-
-
-def test_preflight_waits_for_initial_sensor_states() -> None:
-    class DelayedSession(FakeSession):
-        async def async_wait_for_sensor_states(
-            self, keys: frozenset[tuple[int, int]], **_: Any
-        ) -> None:
-            assert keys
-            self.state_cache.update(session_for(meter).state_cache)
-
-    async def run() -> None:
-        session = DelayedSession()
-
-        result = await async_preflight(session, meter, asyncio.Lock())
-
-        assert result.ok
-
-    meter = binding(0)
     asyncio.run(run())
 
 

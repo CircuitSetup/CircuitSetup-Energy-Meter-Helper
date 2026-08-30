@@ -1458,9 +1458,15 @@ function configReview(status, configuration = null, impact = null) {
     </section>
   `;
 }
-function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false) {
+function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "") {
   const state = status?.state ?? "previewed";
-  const retryableInstall = state === "install_confirmation_required" && status?.evidence.includes("reconnect_unavailable") === true;
+  const busy = Boolean(pendingAction);
+  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch"].includes(code)) === true;
+  const waitingForStartup = state === "reconnecting";
+  const latestProgress = status?.upload_progress.slice().reverse().find((item) => item.percentage !== null) ?? status?.upload_progress.at(-1) ?? null;
+  const jobProgress = pendingAction === "install" && state === "install_confirmation_required" ? null : latestProgress;
+  const progressAction = waitingForStartup ? null : pendingAction === "compile" ? "Compile" : pendingAction === "install" ? "Install" : status?.upload_progress.length ? status.progress.includes("firmware_compiled") ? "Install" : "Compile" : null;
+  const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   return b`
     <section class="step-content" aria-labelledby="step-heading">
@@ -1469,26 +1475,31 @@ function buildInstallStep(status, apply, compile, install, rollback, back, conti
         <div class="recovery-panel" role="status">
           <strong>Build or install needs attention</strong>
           <p>${status?.evidence.join(", ") || "The operation did not complete."}</p>
-          ${status?.rollback_available ? b`<button class="danger" @click=${rollback}>Rollback</button>` : ""}
+          ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
       ${validationFailed ? b`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>The original config was restored. Review the config changes and open ESPHome Device Builder logs for the exact validation error.</p></div>` : ""}
+      ${waitingForStartup ? b`<div class="job-progress" role="status" aria-live="polite">
+        <span>Meter is rebooting. Waiting for startup verification.</span>
+        <progress max="100" aria-label="Waiting for meter startup"></progress>
+      </div>` : ""}
       <div class="confirmation-actions">
-        <button class="primary" @click=${apply} ?disabled=${reviewBackBusy || correctionPending || state !== "previewed"}>Apply</button>
-        <button class="secondary" @click=${compile} ?disabled=${reviewBackBusy || correctionPending || state !== "validated"}>Compile</button>
-        <button class="primary" @click=${install} ?disabled=${reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${retryableInstall ? "Retry Install" : "Install"}</button>
+        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Apply"}</button>
+        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Compile"}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : retryableInstall ? "Retry Install" : "Install"}</button>
       </div>
       ${status?.validation_detail ? b`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
         <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>
         <div><dt>Warnings</dt><dd>${status.validation_detail.warning_record_count} records (${status.validation_detail.reported_warning_count === null ? "unreported" : `${status.validation_detail.reported_warning_count} reported`})</dd></div>
       </dl>` : ""}
-      ${status?.upload_progress?.length ? b`<ul class="upload-progress">${status.upload_progress.map((item) => b`
-        <li>${item.stage}: ${item.percentage ?? "in progress"}${item.percentage != null ? "%" : ""}</li>
-      `)}</ul>` : ""}
+      ${progressAction ? b`<div class="job-progress" role="status" aria-live="polite">
+        <span>${progressAction} progress: ${percentage === null ? "in progress" : `${percentage}%`}</span>
+        ${percentage === null ? b`<progress max="100" aria-label="${progressAction} progress: in progress"></progress>` : b`<progress max="100" value=${percentage} aria-label="${progressAction} progress: ${percentage}%"></progress>`}
+      </div>` : ""}
       <footer class="action-footer">
-        <button class="secondary" @click=${back} ?disabled=${reviewBackBusy}>${reviewBackBusy ? "Loading…" : "Back"}</button>
-        <button class="primary" data-action="continue" @click=${continueFlow} ?disabled=${reviewBackBusy || correctionPending || state !== "verified"}>Continue</button>
+        <button class="secondary" @click=${back} ?disabled=${busy || reviewBackBusy}>${reviewBackBusy ? "Loading…" : "Back"}</button>
+        <button class="primary" data-action="continue" @click=${continueFlow} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "verified"}>Continue</button>
       </footer>
     </section>
   `;
@@ -1555,7 +1566,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                 <span role="cell" data-voltage-reference><span class="mobile-label">Voltage reference</span>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span>
                 <label role="cell"><span class="mobile-label">Name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
                   @input=${(event) => update(channel.channel, { name: event.target.value })} /></label>
-                <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} ?disabled=${labelOnly}
+                <label role="cell"><span class="mobile-label">Model</span><select aria-label=${`CT${channel.channel} model`} .value=${draft.modelId} ?disabled=${labelOnly}
                   @change=${(event) => {
       const modelId = event.target.value;
       const selectedPreset = inventory.catalog.presets.find((item) => item.model_id === modelId);
@@ -1570,7 +1581,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                   <option value="custom" ?selected=${draft.modelId === "custom"}>Custom</option>
                 </select></label>
                 <span role="cell"><span class="mobile-label">Current gain</span>${channel.raw_gain_ct}</span>
-                <label role="cell"><span class="mobile-label">Multiplier</span><select aria-label=${`CT${channel.channel} multiplier`} ?disabled=${labelOnly}
+                <label role="cell"><span class="mobile-label">Multiplier</span><select aria-label=${`CT${channel.channel} multiplier`} .value=${String(draft.multiplier)} ?disabled=${labelOnly}
                   @change=${(event) => update(channel.channel, { multiplier: Number(event.target.value) })}>
                   ${[1, 2, 4, 8].map((value) => b`<option value=${value} ?selected=${draft.multiplier === value}>${value}</option>`)}
                 </select></label>
@@ -1580,7 +1591,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                   ${draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}
                 </button>
               </div>
-              ${draft.modelId === "custom" ? b`<div class="ct-detail custom-fields">
+              ${draft.modelId === "custom" && draft.expanded ? b`<div class="ct-detail custom-fields">
                 <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
                   ?disabled=${labelOnly}
                   .value=${draft.customGainCt === void 0 ? "" : String(draft.customGainCt)}
@@ -1588,7 +1599,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                 <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} ?disabled=${labelOnly} .value=${draft.customLabel ?? ""}
                   @input=${(event) => update(channel.channel, { customLabel: event.target.value })} /></label>
               </div>` : A}
-              ${draft.modelId === "custom" || preset?.requires_burden_jumper_cut ? b`<div class="warning-band">
+              ${draft.expanded && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
                 <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
                   ?disabled=${labelOnly}
                   .checked=${draft.burdenAcknowledged}
@@ -1610,7 +1621,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       </div>
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
-      ${configuration ? circuitsEditor(configuration, updateConfiguration, managedTotals, managedTotalsReason) : A}
+      ${configuration ? circuitsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason) : A}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
@@ -1645,7 +1656,7 @@ function reconcileSplitPhaseAggregates(configuration, previousManaged = null) {
   const preserved = configuration.aggregates.filter((aggregate) => !isManaged(aggregate));
   const preservedIds = new Set(preserved.map((aggregate) => aggregate.aggregate_id));
   const claimed = new Set(preserved.flatMap((aggregate) => aggregate.channels));
-  const rebuilt = configuration.meter.electrical_system === "split_phase_120_240" ? Object.keys(automaticAggregates).flatMap((role) => {
+  const rebuilt = ["split_phase_120_240", "custom"].includes(configuration.meter.electrical_system) ? Object.keys(automaticAggregates).flatMap((role) => {
     const channels = configuration.channels.filter((channel) => channel.enabled && channel.role === role && !claimed.has(channel.channel)).map((channel) => channel.channel);
     const definition = automaticAggregates[role];
     return channels.length === 2 && !preservedIds.has(definition.aggregate_id) ? [{
@@ -1663,7 +1674,7 @@ function reconcileSplitPhaseAggregates(configuration, previousManaged = null) {
   const changed = aggregates.length !== configuration.aggregates.length || aggregates.some((aggregate, index) => !sameAggregate(aggregate, configuration.aggregates[index]));
   return { configuration: changed ? { ...configuration, aggregates } : configuration, managed: rebuilt, changed };
 }
-function circuitsEditor(configuration, update, managedTotals, managedTotalsReason) {
+function circuitsEditor(configuration, drafts, update, managedTotals, managedTotalsReason) {
   const patchAggregate = (index, patch) => update({
     ...configuration,
     aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item)
@@ -1672,6 +1683,26 @@ function circuitsEditor(configuration, update, managedTotals, managedTotalsReaso
     const old = configuration.aggregates[index].aggregate_id;
     update({ ...configuration, aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index ? { ...item, aggregate_id: aggregateId } : item.parent_id === old ? { ...item, parent_id: aggregateId } : item) });
   };
+  const addAggregate = () => {
+    const ids = new Set(configuration.aggregates.map((aggregate) => aggregate.aggregate_id));
+    let number2 = 1;
+    while (ids.has(`aggregate-${number2}`)) number2 += 1;
+    update({ ...configuration, aggregates: [...configuration.aggregates, {
+      aggregate_id: `aggregate-${number2}`,
+      name: `Aggregate total ${number2}`,
+      role: "branch",
+      channels: [],
+      measurement_method: "two_ct_sum",
+      parent_id: null,
+      energy_mode: "consumption",
+      expose_power: true,
+      expose_current: false
+    }] });
+  };
+  const channelGroups = Array.from({ length: Math.ceil(configuration.channels.length / 6) }, (_2, board) => ({
+    board,
+    channels: configuration.channels.filter((channel) => channel.enabled && Math.floor((channel.channel - 1) / 6) === board)
+  })).filter((group) => group.channels.length);
   const warnings = configuration.aggregates.flatMap((aggregate) => [
     aggregate.role === "grid" && aggregate.channels.some((channel) => configuration.channels[channel - 1]?.role === "branch") ? `${aggregate.name}: keep branch loads out of the root-grid total.` : "",
     aggregate.measurement_method === "one_ct_double_power" && aggregate.channels.length !== 1 ? `${aggregate.name}: doubled-one-leg measurement requires exactly one CT.` : "",
@@ -1682,29 +1713,42 @@ function circuitsEditor(configuration, update, managedTotals, managedTotalsReaso
     <h2 id="aggregates-heading">Aggregate totals</h2>
     ${!managedTotals ? b`<p class="info-band" role="status">Aggregate editing unavailable: ${managedTotalsReason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : A}
     ${warnings.map((warning) => b`<p class="warning-band" role="status">${warning}</p>`)}
-    ${configuration.aggregates.map((aggregate, index) => b`<fieldset class="ct-detail" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!managedTotals}><legend>${aggregate.name}</legend>
+    <div class="aggregate-list">
+    ${configuration.aggregates.map((aggregate, index) => b`<fieldset class="aggregate-card" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!managedTotals}><legend>${aggregate.name}</legend>
+      <div class="aggregate-fields">
       <label>ID <input aria-label=${`${aggregate.aggregate_id} aggregate id`} maxlength="64" .value=${aggregate.aggregate_id}
         @change=${(event) => renameAggregate(index, event.target.value.trim())} /></label>
       <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
         @input=${(event) => patchAggregate(index, { name: event.target.value })} /></label>
       <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
-        @change=${(event) => patchAggregate(index, { role: event.target.value })}>${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role}>${roleLabel(role)}</option>`)}</select></label>
+        @change=${(event) => patchAggregate(index, { role: event.target.value })}>${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role}>${roleLabel(role)}</option>`)}</select>
+        <small>Describes how this total is used, such as mains, solar, or a branch circuit.</small></label>
       <label>Method <select aria-label=${`${aggregate.aggregate_id} aggregate method`} .value=${aggregate.measurement_method}
-        @change=${(event) => patchAggregate(index, { measurement_method: event.target.value })}>${METHODS.map((method) => b`<option value=${method}>${method.replaceAll("_", " ")}</option>`)}</select></label>
+        @change=${(event) => patchAggregate(index, { measurement_method: event.target.value })}>${METHODS.map((method) => b`<option value=${method}>${method === "two_ct_sum" ? "Two CT Sum" : method.replaceAll("_", " ")}</option>`)}</select>
+        <small>Controls how CT readings are combined. Two CT Sum adds exactly two CTs.</small></label>
       <label>Energy <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
-        @change=${(event) => patchAggregate(index, { energy_mode: event.target.value })}>${ENERGY.map((mode) => b`<option value=${mode}>${mode}</option>`)}</select></label>
-      <label>Channels <input aria-label=${`${aggregate.aggregate_id} aggregate channels`} .value=${aggregate.channels.join(",")}
-        @change=${(event) => patchAggregate(index, { channels: event.target.value.split(",").map(Number).filter(Number.isInteger) })} /></label>
-      <fieldset><legend>Selected channels</legend>${configuration.channels.filter((channel) => channel.enabled).map((channel) => b`<label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} CT${channel.channel}`} .checked=${aggregate.channels.includes(channel.channel)}
-        @change=${(event) => patchAggregate(index, { channels: event.target.checked ? [...aggregate.channels, channel.channel] : aggregate.channels.filter((item) => item !== channel.channel) })} />CT${channel.channel}</label>`)}</fieldset>
+        @change=${(event) => patchAggregate(index, { energy_mode: event.target.value })}>${ENERGY.map((mode) => b`<option value=${mode}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`)}</select>
+        <small>Any option except None adds ESPHome platform: total_daily_energy sensors in kWh.</small></label>
       <label>Parent <select aria-label=${`${aggregate.aggregate_id} aggregate parent`} .value=${aggregate.parent_id ?? ""}
         @change=${(event) => patchAggregate(index, { parent_id: event.target.value || null })}><option value="">None</option>${configuration.aggregates.filter((item) => item.aggregate_id !== aggregate.aggregate_id).map((item) => b`<option value=${item.aggregate_id}>${item.name}</option>`)}</select></label>
+      </div>
+      <fieldset class="aggregate-channels"><legend>Selected channels</legend>
+        <div class="aggregate-channel-groups">${channelGroups.map((group) => b`<section class="aggregate-channel-group" aria-label=${group.board === 0 ? "Main Board channels" : `Add-on ${group.board} channels`}>
+          <h4>${group.board === 0 ? "Main Board" : `Add-on ${group.board}`}</h4>
+          <div>${group.channels.map((channel) => b`<label class=${`aggregate-channel-option${aggregate.channels.includes(channel.channel) ? " selected" : ""}`}><input type="checkbox" aria-label=${`${aggregate.aggregate_id} CT${channel.channel}`} .checked=${aggregate.channels.includes(channel.channel)}
+            @change=${(event) => patchAggregate(index, { channels: event.target.checked ? [...aggregate.channels, channel.channel].sort((first, second) => first - second) : aggregate.channels.filter((item) => item !== channel.channel) })} />CT${channel.channel} · ${drafts.get(channel.channel)?.name ?? channel.name}</label>`)}</div>
+        </section>`)}</div>
+      </fieldset>
+      <div class="aggregate-actions">
       <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose power`} .checked=${aggregate.expose_power}
         @change=${(event) => patchAggregate(index, { expose_power: event.target.checked })} />Power</label>
       <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose current`} .checked=${aggregate.expose_current}
         @change=${(event) => patchAggregate(index, { expose_current: event.target.checked })} />Current</label>
       <button class="secondary" @click=${() => update({ ...configuration, aggregates: configuration.aggregates.filter((_item, itemIndex) => itemIndex !== index).map((item) => item.parent_id === aggregate.aggregate_id ? { ...item, parent_id: null } : item) })}>Delete aggregate</button>
+      </div>
     </fieldset>`)}
+    </div>
+    ${managedTotals ? b`<button class="secondary" data-action="add-aggregate" @click=${addAggregate}>Create aggregate total</button>` : A}
   </section>`;
 }
 function circuitConfigurationIsValid(configuration, ctCount) {
@@ -1924,7 +1968,7 @@ const SYSTEMS = [
   ["custom", "Custom"]
 ];
 const INTERVALS = [1, 2, 5, 10, 30, 60];
-const intervalImpact = (interval) => interval <= 5 ? "1–5 seconds: high traffic." : interval === 10 ? "10 seconds: standard." : interval >= 30 ? "30–60 seconds: lower traffic; guided calibration takes longer." : "This interval affects update traffic and guided calibration time.";
+const intervalImpact = (interval) => interval <= 5 ? "1–5 seconds: high traffic." : interval === 10 ? null : interval >= 30 ? "30–60 seconds: lower traffic; guided calibration takes longer." : "This interval affects update traffic and guided calibration time.";
 function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, setFrequency, setNominalVoltage, setAcknowledged, back, continueToCircuits, boardPackages = null, setBoardPackages = () => void 0) {
   const multiReference = draft.voltage_references.length > 1;
   const valid = Boolean(draft.friendly_name.trim()) && draft.voltage_references.every((reference) => reference.label.trim() && reference.phase_label.trim() && Number.isFinite(reference.nominal_voltage_v) && reference.nominal_voltage_v >= 1 && reference.nominal_voltage_v <= 600 && Number.isInteger(reference.gain_voltage) && reference.gain_voltage >= 1 && reference.gain_voltage <= 65535 && reference.group_keys.length) && (!multiReference || acknowledged);
@@ -1977,12 +2021,12 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
           @input=${(event) => patch({ friendly_name: event.target.value })} /></label>
         <label>Electrical system <select aria-label="Electrical system" .value=${draft.electrical_system}
           @change=${(event) => setProfile(event.target.value)}>${SYSTEMS.map(([value, label]) => b`<option value=${value}>${label}</option>`)}</select></label>
-        <label>Line frequency <select aria-label="Line frequency" .value=${String(draft.line_frequency_hz)}
-          @change=${(event) => setFrequency(Number(event.target.value))}>${[50, 60].map((value) => b`<option value=${value}>${value} Hz</option>`)}</select></label>
-        <label>Reporting interval <select aria-label="Reporting interval" .value=${String(draft.update_interval_s)}
-          @change=${(event) => patch({ update_interval_s: Number(event.target.value) })}>${INTERVALS.map((value) => b`<option value=${value}>${value} seconds</option>`)}</select></label>
+        <label>Line frequency (N. America: 60Hz) <select aria-label="Line frequency" .value=${String(draft.line_frequency_hz)}
+          @change=${(event) => setFrequency(Number(event.target.value))}>${[50, 60].map((value) => b`<option value=${value} ?selected=${draft.line_frequency_hz === value}>${value} Hz</option>`)}</select></label>
+        <label>Reporting interval (default: 10 seconds) <select aria-label="Reporting interval" .value=${String(draft.update_interval_s)}
+          @change=${(event) => patch({ update_interval_s: Number(event.target.value) })}>${INTERVALS.map((value) => b`<option value=${value} ?selected=${draft.update_interval_s === value}>${value} seconds</option>`)}</select></label>
       </div>
-      <p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>
+      ${intervalImpact(draft.update_interval_s) ? b`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : A}
       ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
       <h3>Voltage references</h3>
       <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
@@ -2003,8 +2047,8 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
             ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? b`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>
           <label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
             @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number(event.target.value) } : item) })} /></label>
-          <label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
-            @input=${(event) => setNominalVoltage(reference.reference_id, Number(event.target.value))} /></label>
+          ${["three_phase", "custom"].includes(draft.electrical_system) ? b`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
+            @input=${(event) => setNominalVoltage(reference.reference_id, Number(event.target.value))} /></label>` : A}
           ${draft.voltage_references.length > 1 ? b`<button class="secondary" aria-label=${`Remove ${reference.reference_id} voltage reference`} @click=${() => removeReference(reference.reference_id)}>Remove reference</button>` : ""}
         </section>`)}
       </div>
@@ -2775,6 +2819,24 @@ const panelStyles = i$5`
   .row-toggle { color: var(--accent); border: 0; padding: 4px; }
   .mobile-label { display: none; }
   .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 16px 30px; background: var(--surface-alt); border-top: 1px solid var(--border); }
+  .aggregate-list { display: grid; gap: 16px; margin: 14px 0; }
+  .aggregate-card { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .aggregate-card > legend { padding: 0 8px; }
+  .aggregate-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 22px; }
+  .aggregate-fields label { display: grid; align-content: start; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
+  .aggregate-fields input, .aggregate-fields select { width: 100%; padding: 10px; border: 1px solid var(--border); }
+  .aggregate-fields small { color: var(--muted); font-weight: var(--ha-font-weight-normal, 400); }
+  .aggregate-channels { margin: 18px 0 14px; }
+  .aggregate-channels > legend { font-size: var(--ha-font-size-l, 16px); }
+  .aggregate-channel-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .aggregate-channel-group { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); }
+  .aggregate-channel-group h4 { margin: 0 0 8px; }
+  .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .aggregate-channel-option { display: flex; align-items: center; min-width: 0; min-height: 44px; gap: 7px; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface); cursor: pointer; overflow-wrap: anywhere; }
+  .aggregate-channel-option input { flex: 0 0 auto; min-height: auto; margin: 0; }
+  .aggregate-channel-option.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+  .aggregate-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+  .aggregate-actions button { margin-left: auto; }
   .row-count { color: var(--muted); padding-left: 12px; }
   pre { max-height: 260px; overflow: auto; padding: 16px; color: var(--text); background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius-small); white-space: pre-wrap; }
   .config-diff { white-space: pre; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
@@ -2817,6 +2879,8 @@ const panelStyles = i$5`
   .measurement-evidence { margin: 14px 0; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-alt); }
   .measurement-evidence h3 { margin-top: 0; }
   .measurement-evidence dl, .evidence-list, .upload-progress { display: grid; gap: 6px; }
+  .job-progress { display: grid; gap: 6px; margin-top: 12px; }
+  .job-progress progress { width: 100%; }
   details { margin-top: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
   summary { display: flex; align-items: center; padding: 12px 16px; cursor: pointer; font-weight: var(--ha-font-weight-bold, 700); }
   .technical-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 28px; padding: 0 16px 16px; }
@@ -2838,7 +2902,9 @@ const panelStyles = i$5`
     .ct-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .ct-row > * { min-width: 0; }
     .mobile-label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; }
-    .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card { grid-template-columns: 1fr; }
+    .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card, .aggregate-fields, .aggregate-channel-groups { grid-template-columns: 1fr; }
+    .aggregate-channel-group > div { grid-template-columns: 1fr; }
+    .aggregate-actions button { width: 100%; margin-left: 0; }
     .progress-steps { grid-template-columns: 1fr; gap: 8px; }
     .action-footer { left: 0; padding: 12px 18px; }
     .offset-step { padding-bottom: 84px; }
@@ -2863,6 +2929,7 @@ const REBIND_TIMEOUT_MS = 1e4;
 const REBIND_RETRY_MS = 250;
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const meterSettings = ({ authoritative: _authoritative, warnings: _warnings, ...meter }) => meter;
+const profileNominalVoltage = (system) => system === "split_phase_120_240" ? 120 : system === "single_phase_230" ? 230 : null;
 const ENTITY_COUNT_WARNING_THRESHOLD = 100;
 class CircuitSetupPanel extends i$2 {
   constructor() {
@@ -3248,17 +3315,30 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
   }
   showInventory(inventory) {
-    this.inventory = inventory;
-    this.drafts = new Map(inventory.channels.map((channel) => {
+    const configured = new Map(this.meterConfiguration?.configuration.channels.map((channel) => [channel.channel, channel]) ?? []);
+    this.inventory = { ...inventory, channels: inventory.channels.map((channel) => {
+      const settings = configured.get(channel.channel);
+      return settings ? {
+        ...channel,
+        name: settings.name,
+        selected_model_id: settings.model_id,
+        reporting_multiplier: settings.reporting_multiplier,
+        display_label: settings.custom_label,
+        selection_verified_against_config: true,
+        stored_selection_present: true
+      } : channel;
+    }) };
+    this.drafts = new Map(this.inventory.channels.map((channel) => {
+      const settings = configured.get(channel.channel);
       const modelId = channel.selected_model_id ?? "";
       const preset = inventory.catalog.presets.find((item) => item.model_id === modelId);
       return [channel.channel, {
         name: channel.name,
         modelId,
         multiplier: channel.reporting_multiplier,
-        customGainCt: modelId === "custom" || channel.selected_model_id === null ? channel.raw_gain_ct * channel.reporting_multiplier : void 0,
+        customGainCt: modelId === "custom" ? settings?.custom_gain_ct ?? channel.raw_gain_ct * channel.reporting_multiplier : void 0,
         customLabel: channel.display_label ?? void 0,
-        burdenAcknowledged: channel.selection_verified_against_config && (modelId === "custom" || preset?.requires_burden_jumper_cut === true),
+        burdenAcknowledged: settings?.burden_output_acknowledged ?? (channel.selection_verified_against_config && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
         expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518
       }];
     }));
@@ -3584,16 +3664,19 @@ class CircuitSetupPanel extends i$2 {
       multi_reference_preparation_acknowledged: false
     } };
     const importedMeter = normalized.configuration.meter;
-    const profileDefault = this.electricalSystem === "split_phase_120_240" ? 120 : this.electricalSystem === "single_phase_230" ? 230 : null;
+    const profileDefault = profileNominalVoltage(this.electricalSystem);
     const defaultImport = importedMeter.voltage_layout === "standard" && importedMeter.electrical_system === "split_phase_120_240" && importedMeter.line_frequency_hz === 60 && importedMeter.voltage_references.every((reference) => reference.nominal_voltage_v === 120);
     const seedInstallerIntent = this.newInstallDeviceId !== null && this.selectedDeviceId === this.newInstallDeviceId && this.electricalProfileConfirmed && this.lineFrequencyHz !== null && defaultImport;
     const seededMeter = seedInstallerIntent ? {
       ...importedMeter,
       electrical_system: this.electricalSystem,
       line_frequency_hz: this.lineFrequencyHz,
-      voltage_references: importedMeter.voltage_references.map((reference) => profileDefault !== null && !this.meterNominalVoltageTouched.has(reference.reference_id) ? { ...reference, nominal_voltage_v: profileDefault } : reference)
+      voltage_references: importedMeter.voltage_references.map((reference) => profileDefault !== null ? { ...reference, nominal_voltage_v: profileDefault } : reference)
     } : importedMeter;
-    const seeded = { ...normalized, configuration: { ...normalized.configuration, meter: seededMeter } };
+    const fixedVoltage = profileNominalVoltage(seededMeter.electrical_system);
+    const voltageMismatch = fixedVoltage !== null && seededMeter.voltage_references.some((reference) => reference.nominal_voltage_v !== fixedVoltage);
+    const resolvedMeter = voltageMismatch ? { ...seededMeter, voltage_references: seededMeter.voltage_references.map((reference) => ({ ...reference, nominal_voltage_v: fixedVoltage })) } : seededMeter;
+    const seeded = { ...normalized, configuration: { ...normalized.configuration, meter: resolvedMeter } };
     this.verifiedMeterConfiguration = configuration.capabilities.configuration_authoritative ? normalized : null;
     this.sourcePackageOptions = {
       power_quality: [...normalized.configuration.power_quality],
@@ -3610,9 +3693,9 @@ class CircuitSetupPanel extends i$2 {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields]
     };
-    this.canonicalConfigurationChanged = this.packageOptionsTouched || seededMeter !== importedMeter || reconciliation?.changed === true;
+    this.canonicalConfigurationChanged = this.packageOptionsTouched || resolvedMeter !== importedMeter || reconciliation?.changed === true;
     this.meterSettingsDraft = {
-      ...seededMeter,
+      ...resolvedMeter,
       authoritative: configuration.capabilities.configuration_authoritative,
       warnings: configuration.warnings
     };
@@ -3627,7 +3710,7 @@ class CircuitSetupPanel extends i$2 {
       ...this.meterSettingsDraft,
       electrical_system: electricalSystem,
       ...defaults && !this.meterFrequencyTouched ? { line_frequency_hz: defaults.frequency } : {},
-      ...defaults ? { voltage_references: this.meterSettingsDraft.voltage_references.map((reference) => this.meterNominalVoltageTouched.has(reference.reference_id) ? reference : { ...reference, nominal_voltage_v: defaults.voltage }) } : {}
+      ...defaults ? { voltage_references: this.meterSettingsDraft.voltage_references.map((reference) => ({ ...reference, nominal_voltage_v: defaults.voltage })) } : {}
     };
     this.updateMeterSettings(this.meterSettingsDraft);
     this.requestUpdate();
@@ -3946,11 +4029,13 @@ class CircuitSetupPanel extends i$2 {
     );
   }
   async transactionAction(action) {
-    if (!this.api || !this.transaction || !this.selectedDeviceId) return;
+    if (!this.api || !this.transaction || !this.selectedDeviceId || this.pendingAction) return;
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
     const generation = ++this.operationGeneration;
+    this.pendingAction = action;
+    this.requestUpdate();
     await this.run(
       async () => {
         const args = [deviceId, current.transaction_id, current.source_sha256];
@@ -4014,6 +4099,8 @@ class CircuitSetupPanel extends i$2 {
       action === "install" && this.calibrationHandoff ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values." : "This confirmation is stale. Reload the CT inventory before making another change.",
       () => this.ownsOperation(generation, api, deviceId)
     );
+    if (this.pendingAction === action) this.pendingAction = "";
+    this.requestUpdate();
   }
   async startSession() {
     if (!this.api || !this.selectedDeviceId || this.sessionStarting || this.pendingAction) return;
@@ -4612,7 +4699,8 @@ class CircuitSetupPanel extends i$2 {
       this.meterConfiguration?.configuration ?? null,
       this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null,
       this.pendingAction === "review-back",
-      this.reviewCorrection !== null
+      this.reviewCorrection !== null,
+      this.pendingAction
     );
     if (this.step === "safety") return safetyStep(
       this.session,

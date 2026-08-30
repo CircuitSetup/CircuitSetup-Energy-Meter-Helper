@@ -6,11 +6,9 @@ test("inline ESP Web Tools registers in the helper panel without opening a page"
   await page.goto("/test/harness.html");
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
 
-  const registered = await page.evaluate(async () => Promise.race([
-    customElements.whenDefined("esp-web-install-button").then(() => true),
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
-  ]));
-  expect(registered).toBe(true);
+  await expect.poll(() => page.evaluate(
+    () => Boolean(customElements.get("esp-web-install-button")),
+  )).toBe(true);
 
   const pageOpened = page.context().waitForEvent("page", { timeout: 250 }).then(() => true).catch(() => false);
   await page.locator("circuitsetup-energy-meter-helper-panel").evaluate((panel, manifest) => {

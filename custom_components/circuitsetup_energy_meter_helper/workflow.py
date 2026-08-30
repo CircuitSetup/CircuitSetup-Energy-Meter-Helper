@@ -326,8 +326,10 @@ class LazyDeviceBuilder:
     async def async_validate(self, configuration: str) -> Any:
         return await (await self._ready()).async_validate(configuration)
 
-    async def async_compile(self, configuration: str) -> Any:
-        return await (await self._ready()).async_compile(configuration)
+    async def async_compile(
+        self, configuration: str, progress: Callable[[Any], None] | None = None
+    ) -> Any:
+        return await (await self._ready()).async_compile(configuration, progress)
 
     async def async_upload(
         self, configuration: str, progress: Callable[[Any], None] | None = None
@@ -765,14 +767,6 @@ class EntryWorkflow:
             )
         mac = self._mac(device_id)
         stored_read = await self._store.async_get_meter_configuration_read(mac)
-        if stored_read.stale or (
-            stored_read.configuration is not None
-            and (
-                snapshot is None
-                or stored_read.configuration.config_sha256 != snapshot.sha256
-            )
-        ):
-            raise WorkflowHandleError("stored meter configuration is stale")
         session_id = uuid4().hex
         meter_configuration: MeterConfigurationRequest | None = None
         if snapshot is not None:
@@ -793,7 +787,7 @@ class EntryWorkflow:
                 reporting_multipliers=_stored_reporting_multipliers(
                     selections, snapshot.sha256
                 ),
-                stored_semantics_stale=False,
+                stored_semantics_stale=stored_read.stale,
             ).configuration
         cleanup = self._cleaning_macs.get(mac)
         if cleanup is not None and await _wait_for_owned_cleanup(cleanup):
@@ -1410,7 +1404,9 @@ class EntryWorkflow:
             canonical_mac(mac),
             topology,
             {
-                channel.channel: channel.current_sensor.descriptor.name
+                channel.channel: channel.current_sensor.descriptor.name.removesuffix(
+                    " Amps"
+                )
                 for channel in binding.channels
             },
             len(binding.channels),

@@ -255,6 +255,41 @@ def _apply_package_options(
     active_package_line = re.compile(
         r"^(?P<indent> *)-\s+Software/ESPHome/.*\.yaml(?:\s*(?:#.*)?)?(?:\r?\n)?$"
     )
+    files_line = re.compile(r"^(?P<indent> *)files:\s*(?:#.*)?(?:\r?\n)?$")
+
+    def package_indent(target_index: int, fallback: str) -> str:
+        def belongs_to_files_block(line: str, parent_indent: int) -> bool:
+            body = line.rstrip("\r\n")
+            stripped = body.lstrip(" ")
+            if not stripped or stripped.startswith("#"):
+                return True
+            indent = len(body) - len(stripped)
+            return indent > parent_indent or (
+                indent == parent_indent and stripped.startswith("-")
+            )
+
+        for start in range(target_index - 1, -1, -1):
+            if (files := files_line.fullmatch(lines[start])) is None:
+                continue
+            parent_indent = len(files.group("indent"))
+            end = next(
+                (
+                    index
+                    for index in range(start + 1, len(lines))
+                    if not belongs_to_files_block(lines[index], parent_indent)
+                ),
+                len(lines),
+            )
+            if target_index >= end:
+                continue
+            peers = [
+                (abs(index - target_index), peer.group("indent"))
+                for index in range(start + 1, end)
+                if (peer := active_package_line.fullmatch(lines[index])) is not None
+            ]
+            return min(peers)[1] if peers else fallback
+        return fallback
+
     changes: list[SubstitutionChange] = []
     for feature, (directory, suffix) in _PACKAGE_FEATURES.items():
         for board_index, enabled in enumerate(desired[feature]):
@@ -279,13 +314,7 @@ def _apply_package_options(
             index, match = matches[0]
             indent = match.group("indent")
             if enabled:
-                peers = [
-                    (abs(peer_index - index), peer.group("indent"))
-                    for peer_index, line in enumerate(lines)
-                    if (peer := active_package_line.fullmatch(line)) is not None
-                ]
-                if peers:
-                    indent = min(peers)[1]
+                indent = package_indent(index, indent)
             lines[index] = (
                 indent
                 + ("" if enabled else "#")

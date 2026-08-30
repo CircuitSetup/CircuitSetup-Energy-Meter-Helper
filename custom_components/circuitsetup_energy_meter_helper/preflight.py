@@ -64,16 +64,6 @@ async def async_preflight(
     await device_lock.acquire()
     try:
         issues = _validate_binding(binding)
-        wait_for_sensors = getattr(session, "async_wait_for_sensor_states", None)
-        if wait_for_sensors is not None:
-            await wait_for_sensors(
-                frozenset(
-                    (entity.descriptor.device_id, entity.descriptor.key)
-                    for entity in binding.entities
-                    if entity.descriptor.kind == "sensor"
-                )
-            )
-        issues.extend(_validate_state_availability(session, binding))
         if issues:
             return PreflightResult(tuple(issues))
 
@@ -232,49 +222,6 @@ def _finite_attr(info: Any, name: str) -> float | None:
     except AttributeError, TypeError, ValueError:
         return None
     return value if math.isfinite(value) else None
-
-
-def _validate_state_availability(
-    session: Any, binding: MeterBinding
-) -> list[PreflightIssue]:
-    cache = getattr(session, "state_cache", None)
-    if cache is None:
-        return [
-            PreflightIssue(
-                PreflightCode.UNAVAILABLE,
-                "device",
-                "native state cache is unavailable",
-            )
-        ]
-    issues: list[PreflightIssue] = []
-    for entity in binding.entities:
-        descriptor = entity.descriptor
-        if descriptor.kind != "sensor":
-            continue
-        state_name = f"{descriptor.kind.title()}State"
-        record = next(
-            (
-                value
-                for (state_type, device_id, key), value in cache.items()
-                if state_type.__name__ == state_name
-                and device_id == descriptor.device_id
-                and key == descriptor.key
-            ),
-            None,
-        )
-        stale = bool(getattr(record, "stale", False))
-        state = (
-            getattr(record, "state", None) if hasattr(record, "received_at") else record
-        )
-        if record is None or stale or bool(getattr(state, "missing_state", False)):
-            issues.append(
-                PreflightIssue(
-                    PreflightCode.UNAVAILABLE,
-                    entity.role,
-                    "native entity state is unavailable",
-                )
-            )
-    return issues
 
 
 def _references(binding: MeterBinding) -> tuple[BoundEntity, ...]:

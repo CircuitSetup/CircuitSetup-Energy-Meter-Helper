@@ -109,6 +109,24 @@ export const panelStyles = css`
   .row-toggle { color: var(--accent); border: 0; padding: 4px; }
   .mobile-label { display: none; }
   .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 16px 30px; background: var(--surface-alt); border-top: 1px solid var(--border); }
+  .aggregate-list { display: grid; gap: 16px; margin: 14px 0; }
+  .aggregate-card { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .aggregate-card > legend { padding: 0 8px; }
+  .aggregate-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 22px; }
+  .aggregate-fields label { display: grid; align-content: start; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
+  .aggregate-fields input, .aggregate-fields select { width: 100%; padding: 10px; border: 1px solid var(--border); }
+  .aggregate-fields small { color: var(--muted); font-weight: var(--ha-font-weight-normal, 400); }
+  .aggregate-channels { margin: 18px 0 14px; }
+  .aggregate-channels > legend { font-size: var(--ha-font-size-l, 16px); }
+  .aggregate-channel-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .aggregate-channel-group { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); }
+  .aggregate-channel-group h4 { margin: 0 0 8px; }
+  .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .aggregate-channel-option { display: flex; align-items: center; min-width: 0; min-height: 44px; gap: 7px; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface); cursor: pointer; overflow-wrap: anywhere; }
+  .aggregate-channel-option input { flex: 0 0 auto; min-height: auto; margin: 0; }
+  .aggregate-channel-option.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+  .aggregate-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+  .aggregate-actions button { margin-left: auto; }
   .row-count { color: var(--muted); padding-left: 12px; }
   pre { max-height: 260px; overflow: auto; padding: 16px; color: var(--text); background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius-small); white-space: pre-wrap; }
   .config-diff { white-space: pre; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
@@ -151,6 +169,8 @@ export const panelStyles = css`
   .measurement-evidence { margin: 14px 0; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-alt); }
   .measurement-evidence h3 { margin-top: 0; }
   .measurement-evidence dl, .evidence-list, .upload-progress { display: grid; gap: 6px; }
+  .job-progress { display: grid; gap: 6px; margin-top: 12px; }
+  .job-progress progress { width: 100%; }
   details { margin-top: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
   summary { display: flex; align-items: center; padding: 12px 16px; cursor: pointer; font-weight: var(--ha-font-weight-bold, 700); }
   .technical-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 28px; padding: 0 16px 16px; }
@@ -172,7 +192,9 @@ export const panelStyles = css`
     .ct-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .ct-row > * { min-width: 0; }
     .mobile-label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; }
-    .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card { grid-template-columns: 1fr; }
+    .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card, .aggregate-fields, .aggregate-channel-groups { grid-template-columns: 1fr; }
+    .aggregate-channel-group > div { grid-template-columns: 1fr; }
+    .aggregate-actions button { width: 100%; margin-left: 0; }
     .progress-steps { grid-template-columns: 1fr; gap: 8px; }
     .action-footer { left: 0; padding: 12px 18px; }
     .offset-step { padding-bottom: 84px; }
