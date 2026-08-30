@@ -473,6 +473,19 @@ describe("CircuitSetup panel", () => {
     expect(root.querySelector('[data-action="add-aggregate"]')).toBeNull();
   });
 
+  it("summarizes every detected existing total regardless of its identifier", () => {
+    const response = meterResponse();
+    const configuration = response.configuration as MeterConfigurationRequest;
+    configuration.aggregates = [{ aggregate_id: "mains1", name: "Mains", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false }];
+    const root = document.createElement("div");
+
+    render(ctInventoryStep(response as unknown as CtInventory, 0, new Map(), () => undefined, () => undefined,
+      () => undefined, () => undefined, false, false, configuration, () => undefined, () => undefined, true), root);
+
+    expect(root.textContent).toContain("Mains total = CT1 + CT2");
+    expect(root.textContent).not.toContain("No automatic totals are configured.");
+  });
+
   it("creates a custom aggregate with safe consumption defaults", () => {
     const response = meterResponse();
     let updated = response.configuration as MeterConfigurationRequest;

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from base64 import urlsafe_b64encode
 from dataclasses import dataclass, replace
 from difflib import unified_diff
 
@@ -540,8 +541,26 @@ def _render_aggregates(
         f"00_{total_id}": _internal_total(total_id)
         for total_id in _official_total_ids(topology)
     }
-    for aggregate in aggregates:
-        entries[f"10_{aggregate.aggregate_id}"] = _aggregate_entry(aggregate)
+    for order, aggregate in enumerate(aggregates):
+        metadata = urlsafe_b64encode(json.dumps(
+            {
+                "aggregate_id": aggregate.aggregate_id,
+                "name": aggregate.name,
+                "role": aggregate.role.value,
+                "channels": aggregate.channels,
+                "measurement_method": aggregate.measurement_method.value,
+                "parent_id": aggregate.parent_id,
+                "energy_mode": aggregate.energy_mode.value,
+                "expose_power": aggregate.expose_power,
+                "expose_current": aggregate.expose_current,
+                "order": order,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()).decode().rstrip("=")
+        entries[f"10_{aggregate.aggregate_id}"] = (
+            f"  # csemh-aggregate: {metadata}\n" + _aggregate_entry(aggregate)
+        )
     return render_aggregates(entries)
 
 

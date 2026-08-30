@@ -1764,7 +1764,7 @@ function circuitsEditor(configuration, drafts, update, managedTotals, managedTot
     aggregate.role === "two_pole" && !["one_ct_double_power", "both_conductors_one_ct", "two_ct_sum"].includes(aggregate.measurement_method) ? `${aggregate.name}: select a two-pole measurement method.` : "",
     aggregate.role === "two_pole" && aggregate.channels.some((channel) => configuration.aggregates.filter((item) => item.role === "two_pole" && item.channels.includes(channel)).length > 1) ? `${aggregate.name}: a CT cannot belong to two two-pole aggregates.` : ""
   ].filter(Boolean));
-  const automaticPreview = configuration.aggregates.filter((aggregate) => aggregate.aggregate_id.startsWith("auto-")).map((aggregate) => `${aggregate.name} total = ${aggregate.channels.map((channel) => `CT${channel}`).join(" + ")}`);
+  const automaticPreview = configuration.aggregates.map((aggregate) => `${aggregate.name} total = ${aggregate.channels.map((channel) => `CT${channel}`).join(" + ")}`);
   return b`<section class="step-content" aria-labelledby="aggregates-heading">
     <h2 id="aggregates-heading">Automatic totals</h2>
     <p class="info-band">${automaticPreview.length ? automaticPreview.join(" · ") : "No automatic totals are configured."}</p>

@@ -1,5 +1,7 @@
 """Tests for firmware configuration capability discovery."""
 
+import json
+from base64 import urlsafe_b64encode
 from dataclasses import fields, replace
 from hashlib import sha256
 from types import SimpleNamespace
@@ -149,6 +151,32 @@ def _inventory(
     )
 
 
+def _helper_mains_total() -> str:
+    return (
+        "sensor:\n"
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+        "  - id: !extend totalEnergyDaily\n"
+        "    internal: true\n"
+        "  - platform: template\n"
+        "    id: csemh_mains1_power\n"
+        '    name: "${friendly_name} Mains Power"\n'
+        "    lambda: return std::max(0.0f, id(ct1Watts).state + id(ct2Watts).state);\n"
+        "    unit_of_measurement: W\n"
+        "    device_class: power\n"
+        "    update_interval: ${update_time}\n"
+        "  - platform: total_daily_energy\n"
+        "    id: csemh_mains1_energy\n"
+        '    name: "${friendly_name} Mains Energy"\n'
+        "    power_id: csemh_mains1_power\n"
+        "    filters:\n"
+        "      - multiply: 0.001\n"
+        "    unit_of_measurement: kWh\n"
+        "    device_class: energy\n"
+        "    state_class: total_increasing\n"
+        "# End CircuitSetup Energy Meter Helper: aggregates v1\n"
+    )
+
+
 def test_inventory_has_server_plan_and_catalog_fields() -> None:
     inventory = _inventory(_document())
 
@@ -169,6 +197,98 @@ def test_inventory_has_server_plan_and_catalog_fields() -> None:
 
 def test_inventory_without_stored_configuration_is_legacy_inferred() -> None:
     assert _inventory(_document()).capabilities.semantic_source == "legacy_inferred"
+
+
+def test_helper_owned_total_is_recovered_when_matching_storage_is_empty() -> None:
+    """An empty store record must not hide an aggregate present in owned YAML."""
+    content = _document(contract=True) + _helper_mains_total()
+    baseline = _inventory(content).configuration
+    channels = tuple(
+        replace(
+            channel,
+            role=CircuitRole.GRID if channel.channel in (1, 2) else CircuitRole.BRANCH,
+        )
+        for channel in baseline.channels
+    )
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(),
+        baseline.meter,
+        channels,
+        (),
+        baseline.power_quality,
+        baseline.status_fields,
+    )
+
+    inventory = _inventory(content, stored=stored)
+
+    assert inventory.configuration.aggregates == (
+        CircuitAggregate(
+            "mains1",
+            "Mains",
+            CircuitRole.GRID,
+            (1, 2),
+            MeasurementMethod.TWO_CT_SUM,
+            None,
+            EnergyMode.CONSUMPTION,
+        ),
+    )
+    assert "aggregate_semantics_inferred" in inventory.warnings
+
+
+def test_malformed_owned_total_metadata_fails_closed() -> None:
+    """Untrusted metadata must not make inventory parsing fail."""
+    data = {
+        "aggregate_id": [],
+        "name": "Mains",
+        "role": "grid",
+        "channels": [1, 2],
+        "measurement_method": "two_ct_sum",
+        "parent_id": None,
+        "energy_mode": "consumption",
+        "expose_power": True,
+        "expose_current": False,
+        "order": 0,
+    }
+    metadata = urlsafe_b64encode(
+        json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
+    ).decode().rstrip("=")
+    block = _helper_mains_total().replace(
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n",
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+        f"  # csemh-aggregate: {metadata}\n",
+    )
+
+    inventory = _inventory(_document(contract=True) + block)
+
+    assert inventory.configuration.aggregates == ()
+    assert "aggregate_semantics_unreadable" in inventory.warnings
+
+
+def test_builtin_meter_totals_are_exposed_as_one_editable_aggregate() -> None:
+    """Dropping official total IDs would leave an installed total invisible."""
+    content = _document(contract=True) + (
+        "sensor:\n"
+        "  - id: totalAmps\n"
+        "  - id: totalWatts\n"
+        "  - id: totalEnergyDaily\n"
+    )
+
+    inventory = _inventory(content)
+
+    assert inventory.configuration.aggregates == (
+        CircuitAggregate(
+            "meter-total",
+            "Meter total",
+            CircuitRole.CUSTOM,
+            (1, 2, 3, 4, 5, 6),
+            MeasurementMethod.DIRECT,
+            None,
+            EnergyMode.CONSUMPTION,
+            True,
+            True,
+        ),
+    )
+    assert "builtin_total_semantics_inferred" in inventory.warnings
 
 
 @pytest.mark.parametrize("interval", (1, 2, 5, 10, 30, 60))
@@ -255,7 +375,13 @@ def test_legacy_inventory_keeps_yaml_ct_values_and_requires_electrical_confirmat
     assert inventory.configuration.meter.line_frequency_hz == 60
     assert inventory.configuration.meter.update_interval_s == 10
     assert inventory.voltage_topology.references == (("main", ("main_1", "main_2")),)
-    assert inventory.configuration.aggregates == ()
+    assert inventory.configuration.aggregates == (
+        CircuitAggregate(
+            "meter-total", "Meter total", CircuitRole.CUSTOM,
+            (1, 2, 3, 4, 5, 6), MeasurementMethod.DIRECT,
+            None, EnergyMode.NONE, True, False,
+        ),
+    )
     assert inventory.configuration.power_quality == (True,)
     assert inventory.configuration.status_fields == (True,)
     assert {

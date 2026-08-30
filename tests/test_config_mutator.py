@@ -2044,6 +2044,37 @@ def test_aggregate_preview_upgrades_legacy_contract_and_never_invents_default_to
     ).proposed_content == legacy.content
 
 
+def test_rendered_aggregate_metadata_is_lossless_without_storage() -> None:
+    """Owned YAML must recover semantics that sensor expressions cannot encode."""
+    snapshot = _contract_snapshot()
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    aggregates = (
+        CircuitAggregate(
+            "parent-total", "Parent", CircuitRole.CUSTOM, (1,),
+            MeasurementMethod.BOTH_CONDUCTORS_ONE_CT, None,
+            EnergyMode.BIDIRECTIONAL, False, False,
+        ),
+        CircuitAggregate(
+            "child-total", "Child", CircuitRole.SOLAR, (2,),
+            MeasurementMethod.DIRECT, "parent-total",
+            EnergyMode.GENERATION, True, False,
+        ),
+    )
+    requested = replace(current.configuration, aggregates=aggregates)
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    installed = replace(
+        snapshot,
+        content=plan.proposed_content,
+        sha256=sha256(plan.proposed_content.encode()).hexdigest(),
+    )
+
+    recovered = _inventory(installed, topology)
+
+    assert recovered.configuration.aggregates == aggregates
+    assert "aggregate_semantics_inferred" not in recovered.warnings
+
+
 @pytest.mark.parametrize(
     ("addon_count", "hidden_totals"),
     (

@@ -255,7 +255,6 @@ function circuitsEditor(
     aggregate.role === "two_pole" && aggregate.channels.some((channel) => configuration.aggregates.filter((item) => item.role === "two_pole" && item.channels.includes(channel)).length > 1) ? `${aggregate.name}: a CT cannot belong to two two-pole aggregates.` : "",
   ].filter(Boolean));
   const automaticPreview = configuration.aggregates
-    .filter((aggregate) => aggregate.aggregate_id.startsWith("auto-"))
     .map((aggregate) => `${aggregate.name} total = ${aggregate.channels.map((channel) => `CT${channel}`).join(" + ")}`);
   return html`<section class="step-content" aria-labelledby="aggregates-heading">
     <h2 id="aggregates-heading">Automatic totals</h2>
