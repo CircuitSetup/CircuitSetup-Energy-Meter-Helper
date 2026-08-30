@@ -379,6 +379,91 @@ def test_helper_and_official_totals_populate_together_with_global_visibility() -
         assert aggregates[aggregate_id].energy_mode is EnergyMode.NONE
 
 
+def test_custom_template_totals_preserve_channels_names_and_visibility() -> None:
+    """Root template sums are editable even when HA hides one output."""
+    content = _document(contract=True, addon_count=1) + (
+        "sensor:\n"
+        "  - platform: template\n"
+        "    id: totalAmps\n"
+        "    name: House Total Amps\n"
+        "    internal: true\n"
+        "    lambda: return id(ct1Amps).state + id(ct2Amps).state ;\n"
+        "    unit_of_measurement: A\n"
+        "    device_class: current\n"
+        "  - platform: template\n"
+        "    id: totalWatts\n"
+        "    name: House Total Watts\n"
+        "    lambda: return id(ct1Watts).state + id(ct2Watts).state ;\n"
+        "    unit_of_measurement: W\n"
+        "    device_class: power\n"
+        "  - platform: template\n"
+        "    id: totalChargerWatts\n"
+        "    name: Total Charger Watts\n"
+        "    lambda: return id(ct5Watts).state + id(ct6Watts).state ;\n"
+        "    unit_of_measurement: W\n"
+        "    device_class: power\n"
+        "  - platform: template\n"
+        "    id: totalAC1Watts\n"
+        "    name: Total AC1 Watts\n"
+        "    internal: true\n"
+        "    lambda: return id(ct7Watts).state + id(ct8Watts).state ;\n"
+        "    unit_of_measurement: W\n"
+        "    device_class: power\n"
+    )
+
+    aggregates = {
+        aggregate.aggregate_id: aggregate
+        for aggregate in _inventory(content).configuration.aggregates
+    }
+
+    assert aggregates["meter-total"] == CircuitAggregate(
+        "meter-total", "House Total", CircuitRole.CUSTOM,
+        (1, 2), MeasurementMethod.TWO_CT_SUM,
+        None, EnergyMode.NONE, True, False,
+    )
+    assert aggregates["total-charger"] == CircuitAggregate(
+        "total-charger", "Total Charger", CircuitRole.CUSTOM,
+        (5, 6), MeasurementMethod.TWO_CT_SUM,
+        None, EnergyMode.NONE, True, False,
+    )
+    assert aggregates["total-ac1"] == CircuitAggregate(
+        "total-ac1", "Total AC1", CircuitRole.CUSTOM,
+        (7, 8), MeasurementMethod.TWO_CT_SUM,
+        None, EnergyMode.NONE, False, False,
+    )
+    for aggregate_id in ("main-total", "addon1-total"):
+        assert aggregates[aggregate_id].expose_power is False
+        assert aggregates[aggregate_id].expose_current is False
+
+
+def test_parent_template_total_links_default_board_calculations() -> None:
+    """Default board-total references become editable parent relationships."""
+    content = _document(contract=True, addon_count=1) + (
+        "sensor:\n"
+        "  - platform: template\n"
+        "    id: totalWatts\n"
+        "    name: House Total Watts\n"
+        "    lambda: return id(totalWattsMain).state + id(totalWattsAddOn1).state;\n"
+        "    unit_of_measurement: W\n"
+        "    device_class: power\n"
+        "  - platform: template\n"
+        "    id: totalAmps\n"
+        "    name: House Total Amps\n"
+        "    lambda: return id(totalAmpsMain).state + id(totalAmpsAddOn1).state;\n"
+        "    unit_of_measurement: A\n"
+        "    device_class: current\n"
+    )
+
+    aggregates = {
+        aggregate.aggregate_id: aggregate
+        for aggregate in _inventory(content).configuration.aggregates
+    }
+
+    assert aggregates["meter-total"].channels == tuple(range(1, 13))
+    assert aggregates["main-total"].parent_id == "meter-total"
+    assert aggregates["addon1-total"].parent_id == "meter-total"
+
+
 def test_global_daily_energy_is_detected_in_a_later_root_sensor_section() -> None:
     """ESPHome accepts repeated root sensor sections in existing meter files."""
     content = _document(contract=True) + (

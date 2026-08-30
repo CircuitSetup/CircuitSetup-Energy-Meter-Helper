@@ -473,20 +473,30 @@ describe("CircuitSetup panel", () => {
     expect(root.querySelector('[data-action="add-aggregate"]')).toBeNull();
   });
 
-  it("summarizes every detected existing total regardless of its identifier", () => {
+  it("tables every detected total with sources and internal outputs", () => {
     const response = meterResponse();
     const configuration = response.configuration as MeterConfigurationRequest;
-    configuration.aggregates = [{ aggregate_id: "mains1", name: "Mains", role: "custom", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false }];
+    configuration.aggregates = [
+      { aggregate_id: "house", name: "House Total", role: "custom", channels: [1, 2, 3, 4], measurement_method: "direct", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false },
+      { aggregate_id: "main-total", name: "Main total", role: "custom", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: "house", energy_mode: "none", expose_power: false, expose_current: false },
+      { aggregate_id: "addon1-total", name: "Add-on 1 total", role: "custom", channels: [3, 4], measurement_method: "two_ct_sum", parent_id: "house", energy_mode: "none", expose_power: false, expose_current: false },
+    ];
     const root = document.createElement("div");
 
     render(ctInventoryStep(response as unknown as CtInventory, 0, new Map(), () => undefined, () => undefined,
       () => undefined, () => undefined, false, false, configuration, () => undefined, () => undefined, true), root);
 
-    expect(root.textContent).toContain("Mains total = CT1 + CT2");
-    expect(root.textContent).not.toContain("No automatic totals are configured.");
-    expect((root.querySelector('[aria-label="mains1 aggregate role"]') as HTMLSelectElement).value).toBe("custom");
-    expect((root.querySelector('[aria-label="mains1 aggregate method"]') as HTMLSelectElement).value).toBe("two_ct_sum");
-    expect((root.querySelector('[aria-label="mains1 aggregate energy"]') as HTMLSelectElement).value).toBe("consumption");
+    const table = root.querySelector<HTMLTableElement>('table[aria-label="Automatic totals"]');
+    expect([...table?.querySelectorAll("th") ?? []].map((cell) => cell.textContent)).toEqual(["Name", "CTs / meter", "Outputs"]);
+    const rows = [...table?.querySelectorAll("tbody tr") ?? []].map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent));
+    expect(rows).toEqual([
+      ["House Total", "Main total + Add-on 1 total", "Power · Current (internal) · Energy"],
+      ["Main total", "CT1 + CT2", "Power (internal) · Current (internal)"],
+      ["Add-on 1 total", "CT3 + CT4", "Power (internal) · Current (internal)"],
+    ]);
+    expect((root.querySelector('[aria-label="main-total aggregate role"]') as HTMLSelectElement).value).toBe("custom");
+    expect((root.querySelector('[aria-label="main-total aggregate method"]') as HTMLSelectElement).value).toBe("two_ct_sum");
+    expect((root.querySelector('[aria-label="house aggregate energy"]') as HTMLSelectElement).value).toBe("consumption");
   });
 
   it("creates a custom aggregate with safe consumption defaults", () => {

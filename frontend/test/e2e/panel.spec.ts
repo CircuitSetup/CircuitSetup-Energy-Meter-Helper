@@ -797,7 +797,9 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByLabel("CT1 role").selectOption("grid");
   await page.getByLabel("CT2 role").selectOption("grid");
-  await expect(page.getByRole("region", { name: "Automatic totals", exact: true })).toContainText("Mains total = CT1 + CT2");
+  await expect(page.getByRole("region", { name: "Automatic totals", exact: true }).getByRole("row", {
+    name: "Mains CT1 + CT2 Power · Current (internal) · Energy", exact: true,
+  })).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
@@ -925,8 +927,12 @@ test("automatic role pairs remain distinct without preset aggregate controls", a
   await page.getByLabel("CT4 role").selectOption("subpanel");
   await page.getByLabel("CT5 role").selectOption("grid");
   await page.getByLabel("CT6 role").selectOption("grid");
-  await expect(page.getByRole("region", { name: "Automatic totals", exact: true }))
-    .toContainText("Mains total = CT5 + CT6 · Subpanel total = CT3 + CT4 · Two-pole circuit total = CT1 + CT2");
+  const totals = page.getByRole("region", { name: "Automatic totals", exact: true });
+  for (const row of [
+    "Mains CT5 + CT6 Power · Current (internal) · Energy",
+    "Subpanel CT3 + CT4 Power · Current (internal) · Energy",
+    "Two-pole circuit CT1 + CT2 Power · Current (internal) · Energy",
+  ]) await expect(totals.getByRole("row", { name: row, exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
   expect(preview.configuration).toEqual(expect.objectContaining({

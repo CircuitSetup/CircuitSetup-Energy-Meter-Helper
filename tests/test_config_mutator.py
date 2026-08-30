@@ -1785,8 +1785,48 @@ def test_default_total_controls_replace_each_builtin_entity() -> None:
     for total_id in ("totalAmpsMain", "totalWattsMain", "totalEnergyDaily"):
         assert f"- id: !extend {total_id}\n    internal: true" in block
     assert "id: csemh_main_total_power" in block
-    assert "id: csemh_main_total_current" not in block
+    assert "id: csemh_main_total_current" in block
+    assert "id: csemh_main_total_current\n    internal: true" in block
     assert "id: csemh_main_total_energy" not in block
+
+
+def test_custom_template_totals_are_internalized_before_managed_replacements() -> None:
+    """Migration keeps legacy W/A entities from duplicating editable totals."""
+    snapshot = _contract_snapshot()
+    custom = (
+        "  - platform: template\n"
+        "    id: totalChargerWatts\n"
+        "    name: Total Charger Watts\n"
+        "    lambda: return id(ct5Watts).state + id(ct6Watts).state;\n"
+        "    unit_of_measurement: W\n"
+        "    device_class: power\n"
+    )
+    content = snapshot.content.replace("sensor:\n", "sensor:\n" + custom, 1)
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+    topology = _topology()
+    current = _inventory(snapshot, topology)
+    requested = replace(
+        current.configuration,
+        aggregates=tuple(
+            replace(aggregate, expose_power=False)
+            if aggregate.aggregate_id == "total-charger"
+            else aggregate
+            for aggregate in current.configuration.aggregates
+        ),
+    )
+
+    plan = build_meter_configuration_mutation(
+        snapshot, topology, current, requested
+    )
+    block = plan.proposed_content.split("aggregates v1\n", 1)[1].split(
+        "# End CircuitSetup", 1
+    )[0]
+
+    assert "- id: !extend totalChargerWatts\n    internal: true" in block
+    assert "id: csemh_total_charger_power" in block
+    assert "id: csemh_total_charger_current\n    internal: true" in block
 
 
 def test_custom_daily_energy_id_is_not_hidden_with_default_totals() -> None:
@@ -1886,7 +1926,7 @@ def test_mains_and_solar_templates_split_grid_import_from_export() -> None:
     )
     _assert_daily_energy(block, "csemh_auto_mains_import_power")
     _assert_daily_energy(block, "csemh_auto_mains_export_power")
-    assert "csemh_auto_mains_current" not in block
+    assert "id: csemh_auto_mains_current\n    internal: true" in block
     assert 'name: "${friendly_name} Mains Import Energy"' in block
     assert 'name: "${friendly_name} Mains Return to Grid Power"' in block
     assert 'name: "${friendly_name} Mains Return to Grid Energy"' in block

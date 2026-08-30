@@ -35,6 +35,7 @@ from .meter_configuration import (
 from .meter_inventory import (
     MeterConfigurationInventory,
     _default_daily_energy_power_ids,
+    _legacy_template_total_ids,
 )
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import VerifiedCalibrationRecord
@@ -588,6 +589,7 @@ def _official_total_ids(document: ESPHomeConfigDocument) -> tuple[str, ...]:
         if (match := _OFFICIAL_TOTAL_ID.fullmatch(line.rstrip())) is not None
     ]
     total_ids.extend(total_id for total_id in explicit_ids if total_id != "totalEnergyDaily")
+    total_ids.extend(_legacy_template_total_ids(document))
     official_power_ids = {
         total_id for total_id in total_ids if total_id.startswith("totalWatts")
     }
@@ -616,14 +618,14 @@ def _aggregate_entry(aggregate: CircuitAggregate) -> str:
         "power",
         internal=power_internal,
     )
-    if aggregate.expose_current:
-        lines += _template_sensor(
-            f"{identifier}_current",
-            f"${{friendly_name}} {aggregate.name} Current",
-            _current_expression(aggregate),
-            "A",
-            "current",
-        )
+    lines += _template_sensor(
+        f"{identifier}_current",
+        f"${{friendly_name}} {aggregate.name} Current",
+        _current_expression(aggregate),
+        "A",
+        "current",
+        internal=not aggregate.expose_current,
+    )
     if aggregate.energy_mode is EnergyMode.CONSUMPTION:
         lines += _daily_energy(
             f"{identifier}_energy",
