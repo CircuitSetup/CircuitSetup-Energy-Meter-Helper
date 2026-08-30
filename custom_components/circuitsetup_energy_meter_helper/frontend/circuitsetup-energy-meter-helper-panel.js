@@ -965,11 +965,19 @@ function session(value, label) {
 }
 function offsetReadiness(value, label, expectedBoard, expectedStage) {
   const item = record(value, label);
-  exactKeys(item, ["stage", "ready", "connection_generation", "entities", "reasons", "thresholds"], label);
+  exactKeys(item, ["stage", "ready", "connection_generation", "entities", "reasons", "thresholds", "saved_offset_sources"], label);
   if (integer(item.stage, label) !== expectedStage || expectedBoard < 0 || expectedBoard > 6) throw new Error(`${label} response is invalid`);
   const ready = boolean(item.ready, label);
   const generation = integer(item.connection_generation, label);
   if (generation < 1) throw new Error(`${label} response is invalid`);
+  const sourceGroups = expectedBoard === 0 ? ["main_1", "main_2"] : [`addon${expectedBoard}_1`, `addon${expectedBoard}_2`];
+  const sources = array(item.saved_offset_sources, label, 2);
+  if (sources.length !== 2) throw new Error(`${label} response is invalid`);
+  sources.forEach((entry, index) => {
+    const pair = array(entry, label, 2);
+    if (pair.length !== 2 || pair[0] !== sourceGroups[index]) throw new Error(`${label} response is invalid`);
+    enumeration(pair[1], /* @__PURE__ */ new Set(["flash", "configuration", "unknown"]), label);
+  });
   const thresholds = record(item.thresholds, label);
   exactKeys(thresholds, ["sample_count", "zero_voltage_peak_volts", "zero_voltage_spread_volts", "zero_current_peak_amps", "zero_current_spread_amps", "voltage_present_minimum_volts", "voltage_present_spread_volts"], label);
   const sampleCount = integer(thresholds.sample_count, label);
@@ -1616,7 +1624,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                   @input=${(event) => update(channel.channel, { name: event.target.value })} /></label>
                 ${circuit ? b`<label role="cell"><span class="mobile-label">Circuit type</span><select aria-label=${`CT${channel.channel} role`} .value=${circuit.role} ?disabled=${!circuit.enabled}
                   @change=${(event) => patchChannel(channel.channel, { role: event.target.value })}>
-                  ${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role}>${roleLabel(role)}</option>`)}</select></label>` : b`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
+                  ${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role} ?selected=${role === circuit.role}>${roleLabel(role)}</option>`)}</select></label>` : b`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
                 <label role="cell"><span class="mobile-label">CT model / rating</span><select aria-label=${`CT${channel.channel} model`} .value=${draft.modelId} ?disabled=${labelOnly || draft.preserveExistingGain}
                   @change=${(event) => {
       const modelId = event.target.value;
@@ -1709,7 +1717,15 @@ function reconcileSplitPhaseAggregates(configuration, previousManaged = null) {
   const managed = configuration.aggregates.filter(isManaged);
   const preserved = configuration.aggregates.filter((aggregate) => !isManaged(aggregate));
   const preservedIds = new Set(preserved.map((aggregate) => aggregate.aggregate_id));
-  const claimed = new Set(preserved.flatMap((aggregate) => aggregate.channels));
+  const isDefaultTotal = (aggregate) => {
+    const match = /^(main|addon([1-6])|meter)-total$/.exec(aggregate.aggregate_id);
+    if (!match || aggregate.role !== "custom" || aggregate.measurement_method !== "direct" || !["none", "consumption"].includes(aggregate.energy_mode)) return false;
+    const board = Number(match[2] ?? 0);
+    const name = match[1] === "meter" ? "Meter total" : board === 0 ? "Main total" : `Add-on ${board} total`;
+    const channels = configuration.channels.filter((channel) => channel.enabled && (match[1] === "meter" || Math.floor((channel.channel - 1) / 6) === board)).map((channel) => channel.channel);
+    return aggregate.name === name && aggregate.channels.length === channels.length && aggregate.channels.every((channel, index) => channel === channels[index]);
+  };
+  const claimed = new Set(preserved.filter((aggregate) => !isDefaultTotal(aggregate)).flatMap((aggregate) => aggregate.channels));
   const rebuilt = ["split_phase_120_240", "custom"].includes(configuration.meter.electrical_system) ? Object.keys(automaticAggregates).flatMap((role) => {
     const channels = configuration.channels.filter((channel) => channel.enabled && channel.role === role && !claimed.has(channel.channel)).map((channel) => channel.channel);
     const definition = automaticAggregates[role];
@@ -2470,6 +2486,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
   const unavailable = capability?.status !== "available";
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
+  const savedSources = new Map(readiness?.saved_offset_sources ?? []);
   return b`
     <section class="step-content offset-step" aria-labelledby="step-heading">
       ${unavailable ? b`
@@ -2542,8 +2559,10 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
           ` : A}
           <section class="measurement-evidence" aria-label="Per-chip offset progress" aria-live="polite">
             <h3>Per-chip progress</h3>
-            <table><thead><tr><th>Chip</th><th>State</th><th>Backend evidence</th></tr></thead><tbody>
-              ${keys.map((key) => b`<tr><td>${key}</td><td>${tableByGroup.has(key) || stageState === "completed" ? "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
+            <table><thead><tr><th>Chip</th><th>Previously saved offsets</th><th>This run</th><th>Backend evidence</th></tr></thead><tbody>
+              ${keys.map((key) => b`<tr><td>${key}</td>
+                <td>${!readiness ? "Check measured readiness to inspect saved offsets." : tableByGroup.has(key) || stageState === "completed" ? "Fresh calibration saved during this session." : savedSources.get(key) === "flash" ? "Saved offsets detected; this run will recalibrate this chip." : savedSources.get(key) === "configuration" ? "Configuration offsets reported; this run will calibrate this chip." : "Saved-offset status unknown; this run still requires fresh calibration."}</td>
+                <td>${tableByGroup.has(key) || stageState === "completed" ? "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
                 <td>${tableByGroup.has(key) ? tableByGroup.get(key).map(([first, second]) => `${first}/${second}`).join(", ") : "—"}</td></tr>`)}
             </tbody></table>
           </section>
