@@ -557,7 +557,7 @@ export class CircuitSetupPanel extends LitElement {
   private workflowContext(): WorkflowContext {
     const runtimeOnly = this.configurationMode === "runtime_only"
       || (this.configurationMode === null
-        && this.setup?.configuration_authoritative === false
+        && !this.selectedConfigurationAvailable()
         && this.meterConfiguration === null);
     const mode = this.configurationMode ?? configurationModeFor({
       journeyOrigin: this.journeyOrigin,
@@ -661,6 +661,14 @@ export class CircuitSetupPanel extends LitElement {
 
   private selectedProjectName(): string | null {
     return this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.project_name ?? null;
+  }
+
+  private selectedConfiguration(): string | null {
+    return this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration ?? null;
+  }
+
+  private selectedConfigurationAvailable(): boolean {
+    return this.selectedConfiguration() !== null || this.setup?.configuration_authoritative !== false;
   }
 
   public showRecovery(state: "calibration_outcome_indeterminate" | "restart_failed"): void {
@@ -790,7 +798,7 @@ export class CircuitSetupPanel extends LitElement {
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.showTopologyResult(result);
-      if (this.setup?.configuration_authoritative === false) {
+      if (!this.selectedConfigurationAvailable()) {
         this.configurationMode = "runtime_only";
       } else {
         const configuration = await api.getMeterConfiguration(deviceId);
@@ -1957,11 +1965,10 @@ export class CircuitSetupPanel extends LitElement {
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, Boolean(this.topology),
       this.firmwareCatalog(), this.importFailedDeviceId)}
       ${this.topology ? topologyStep(this.topology, this.selectedProjectVersion(),
-        () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.setup?.configuration_authoritative !== false
-          && this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration
+        () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.selectedConfigurationAvailable()
           ? this.loadInventory() : this.navigate("calibration-plan")), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session") : nothing}`;
     if (this.step === "legacy-review" && this.meterConfiguration) return existingConfigurationStep(this.meterConfiguration, {
-      configurationFilename: this.setup?.devices.find((device) => device.entry_id === this.selectedDeviceId)?.configuration ?? "Unavailable",
+      configurationFilename: this.selectedConfiguration() ?? "Unavailable",
       projectName: this.selectedProjectName() ?? this.meterConfiguration.topology.project_name,
       projectVersion: this.selectedProjectVersion() ?? "Unavailable",
       boardCount: this.meterConfiguration.topology.board_count,

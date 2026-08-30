@@ -193,12 +193,16 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   let activeSourceSha256 = hash;
   let pendingPreview = false;
   let freshPlanGeneration = 0;
+  const discoveredDevice = (entryId = "meter-1") => ({
+    ...device(addons, options.importable, entryId),
+    configuration: options.guidedMode === "runtime" || options.importable ? null : "meter.yaml",
+  });
   const setupDevices = options.setupEvent === "devices"
-    ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
-    : options.setupEvent === "device" ? [device(addons, options.importable)] : [];
+    ? [discoveredDevice(), discoveredDevice("meter-2")]
+    : options.setupEvent === "device" ? [discoveredDevice()] : [];
   const authoritative = () => options.guidedMode !== "runtime" && (!options.importable || imported);
   const setupSnapshot = () => boundDeviceId || deviceSeen
-    ? { state: "topology_review", devices: (setupDevices.length ? setupDevices : [device(addons)]).map((item) => item.entry_id === (boundDeviceId ?? "meter-1") && imported
+    ? { state: "topology_review", devices: (setupDevices.length ? setupDevices : [discoveredDevice()]).map((item) => item.entry_id === (boundDeviceId ?? "meter-1") && imported
       ? { ...item, importable: false, configuration: "meter.yaml" } : item), bound_device_id: boundDeviceId ?? "meter-1",
     configuration_authoritative: authoritative() }
     : { state: "no_device", devices: [] };
@@ -240,8 +244,8 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         if (state !== "none") deviceSeen = true;
         result = state === "none" ? { state: "no_device", devices: [] }
           : { state: "device_discovered", devices: state === "devices" && !options.oneDevice
-            ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
-            : [device(addons, options.importable)], configuration_authoritative: authoritative() };
+            ? [discoveredDevice(), discoveredDevice("meter-2")]
+            : [discoveredDevice()], configuration_authoritative: authoritative() };
       } else if (operation === "adopt_device") {
         boundDeviceId = "meter-1";
         imported = true;

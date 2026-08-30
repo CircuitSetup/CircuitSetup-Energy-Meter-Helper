@@ -1380,7 +1380,7 @@ describe("CircuitSetup panel", () => {
     legacy.configuration.channels[1]!.role = "grid";
     const operations: string[] = [];
     const hass = makeHass({
-      setup_status: legacyEditableScenario.setup,
+      setup_status: { ...legacyEditableScenario.setup, configuration_authoritative: false },
       get_meter_configuration: legacy,
     });
     const callWS = hass.callWS;
@@ -2453,7 +2453,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
   });
 
-  it("does not read configuration even when runtime-only setup reports a stale source name", async () => {
+  it("opens editable settings when the selected meter has a Device Builder configuration", async () => {
     const operations: string[] = [];
     const configured = { ...device, importable: false, configuration: "meter.yaml" };
     const inventory: CtInventory = {
@@ -2485,10 +2485,11 @@ describe("CircuitSetup panel", () => {
     panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]")?.click();
     await tick(); await tick(); await panel.updateComplete;
 
-    expect(operations).not.toContain("get_meter_configuration");
+    expect(operations).toContain("get_meter_configuration");
     expect(operations).not.toContain("get_ct_inventory");
     expect(operations).not.toContain("start_session");
-    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Meter Settings");
+    expect(text(panel)).not.toContain("That workflow step is not available for the selected meter.");
   });
 
   it("never substitutes restart verification for missing CT inventory", async () => {
