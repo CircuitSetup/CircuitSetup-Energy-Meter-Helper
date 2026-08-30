@@ -221,7 +221,7 @@ def test_helper_owned_total_is_recovered_when_matching_storage_is_empty() -> Non
 
     inventory = _inventory(content, stored=stored)
 
-    assert inventory.configuration.aggregates == (
+    assert inventory.configuration.aggregates[:1] == (
         CircuitAggregate(
             "mains1",
             "Mains",
@@ -232,6 +232,7 @@ def test_helper_owned_total_is_recovered_when_matching_storage_is_empty() -> Non
             EnergyMode.CONSUMPTION,
         ),
     )
+    assert inventory.configuration.aggregates[1].aggregate_id == "main-total"
     assert "aggregate_semantics_inferred" in inventory.warnings
 
 
@@ -264,8 +265,8 @@ def test_malformed_owned_total_metadata_fails_closed() -> None:
     assert "aggregate_semantics_unreadable" in inventory.warnings
 
 
-def test_builtin_meter_totals_are_exposed_as_one_editable_aggregate() -> None:
-    """Dropping official total IDs would leave an installed total invisible."""
+def test_builtin_meter_totals_require_power_id_before_enabling_energy() -> None:
+    """An ambiguous daily-energy ID must not be attached without its power source."""
     content = _document(contract=True).replace(
         "    - Software/ESPHome/meter_sensors/6chan_main_sensor.yaml\n", ""
     ) + (
@@ -285,7 +286,7 @@ def test_builtin_meter_totals_are_exposed_as_one_editable_aggregate() -> None:
             (1, 2, 3, 4, 5, 6),
             MeasurementMethod.DIRECT,
             None,
-            EnergyMode.CONSUMPTION,
+            EnergyMode.NONE,
             True,
             True,
         ),
@@ -314,8 +315,8 @@ def test_default_main_totals_are_detected_with_independent_energy() -> None:
             MeasurementMethod.DIRECT,
             None,
             EnergyMode.CONSUMPTION,
-            True,
-            True,
+            False,
+            False,
         ),
     )
 
@@ -340,14 +341,42 @@ def test_default_totals_are_grouped_by_board_and_kwh_power_id() -> None:
         CircuitAggregate(
             "main-total", "Main total", CircuitRole.CUSTOM,
             (1, 2, 3, 4, 5, 6), MeasurementMethod.DIRECT,
-            None, EnergyMode.NONE, True, True,
+            None, EnergyMode.NONE, False, False,
         ),
         CircuitAggregate(
             "addon1-total", "Add-on 1 total", CircuitRole.CUSTOM,
             (7, 8, 9, 10, 11, 12), MeasurementMethod.DIRECT,
-            None, EnergyMode.CONSUMPTION, True, True,
+            None, EnergyMode.CONSUMPTION, False, False,
         ),
     )
+
+
+def test_helper_and_official_totals_populate_together_with_global_visibility() -> None:
+    """Owned totals must not suppress board or global package totals."""
+    content = _document(contract=True, addon_count=1) + _helper_mains_total() + (
+        "  - id: totalAmps\n"
+        "  - id: totalWatts\n"
+        "  - platform: total_daily_energy\n"
+        "    id: totalEnergyDaily\n"
+        "    power_id: totalWatts\n"
+        "    unit_of_measurement: kWh\n"
+    )
+
+    aggregates = {
+        aggregate.aggregate_id: aggregate
+        for aggregate in _inventory(content).configuration.aggregates
+    }
+
+    assert set(aggregates) == {"mains1", "meter-total", "main-total", "addon1-total"}
+    assert aggregates["meter-total"] == CircuitAggregate(
+        "meter-total", "Meter total", CircuitRole.CUSTOM,
+        tuple(range(1, 13)), MeasurementMethod.DIRECT,
+        None, EnergyMode.CONSUMPTION, True, True,
+    )
+    for aggregate_id in ("main-total", "addon1-total"):
+        assert aggregates[aggregate_id].expose_power is False
+        assert aggregates[aggregate_id].expose_current is False
+        assert aggregates[aggregate_id].energy_mode is EnergyMode.NONE
 
 
 @pytest.mark.parametrize("interval", (1, 2, 5, 10, 30, 60))
@@ -517,7 +546,7 @@ def test_matching_stored_semantics_restore_roles_reference_mapping_and_aggregate
     inventory = _inventory(content, stored=stored)
 
     assert inventory.configuration.channels == channels
-    assert inventory.configuration.aggregates == (aggregate,)
+    assert aggregate in inventory.configuration.aggregates
     assert inventory.configuration.meter.voltage_references == voltage_references
     assert inventory.voltage_topology.references == (
         ("grid", ("main_1",)),
@@ -568,7 +597,7 @@ def test_matching_single_reference_restores_semantics_when_physical_gains_agree(
 
     assert inventory.configuration.meter.voltage_references[0].gain_voltage == 7001
     assert inventory.configuration.channels[0].role is CircuitRole.GRID
-    assert inventory.configuration.aggregates == (aggregate,)
+    assert aggregate in inventory.configuration.aggregates
     assert not inventory.configuration.multi_reference_preparation_acknowledged
     assert "stored_semantics_stale" not in inventory.warnings
 

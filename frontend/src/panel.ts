@@ -198,6 +198,7 @@ export class CircuitSetupPanel extends LitElement {
   private currentSkipped = false;
   private mobileStepsOpen = false;
   private focusHeading = false;
+  private lastFocusedError = "";
 
   public override connectedCallback(): void {
     super.connectedCallback();
@@ -232,7 +233,11 @@ export class CircuitSetupPanel extends LitElement {
 
   protected override updated(changed: PropertyValues<this>): void {
     if ((changed.has("hass") || changed.has("panel")) && this.isConnected) void this.ensureApi(this.connectionGeneration);
-    if (this.error) this.shadowRoot?.querySelector<HTMLElement>("[role=alert]")?.focus();
+    if (!this.error) this.lastFocusedError = "";
+    if (this.error && this.error !== this.lastFocusedError) {
+      this.lastFocusedError = this.error;
+      this.shadowRoot?.querySelector<HTMLElement>("[role=alert]")?.focus();
+    }
     else if (this.focusHeading) {
       this.focusHeading = false;
       this.shadowRoot?.querySelector<HTMLElement>("#step-heading")?.focus();
@@ -1994,7 +1999,8 @@ export class CircuitSetupPanel extends LitElement {
       (board) => { this.board = board; this.requestUpdate(); },
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session",
       this.labelOnly ? null : this.meterConfiguration?.configuration ?? null, (configuration) => this.updateCircuitConfiguration(configuration), (channel) => this.disableCircuit(channel),
-      this.configurationMode !== "runtime_only" && (this.meterConfiguration?.capabilities.configuration_authoritative ?? true), this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "", this.configurationMode === "legacy_editable")}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
+      this.configurationMode !== "runtime_only" && (this.meterConfiguration?.capabilities.configuration_authoritative ?? true), this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "", this.configurationMode === "legacy_editable",
+      this.configurationMode !== "legacy_editable" || this.existingConfigurationChoice !== "manage_with_helper" || this.labelOnly || this.legacyCircuitSemanticsConfirmed)}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
     if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return html`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
       <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
       <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>

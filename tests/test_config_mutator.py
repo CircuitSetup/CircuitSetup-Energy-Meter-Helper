@@ -1943,7 +1943,11 @@ def test_indentless_contract_sensor_supports_voltage_aggregate_preview_and_readb
     configured = _inventory(configured_snapshot, topology, stored=stored)
 
     assert configured.configuration.meter == requested.meter
-    assert configured.configuration.aggregates == requested.aggregates
+    assert configured.configuration.aggregates[0] == requested.aggregates[0]
+    assert [item.aggregate_id for item in configured.configuration.aggregates] == [
+        "load",
+        "meter-total",
+    ]
     removed = build_meter_configuration_mutation(
         configured_snapshot,
         topology,

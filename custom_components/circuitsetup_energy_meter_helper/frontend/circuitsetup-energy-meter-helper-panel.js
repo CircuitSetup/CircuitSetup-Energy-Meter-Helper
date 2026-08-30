@@ -1543,7 +1543,7 @@ function calibrationPlanStep(selected, choose, back, runtimeOnly = false) {
       <p>Importing the meter into ESPHome Device Builder, when available, is the path to editable configuration.</p>
       <p>Current calibration requires confirmation of the reporting multiplier because no authoritative CT inventory is available.</p>
     </section>` : ""}
-    <fieldset><legend>Calibration plan</legend>
+    <fieldset class="name-mode"><legend>Calibration plan</legend>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "keep_existing"} @change=${() => choose("keep_existing")}> Keep existing calibration — no live session or safety acknowledgement.</label>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "standard"} @change=${() => choose("standard")}> Standard calibration — preserve existing offset values, then calibrate voltage and current.</label>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "full"} @change=${() => choose("full")}> Full calibration — includes optional offset calibration before voltage and current.</label>
@@ -1566,7 +1566,7 @@ function recommendedReportingMultiplier(ratedCurrentA) {
   return ratedCurrentA <= 65.535 ? 1 : ratedCurrentA <= 131.07 ? 2 : ratedCurrentA <= 262.14 ? 4 : ratedCurrentA <= 524.28 ? 8 : null;
 }
 const resultingGain = (preset, multiplier, customGain) => (preset?.default_gain_ct ?? customGain) == null || !Number.isFinite(multiplier) || multiplier <= 0 ? null : Math.round((preset?.default_gain_ct ?? customGain) / multiplier);
-function ctInventoryStep(inventory, board, drafts, setBoard, update, back, review, labelOnly = false, busy = false, configuration = null, updateConfiguration = () => void 0, disableChannel = () => void 0, managedTotals = true, managedTotalsReason = "", allowPreserveExistingGain = false) {
+function ctInventoryStep(inventory, board, drafts, setBoard, update, back, review, labelOnly = false, busy = false, configuration = null, updateConfiguration = () => void 0, disableChannel = () => void 0, managedTotals = true, managedTotalsReason = "", allowPreserveExistingGain = false, continueAllowed = true) {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
   const referenceByGroup = new Map(configuration?.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference])) ?? []);
@@ -1679,7 +1679,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       ${configuration ? circuitsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason) : A}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
+        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
       </footer>
     </section>
   `;
@@ -1815,15 +1815,13 @@ function circuitConfigurationIsValid(configuration, ctCount) {
   const referenceByGroup = new Map(configuration.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference.reference_id])));
   if (configuration.channels.length !== ctCount || new Set(configuration.channels.map((channel) => channel.channel)).size !== ctCount || configuration.channels.some((channel) => channel.channel < 1 || channel.channel > ctCount || !channel.name.trim() || !references.has(channel.voltage_reference_id) || channel.enabled === (channel.role === "unused") || referenceByGroup.get(`${channel.channel <= 6 ? "main" : `addon${Math.floor((channel.channel - 1) / 6)}`}_${Math.floor((channel.channel - 1) % 6 / 3) + 1}`) !== channel.voltage_reference_id)) return false;
   const ids = /* @__PURE__ */ new Set();
-  const claimed = /* @__PURE__ */ new Set();
   const parents = /* @__PURE__ */ new Map();
   for (const aggregate of configuration.aggregates) {
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(aggregate.aggregate_id) || ids.has(aggregate.aggregate_id) || !aggregate.name.trim() || !aggregate.channels.length || new Set(aggregate.channels).size !== aggregate.channels.length) return false;
     ids.add(aggregate.aggregate_id);
     parents.set(aggregate.aggregate_id, aggregate.parent_id);
     const needed = aggregate.measurement_method === "two_ct_sum" ? 2 : aggregate.measurement_method === "one_ct_double_power" || aggregate.measurement_method === "both_conductors_one_ct" ? 1 : void 0;
-    if (needed !== void 0 && aggregate.channels.length !== needed || aggregate.channels.some((channel) => channel < 1 || channel > ctCount || claimed.has(channel) || !configuration.channels[channel - 1]?.enabled)) return false;
-    aggregate.channels.forEach((channel) => claimed.add(channel));
+    if (needed !== void 0 && aggregate.channels.length !== needed || aggregate.channels.some((channel) => channel < 1 || channel > ctCount || !configuration.channels[channel - 1]?.enabled)) return false;
   }
   for (const [id2, parent] of parents) {
     const seen = /* @__PURE__ */ new Set();
@@ -2429,8 +2427,7 @@ const warningCopy = {
 function existingConfigurationStep(configuration, metadata, onManage, onCalibrateOnly, onBack) {
   if (!configuration.capabilities.configuration_authoritative || configuration.capabilities.semantic_source !== "legacy_inferred") return b``;
   const warnings = [.../* @__PURE__ */ new Set([...configuration.warnings, ...configuration.capabilities.reason_codes])];
-  return b`<section class="existing-configuration" aria-labelledby="existing-configuration-heading">
-    <h2 id="existing-configuration-heading">Review Existing Setup</h2>
+  return b`<section class="existing-configuration" aria-label="Review Existing Setup">
     <p>This meter already has an ESPHome configuration. Choose whether to manage its configuration with this helper or leave it unchanged.</p>
     <dl class="status-list">
       <div><dt>ESPHome configuration</dt><dd>${metadata.configurationFilename}</dd></div>
@@ -2447,7 +2444,7 @@ function existingConfigurationStep(configuration, metadata, onManage, onCalibrat
       <div><dt>What migration preserves</dt><dd>Unowned YAML and unmanaged totals remain intact unless the reviewed migration explicitly replaces them.</dd></div>
     </dl>
     ${warnings.length ? b`<div class="warning-band" role="note"><strong>Review notes</strong><ul>${warnings.map((warning) => b`<li>${warningCopy[warning] ?? "Some legacy settings could not be identified and must be reviewed."}</li>`)}</ul><details><summary>Technical details</summary><code>${warnings.join(", ")}</code></details></div>` : A}
-    <div class="action-footer"><button class="primary" @click=${onManage}>Review and manage with helper</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="secondary" @click=${onBack}>Back</button></div>
+    <div class="action-footer"><button class="secondary" @click=${onBack}>Back</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="primary" @click=${onManage}>Review and manage with helper</button></div>
   </section>`;
 }
 const boardLabel = (index) => index === 0 ? "Main Board" : `Add-on ${index}`;
@@ -2920,6 +2917,7 @@ const panelStyles = i$5`
   dl div { display: flex; gap: 12px; }
   dt { font-weight: var(--ha-font-weight-bold, 700); }
   dd { margin: 0; }
+  .existing-configuration .status-list > div { display: grid; grid-template-columns: minmax(190px, 240px) minmax(0, 1fr); gap: 12px; }
   .summary-band strong, .success-band { color: var(--success); }
   .esp-web-installer {
     --esp-tools-button-color: var(--accent);
@@ -3042,6 +3040,7 @@ const panelStyles = i$5`
     .mobile-label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; }
     .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card, .aggregate-fields, .aggregate-channel-groups { grid-template-columns: 1fr; }
     .aggregate-channel-group > div { grid-template-columns: 1fr; }
+    .existing-configuration .status-list > div { grid-template-columns: 1fr; gap: 2px; }
     .aggregate-actions button { width: 100%; margin-left: 0; }
     .progress-steps { grid-template-columns: 1fr; gap: 8px; }
     .action-footer { left: 0; padding: 12px 18px; }
@@ -3284,6 +3283,7 @@ class CircuitSetupPanel extends i$2 {
     this.currentSkipped = false;
     this.mobileStepsOpen = false;
     this.focusHeading = false;
+    this.lastFocusedError = "";
   }
   static {
     this.styles = panelStyles;
@@ -3328,8 +3328,11 @@ class CircuitSetupPanel extends i$2 {
   }
   updated(changed) {
     if ((changed.has("hass") || changed.has("panel")) && this.isConnected) void this.ensureApi(this.connectionGeneration);
-    if (this.error) this.shadowRoot?.querySelector("[role=alert]")?.focus();
-    else if (this.focusHeading) {
+    if (!this.error) this.lastFocusedError = "";
+    if (this.error && this.error !== this.lastFocusedError) {
+      this.lastFocusedError = this.error;
+      this.shadowRoot?.querySelector("[role=alert]")?.focus();
+    } else if (this.focusHeading) {
       this.focusHeading = false;
       this.shadowRoot?.querySelector("#step-heading")?.focus();
     }
@@ -5101,7 +5104,8 @@ class CircuitSetupPanel extends i$2 {
         (channel) => this.disableCircuit(channel),
         this.configurationMode !== "runtime_only" && (this.meterConfiguration?.capabilities.configuration_authoritative ?? true),
         this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "",
-        this.configurationMode === "legacy_editable"
+        this.configurationMode === "legacy_editable",
+        this.configurationMode !== "legacy_editable" || this.existingConfigurationChoice !== "manage_with_helper" || this.labelOnly || this.legacyCircuitSemanticsConfirmed
       )}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? b`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event) => {
         this.legacyCircuitSemanticsConfirmed = event.target.checked;
         if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration);

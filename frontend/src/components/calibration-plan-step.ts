@@ -18,7 +18,7 @@ export function calibrationPlanStep(
       <p>Importing the meter into ESPHome Device Builder, when available, is the path to editable configuration.</p>
       <p>Current calibration requires confirmation of the reporting multiplier because no authoritative CT inventory is available.</p>
     </section>` : ""}
-    <fieldset><legend>Calibration plan</legend>
+    <fieldset class="name-mode"><legend>Calibration plan</legend>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "keep_existing"} @change=${() => choose("keep_existing")}> Keep existing calibration — no live session or safety acknowledgement.</label>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "standard"} @change=${() => choose("standard")}> Standard calibration — preserve existing offset values, then calibrate voltage and current.</label>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "full"} @change=${() => choose("full")}> Full calibration — includes optional offset calibration before voltage and current.</label>

@@ -439,11 +439,11 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector('[aria-label="CT1"] .row-toggle')?.textContent?.trim()).toBe("OK");
   });
 
-  it("rejects aggregate channels that overlap or include disabled circuits", () => {
+  it("allows aggregate channels to overlap but rejects disabled circuits", () => {
     const configuration = meterResponse().configuration as MeterConfigurationRequest;
     const aggregate = { aggregate_id: "main-service", name: "Main service", role: "grid" as const, channels: [1, 2], measurement_method: "two_ct_sum" as const, parent_id: null, energy_mode: "bidirectional" as const, expose_power: true, expose_current: true };
     expect(circuitConfigurationIsValid({ ...configuration, aggregates: [aggregate] }, 6)).toBe(true);
-    expect(circuitConfigurationIsValid({ ...configuration, aggregates: [aggregate, { ...aggregate, aggregate_id: "duplicate", channels: [2, 3] }] }, 6)).toBe(false);
+    expect(circuitConfigurationIsValid({ ...configuration, aggregates: [aggregate, { ...aggregate, aggregate_id: "overlap", channels: [2, 3] }] }, 6)).toBe(true);
     expect(circuitConfigurationIsValid({ ...configuration, channels: [{ ...configuration.channels[0]!, enabled: false, role: "unused" }, ...configuration.channels.slice(1)], aggregates: [aggregate] }, 6)).toBe(false);
   });
 
@@ -1477,6 +1477,7 @@ describe("CircuitSetup panel", () => {
     }));
     const state = panel as unknown as Record<string, unknown> & {
       setMeterConfiguration(value: typeof legacy): void;
+      drafts: Map<number, CtDraft>;
     };
 
     state.setMeterConfiguration(legacy);
@@ -1486,9 +1487,24 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector('[aria-label="main_1 voltage reference"]')).not.toBeNull();
 
     panel.showInventory(legacy as unknown as CtInventory);
+    state.drafts = new Map(legacy.channels.map((channel) => [channel.channel, {
+      name: channel.name,
+      modelId: "",
+      multiplier: channel.reporting_multiplier,
+      multiplierMode: "automatic" as const,
+      preserveExistingGain: true,
+      burdenAcknowledged: false,
+      expanded: false,
+    }]));
+    panel.requestUpdate();
     await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector('[data-action="add-aggregate"]')).not.toBeNull();
     expect(text(panel)).not.toContain("Aggregate editing unavailable");
+    const continueButton = panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]');
+    expect(continueButton?.disabled).toBe(true);
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="I reviewed used/unused channels and circuit roles"]')?.click();
+    await panel.updateComplete;
+    expect(continueButton?.disabled).toBe(false);
   });
 
   it("routes helper-managed configuration directly to Meter Settings", async () => {
@@ -2427,6 +2443,12 @@ describe("CircuitSetup panel", () => {
     expect(alert?.textContent).toContain("Topology mismatch");
     expect(panel.shadowRoot?.querySelector("[data-action=continue]")).toBeNull();
     expect(panel.shadowRoot?.activeElement).toBe(alert);
+
+    const control = panel.shadowRoot?.querySelector<HTMLButtonElement>("button");
+    control?.focus();
+    panel.requestUpdate();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.activeElement).toBe(control);
   });
 
   it("blocks Continue when topology evidence is empty or non-authoritative", async () => {

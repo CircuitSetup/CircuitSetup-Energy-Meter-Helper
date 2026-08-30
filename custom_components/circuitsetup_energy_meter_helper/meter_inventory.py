@@ -662,6 +662,8 @@ def _detected_aggregates(
     stored: tuple[CircuitAggregate, ...],
 ) -> tuple[tuple[CircuitAggregate, ...], tuple[str, ...]]:
     block = document.managed_blocks.get("aggregates")
+    detected: tuple[CircuitAggregate, ...] = ()
+    warnings: tuple[str, ...] = ()
     if block is not None:
         try:
             decoded = _decode_aggregate_block(document, channels)
@@ -669,46 +671,33 @@ def _detected_aggregates(
             if metadata is not None:
                 if not _metadata_matches_rendered(metadata, decoded):
                     raise ValueError("aggregate metadata does not match rendered sensors")
-                return metadata, ()
-            if stored:
-                return stored, ()
-            return decoded, (("aggregate_semantics_inferred",) if decoded else ())
+                detected = metadata
+            elif stored:
+                detected = stored
+            else:
+                detected = decoded
+                warnings = (("aggregate_semantics_inferred",) if decoded else ())
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             return (), ("aggregate_semantics_unreadable",)
-    if stored:
-        return stored, ()
-    default_groups = _default_total_groups(document, channels)
-    if default_groups:
-        energy_power_ids = _default_daily_energy_power_ids(document)
-        return (
-            tuple(
-                CircuitAggregate(
-                    f"{group_id}-total",
-                    f"{label} total",
-                    CircuitRole.CUSTOM,
-                    group_channels,
-                    MeasurementMethod.DIRECT,
-                    None,
-                    (
-                        EnergyMode.CONSUMPTION
-                        if power_id in energy_power_ids
-                        else EnergyMode.NONE
-                    ),
-                    True,
-                    True,
-                )
-                for group_id, label, group_channels, power_id in default_groups
-            ),
-            ("builtin_total_semantics_inferred",),
-        )
+    elif stored:
+        detected = stored
+
     total_ids = _generic_total_ids(document)
     enabled = tuple(channel.channel for channel in channels if channel.enabled)
-    if not total_ids:
-        return (), ()
-    if not enabled:
+    default_groups = _default_total_groups(document, channels)
+    if (total_ids or default_groups) and not enabled:
         return (), ("builtin_total_semantics_unreadable",)
-    return (
-        (
+    energy_power_ids = _default_daily_energy_power_ids(document)
+    defaults: list[CircuitAggregate] = []
+    expose_power = "totalWatts" in total_ids
+    expose_current = "totalAmps" in total_ids
+    energy_mode = (
+        EnergyMode.CONSUMPTION
+        if "totalWatts" in energy_power_ids
+        else EnergyMode.NONE
+    )
+    if expose_power or expose_current or energy_mode is not EnergyMode.NONE:
+        defaults.append(
             CircuitAggregate(
                 "meter-total",
                 "Meter total",
@@ -716,17 +705,37 @@ def _detected_aggregates(
                 enabled,
                 MeasurementMethod.DIRECT,
                 None,
-                (
-                    EnergyMode.CONSUMPTION
-                    if "totalEnergyDaily" in total_ids
-                    else EnergyMode.NONE
-                ),
-                "totalWatts" in total_ids,
-                "totalAmps" in total_ids,
+                energy_mode,
+                expose_power,
+                expose_current,
+            )
+        )
+    defaults.extend(
+        CircuitAggregate(
+            f"{group_id}-total",
+            f"{label} total",
+            CircuitRole.CUSTOM,
+            group_channels,
+            MeasurementMethod.DIRECT,
+            None,
+            (
+                EnergyMode.CONSUMPTION
+                if power_id in energy_power_ids
+                else EnergyMode.NONE
             ),
-        ),
-        ("builtin_total_semantics_inferred",),
+            False,
+            False,
+        )
+        for group_id, label, group_channels, power_id in default_groups
     )
+    existing_ids = {aggregate.aggregate_id for aggregate in detected}
+    added = tuple(
+        aggregate for aggregate in defaults
+        if aggregate.aggregate_id not in existing_ids
+    )
+    if added:
+        warnings = tuple(dict.fromkeys((*warnings, "builtin_total_semantics_inferred")))
+    return (*detected, *added), warnings
 
 
 def _aggregate_metadata(content: str) -> tuple[CircuitAggregate, ...] | None:

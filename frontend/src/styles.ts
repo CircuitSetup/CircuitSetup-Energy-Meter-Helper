@@ -80,6 +80,7 @@ export const panelStyles = css`
   dl div { display: flex; gap: 12px; }
   dt { font-weight: var(--ha-font-weight-bold, 700); }
   dd { margin: 0; }
+  .existing-configuration .status-list > div { display: grid; grid-template-columns: minmax(190px, 240px) minmax(0, 1fr); gap: 12px; }
   .summary-band strong, .success-band { color: var(--success); }
   .esp-web-installer {
     --esp-tools-button-color: var(--accent);
@@ -202,6 +203,7 @@ export const panelStyles = css`
     .mobile-label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; }
     .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card, .aggregate-fields, .aggregate-channel-groups { grid-template-columns: 1fr; }
     .aggregate-channel-group > div { grid-template-columns: 1fr; }
+    .existing-configuration .status-list > div { grid-template-columns: 1fr; gap: 2px; }
     .aggregate-actions button { width: 100%; margin-left: 0; }
     .progress-steps { grid-template-columns: 1fr; gap: 8px; }
     .action-footer { left: 0; padding: 12px 18px; }

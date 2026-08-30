@@ -233,7 +233,6 @@ def validate_meter_configuration(
     aggregate_ids = {a.aggregate_id for a in request.aggregates}
     if len(aggregate_ids) != len(request.aggregates):
         raise ValueError("aggregate IDs must be unique")
-    aggregate_channels: set[int] = set()
     for aggregate in request.aggregates:
         _text(aggregate.aggregate_id, "aggregate_id")
         if not _SLUG.fullmatch(aggregate.aggregate_id):
@@ -245,9 +244,8 @@ def validate_meter_configuration(
             or len(set(aggregate.channels)) != len(aggregate.channels)
         ):
             raise ValueError("aggregate channels must be unique")
-        if any(c not in by_channel for c in aggregate.channels) or aggregate_channels.intersection(aggregate.channels):
-            raise ValueError("aggregate channels must be unique and in topology")
-        aggregate_channels.update(aggregate.channels)
+        if any(c not in by_channel for c in aggregate.channels):
+            raise ValueError("aggregate channels must be in topology")
         if not isinstance(aggregate.measurement_method, MeasurementMethod) or not isinstance(aggregate.energy_mode, EnergyMode):
             raise ValueError("invalid aggregate method or energy mode")  # noqa: TRY004
         if not isinstance(aggregate.role, CircuitRole):

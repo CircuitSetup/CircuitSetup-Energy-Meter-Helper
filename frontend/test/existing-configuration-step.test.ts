@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { render } from "lit";
+import { html, render } from "lit";
 import { existingConfigurationStep } from "../src/components/existing-configuration-step";
+import { panelStyles } from "../src/styles";
 import { meterResponse } from "./workflow-scenarios";
 
 const configuration = meterResponse();
@@ -13,13 +14,13 @@ describe("existing configuration step", () => {
   it("explains provenance, warnings, and branch actions without writing", () => {
     const manage = vi.fn(); const calibrate = vi.fn(); const back = vi.fn();
     const host = document.createElement("div"); document.body.append(host);
-    render(existingConfigurationStep(configuration, {
+    render(html`<style>${panelStyles.cssText}</style>${existingConfigurationStep(configuration, {
       configurationFilename: "production-meter.yaml",
       projectName: "circuitsetup.6c-energy-meter",
       projectVersion: "2026.8.0",
       boardCount: 1,
       ctCount: 6,
-    }, manage, calibrate, back), host);
+    }, manage, calibrate, back)}`, host);
     const root = host;
     expect(root.textContent).toContain("production-meter.yaml");
     expect(root.textContent).toContain("circuitsetup.6c-energy-meter");
@@ -36,7 +37,15 @@ describe("existing configuration step", () => {
     expect(root.textContent).toContain("older helper contract");
     expect([...root.querySelectorAll(".warning-band li")].map((item) => item.textContent).join(" ")).not.toContain("stored_semantics_stale");
     expect(root.querySelector("details")?.textContent).toContain("stored_semantics_stale");
+    expect(root.querySelector(".existing-configuration")?.getAttribute("aria-label")).toBe("Review Existing Setup");
+    expect(root.querySelector(".existing-configuration h2")).toBeNull();
+    expect([...root.querySelectorAll(".status-list > div")].map((row) => getComputedStyle(row).display)).toEqual(
+      Array(8).fill("grid"),
+    );
     const buttons = [...root.querySelectorAll("button")];
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual([
+      "Back", "Keep ESPHome configuration and calibrate only", "Review and manage with helper",
+    ]);
     buttons[0]?.click(); buttons[1]?.click(); buttons[2]?.click();
     expect(manage).toHaveBeenCalledOnce(); expect(calibrate).toHaveBeenCalledOnce(); expect(back).toHaveBeenCalledOnce();
   });

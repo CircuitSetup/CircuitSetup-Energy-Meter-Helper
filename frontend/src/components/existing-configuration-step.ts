@@ -26,8 +26,7 @@ export function existingConfigurationStep(
   if (!configuration.capabilities.configuration_authoritative
     || configuration.capabilities.semantic_source !== "legacy_inferred") return html``;
   const warnings = [...new Set([...configuration.warnings, ...configuration.capabilities.reason_codes])];
-  return html`<section class="existing-configuration" aria-labelledby="existing-configuration-heading">
-    <h2 id="existing-configuration-heading">Review Existing Setup</h2>
+  return html`<section class="existing-configuration" aria-label="Review Existing Setup">
     <p>This meter already has an ESPHome configuration. Choose whether to manage its configuration with this helper or leave it unchanged.</p>
     <dl class="status-list">
       <div><dt>ESPHome configuration</dt><dd>${metadata.configurationFilename}</dd></div>
@@ -44,6 +43,6 @@ export function existingConfigurationStep(
       <div><dt>What migration preserves</dt><dd>Unowned YAML and unmanaged totals remain intact unless the reviewed migration explicitly replaces them.</dd></div>
     </dl>
     ${warnings.length ? html`<div class="warning-band" role="note"><strong>Review notes</strong><ul>${warnings.map((warning) => html`<li>${warningCopy[warning] ?? "Some legacy settings could not be identified and must be reviewed."}</li>`)}</ul><details><summary>Technical details</summary><code>${warnings.join(", ")}</code></details></div>` : nothing}
-    <div class="action-footer"><button class="primary" @click=${onManage}>Review and manage with helper</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="secondary" @click=${onBack}>Back</button></div>
+    <div class="action-footer"><button class="secondary" @click=${onBack}>Back</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="primary" @click=${onManage}>Review and manage with helper</button></div>
   </section>`;
 }

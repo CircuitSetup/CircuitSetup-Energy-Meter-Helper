@@ -41,6 +41,7 @@ export function ctInventoryStep(
   managedTotals = true,
   managedTotalsReason = "",
   allowPreserveExistingGain = false,
+  continueAllowed = true,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -157,7 +158,7 @@ export function ctInventoryStep(
       ${configuration ? circuitsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason) : nothing}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
+        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
       </footer>
     </section>
   `;
@@ -309,7 +310,7 @@ export function circuitConfigurationIsValid(configuration: MeterConfigurationReq
     || configuration.channels.some((channel) => channel.channel < 1 || channel.channel > ctCount || !channel.name.trim()
       || !references.has(channel.voltage_reference_id) || channel.enabled === (channel.role === "unused")
       || referenceByGroup.get(`${channel.channel <= 6 ? "main" : `addon${Math.floor((channel.channel - 1) / 6)}`}_${Math.floor(((channel.channel - 1) % 6) / 3) + 1}`) !== channel.voltage_reference_id)) return false;
-  const ids = new Set<string>(); const claimed = new Set<number>(); const parents = new Map<string, string | null>();
+  const ids = new Set<string>(); const parents = new Map<string, string | null>();
   for (const aggregate of configuration.aggregates) {
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(aggregate.aggregate_id) || ids.has(aggregate.aggregate_id)
       || !aggregate.name.trim() || !aggregate.channels.length || new Set(aggregate.channels).size !== aggregate.channels.length) return false;
@@ -317,9 +318,8 @@ export function circuitConfigurationIsValid(configuration: MeterConfigurationReq
     const needed = aggregate.measurement_method === "two_ct_sum" ? 2
       : aggregate.measurement_method === "one_ct_double_power" || aggregate.measurement_method === "both_conductors_one_ct" ? 1 : undefined;
     if (needed !== undefined && aggregate.channels.length !== needed
-      || aggregate.channels.some((channel) => channel < 1 || channel > ctCount || claimed.has(channel)
+      || aggregate.channels.some((channel) => channel < 1 || channel > ctCount
         || !configuration.channels[channel - 1]?.enabled)) return false;
-    aggregate.channels.forEach((channel) => claimed.add(channel));
   }
   for (const [id, parent] of parents) {
     const seen = new Set<string>();
