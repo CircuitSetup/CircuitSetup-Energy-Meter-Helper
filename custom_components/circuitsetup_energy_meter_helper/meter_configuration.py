@@ -326,9 +326,9 @@ def validate_meter_configuration(
     aggregate_ids = {a.aggregate_id for a in request.aggregates}
     if len(aggregate_ids) != len(request.aggregates):
         raise ValueError("aggregate IDs must be unique")
-    native_source_ids = {"overall", "board-main"} | {
-        f"board-addon-{index}" for index in range(1, topology.board_count)
-    }
+    from .total_graph import native_total_sources
+
+    native_source_ids = {source.source_id for source in native_total_sources(topology)}
     for aggregate in request.aggregates:
         _source_id(aggregate.aggregate_id, "aggregate_id")
         _text(aggregate.name, "aggregate name")
@@ -407,12 +407,9 @@ def default_meter_configuration(
     )
     channels = tuple(ChannelSettings(i, True, f"CT {i}", "default", 1.0, CircuitRole.BRANCH, "main") for i in range(1, topology.ct_count + 1))
     outputs = TotalOutputSettings(True, True, True)
-    default_totals = DefaultTotalsSettings(
-        outputs,
-        () if topology.board_count == 1 else tuple(
-            BoardTotalSettings(board, outputs) for board in range(topology.board_count)
-        ),
-    )
+    from .total_graph import default_total_settings
+
+    default_totals = default_total_settings(topology)
     result = MeterConfigurationRequest(
         MeterSettings("Energy meter", ElectricalSystem.SPLIT_PHASE_120_240, 60, 10, VoltageLayout.STANDARD, refs),
         channels,
