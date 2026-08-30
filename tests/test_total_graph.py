@@ -1,10 +1,26 @@
+from dataclasses import replace
+
+from test_firmware_total_contract import _firmware_root, firmware_contract
+from test_meter_configuration import request
+
+from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    AutomaticTotalSettings,
+    ChannelTotalSource,
+    CircuitAggregate,
+    CircuitRole,
+    EnergyMode,
+    MeasurementMethod,
+    TotalOutputSettings,
+)
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
-from custom_components.circuitsetup_energy_meter_helper.meter_configuration import TotalOutputSettings
 from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+    AutomaticTotalCandidate,
+    automatic_total_candidates,
     default_total_settings,
     native_total_sources,
+    resolve_automatic_totals,
+    stale_automatic_total_settings,
 )
-from test_firmware_total_contract import _firmware_root, firmware_contract
 
 
 def topology(addons: int) -> MeterTopology:
@@ -76,3 +92,136 @@ def test_catalog_matches_pinned_firmware_inspector_for_every_topology(tmp_path) 
         assert tuple(board.outputs for board in default_total_settings(topology(addons)).boards) == tuple(
             item.upstream_defaults for item in catalog[:-1]
         )
+
+
+def test_exact_grid_pair_produces_stable_candidate() -> None:
+    configuration = replace(
+        request(),
+        channels=tuple(
+            replace(channel, role=CircuitRole.GRID)
+            if channel.channel in (1, 2)
+            else channel
+            for channel in request().channels
+        ),
+    )
+
+    assert automatic_total_candidates(configuration) == (
+        AutomaticTotalCandidate(
+            candidate_id="grid-ct1-ct2",
+            aggregate_id="auto-mains",
+            name="Mains",
+            role=CircuitRole.GRID,
+            sources=(
+                ChannelTotalSource("channel", 1),
+                ChannelTotalSource("channel", 2),
+            ),
+            measurement_method=MeasurementMethod.TWO_CT_SUM,
+            energy_mode=EnergyMode.BIDIRECTIONAL,
+            recommended_outputs=TotalOutputSettings(True, False, True),
+        ),
+    )
+
+
+def test_four_subpanel_channels_are_not_guessed_into_pairs() -> None:
+    configuration = replace(
+        request(),
+        channels=tuple(
+            replace(channel, role=CircuitRole.SUBPANEL)
+            if channel.channel in (1, 2, 3, 4)
+            else channel
+            for channel in request().channels
+        ),
+    )
+
+    assert automatic_total_candidates(configuration) == ()
+
+
+def test_disabled_channels_and_existing_advanced_auto_id_exclude_candidate() -> None:
+    baseline = request()
+    roles = tuple(
+        replace(channel, role=CircuitRole.GRID, enabled=channel.channel != 2)
+        if channel.channel in (1, 2)
+        else channel
+        for channel in baseline.channels
+    )
+    assert automatic_total_candidates(replace(baseline, channels=roles)) == ()
+
+    advanced = CircuitAggregate(
+        "auto-mains",
+        "Edited Mains",
+        CircuitRole.CUSTOM,
+        (ChannelTotalSource("channel", 3),),
+        MeasurementMethod.DIRECT,
+        EnergyMode.CONSUMPTION,
+        TotalOutputSettings(True, False, True),
+    )
+    enabled = tuple(
+        replace(channel, role=CircuitRole.GRID)
+        if channel.channel in (1, 2)
+        else channel
+        for channel in baseline.channels
+    )
+    assert automatic_total_candidates(
+        replace(baseline, channels=enabled, aggregates=(advanced,))
+    ) == ()
+
+
+def test_resolver_keeps_explicit_off_and_ignores_stale_settings() -> None:
+    candidates = automatic_total_candidates(
+        replace(
+            request(),
+            channels=tuple(
+                replace(channel, role=CircuitRole.GRID)
+                if channel.channel in (1, 2)
+                else channel
+                for channel in request().channels
+            ),
+        )
+    )
+    resolved = resolve_automatic_totals(
+        candidates,
+        (
+            AutomaticTotalSettings(
+                "grid-ct1-ct2", False, TotalOutputSettings(False, True, False)
+            ),
+            AutomaticTotalSettings("solar-ct3-ct4", True, TotalOutputSettings(True, False, True)),
+        ),
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].candidate == candidates[0]
+    assert resolved[0].enabled is False
+    assert resolved[0].outputs == TotalOutputSettings(False, True, False)
+    assert stale_automatic_total_settings(
+        candidates,
+        (
+            AutomaticTotalSettings("grid-ct1-ct2", False, TotalOutputSettings(False, True, False)),
+            AutomaticTotalSettings("solar-ct3-ct4", True, TotalOutputSettings(True, False, True)),
+        ),
+    ) == (AutomaticTotalSettings("solar-ct3-ct4", True, TotalOutputSettings(True, False, True)),)
+
+
+def test_candidate_id_uses_role_and_channels_not_ct_display_names() -> None:
+    baseline = request()
+    configuration = replace(
+        baseline,
+        channels=tuple(
+            replace(channel, role=CircuitRole.GRID, name="Renamed service feed")
+            if channel.channel in (1, 2)
+            else channel
+            for channel in baseline.channels
+        ),
+    )
+
+    assert automatic_total_candidates(configuration)[0].candidate_id == "grid-ct1-ct2"
+    assert automatic_total_candidates(
+        replace(
+            configuration,
+            channels=tuple(
+                replace(channel, role=CircuitRole.BRANCH)
+                if channel.channel == 2
+                else channel
+                for channel in configuration.channels
+            ),
+        )
+    ) == ()

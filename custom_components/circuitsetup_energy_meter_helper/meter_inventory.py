@@ -14,6 +14,7 @@ from .config_mutator import package_options_from_document
 from .ct_catalog import CTPresetCatalog
 from .ct_inventory import CTInventory
 from .meter_configuration import (
+    AutomaticTotalSettings,
     ChannelSettings,
     CircuitRole,
     ElectricalSystem,
@@ -38,6 +39,14 @@ from .topology import (
     voltage_reference_topology_from_config,
     voltage_reference_topology_from_configuration,
     voltage_reference_topology_from_legacy,
+)
+from .total_graph import (
+    AutomaticTotalCandidate,
+    ResolvedAutomaticTotal,
+    automatic_total_candidates,
+    default_total_settings,
+    resolve_automatic_totals,
+    stale_automatic_total_settings,
 )
 from .voltage_transformer_catalog import VoltageTransformerCatalog
 
@@ -93,6 +102,9 @@ class MeterConfigurationInventory:
     warnings: tuple[str, ...]
     ct_inventory: CTInventory
     voltage_topology: VoltageReferenceTopology
+    automatic_candidates: tuple[AutomaticTotalCandidate, ...]
+    automatic_totals: tuple[ResolvedAutomaticTotal, ...]
+    stale_automatic_total_settings: tuple[AutomaticTotalSettings, ...]
 
     @classmethod
     def from_document(
@@ -177,6 +189,7 @@ class MeterConfigurationInventory:
             warnings.append("stored_semantics_stale")
         if configuration.meter.update_interval_s in (30, 60):
             warnings.append("slow_interval_extends_calibration")
+        automatic_candidates = automatic_total_candidates(configuration)
         return cls(
             plan_id=plan_id,
             source_sha256=actual_sha256,
@@ -188,6 +201,13 @@ class MeterConfigurationInventory:
             warnings=tuple(warnings),
             ct_inventory=ct_inventory,
             voltage_topology=voltage_topology,
+            automatic_candidates=automatic_candidates,
+            automatic_totals=resolve_automatic_totals(
+                automatic_candidates, configuration.automatic_totals
+            ),
+            stale_automatic_total_settings=stale_automatic_total_settings(
+                automatic_candidates, configuration.automatic_totals
+            ),
         )
 
 
@@ -245,6 +265,8 @@ def _stored_request(
             voltage_references=references,
         ),
         tuple(channels),
+        default_total_settings(topology),
+        (),
         stored.aggregates,
         stored.power_quality,
         stored.status_fields,
@@ -575,6 +597,8 @@ def _legacy_request(
             references,
         ),
         channel_settings,
+        default_total_settings(topology),
+        (),
         (),
         package_options["power_quality"],
         package_options["status_fields"],

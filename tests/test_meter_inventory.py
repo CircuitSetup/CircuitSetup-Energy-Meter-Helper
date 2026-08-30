@@ -164,6 +164,9 @@ def test_inventory_has_server_plan_and_catalog_fields() -> None:
     )
     assert inventory.plan_id == "a" * 32
     assert inventory.ct_catalog is inventory.ct_inventory.catalog
+    assert inventory.automatic_candidates == ()
+    assert inventory.automatic_totals == ()
+    assert inventory.stale_automatic_total_settings == ()
 
 
 @pytest.mark.parametrize("interval", (1, 2, 5, 10, 30, 60))
