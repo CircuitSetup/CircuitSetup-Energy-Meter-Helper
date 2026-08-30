@@ -1,15 +1,19 @@
 from dataclasses import replace
 
+import pytest
+
 from test_firmware_total_contract import _firmware_root, firmware_contract
 from test_meter_configuration import request
 
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    AggregateTotalSource,
     AutomaticTotalSettings,
     ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
     EnergyMode,
     MeasurementMethod,
+    NativeTotalSource,
     TotalOutputSettings,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
@@ -20,6 +24,8 @@ from custom_components.circuitsetup_energy_meter_helper.total_graph import (
     native_total_sources,
     resolve_automatic_totals,
     stale_automatic_total_settings,
+    plan_total_graph,
+    validate_total_graph,
 )
 
 
@@ -28,6 +34,136 @@ def topology(addons: int) -> MeterTopology:
         addons, connection_type="wifi", voltage_layout="standard",
         project_name="circuitsetup.6c-energy-meter", evidence=(),
     )
+
+
+def channel_source(channel: int) -> ChannelTotalSource:
+    return ChannelTotalSource("channel", channel)
+
+
+def native_source(source_id: str) -> NativeTotalSource:
+    return NativeTotalSource("native_total", source_id)
+
+
+def aggregate_source(aggregate_id: str) -> AggregateTotalSource:
+    return AggregateTotalSource("aggregate", aggregate_id)
+
+
+def advanced(
+    aggregate_id: str,
+    *,
+    sources: tuple[ChannelTotalSource | NativeTotalSource | AggregateTotalSource, ...],
+    method: MeasurementMethod = MeasurementMethod.DIRECT,
+    outputs: TotalOutputSettings = TotalOutputSettings(True, False, True),
+) -> CircuitAggregate:
+    return CircuitAggregate(
+        aggregate_id, aggregate_id, CircuitRole.CUSTOM, sources, method,
+        EnergyMode.CONSUMPTION, outputs,
+    )
+
+
+def configuration(*aggregates: CircuitAggregate, addons: int = 0):
+    return replace(request(addons=addons), aggregates=aggregates)
+
+
+def test_parent_uses_child_nodes_and_orders_children_first() -> None:
+    child = advanced("east", sources=(channel_source(1), channel_source(2)))
+    parent = advanced("whole", sources=(aggregate_source("east"), native_source("board-addon-1")))
+    plan = plan_total_graph(configuration(child, parent, addons=1), topology(1))
+    assert [node.aggregate.aggregate_id for node in plan.ordered_nodes] == ["east", "whole"]
+    assert plan.leaf_channels["whole"] == frozenset({1, 2, *range(7, 13)})
+    assert plan.ordered_nodes[1].sources[0].power_id == "csemh_east_power"
+
+
+def test_graph_rejects_missing_native_and_aggregate_sources() -> None:
+    missing_native = advanced("whole", sources=(native_source("missing"),))
+    with pytest.raises(ValueError, match="native"):
+        validate_total_graph(configuration(missing_native), topology(0))
+    missing_child = advanced("whole", sources=(aggregate_source("missing"),))
+    with pytest.raises(ValueError, match="aggregate"):
+        validate_total_graph(configuration(missing_child), topology(0))
+
+
+def test_graph_rejects_aggregate_ids_reserved_by_native_sources() -> None:
+    with pytest.raises(ValueError, match="reserved"):
+        validate_total_graph(configuration(advanced("overall", sources=(channel_source(1),))), topology(0))
+
+
+@pytest.mark.parametrize(
+    "aggregates",
+    (
+        (advanced("a", sources=(aggregate_source("a"),)),),
+        (
+            advanced("a", sources=(aggregate_source("b"),)),
+            advanced("b", sources=(aggregate_source("a"),)),
+        ),
+    ),
+)
+def test_graph_rejects_cycles(aggregates: tuple[CircuitAggregate, ...]) -> None:
+    with pytest.raises(ValueError, match="cycle"):
+        validate_total_graph(configuration(*aggregates), topology(0))
+
+
+def test_graph_rejects_child_fanout_and_ancestor_overlaps() -> None:
+    child = advanced("child", sources=(channel_source(1),))
+    one = advanced("one", sources=(aggregate_source("child"),))
+    two = advanced("two", sources=(aggregate_source("child"),))
+    with pytest.raises(ValueError, match="one parent"):
+        validate_total_graph(configuration(child, one, two), topology(0))
+    overlap = advanced("whole", sources=(native_source("overall"), channel_source(1)))
+    with pytest.raises(ValueError, match="mixed"):
+        validate_total_graph(configuration(overlap), topology(0))
+    child_overlap = advanced("whole", sources=(aggregate_source("child"), channel_source(1)))
+    with pytest.raises(ValueError, match="mixed"):
+        validate_total_graph(configuration(child, child_overlap), topology(0))
+
+
+def test_graph_rejects_overlapping_children_but_allows_independent_roots() -> None:
+    east = advanced("east", sources=(channel_source(1), channel_source(2)))
+    west = advanced("west", sources=(channel_source(2), channel_source(3)))
+    parent = advanced("whole", sources=(aggregate_source("east"), aggregate_source("west")))
+    with pytest.raises(ValueError, match="overlap"):
+        validate_total_graph(configuration(east, west, parent), topology(0))
+    plan = plan_total_graph(configuration(east, west), topology(0))
+    assert plan.independent_overlap_warnings == (("east", "west", frozenset({2})),)
+
+
+def test_graph_allows_nested_only_parent_and_rejects_mixed_or_special_nested() -> None:
+    child = advanced("child", sources=(channel_source(1),))
+    parent = advanced("whole", sources=(aggregate_source("child"), native_source("board-addon-1")))
+    validate_total_graph(configuration(child, parent, addons=1), topology(1))
+    mixed = advanced("mixed", sources=(channel_source(1), aggregate_source("child")))
+    with pytest.raises(ValueError, match="mixed"):
+        validate_total_graph(configuration(child, mixed), topology(0))
+    special = advanced("special", sources=(aggregate_source("child"),), method=MeasurementMethod.TWO_CT_SUM)
+    with pytest.raises(ValueError, match="direct"):
+        validate_total_graph(configuration(child, special), topology(0))
+
+
+def test_disabled_or_unknown_automatic_settings_are_rejected_and_hidden_watts_still_required() -> None:
+    baseline = request()
+    grid = replace(
+        baseline,
+        channels=tuple(replace(channel, role=CircuitRole.GRID) if channel.channel in (1, 2) else channel for channel in baseline.channels),
+        automatic_totals=(AutomaticTotalSettings("grid-ct1-ct2", False, TotalOutputSettings(True, False, True)),),
+    )
+    parent = advanced("whole", sources=(aggregate_source("auto-mains"),))
+    with pytest.raises(ValueError, match="disabled"):
+        validate_total_graph(replace(grid, aggregates=(parent,)), topology(0))
+    with pytest.raises(ValueError, match="automatic"):
+        validate_total_graph(replace(baseline, automatic_totals=(AutomaticTotalSettings("missing", True, TotalOutputSettings(True, False, True)),)), topology(0))
+    hidden = advanced("hidden", sources=(channel_source(1),), outputs=TotalOutputSettings(False, False, True))
+    plan = plan_total_graph(configuration(hidden), topology(0))
+    assert plan.ordered_nodes[0].power_required is True
+    with pytest.raises(TypeError):
+        plan.leaf_channels["hidden"] = frozenset()
+
+
+def test_parent_requirements_keep_hidden_child_watts_and_amps_internal() -> None:
+    child = advanced("child", sources=(channel_source(1),), outputs=TotalOutputSettings(False, False, False))
+    parent = advanced("parent", sources=(aggregate_source("child"),), outputs=TotalOutputSettings(True, True, False))
+    plan = plan_total_graph(configuration(child, parent), topology(0))
+    assert plan.ordered_nodes[0].power_required is True
+    assert plan.ordered_nodes[0].current_required is True
 
 
 def test_catalog_covers_all_topologies() -> None:
@@ -53,6 +189,12 @@ def test_addon_catalog_maps_native_ids_and_leaf_channels() -> None:
     assert addon.power_id == "totalWattsAddOn2"
     assert addon.leaf_channels == tuple(range(13, 19))
     assert overall.leaf_channels == tuple(range(1, 19))
+
+
+def test_native_catalog_uses_human_readable_board_labels() -> None:
+    catalog = native_total_sources(topology(1))
+    assert catalog[0].label == "Main Board total"
+    assert catalog[1].label == "Add-on 1 total"
 
 
 def test_upstream_visibility_defaults() -> None:

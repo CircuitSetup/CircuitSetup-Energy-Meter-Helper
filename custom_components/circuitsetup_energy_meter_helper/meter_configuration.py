@@ -197,7 +197,7 @@ def _total_outputs(value: object, field: str) -> None:
 
 def _source_id(value: object, field: str) -> None:
     _text(value, field)
-    if not _SLUG.fullmatch(value):
+    if not isinstance(value, str) or not _SLUG.fullmatch(value):
         raise ValueError(f"{field} must be a safe slug")
 
 
@@ -379,6 +379,9 @@ def validate_meter_configuration(
             raise ValueError("measurement method cardinality requires channel sources")
     _bools(request.power_quality, "power_quality", topology.board_count)
     _bools(request.status_fields, "status_fields", topology.board_count)
+    from .total_graph import validate_total_graph
+
+    validate_total_graph(request, topology)
 
 
 def default_meter_configuration(

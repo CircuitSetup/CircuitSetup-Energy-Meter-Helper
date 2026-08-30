@@ -391,8 +391,9 @@ def test_distinct_aggregates_may_reuse_channels() -> None:
     """Board, meter, and helper totals may intentionally overlap."""
     value = request()
     first = CircuitAggregate(
-        "board-total", "Board total", CircuitRole.CUSTOM, (1, 2),
-        MeasurementMethod.DIRECT, None, EnergyMode.NONE,
+        "board-total", "Board total", CircuitRole.CUSTOM,
+        (ChannelTotalSource("channel", 1), ChannelTotalSource("channel", 2)),
+        MeasurementMethod.DIRECT, EnergyMode.NONE, TotalOutputSettings(True, False, False),
     )
     second = replace(first, aggregate_id="meter-total", name="Meter total")
     object.__setattr__(value, "aggregates", (first, second))
