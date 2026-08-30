@@ -14,7 +14,15 @@ Passed: 4 tests.
 
 `C:/Users/John/Documents/CircuitSetup-Energy-Meter-Helper/.venv/Scripts/python.exe -m pytest tests/test_meter_configuration.py -q`
 
-Passed as part of the focused follow-up run (no failures; pytest output was combined with the catalog invocation).
+Review rerun: 2 failed, 75 passed. The failures are deferred renderer consumers still using retired `expose_power` fields.
+
+`C:/Users/John/Documents/CircuitSetup-Energy-Meter-Helper/.venv/Scripts/python.exe -m pytest tests/test_total_graph.py tests/test_firmware_total_contract.py -q`
+
+After adding the all-topology crosscheck: 12 passed (5 deprecation warnings from Home Assistant dependencies).
+
+`C:/Users/John/Documents/CircuitSetup-Energy-Meter-Helper/.venv/Scripts/python.exe -m mypy custom_components/circuitsetup_energy_meter_helper`
+
+45 errors in 7 files. One existing type narrowing error is in `meter_configuration.py`; the remaining 44 are deferred Task 2 consumer migrations in store, inventory, mutator, estimator, transaction, and websocket modules.
 
 ## Changes
 
