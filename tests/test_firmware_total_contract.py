@@ -7,6 +7,10 @@ from pathlib import Path
 
 import pytest
 from test_firmware_contract import _contract_fixture
+from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
+from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+    default_total_settings, native_total_sources,
+)
 
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts/verify_firmware_contract.py"
@@ -63,6 +67,39 @@ def test_one_addon_root_uses_board_totals(tmp_path: Path) -> None:
     assert contract.root_power_sources == ("totalWattsMain", "totalWattsAddOn1")
     assert contract.root_current_sources == ("totalAmpsMain", "totalAmpsAddOn1")
     assert contract.energy_power_id == "totalWatts"
+
+
+def test_native_catalog_matches_inspector_for_all_topologies(tmp_path: Path) -> None:
+    firmware_root = _firmware_root(tmp_path)
+    boards = firmware_contract.inspect_firmware_totals(firmware_root).boards
+    for addons in range(7):
+        topology = MeterTopology.from_addon_count(
+            addons, connection_type="wifi", voltage_layout="standard",
+            project_name="circuitsetup.6c-energy-meter", evidence=(),
+        )
+        catalog = native_total_sources(topology)
+        for definition in catalog[:-1]:
+            board = boards[0 if definition.source_id == "board-main" else int(definition.source_id.rsplit("-", 1)[1])]
+            assert definition.power_id == board.power_id
+            assert definition.current_id == board.current_id
+            assert definition.leaf_channels == board.power_channels == board.current_channels
+            assert definition.existing_energy_id is None
+        overall = catalog[-1]
+        if addons:
+            root = firmware_contract.inspect_top_level_totals(
+                firmware_root / "Software/ESPHome" / f"6chan_energy_meter_{addons}-addon{'s' if addons > 1 else ''}.yaml"
+            )
+            assert (overall.power_id, overall.current_id) == (root.root_power_id, root.root_current_id)
+            assert tuple(item.power_id for item in catalog[:-1]) == root.root_power_sources
+            assert tuple(item.current_id for item in catalog[:-1]) == root.root_current_sources
+            assert (overall.existing_energy_id, root.energy_power_id) == (root.energy_id, overall.power_id)
+        else:
+            assert (overall.power_id, overall.current_id, overall.existing_energy_id) == (
+                "totalWattsMain", "totalAmpsMain", "totalEnergyDaily"
+            )
+        defaults = default_total_settings(topology)
+        assert defaults.overall == overall.upstream_defaults
+        assert tuple(item.outputs for item in defaults.boards) == tuple(item.upstream_defaults for item in catalog[:-1])
 
 
 @pytest.mark.parametrize(

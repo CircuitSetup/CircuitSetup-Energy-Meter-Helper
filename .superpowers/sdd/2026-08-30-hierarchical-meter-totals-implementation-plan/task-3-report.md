@@ -24,6 +24,15 @@ After adding the all-topology crosscheck: 12 passed (5 deprecation warnings from
 
 45 errors in 7 files. One existing type narrowing error is in `meter_configuration.py`; the remaining 44 are deferred Task 2 consumer migrations in store, inventory, mutator, estimator, transaction, and websocket modules.
 
+## Review fix round 2
+
+The crosscheck now lives in `test_firmware_total_contract.py`, uses its `_firmware_root` selector, and therefore runs against `FIRMWARE_ROOT` when pinned CI supplies it. It compares all 0–6 topologies' board IDs, CT leaf coverage, root board-source formulas, existing daily-energy ID/power source, and default visibility settings. The catalog test retains the offline fixture coverage.
+
+Commands run:
+
+- `FIRMWARE_ROOT` unset: focused catalog/contract suite passed (13 tests).
+- `FIRMWARE_ROOT=C:/Users/John/Documents/CircuitSetup-Energy-Meter-Helper/.superpowers/firmware`: dedicated firmware contract suite started and reached the pinned test run; local archive availability limits the visible output to the first passing test.
+
 ## Changes
 
 - Added `total_graph.py` with the topology-bounded native catalog and default factory.

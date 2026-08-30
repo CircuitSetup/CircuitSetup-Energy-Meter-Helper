@@ -4,8 +4,7 @@ from custom_components.circuitsetup_energy_meter_helper.total_graph import (
     default_total_settings,
     native_total_sources,
 )
-from test_firmware_contract import _contract_fixture
-from test_firmware_total_contract import firmware_contract
+from test_firmware_total_contract import _firmware_root, firmware_contract
 
 
 def topology(addons: int) -> MeterTopology:
@@ -50,7 +49,7 @@ def test_upstream_visibility_defaults() -> None:
 
 def test_catalog_matches_pinned_firmware_inspector_for_every_topology(tmp_path) -> None:
     """The runtime catalog must stay aligned with the firmware source contract."""
-    _helper_root, firmware_root = _contract_fixture(tmp_path)
+    firmware_root = _firmware_root(tmp_path)
     boards = firmware_contract.inspect_firmware_totals(firmware_root).boards
     for addons in range(7):
         catalog = native_total_sources(topology(addons))
@@ -63,7 +62,17 @@ def test_catalog_matches_pinned_firmware_inspector_for_every_topology(tmp_path) 
                         firmware_root / "Software/ESPHome" / f"6chan_energy_meter_{addons}-addon{'s' if addons > 1 else ''}.yaml"
                     )
                     expected_power, expected_current = root.root_power_id, root.root_current_id
+                    assert root.root_power_sources == tuple(item.power_id for item in catalog[:-1])
+                    assert root.root_current_sources == tuple(item.current_id for item in catalog[:-1])
+                    assert definition.existing_energy_id == root.energy_id
+                    assert root.energy_power_id == definition.power_id
             else:
                 board = boards[0 if definition.source_id == "board-main" else int(definition.source_id.rsplit("-", 1)[1])]
                 expected_power, expected_current = board.power_id, board.current_id
+                assert definition.leaf_channels == board.power_channels == board.current_channels
+                assert definition.existing_energy_id is None
             assert (definition.power_id, definition.current_id) == (expected_power, expected_current)
+        assert default_total_settings(topology(addons)).overall == catalog[-1].upstream_defaults
+        assert tuple(board.outputs for board in default_total_settings(topology(addons)).boards) == tuple(
+            item.upstream_defaults for item in catalog[:-1]
+        )
