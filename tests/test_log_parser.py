@@ -10,6 +10,8 @@ import pytest
 from custom_components.circuitsetup_energy_meter_helper.log_parser import (
     CalibrationLogLine,
     LogEvidenceError,
+    OffsetRunEvidence,
+    PowerOffsetRunEvidence,
     parse_calibration_sources,
     parse_gain_run,
     parse_offset_run,
@@ -18,6 +20,29 @@ from custom_components.circuitsetup_energy_meter_helper.log_parser import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "logs"
+
+
+@pytest.mark.parametrize("stage,kind", ((1, "offset"), (2, "power offset")))
+def test_detects_saved_offsets_separately_from_gain_and_other_stage(
+    stage: int, kind: str
+) -> None:
+    assert parse_calibration_sources(
+        (
+            f"[CALIBRATION][meter_main1] Restored {kind} calibration from memory",
+            f"[CALIBRATION][meter_main2] {kind.capitalize()} mismatch: using flash values (config differs)",
+            "[CALIBRATION][addon1_1] Gain calibration loaded and verified successfully.",
+            "[CALIBRATION][addon1_2] Restored power offset calibration from memory"
+            if stage == 1
+            else "[CALIBRATION][addon1_2] Restored offset calibration from memory",
+        ),
+        {"meter_main1", "meter_main2", "addon1_1", "addon1_2"},
+        offset_stage=stage,
+    ) == {
+        "addon1_1": "unknown",
+        "addon1_2": "unknown",
+        "meter_main1": "flash",
+        "meter_main2": "flash",
+    }
 
 
 def test_detects_current_flash_and_configuration_calibration_sources() -> None:
@@ -424,6 +449,84 @@ def test_parses_exact_signed_offset_tables_and_verified_terminals() -> None:
     ] == [("A", -101, 201), ("B", -32768, 32767), ("C", 103, -203)]
     assert offset.flash_saved and offset.register_verified
     assert power.flash_saved and power.register_verified
+
+
+def test_parses_esphome_colon_after_offset_button_prefix() -> None:
+    lines = log_lines("offset_success.log")
+    lines[0] = CalibrationLogLine(
+        lines[0].connection_generation,
+        lines[0].operation_sequence,
+        lines[0].arrived_at,
+        lines[0].line.replace("] 1.", "]: 1.", 1),
+    )
+
+    evidence = parse_offset_run(
+        lines,
+        connection_generation=3,
+        operation_sequence=8,
+        target_instance_id="meter_main1",
+        button_name="1. Run Main Meter 1 Offset Cal",
+        dispatched_after=10.0,
+    )
+
+    assert evidence.instance_id == "meter_main1"
+
+
+@pytest.mark.parametrize(
+    ("fixture", "parser", "button", "guidance"),
+    (
+        (
+            "offset_success.log",
+            parse_offset_run,
+            "1. Run Main Meter 1 Offset Cal",
+            "Use offset_voltage: & offset_current: under each phase_x: in your config file to save these values",
+        ),
+        (
+            "power_offset_success.log",
+            parse_power_offset_run,
+            "2. Run Main Meter 1 Power Offset Cal",
+            "Use offset_active_power: & offset_reactive_power: under each phase_x: in your config file to save these values",
+        ),
+    ),
+)
+def test_offset_runs_distinguish_button_guidance_from_another_press(
+    fixture: str,
+    parser: Callable[..., OffsetRunEvidence | PowerOffsetRunEvidence],
+    button: str,
+    guidance: str,
+) -> None:
+    lines = log_lines(fixture)
+    lines[0] = CalibrationLogLine(3, 8, 11.0, f"[I][atm90e32.button:037]: {button}")
+    lines[1:1] = [
+        CalibrationLogLine(
+            3,
+            8,
+            11.1,
+            "[I][atm90e32.button:038]: [CALIBRATION] **NOTE: CTs and ACVs must be 0 during this process. USB power only**",
+        ),
+        CalibrationLogLine(
+            3, 8, 11.2, f"[I][atm90e32.button:039]: [CALIBRATION] {guidance}"
+        ),
+    ]
+    arguments = {
+        "connection_generation": 3,
+        "operation_sequence": 8,
+        "target_instance_id": "meter_main1",
+        "button_name": button,
+        "dispatched_after": 10.0,
+    }
+
+    evidence = parser(lines, **arguments)
+    assert evidence.flash_saved and evidence.register_verified
+
+    lines.insert(
+        3,
+        CalibrationLogLine(
+            3, 8, 11.3, "[I][atm90e32.button:051]: z1. Clear Main Meter 2 Offset Cal"
+        ),
+    )
+    with pytest.raises(LogEvidenceError, match="wrong button"):
+        parser(lines, **arguments)
 
 
 def test_parses_combined_offset_save_and_verification_terminals() -> None:

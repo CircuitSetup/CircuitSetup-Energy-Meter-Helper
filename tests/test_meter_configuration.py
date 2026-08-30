@@ -387,6 +387,19 @@ def test_aggregate_invariants_and_direct_multi() -> None:
         validate_meter_configuration(duplicate, topology())
 
 
+def test_distinct_aggregates_may_reuse_channels() -> None:
+    """Board, meter, and helper totals may intentionally overlap."""
+    value = request()
+    first = CircuitAggregate(
+        "board-total", "Board total", CircuitRole.CUSTOM, (1, 2),
+        MeasurementMethod.DIRECT, None, EnergyMode.NONE,
+    )
+    second = replace(first, aggregate_id="meter-total", name="Meter total")
+    object.__setattr__(value, "aggregates", (first, second))
+
+    validate_meter_configuration(value, topology())
+
+
 def test_aggregates_reject_unused_channels_without_changing_ct_scaling() -> None:
     value = request()
     unused = replace(value.channels[2], enabled=False, role=CircuitRole.UNUSED)

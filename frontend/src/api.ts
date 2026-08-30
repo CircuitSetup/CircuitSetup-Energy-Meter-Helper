@@ -237,12 +237,12 @@ function meterConfiguration(value: unknown, label: string): MeterConfiguration {
     if (integer(channel.channel, label) !== index + 1 || ![1, 2, 4, 8].includes(number(channel.reporting_multiplier, label)) || referenceId !== owner) throw new Error(`${label} response is invalid`);
     const enabled = boolean(channel.enabled, label); string(channel.name, label); id(channel.model_id, label); const role = enumeration(channel.role, CIRCUIT_ROLES, label); if ((enabled && role === "unused") || (!enabled && role !== "unused")) throw new Error(`${label} response is invalid`); if (channel.custom_gain_ct !== null && (integer(channel.custom_gain_ct, label) < 1 || integer(channel.custom_gain_ct, label) > 65535)) throw new Error(`${label} response is invalid`); if (channel.custom_label !== null) string(channel.custom_label, label); boolean(channel.burden_output_acknowledged, label);
   });
-  const aggregateIds = new Set<string>(); const aggregateChannels = new Set<number>(); const aggregateParents = new Map<string, string | null>();
-  array(configuration.aggregates, label, 32).forEach((entry) => { const aggregate = record(entry, label); exactKeys(aggregate, ["aggregate_id", "name", "role", "channels", "measurement_method", "parent_id", "energy_mode", "expose_power", "expose_current"], label); const aggregateId = id(aggregate.aggregate_id, label); if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(aggregateId) || aggregateIds.has(aggregateId)) throw new Error(`${label} response is invalid`); aggregateIds.add(aggregateId); string(aggregate.name, label); enumeration(aggregate.role, CIRCUIT_ROLES, label); const members = array(aggregate.channels, label, 42).map((channel) => integer(channel, label)); const method = enumeration(aggregate.measurement_method, MEASUREMENT_METHODS, label); const count = method === "two_ct_sum" ? 2 : method === "one_ct_double_power" || method === "both_conductors_one_ct" ? 1 : undefined; if (!members.length || new Set(members).size !== members.length || members.some((channel) => channel < 1 || channel > planTopology.ct_count || aggregateChannels.has(channel) || !boolean(record(channels[channel - 1], label).enabled, label)) || count !== undefined && members.length !== count) throw new Error(`${label} response is invalid`); members.forEach((channel) => aggregateChannels.add(channel)); const parent = aggregate.parent_id === null ? null : id(aggregate.parent_id, label); aggregateParents.set(aggregateId, parent); enumeration(aggregate.energy_mode, ENERGY_MODES, label); boolean(aggregate.expose_power, label); boolean(aggregate.expose_current, label); });
+  const aggregateIds = new Set<string>(); const aggregateParents = new Map<string, string | null>();
+  array(configuration.aggregates, label, 32).forEach((entry) => { const aggregate = record(entry, label); exactKeys(aggregate, ["aggregate_id", "name", "role", "channels", "measurement_method", "parent_id", "energy_mode", "expose_power", "expose_current"], label); const aggregateId = id(aggregate.aggregate_id, label); if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(aggregateId) || aggregateIds.has(aggregateId)) throw new Error(`${label} response is invalid`); aggregateIds.add(aggregateId); string(aggregate.name, label); enumeration(aggregate.role, CIRCUIT_ROLES, label); const members = array(aggregate.channels, label, 42).map((channel) => integer(channel, label)); const method = enumeration(aggregate.measurement_method, MEASUREMENT_METHODS, label); const count = method === "two_ct_sum" ? 2 : method === "one_ct_double_power" || method === "both_conductors_one_ct" ? 1 : undefined; if (!members.length || new Set(members).size !== members.length || members.some((channel) => channel < 1 || channel > planTopology.ct_count || !boolean(record(channels[channel - 1], label).enabled, label)) || count !== undefined && members.length !== count) throw new Error(`${label} response is invalid`); const parent = aggregate.parent_id === null ? null : id(aggregate.parent_id, label); aggregateParents.set(aggregateId, parent); enumeration(aggregate.energy_mode, ENERGY_MODES, label); boolean(aggregate.expose_power, label); boolean(aggregate.expose_current, label); });
   for (const [aggregateId, parent] of aggregateParents) { const seen = new Set<string>(); for (let current = parent; current !== null; current = aggregateParents.get(current) ?? null) { if (!aggregateIds.has(current) || current === aggregateId || seen.has(current)) throw new Error(`${label} response is invalid`); seen.add(current); } }
   for (const key of ["power_quality", "status_fields"] as const) { const values = array(configuration[key], label, 7); if (values.length !== planTopology.board_count) throw new Error(`${label} response is invalid`); values.forEach((entry) => boolean(entry, label)); }
   boolean(configuration.multi_reference_preparation_acknowledged, label);
-  const capabilities = record(response.capabilities, label); exactKeys(capabilities, ["configuration_authoritative", "managed_totals", "multi_reference", "reason_codes"], label); boolean(capabilities.configuration_authoritative, label); boolean(capabilities.managed_totals, label); boolean(capabilities.multi_reference, label); array(capabilities.reason_codes, label, 8).forEach((reason) => string(reason, label));
+  const capabilities = record(response.capabilities, label); exactKeys(capabilities, ["configuration_authoritative", "managed_totals", "multi_reference", "semantic_source", "reason_codes"], label); boolean(capabilities.configuration_authoritative, label); boolean(capabilities.managed_totals, label); boolean(capabilities.multi_reference, label); enumeration(capabilities.semantic_source, new Set(["helper_managed", "legacy_inferred"]), label); array(capabilities.reason_codes, label, 8).forEach((reason) => string(reason, label));
   const voltageTopology = record(response.voltage_topology, label); exactKeys(voltageTopology, ["references", "source"], label); enumeration(voltageTopology.source, new Set(["helper", "legacy"]), label); const topologyReferences = array(voltageTopology.references, label, 8).map((entry) => { const reference = array(entry, label, 2); if (reference.length !== 2) throw new Error(`${label} response is invalid`); const referenceId = id(reference[0], label); const groups = array(reference[1], label, 14).map((group) => id(group, label)); if (!groups.length) throw new Error(`${label} response is invalid`); return [referenceId, groups] as const; }); if (topologyReferences.length !== voltageReferences.length || !exactStrings(topologyReferences.map(([reference]) => reference), voltageReferences.map((reference) => reference.reference_id)) || !topologyReferences.every(([reference, groups], index) => exactStrings(groups, voltageReferences[index]!.group_keys))) throw new Error(`${label} response is invalid`);
   const voltageCatalog = record(response.voltage_transformer_catalog, label); exactKeys(voltageCatalog, ["presets", "source_repository", "source_ref", "schema_version"], label); string(voltageCatalog.source_repository, label); if (!/^[0-9a-f]{40}$/.test(string(voltageCatalog.source_ref, label)! ) || integer(voltageCatalog.schema_version, label) !== 1) throw new Error(`${label} response is invalid`); const voltagePresets = array(voltageCatalog.presets, label, 64); if (!voltagePresets.length) throw new Error(`${label} response is invalid`); const voltageModelIds = new Set<string>(); voltagePresets.forEach((entry) => { const preset = record(entry, label); exactKeys(preset, ["model_id", "label", "primary_nominal_v", "secondary_nominal_v", "default_gain_voltage", "notes"], label); const model = id(preset.model_id, label); if (voltageModelIds.has(model)) throw new Error(`${label} response is invalid`); voltageModelIds.add(model); string(preset.label, label); if (number(preset.primary_nominal_v, label) <= 0 || number(preset.secondary_nominal_v, label) <= 0) throw new Error(`${label} response is invalid`); const gain = integer(preset.default_gain_voltage, label); if (gain < 1 || gain > 65535) throw new Error(`${label} response is invalid`); string(preset.notes, label); });
   ctInventory({ plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.catalog }, label);
@@ -287,6 +287,7 @@ function session(value: unknown, label: string): SessionStatus {
   const preflight = record(item.preflight, label); array(preflight.issues, label).forEach((entry) => { const issue = record(entry, label); enumeration(issue.code, PREFLIGHT_CODES, label); string(issue.role, label); string(issue.detail, label); }); array(preflight.zeroed_roles, label).forEach((entry) => string(entry, label));
   if (item.entity_role_counts !== undefined) Object.values(record(item.entity_role_counts, label)).forEach((count) => { if (integer(count, label) < 0) throw new Error(`${label} response is invalid`); });
   if (item.calibration_sources !== undefined) Object.values(record(item.calibration_sources, label)).forEach((source) => enumeration(source, new Set(["flash", "configuration", "unknown"]), label));
+  if (item.calibration_plan !== undefined) enumeration(item.calibration_plan, new Set(["standard", "full"]), label);
   const offsetFields = [item.offset_capability, item.offset_disposition, item.offset_boards, item.has_pending_calibration];
   if (offsetFields.every((field) => field === undefined)) return value as SessionStatus;
   if (offsetFields.some((field) => field === undefined)) throw new Error(`${label} response is invalid`);
@@ -321,10 +322,18 @@ function session(value: unknown, label: string): SessionStatus {
 }
 
 function offsetReadiness(value: unknown, label: string, expectedBoard: number, expectedStage: 1 | 2): OffsetReadinessResult {
-  const item = record(value, label); exactKeys(item, ["stage", "ready", "connection_generation", "entities", "reasons", "thresholds"], label);
+  const item = record(value, label); exactKeys(item, ["stage", "ready", "connection_generation", "entities", "reasons", "thresholds", "saved_offset_sources"], label);
   if (integer(item.stage, label) !== expectedStage || expectedBoard < 0 || expectedBoard > 6) throw new Error(`${label} response is invalid`);
   const ready = boolean(item.ready, label); const generation = integer(item.connection_generation, label);
   if (generation < 1) throw new Error(`${label} response is invalid`);
+  const sourceGroups = expectedBoard === 0 ? ["main_1", "main_2"] : [`addon${expectedBoard}_1`, `addon${expectedBoard}_2`];
+  const sources = array(item.saved_offset_sources, label, 2);
+  if (sources.length !== 2) throw new Error(`${label} response is invalid`);
+  sources.forEach((entry, index) => {
+    const pair = array(entry, label, 2);
+    if (pair.length !== 2 || pair[0] !== sourceGroups[index]) throw new Error(`${label} response is invalid`);
+    enumeration(pair[1], new Set(["flash", "configuration", "unknown"]), label);
+  });
   const thresholds = record(item.thresholds, label);
   exactKeys(thresholds, ["sample_count", "zero_voltage_peak_volts", "zero_voltage_spread_volts", "zero_current_peak_amps", "zero_current_spread_amps", "voltage_present_minimum_volts", "voltage_present_spread_volts"], label);
   const sampleCount = integer(thresholds.sample_count, label);
@@ -606,6 +615,7 @@ export class HelperApi {
     depth = 0,
     field = "",
     allowChangeKey = false,
+    activeWork = false,
   ): void {
     if (depth > 8) throw new Error("payload nesting is too deep");
     if (Array.isArray(value)) {
@@ -628,11 +638,16 @@ export class HelperApi {
       if (key.toLowerCase() !== "raw_gain_ct" && PRIVATE_FIELD.test(key)) {
         throw new Error(`private field ${key} refused`);
       }
-      if (transactionStatus && depth === 0 && key === "changes" && Array.isArray(item)) {
+      if (transactionStatus && key === "changes" && Array.isArray(item)) {
         if (item.length > 100) throw new Error("unsafe collection changes refused");
         for (const change of item) this.assertPublicPayload(change, false, depth + 2, "", true);
       } else {
-        this.assertPublicPayload(item, false, depth + 1, key.toLowerCase());
+        this.assertPublicPayload(
+          item,
+          activeWork && depth === 0 && key === "transaction",
+          depth + 1,
+          key.toLowerCase(),
+        );
       }
     }
   }
@@ -643,7 +658,14 @@ export class HelperApi {
       entry_id: this.entryId,
       ...data,
     });
-    HelperApi.assertPublicPayload(result, TRANSACTION_OPERATIONS.has(operation));
+    HelperApi.assertPublicPayload(
+      result,
+      TRANSACTION_OPERATIONS.has(operation),
+      0,
+      "",
+      false,
+      operation === "get_active_work",
+    );
     return validator(result);
   }
 
@@ -731,8 +753,8 @@ export class HelperApi {
     this.transaction("abandon_ct_config", deviceId, transactionId, sourceSha256);
   public rollbackCtConfig = (deviceId: string, transactionId: string, sourceSha256: string) =>
     this.transaction("rollback_ct_config", deviceId, transactionId, sourceSha256);
-  public startSession = (deviceId: string) =>
-    this.call("start_session", (value) => session(value, "start_session"), { device_id: deviceId });
+  public startSession = (deviceId: string, calibrationPlan: "standard" | "full" = "full") =>
+    this.call("start_session", (value) => session(value, "start_session"), { device_id: deviceId, calibration_plan: calibrationPlan });
   public acknowledgeSafety = (sessionId: string) =>
     this.call("acknowledge_safety", (value) => session(value, "acknowledge_safety"), { session_id: sessionId, acknowledged: true });
   public checkStability = (sessionId: string, target: "voltage" | "current", targetId: string) =>

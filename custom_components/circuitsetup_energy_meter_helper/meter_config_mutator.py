@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from base64 import urlsafe_b64encode
 from dataclasses import dataclass, replace
 from difflib import unified_diff
 
@@ -24,6 +25,7 @@ from .config_mutator import (
 )
 from .ct_inventory import _esphome_object_id
 from .meter_configuration import (
+    ChannelSettings,
     CircuitAggregate,
     EnergyMode,
     MeasurementMethod,
@@ -31,9 +33,21 @@ from .meter_configuration import (
     VoltageReferenceConfig,
     validate_meter_configuration,
 )
-from .meter_inventory import MeterConfigurationInventory
+from .meter_inventory import (
+    MeterConfigurationInventory,
+    _default_daily_energy_power_ids,
+    _explicit_total_calculation_ids,
+    _legacy_template_total_ids,
+)
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import VerifiedCalibrationRecord
+from .topology import addon_count_from_packages
+
+_OFFICIAL_TOTAL_ID = re.compile(
+    r"^\s*(?:-\s*)?id:\s*(?:!extend\s+)?[\"']?"
+    r"(?P<id>total(?:Amps|Watts)(?:Main|AddOn[1-6])?|totalEnergyDaily)"
+    r"[\"']?\s*$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,16 +122,15 @@ def build_meter_configuration_mutation(
     voltage_references_changed = (
         requested.meter.voltage_references != previous.meter.voltage_references
     )
+    aggregates_changed = requested.aggregates != previous.aggregates
+    managed_totals_upgrade_required = (
+        aggregates_changed and not current.capabilities.managed_totals
+    )
     if (
         len(requested.meter.voltage_references) > 1
         and not current.capabilities.multi_reference
     ):
         raise ConfigMutationError("multi-reference capability is unavailable")
-    if (
-        requested.aggregates != current.configuration.aggregates
-        and not current.capabilities.managed_totals
-    ):
-        raise ConfigMutationError("managed totals capability is unavailable")
     if (
         replace(
             previous,
@@ -220,11 +233,22 @@ def build_meter_configuration_mutation(
                     requested.meter.voltage_references, topology, document
                 ),
             )
-    if requested.aggregates != previous.aggregates:
+    if aggregates_changed:
+        if managed_totals_upgrade_required:
+            document = ESPHomeConfigDocument.parse(content)
+            scalar = document.substitutions.get("csemh_config_contract")
+            contract_change = SubstitutionChange(
+                "csemh_config_contract", scalar.value if scalar else None, "2"
+            )
+            changes.append(contract_change)
+            content = _apply_changes(
+                document, [contract_change], {"csemh_config_contract": "2"}
+            )
+        document = ESPHomeConfigDocument.parse(content)
         content = replace_managed_block(
             content,
             "aggregates",
-            _render_aggregates(requested.aggregates, topology)
+            _render_aggregates(requested.aggregates, document, previous.channels)
             if requested.aggregates
             else "",
         )
@@ -246,7 +270,7 @@ def build_meter_configuration_mutation(
                 for reference in requested.meter.voltage_references
             ),
         )
-    if requested.aggregates != previous.aggregates:
+    if aggregates_changed:
         rendered_blocks["Aggregate"] = _managed_block_diff(
             source_document.managed_blocks.get("aggregates"),
             proposed_document.managed_blocks.get("aggregates")
@@ -282,7 +306,7 @@ def _grouped_review_diff(
             continue
         if value.startswith(("friendly_name:", "update_time:", "electric_freq:")):
             group = "Meter"
-        elif value.startswith(("package.", "power_quality_", "status_fields_")):
+        elif value.startswith(("package.", "power_quality_", "status_fields_", "csemh_config_contract:")):
             group = "Package"
         elif "calibrated voltage gains" in value:
             group = "Voltage reference"
@@ -525,23 +549,67 @@ def _render_voltage_references(
 
 
 def _render_aggregates(
-    aggregates: tuple[CircuitAggregate, ...], topology: MeterTopology
+    aggregates: tuple[CircuitAggregate, ...],
+    document: ESPHomeConfigDocument,
+    channels: tuple[ChannelSettings, ...],
 ) -> str:
     entries = {
         f"00_{total_id}": _internal_total(total_id)
-        for total_id in _official_total_ids(topology)
+        for total_id in _official_total_ids(document, channels)
     }
-    for aggregate in aggregates:
-        entries[f"10_{aggregate.aggregate_id}"] = _aggregate_entry(aggregate)
+    for order, aggregate in enumerate(aggregates):
+        metadata = urlsafe_b64encode(json.dumps(
+            {
+                "aggregate_id": aggregate.aggregate_id,
+                "name": aggregate.name,
+                "role": aggregate.role.value,
+                "channels": aggregate.channels,
+                "measurement_method": aggregate.measurement_method.value,
+                "parent_id": aggregate.parent_id,
+                "energy_mode": aggregate.energy_mode.value,
+                "expose_power": aggregate.expose_power,
+                "expose_current": aggregate.expose_current,
+                "order": order,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()).decode().rstrip("=")
+        entries[f"10_{aggregate.aggregate_id}"] = (
+            f"  # csemh-aggregate: {metadata}\n" + _aggregate_entry(aggregate)
+        )
     return render_aggregates(entries)
 
 
-def _official_total_ids(topology: MeterTopology) -> tuple[str, ...]:
-    return (
-        ("totalEnergyDaily",)
-        if topology.addon_count == 0
-        else ("totalAmps", "totalWatts", "totalEnergyDaily")
+def _official_total_ids(
+    document: ESPHomeConfigDocument, channels: tuple[ChannelSettings, ...]
+) -> tuple[str, ...]:
+    total_ids: list[str] = []
+    addon_count = addon_count_from_packages(document.package_files)
+    if addon_count is not None:
+        for board in range(addon_count + 1):
+            suffix = "Main" if board == 0 else f"AddOn{board}"
+            total_ids.extend((f"totalAmps{suffix}", f"totalWatts{suffix}"))
+    explicit_ids = [
+        match["id"]
+        for line in document.code_lines
+        if (match := _OFFICIAL_TOTAL_ID.fullmatch(line.rstrip())) is not None
+    ]
+    calculations = _explicit_total_calculation_ids(document)
+    total_ids.extend(
+        total_id for total_id in explicit_ids
+        if total_id != "totalEnergyDaily" and total_id not in calculations
     )
+    total_ids.extend(_legacy_template_total_ids(document, channels))
+    official_power_ids = {
+        total_id for total_id in total_ids
+        if total_id.startswith("totalWatts") or total_id.endswith("Watts")
+    }
+    if (
+        "totalEnergyDaily" in explicit_ids
+        and _default_daily_energy_power_ids(document) & official_power_ids
+    ):
+        total_ids.append("totalEnergyDaily")
+    return tuple(dict.fromkeys(total_ids))
 
 
 def _internal_total(total_id: str) -> str:
@@ -561,14 +629,14 @@ def _aggregate_entry(aggregate: CircuitAggregate) -> str:
         "power",
         internal=power_internal,
     )
-    if aggregate.expose_current:
-        lines += _template_sensor(
-            f"{identifier}_current",
-            f"${{friendly_name}} {aggregate.name} Current",
-            _current_expression(aggregate),
-            "A",
-            "current",
-        )
+    lines += _template_sensor(
+        f"{identifier}_current",
+        f"${{friendly_name}} {aggregate.name} Current",
+        _current_expression(aggregate),
+        "A",
+        "current",
+        internal=not aggregate.expose_current,
+    )
     if aggregate.energy_mode is EnergyMode.CONSUMPTION:
         lines += _daily_energy(
             f"{identifier}_energy",

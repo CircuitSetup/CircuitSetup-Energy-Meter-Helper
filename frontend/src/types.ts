@@ -248,8 +248,13 @@ export interface MeterConfigurationCapabilities {
   configuration_authoritative: boolean;
   managed_totals: boolean;
   multi_reference: boolean;
+  semantic_source: ConfigurationSemanticSource;
   reason_codes: string[];
 }
+
+export type ConfigurationSemanticSource =
+  | "helper_managed"
+  | "legacy_inferred";
 
 export interface ConfigurationImpact {
   enabled_channel_count: number;
@@ -353,6 +358,7 @@ export interface SessionStatus {
   offset_disposition?: "not_started" | "in_progress" | "completed" | "skipped" | "partial";
   offset_boards?: OffsetBoardStatus[];
   has_pending_calibration?: boolean;
+  calibration_plan?: "standard" | "full";
 }
 
 export type OffsetStageState = "not_started" | "in_progress" | "completed" | "skipped" | "partial" | "indeterminate";
@@ -394,6 +400,7 @@ export interface OffsetReadinessResult {
   }>;
   reasons: string[];
   thresholds: OffsetReadinessThresholds;
+  saved_offset_sources: Array<[string, "flash" | "configuration" | "unknown"]>;
 }
 
 export type OffsetTable = [[number, number], [number, number], [number, number]];
@@ -479,15 +486,3 @@ interface RestartVerificationBase {
 }
 
 export type RestartVerificationResult = RestartVerificationBase;
-
-export type PanelStep =
-  | "setup"
-  | "meter"
-  | "ct"
-  | "build"
-  | "safety"
-  | "offset"
-  | "voltage"
-  | "current"
-  | "restart"
-  | "summary";

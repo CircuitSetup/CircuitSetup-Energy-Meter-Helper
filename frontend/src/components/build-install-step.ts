@@ -1,8 +1,10 @@
 import { html, type TemplateResult } from "lit";
 import type { ConfigurationImpact, MeterConfigurationRequest, TransactionStatus } from "../types";
+import type { TransactionPurpose } from "../workflow-model";
 import { configReview } from "./config-review-step";
 
 export function buildInstallStep(
+  purpose: Exclude<TransactionPurpose, null>,
   status: TransactionStatus | null,
   apply: () => void,
   compile: () => void,
@@ -15,8 +17,19 @@ export function buildInstallStep(
   reviewBackBusy = false,
   correctionPending = false,
   pendingAction = "",
+  legacyMigration = false,
 ): TemplateResult {
-  const state = status?.state ?? "previewed";
+  if (!status) return html`
+    <section class="step-content" aria-labelledby="step-heading">
+      <div class="recovery-panel" role="status"><strong>No active review</strong><p>Return to the previous step and review the current configuration before continuing.</p></div>
+      <footer class="action-footer"><button class="secondary" @click=${back}>Back</button></footer>
+    </section>
+  `;
+  const labels = purpose === "save_calibration"
+    ? { heading: "Save verified calibration", apply: "Write verified gains to ESPHome", compile: "Build firmware", install: "Install calibrated firmware" }
+    : { heading: legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
+  const state = status.state;
+  const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
     ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch"].includes(code)) === true;
@@ -32,6 +45,7 @@ export function buildInstallStep(
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   return html`
     <section class="step-content" aria-labelledby="step-heading">
+      <h2>${labels.heading}</h2>
       ${configReview(status, configuration, impact)}
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
@@ -46,15 +60,10 @@ export function buildInstallStep(
         <progress max="100" aria-label="Waiting for meter startup"></progress>
       </div>` : ""}
       <div class="confirmation-actions">
-        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Apply"}</button>
-        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Compile"}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : retryableInstall ? "Retry Install" : "Install"}</button>
+        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
+        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? "Installing…" : retryClear ? "Retry clearing saved flash values" : retryableInstall ? "Retry Install" : labels.install}</button>
       </div>
-      ${status?.validation_detail ? html`<dl class="status-list evidence-list">
-        <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
-        <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>
-        <div><dt>Warnings</dt><dd>${status.validation_detail.warning_record_count} records (${status.validation_detail.reported_warning_count === null ? "unreported" : `${status.validation_detail.reported_warning_count} reported`})</dd></div>
-      </dl>` : ""}
       ${progressAction ? html`<div class="job-progress" role="status" aria-live="polite">
         <span>${progressAction} progress: ${percentage === null ? "in progress" : `${percentage}%`}</span>
         ${percentage === null

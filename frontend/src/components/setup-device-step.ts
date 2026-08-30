@@ -1,5 +1,5 @@
 import { html, type TemplateResult } from "lit";
-import type { ConnectionType, ElectricalSystem, LineFrequencyHz, SetupSnapshot } from "../types";
+import type { ConnectionType, SetupSnapshot } from "../types";
 
 const CONNECTIONS: Array<[Exclude<ConnectionType, "unknown">, string]> = [
   ["wifi", "Wi-Fi"],
@@ -7,15 +7,6 @@ const CONNECTIONS: Array<[Exclude<ConnectionType, "unknown">, string]> = [
   ["ethernet_waveshare", "Waveshare Ethernet"],
 ];
 const ADDON_PINS = ["(0, 16)", "(27, 17)", "(2, 21)", "(13, 22)", "(14, 25)", "(15, 26)"];
-const ELECTRICAL_SYSTEMS: Array<[ElectricalSystem, string]> = [
-  ["split_phase_120_240", "Split phase 120/240 V"],
-  ["single_phase_230", "Single phase 230 V"],
-  ["three_phase", "Three phase"],
-  ["custom", "Custom"],
-];
-const suggestedFrequency = (system: ElectricalSystem): LineFrequencyHz | null =>
-  system === "split_phase_120_240" ? 60 : system === "single_phase_230" ? 50 : null;
-
 export function setupDeviceStep(
   snapshot: SetupSnapshot | null,
   addonCount: number,
@@ -29,36 +20,29 @@ export function setupDeviceStep(
   discoverOnly = false,
   firmwareCatalog: TemplateResult = html``,
   importFailedDeviceId: string | null = null,
-  electricalSystem: ElectricalSystem = "split_phase_120_240",
-  lineFrequencyHz: LineFrequencyHz | null = 60,
-  electricalProfileConfirmed = false,
-  setElectricalSystem: (value: ElectricalSystem) => void = () => undefined,
-  setLineFrequency: (value: LineFrequencyHz) => void = () => undefined,
-  confirmElectricalProfile: () => void = () => undefined,
 ): TemplateResult {
   return html`
     <section class="step-content setup-step" aria-labelledby="step-heading">
-      <section aria-labelledby="existing-device-heading">
-        <h2 id="existing-device-heading">Configure an existing device</h2>
+      ${snapshot?.devices.length ? html`<section aria-labelledby="existing-device-heading">
+        <h2 id="existing-device-heading">Existing meters</h2>
         <p>Select a compatible meter already connected to Home Assistant.</p>
-        ${snapshot?.devices.length ? html`<div class="meter-list">
+        <div class="meter-list">
           ${snapshot.devices.map((device) => html`
             <div class="meter-row">
               <span><strong>${device.title}</strong><small>${device.project_name} · ${device.project_version ?? "version unavailable"}</small></span>
-              <span>Device Builder: ${device.configuration ? "Yes" : device.importable ? "Yes — import available" : "No"}</span>
-              ${device.importable && !device.configuration ? html`<button class="secondary" ?disabled=${Boolean(busyAction)}
-                @click=${() => adopt(device.entry_id)}>${importFailedDeviceId === device.entry_id ? "Retry import" : "Import"}</button>` : ""}
-              <button class="primary" data-action="configure-device" ?disabled=${Boolean(busyAction)}
-                @click=${() => configure(device.entry_id)}>${busyAction === `topology:${device.entry_id}` ? "Loading topology…" : "Configure"}</button>
+              <span>${device.configuration ? "Managed in ESPHome Device Builder" : device.importable ? "Import available" : "Calibration only — no editable source."}</span>
+              ${!device.configuration && !device.importable ? html`<small>The meter is connected, but ESPHome source editing is unavailable. Calibration remains in meter flash and may be replaced by a future firmware install.</small>` : ""}
+              ${device.importable && !device.configuration
+                ? html`<button class="primary" data-action="import-device" ?disabled=${Boolean(busyAction)}
+                    @click=${() => adopt(device.entry_id)}>${busyAction === `adopt:${device.entry_id}` ? "Importing configuration…" : importFailedDeviceId === device.entry_id ? "Retry import" : "Import configuration"}</button>`
+                : html`<button class="primary" data-action="configure-device" ?disabled=${Boolean(busyAction)}
+                    @click=${() => configure(device.entry_id)}>${busyAction === `topology:${device.entry_id}` ? "Loading meter…" : device.configuration ? "Open setup" : "Open calibration"}</button>`}
             </div>
           `)}
-        </div>` : html`<div class="error-panel passive" role="status">
-          <strong>No compatible device found</strong>
-          <span>Check power and connection, then try again.</span>
-        </div>`}
-      </section>
+        </div>
+      </section>` : html``}
       ${discoverOnly ? "" : html`<hr />
-      <h2>Set up a new device</h2>
+      <h2>Set up a new meter</h2>
       <fieldset class="choice-field">
         <legend>Add-on boards</legend>
         <p>Select how many add-on boards are attached to your energy meter.</p>
@@ -71,31 +55,6 @@ export function setupDeviceStep(
             </label>
           `)}
         </div>
-      </fieldset>
-      <fieldset class="choice-field">
-        <legend>Electrical system</legend>
-        <p id="electrical-profile-help">Confirm the line frequency before it is saved with this installation.</p>
-        <div class="connection-options">
-          ${ELECTRICAL_SYSTEMS.map(([value, label]) => html`
-            <label class=${value === electricalSystem ? "selected" : ""}>
-              <input name="electrical-system" type="radio" .value=${value}
-                .checked=${value === electricalSystem} @change=${() => setElectricalSystem(value)} />
-              <span>${label}</span>
-            </label>
-          `)}
-        </div>
-        <div class="connection-options" role="group" aria-describedby="electrical-profile-help">
-          ${([50, 60] as const).map((value) => html`<label class=${value === lineFrequencyHz ? "selected" : ""}>
-            <input name="line-frequency" type="radio" .value=${String(value)} .checked=${value === lineFrequencyHz}
-              @change=${() => setLineFrequency(value)} /> <span>${value} Hz</span>
-          </label>`)}
-        </div>
-        <p>${suggestedFrequency(electricalSystem)
-          ? `${suggestedFrequency(electricalSystem)} Hz is suggested; confirm it after checking your supply.`
-          : "Choose the line frequency for this electrical system."}</p>
-        <button class="secondary" data-action="confirm-electrical-profile" ?disabled=${lineFrequencyHz === null} @click=${confirmElectricalProfile}>
-          ${electricalProfileConfirmed ? "Electrical profile confirmed" : "Confirm electrical profile"}
-        </button>
       </fieldset>
       <fieldset class="choice-field">
         <legend>Connection</legend>
@@ -111,7 +70,7 @@ export function setupDeviceStep(
         </div>
       </fieldset>
       <section aria-labelledby="jumper-heading">
-        <h2 id="jumper-heading">Jumper summary</h2>
+        <h2 id="jumper-heading">Add-on address jumper settings</h2>
         <dl class="summary-band">
           <div><dt>Add-on boards</dt><dd>${addonCount}</dd></div>
           <div><dt>Connection</dt><dd>${CONNECTIONS.find(([value]) => value === connection)?.[1]}</dd></div>

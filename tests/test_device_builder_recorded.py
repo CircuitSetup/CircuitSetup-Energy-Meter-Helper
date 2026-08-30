@@ -4,6 +4,8 @@ import asyncio
 import json
 from pathlib import Path
 
+from aiohttp import WSMessage, WSMsgType
+
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     DeviceBuilderClient,
 )
@@ -28,6 +30,12 @@ class RecordedWebSocket:
 
     async def receive_json(self) -> dict[str, object] | None:
         return await self._received.get()
+
+    async def receive(self) -> WSMessage:
+        message = await self.receive_json()
+        if message is None:
+            return WSMessage(WSMsgType.CLOSED, None, None)
+        return WSMessage(WSMsgType.TEXT, json.dumps(message), None)
 
     async def close(self) -> None:
         await self._received.put(None)

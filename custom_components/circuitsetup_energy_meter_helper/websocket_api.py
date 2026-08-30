@@ -45,7 +45,11 @@ from .repairs import async_reconcile_issues, signals_from_result
 from .session_manager import CalibrationBusyError, SessionManager
 from .store import HelperStore
 from .topology import topology_from_native
-from .workflow import WorkflowCapabilityUnavailable, WorkflowHandleError
+from .workflow import (
+    CalibrationPlan,
+    WorkflowCapabilityUnavailable,
+    WorkflowHandleError,
+)
 
 _PREFIX = f"{DOMAIN}/"
 READ_COMMANDS = (
@@ -236,7 +240,9 @@ class WorkflowOwner(Protocol):
         self, device_id: str, plan_id: str, source_sha256: str, changes: tuple[Mapping[str, Any], ...]
     ) -> Any: ...
 
-    async def async_start_session(self, device_id: str) -> Any: ...
+    async def async_start_session(
+        self, device_id: str, calibration_plan: CalibrationPlan
+    ) -> Any: ...
 
     async def async_acknowledge_safety(
         self, session_id: str, acknowledged: bool
@@ -455,7 +461,7 @@ class EntryWebsocketController:
         }:
             return await self._async_transaction(operation, msg, user_id)
         if operation == "start_session" and workflow is not None:
-            return await workflow.async_start_session(msg["device_id"])
+            return await workflow.async_start_session(msg["device_id"], msg["calibration_plan"])
         if operation == "acknowledge_safety" and workflow is not None:
             return await workflow.async_acknowledge_safety(
                 msg["session_id"], msg["acknowledged"]
@@ -1097,8 +1103,13 @@ def _schema(command: str) -> Any:
             vol.Required("transaction_id"): _ID,
             vol.Required("source_sha256"): _SHA256,
         }
-    elif operation in {"get_active_work", "start_session"}:
+    elif operation == "get_active_work":
         schema[vol.Required("device_id")] = _ID
+    elif operation == "start_session":
+        schema |= {
+            vol.Required("device_id"): _ID,
+            vol.Required("calibration_plan"): vol.In(("standard", "full")),
+        }
     elif operation == "preview_calibrated_gains":
         schema |= {
             vol.Required("session_id"): _SERVER_ID,
