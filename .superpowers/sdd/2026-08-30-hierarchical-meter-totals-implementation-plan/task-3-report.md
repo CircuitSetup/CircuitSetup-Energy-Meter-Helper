@@ -33,6 +33,15 @@ Commands run:
 - `FIRMWARE_ROOT` unset: focused catalog/contract suite passed (13 tests).
 - `FIRMWARE_ROOT=C:/Users/John/Documents/CircuitSetup-Energy-Meter-Helper/.superpowers/firmware`: dedicated firmware contract suite started and reached the pinned test run; local archive availability limits the visible output to the first passing test.
 
+## Review fix round 3
+
+The dedicated CI job now installs the repository's Python 3.14.2 dependency set with `uv sync --all-groups` and runs the catalog contract through `uv run pytest`; the separate upstream firmware test remains on `uvx --python 3.12`. This fixes the prior Python 3.12 collection failure (`ModuleNotFoundError: aiohasupervisor`).
+
+Completed local checks (correct worktree archive path):
+
+- Offline: `FIRMWARE_ROOT` unset, `.../.venv/Scripts/python.exe -m pytest -q tests/test_total_graph.py tests/test_firmware_total_contract.py` completed successfully (13 tests).
+- Pinned: `FIRMWARE_ROOT=C:/Users/John/Documents/CircuitSetup-Energy-Meter-Helper/.worktrees/hierarchical-meter-totals/.superpowers/firmware`, `.../.venv/Scripts/python.exe -m pytest -q tests/test_firmware_total_contract.py` completed successfully (13 tests).
+
 ## Changes
 
 - Added `total_graph.py` with the topology-bounded native catalog and default factory.

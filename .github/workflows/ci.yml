@@ -91,14 +91,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
-          python-version: "3.12"
+          python-version: "3.14.2"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
           ref: 3820c5e395379cc4de16fdcac41cabc13788eb8b
           path: firmware
       - name: Test pinned firmware total hierarchy
-        run: uvx --python 3.12 --from pytest==9.0.2 pytest -q tests/test_firmware_total_contract.py
+        run: uv sync --all-groups && uv run pytest -q tests/test_firmware_total_contract.py
         env:
           FIRMWARE_ROOT: firmware
       - name: Verify catalog schema and supported project patterns
