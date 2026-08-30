@@ -30,7 +30,7 @@ _COMPARE_ROW_RE = re.compile(
 )
 _MISMATCH_RE = re.compile(r"Mismatch detected for Phase (?P<phase>[ABC])!")
 _BUTTON_RE = re.compile(
-    r"\[[^\]]*atm90e32\.button[^\]]*\]\s*(?P<button>.+?)\s*$"
+    r"\[[^\]]*atm90e32\.button[^\]]*\]\s*:?\s*(?P<button>.+?)\s*$"
 )
 _OFFSET_ROW_RE = re.compile(
     r"\|\s*(?P<phase>[ABC])\s*\|\s*(?P<voltage>[+-]?\d+)\s*\|\s*"

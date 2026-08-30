@@ -7,7 +7,7 @@ describe("calibrationPlanStep", () => {
   it("offers keep-existing, standard, and full choices", async () => {
     const choose = vi.fn();
     const root = document.createElement("div");
-    render(calibrationPlanStep(null, choose, () => {}), root);
+    render(calibrationPlanStep(null, choose, () => {}, false, false), root);
     expect(root.textContent).to.contain("Keep existing calibration");
     expect(root.textContent).to.contain("Standard calibration");
     expect(root.textContent).to.contain("Full calibration");
@@ -16,7 +16,7 @@ describe("calibrationPlanStep", () => {
   it("lays out the calibration choices as three aligned rows", () => {
     const root = document.createElement("div");
     document.body.append(root);
-    render(html`<style>${panelStyles.cssText}</style>${calibrationPlanStep(null, vi.fn(), vi.fn())}`, root);
+    render(html`<style>${panelStyles.cssText}</style>${calibrationPlanStep(null, vi.fn(), vi.fn(), false, false)}`, root);
 
     const fieldset = root.querySelector("fieldset");
     const labels = [...root.querySelectorAll("fieldset > label")];
@@ -28,7 +28,7 @@ describe("calibrationPlanStep", () => {
 
   it("discloses runtime-only limitations before calibration", () => {
     const root = document.createElement("div");
-    render(calibrationPlanStep(null, vi.fn(), vi.fn(), true), root);
+    render(calibrationPlanStep(null, vi.fn(), vi.fn(), true, false), root);
 
     for (const copy of [
       "connected to Home Assistant",
@@ -39,5 +39,14 @@ describe("calibrationPlanStep", () => {
       "ESPHome Device Builder",
       "reporting multiplier",
     ]) expect(root.textContent).toContain(copy);
+  });
+
+  it("shows and locks the plan while the next page loads", () => {
+    const root = document.createElement("div");
+    render(calibrationPlanStep("standard", vi.fn(), vi.fn(), false, true), root);
+
+    expect(root.querySelector('[role="status"]')?.textContent).toContain("Loading calibration");
+    expect(root.querySelector("fieldset")?.disabled).toBe(true);
+    expect(root.querySelector("button")?.disabled).toBe(true);
   });
 });

@@ -2023,7 +2023,7 @@ export class CircuitSetupPanel extends LitElement {
         this.navigate("summary");
       } else void this.startSession(plan as "standard" | "full");
       this.requestUpdate();
-    }, () => this.back(), this.workflowContext().configurationMode === "runtime_only");
+    }, () => this.back(), this.workflowContext().configurationMode === "runtime_only", this.pendingAction === "session");
     if (this.step === "offset") return offsetStep(this.topology, this.session, this.board, this.offsetStage,
       this.offsetAcknowledged[this.offsetStage - 1] ?? false, this.offsetRetryConfirmed,
       this.offsetReadinessByTarget.get(this.offsetKey()) ?? null, this.offsetResultByTarget.get(this.offsetKey()) ?? null,

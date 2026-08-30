@@ -426,6 +426,27 @@ def test_parses_exact_signed_offset_tables_and_verified_terminals() -> None:
     assert power.flash_saved and power.register_verified
 
 
+def test_parses_esphome_colon_after_offset_button_prefix() -> None:
+    lines = log_lines("offset_success.log")
+    lines[0] = CalibrationLogLine(
+        lines[0].connection_generation,
+        lines[0].operation_sequence,
+        lines[0].arrived_at,
+        lines[0].line.replace("] 1.", "]: 1.", 1),
+    )
+
+    evidence = parse_offset_run(
+        lines,
+        connection_generation=3,
+        operation_sequence=8,
+        target_instance_id="meter_main1",
+        button_name="1. Run Main Meter 1 Offset Cal",
+        dispatched_after=10.0,
+    )
+
+    assert evidence.instance_id == "meter_main1"
+
+
 def test_parses_combined_offset_save_and_verification_terminals() -> None:
     for fixture, parser, button, name in (
         (

@@ -1529,8 +1529,8 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
     </section>
   `;
 }
-function calibrationPlanStep(selected, choose, back, runtimeOnly = false) {
-  return b`<section class="step-content" aria-labelledby="calibration-plan-heading">
+function calibrationPlanStep(selected, choose, back, runtimeOnly, busy) {
+  return b`<section class="step-content" aria-labelledby="calibration-plan-heading" aria-busy=${busy ? "true" : "false"}>
     <h2 id="calibration-plan-heading">Choose calibration</h2>
     <p>Calibration values stay in meter flash until a verified ESPHome handoff is available.</p>
     ${runtimeOnly ? b`<section class="info-band" aria-label="Runtime-only capabilities">
@@ -1541,12 +1541,13 @@ function calibrationPlanStep(selected, choose, back, runtimeOnly = false) {
       <p>Importing the meter into ESPHome Device Builder, when available, is the path to editable configuration.</p>
       <p>Current calibration requires confirmation of the reporting multiplier because no authoritative CT inventory is available.</p>
     </section>` : ""}
-    <fieldset class="name-mode"><legend>Calibration plan</legend>
+    <fieldset class="name-mode" ?disabled=${busy}><legend>Calibration plan</legend>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "keep_existing"} @change=${() => choose("keep_existing")}> Keep existing calibration — no live session or safety acknowledgement.</label>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "standard"} @change=${() => choose("standard")}> Standard calibration — preserve existing offset values, then calibrate voltage and current.</label>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "full"} @change=${() => choose("full")}> Full calibration — includes optional offset calibration before voltage and current.</label>
     </fieldset>
-    <footer class="action-footer"><button class="secondary" @click=${back}>Back</button></footer>
+    ${busy ? b`<p role="status">Loading calibration…</p>` : ""}
+    <footer class="action-footer"><button class="secondary" ?disabled=${busy} @click=${back}>Back</button></footer>
   </section>`;
 }
 const moveTab = (event, index) => {
@@ -5150,7 +5151,7 @@ class CircuitSetupPanel extends i$2 {
         this.navigate("summary");
       } else void this.startSession(plan);
       this.requestUpdate();
-    }, () => this.back(), this.workflowContext().configurationMode === "runtime_only");
+    }, () => this.back(), this.workflowContext().configurationMode === "runtime_only", this.pendingAction === "session");
     if (this.step === "offset") return offsetStep(
       this.topology,
       this.session,
