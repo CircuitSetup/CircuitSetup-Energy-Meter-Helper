@@ -63,6 +63,77 @@ OFFSET_TABLE = ((1, 2), (3, 4), (5, 6))
 POWER_OFFSET_TABLE = ((7, 8), (9, 10), (11, 12))
 
 
+def _total_preview_workflow() -> tuple[EntryWorkflow, Any]:
+    from custom_components.circuitsetup_energy_meter_helper.workflow import _PlanHandle
+    from tests.test_meter_inventory import _document, _inventory
+
+    inventory = _inventory(_document(contract=True))
+    snapshot = ESPHomeConfigSnapshot("meter.yaml", _document(contract=True), inventory.source_sha256)
+    plan = _PlanHandle("plan", "meter", MAC, inventory.topology, snapshot, inventory, 100)
+    workflow = object.__new__(EntryWorkflow)
+    workflow._plans = {"plan": plan}
+    workflow._clock = lambda: 0
+    workflow.transactions = None
+    return workflow, plan
+
+
+def test_total_graph_preview_is_repeatable_read_only_and_recomputes_roles() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AutomaticTotalSettings,
+        TotalOutputSettings,
+    )
+
+    async def run() -> None:
+        workflow, plan = _total_preview_workflow()
+        original = plan.inventory.configuration
+        draft = replace(original, channels=tuple(
+            replace(channel, role=CircuitRole.GRID) if channel.channel in (1, 2) else channel
+            for channel in original.channels
+        ))
+        preview = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, draft)
+        assert preview["automatic_candidates"][0].candidate_id == "grid-ct1-ct2"
+        assert preview["graph"]["leaf_channels"]["auto-mains"] == [1, 2]
+        assert preview == await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, draft)
+        disabled = replace(draft, automatic_totals=(AutomaticTotalSettings("grid-ct1-ct2", False, TotalOutputSettings(True, False, True)),))
+        await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, disabled)
+        gone = replace(disabled, channels=original.channels)
+        result = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, gone)
+        assert result["automatic_totals"] == ()
+        assert result["stale_automatic_total_settings"] == disabled.automatic_totals
+        restored = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, disabled)
+        assert not restored["automatic_totals"][0].enabled
+        assert plan.inventory.configuration == original
+        assert workflow._plans["plan"] is plan
+        assert plan.snapshot.content
+        other_workflow, other_plan = _total_preview_workflow()
+        with pytest.raises(ValueError, match="candidate"):
+            await other_workflow.async_preview_total_graph("meter", "plan", other_plan.snapshot.sha256, gone)
+        with pytest.raises(ValueError, match="candidate"):
+            plan.inventory.validate_totals_change(gone)
+        unknown = replace(draft, automatic_totals=(AutomaticTotalSettings("invented", True, TotalOutputSettings(True, False, True)),))
+        with pytest.raises(ValueError, match="candidate"):
+            await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, unknown)
+        plan.scrub()
+        assert not plan.issued_total_candidate_ids
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("invalid", ("device", "hash", "expired"))
+def test_total_graph_preview_rejects_unbound_handles(invalid: str) -> None:
+    async def run() -> None:
+        workflow, plan = _total_preview_workflow()
+        if invalid == "expired":
+            workflow._clock = lambda: 100
+        with pytest.raises(WorkflowHandleError):
+            await workflow.async_preview_total_graph(
+                "other" if invalid == "device" else "meter", "plan",
+                "f" * 64 if invalid == "hash" else plan.snapshot.sha256,
+                plan.inventory.configuration,
+            )
+    asyncio.run(run())
+
+
 def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() -> None:
     """A foreign device or CT-only handle would bypass the server-owned plan boundary."""
     content = (
@@ -174,6 +245,8 @@ def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() 
             digest,
             authoritative.meter,
             authoritative.channels,
+            authoritative.default_totals,
+            authoritative.automatic_totals,
             authoritative.aggregates,
             authoritative.power_quality,
             authoritative.status_fields,
@@ -242,7 +315,7 @@ def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() 
         )
         assert preview == {"transaction_id": "1"}
         assert transactions.calls[0][1]["meter_configuration"].ct_selections
-        assert not transactions.calls[0][1]["meter_configuration"].multi_reference_preparation_acknowledged
+        assert transactions.calls[0][1]["meter_configuration"].multi_reference_preparation_acknowledged
         assert (
             transactions.calls[0][1]["expected_sensor_entities"]
             == expected.sensor_entities
@@ -308,6 +381,8 @@ def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() 
             MeterConfigurationRequest(
                 wrapper_configuration.meter,
                 wrapper_configuration.channels,
+                wrapper_configuration.default_totals,
+                wrapper_configuration.automatic_totals,
                 wrapper_configuration.aggregates,
                 wrapper_configuration.power_quality,
                 wrapper_configuration.status_fields,

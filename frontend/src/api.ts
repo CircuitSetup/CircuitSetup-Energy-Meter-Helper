@@ -23,7 +23,7 @@ import type {
   TransactionStatus,
 } from "./types";
 import type { FirmwareOption } from "./firmware-installer";
-import { configurationImpact } from "./configuration-impact";
+import type { TotalGraphPreview } from "./types";
 
 export interface HomeAssistant {
   callWS<T>(message: Record<string, unknown>): Promise<T>;
@@ -192,14 +192,101 @@ function topologyResponse(value: unknown, label: string): MeterTopology | { topo
   }
   return topology(value, label);
 }
+function totalOutputs(value: unknown, label: string): void {
+  const item = record(value, label); exactKeys(item, ["watts", "amps", "kwh"], label);
+  for (const key of ["watts", "amps", "kwh"]) boolean(item[key], label);
+}
+
+function leafChannels(value: unknown, label: string, count = 42): number[] {
+  const channels = array(value, label, 42).map((entry) => integer(entry, label));
+  if (new Set(channels).size !== channels.length || channels.some((entry) => entry < 1 || entry > count)) throw new Error(`${label} response is invalid`);
+  return channels;
+}
+
+function totalSources(value: unknown, label: string, count = 42): Record<string, unknown>[] {
+  const sources = array(value, label, 82).map((entry) => {
+    const item = record(entry, label);
+    if (item.kind === "channel") { exactKeys(item, ["kind", "channel"], label); leafChannels([item.channel], label, count); }
+    else if (item.kind === "native_total") { exactKeys(item, ["kind", "source_id"], label); id(item.source_id, label); }
+    else if (item.kind === "aggregate") { exactKeys(item, ["kind", "aggregate_id"], label); id(item.aggregate_id, label); }
+    else throw new Error(`${label} response is invalid`);
+    return item;
+  });
+  if (!sources.length || new Set(sources.map((item) => `${String(item.kind)}:${String(item.channel ?? item.source_id ?? item.aggregate_id)}`)).size !== sources.length) throw new Error(`${label} response is invalid`);
+  return sources;
+}
+
+function advancedTotal(value: unknown, label: string, count = 42): Record<string, unknown> {
+  const item = record(value, label);
+  exactKeys(item, ["aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "outputs", "origin"], label);
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id(item.aggregate_id, label))) throw new Error(`${label} response is invalid`);
+  string(item.name, label); enumeration(item.role, CIRCUIT_ROLES, label);
+  const sources = totalSources(item.sources, label, count);
+  const method = enumeration(item.measurement_method, MEASUREMENT_METHODS, label);
+  const cardinality = method === "two_ct_sum" ? 2 : method === "direct" ? undefined : 1;
+  if (cardinality !== undefined && (sources.length !== cardinality || sources.some((source) => source.kind !== "channel"))) throw new Error(`${label} response is invalid`);
+  const energy = enumeration(item.energy_mode, ENERGY_MODES, label); totalOutputs(item.outputs, label);
+  if (energy === "none" && record(item.outputs, label).kwh) throw new Error(`${label} response is invalid`);
+  enumeration(item.origin, new Set(["advanced", "migrated"]), label);
+  return item;
+}
+
+function automaticSettings(value: unknown, label: string): Record<string, unknown>[] {
+  const settings = array(value, label, 100).map((entry) => { const item = record(entry, label); exactKeys(item, ["candidate_id", "enabled", "outputs"], label); id(item.candidate_id, label); boolean(item.enabled, label); totalOutputs(item.outputs, label); return item; });
+  if (new Set(settings.map((item) => item.candidate_id)).size !== settings.length) throw new Error(`${label} response is invalid`);
+  return settings;
+}
+
+function automaticCandidate(value: unknown, label: string, count = 42): Record<string, unknown> {
+  const item = record(value, label);
+  exactKeys(item, ["candidate_id", "aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "recommended_outputs"], label);
+  id(item.candidate_id, label); id(item.aggregate_id, label); string(item.name, label); enumeration(item.role, CIRCUIT_ROLES, label);
+  const sources = totalSources(item.sources, label, count);
+  if (sources.length !== 2 || sources.some((source) => source.kind !== "channel") || item.measurement_method !== "two_ct_sum") throw new Error(`${label} response is invalid`);
+  enumeration(item.energy_mode, ENERGY_MODES, label); totalOutputs(item.recommended_outputs, label);
+  return item;
+}
+
+function automaticPreview(item: Record<string, unknown>, label: string, count = 42): void {
+  const candidates = array(item.automatic_candidates, label, 4).map((entry) => automaticCandidate(entry, label, count));
+  if (new Set(candidates.map((entry) => entry.candidate_id)).size !== candidates.length) throw new Error(`${label} response is invalid`);
+  const resolved = array(item.automatic_totals, label, 4);
+  if (resolved.length !== candidates.length) throw new Error(`${label} response is invalid`);
+  resolved.forEach((entry, index) => { const total = record(entry, label); exactKeys(total, ["candidate", "enabled", "outputs"], label); const candidate = automaticCandidate(total.candidate, label, count); if (candidate.candidate_id !== candidates[index]!.candidate_id) throw new Error(`${label} response is invalid`); boolean(total.enabled, label); totalOutputs(total.outputs, label); });
+  automaticSettings(item.stale_automatic_total_settings, label);
+}
+
+function totalsInventory(value: unknown, label: string, count: number): Record<string, unknown> {
+  const item = record(value, label); exactKeys(item, ["native_sources", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "migration"], label);
+  const native = array(item.native_sources, label, 8).map((entry) => { const source = record(entry, label); exactKeys(source, ["source_id", "label", "leaf_channels", "power_id", "current_id", "existing_energy_id", "upstream_defaults"], label); id(source.source_id, label); string(source.label, label); id(source.power_id, label); id(source.current_id, label); if (source.existing_energy_id !== null) id(source.existing_energy_id, label); if (!leafChannels(source.leaf_channels, label, count).length) throw new Error(`${label} response is invalid`); totalOutputs(source.upstream_defaults, label); return source; });
+  if (new Set(native.map((entry) => entry.source_id)).size !== native.length || !native.some((entry) => entry.source_id === "overall")) throw new Error(`${label} response is invalid`);
+  automaticPreview(item, label, count);
+  const migration = record(item.migration, label); exactKeys(migration, ["parent_review_required", "legacy_parent_links", "native_visibility_confirmation_required", "native_visibility_resolved"], label);
+  boolean(migration.parent_review_required, label); boolean(migration.native_visibility_confirmation_required, label); boolean(migration.native_visibility_resolved, label);
+  array(migration.legacy_parent_links, label, 32).forEach((entry) => { const link = record(entry, label); exactKeys(link, ["child_id", "proposed_parent_id"], label); id(link.child_id, label); id(link.proposed_parent_id, label); });
+  return item;
+}
+
+function totalGraphPreview(value: unknown, label: string, planId: string, sourceSha256: string): TotalGraphPreview {
+  const item = record(value, label); exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph"], label);
+  if (item.plan_id !== planId || item.source_sha256 !== sourceSha256) throw new Error(`${label} response is invalid`);
+  automaticPreview(item, label);
+  const graph = record(item.graph, label); exactKeys(graph, ["native_visibility", "ordered_nodes", "leaf_channels", "independent_overlap_warnings"], label);
+  array(graph.native_visibility, label, 24).forEach((entry) => { const override = record(entry, label); exactKeys(override, ["sensor_id", "internal"], label); id(override.sensor_id, label); boolean(override.internal, label); });
+  array(graph.ordered_nodes, label, 36).forEach((entry) => { const node = record(entry, label); exactKeys(node, ["aggregate", "power_id", "current_id", "sources", "power_required", "current_required", "energy_required"], label); advancedTotal(node.aggregate, label); id(node.power_id, label); id(node.current_id, label); for (const key of ["power_required", "current_required", "energy_required"]) boolean(node[key], label); array(node.sources, label, 82).forEach((entry) => { const source = record(entry, label); exactKeys(source, ["label", "power_id", "current_id", "leaf_channels"], label); string(source.label, label); id(source.power_id, label); id(source.current_id, label); leafChannels(source.leaf_channels, label); }); });
+  Object.values(record(graph.leaf_channels, label)).forEach((entry) => leafChannels(entry, label));
+  array(graph.independent_overlap_warnings, label, 630).forEach((entry) => { const warning = record(entry, label); exactKeys(warning, ["first_id", "second_id", "leaf_channels"], label); id(warning.first_id, label); id(warning.second_id, label); leafChannels(warning.leaf_channels, label); });
+  return value as TotalGraphPreview;
+}
+
 function meterConfiguration(value: unknown, label: string): MeterConfiguration {
   const response = record(value, label);
-  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "channels", "catalog"], label);
+  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "totals", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "channels", "catalog"], label);
   const planId = string(response.plan_id, label)!;
   if (!SERVER_ID.test(planId) || !SHA256.test(string(response.source_sha256, label)!)) throw new Error(`${label} response is invalid`);
   const planTopology = topology(response.topology, label);
   const configuration = record(response.configuration, label);
-  exactKeys(configuration, ["meter", "channels", "aggregates", "power_quality", "status_fields", "multi_reference_preparation_acknowledged"], label);
+  exactKeys(configuration, ["meter", "channels", "default_totals", "automatic_totals", "aggregates", "power_quality", "status_fields", "multi_reference_preparation_acknowledged", "totals_change_intent"], label);
   const meter = record(configuration.meter, label);
   exactKeys(meter, ["friendly_name", "electrical_system", "line_frequency_hz", "update_interval_s", "voltage_layout", "voltage_references"], label);
   string(meter.friendly_name, label);
@@ -237,19 +324,43 @@ function meterConfiguration(value: unknown, label: string): MeterConfiguration {
     if (integer(channel.channel, label) !== index + 1 || ![1, 2, 4, 8].includes(number(channel.reporting_multiplier, label)) || referenceId !== owner) throw new Error(`${label} response is invalid`);
     const enabled = boolean(channel.enabled, label); string(channel.name, label); id(channel.model_id, label); const role = enumeration(channel.role, CIRCUIT_ROLES, label); if ((enabled && role === "unused") || (!enabled && role !== "unused")) throw new Error(`${label} response is invalid`); if (channel.custom_gain_ct !== null && (integer(channel.custom_gain_ct, label) < 1 || integer(channel.custom_gain_ct, label) > 65535)) throw new Error(`${label} response is invalid`); if (channel.custom_label !== null) string(channel.custom_label, label); boolean(channel.burden_output_acknowledged, label);
   });
-  const aggregateIds = new Set<string>(); const aggregateParents = new Map<string, string | null>();
-  array(configuration.aggregates, label, 32).forEach((entry) => { const aggregate = record(entry, label); exactKeys(aggregate, ["aggregate_id", "name", "role", "channels", "measurement_method", "parent_id", "energy_mode", "expose_power", "expose_current"], label); const aggregateId = id(aggregate.aggregate_id, label); if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(aggregateId) || aggregateIds.has(aggregateId)) throw new Error(`${label} response is invalid`); aggregateIds.add(aggregateId); string(aggregate.name, label); enumeration(aggregate.role, CIRCUIT_ROLES, label); const members = array(aggregate.channels, label, 42).map((channel) => integer(channel, label)); const method = enumeration(aggregate.measurement_method, MEASUREMENT_METHODS, label); const count = method === "two_ct_sum" ? 2 : method === "one_ct_double_power" || method === "both_conductors_one_ct" ? 1 : undefined; if (!members.length || new Set(members).size !== members.length || members.some((channel) => channel < 1 || channel > planTopology.ct_count || !boolean(record(channels[channel - 1], label).enabled, label)) || count !== undefined && members.length !== count) throw new Error(`${label} response is invalid`); const parent = aggregate.parent_id === null ? null : id(aggregate.parent_id, label); aggregateParents.set(aggregateId, parent); enumeration(aggregate.energy_mode, ENERGY_MODES, label); boolean(aggregate.expose_power, label); boolean(aggregate.expose_current, label); });
-  for (const [aggregateId, parent] of aggregateParents) { const seen = new Set<string>(); for (let current = parent; current !== null; current = aggregateParents.get(current) ?? null) { if (!aggregateIds.has(current) || current === aggregateId || seen.has(current)) throw new Error(`${label} response is invalid`); seen.add(current); } }
+  const totals = totalsInventory(response.totals, label, planTopology.ct_count);
+  const defaults = record(configuration.default_totals, label);
+  exactKeys(defaults, ["overall", "boards"], label); totalOutputs(defaults.overall, label);
+  const boards = array(defaults.boards, label, 7);
+  if (boards.length !== (planTopology.board_count === 1 ? 0 : planTopology.board_count)) throw new Error(`${label} response is invalid`);
+  boards.forEach((entry, index) => { const board = record(entry, label); exactKeys(board, ["board_index", "outputs"], label); if (integer(board.board_index, label) !== index) throw new Error(`${label} response is invalid`); totalOutputs(board.outputs, label); });
+  const automatic = automaticSettings(configuration.automatic_totals, label);
+  const candidates = array(totals.automatic_candidates, label, 4).map((entry) => record(entry, label));
+  if (automatic.some((entry) => !candidates.some((candidate) => candidate.candidate_id === entry.candidate_id))) throw new Error(`${label} response is invalid`);
+  const aggregates = array(configuration.aggregates, label, 32).map((entry) => advancedTotal(entry, label, planTopology.ct_count));
+  const aggregateIds = new Set(aggregates.map((entry) => entry.aggregate_id));
+  if (aggregateIds.size !== aggregates.length) throw new Error(`${label} response is invalid`);
+  const knownAggregates = new Set([...aggregateIds, ...candidates.map((entry) => entry.aggregate_id)]);
+  const nativeIds = new Set(array(totals.native_sources, label, 8).map((entry) => record(entry, label).source_id));
+  for (const aggregate of aggregates) for (const source of array(aggregate.sources, label, 82).map((entry) => record(entry, label))) {
+    if (source.kind === "channel" && !boolean(record(channels[Number(source.channel) - 1], label).enabled, label)
+      || source.kind === "native_total" && !nativeIds.has(source.source_id)
+      || source.kind === "aggregate" && !knownAggregates.has(source.aggregate_id)) throw new Error(`${label} response is invalid`);
+  }
+  const intent = record(configuration.totals_change_intent, label);
+  exactKeys(intent, ["adopt_managed_totals", "legacy_parent_decisions"], label); boolean(intent.adopt_managed_totals, label);
+  const reviewed = new Set<string>();
+  array(intent.legacy_parent_decisions, label, 32).forEach((entry) => { const decision = record(entry, label); exactKeys(decision, ["child_id", "proposed_parent_id", "accepted"], label); const child = id(decision.child_id, label); id(decision.proposed_parent_id, label); boolean(decision.accepted, label); if (reviewed.has(child)) throw new Error(`${label} response is invalid`); reviewed.add(child); });
   for (const key of ["power_quality", "status_fields"] as const) { const values = array(configuration[key], label, 7); if (values.length !== planTopology.board_count) throw new Error(`${label} response is invalid`); values.forEach((entry) => boolean(entry, label)); }
   boolean(configuration.multi_reference_preparation_acknowledged, label);
-  const capabilities = record(response.capabilities, label); exactKeys(capabilities, ["configuration_authoritative", "managed_totals", "multi_reference", "semantic_source", "reason_codes"], label); boolean(capabilities.configuration_authoritative, label); boolean(capabilities.managed_totals, label); boolean(capabilities.multi_reference, label); enumeration(capabilities.semantic_source, new Set(["helper_managed", "legacy_inferred"]), label); array(capabilities.reason_codes, label, 8).forEach((reason) => string(reason, label));
+  const capabilities = record(response.capabilities, label); exactKeys(capabilities, ["configuration_authoritative", "native_totals_readable", "native_totals_writable", "managed_automatic_totals", "managed_advanced_totals", "multi_reference", "semantic_source", "reason_codes"], label); for (const key of ["configuration_authoritative", "native_totals_readable", "native_totals_writable", "managed_automatic_totals", "managed_advanced_totals", "multi_reference"]) boolean(capabilities[key], label); enumeration(capabilities.semantic_source, new Set(["helper_managed", "legacy_inferred"]), label); array(capabilities.reason_codes, label, 8).forEach((reason) => string(reason, label));
   const voltageTopology = record(response.voltage_topology, label); exactKeys(voltageTopology, ["references", "source"], label); enumeration(voltageTopology.source, new Set(["helper", "legacy"]), label); const topologyReferences = array(voltageTopology.references, label, 8).map((entry) => { const reference = array(entry, label, 2); if (reference.length !== 2) throw new Error(`${label} response is invalid`); const referenceId = id(reference[0], label); const groups = array(reference[1], label, 14).map((group) => id(group, label)); if (!groups.length) throw new Error(`${label} response is invalid`); return [referenceId, groups] as const; }); if (topologyReferences.length !== voltageReferences.length || !exactStrings(topologyReferences.map(([reference]) => reference), voltageReferences.map((reference) => reference.reference_id)) || !topologyReferences.every(([reference, groups], index) => exactStrings(groups, voltageReferences[index]!.group_keys))) throw new Error(`${label} response is invalid`);
   const voltageCatalog = record(response.voltage_transformer_catalog, label); exactKeys(voltageCatalog, ["presets", "source_repository", "source_ref", "schema_version"], label); string(voltageCatalog.source_repository, label); if (!/^[0-9a-f]{40}$/.test(string(voltageCatalog.source_ref, label)! ) || integer(voltageCatalog.schema_version, label) !== 1) throw new Error(`${label} response is invalid`); const voltagePresets = array(voltageCatalog.presets, label, 64); if (!voltagePresets.length) throw new Error(`${label} response is invalid`); const voltageModelIds = new Set<string>(); voltagePresets.forEach((entry) => { const preset = record(entry, label); exactKeys(preset, ["model_id", "label", "primary_nominal_v", "secondary_nominal_v", "default_gain_voltage", "notes"], label); const model = id(preset.model_id, label); if (voltageModelIds.has(model)) throw new Error(`${label} response is invalid`); voltageModelIds.add(model); string(preset.label, label); if (number(preset.primary_nominal_v, label) <= 0 || number(preset.secondary_nominal_v, label) <= 0) throw new Error(`${label} response is invalid`); const gain = integer(preset.default_gain_voltage, label); if (gain < 1 || gain > 65535) throw new Error(`${label} response is invalid`); string(preset.notes, label); });
   ctInventory({ plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.catalog }, label);
   const ctCatalog = record(response.ct_catalog, label); exactKeys(ctCatalog, ["presets", "source_repository", "source_ref", "schema_version"], label);
   ctInventory({ plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.ct_catalog }, label);
   const warnings = array(response.warnings, label, 32).map((warning) => string(warning, label)!);
-  const impact = record(response.configuration_impact, label); exactKeys(impact, ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count", "approximate_publications_per_second"], label); for (const key of ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count"] as const) if (integer(impact[key], label) < 0) throw new Error(`${label} response is invalid`); const publications = number(impact.approximate_publications_per_second, label); if (publications < 0) throw new Error(`${label} response is invalid`); const expectedImpact = configurationImpact(response.configuration as MeterConfigurationRequest, planTopology); if (impact.enabled_channel_count !== expectedImpact.enabled_channel_count || impact.numeric_entity_count !== expectedImpact.numeric_entity_count || impact.text_entity_count !== expectedImpact.text_entity_count || impact.energy_entity_count !== expectedImpact.energy_entity_count || Math.abs(publications - expectedImpact.approximate_publications_per_second) > Number.EPSILON * Math.max(1, publications, expectedImpact.approximate_publications_per_second) * 8) throw new Error(`${label} response is invalid`);
+  const impact = record(response.configuration_impact, label); exactKeys(impact, ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count", "approximate_publications_per_second"], label); for (const key of ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count"] as const) if (integer(impact[key], label) < 0) throw new Error(`${label} response is invalid`); const publications = number(impact.approximate_publications_per_second, label); const expectedPublications = (Number(impact.numeric_entity_count) + Number(impact.text_entity_count)) / updateInterval; if (publications < 0 || Math.abs(publications - expectedPublications) > Number.EPSILON * Math.max(1, publications, expectedPublications) * 8) throw new Error(`${label} response is invalid`);
+  const enabledChannels = channels.map((entry) => record(entry, label)).filter((entry) => entry.enabled);
+  const statusFields = array(configuration.status_fields, label, 7);
+  const textCount = enabledChannels.filter((entry) => statusFields[Math.floor((Number(entry.channel) - 1) / 6)]).length;
+  if (impact.enabled_channel_count !== enabledChannels.length || impact.text_entity_count !== textCount || Number(impact.energy_entity_count) > Number(impact.numeric_entity_count)) throw new Error(`${label} response is invalid`);
   return value as MeterConfiguration;
 }
 
@@ -731,6 +842,11 @@ export class HelperApi {
   });
   public previewMeterConfiguration = (deviceId: string, planId: string, sourceSha256: string, configuration: MeterConfigurationRequest) =>
     this.call("preview_meter_configuration", (value) => transaction(value, "preview_meter_configuration"), {
+      device_id: deviceId, plan_id: planId, source_sha256: sourceSha256, configuration,
+    });
+
+  public previewTotalGraph = (deviceId: string, planId: string, sourceSha256: string, configuration: MeterConfigurationRequest) =>
+    this.call("preview_total_graph", (value) => totalGraphPreview(value, "preview_total_graph", planId, sourceSha256), {
       device_id: deviceId, plan_id: planId, source_sha256: sourceSha256, configuration,
     });
   public setHaLabels = (deviceId: string, planId: string, sourceSha256: string, changes: Array<{ channel: number; name: string }>) =>

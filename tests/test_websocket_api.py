@@ -558,7 +558,7 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
                 }
             ],
         }
-    elif suffix == "preview_meter_configuration":
+    elif suffix in ("preview_meter_configuration", "preview_total_graph"):
         base |= {
             "device_id": "meter",
             "plan_id": "plan",
@@ -582,6 +582,8 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
                     "custom_gain_ct": 27518, "custom_label": "Mains CT",
                 }],
                 "aggregates": [], "power_quality": [True], "status_fields": [False],
+                "default_totals": {"overall": {"watts": True, "amps": True, "kwh": True}, "boards": []},
+                "automatic_totals": [],
             },
         }
     elif suffix == "set_ha_labels":
@@ -2910,6 +2912,84 @@ def test_ct_preview_schemas_restrict_reporting_multipliers() -> None:
     asyncio.run(run())
 
 
+def test_total_graph_preview_route_serializes_server_graph_without_transaction() -> None:
+    from dataclasses import asdict, replace
+
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        CircuitRole,
+    )
+    from tests.test_workflow import _total_preview_workflow
+
+    async def run() -> None:
+        workflow, plan = _total_preview_workflow()
+        controller = EntryWebsocketController(ProvisioningCoordinator(FakeHass()), SessionManager(), HelperStore(FakeHass()))
+        controller.workflow = workflow
+        draft = replace(plan.inventory.configuration, channels=tuple(
+            replace(channel, role=CircuitRole.GRID) if channel.channel in (1, 2) else channel
+            for channel in plan.inventory.configuration.channels
+        ))
+        command = f"{DOMAIN}/preview_total_graph"
+        payload = _schema(command)({"type": command, "entry_id": "helper", "device_id": "meter", "plan_id": "plan", "source_sha256": plan.snapshot.sha256, "configuration": json.loads(json.dumps(asdict(draft)))})
+        result = sanitize_payload(await controller.async_call(command, payload, "user"))
+        assert result["graph"]["leaf_channels"]["auto-mains"] == [1, 2]
+        assert result["graph"]["ordered_nodes"][0]["sources"][0]["power_id"] == "ct1Watts"
+        assert result["automatic_candidates"][0]["sources"] == [{"kind": "channel", "channel": 1}, {"kind": "channel", "channel": 2}]
+        assert json.loads(json.dumps(result)) == result
+        assert "transaction_id" not in result
+        assert workflow._plans["plan"] is plan
+
+    asyncio.run(run())
+
+
+def test_total_source_request_schema_and_intent_are_strict() -> None:
+    from dataclasses import asdict
+
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        _meter_configuration_request,
+    )
+    from tests.test_meter_configuration import request
+
+    payload = json.loads(json.dumps(asdict(request())))
+    payload["totals_change_intent"] = {"adopt_managed_totals": True, "legacy_parent_decisions": []}
+    payload["aggregates"] = [{
+        "aggregate_id": "house", "name": "House", "role": "custom",
+        "sources": [{"kind": "native_total", "source_id": "overall"}],
+        "measurement_method": "direct", "energy_mode": "consumption",
+        "outputs": {"watts": True, "amps": False, "kwh": True}, "origin": "advanced",
+    }]
+    parsed = _meter_configuration_request(payload)
+    assert parsed.aggregates[0].sources[0].source_id == "overall"
+    assert parsed.totals_change_intent.adopt_managed_totals
+    history = deepcopy(payload)
+    history["automatic_totals"] = [
+        {"candidate_id": f"grid-ct1-ct{channel}", "enabled": False, "outputs": {"watts": True, "amps": False, "kwh": True}}
+        for channel in range(2, 7)
+    ]
+    assert len(_meter_configuration_request(history).automatic_totals) == 5
+    for source in (
+        {"kind": "native_total", "source_id": "overall", "power_id": "injected"},
+        {"kind": "channel", "channel": True}, {"kind": "invented", "channel": 1},
+        {"kind": "aggregate", "aggregate_id": "child", "channel": 1},
+    ):
+        invalid = deepcopy(payload)
+        invalid["aggregates"][0]["sources"] = [source]
+        with pytest.raises((vol.Invalid, ValueError)):
+            _meter_configuration_request(invalid)
+    for key, value in (("parent_id", None), ("channels", [1]), ("expose_power", True)):
+        invalid = deepcopy(payload)
+        invalid["aggregates"][0][key] = value
+        with pytest.raises((vol.Invalid, ValueError)):
+            _meter_configuration_request(invalid)
+    for invalid_intent in (
+        {"adopt_managed_totals": 1, "legacy_parent_decisions": []},
+        {"adopt_managed_totals": False, "legacy_parent_decisions": [], "extra": True},
+    ):
+        invalid = deepcopy(payload)
+        invalid["totals_change_intent"] = invalid_intent
+        with pytest.raises((vol.Invalid, ValueError)):
+            _meter_configuration_request(invalid)
+
+
 def test_meter_configuration_commands_use_a_strict_full_request_schema() -> None:
     """The public full-configuration request is bounded before it reaches a plan."""
 
@@ -2955,6 +3035,8 @@ def test_meter_configuration_commands_use_a_strict_full_request_schema() -> None
                 }
             ],
             "aggregates": [],
+            "default_totals": {"overall": {"watts": True, "amps": True, "kwh": True}, "boards": []},
+            "automatic_totals": [],
             "power_quality": [True],
             "status_fields": [False],
         },
@@ -3007,8 +3089,8 @@ def test_meter_configuration_commands_use_a_strict_full_request_schema() -> None
             schema(invalid)
     aggregate = {
         "aggregate_id": "mains", "name": "Mains", "role": "branch",
-        "channels": [1], "measurement_method": "direct", "parent_id": None,
-        "energy_mode": "none",
+        "sources": [{"kind": "channel", "channel": 1}], "measurement_method": "direct",
+        "energy_mode": "none", "origin": "advanced", "outputs": {"watts": True, "amps": False, "kwh": False},
     }
     for field, values in (
         ("channels", [message["configuration"]["channels"][0]] * 43),
@@ -3101,6 +3183,8 @@ def test_controller_routes_full_meter_configuration_without_browser_changes() ->
                  "custom_gain_ct": 27518, "custom_label": "Mains CT", "burden_output_acknowledged": False}
             ],
             "aggregates": [], "power_quality": [True], "status_fields": [False],
+            "default_totals": {"overall": {"watts": True, "amps": True, "kwh": True}, "boards": []},
+            "automatic_totals": [],
         }
         assert await controller.async_call(
             f"{DOMAIN}/get_meter_configuration", {"device_id": "meter"}, "user"
@@ -3141,7 +3225,7 @@ def test_get_meter_configuration_serializes_only_public_semantic_provenance() ->
     payload = sanitize_payload(
         {
             "capabilities": MeterConfigurationCapabilities(
-                True, True, True, "helper_managed", ()
+                True, True, True, True, True, True, "helper_managed", ()
             )
         }
     )
@@ -3149,7 +3233,10 @@ def test_get_meter_configuration_serializes_only_public_semantic_provenance() ->
     assert payload == {
         "capabilities": {
             "configuration_authoritative": True,
-            "managed_totals": True,
+            "native_totals_readable": True,
+            "native_totals_writable": True,
+            "managed_automatic_totals": True,
+            "managed_advanced_totals": True,
             "multi_reference": True,
             "semantic_source": "helper_managed",
             "reason_codes": [],

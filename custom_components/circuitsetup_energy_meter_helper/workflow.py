@@ -79,11 +79,23 @@ from .provisioning import (
 )
 from .session_manager import CalibrationBusyError, SessionManager
 from .state_tracker import SensorSampleWindow
-from .store import CalibrationSourceAuthority, HelperStore, StoredMeterConfiguration
+from .store import (
+    CalibrationSourceAuthority,
+    HelperStore,
+    StoredMeterConfiguration,
+    TotalsMigrationRecord,
+)
 from .topology import (
     topology_from_config,
     topology_from_native,
     verified_voltage_reference_fingerprint,
+)
+from .total_graph import (
+    automatic_total_candidates,
+    native_total_sources,
+    plan_total_graph,
+    resolve_automatic_totals,
+    stale_automatic_total_settings,
 )
 from .voltage_transformer_catalog import VoltageTransformerCatalog
 
@@ -130,9 +142,11 @@ class _PlanHandle:
     snapshot: ESPHomeConfigSnapshot
     inventory: MeterConfigurationInventory
     expires_at: float
+    issued_total_candidate_ids: set[str] = field(default_factory=set)
 
     def scrub(self) -> None:
         self.snapshot = ESPHomeConfigSnapshot("expired.yaml", "", "0" * 64)
+        self.issued_total_candidate_ids.clear()
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,6 +518,18 @@ class EntryWorkflow:
             "topology": inventory.topology,
             "configuration": inventory.configuration,
             "capabilities": inventory.capabilities,
+            "totals": {
+                "native_sources": native_total_sources(topology),
+                "automatic_candidates": inventory.automatic_candidates,
+                "automatic_totals": inventory.automatic_totals,
+                "stale_automatic_total_settings": inventory.stale_automatic_total_settings,
+                "migration": {
+                    "parent_review_required": inventory.totals_parent_review_required,
+                    "legacy_parent_links": inventory.legacy_parent_links,
+                    "native_visibility_confirmation_required": inventory.native_visibility_confirmation_required,
+                    "native_visibility_resolved": inventory.native_visibility_resolved,
+                },
+            },
             "voltage_topology": inventory.voltage_topology,
             "voltage_transformer_catalog": inventory.voltage_transformer_catalog,
             "ct_catalog": inventory.ct_catalog,
@@ -620,6 +646,48 @@ class EntryWorkflow:
             )
         return await self._async_preview_meter_configuration(plan, requested)
 
+    async def async_preview_total_graph(
+        self, device_id: str, plan_id: str, source_sha256: str,
+        requested: MeterConfigurationRequest,
+    ) -> dict[str, Any]:
+        """Validate a draft without source rendering, transactions, or saved choices."""
+        plan = self._plan(plan_id, device_id, source_sha256)
+        candidates = automatic_total_candidates(requested)
+        stale = stale_automatic_total_settings(candidates, requested.automatic_totals)
+        known = plan.issued_total_candidate_ids | {
+            candidate.candidate_id for candidate in plan.inventory.automatic_candidates
+        } | {setting.candidate_id for setting in plan.inventory.stale_automatic_total_settings}
+        if any(setting.candidate_id not in known for setting in stale):
+            raise ValueError("automatic total setting has no issued candidate")
+        current = replace(requested, automatic_totals=tuple(
+            setting for setting in requested.automatic_totals if setting not in stale
+        ))
+        # Validate stale setting scalars too, without executing them in the graph.
+        if len({setting.candidate_id for setting in requested.automatic_totals}) != len(requested.automatic_totals):
+            raise ValueError("automatic candidate settings must be unique")
+        for setting in stale:
+            if type(setting.enabled) is not bool or any(type(value) is not bool for value in (setting.outputs.watts, setting.outputs.amps, setting.outputs.kwh)):
+                raise ValueError("automatic candidate settings require booleans")
+        plan.inventory.validate_totals_change(current, preview_only=True)
+        graph = plan_total_graph(current, plan.topology)
+        # IDs are bounded by four roles times all distinct topology CT pairs.
+        plan.issued_total_candidate_ids.update(candidate.candidate_id for candidate in candidates)
+        return {
+            "plan_id": plan_id, "source_sha256": source_sha256,
+            "automatic_candidates": candidates,
+            "automatic_totals": resolve_automatic_totals(candidates, current.automatic_totals),
+            "stale_automatic_total_settings": stale,
+            "graph": {
+                "native_visibility": graph.native_visibility,
+                "ordered_nodes": graph.ordered_nodes,
+                "leaf_channels": {key: sorted(value) for key, value in graph.leaf_channels.items()},
+                "independent_overlap_warnings": [
+                    {"first_id": first, "second_id": second, "leaf_channels": sorted(leaves)}
+                    for first, second, leaves in graph.independent_overlap_warnings
+                ],
+            },
+        }
+
     async def async_preview_meter_configuration(
         self,
         device_id: str,
@@ -635,6 +703,7 @@ class EntryWorkflow:
     async def _async_preview_meter_configuration(
         self, plan: _PlanHandle, requested: MeterConfigurationRequest
     ) -> Any:
+        plan.inventory.validate_totals_change(requested)
         manager = self.transactions
         if manager is None:
             raise WorkflowCapabilityUnavailable("configuration writes are unavailable")
@@ -668,11 +737,18 @@ class EntryWorkflow:
             proposed_sha256,
             requested.meter,
             requested.channels,
+            requested.default_totals,
+            requested.automatic_totals,
             requested.aggregates,
             requested.power_quality,
             requested.status_fields,
             selections,
-            False,
+            requested.multi_reference_preparation_acknowledged,
+            TotalsMigrationRecord(
+                plan.inventory.totals_parent_review_required,
+                plan.inventory.legacy_parent_links,
+                plan.inventory.native_visibility_confirmation_required,
+            ),
         )
         expected = expected_meter_entity_evidence(requested, plan.topology)
         status = await manager.async_preview(

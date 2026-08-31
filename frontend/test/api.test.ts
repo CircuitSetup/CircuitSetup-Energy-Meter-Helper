@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { HelperApi, type HomeAssistant } from "../src/api";
-import { configurationImpact } from "../src/configuration-impact";
 import type { MeterConfiguration, MeterTopology, OffsetReadinessResult } from "../src/types";
 import sanitizerContract from "../../tests/fixtures/task20_sanitized_change.json";
 
@@ -62,16 +61,25 @@ const meterConfiguration: MeterConfiguration = {
       reporting_multiplier: 1, role: "branch", voltage_reference_id: "main",
       custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false,
     })),
+    default_totals: { overall: { watts: true, amps: true, kwh: true }, boards: [] },
+    automatic_totals: [],
+    totals_change_intent: { adopt_managed_totals: false, legacy_parent_decisions: [] },
     aggregates: [{
-      aggregate_id: "main-load", name: "Main load", role: "grid", channels: [1, 2],
-      measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional",
-      expose_power: true, expose_current: false,
+      aggregate_id: "main-load", name: "Main load", role: "grid", sources: [{ kind: "channel", channel: 1 }, { kind: "channel", channel: 2 }],
+      measurement_method: "two_ct_sum", energy_mode: "bidirectional",
+      outputs: { watts: true, amps: false, kwh: true }, origin: "advanced",
     }],
     power_quality: [true], status_fields: [false], multi_reference_preparation_acknowledged: false,
   },
   capabilities: {
-    configuration_authoritative: true, managed_totals: true, multi_reference: true,
+    configuration_authoritative: true, native_totals_readable: true, native_totals_writable: true,
+    managed_automatic_totals: true, managed_advanced_totals: true, multi_reference: true,
     semantic_source: "helper_managed", reason_codes: [],
+  },
+  totals: {
+    native_sources: [{ source_id: "overall", label: "Overall meter total", leaf_channels: [1, 2, 3, 4, 5, 6], power_id: "totalWattsMain", current_id: "totalAmpsMain", existing_energy_id: "totalEnergyDaily", upstream_defaults: { watts: true, amps: true, kwh: true } }],
+    automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+    migration: { parent_review_required: false, legacy_parent_links: [], native_visibility_confirmation_required: false, native_visibility_resolved: true },
   },
   voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" },
   voltage_transformer_catalog: {
@@ -206,7 +214,7 @@ describe("HelperApi", () => {
     await expect(new HelperApi(hass, "entry-1").getMeterConfiguration("meter-1")).resolves.toMatchObject({
       plan_id: "b".repeat(32), source_sha256: "a".repeat(64),
       configuration: { meter: { voltage_layout: "standard", update_interval_s: 30 }, aggregates: [{ aggregate_id: "main-load" }] },
-      capabilities: { managed_totals: true }, voltage_topology: { source: "legacy" },
+      capabilities: { native_totals_writable: true }, voltage_topology: { source: "legacy" },
       voltage_transformer_catalog: { presets: [{ default_gain_voltage: 7305 }] }, ct_catalog: inventory.catalog,
       warnings: ["slow_interval_extends_calibration"], channels: inventory.channels, catalog: inventory.catalog,
     });
@@ -222,7 +230,7 @@ describe("HelperApi", () => {
           ...meterConfiguration.configuration.aggregates[0]!,
           aggregate_id: "meter-total",
           name: "Meter total",
-          channels: [1, 2, 3, 4, 5, 6],
+          sources: [1, 2, 3, 4, 5, 6].map((channel) => ({ kind: "channel" as const, channel })),
           measurement_method: "direct" as const,
         },
       ],
@@ -230,7 +238,7 @@ describe("HelperApi", () => {
     hass.responses.get_meter_configuration = {
       ...meterConfiguration,
       configuration,
-      configuration_impact: configurationImpact(configuration, topology),
+      configuration_impact: { ...meterConfiguration.configuration_impact, numeric_entity_count: 48, energy_entity_count: 4, approximate_publications_per_second: 48 / 30 },
     };
 
     await expect(new HelperApi(hass, "entry-1").getMeterConfiguration("meter-1"))
@@ -249,6 +257,34 @@ describe("HelperApi", () => {
     });
   });
 
+  it("validates the read-only graph preview and binds it to the requested plan", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const preview = { plan_id: "b".repeat(32), source_sha256: "a".repeat(64), automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
+    hass.responses.preview_total_graph = preview;
+    await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, meterConfiguration.configuration)).resolves.toEqual(preview);
+    expect(hass.messages[0]).toMatchObject({ type: "circuitsetup_energy_meter_helper/preview_total_graph", configuration: meterConfiguration.configuration });
+    for (const invalid of [
+      { ...preview, plan_id: "other" }, { ...preview, source_sha256: "c".repeat(64) },
+      { ...preview, graph: { ...preview.graph, native_visibility: [{ sensor_id: "totalWatts", internal: 1 }] } },
+      { ...preview, graph: { ...preview.graph, leaf_channels: { invalid: [0] } } },
+    ]) { hass.responses.preview_total_graph = invalid; await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, meterConfiguration.configuration)).rejects.toThrow("preview_total_graph"); }
+  });
+
+  it("rejects malformed total sources, outputs, capabilities, and intent", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const config = meterConfiguration.configuration;
+    for (const source of [{ kind: "native_total", source_id: "overall", power_id: "injected" }, { kind: "native_total", source_id: "unknown" }, { kind: "unexpected", channel: 1 }, { kind: "channel", channel: true }]) {
+      hass.responses.get_meter_configuration = { ...meterConfiguration, configuration: { ...config, aggregates: [{ ...config.aggregates[0], sources: [source] }] } };
+      await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration");
+    }
+    for (const invalid of [
+      { ...meterConfiguration, capabilities: { ...meterConfiguration.capabilities, native_totals_writable: undefined } },
+      { ...meterConfiguration, configuration: { ...config, default_totals: { overall: { watts: 1, amps: false, kwh: true }, boards: [] } } },
+      { ...meterConfiguration, configuration: { ...config, automatic_totals: [{ candidate_id: "unknown", enabled: true, outputs: { watts: true, amps: false, kwh: true } }] } },
+      { ...meterConfiguration, configuration: { ...config, totals_change_intent: { adopt_managed_totals: 1, legacy_parent_decisions: [] } } },
+    ]) { hass.responses.get_meter_configuration = invalid; await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration"); }
+  });
+
   it("rejects malformed full meter configuration nesting before rendering", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
@@ -261,7 +297,7 @@ describe("HelperApi", () => {
       { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, meter: { ...meterConfiguration.configuration.meter, voltage_references: [{ ...meterConfiguration.configuration.meter.voltage_references[0], gain_voltage: Number.NaN }] } } },
       { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, channels: [{ ...meterConfiguration.configuration.channels[0], role: "invented" }] } },
       { ...meterConfiguration, configuration: inconsistentReferences,
-        configuration_impact: configurationImpact(inconsistentReferences, topology),
+        configuration_impact: meterConfiguration.configuration_impact,
         voltage_topology: { references: [["main", ["main_1"]], ["reference-2", ["main_2"]]], source: "helper" } },
       { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, aggregates: [{ ...meterConfiguration.configuration.aggregates[0], channels: ["1"] }] } },
       { ...meterConfiguration, voltage_transformer_catalog: { ...meterConfiguration.voltage_transformer_catalog, presets: [{ ...meterConfiguration.voltage_transformer_catalog.presets[0], default_gain_voltage: "7305" }] } },

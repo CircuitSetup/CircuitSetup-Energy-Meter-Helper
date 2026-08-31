@@ -15,6 +15,7 @@ from .config_mutator import package_options_from_document
 from .ct_catalog import CTPresetCatalog
 from .ct_inventory import CTInventory
 from .meter_configuration import (
+    AggregateTotalSource,
     AutomaticTotalSettings,
     BoardTotalSettings,
     ChannelSettings,
@@ -86,10 +87,17 @@ class MeterConfigurationCapabilities:
     """The configuration writes supported by an authoritative firmware contract."""
 
     configuration_authoritative: bool
-    managed_totals: bool
+    native_totals_readable: bool
+    native_totals_writable: bool
+    managed_automatic_totals: bool
+    managed_advanced_totals: bool
     multi_reference: bool
     semantic_source: ConfigurationSemanticSource
     reason_codes: tuple[str, ...]
+
+    @property
+    def managed_totals(self) -> bool:
+        return self.native_totals_writable and self.managed_automatic_totals and self.managed_advanced_totals
 
 
 def meter_configuration_capabilities(
@@ -102,16 +110,16 @@ def meter_configuration_capabilities(
         raise TypeError("config_contract must be an int or None")
     if not configuration_authoritative:
         return MeterConfigurationCapabilities(
-            False,
+            False, True, False, False,
             False,
             False,
             "legacy_inferred",
             ("configuration_not_authoritative",),
         )
     if config_contract == 2:
-        return MeterConfigurationCapabilities(True, True, True, "legacy_inferred", ())
+        return MeterConfigurationCapabilities(True, True, True, True, True, True, "legacy_inferred", ())
     return MeterConfigurationCapabilities(
-        True, False, True, "legacy_inferred", ("config_contract_upgrade_required",)
+        True, True, False, False, False, True, "legacy_inferred", ("config_contract_upgrade_required",)
     )
 
 
@@ -134,6 +142,42 @@ class MeterConfigurationInventory:
     stale_automatic_total_settings: tuple[AutomaticTotalSettings, ...]
     totals_parent_review_required: bool
     legacy_parent_links: tuple[LegacyParentLink, ...]
+    native_visibility_confirmation_required: bool = False
+    native_visibility_resolved: bool = True
+
+    def validate_totals_change(self, requested: MeterConfigurationRequest, *, preview_only: bool = False) -> None:
+        """Check explicit decisions against this source-bound inventory, never clear them."""
+        validate_meter_configuration(requested, self.topology, require_multi_reference_acknowledgement=not preview_only)
+        intent = requested.totals_change_intent
+        if intent.adopt_managed_totals and (
+            not self.capabilities.configuration_authoritative
+            or "config_contract_upgrade_required" in self.capabilities.reason_codes
+            or not self.native_visibility_resolved
+        ):
+            raise ValueError("totals adoption requires authoritative, visibility-confirmed contract support")
+        pending = {(link.child_id, link.proposed_parent_id) for link in self.legacy_parent_links}
+        parents = {aggregate.aggregate_id: aggregate for aggregate in requested.aggregates}
+        accepted = {(decision.child_id, decision.proposed_parent_id) for decision in intent.legacy_parent_decisions if decision.accepted}
+        for child_id, parent_id in pending - accepted:
+            parent = parents.get(parent_id)
+            if parent is not None and AggregateTotalSource("aggregate", child_id) in parent.sources:
+                raise ValueError("legacy parent link requires explicit acceptance")
+        for decision in intent.legacy_parent_decisions:
+            if (decision.child_id, decision.proposed_parent_id) not in pending:
+                raise ValueError("legacy parent decision is unknown or altered")
+            parent = parents.get(decision.proposed_parent_id)
+            linked = parent is not None and AggregateTotalSource("aggregate", decision.child_id) in parent.sources
+            if linked != decision.accepted:
+                raise ValueError("legacy parent decision does not match requested sources")
+        original = self.configuration
+        changes = (
+            (requested.default_totals != original.default_totals, self.capabilities.native_totals_writable),
+            (requested.automatic_totals != original.automatic_totals
+             or automatic_total_candidates(requested) != automatic_total_candidates(original), self.capabilities.managed_automatic_totals),
+            (requested.aggregates != original.aggregates or bool(intent.legacy_parent_decisions), self.capabilities.managed_advanced_totals),
+        )
+        if not preview_only and not intent.adopt_managed_totals and any(changed and not allowed for changed, allowed in changes):
+            raise ValueError("managed totals require explicit adoption and write capability")
 
     @classmethod
     def from_document(
@@ -261,19 +305,41 @@ class MeterConfigurationInventory:
             aggregate_warnings = tuple(
                 dict.fromkeys((*aggregate_warnings, "aggregate_semantics_unreadable"))
             )
+        if semantic_source != "helper_managed":
+            normalized_defaults = _source_normalized_default_totals(document, topology)
+            visibility_unconfirmed = normalized_defaults is None
+            if normalized_defaults is not None:
+                configuration = replace(configuration, default_totals=normalized_defaults)
         capabilities = replace(capabilities, semantic_source=semantic_source)
-        if stale or visibility_unconfirmed:
+        if stale or visibility_unconfirmed or semantic_source != "helper_managed":
             capabilities = replace(
                 capabilities,
-                managed_totals=False,
-                reason_codes=(*capabilities.reason_codes,
-                    "stored_semantics_stale" if stale else "native_visibility_unconfirmed"),
+                native_totals_writable=False,
+                managed_automatic_totals=False,
+                managed_advanced_totals=False,
+                reason_codes=(
+                    *capabilities.reason_codes,
+                    *(("stored_semantics_stale",) if stale else ()),
+                    *(("native_visibility_unconfirmed",) if visibility_unconfirmed else ()),
+                    *(("totals_adoption_required",) if semantic_source != "helper_managed" else ()),
+                ),
             )
+        native_ids = {
+            sensor_id for source in native_total_sources(topology)
+            for sensor_id in (source.power_id, source.current_id)
+        }
+        if set(_legacy_template_total_items(document)) - native_ids:
+            capabilities = replace(capabilities, reason_codes=(
+                *capabilities.reason_codes, "legacy_custom_totals_unmanaged"
+            ))
         warnings = [*capabilities.reason_codes, *aggregate_warnings]
         if configuration.meter.electrical_system is ElectricalSystem.CUSTOM:
             warnings.append("electrical_profile_requires_confirmation")
         if _has_generic_total(document) and not capabilities.managed_totals:
             warnings.append("legacy_generic_totals_unmanaged")
+            capabilities = replace(capabilities, reason_codes=(
+                *capabilities.reason_codes, "legacy_generic_totals_unmanaged"
+            ))
         if stale and "stored_semantics_stale" not in warnings:
             warnings.append("stored_semantics_stale")
         if configuration.meter.update_interval_s in (30, 60):
@@ -309,6 +375,10 @@ class MeterConfigurationInventory:
             legacy_parent_links=(
                 parent_links
             ),
+            native_visibility_confirmation_required=bool(
+                migration and migration.native_visibility_confirmation_required
+            ),
+            native_visibility_resolved=not visibility_unconfirmed,
         )
 
 
@@ -319,10 +389,13 @@ def _source_normalized_default_totals(
     sensor_span = document.writable_sensor_span
     if sensor_span is None:
         return None
-    items = _managed_sensor_items(
-        document.content[sensor_span.start : sensor_span.end],
-        document.sensor_item_indent,
-    )
+    try:
+        items = _managed_sensor_items(
+            document.content[sensor_span.start : sensor_span.end],
+            document.sensor_item_indent,
+        )
+    except ValueError:
+        return None
     native_ids = {
         sensor_id
         for definition in native_total_sources(topology)

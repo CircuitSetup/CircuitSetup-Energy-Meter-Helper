@@ -8,13 +8,13 @@ from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator imp
     expected_meter_entity_evidence,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    AggregateTotalSource,
+    AutomaticTotalSettings,
+    BoardTotalSettings,
     ChannelSettings,
     ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
-    BoardTotalSettings,
-    AutomaticTotalSettings,
-    AggregateTotalSource,
     DefaultTotalsSettings,
     ElectricalSystem,
     EnergyMode,
@@ -30,6 +30,24 @@ from custom_components.circuitsetup_energy_meter_helper.meter_configuration impo
     validate_meter_configuration,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
+
+
+def test_totals_change_intent_requires_typed_unique_link_decisions() -> None:
+    from custom_components.circuitsetup_energy_meter_helper import (
+        meter_configuration as model,
+    )
+
+    assert hasattr(model, "TotalsChangeIntent")
+    decision = model.LegacyParentDecision("child", "parent", True)
+    valid = replace(request(), totals_change_intent=model.TotalsChangeIntent(False, (decision,)))
+    validate_meter_configuration(valid, topology())
+    for intent in (
+        model.TotalsChangeIntent(1, ()),
+        model.TotalsChangeIntent(False, (decision, decision)),
+        model.TotalsChangeIntent(False, (model.LegacyParentDecision("child", "parent", 1),)),
+    ):
+        with pytest.raises(ValueError):
+            validate_meter_configuration(replace(request(), totals_change_intent=intent), topology())
 
 
 def topology(addons: int = 0) -> MeterTopology:
@@ -80,7 +98,7 @@ def total_aggregate(
     channels: tuple[int, ...],
     method: MeasurementMethod,
     energy_mode: EnergyMode,
-    outputs: TotalOutputSettings = TotalOutputSettings(True, False, True),
+    outputs: TotalOutputSettings = TotalOutputSettings(True, False, True),  # noqa: B008 - frozen value
 ) -> CircuitAggregate:
     return CircuitAggregate(
         aggregate_id,
@@ -517,5 +535,3 @@ def test_custom_gain_bounds(gain: object) -> None:
     object.__setattr__(value, "channels", (replace(value.channels[0], custom_gain_ct=gain),) + value.channels[1:])
     with pytest.raises(ValueError):
         validate_meter_configuration(value, topology())
-    NativeTotalSource,
-    TotalOutputSettings,

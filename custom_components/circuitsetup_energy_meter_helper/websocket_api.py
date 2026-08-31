@@ -27,14 +27,25 @@ from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
 from .meter_configuration import (
+    AggregateTotalSource,
+    AutomaticTotalSettings,
+    BoardTotalSettings,
     ChannelSettings,
+    ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
+    DefaultTotalsSettings,
     ElectricalSystem,
     EnergyMode,
+    LegacyParentDecision,
     MeasurementMethod,
     MeterConfigurationRequest,
     MeterSettings,
+    NativeTotalSource,
+    TotalOrigin,
+    TotalOutputSettings,
+    TotalsChangeIntent,
+    TotalSource,
     VoltageLayout,
     VoltageReferenceConfig,
 )
@@ -58,6 +69,7 @@ READ_COMMANDS = (
     f"{_PREFIX}get_topology",
     f"{_PREFIX}get_ct_inventory",
     f"{_PREFIX}get_meter_configuration",
+    f"{_PREFIX}preview_total_graph",
     f"{_PREFIX}get_active_work",
     f"{_PREFIX}get_session",
     f"{_PREFIX}get_diagnostics_summary",
@@ -227,6 +239,11 @@ class WorkflowOwner(Protocol):
     ) -> Any: ...
 
     async def async_get_meter_configuration(self, device_id: str) -> Any: ...
+
+    async def async_preview_total_graph(
+        self, device_id: str, plan_id: str, source_sha256: str,
+        requested: MeterConfigurationRequest,
+    ) -> Any: ...
 
     async def async_preview_meter_configuration(
         self,
@@ -436,15 +453,16 @@ class EntryWebsocketController:
                 tuple(msg["changes"]),
                 msg.get("package_options"),
             )
-        if operation == "preview_meter_configuration" and workflow is not None:
+        if operation in ("preview_meter_configuration", "preview_total_graph") and workflow is not None:
             try:
-                return await workflow.async_preview_meter_configuration(
+                preview = workflow.async_preview_total_graph if operation == "preview_total_graph" else workflow.async_preview_meter_configuration
+                return await preview(
                     msg["device_id"],
                     msg["plan_id"],
                     msg["source_sha256"],
                     _meter_configuration_request(msg["configuration"]),
                 )
-            except ConfigMutationError as error:
+            except (ConfigMutationError, ValueError, vol.Invalid) as error:
                 raise ApiFailure(
                     "meter_configuration_invalid", "The meter configuration is invalid"
                 ) from error
@@ -947,7 +965,7 @@ def async_unregister_entry(hass: HomeAssistant, entry_id: str) -> None:
 
 
 def _handler(command: str) -> websocket_api.WebSocketCommandHandler:
-    preview_configuration = command == f"{_PREFIX}preview_meter_configuration"
+    preview_configuration = command in (f"{_PREFIX}preview_meter_configuration", f"{_PREFIX}preview_total_graph")
     schema = _preview_meter_configuration_envelope(command) if preview_configuration else _schema(command)
 
     async def handle(
@@ -965,7 +983,7 @@ def _handler(command: str) -> websocket_api.WebSocketCommandHandler:
 
     decorated = websocket_api.async_response(handle)
     if preview_configuration:
-        admin_decorated = websocket_api.require_admin(decorated)
+        admin_decorated = websocket_api.require_admin(decorated) if command in MUTATION_COMMANDS else decorated
 
         @wraps(admin_decorated)
         def size_checked(
@@ -1069,7 +1087,7 @@ def _schema(command: str) -> Any:
             },
         }
         return vol.All(vol.Schema(schema), _validate_config_preview_schema)
-    elif operation == "preview_meter_configuration":
+    elif operation in ("preview_meter_configuration", "preview_total_graph"):
         schema |= {
             vol.Required("device_id"): _ID,
             vol.Required("plan_id"): _ID,
@@ -1285,6 +1303,23 @@ def _finite_float(value: Any) -> float:
     return value
 
 
+_TOTAL_OUTPUTS_SCHEMA = vol.Schema({
+    vol.Required("watts"): bool, vol.Required("amps"): bool, vol.Required("kwh"): bool,
+}, extra=vol.PREVENT_EXTRA)
+_TOTAL_SOURCE_SCHEMA = vol.Any(
+    vol.Schema({vol.Required("kind"): "channel", vol.Required("channel"): vol.All(_strict_integer, vol.Range(min=1, max=42))}, extra=vol.PREVENT_EXTRA),
+    vol.Schema({vol.Required("kind"): "native_total", vol.Required("source_id"): _ID}, extra=vol.PREVENT_EXTRA),
+    vol.Schema({vol.Required("kind"): "aggregate", vol.Required("aggregate_id"): _ID}, extra=vol.PREVENT_EXTRA),
+)
+_TOTALS_CHANGE_INTENT_SCHEMA = vol.Schema({
+    vol.Required("adopt_managed_totals"): bool,
+    vol.Required("legacy_parent_decisions"): vol.All([vol.Schema({
+        vol.Required("child_id"): _ID, vol.Required("proposed_parent_id"): _ID,
+        vol.Required("accepted"): bool,
+    }, extra=vol.PREVENT_EXTRA)], vol.Length(max=32)),
+}, extra=vol.PREVENT_EXTRA)
+
+
 _METER_CONFIGURATION_SCHEMA = vol.Schema(
     {
         vol.Required("meter"): vol.Schema(
@@ -1361,6 +1396,18 @@ _METER_CONFIGURATION_SCHEMA = vol.Schema(
             ],
             vol.Length(min=1, max=42),
         ),
+        vol.Required("default_totals"): vol.Schema({
+            vol.Required("overall"): _TOTAL_OUTPUTS_SCHEMA,
+            vol.Required("boards"): vol.All([vol.Schema({
+                vol.Required("board_index"): vol.All(_strict_integer, vol.Range(min=0, max=6)),
+                vol.Required("outputs"): _TOTAL_OUTPUTS_SCHEMA,
+            }, extra=vol.PREVENT_EXTRA)], vol.Length(max=7)),
+        }, extra=vol.PREVENT_EXTRA),
+        vol.Required("automatic_totals"): vol.All([vol.Schema({
+            vol.Required("candidate_id"): _ID, vol.Required("enabled"): bool,
+            vol.Required("outputs"): _TOTAL_OUTPUTS_SCHEMA,
+        }, extra=vol.PREVENT_EXTRA)], vol.Length(max=_MAX_ITEMS)),
+        vol.Optional("totals_change_intent"): _TOTALS_CHANGE_INTENT_SCHEMA,
         vol.Required("aggregates"): vol.All(
             [
                 vol.Schema(
@@ -1370,19 +1417,17 @@ _METER_CONFIGURATION_SCHEMA = vol.Schema(
                         vol.Required("role"): vol.In(
                             tuple(item.value for item in CircuitRole)
                         ),
-                        vol.Required("channels"): vol.All(
-                            [vol.All(_strict_integer, vol.Range(min=1, max=42))],
-                            vol.Length(min=1, max=42),
+                        vol.Required("sources"): vol.All(
+                            [_TOTAL_SOURCE_SCHEMA], vol.Length(min=1, max=82),
                         ),
                         vol.Required("measurement_method"): vol.In(
                             tuple(item.value for item in MeasurementMethod)
                         ),
-                        vol.Required("parent_id"): vol.Any(None, _ID),
                         vol.Required("energy_mode"): vol.In(
                             tuple(item.value for item in EnergyMode)
                         ),
-                        vol.Optional("expose_power", default=True): bool,
-                        vol.Optional("expose_current", default=False): bool,
+                        vol.Required("outputs"): _TOTAL_OUTPUTS_SCHEMA,
+                        vol.Required("origin"): vol.In(tuple(item.value for item in TotalOrigin)),
                     },
                     extra=vol.PREVENT_EXTRA,
                 )
@@ -1406,6 +1451,7 @@ def _meter_configuration_request(
     configuration: Mapping[str, Any],
 ) -> MeterConfigurationRequest:
     """Convert only the strict public schema to the existing workflow DTO."""
+    configuration = _METER_CONFIGURATION_SCHEMA(dict(configuration))
     meter = configuration["meter"]
     return MeterConfigurationRequest(
         MeterSettings(
@@ -1442,24 +1488,52 @@ def _meter_configuration_request(
             )
             for channel in configuration["channels"]
         ),
-        tuple(
-            CircuitAggregate(
-                aggregate["aggregate_id"],
-                aggregate["name"],
-                CircuitRole(aggregate["role"]),
-                tuple(aggregate["channels"]),
-                MeasurementMethod(aggregate["measurement_method"]),
-                aggregate["parent_id"],
-                EnergyMode(aggregate["energy_mode"]),
-                aggregate["expose_power"],
-                aggregate["expose_current"],
-            )
-            for aggregate in configuration["aggregates"]
+        DefaultTotalsSettings(
+            _parse_total_outputs(configuration["default_totals"]["overall"]),
+            tuple(BoardTotalSettings(board["board_index"], _parse_total_outputs(board["outputs"]))
+                  for board in configuration["default_totals"]["boards"]),
         ),
+        tuple(AutomaticTotalSettings(setting["candidate_id"], setting["enabled"], _parse_total_outputs(setting["outputs"]))
+              for setting in configuration["automatic_totals"]),
+        tuple(_parse_advanced_total(aggregate) for aggregate in configuration["aggregates"]),
         tuple(configuration["power_quality"]),
         tuple(configuration["status_fields"]),
         configuration.get("multi_reference_preparation_acknowledged", False),
+        _parse_totals_change_intent(configuration.get("totals_change_intent", {
+            "adopt_managed_totals": False, "legacy_parent_decisions": [],
+        })),
     )
+
+
+def _parse_total_outputs(message: Mapping[str, Any]) -> TotalOutputSettings:
+    value = _TOTAL_OUTPUTS_SCHEMA(dict(message))
+    return TotalOutputSettings(value["watts"], value["amps"], value["kwh"])
+
+
+def _parse_total_source(message: Mapping[str, Any]) -> TotalSource:
+    value = _TOTAL_SOURCE_SCHEMA(dict(message))
+    if value["kind"] == "channel":
+        return ChannelTotalSource("channel", value["channel"])
+    if value["kind"] == "native_total":
+        return NativeTotalSource("native_total", value["source_id"])
+    return AggregateTotalSource("aggregate", value["aggregate_id"])
+
+
+def _parse_advanced_total(message: Mapping[str, Any]) -> CircuitAggregate:
+    return CircuitAggregate(
+        message["aggregate_id"], message["name"], CircuitRole(message["role"]),
+        tuple(_parse_total_source(source) for source in message["sources"]),
+        MeasurementMethod(message["measurement_method"]), EnergyMode(message["energy_mode"]),
+        _parse_total_outputs(message["outputs"]), TotalOrigin(message["origin"]),
+    )
+
+
+def _parse_totals_change_intent(message: Mapping[str, Any]) -> TotalsChangeIntent:
+    value = _TOTALS_CHANGE_INTENT_SCHEMA(dict(message))
+    return TotalsChangeIntent(value["adopt_managed_totals"], tuple(
+        LegacyParentDecision(item["child_id"], item["proposed_parent_id"], item["accepted"])
+        for item in value["legacy_parent_decisions"]
+    ))
 
 
 def sanitize_payload(

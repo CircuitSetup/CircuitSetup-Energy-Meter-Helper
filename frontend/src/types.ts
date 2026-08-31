@@ -142,6 +142,70 @@ export interface MeterConfigurationRequest {
   power_quality: boolean[];
   status_fields: boolean[];
   multi_reference_preparation_acknowledged?: boolean;
+  totals_change_intent?: TotalsChangeIntent;
+}
+
+export interface TotalsChangeIntent {
+  adopt_managed_totals: boolean;
+  legacy_parent_decisions: Array<{ child_id: string; proposed_parent_id: string; accepted: boolean }>;
+}
+
+export interface NativeTotalDefinition {
+  source_id: string;
+  label: string;
+  leaf_channels: number[];
+  power_id: string;
+  current_id: string;
+  existing_energy_id: string | null;
+  upstream_defaults: TotalOutputSettings;
+}
+
+export interface AutomaticTotalCandidate {
+  candidate_id: string;
+  aggregate_id: string;
+  name: string;
+  role: CircuitRole;
+  sources: Array<{ kind: "channel"; channel: number }>;
+  measurement_method: MeasurementMethod;
+  energy_mode: EnergyMode;
+  recommended_outputs: TotalOutputSettings;
+}
+
+export interface ResolvedAutomaticTotal {
+  candidate: AutomaticTotalCandidate;
+  enabled: boolean;
+  outputs: TotalOutputSettings;
+}
+
+export interface TotalsInventory {
+  native_sources: NativeTotalDefinition[];
+  automatic_candidates: AutomaticTotalCandidate[];
+  automatic_totals: ResolvedAutomaticTotal[];
+  stale_automatic_total_settings: AutomaticTotalSettings[];
+  migration: {
+    parent_review_required: boolean;
+    legacy_parent_links: Array<{ child_id: string; proposed_parent_id: string }>;
+    native_visibility_confirmation_required: boolean;
+    native_visibility_resolved: boolean;
+  };
+}
+
+export interface TotalGraphPreview {
+  plan_id: string;
+  source_sha256: string;
+  automatic_candidates: AutomaticTotalCandidate[];
+  automatic_totals: ResolvedAutomaticTotal[];
+  stale_automatic_total_settings: AutomaticTotalSettings[];
+  graph: {
+    native_visibility: Array<{ sensor_id: string; internal: boolean }>;
+    ordered_nodes: Array<{
+      aggregate: CircuitAggregate; power_id: string; current_id: string;
+      sources: Array<{ label: string; power_id: string; current_id: string; leaf_channels: number[] }>;
+      power_required: boolean; current_required: boolean; energy_required: boolean;
+    }>;
+    leaf_channels: Record<string, number[]>;
+    independent_overlap_warnings: Array<{ first_id: string; second_id: string; leaf_channels: number[] }>;
+  };
 }
 
 export interface BoardPackageOptions {
@@ -246,7 +310,10 @@ export interface VoltageTransformerCatalog {
 
 export interface MeterConfigurationCapabilities {
   configuration_authoritative: boolean;
-  managed_totals: boolean;
+  native_totals_readable: boolean;
+  native_totals_writable: boolean;
+  managed_automatic_totals: boolean;
+  managed_advanced_totals: boolean;
   multi_reference: boolean;
   semantic_source: ConfigurationSemanticSource;
   reason_codes: string[];
@@ -275,6 +342,7 @@ export interface MeterConfiguration extends CtInventory {
   topology: MeterTopology;
   configuration: MeterConfigurationRequest;
   capabilities: MeterConfigurationCapabilities;
+  totals: TotalsInventory;
   voltage_topology: VoltageReferenceTopology;
   voltage_transformer_catalog: VoltageTransformerCatalog;
   ct_catalog: CtCatalog;

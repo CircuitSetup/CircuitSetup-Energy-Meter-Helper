@@ -154,6 +154,19 @@ class CircuitAggregate:
 
 
 @dataclass(frozen=True, slots=True)
+class LegacyParentDecision:
+    child_id: str
+    proposed_parent_id: str
+    accepted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TotalsChangeIntent:
+    adopt_managed_totals: bool = False
+    legacy_parent_decisions: tuple[LegacyParentDecision, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class MeterConfigurationRequest:
     meter: MeterSettings
     channels: tuple[ChannelSettings, ...]
@@ -163,6 +176,7 @@ class MeterConfigurationRequest:
     power_quality: tuple[bool, ...]
     status_fields: tuple[bool, ...]
     multi_reference_preparation_acknowledged: bool = False
+    totals_change_intent: TotalsChangeIntent = TotalsChangeIntent()
 
 
 PROFILE_DEFAULTS = {
@@ -208,6 +222,20 @@ def validate_meter_configuration(
     require_multi_reference_acknowledgement: bool = True,
 ) -> None:
     """Validate a request against fixed physical topology without side effects."""
+    intent = request.totals_change_intent
+    if not isinstance(intent, TotalsChangeIntent) or type(intent.adopt_managed_totals) is not bool:
+        raise ValueError("totals change intent is invalid")
+    if not isinstance(intent.legacy_parent_decisions, tuple):
+        raise ValueError("legacy parent decisions must be a tuple")  # noqa: TRY004
+    reviewed: set[str] = set()
+    for decision in intent.legacy_parent_decisions:
+        if not isinstance(decision, LegacyParentDecision) or type(decision.accepted) is not bool:
+            raise ValueError("legacy parent decision is invalid")
+        _source_id(decision.child_id, "legacy child_id")
+        _source_id(decision.proposed_parent_id, "legacy proposed_parent_id")
+        if decision.child_id in reviewed:
+            raise ValueError("legacy parent decisions must be unique")
+        reviewed.add(decision.child_id)
     meter = request.meter
     _text(meter.friendly_name, "friendly_name")
     if not isinstance(meter.electrical_system, ElectricalSystem):
@@ -297,7 +325,7 @@ def validate_meter_configuration(
         raise ValueError("channels must cover topology exactly")
 
     if not isinstance(request.default_totals, DefaultTotalsSettings):
-        raise ValueError("default totals are invalid")
+        raise ValueError("default totals are invalid")  # noqa: TRY004
     _total_outputs(request.default_totals.overall, "overall total output")
     boards = request.default_totals.boards
     expected_boards = () if topology.board_count == 1 else tuple(range(topology.board_count))
@@ -312,11 +340,11 @@ def validate_meter_configuration(
         _total_outputs(board.outputs, "board total output")
 
     if not isinstance(request.automatic_totals, tuple):
-        raise ValueError("automatic totals must be a tuple")
+        raise ValueError("automatic totals must be a tuple")  # noqa: TRY004
     candidate_ids: set[str] = set()
     for automatic in request.automatic_totals:
         if not isinstance(automatic, AutomaticTotalSettings):
-            raise ValueError("automatic total is invalid")
+            raise ValueError("automatic total is invalid")  # noqa: TRY004
         _source_id(automatic.candidate_id, "automatic candidate_id")
         if automatic.candidate_id in candidate_ids or type(automatic.enabled) is not bool:
             raise ValueError("automatic totals must have unique IDs and boolean enabled")
@@ -361,7 +389,7 @@ def validate_meter_configuration(
                     raise ValueError("aggregate source is invalid")
                 _source_id(source.aggregate_id, "aggregate source_id")
             else:
-                raise ValueError("aggregate source is invalid")
+                raise ValueError("aggregate source is invalid")  # noqa: TRY004
         expected = {
             MeasurementMethod.TWO_CT_SUM: 2,
             MeasurementMethod.ONE_CT_DOUBLE_POWER: 1,
@@ -409,7 +437,6 @@ def default_meter_configuration(
         ),
     )
     channels = tuple(ChannelSettings(i, True, f"CT {i}", "default", 1.0, CircuitRole.BRANCH, "main") for i in range(1, topology.ct_count + 1))
-    outputs = TotalOutputSettings(True, True, True)
     from .total_graph import default_total_settings
 
     default_totals = default_total_settings(topology)

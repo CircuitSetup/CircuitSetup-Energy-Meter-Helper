@@ -58,14 +58,17 @@ from tests.test_store import (
 def test_capability_model_has_exact_frozen_slots_contract() -> None:
     assert tuple(field.name for field in fields(MeterConfigurationCapabilities)) == (
         "configuration_authoritative",
-        "managed_totals",
+        "native_totals_readable",
+        "native_totals_writable",
+        "managed_automatic_totals",
+        "managed_advanced_totals",
         "multi_reference",
         "semantic_source",
         "reason_codes",
     )
     assert hasattr(MeterConfigurationCapabilities, "__slots__")
     assert not hasattr(
-        MeterConfigurationCapabilities(True, True, True, "helper_managed", ()), "__dict__"
+        MeterConfigurationCapabilities(True, True, True, True, True, True, "helper_managed", ()), "__dict__"
     )
 
 
@@ -234,6 +237,80 @@ def test_inventory_has_server_plan_and_catalog_fields() -> None:
     assert inventory.automatic_candidates == ()
     assert inventory.automatic_totals == ()
     assert inventory.stale_automatic_total_settings == ()
+
+
+def test_totals_intent_is_checked_against_pending_links_and_authority() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AggregateTotalSource,
+        LegacyParentDecision,
+        TotalsChangeIntent,
+    )
+    inventory = _inventory(_document(contract=True))
+    caps = replace(inventory.capabilities, native_totals_writable=True, managed_automatic_totals=True, managed_advanced_totals=True)
+    inventory = replace(inventory, capabilities=caps, legacy_parent_links=(LegacyParentLink("child", "parent"), LegacyParentLink("other", "parent")))
+    child = _aggregate("child", "Child", CircuitRole.CUSTOM, (1,), MeasurementMethod.DIRECT, EnergyMode.NONE)
+    parent = replace(child, aggregate_id="parent", name="Parent", sources=(AggregateTotalSource("aggregate", "child"),))
+    draft = replace(inventory.configuration, aggregates=(child, parent), totals_change_intent=TotalsChangeIntent(False, (LegacyParentDecision("child", "parent", True),)))
+    inventory.validate_totals_change(draft)
+    assert len(inventory.legacy_parent_links) == 2
+    with pytest.raises(ValueError, match="legacy"):
+        inventory.validate_totals_change(replace(draft, totals_change_intent=TotalsChangeIntent()))
+    for decision in (LegacyParentDecision("missing", "parent", False), LegacyParentDecision("child", "altered", False), LegacyParentDecision("child", "parent", False)):
+        with pytest.raises(ValueError, match="legacy"):
+            inventory.validate_totals_change(replace(draft, totals_change_intent=TotalsChangeIntent(False, (decision,))))
+    with pytest.raises(ValueError, match="legacy"):
+        inventory.validate_totals_change(replace(draft, aggregates=(child,)))
+    runtime = _inventory(_document(contract=True), authoritative=False)
+    with pytest.raises(ValueError, match="authoritative"):
+        runtime.validate_totals_change(replace(runtime.configuration, totals_change_intent=TotalsChangeIntent(True)))
+    with pytest.raises(ValueError, match="managed"):
+        runtime.validate_totals_change(replace(runtime.configuration, default_totals=replace(runtime.configuration.default_totals, overall=TotalOutputSettings(False, False, False))))
+
+
+def test_custom_template_totals_have_an_explicit_unmanaged_capability_reason() -> None:
+    content = _document(contract=True) + (
+        "sensor:\n  - platform: template\n    id: totalGarageWatts\n"
+        "    name: Garage Power\n    unit_of_measurement: W\n    device_class: power\n"
+        "    lambda: return id(ct1Watts).state + id(ct2Watts).state;\n"
+    )
+    inventory = _inventory(content)
+    assert "legacy_custom_totals_unmanaged" in inventory.capabilities.reason_codes
+    assert "legacy_custom_totals_unmanaged" in inventory.warnings
+
+
+def test_unmanaged_native_visibility_is_source_confirmed_before_adoption() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        TotalsChangeIntent,
+    )
+    content = _document(contract=True) + "sensor:\n" + _explicit_native_definitions() + "  - id: !extend totalWattsMain\n    internal: true\n"
+    inventory = _inventory(content)
+    assert not inventory.configuration.default_totals.overall.watts
+    inventory.validate_totals_change(replace(inventory.configuration, totals_change_intent=TotalsChangeIntent(True)))
+    unresolved = _inventory(_document(contract=True))
+    assert "native_visibility_unconfirmed" in unresolved.capabilities.reason_codes
+    with pytest.raises(ValueError, match="visibility"):
+        unresolved.validate_totals_change(replace(unresolved.configuration, totals_change_intent=TotalsChangeIntent(True)))
+
+
+def test_ambiguous_native_sensor_fields_leave_inventory_read_only() -> None:
+    content = _document(contract=True) + "sensor:\n" + _explicit_native_definitions().replace(
+        "    name: Native totalWattsMain\n", "    name: Native totalWattsMain\n    name: Duplicate\n"
+    )
+    inventory = _inventory(content)
+    assert not inventory.native_visibility_resolved
+    assert not inventory.capabilities.native_totals_writable
+
+
+def test_unmanaged_and_runtime_totals_require_explicit_adoption() -> None:
+    unmanaged = _inventory(_document(contract=True))
+    runtime = _inventory(_document(contract=True), authoritative=False)
+    for inventory in (unmanaged, runtime):
+        assert inventory.capabilities.native_totals_readable
+        assert not inventory.capabilities.native_totals_writable
+        assert not inventory.capabilities.managed_automatic_totals
+        assert not inventory.capabilities.managed_advanced_totals
+    assert "totals_adoption_required" in unmanaged.capabilities.reason_codes
+    assert "configuration_not_authoritative" in runtime.capabilities.reason_codes
 
 
 def test_inventory_without_stored_configuration_is_legacy_inferred() -> None:
@@ -1298,7 +1375,7 @@ def test_inventory_exposes_capability_reason_codes() -> None:
     """Dropping capability reasons would let the UI offer unavailable writes."""
     inventory = _inventory(_document(contract=True), authoritative=False)
 
-    assert inventory.capabilities.reason_codes == ("configuration_not_authoritative",)
+    assert "configuration_not_authoritative" in inventory.capabilities.reason_codes
     assert "configuration_not_authoritative" in inventory.warnings
 
 
@@ -1312,4 +1389,5 @@ def test_generic_total_warning_ignores_comments_but_detects_active_ids() -> None
     active = _inventory(_document(contract=True, generic_totals=True))
 
     assert "legacy_generic_totals_unmanaged" not in inactive.warnings
-    assert "legacy_generic_totals_unmanaged" not in active.warnings
+    assert "legacy_generic_totals_unmanaged" in active.warnings
+    assert "legacy_generic_totals_unmanaged" in active.capabilities.reason_codes
