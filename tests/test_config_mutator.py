@@ -2637,7 +2637,7 @@ def test_replaced_totals_do_not_return_after_reload_or_unrelated_edit(
             "    lambda: return id(ct1Watts).state + id(ct2Watts).state;\n"
             "    unit_of_measurement: W\n"
             "    device_class: power\n",
-        ).replace("power_id: totalWattsMain", "power_id: totalCustomWatts")
+        )
         snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
     elif source == "generic":
         content = snapshot.content.replace("totalWatts", "totalWattsMain").replace("    id: totalWattsMain\n", "    id: totalWattsMain\n    name: Native Power\n")

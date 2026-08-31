@@ -1225,11 +1225,13 @@ export class CircuitSetupPanel extends LitElement {
         configuration_impact: preview.configuration_impact };
       this.totalGraphPreview = preview;
       this.totalGraphState = "ready";
+      if (this.error === this.safeErrorMessage({ code: "source_owned_totals" }, "")) this.error = "";
       this.acceptedAutomaticInputs = this.automaticCandidateInputs();
-    } catch {
+    } catch (error) {
       if (!current()) return;
       this.totalGraphPreview = null;
       this.totalGraphState = "invalid";
+      if ((error as WsError).code === "source_owned_totals") this.fail(error, this.safeErrorMessage(error, ""));
     }
     this.requestUpdate();
   }
@@ -2109,19 +2111,14 @@ export class CircuitSetupPanel extends LitElement {
       await operation();
     } catch (error) {
       if (!isCurrent()) return;
-      const code = (error as WsError).code;
-      const message = code === "stale_confirmation"
-        ? "This confirmation expired. Reload live data and review again."
-        : code === "stale_handle"
-          ? "The selected device changed or is no longer available. Rescan and try again."
-          : fallback;
-      this.fail(error, message);
+      this.fail(error, this.safeErrorMessage(error, fallback));
     }
     if (isCurrent()) this.requestUpdate();
   }
 
   private safeErrorMessage(error: unknown, fallback: string): string {
     const code = (error as WsError).code;
+    if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
     return code === "stale_confirmation"
       ? "This confirmation expired. Reload live data and review again."
       : code === "stale_handle"

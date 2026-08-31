@@ -353,7 +353,7 @@ class MeterConfigurationInventory:
             sensor_id for source in native_total_sources(topology)
             for sensor_id in (source.power_id, source.current_id)
         }
-        if set(_legacy_template_total_items(document)) - native_ids:
+        if set(_legacy_template_total_items(document)) - (native_ids - _custom_native_total_ids(document, topology)):
             capabilities = replace(capabilities, reason_codes=(
                 *capabilities.reason_codes, "legacy_custom_totals_unmanaged"
             ))
@@ -408,6 +408,22 @@ class MeterConfigurationInventory:
         )
 
 
+def _total_sensor_name(value: str, friendly_name: str) -> str:
+    """Resolve only supported literal names and the pinned friendly-name substitution."""
+    if value.startswith('"'):
+        value = json.loads(value)
+    elif value.startswith("'") and value.endswith("'"):
+        value = value[1:-1].replace("''", "'")
+    value = value.replace("${friendly_name}", friendly_name)
+    if (
+        not value
+        or value.lower() in {"none", "null", "true", "false"}
+        or any(token in value for token in ("${", "!", "\n", "\r"))
+    ):
+        raise ValueError("total sensor name cannot be resolved safely")
+    return value
+
+
 def _source_native_visibility(
     document: ESPHomeConfigDocument, topology: MeterTopology
 ) -> dict[str, bool | None]:
@@ -451,6 +467,7 @@ def _source_native_visibility(
         )
         if sensor_id is not None
     }
+    native_ids -= _custom_native_total_ids(document, topology)
     definitions_visibility: dict[str, bool | None] = {}
     overrides: dict[str, bool | None] = {}
     for item in items:
@@ -466,16 +483,17 @@ def _source_native_visibility(
         )
         if sensor_id in visibility:
             return {}
-        name = item.get("name", "")
-        if len(name) >= 2 and name[0] == name[-1] and name[0] in "\"'":
-            name = name[1:-1]
-        # ponytail: literal names only; defer substitution resolution to source adoption.
+        try:
+            name = _total_sensor_name(
+                item.get("name", ""), _value(document, "friendly_name", "${friendly_name}")
+            )
+        except ValueError:
+            name = ""
         named_definition = (
             visibility is definitions_visibility
             and _plain_sensor_scalar(item.get("platform", ""))
             in {"template", "total_daily_energy"}
-            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]*", name) is not None
-            and name.lower() not in {"none", "null", "true", "false"}
+            and bool(name)
         )
         visibility[sensor_id] = (
             internal == "false"
@@ -1025,9 +1043,10 @@ def _detected_aggregates(
     energy_power_ids = (
         frozenset() if "totalEnergyDaily" in hidden_ids
         else _default_daily_energy_power_ids(document)
-    )
+    ) | _source_daily_energy_items(document).keys()
     legacy, parent_links = _legacy_aggregates(
-        document, channels, default_groups, energy_power_ids, hidden_ids, native_ids
+        document, channels, default_groups, energy_power_ids, hidden_ids,
+        native_ids - _custom_native_total_ids(document, topology),
     )
     defaults: list[CircuitAggregate] = []
     expose_power = "totalWatts" in total_ids
@@ -1561,6 +1580,74 @@ def _root_sensor_items(
     return tuple(items)
 
 
+def _source_daily_energy_items(document: ESPHomeConfigDocument) -> dict[str, dict[str, str]]:
+    """Recognize named source-owned kWh by its power reference, not an optional ID."""
+    if block := document.managed_blocks.get("aggregates"):
+        document = ESPHomeConfigDocument.parse(
+            document.content[:block.span.start] + document.content[block.span.end:]
+        )
+    roots = _root_sensor_items(document)
+    powers = {sensor_id for sensor_id in _legacy_template_total_items(document) if sensor_id.endswith("Watts")}
+    candidates: dict[str, dict[str, str]] = {}
+    ambiguous: set[str] = set()
+    for item in roots:
+        power_id = _plain_sensor_scalar(item.get("power_id", ""))
+        if _plain_sensor_scalar(item.get("platform", "")) != "total_daily_energy" or power_id not in powers:
+            continue
+        if power_id in candidates:
+            ambiguous.add(power_id)
+        if "id" in item and not _plain_sensor_scalar(item["id"]):
+            ambiguous.add(power_id)
+            continue
+        effective = dict(item)
+        sensor_id = _plain_sensor_scalar(item.get("id", ""))
+        overrides = [root for root in roots if sensor_id and root.get("id", "").startswith("!extend ")
+            and _plain_sensor_scalar(root["id"].removeprefix("!extend ")) == sensor_id]
+        if len(overrides) > 1 or (sensor_id and sum(_plain_sensor_scalar(root.get("id", "")) == sensor_id for root in roots) != 1):
+            ambiguous.add(power_id)
+            continue
+        if overrides:
+            effective.update(overrides[0])
+        if (
+            _plain_sensor_scalar(effective.get("power_id", "")) != power_id
+            or _plain_sensor_scalar(effective.get("unit_of_measurement", "")) != "kWh"
+            or _plain_sensor_scalar(effective.get("device_class", "")) != "energy"
+            or _plain_sensor_scalar(effective.get("state_class", "")) != "total_increasing"
+            or effective.get("internal", "false") not in {"true", "false"}
+        ):
+            ambiguous.add(power_id)
+            continue
+        try:
+            _total_sensor_name(effective.get("name", ""), _value(document, "friendly_name", "${friendly_name}"))
+        except ValueError:
+            ambiguous.add(power_id)
+            continue
+        candidates[power_id] = effective
+    return {power_id: item for power_id, item in candidates.items()
+        if power_id not in ambiguous and item.get("internal", "false") == "false"}
+
+
+def _custom_native_total_ids(document: ESPHomeConfigDocument, topology: MeterTopology) -> frozenset[str]:
+    """A native-looking ID is not a native total when its direct CT sum differs."""
+    items = _legacy_template_total_items(document)
+    custom: set[str] = set()
+    for source in native_total_sources(topology):
+        for sensor_id, kind in ((source.power_id, "Watts"), (source.current_id, "Amps")):
+            item = items.get(sensor_id)
+            if item is None:
+                continue
+            references = _sum_references(item["lambda"]) or ()
+            matches = [re.fullmatch(rf"ct([1-9][0-9]*){kind}", reference) for reference in references]
+            if not matches or any(match is None for match in matches):
+                continue
+            channels = [int(match[1]) for match in matches if match is not None]
+            if (len(set(channels)) == len(channels)
+                and all(channel <= topology.ct_count for channel in channels)
+                and set(channels) != set(source.leaf_channels)):
+                custom.update(value for value in (source.power_id, source.current_id, source.existing_energy_id) if value is not None)
+    return frozenset(custom)
+
+
 def _explicit_total_calculation_ids(document: ESPHomeConfigDocument) -> frozenset[str]:
     """Root formulas must not be replaced by ID-only default assumptions."""
     return frozenset(
@@ -1587,7 +1674,7 @@ def _legacy_template_total_ids(
 
 
 def _legacy_replacement_sources(document: ESPHomeConfigDocument, topology: MeterTopology, channels: tuple[ChannelSettings, ...]) -> dict[str, tuple[str, ...]]:
-    native_ids = frozenset(sensor_id for source in native_total_sources(topology) for sensor_id in (source.power_id, source.current_id))
+    native_ids = frozenset(sensor_id for source in native_total_sources(topology) for sensor_id in (source.power_id, source.current_id)) - _custom_native_total_ids(document, topology)
     items = _legacy_template_total_items(document, native_ids)
     accepted, _parents = _legacy_aggregates(document, channels, _default_total_groups(document, channels), frozenset(), excluded_ids=native_ids)
     return {aggregate.aggregate_id: tuple(sensor_id for sensor_id in items
