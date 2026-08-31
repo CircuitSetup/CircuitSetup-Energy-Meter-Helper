@@ -51,6 +51,69 @@ def observed(instance: str = "meter_main1", generation: int = 1) -> OffsetTableS
     return OffsetTableSnapshot(generation, instance, 1, OLD, "restored", False, False)
 
 
+def test_unfinished_selected_preparation_cannot_authorize_or_rotate_recovery(tmp_path: Path) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        _final_evidence_hash,
+    )
+    from tests.test_esphome_api import make_session
+    from tests.test_stock_offset_finalization import SelectionClient, finalization_case
+
+    async def run() -> None:
+        sessions, recovery, builder, manager, review, final = await finalization_case(
+            tmp_path
+        )
+        await manager.async_confirm_write(review.transaction_id, "admin")
+        await manager.async_compile(review.transaction_id)
+        await manager.async_confirm_install(review.transaction_id, "admin")
+        api = make_session([SelectionClient()])
+        await api.async_connect()
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            selected = await recovery.async_reconcile_finalization(
+                lease,
+                final,
+                api,
+                source_reader=lambda: builder.async_get_config("meter.yaml"),
+                timeout=0.01,
+            )
+            # Valid durable state representing the previously accepted partial finalization.
+            partial = replace(selected, results=(selected.results[0],))
+            partial = replace(
+                partial,
+                finalization=replace(
+                    final,
+                    targets=("meter_main1",),
+                    evidence_sha256=_final_evidence_hash(partial),
+                ),
+            )
+            await recovery._save(lease, partial)
+            recovery._confirmed_final_receipts[MAC] = partial.finalization
+            archive = recovery._path(lease).with_suffix(".previous.json")
+            await recovery._write(archive, recovery._read(recovery._path(lease)))
+            original_bytes, archive_bytes = (
+                recovery._read(recovery._path(lease)),
+                recovery._read(archive),
+            )
+            with pytest.raises(ValueError):
+                await recovery.async_begin_new_cycle(
+                    lease,
+                    api,
+                    source_reader=lambda: builder.async_get_config("meter.yaml"),
+                    backup_acknowledged=True,
+                    timeout=0.01,
+                )
+            assert not recovery.is_finalization_ready(partial)
+            assert recovery._read(recovery._path(lease)) == original_bytes
+            assert recovery._read(archive) == archive_bytes
+            with pytest.raises(ValueError):
+                await recovery.async_load_archive(lease)
+        finally:
+            lease.release()
+            await api.async_shutdown()
+
+    asyncio.run(run())
+
+
 def test_backup_is_private_durable_and_reloaded_without_replacing_original(
     tmp_path: Path,
 ) -> None:

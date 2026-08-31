@@ -155,6 +155,17 @@ def _validate_observation(
     )
 
 
+def _has_unfinished_preparation(record: OffsetRecoveryRecord) -> bool:
+    preparation = record.preparation
+    if preparation is None:
+        return False
+    completed = {(item.instance_id, item.stage) for item in record.results}
+    return any(
+        (instance, preparation.stage) not in completed
+        for instance in preparation.targets
+    )
+
+
 def _final_evidence_hash(record: OffsetRecoveryRecord) -> str:
     return sha256(
         json.dumps(
@@ -741,6 +752,8 @@ class OffsetRecovery:
     ) -> ConfigMutationPlan:
         """Select exact captured tables and known effective unchanged stages."""
         _validate_source(source, record.topology)
+        if _has_unfinished_preparation(record):
+            raise ValueError("unfinished offset preparation requires retry before final review")
         targets = {item.instance_id for item in record.results}
         if not targets:
             raise ValueError("captured offset results are absent")
@@ -856,6 +869,7 @@ class OffsetRecovery:
             and record.finalization is not None
             and record.final_installed
             and not record.final_cancelled
+            and not _has_unfinished_preparation(record)
             and self._confirmed_final_receipts.get(record.mac) == record.finalization
         )
 
@@ -993,6 +1007,7 @@ class OffsetRecovery:
             record.mac != lease.mac
             or not record.configuration_selected
             or record.final_cancelled
+            or _has_unfinished_preparation(record)
         ):
             raise ValueError("recovery archive is not a finalized operation")
         return record
@@ -1015,8 +1030,10 @@ class OffsetRecovery:
             record is None
             or record.finalization is None
             or not record.configuration_selected
+            or _has_unfinished_preparation(record)
         ):
             raise ValueError("unfinished recovery cannot start a new cycle")
+        generation = api.connection_generation
         record = await self.async_reconcile_finalization(
             lease,
             record.finalization,
@@ -1039,7 +1056,6 @@ class OffsetRecovery:
         entries = _read_calibrated_offset_entries(
             ESPHomeConfigDocument.parse(source.content), record.topology
         )
-        generation = api.connection_generation
         stages: tuple[tuple[Literal[1, 2], str], ...] = ((1, "rms"), (2, "power"))
         observations = tuple(
             SavedOffsetObservation(

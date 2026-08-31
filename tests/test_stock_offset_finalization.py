@@ -769,6 +769,27 @@ def test_workflow_final_review_install_selection_reload_and_explicit_next_cycle(
                 preparation_acknowledged=True,
             )
         ).state.value == "partial"
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            partial = await workflow._offset_recovery.async_load(lease)
+            assert partial.preparation.targets == ("meter_main1", "meter_main2")
+            assert tuple(item.instance_id for item in partial.results) == (
+                "meter_main1",
+            )
+        finally:
+            lease.release()
+        with pytest.raises((KeyError, RuntimeError)):
+            await workflow.async_preview_offset_finalization(handle.session_id)
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            retained = await workflow._offset_recovery.async_load(lease)
+            assert retained.finalization is None
+            assert retained.results == partial.results
+            assert retained.attempted == partial.attempted
+            assert await workflow._offset_recovery.async_load_archive(lease) is None
+        finally:
+            lease.release()
+        assert handle.stock_offset_pending
         stock.fail_second = False
         stock.snapshot_overrides[("meter_main1", 1)] = None
         review = await workflow.async_preview_offset_preparation(
@@ -1335,6 +1356,96 @@ def test_new_cycle_archive_is_explicit_bounded_and_recoverable(
                         timeout=0.01,
                     )
                     assert await recovery.async_load_archive(lease) == selected
+        finally:
+            lease.release()
+            await api.async_shutdown()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("boundary", ("selection", "archive", "source"))
+def test_new_cycle_rejects_post_selection_generation_change(
+    tmp_path, monkeypatch, boundary
+):
+    from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
+        ESPHomeSessionDisconnectedError,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        _encode,
+    )
+
+    async def run():
+        sessions, recovery, builder, manager, review, final = await finalization_case(
+            tmp_path
+        )
+        await manager.async_confirm_write(review.transaction_id, "admin")
+        await manager.async_compile(review.transaction_id)
+        await manager.async_confirm_install(review.transaction_id, "admin")
+        api = make_session([SelectionClient()])
+        await api.async_connect()
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            selected = await recovery.async_reconcile_finalization(
+                lease,
+                final,
+                api,
+                source_reader=lambda: builder.async_get_config("meter.yaml"),
+                timeout=0.01,
+            )
+            archive = recovery._path(lease).with_suffix(".previous.json")
+            prior = replace(
+                selected,
+                finalization=replace(
+                    final, operation_id="f" * 32, transaction_id="e" * 32
+                ),
+            )
+            await recovery._write(archive, _encode(prior))
+            active_bytes, prior_bytes = (
+                recovery._read(recovery._path(lease)),
+                recovery._read(archive),
+            )
+            reconcile, load_archive = (
+                recovery.async_reconcile_finalization,
+                recovery.async_load_archive,
+            )
+            reconciled = False
+
+            async def after_selection(*args, **kwargs):
+                nonlocal reconciled
+                result = await reconcile(*args, **kwargs)
+                reconciled = True
+                if boundary == "selection":
+                    api._state_tracker.connect(api.connection_generation + 1)
+                return result
+
+            async def after_archive(*args, **kwargs):
+                result = await load_archive(*args, **kwargs)
+                if boundary == "archive":
+                    api._state_tracker.connect(api.connection_generation + 1)
+                return result
+
+            async def read_source():
+                source = await builder.async_get_config("meter.yaml")
+                if boundary == "source" and reconciled:
+                    api._state_tracker.connect(api.connection_generation + 1)
+                return source
+
+            monkeypatch.setattr(
+                recovery, "async_reconcile_finalization", after_selection
+            )
+            monkeypatch.setattr(recovery, "async_load_archive", after_archive)
+            with pytest.raises(ESPHomeSessionDisconnectedError):
+                await recovery.async_begin_new_cycle(
+                    lease,
+                    api,
+                    source_reader=read_source,
+                    backup_acknowledged=True,
+                    timeout=0.01,
+                )
+            assert reconciled
+            assert recovery._read(recovery._path(lease)) == active_bytes
+            assert recovery._read(archive) == prior_bytes
+            assert await recovery.async_load(lease) == selected
         finally:
             lease.release()
             await api.async_shutdown()
