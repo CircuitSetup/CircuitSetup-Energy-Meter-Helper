@@ -1025,6 +1025,8 @@ def _reject_local_offset_overrides(
         "offset_reactive_power",
     }
     for index, line in enumerate(lines):
+        if _yaml_flow_keys(line).intersection(offset_fields):
+            raise ConfigMutationError("existing offset overrides are not safely writable")
         item = re.match(r"(?P<indent> *)-\s+", line)
         if item is None:
             continue

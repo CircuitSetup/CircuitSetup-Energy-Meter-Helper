@@ -1424,10 +1424,7 @@ def test_offset_rendering_rejects_malformed_owned_blocks(body: str) -> None:
 def test_offset_rendering_rejects_source_owned_target_override() -> None:
     source = _snapshot().content + (
         "sensor:\n"
-        "  - id: !extend meter_main1 # local source override\n"
-        "    phase_a:\n"
-        "      offset_voltage: -1\n"
-        "      offset_current: 2\n"
+        "  - {id: !extend meter_main1, phase_a: {offset_voltage: -1, offset_current: 2}}\n"
     )
     snapshot = _snapshot(source)
     record = replace(
