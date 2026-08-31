@@ -937,13 +937,13 @@ export class CircuitSetupPanel extends LitElement {
       this.packageOptionsTouched = correction!.packageOptionsTouched;
       this.meterFrequencyTouched = correction!.meterFrequencyTouched;
       this.meterNominalVoltageTouched = new Set(correction!.meterNominalVoltageTouched);
-      this.meterConfiguration = { ...fresh, configuration: restoredConfiguration };
+      this.updateCircuitConfiguration(restoredConfiguration);
       this.meterSettingsDraft = { ...restoredConfiguration.meter,
         authoritative: fresh.capabilities.configuration_authoritative,
         warnings: fresh.warnings };
       this.multiReferencePreparationAcknowledged = false;
       this.canonicalConfigurationChanged = true;
-      this.showInventory(this.meterConfiguration);
+      this.showInventory(this.meterConfiguration!);
       this.drafts = new Map(correction!.drafts);
       this.reviewCorrection = null;
       this.announcement = "Review cancelled. Live meter data was reloaded and your edits were preserved.";
@@ -1065,7 +1065,7 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.selectedDeviceId || !this.meterSettingsDraft || this.pendingAction || !this.meterProfileConfirmed) return;
     this.pendingAction = "inventory";
     this.requestUpdate();
-    const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
+    const api = this.api; const deviceId = this.selectedDeviceId; const generation = this.operationGeneration;
     try {
       await this.run(async () => {
         this.updateCircuitConfiguration({ ...this.meterConfiguration!.configuration, meter: meterSettings(this.meterSettingsDraft!),
@@ -1316,6 +1316,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private async continueFromCt(): Promise<void> {
     if (!this.api || !this.inventory || !this.selectedDeviceId || this.pendingAction) return;
+    if (this.meterConfiguration && this.totalGraphState !== "ready") return;
     if (!this.labelOnly && this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.legacyCircuitSemanticsConfirmed) {
       return this.fail(new Error(), "Confirm that you reviewed used and unused channels and circuit roles before continuing.");
     }
@@ -2054,8 +2055,9 @@ export class CircuitSetupPanel extends LitElement {
       (board) => { this.board = board; this.requestUpdate(); },
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session",
       this.labelOnly ? null : this.meterConfiguration?.configuration ?? null, (configuration) => this.updateCircuitConfiguration(configuration), (channel) => this.disableCircuit(channel),
-      this.configurationMode !== "runtime_only" && (this.meterConfiguration?.capabilities.configuration_authoritative ?? true), this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "", this.configurationMode === "legacy_editable",
-      this.configurationMode !== "legacy_editable" || this.existingConfigurationChoice !== "manage_with_helper" || this.labelOnly || this.legacyCircuitSemanticsConfirmed, this.totalGraphState === "ready" ? this.meterConfiguration?.totals ?? null : null)}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
+      this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true
+        && this.meterConfiguration.capabilities.managed_advanced_totals, this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "", this.configurationMode === "legacy_editable",
+      (!this.meterConfiguration || this.totalGraphState === "ready") && (this.configurationMode !== "legacy_editable" || this.existingConfigurationChoice !== "manage_with_helper" || this.labelOnly || this.legacyCircuitSemanticsConfirmed), this.totalGraphState === "ready" ? this.meterConfiguration?.totals ?? null : null)}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
     if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return html`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
       <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
       <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>

@@ -160,6 +160,124 @@ afterEach(() => {
 });
 
 describe("server-authoritative total graph", () => {
+  it("gates Continue until the current graph removes inactive settings and resolves counts", async () => {
+    const response = meterResponse();
+    response.catalog.presets = [{ model_id: "model", label: "Model", rated_current_a: 50, secondary: "50 mA",
+      default_gain_ct: 5500, requires_burden_jumper_cut: false, notes: "Approved" }];
+    const off = { candidate_id: "issued-mains", enabled: false, outputs: { watts: true, amps: false, kwh: true } };
+    response.configuration.automatic_totals = [off];
+    let resolveGraph: (value: unknown) => void = () => undefined;
+    const writes: MeterConfigurationRequest[] = [];
+    const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: response.source_sha256,
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null,
+      upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] } }); const call = hass.callWS.bind(hass);
+    hass.callWS = <T>(message: Record<string, unknown>): Promise<T> => {
+      if (String(message.type).endsWith("/preview_total_graph")) return new Promise<T>((resolve) => { resolveGraph = (value) => resolve(value as T); });
+      if (String(message.type).endsWith("/preview_meter_configuration")) { writes.push(message.configuration as MeterConfigurationRequest); return Promise.resolve(transaction as T); }
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as { selectedDeviceId: string; setMeterConfiguration(value: typeof response): void;
+      updateCircuitConfiguration(value: MeterConfigurationRequest): void; continueFromCt(): Promise<void>;
+      meterConfiguration: typeof response; totalGraphState: string; step: string };
+    state.selectedDeviceId = "meter-1"; state.setMeterConfiguration(response); panel.showInventory(response);
+    await panel.updateComplete;
+    expect(panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="continue"]')!.disabled).toBe(false);
+    state.updateCircuitConfiguration({ ...response.configuration, channels: response.configuration.channels.map((channel) => ({ ...channel, role: "branch" })),
+      meter: { ...response.configuration.meter, friendly_name: "Edited meter" } });
+    await state.continueFromCt(); await panel.updateComplete;
+    expect(writes).toEqual([]);
+    expect(state.step).toBe("ct");
+    expect(panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="continue"]')!.disabled).toBe(true);
+    resolveGraph({ plan_id: response.plan_id, source_sha256: response.source_sha256,
+      automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [off],
+      configuration_impact: { ...response.configuration_impact, numeric_entity_count: 43, approximate_publications_per_second: 8.6 },
+      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
+    await tick(); await panel.updateComplete;
+    expect(state.totalGraphState).toBe("ready");
+    expect(text(panel).includes("43 public entities")).toBe(true);
+    expect(panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="continue"]')!.disabled).toBe(false);
+    await state.continueFromCt();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.automatic_totals).toEqual([]);
+  });
+
+  it("preserves a pending graph across local meter-to-CT navigation", async () => {
+    const response = meterResponse();
+    let resolveGraph: (value: unknown) => void = () => undefined;
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] } }); const call = hass.callWS.bind(hass);
+    hass.callWS = <T>(message: Record<string, unknown>): Promise<T> => String(message.type).endsWith("/preview_total_graph")
+      ? new Promise<T>((resolve) => { resolveGraph = (value) => resolve(value as T); }) : call<T>(message);
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { setMeterConfiguration(value: typeof response): void;
+      updateMeterSettings(value: MeterSettingsDraft): void; continueFromMeterSettings(): Promise<void> };
+    state.selectedDeviceId = "meter-1"; state.setMeterConfiguration(response);
+    state.updateMeterSettings({ ...response.configuration.meter, friendly_name: "Pending meter", authoritative: true, warnings: [] });
+    state.meterProfileConfirmed = true;
+    await state.continueFromMeterSettings();
+    resolveGraph({ plan_id: response.plan_id, source_sha256: response.source_sha256,
+      automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], configuration_impact: response.configuration_impact,
+      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
+    await tick();
+    expect(state.step).toBe("ct");
+    expect(state.totalGraphState).toBe("ready");
+  });
+
+  it.each([false, true])("refreshes restored Back totals on the current plan (hydration pending: %s)", async (packageTouched) => {
+    const fresh = meterResponse(); fresh.plan_id = "c".repeat(32);
+    const candidate: import("../src/types").AutomaticTotalCandidate = { candidate_id: "issued-solar", aggregate_id: "auto-solar",
+      name: "Restored solar", role: "solar", sources: [{ kind: "channel", channel: 1 }, { kind: "channel", channel: 2 }],
+      measurement_method: "two_ct_sum", energy_mode: "generation", recommended_outputs: { watts: true, amps: false, kwh: true } };
+    const pending: Array<{ request: MeterConfigurationRequest; resolve(value: unknown): void }> = [];
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] }, get_meter_configuration: fresh });
+    const call = hass.callWS.bind(hass);
+    hass.callWS = <T>(message: Record<string, unknown>): Promise<T> => String(message.type).endsWith("/preview_total_graph")
+      ? new Promise<T>((resolve) => pending.push({ request: message.configuration as MeterConfigurationRequest, resolve: (value) => resolve(value as T) }))
+      : call<T>(message);
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void>; meterConfiguration: typeof fresh; totalGraphState: string };
+    state.selectedDeviceId = "meter-1"; state.journeyOrigin = "new_install";
+    state.meterConfiguration = { ...fresh, plan_id: "b".repeat(32), configuration: { ...fresh.configuration,
+      channels: fresh.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "solar" } : channel),
+      power_quality: [!packageTouched] } };
+    state.packageOptionsTouched = packageTouched; state.packageOptions = { power_quality: [!packageTouched], status_fields: [false] };
+    await state.backFromBuild(); await panel.updateComplete;
+    expect(pending).toHaveLength(packageTouched ? 2 : 1);
+    expect(state.totalGraphState).toBe("pending");
+    expect(text(panel).includes("41 public entities")).toBe(false);
+    expect(pending.at(-1)!.request.channels[0]!.role).toBe("solar");
+    const preview = { plan_id: fresh.plan_id, source_sha256: fresh.source_sha256,
+      automatic_candidates: [candidate], automatic_totals: [{ candidate, enabled: true, outputs: candidate.recommended_outputs }],
+      stale_automatic_total_settings: [],
+      configuration_impact: { ...fresh.configuration_impact, numeric_entity_count: 43, approximate_publications_per_second: 8.6 },
+      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
+    pending.at(-1)!.resolve(preview); await tick(); await panel.updateComplete;
+    expect(state.totalGraphState).toBe("ready");
+    expect(state.meterConfiguration.configuration.channels[0]!.role).toBe("solar");
+    expect(text(panel).includes("43 public entities")).toBe(true);
+    expect(text(panel).includes("Restored solar")).toBe(true);
+    if (packageTouched) {
+      pending[0]!.resolve({ ...preview, automatic_candidates: [], automatic_totals: [], configuration_impact: fresh.configuration_impact });
+      await tick(); await panel.updateComplete;
+      expect(text(panel).includes("43 public entities")).toBe(true);
+      expect(text(panel).includes("Restored solar")).toBe(true);
+    }
+  });
+
+  it("honors managed advanced capability in the real panel despite authoritative source", async () => {
+    const response = meterResponse(); response.capabilities.managed_advanced_totals = false;
+    response.configuration.aggregates = [{ aggregate_id: "preserved", name: "Preserved total", role: "branch",
+      sources: [{ kind: "channel", channel: 1 }], measurement_method: "direct", energy_mode: "consumption",
+      outputs: { watts: true, amps: false, kwh: true }, origin: "advanced" }];
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as { setMeterConfiguration(value: typeof response): void };
+    state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
+    expect(panel.shadowRoot!.querySelector('[data-action="add-aggregate"]')).toBeNull();
+    expect(panel.shadowRoot!.querySelector<HTMLFieldSetElement>('[aria-label="Preserved total aggregate"]')!.disabled).toBe(true);
+    expect(text(panel).includes("Preserved total")).toBe(true);
+  });
+
   it.each([
     ["native", 41, 3, 0, 1],
     ["automatic bidirectional", 46, 8, 1, 3],
@@ -750,6 +868,10 @@ describe("CircuitSetup panel", () => {
         operations.push({ operation, planId: message.plan_id });
         if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
         if (operation === "get_ct_inventory") { activePlan = "c".repeat(32); return { ...meterResponse(), plan_id: activePlan } as T; }
+        if (operation === "preview_total_graph") return { plan_id: message.plan_id, source_sha256: message.source_sha256,
+          automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+          configuration_impact: meterResponse().configuration_impact,
+          graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
         if (operation === "preview_meter_configuration") {
           if (message.plan_id !== activePlan) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
           return preview as T;
@@ -771,6 +893,7 @@ describe("CircuitSetup panel", () => {
     state.setMeterConfiguration(configuration);
     state.updateMeterSettings({ ...(state.meterSettingsDraft as import("../src/types").MeterSettingsDraft), friendly_name: "Kitchen meter" });
     await state.continueFromMeterSettings();
+    await tick();
     await state.continueFromCt();
     expect(operations.some(({ operation }) => operation === "get_ct_inventory")).toBe(false);
     expect(operations.find(({ operation }) => operation === "preview_meter_configuration")?.planId).toBe("b".repeat(32));
@@ -829,6 +952,10 @@ describe("CircuitSetup panel", () => {
         const operation = String(message.type).split("/").at(-1) ?? "";
         operations.push({ operation, planId: message.plan_id });
         if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "preview_total_graph") return { plan_id: message.plan_id, source_sha256: message.source_sha256,
+          automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+          configuration_impact: meterResponse().configuration_impact,
+          graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
         if (operation === "preview_meter_configuration") {
           if (message.plan_id !== activePlan || pendingTransaction) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
           activePlan = null; pendingTransaction = true;
@@ -863,6 +990,7 @@ describe("CircuitSetup panel", () => {
     state.setMeterConfiguration(configuration);
     state.updateMeterSettings({ ...(state.meterSettingsDraft as import("../src/types").MeterSettingsDraft), friendly_name: "Preserved edit" });
     await state.continueFromMeterSettings();
+    await tick();
     await state.continueFromCt();
 
     const returning = state.backFromBuild();
@@ -877,6 +1005,7 @@ describe("CircuitSetup panel", () => {
     expect((state.meterConfiguration as import("../src/types").MeterConfiguration).plan_id).toBe("c".repeat(32));
     expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.meter.friendly_name).toBe("Preserved edit");
     expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.multi_reference_preparation_acknowledged).toBe(false);
+    await tick();
     await state.continueFromCt();
     expect(operations.filter(({ operation }) => operation === "preview_meter_configuration").map(({ planId }) => planId)).toEqual(["b".repeat(32), "c".repeat(32)]);
   });
@@ -917,6 +1046,10 @@ describe("CircuitSetup panel", () => {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
         if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
+        if (operation === "preview_total_graph") return { plan_id: message.plan_id, source_sha256: message.source_sha256,
+          automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+          configuration_impact: meterResponse().configuration_impact,
+          graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
         if (operation === "preview_meter_configuration") {
           previews.push({ planId: message.plan_id, sourceSha256: message.source_sha256, configuration: message.configuration });
           if (message.plan_id !== activePlan || pendingTransaction) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
@@ -962,6 +1095,7 @@ describe("CircuitSetup panel", () => {
     state.updateCircuitConfiguration({ ...stale, aggregates: [{ aggregate_id: "stale-total", name: "Stale total", role: "grid",
       sources: [{ kind: "channel" as const, channel: 1 }], measurement_method: "direct", energy_mode: "bidirectional", outputs: { watts: true, amps: true, kwh: true }, origin: "advanced" as const }] });
     state.setPackageOptions({ power_quality: [false], status_fields: [true] });
+    await tick();
     await state.continueFromCt();
 
     await state.backFromBuild();
@@ -978,6 +1112,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("[role=alert]")?.textContent).toContain("drafts were not restored");
     state.updateMeterSettings({ ...(state.meterSettingsDraft as import("../src/types").MeterSettingsDraft), friendly_name: "Reviewed external meter" });
     await state.continueFromMeterSettings();
+    await tick();
     await state.continueFromCt();
 
     expect(previews).toHaveLength(2);
@@ -1451,7 +1586,7 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("That workflow step is not available for the selected meter.");
   });
 
-  it("allows aggregate and voltage assignment edits during an explicit legacy migration", async () => {
+  it("keeps advanced editing unavailable until server capability allows legacy migration", async () => {
     const legacy = structuredClone(legacyEditableScenario.meterConfiguration!);
     const panel = await mount(makeHass({
       setup_status: legacyEditableScenario.setup,
@@ -1480,8 +1615,8 @@ describe("CircuitSetup panel", () => {
     }]));
     panel.requestUpdate();
     await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector('[data-action="add-aggregate"]')).not.toBeNull();
-    expect(text(panel)).not.toContain("Aggregate editing unavailable");
+    expect(panel.shadowRoot?.querySelector('[data-action="add-aggregate"]')).toBeNull();
+    expect(text(panel)).toContain("Aggregate editing unavailable");
     const continueButton = panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]');
     expect(continueButton?.disabled).toBe(true);
     panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="I reviewed used/unused channels and circuit roles"]')?.click();
