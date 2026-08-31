@@ -500,7 +500,7 @@ test("native board totals feed an advanced parent without raw CT selection", asy
   await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("Main Board total + Add-on 1 total");
   await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("CT1–CT12");
   await expect(page.getByLabel("Whole building: CT1", { exact: true })).toBeDisabled();
-  await expect(page.locator(".default-totals")).toContainText("retained internally for");
+  await expect(page.locator(".default-totals")).toContainText("Watts is hidden from Home Assistant when off");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   const state = await fixture.state();
@@ -537,7 +537,7 @@ for (const name of ["main-only", "one-addon"] as const) test(`totals defaults an
   await page.getByRole("switch", { name: "Overall meter total Watts", exact: true }).press("Space");
   await expect(page.getByRole("switch", { name: "Overall meter total Watts", exact: true })).not.toBeChecked();
   await expect(page.getByRole("switch", { name: "Overall meter total kWh", exact: true })).toBeChecked();
-  await expect(page.locator(".default-totals")).toContainText("retained internally for Overall meter total kWh");
+  await expect(page.locator(".default-totals")).toContainText("Watts is hidden from Home Assistant when off");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   expect((await fixture.state()).proposed_content).toContain("internal: true");

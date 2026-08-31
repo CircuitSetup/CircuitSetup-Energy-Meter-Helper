@@ -1901,7 +1901,7 @@ const moveTab = (event, index) => {
   tabs[next]?.focus();
 };
 const range = (channels) => channels.length ? `CT${channels[0]}–CT${channels.at(-1)}` : "No CTs";
-function defaultTotalsSection(configuration, totals, readable, writable, update, preview = null, graphState = "ready") {
+function defaultTotalsSection(configuration, totals, readable, writable, update, graphState = "ready") {
   if (!readable) return b`<section class="default-totals" aria-labelledby="default-totals-heading"><h2 id="default-totals-heading">Default meter totals</h2><p class="info-band" role="status">Native default totals are unavailable for this configuration.</p></section>`;
   const overall = totals.native_sources.find((source) => source.source_id === "overall");
   const boards = totals.native_sources.filter((source) => source.source_id !== "overall");
@@ -1909,30 +1909,6 @@ function defaultTotalsSection(configuration, totals, readable, writable, update,
     ...configuration,
     default_totals: boardIndex === void 0 ? { ...configuration.default_totals, overall: outputs } : { ...configuration.default_totals, boards: configuration.default_totals.boards.map((board) => board.board_index === boardIndex ? { ...board, outputs } : board) }
   });
-  const consumers = (sourceId, output) => {
-    const names = /* @__PURE__ */ new Set();
-    if (sourceId !== "overall" && (output === "watts" || output === "amps")) names.add("Overall meter total");
-    const native = totals.native_sources.find((source) => source.source_id === sourceId);
-    const settings = sourceId === "overall" ? configuration.default_totals.overall : configuration.default_totals.boards.find((board) => board.board_index === boards.findIndex((source) => source.source_id === sourceId))?.outputs;
-    if (output === "watts" && native && settings?.kwh) names.add(`${native.label} kWh`);
-    configuration.aggregates.filter((aggregate) => aggregate.sources.some((source) => source.kind === "native_total" && source.source_id === sourceId)).forEach((aggregate) => {
-      if (output === "watts" && (aggregate.outputs.watts || aggregate.outputs.kwh)) names.add(aggregate.outputs.kwh ? `${aggregate.name} kWh` : `${aggregate.name} Watts`);
-      if (output === "amps" && aggregate.outputs.amps) names.add(`${aggregate.name} Amps`);
-    });
-    if (native && preview) preview.graph.ordered_nodes.forEach((node) => {
-      const used = node.sources.some((source) => source.power_id === native.power_id || source.current_id === native.current_id);
-      if (!used) return;
-      if (output === "watts" && (node.power_required || node.energy_required)) names.add(`${node.aggregate.name} Watts`);
-      if (output === "amps" && node.current_required) names.add(`${node.aggregate.name} Amps`);
-    });
-    return [...names];
-  };
-  const outputStatus = (sourceId, output, enabled) => {
-    const dependency = consumers(sourceId, output);
-    const visibility = !totals.migration.native_visibility_resolved ? `${enabled ? "Requested for Home Assistant" : "Hidden from Home Assistant"}; source visibility is unconfirmed.` : enabled ? "Requested for Home Assistant." : "Hidden from Home Assistant.";
-    if (!dependency.length) return visibility;
-    return enabled ? `${visibility} Retained internally for ${dependency.join(" and ")}.` : `${visibility.replace(/\.$/, "")}; retained internally for ${dependency.join(" and ")}.`;
-  };
   const control = (label, checked, onChange) => b`<label class="default-total-control"><input type="checkbox" role="switch" aria-label=${label} .checked=${checked} ?disabled=${!writable}
     @change=${(event) => onChange(event.target.checked)} />${label.replace(/.* (Watts|Amps|kWh)$/, "$1")}</label>`;
   const boardFormula = boards.map((source) => source.label).join(" + ");
@@ -1942,6 +1918,12 @@ function defaultTotalsSection(configuration, totals, readable, writable, update,
     <h2 id="default-totals-heading">Default meter totals</h2>
     ${visibilityUnresolved ? b`<p class="info-band" role="status">Native source visibility is unconfirmed; these controls show requested outputs, not confirmed installed publications.</p>` : A}
     ${graphState === "pending" ? b`<p class="info-band" role="status">Updating total graph; current native cards remain available.</p>` : graphState === "invalid" ? b`<p class="warning-band" role="status">Total graph unavailable; native cards show saved draft status and not current dependency results.</p>` : A}
+    <p>These switches control Home Assistant visibility.</p>
+    <ul class="native-total-status" role="status">
+      <li>Watts is hidden from Home Assistant when off and retained internally when needed by Overall meter total, enabled kWh, or other totals.</li>
+      <li>Amps is hidden from Home Assistant when off and retained internally when needed by Overall meter total or other totals.</li>
+      <li>kWh is hidden from Home Assistant when off.</li>
+    </ul>
     ${overall ? b`<fieldset class="default-total-card"><legend>Overall meter total (all monitored channels)</legend>
       <p>${boardFormula || "All monitored channels"}. Downstream circuit CTs can double-count the service mains, so this native total is not relabeled Mains.</p>
       <p>Covers: ${boardRanges || range(overall.leaf_channels)}.</p>
@@ -1950,7 +1932,6 @@ function defaultTotalsSection(configuration, totals, readable, writable, update,
         ${control("Overall meter total Amps", configuration.default_totals.overall.amps, (amps) => patch({ ...configuration.default_totals.overall, amps }))}
         ${control("Overall meter total kWh", configuration.default_totals.overall.kwh, (kwh) => patch({ ...configuration.default_totals.overall, kwh }))}
       </div>
-      <ul class="native-total-status" role="status"><li>Watts: ${outputStatus("overall", "watts", configuration.default_totals.overall.watts)}</li><li>Amps: ${outputStatus("overall", "amps", configuration.default_totals.overall.amps)}</li><li>kWh: ${outputStatus("overall", "kwh", configuration.default_totals.overall.kwh)}</li></ul>
     </fieldset>` : A}
     ${boards.map((source, boardIndex) => {
     const settings = configuration.default_totals.boards.find((board) => board.board_index === boardIndex)?.outputs;
@@ -1961,7 +1942,6 @@ function defaultTotalsSection(configuration, totals, readable, writable, update,
           ${control(`${source.label} Amps`, settings.amps, (amps) => patch({ ...settings, amps }, boardIndex))}
           ${control(`${source.label} kWh`, settings.kwh, (kwh) => patch({ ...settings, kwh }, boardIndex))}
         </div>
-        <ul class="native-total-status" role="status"><li>Watts: ${outputStatus(source.source_id, "watts", settings.watts)}</li><li>Amps: ${outputStatus(source.source_id, "amps", settings.amps)}</li><li>kWh: ${outputStatus(source.source_id, "kwh", settings.kwh)}</li></ul>
       </fieldset>`;
   })}
   </section>`;
@@ -2383,7 +2363,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
       ${configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : A}
-      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativePreview, nativeGraphState) : A}
+      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState) : A}
       ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration) : A}
       ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh) : A}
       <footer class="action-footer">

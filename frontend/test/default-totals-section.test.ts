@@ -7,27 +7,37 @@ let container: HTMLDivElement;
 
 afterEach(() => container?.remove());
 
-const mount = (response = meterResponse(), writable = true, readable = true, graphState: "ready" | "pending" | "invalid" = "ready", preview: import("../src/types").TotalGraphPreview | null = null) => {
+const mount = (response = meterResponse(), writable = true, readable = true, graphState: "ready" | "pending" | "invalid" = "ready") => {
   container = document.createElement("div");
   document.body.append(container);
   const update = vi.fn();
-  render(defaultTotalsSection(response.configuration, response.totals, readable, writable, update, preview, graphState), container);
+  render(defaultTotalsSection(response.configuration, response.totals, readable, writable, update, graphState), container);
   return { update, response };
 };
 
-it("renders one overall card and its three controls for a main-only meter", () => {
+it("renders one shared conditional visibility note before the main-only card controls", () => {
   mount();
 
   expect(container.querySelectorAll(".default-total-card")).toHaveLength(1);
+  expect(container.querySelectorAll(".native-total-status")).toHaveLength(1);
+  expect(container.querySelectorAll(".native-total-status li")).toHaveLength(3);
+  expect(container.querySelectorAll(".default-total-card .native-total-status")).toHaveLength(0);
+  const note = container.querySelector(".native-total-status");
+  const card = container.querySelector(".default-total-card");
+  expect(note).not.toBeNull();
+  expect(card).not.toBeNull();
+  expect(note!.compareDocumentPosition(card!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(container.textContent).toContain("Overall meter total (all monitored channels)");
   expect(container.textContent).toContain("all monitored channels");
+  expect(container.textContent).toContain("Watts is hidden from Home Assistant when off");
+  expect(container.textContent).not.toContain("Native source visibility is unconfirmed");
   expect(container.textContent).not.toContain("Main Board total");
   expect([...container.querySelectorAll<HTMLInputElement>("input")].map((input) => input.getAttribute("aria-label"))).toEqual([
     "Overall meter total Watts", "Overall meter total Amps", "Overall meter total kWh",
   ]);
 });
 
-it("uses catalog board labels, persisted outputs, and internal dependency copy for add-ons", () => {
+it("uses catalog board labels and persisted output switches for add-ons", () => {
   const response = meterResponse();
   response.totals.native_sources = [
     { source_id: "board-main", label: "Service panel", leaf_channels: [1, 2, 3, 4, 5, 6], power_id: "boardPower", current_id: "boardAmps", existing_energy_id: null,
@@ -50,8 +60,8 @@ it("uses catalog board labels, persisted outputs, and internal dependency copy f
   expect(container.textContent).toContain("Garage panel");
   expect(container.textContent).toContain("Service panel + Garage panel");
   expect(container.textContent).toContain("CT1–CT6 + CT7–CT12");
-  expect(container.textContent).toContain("Hidden from Home Assistant; retained internally for Overall meter total.");
-  expect(container.textContent).toContain("Garage branch kWh");
+  expect(container.querySelectorAll(".native-total-status")).toHaveLength(1);
+  expect(container.querySelectorAll(".default-total-card .native-total-status")).toHaveLength(0);
   expect(container.querySelector<HTMLInputElement>('[aria-label="Service panel Watts"]')?.checked).toBe(false);
   expect(container.querySelector<HTMLInputElement>('[aria-label="Garage panel Amps"]')?.checked).toBe(false);
   expect(container.querySelector<HTMLInputElement>('[aria-label="Garage panel kWh"]')).not.toBeNull();
@@ -69,27 +79,7 @@ it("distinguishes ready inventory from pending and invalid graph previews", () =
   expect(container.textContent).toContain("Total graph unavailable");
 });
 
-it("keeps native Watts for each enabled native kWh output but not advanced energy", () => {
-  const response = meterResponse();
-  response.configuration.default_totals.overall = { watts: false, amps: false, kwh: true };
-  response.totals.native_sources = [
-    { source_id: "board-main", label: "Main Board", leaf_channels: [1, 2, 3, 4, 5, 6], power_id: "boardPower", current_id: "boardAmps", existing_energy_id: null,
-      upstream_defaults: { watts: true, amps: true, kwh: false } }, response.totals.native_sources[0]!,
-  ];
-  response.configuration.default_totals.boards = [{ board_index: 0, outputs: { watts: false, amps: false, kwh: true } }];
-  const preview: import("../src/types").TotalGraphPreview = { plan_id: response.plan_id, source_sha256: response.source_sha256,
-    automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], configuration_impact: response.configuration_impact,
-    graph: { native_visibility: [], leaf_channels: {}, independent_overlap_warnings: [], ordered_nodes: [{ aggregate: { aggregate_id: "advanced", name: "Advanced", role: "branch", sources: [{ kind: "native_total", source_id: "board-main" }], measurement_method: "direct", energy_mode: "consumption", outputs: { watts: false, amps: false, kwh: true }, origin: "advanced" }, power_id: "advancedPower", current_id: "advancedAmps", sources: [{ label: "Main Board", power_id: "boardPower", current_id: "boardAmps", leaf_channels: [1, 2, 3, 4, 5, 6] }], power_required: true, current_required: false, energy_required: true }] },
-  };
-  mount(response, true, true, "ready", preview);
-
-  expect(container.textContent).toContain("retained internally for Overall meter total kWh.");
-  expect(container.textContent).toContain("Main Board kWh");
-  expect(container.textContent).toContain("Advanced Watts");
-  expect(container.textContent).not.toContain("Advanced kWh");
-});
-
-it("patches only the selected board and keeps cards available while visibility is unresolved", () => {
+it("patches only the selected board, keeps mixed output switches, and warns when visibility is unresolved", () => {
   const response = meterResponse();
   response.totals.native_sources = [
     { source_id: "board-main", label: "Main Board", leaf_channels: [1, 2, 3, 4, 5, 6], power_id: "boardPower", current_id: "boardAmps", existing_energy_id: null,
@@ -105,6 +95,17 @@ it("patches only the selected board and keeps cards available while visibility i
   const { update } = mount(response);
 
   expect(container.textContent).toContain("Native source visibility is unconfirmed");
+  expect([...container.querySelectorAll(".info-band")].filter((element) => element.textContent?.includes("Native source visibility is unconfirmed"))).toHaveLength(1);
+  expect(container.querySelectorAll(".native-total-status")).toHaveLength(1);
+  expect(container.querySelectorAll(".native-total-status li")).toHaveLength(3);
+  expect(container.querySelectorAll(".default-total-card .native-total-status")).toHaveLength(0);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="Overall meter total Watts"]')?.checked).toBe(true);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="Overall meter total Amps"]')?.checked).toBe(true);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="Overall meter total kWh"]')?.checked).toBe(true);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="Main Board Watts"]')?.checked).toBe(false);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="Main Board Amps"]')?.checked).toBe(true);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="Add-on 1 Watts"]')?.checked).toBe(true);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="Add-on 1 Amps"]')?.checked).toBe(false);
   container.querySelector<HTMLInputElement>('[aria-label="Add-on 1 Amps"]')?.click();
   expect(update).toHaveBeenCalledWith(expect.objectContaining({ default_totals: {
     overall: response.configuration.default_totals.overall,
