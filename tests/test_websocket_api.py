@@ -2933,10 +2933,10 @@ def test_total_graph_preview_route_serializes_server_graph_without_transaction()
         result = sanitize_payload(await controller.async_call(command, payload, "user"))
         assert result["graph"]["leaf_channels"]["auto-mains"] == [1, 2]
         assert result["configuration_impact"] == {
-            "enabled_channel_count": 6, "numeric_entity_count": 46,
-            "text_entity_count": 6, "energy_entity_count": 3,
-            "approximate_publications_per_second": 5.2,
-            "public_total_entity_count": 8, "internal_total_sensor_count": 0,
+            "enabled_channel_count": 6, "numeric_entity_count": 43,
+            "text_entity_count": 6, "energy_entity_count": 2,
+            "approximate_publications_per_second": 4.9,
+            "public_total_entity_count": 5, "internal_total_sensor_count": 0,
         }
         assert result["graph"]["ordered_nodes"][0]["sources"][0]["power_id"] == "ct1Watts"
         assert result["automatic_candidates"][0]["sources"] == [{"kind": "channel", "channel": 1}, {"kind": "channel", "channel": 2}]

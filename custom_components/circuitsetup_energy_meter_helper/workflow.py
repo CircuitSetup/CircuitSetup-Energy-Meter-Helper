@@ -537,6 +537,7 @@ class EntryWorkflow:
             "configuration_impact": estimate_configuration_impact(
                 inventory.configuration, inventory.topology,
                 document=document, previous=inventory.configuration,
+                native_visibility_resolved=inventory.native_visibility_resolved,
             ),
             "channels": inventory.ct_inventory.channels,
             "catalog": inventory.ct_catalog,
@@ -672,7 +673,8 @@ class EntryWorkflow:
         plan.inventory.validate_totals_change(current, preview_only=True)
         graph = plan_total_graph(current, plan.topology)
         impact = estimate_configuration_impact(current, plan.topology,
-            document=ESPHomeConfigDocument.parse(plan.snapshot.content), previous=plan.inventory.configuration)
+            document=ESPHomeConfigDocument.parse(plan.snapshot.content), previous=plan.inventory.configuration,
+            native_visibility_resolved=plan.inventory.native_visibility_resolved)
         # IDs are bounded by four roles times all distinct topology CT pairs.
         plan.issued_total_candidate_ids.update(candidate.candidate_id for candidate in candidates)
         return {
@@ -761,7 +763,8 @@ class EntryWorkflow:
             totals_managed=plan.inventory.totals_managed,
         )
         expected = expected_meter_entity_evidence(requested, plan.topology,
-            document=ESPHomeConfigDocument.parse(plan.snapshot.content), previous=plan.inventory.configuration)
+            document=ESPHomeConfigDocument.parse(plan.snapshot.content), previous=plan.inventory.configuration,
+            native_visibility_resolved=plan.inventory.native_visibility_resolved)
         status = await manager.async_preview(
             plan.mac,
             plan.topology,
@@ -769,6 +772,7 @@ class EntryWorkflow:
             plan.snapshot,
             meter_configuration=configuration,
             totals_change_intent=requested.totals_change_intent,
+            native_visibility_resolved=plan.inventory.native_visibility_resolved,
             expected_sensor_entities=expected.sensor_entities,
             expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
         )

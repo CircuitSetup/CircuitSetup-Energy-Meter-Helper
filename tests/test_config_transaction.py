@@ -476,7 +476,7 @@ def test_reconnect_evidence_accepts_simultaneous_supported_maximum() -> None:
     _validate_expected_sensor_entities(evidence.sensor_entities)
     document = ESPHomeConfigDocument.parse(_supported_source_totals(40))
     evidence = expected_meter_entity_evidence(
-        configuration, topology(6), document=document
+        configuration, topology(6), document=document, native_visibility_resolved=True
     )
     assert len(evidence.source_owned_sensor_entities) == 80
     assert len(evidence.sensor_entities) == 339
@@ -492,7 +492,7 @@ def test_reconnect_evidence_accepts_simultaneous_supported_maximum() -> None:
 
 def test_recomputed_source_evidence_overflow_refuses_preview_without_writes() -> None:
     async def run() -> None:
-        content = _supported_source_totals(512)
+        content = _supported_source_totals(513)
         plan = replace(_plan(content), proposed_content=content)
         builder = Builder(remote_content=content)
         manager = _manager(builder, Persistence())

@@ -267,11 +267,39 @@ def test_public_total_evidence_uses_native_firmware_names(addons: int) -> None:
 def test_native_evidence_uses_supported_source_name_overrides() -> None:
     from tests.test_meter_configuration import request, topology
 
-    document = ESPHomeConfigDocument.parse('sensor:\n  - id: !extend totalWattsMain\n    name: "${friendly_name} Custom watts"\n')
+    document = ESPHomeConfigDocument.parse('sensor:\n  - id: !extend totalWattsMain\n    internal: false\n    name: "${friendly_name} Custom watts"\n')
     evidence = expected_meter_entity_evidence(request(), topology(), document=document)
     names = {name for _, name in evidence.aggregate_sensor_entities}
     assert "Kitchen meter Custom watts" in names
     assert "Kitchen meter Total Watts Main" not in names
+
+
+@pytest.mark.parametrize("visible_current", (False, True))
+def test_unresolved_source_native_evidence_excludes_hidden_and_unknown_totals(
+    visible_current: bool,
+) -> None:
+    snapshot = _contract_snapshot()
+    overrides = "  - id: !extend totalWattsMain\n    internal: true\n"
+    if visible_current:
+        overrides += "  - id: !extend totalAmpsMain\n    internal: false\n"
+    content = snapshot.content.replace("logger:\n", overrides + "logger:\n")
+    snapshot = replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+    current = _inventory(snapshot, _topology())
+    assert not current.native_visibility_resolved
+    assert not current.capabilities.native_totals_writable
+    evidence = expected_meter_entity_evidence(
+        current.configuration,
+        current.topology,
+        document=ESPHomeConfigDocument.parse(content),
+        previous=current.configuration,
+    )
+    assert evidence.native_sensor_entities == (
+        frozenset({("energy_meter_total_amps_main", "Energy meter Total Amps Main")})
+        if visible_current
+        else frozenset()
+    )
 
 
 def test_review_totals_uses_human_sources_and_dependency_reasons() -> None:
@@ -330,8 +358,10 @@ def test_explicit_adoption_materializes_enabled_automatic_totals_without_other_c
     current = _inventory(snapshot, topology, stored=stored)
     requested = replace(current.configuration, totals_change_intent=TotalsChangeIntent(True))
     mutation = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    assert "Suggested circuit totals" in mutation.redacted_diff
+    assert "+ Mains: CT 1 + CT 2; Watts exposed; Amps hidden; kWh exposed; bidirectional; two_ct_sum" in mutation.redacted_diff
     disabled = replace(requested, channels=tuple(replace(channel, role=CircuitRole.BRANCH) for channel in requested.channels))
-    assert "Suggested circuit totals" in build_meter_configuration_mutation(snapshot, topology, current, disabled).redacted_diff
+    assert "Suggested circuit totals" not in build_meter_configuration_mutation(snapshot, topology, current, disabled).redacted_diff
     assert "id: csemh_auto_mains_import_energy" in mutation.proposed_content
 
 
@@ -2313,14 +2343,14 @@ def test_unchanged_custom_total_is_not_copied_during_other_total_edit() -> None:
     evidence = expected_meter_entity_evidence(requested, topology,
         document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
     assert {name for _, name in evidence.aggregate_sensor_entities - evidence.native_sensor_entities} == {f"{requested.meter.friendly_name} Load Power", "Charger Power"}
-    impact = estimate_configuration_impact(requested, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
+    impact = estimate_configuration_impact(requested, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration, native_visibility_resolved=current.native_visibility_resolved)
     assert (impact.public_total_entity_count, impact.numeric_entity_count) == (5, 19)
     selected = replace(requested, aggregates=tuple(replace(item, name="Updated Charger") if item.aggregate_id == "total-charger" else item for item in requested.aggregates))
     replacement = build_meter_configuration_mutation(snapshot, topology, current, selected)
     evidence = expected_meter_entity_evidence(selected, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
     assert "Charger Power" not in {name for _, name in evidence.sensor_entities}
     assert "Energy meter Updated Charger Power" in {name for _, name in evidence.sensor_entities}
-    impact = estimate_configuration_impact(selected, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
+    impact = estimate_configuration_impact(selected, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration, native_visibility_resolved=current.native_visibility_resolved)
     assert (impact.public_total_entity_count, impact.numeric_entity_count) == (5, 19)
     assert "!extend totalChargerWatts\n    internal: true" in replacement.proposed_content
 

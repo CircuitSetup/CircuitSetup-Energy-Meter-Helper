@@ -408,20 +408,20 @@ class MeterConfigurationInventory:
         )
 
 
-def _source_normalized_default_totals(
+def _source_native_visibility(
     document: ESPHomeConfigDocument, topology: MeterTopology
-) -> DefaultTotalsSettings | None:
-    """Read effective native visibility without changing legacy migration state."""
+) -> dict[str, bool | None]:
+    """Read partial native facts; missing or unknown entries are not publications."""
     sensor_span = document.writable_sensor_span
     if sensor_span is None:
-        return None
+        return {}
     try:
         items = _managed_sensor_items(
             document.content[sensor_span.start : sensor_span.end],
             document.sensor_item_indent,
         )
     except ValueError:
-        return None
+        return {}
     native_ids = {
         sensor_id
         for definition in native_total_sources(topology)
@@ -441,12 +441,12 @@ def _source_normalized_default_totals(
             continue
         internal = item.get("internal")
         if internal is not None and internal not in {"true", "false"}:
-            return None
+            return {}
         visibility = (
             overrides if raw_id.startswith("!extend ") else definitions_visibility
         )
         if sensor_id in visibility:
-            return None
+            return {}
         name = item.get("name", "")
         if len(name) >= 2 and name[0] == name[-1] and name[0] in "\"'":
             name = name[1:-1]
@@ -465,7 +465,24 @@ def _source_normalized_default_totals(
             if named_definition
             else None
         )
-    effective = {**definitions_visibility, **overrides}
+    return {**definitions_visibility, **overrides}
+
+
+def _source_normalized_default_totals(
+    document: ESPHomeConfigDocument, topology: MeterTopology
+) -> DefaultTotalsSettings | None:
+    """Require complete source visibility before resolving adoption/migration state."""
+    effective = _source_native_visibility(document, topology)
+    native_ids = {
+        sensor_id
+        for definition in native_total_sources(topology)
+        for sensor_id in (
+            definition.power_id,
+            definition.current_id,
+            definition.existing_energy_id,
+        )
+        if sensor_id is not None
+    }
     # Package filenames discard repository/ref provenance; defaults alone are not evidence.
     if any(effective.get(sensor_id) is None for sensor_id in native_ids):
         return None

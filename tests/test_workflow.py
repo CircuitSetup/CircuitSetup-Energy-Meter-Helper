@@ -139,6 +139,7 @@ async def _install_totals_preview(
         topology,
         document=ESPHomeConfigDocument.parse(content),
         previous=previous,
+        native_visibility_resolved=plan.inventory.native_visibility_resolved,
     )
     verifier.evidence = replace(
         _evidence(),
@@ -176,6 +177,93 @@ def test_unrelated_save_reload_keeps_totals_unowned_and_native_unresolved() -> N
         )
         assert not loaded.inventory.native_visibility_resolved
         assert not loaded.inventory.capabilities.managed_advanced_totals
+
+    asyncio.run(run())
+
+
+def test_partial_unowned_native_visibility_survives_initial_preview_and_unrelated_write() -> (
+    None
+):
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionState,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        TotalsChangeIntent,
+    )
+    from tests.test_config_mutator import _contract_snapshot
+
+    class Hass:
+        config_entries = SimpleNamespace(
+            async_get_entry=lambda _entry: SimpleNamespace(unique_id=MAC)
+        )
+
+        async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
+            return target(*args)
+
+    async def run() -> None:
+        content = (
+            "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
+            + _contract_snapshot().content.replace(
+                "logger:\n",
+                "  - id: !extend totalWattsMain\n    internal: true\nlogger:\n",
+            )
+        )
+        original, _, store, builder, verifier = await _persisted_totals_workflow(
+            content
+        )
+        provisioning = SimpleNamespace(
+            snapshot=SimpleNamespace(
+                devices=(
+                    DiscoveredDevice(
+                        "meter",
+                        "Energy meter",
+                        "circuitsetup.6c-energy-meter",
+                        configuration="meter.yaml",
+                    ),
+                )
+            )
+        )
+        workflow = EntryWorkflow(
+            Hass(), provisioning, SessionManager(), store, "meter", None, builder
+        )
+        workflow.transactions = original.transactions
+        initial = await workflow.async_get_meter_configuration("meter")
+        assert not initial["totals"]["migration"]["native_visibility_resolved"]
+        assert initial["configuration_impact"].public_total_entity_count == 0
+        assert initial["configuration_impact"].internal_total_sensor_count == 1
+        plan = workflow._plans[initial["plan_id"]]
+        preview = await workflow.async_preview_total_graph(
+            "meter", plan.plan_id, plan.snapshot.sha256, plan.inventory.configuration
+        )
+        assert preview["configuration_impact"].public_total_entity_count == 0
+        with pytest.raises(ValueError, match="visibility-confirmed"):
+            plan.inventory.validate_totals_change(
+                replace(
+                    plan.inventory.configuration,
+                    totals_change_intent=TotalsChangeIntent(True),
+                )
+            )
+        requested = replace(
+            plan.inventory.configuration,
+            meter=replace(plan.inventory.configuration.meter, update_interval_s=30),
+        )
+        status = await workflow._async_preview_meter_configuration(plan, requested)
+        verifier.evidence = replace(
+            verifier.evidence, topology=plan.topology, sensor_entities=frozenset()
+        )
+        manager = workflow.transactions
+        await manager.async_confirm_write(status.transaction_id, "admin")
+        await manager.async_compile(status.transaction_id)
+        installed = await manager.async_confirm_install(status.transaction_id, "admin")
+        assert installed.state is ConfigTransactionState.VERIFIED, installed.evidence
+        assert (
+            "  - id: !extend totalWattsMain\n    internal: true\n"
+            in builder.remote_content
+        )
+        reloaded = await workflow.async_get_meter_configuration("meter")
+        assert not reloaded["totals"]["migration"]["native_visibility_resolved"]
+        assert reloaded["configuration_impact"].public_total_entity_count == 0
+        assert not (await store.async_get_meter_configuration(MAC)).totals_managed
 
     asyncio.run(run())
 
@@ -572,14 +660,14 @@ def test_total_graph_preview_is_repeatable_read_only_and_recomputes_roles() -> N
         preview = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, draft)
         assert preview["automatic_candidates"][0].candidate_id == "grid-ct1-ct2"
         assert preview["graph"]["leaf_channels"]["auto-mains"] == [1, 2]
-        assert preview["configuration_impact"].public_total_entity_count == 8
+        assert preview["configuration_impact"].public_total_entity_count == 5
         assert preview == await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, draft)
         disabled = replace(draft, automatic_totals=(AutomaticTotalSettings("grid-ct1-ct2", False, TotalOutputSettings(True, False, True)),))
         await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, disabled)
         gone = replace(disabled, channels=original.channels)
         result = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, gone)
         assert result["automatic_totals"] == ()
-        assert result["configuration_impact"].public_total_entity_count == 3
+        assert result["configuration_impact"].public_total_entity_count == 0
         assert result["stale_automatic_total_settings"] == disabled.automatic_totals
         restored = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, disabled)
         assert not restored["automatic_totals"][0].enabled
@@ -742,7 +830,7 @@ def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() 
         assert workflow._plans[wrapper["plan_id"]].inventory.plan_id == wrapper["plan_id"]
         assert result["source_sha256"] == digest
         assert result["configuration"].meter.friendly_name == "Garage Meter"
-        assert result["configuration_impact"].numeric_entity_count == 17
+        assert result["configuration_impact"].numeric_entity_count == 14
         assert result["configuration_impact"].text_entity_count == 0
         assert "slow_interval_extends_calibration" in result["warnings"]
         assert wrapper["channels"] == result["channels"]

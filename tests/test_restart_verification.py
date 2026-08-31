@@ -1825,6 +1825,7 @@ def test_calibration_preview_handoffs_current_full_metadata_atomically() -> None
             ),
             target,
             document=ESPHomeConfigDocument.parse(transaction.plan.proposed_content),
+            native_visibility_resolved=True,  # Current hash-bound resolved helper record.
         )
         manager._verifier = Verifier(
             ReconnectEvidence(

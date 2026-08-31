@@ -30,6 +30,7 @@ from .meter_configuration import (
     EnergyMode,
     MeasurementMethod,
     MeterConfigurationRequest,
+    TotalOutputSettings,
     VoltageReferenceConfig,
     validate_meter_configuration,
 )
@@ -37,9 +38,11 @@ from .meter_inventory import (
     MeterConfigurationInventory,
     _legacy_replacement_sources,
     _managed_sensor_items,
+    _native_totals_metadata,
     _plain_sensor_scalar,
     _replacement_metadata,
     _root_sensor_items,
+    _source_native_visibility,
 )
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import (
@@ -75,6 +78,7 @@ def expected_meter_entity_evidence(
     *,
     document: ESPHomeConfigDocument | None = None,
     previous: MeterConfigurationRequest | None = None,
+    native_visibility_resolved: bool | None = None,
 ) -> ExpectedMeterEntityEvidence:
     """Derive reconnect evidence from rendered non-internal ESPHome entity names."""
     validate_meter_configuration(requested, topology)
@@ -91,8 +95,9 @@ def expected_meter_entity_evidence(
     ]
     aggregate_names: list[str] = []
     native_names: dict[str, str] = {}
+    native_outputs, _ = _native_total_accounting(requested, topology, document, native_visibility_resolved)
     for source in native_total_sources(topology):
-        outputs = _desired_native_outputs(requested, source)
+        outputs = native_outputs[source.source_id]
         suffix = (
             " Main"
             if source.source_id == "board-main" or topology.board_count == 1
@@ -187,6 +192,53 @@ def _total_sensor_name(value: str, friendly_name: str) -> str:
     return value
 
 
+def _native_total_accounting(
+    requested: MeterConfigurationRequest,
+    topology: MeterTopology,
+    document: ESPHomeConfigDocument | None,
+    native_visibility_resolved: bool | None,
+) -> tuple[dict[str, TotalOutputSettings], int]:
+    """Share source-aware publications across estimates and reconnect evidence.
+
+    Inventory callers pass visibility resolution, not ownership or record existence.
+    Standalone render plans are authoritative; unqualified source documents require
+    partial source proof or validated native render metadata.
+    """
+    sources = native_total_sources(topology)
+    if (
+        document is None
+        or native_visibility_resolved is True
+        or (
+            native_visibility_resolved is None
+            and _native_totals_metadata(document) is not None
+        )
+    ):
+        outputs = {
+            source.source_id: _desired_native_outputs(requested, source)
+            for source in sources
+        }
+        internal = sum(
+            int(not outputs[source.source_id].watts)
+            + int(not outputs[source.source_id].amps)
+            + int(
+                source.existing_energy_id is not None
+                and not outputs[source.source_id].kwh
+            )
+            for source in sources
+        )
+        return outputs, internal
+    visibility = _source_native_visibility(document, topology)
+    return {
+        source.source_id: TotalOutputSettings(
+            visibility.get(source.power_id) is True,
+            visibility.get(source.current_id) is True,
+            source.existing_energy_id is not None
+            and visibility.get(source.existing_energy_id) is True,
+        )
+        for source in sources
+    }, sum(value is False for value in visibility.values())
+
+
 def _source_owned_total_evidence(
     requested: MeterConfigurationRequest,
     topology: MeterTopology,
@@ -246,7 +298,8 @@ def build_meter_configuration_mutation(
         validate_meter_configuration(requested, topology)
         current.validate_totals_change(requested)
         expected_meter_entity_evidence(requested, topology,
-            document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
+            document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration,
+            native_visibility_resolved=current.native_visibility_resolved)
     except ValueError as error:
         raise ConfigMutationError(str(error)) from error
     previous = current.configuration
@@ -444,7 +497,8 @@ def build_meter_configuration_mutation(
                 "~ Existing external custom kWh preserved; unverified and excluded from computed counts"
             )
     review_diff = _grouped_review_diff(
-        previous, requested, topology, rendered_diff, rendered_blocks, total_notes
+        previous, requested, topology, rendered_diff, rendered_blocks, total_notes,
+        source_document=source_document,
     )
     return ConfigMutationPlan(
         plan.configuration,
@@ -462,6 +516,7 @@ def _grouped_review_diff(
     rendered_diff: str = "",
     rendered_blocks: dict[str, list[str]] | None = None,
     total_notes: list[str] | None = None,
+    *, source_document: ESPHomeConfigDocument | None = None,
 ) -> str:
     """Return semantic, line-oriented review data without YAML secrets or gains."""
     rendered: dict[str, list[str]] = {
@@ -523,7 +578,7 @@ def _grouped_review_diff(
     channel_lines = [*rendered["Channel"], *channel_lines]
     if channel_lines:
         groups.append(("Channel", channel_lines))
-    total_groups = _total_review_groups(previous, requested, topology)
+    total_groups = _total_review_groups(previous, requested, topology, source_document)
     if total_notes:
         if total_groups and total_groups[-1][0] == "Advanced total hierarchy":
             total_groups[-1][1].extend(total_notes)
@@ -629,6 +684,7 @@ def _total_review_groups(
     previous: MeterConfigurationRequest,
     requested: MeterConfigurationRequest,
     topology: MeterTopology,
+    source_document: ESPHomeConfigDocument | None = None,
 ) -> list[tuple[str, list[str]]]:
     """Use planner labels in the primary review, not renderer implementation IDs."""
     native_lines = []
@@ -654,6 +710,15 @@ def _total_review_groups(
         for config in (previous, requested)
         for item in config.aggregates
     }
+    if source_document is not None:
+        existing_ids = {
+            _plain_sensor_scalar(item.get("id", ""))
+            for item in _root_sensor_items(source_document)
+        }
+        old_nodes = {
+            identifier: node for identifier, node in old_nodes.items()
+            if identifier in advanced_ids or node.power_id in existing_ids or node.current_id in existing_ids
+        }
     for title, advanced in (
         ("Suggested circuit totals", False),
         ("Advanced total hierarchy", True),

@@ -5,14 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config_document import ESPHomeConfigDocument
-from .meter_config_mutator import _select_render_totals, _source_owned_total_evidence
+from .meter_config_mutator import (
+    _native_total_accounting,
+    _select_render_totals,
+    _source_owned_total_evidence,
+)
 from .meter_configuration import (
     EnergyMode,
     MeterConfigurationRequest,
     validate_meter_configuration,
 )
 from .models import MeterTopology
-from .total_graph import _desired_native_outputs, native_total_sources, plan_total_graph
+from .total_graph import native_total_sources, plan_total_graph
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +38,7 @@ def estimate_configuration_impact(
     *,
     document: ESPHomeConfigDocument | None = None,
     previous: MeterConfigurationRequest | None = None,
+    native_visibility_resolved: bool | None = None,
 ) -> ConfigurationImpact:
     """Count the non-calibration entities rendered by a validated configuration."""
     validate_meter_configuration(
@@ -58,11 +63,11 @@ def estimate_configuration_impact(
         configuration, topology, document, replacements
     )
     public = len(external)
+    native_outputs, native_internal = _native_total_accounting(configuration, topology, document, native_visibility_resolved)
+    internal += native_internal
     for source in native_total_sources(topology):
-        outputs = _desired_native_outputs(configuration, source)
+        outputs = native_outputs[source.source_id]
         public += int(outputs.watts) + int(outputs.amps) + int(outputs.kwh)
-        internal += int(not outputs.watts) + int(not outputs.amps)
-        internal += int(source.existing_energy_id is not None and not outputs.kwh)
         energy += int(outputs.kwh)
     for node in plan_total_graph(configuration, topology).ordered_nodes:
         aggregate = node.aggregate

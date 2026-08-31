@@ -473,6 +473,7 @@ class ConfigTransactionManager:
         *,
         meter_configuration: StoredMeterConfiguration | None = None,
         totals_change_intent: TotalsChangeIntent = TotalsChangeIntent(),  # noqa: B008 - frozen value
+        native_visibility_resolved: bool | None = None,
         expected_sensor_entities: frozenset[tuple[str, str]] = frozenset(),
         expected_aggregate_sensor_entities: frozenset[tuple[str, str]] = frozenset(),
     ) -> TransactionStatus:
@@ -531,6 +532,7 @@ class ConfigTransactionManager:
                     ),
                 )
                 current.validate_totals_change(request)
+                native_visibility_resolved = current.native_visibility_resolved
                 meter_configuration = replace(
                     meter_configuration,
                     totals_managed=current.totals_managed,
@@ -542,7 +544,8 @@ class ConfigTransactionManager:
                 )
             document = ESPHomeConfigDocument.parse(plan.proposed_content)
             expected = expected_meter_entity_evidence(
-                request, topology, document=document
+                request, topology, document=document,
+                native_visibility_resolved=native_visibility_resolved,
             )
             managed_blocks = document.managed_blocks
             expected_aggregate_sensor_entities = (
@@ -674,6 +677,7 @@ class ConfigTransactionManager:
                 stored_configuration is not None
                 and stored_configuration.config_sha256 == snapshot.sha256
             )
+            native_visibility_resolved = None
             channels: tuple[ChannelSettings, ...] = (
                 _channels_with_requests(
                     stored_configuration.channels, requested_channels
@@ -698,6 +702,12 @@ class ConfigTransactionManager:
                         raise
                 else:
                     if has_stored_configuration and stored_configuration is not None:
+                        current = MeterConfigurationInventory.from_document(
+                            "calibration", document, topology, CTPresetCatalog.load(),
+                            VoltageTransformerCatalog.load(), snapshot.sha256,
+                            stored_configuration=stored_configuration,
+                        )
+                        native_visibility_resolved = current.native_visibility_resolved
                         options = package_options_from_document(
                             ESPHomeConfigDocument.parse(plan.proposed_content), topology
                         )
@@ -734,6 +744,7 @@ class ConfigTransactionManager:
                 snapshot,
                 selections,
                 meter_configuration=meter_configuration,
+                native_visibility_resolved=native_visibility_resolved,
                 expected_sensor_entities=expected_sensor_entities,
                 expected_aggregate_sensor_entities=expected_aggregate_sensor_entities,
             )
