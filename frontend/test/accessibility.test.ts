@@ -3,6 +3,7 @@ import "../src/index";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
 import { defaultTotalsSection } from "../src/components/default-totals-section";
+import { automaticTotalsSection } from "../src/components/automatic-totals-section";
 import { currentStep } from "../src/components/current-step";
 import { espWebInstaller } from "../src/components/esp-web-installer";
 import { meterSettingsStep } from "../src/components/meter-settings-step";
@@ -84,6 +85,22 @@ it("keeps default total switches explicitly named and visible in the narrow layo
     "Overall meter total Watts", "Overall meter total Amps", "Overall meter total kWh",
   ]);
   expect(panelStyles.cssText).toContain(".default-total-controls { align-items: stretch; flex-direction: column;");
+});
+
+it("names suggested total controls and keeps them visible in the narrow layout", () => {
+  const response = meterResponse();
+  const candidate = { candidate_id: "grid-ct1-ct2", aggregate_id: "auto-grid", name: "Service mains", role: "grid" as const,
+    sources: [{ kind: "channel" as const, channel: 1 }, { kind: "channel" as const, channel: 2 }], measurement_method: "two_ct_sum" as const,
+    energy_mode: "bidirectional" as const, recommended_outputs: { watts: true, amps: false, kwh: true } };
+  response.totals.automatic_candidates = [candidate]; response.totals.automatic_totals = [{ candidate, enabled: true, outputs: candidate.recommended_outputs }];
+  response.configuration.automatic_totals = [{ candidate_id: candidate.candidate_id, enabled: true, outputs: candidate.recommended_outputs }];
+  container = document.createElement("div"); document.body.append(container);
+  render(automaticTotalsSection(response.configuration, response.totals, true, noop), container);
+
+  expect([...container.querySelectorAll<HTMLInputElement>('[role="switch"]')].map((input) => input.getAttribute("aria-label"))).toEqual([
+    "Create Service mains total", "Service mains Watts", "Service mains Amps", "Service mains kWh",
+  ]);
+  expect(panelStyles.cssText).toContain(".automatic-total-controls { align-items: stretch; flex-direction: column;");
 });
 
 it("keeps Setup Device free of legacy installer and IO0 controls", () => {

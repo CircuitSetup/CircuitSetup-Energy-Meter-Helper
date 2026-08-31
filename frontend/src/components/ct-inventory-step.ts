@@ -3,6 +3,7 @@ import type { ChannelSettings, CircuitAggregate, CircuitRole, CtChange, CtInvent
 import { derivedParentId, reparentAggregate, sourceFormula } from "../total-graph";
 import { moveTab } from "./tab-keyboard";
 import { defaultTotalsSection } from "./default-totals-section";
+import { automaticTotalsSection } from "./automatic-totals-section";
 
 export interface CtDraft {
   name: string;
@@ -50,6 +51,7 @@ export function ctInventoryStep(
   nativePreview: import("../types").TotalGraphPreview | null = null,
   freshTotals = true,
   nativeGraphState: "ready" | "pending" | "invalid" = "ready",
+  automaticTotalsWritable = false,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -164,6 +166,7 @@ export function ctInventoryStep(
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
       ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativePreview, nativeGraphState) : nothing}
+      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration) : nothing}
       ${configuration ? circuitsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, freshTotals ? totals : null) : nothing}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>

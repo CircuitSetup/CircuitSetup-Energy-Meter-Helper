@@ -288,6 +288,7 @@ describe("server-authoritative total graph", () => {
     expect(text(panel)).not.toContain("Updating total graph");
     expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
     expect(panel.shadowRoot!.textContent!.indexOf("Default meter totals")).toBeLessThan(panel.shadowRoot!.textContent!.indexOf("Automatic totals"));
+    expect(text(panel)).toContain("Suggested circuit totals");
     overall.click(); await panel.updateComplete;
     expect(state.meterConfiguration.configuration.default_totals.overall.watts).toBe(false);
     expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
