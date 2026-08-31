@@ -44,6 +44,9 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
 from custom_components.circuitsetup_energy_meter_helper.topology import (
     topology_from_config,
 )
+from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+    native_total_sources,
+)
 from custom_components.circuitsetup_energy_meter_helper.voltage_transformer_catalog import (
     VoltageTransformerCatalog,
 )
@@ -661,7 +664,8 @@ def test_helper_owned_total_is_recovered_when_matching_storage_is_empty() -> Non
             EnergyMode.CONSUMPTION,
         ),
     )
-    assert inventory.configuration.aggregates[1].aggregate_id == "main-total"
+    assert len(inventory.configuration.aggregates) == 1
+    assert native_total_sources(inventory.topology)[0].power_id == "totalWattsMain"
     assert "aggregate_semantics_inferred" in inventory.warnings
 
 
@@ -719,13 +723,13 @@ def test_v14_automatic_owned_yaml_is_not_reimported_as_advanced() -> None:
     assert inventory.automatic_totals[0].enabled is True
     assert "auto-mains" not in {item.aggregate_id for item in inventory.configuration.aggregates}
     assert "aggregate_semantics_unreadable" not in inventory.warnings
-    assert "main-total" in {item.aggregate_id for item in inventory.configuration.aggregates}
+    assert inventory.configuration.aggregates == ()
 
 
 def test_native_total_inference_without_enabled_channels_fails_closed() -> None:
     content = _document(contract=True, generic_totals=True)
     baseline = _inventory(content).configuration
-    aggregates, warnings, links = _detected_aggregates(ESPHomeConfigDocument.parse(content), tuple(replace(channel, enabled=False) for channel in baseline.channels), ())
+    aggregates, warnings, links = _detected_aggregates(ESPHomeConfigDocument.parse(content), tuple(replace(channel, enabled=False) for channel in baseline.channels), (), _inventory(content).topology)
     assert aggregates == links == ()
     assert "builtin_total_semantics_unreadable" in warnings
 
@@ -750,7 +754,7 @@ def test_builtin_meter_totals_require_power_id_before_enabling_energy() -> None:
 
 
 def test_default_main_totals_are_detected_with_independent_energy() -> None:
-    """Package totals and the root kWh sensor become one editable Main total."""
+    """Package totals remain native rather than becoming advanced CT sums."""
     content = _document(contract=True) + (
         "sensor:\n"
         "  - platform: total_daily_energy\n"
@@ -761,9 +765,20 @@ def test_default_main_totals_are_detected_with_independent_energy() -> None:
 
     inventory = _inventory(content)
 
-    assert inventory.configuration.aggregates == (
-        _aggregate("main-total", "Main total", CircuitRole.CUSTOM, (1, 2, 3, 4, 5, 6), MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION, False, False),
-    )
+    assert inventory.configuration.aggregates == ()
+    assert native_total_sources(inventory.topology)[0].existing_energy_id == "totalEnergyDaily"
+
+
+def test_exact_native_definition_ids_are_not_imported_as_advanced() -> None:
+    content = _document(contract=True, addon_count=1) + "sensor:\n"
+    for sensor_id, channel in (("totalWattsMain", 1), ("totalWattsAddOn1", 7), ("totalWatts", 1), ("totalCustomWatts", 3)):
+        content += f"  - platform: template\n    id: {sensor_id}\n    name: {sensor_id}\n    lambda: return id(ct{channel}Watts).state;\n    unit_of_measurement: W\n    device_class: power\n"
+    inventory = _inventory(content)
+    assert [item.aggregate_id for item in inventory.configuration.aggregates] == ["total-custom"]
+    baseline = inventory.configuration
+    stored = StoredMeterConfiguration(sha256(content.encode()).hexdigest(), baseline.meter, baseline.channels,
+        baseline.default_totals, (), (), baseline.power_quality, baseline.status_fields)
+    assert [item.aggregate_id for item in _inventory(content, stored=stored).configuration.aggregates] == ["total-custom"]
 
 
 def test_default_totals_are_grouped_by_board_and_kwh_power_id() -> None:
@@ -782,10 +797,8 @@ def test_default_totals_are_grouped_by_board_and_kwh_power_id() -> None:
 
     inventory = _inventory(content)
 
-    assert inventory.configuration.aggregates == (
-        _aggregate("main-total", "Main total", CircuitRole.CUSTOM, (1, 2, 3, 4, 5, 6), MeasurementMethod.DIRECT, EnergyMode.NONE, False, False),
-        _aggregate("addon1-total", "Add-on 1 total", CircuitRole.CUSTOM, (7, 8, 9, 10, 11, 12), MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION, False, False),
-    )
+    assert inventory.configuration.aggregates == ()
+    assert [source.power_id for source in native_total_sources(inventory.topology)] == ["totalWattsMain", "totalWattsAddOn1", "totalWatts"]
 
 
 def test_helper_and_official_totals_populate_together_with_global_visibility() -> None:
@@ -804,12 +817,8 @@ def test_helper_and_official_totals_populate_together_with_global_visibility() -
         for aggregate in _inventory(content).configuration.aggregates
     }
 
-    assert set(aggregates) == {"mains1", "meter-total", "main-total", "addon1-total"}
-    assert aggregates["meter-total"] == _aggregate("meter-total", "Meter total", CircuitRole.CUSTOM, tuple(range(1, 13)), MeasurementMethod.DIRECT, EnergyMode.NONE, True, True)
-    for aggregate_id in ("main-total", "addon1-total"):
-        assert aggregates[aggregate_id].outputs.watts is False
-        assert aggregates[aggregate_id].outputs.amps is False
-        assert aggregates[aggregate_id].energy_mode is EnergyMode.NONE
+    assert set(aggregates) == {"mains1"}
+    assert aggregates["mains1"].outputs.watts
 
 
 def test_custom_template_totals_preserve_channels_names_and_visibility() -> None:
@@ -817,14 +826,14 @@ def test_custom_template_totals_preserve_channels_names_and_visibility() -> None
     content = _document(contract=True, addon_count=1) + (
         "sensor:\n"
         "  - platform: template\n"
-        "    id: totalAmps\n"
+        "    id: totalHouseAmps\n"
         "    name: House Total Amps\n"
         "    internal: true\n"
         "    lambda: return id(ct1Amps).state + id(ct2Amps).state ;\n"
         "    unit_of_measurement: A\n"
         "    device_class: current\n"
         "  - platform: template\n"
-        "    id: totalWatts\n"
+        "    id: totalHouseWatts\n"
         "    name: House Total Watts\n"
         "    lambda: return id(ct1Watts).state + id(ct2Watts).state ;\n"
         "    unit_of_measurement: W\n"
@@ -849,12 +858,10 @@ def test_custom_template_totals_preserve_channels_names_and_visibility() -> None
         for aggregate in _inventory(content).configuration.aggregates
     }
 
-    assert aggregates["meter-total"] == _aggregate("meter-total", "House Total", CircuitRole.CUSTOM, (1, 2), MeasurementMethod.TWO_CT_SUM, EnergyMode.NONE, True, False)
+    assert aggregates["total-house"] == _aggregate("total-house", "House Total", CircuitRole.CUSTOM, (1, 2), MeasurementMethod.TWO_CT_SUM, EnergyMode.NONE, True, False)
     assert aggregates["total-charger"] == _aggregate("total-charger", "Total Charger", CircuitRole.CUSTOM, (5, 6), MeasurementMethod.TWO_CT_SUM, EnergyMode.NONE, True, False)
     assert aggregates["total-ac1"] == _aggregate("total-ac1", "Total AC1", CircuitRole.CUSTOM, (7, 8), MeasurementMethod.TWO_CT_SUM, EnergyMode.NONE, False, False)
-    for aggregate_id in ("main-total", "addon1-total"):
-        assert aggregates[aggregate_id].outputs.watts is False
-        assert aggregates[aggregate_id].outputs.amps is False
+    assert set(aggregates) == {"total-house", "total-charger", "total-ac1"}
 
 
 def test_parent_template_total_links_default_board_calculations() -> None:
@@ -862,13 +869,13 @@ def test_parent_template_total_links_default_board_calculations() -> None:
     content = _document(contract=True, addon_count=1) + (
         "sensor:\n"
         "  - platform: template\n"
-        "    id: totalWatts\n"
+        "    id: totalCustomWatts\n"
         "    name: House Total Watts\n"
         "    lambda: return id(totalWattsMain).state + id(totalWattsAddOn1).state;\n"
         "    unit_of_measurement: W\n"
         "    device_class: power\n"
         "  - platform: template\n"
-        "    id: totalAmps\n"
+        "    id: totalCustomAmps\n"
         "    name: House Total Amps\n"
         "    lambda: return id(totalAmpsMain).state + id(totalAmpsAddOn1).state;\n"
         "    unit_of_measurement: A\n"
@@ -880,11 +887,10 @@ def test_parent_template_total_links_default_board_calculations() -> None:
         for aggregate in _inventory(content).configuration.aggregates
     }
 
-    assert aggregates["meter-total"].sources == tuple(ChannelTotalSource("channel", channel) for channel in range(1, 13))
-    assert aggregates["main-total"].sources == tuple(ChannelTotalSource("channel", channel) for channel in range(1, 7))
-    assert aggregates["addon1-total"].sources == tuple(ChannelTotalSource("channel", channel) for channel in range(7, 13))
+    assert set(aggregates) == {"total-custom"}
+    assert aggregates["total-custom"].sources == tuple(ChannelTotalSource("channel", channel) for channel in range(1, 13))
     assert set(_inventory(content).legacy_parent_links) == {
-        LegacyParentLink("main-total", "meter-total"), LegacyParentLink("addon1-total", "meter-total"),
+        LegacyParentLink("main-total", "total-custom"), LegacyParentLink("addon1-total", "total-custom"),
     }
 
 

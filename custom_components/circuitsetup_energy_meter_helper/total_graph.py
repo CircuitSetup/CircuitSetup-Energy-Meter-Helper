@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from collections.abc import Mapping
 
 from .meter_configuration import (
-    AutomaticTotalSettings,
     AggregateTotalSource,
+    AutomaticTotalSettings,
     BoardTotalSettings,
     ChannelTotalSource,
     CircuitAggregate,
@@ -365,6 +365,16 @@ def plan_total_graph(
                     current_required=child.current_required or node.current_required,
                 )
     ordered = [planned[node.aggregate.aggregate_id] for node in ordered]
+    generated_ids = [sensor_id for node in ordered for sensor_id in planned_sensor_ids(node)]
+    generated_ids.extend(
+        f"csemh_{source.source_id.replace('-', '_')}_energy"
+        for source in native.values()
+        if source.existing_energy_id is None and _desired_native_outputs(configuration, source).kwh
+    )
+    native_ids = {sensor_id for source in native.values()
+        for sensor_id in (source.power_id, source.current_id, source.existing_energy_id)}
+    if len(generated_ids) != len(set(generated_ids)) or native_ids.intersection(generated_ids):
+        raise ValueError("generated ESPHome sensor ID collision")
     parents = {
         source.aggregate_id
         for aggregate in aggregates
@@ -392,3 +402,18 @@ def plan_total_graph(
     return TotalRenderPlan(
         tuple(overrides), tuple(ordered), MappingProxyType(leaves), warnings
     )
+
+
+def planned_sensor_ids(node: PlannedTotalNode) -> tuple[str, ...]:
+    prefix = node.power_id.removesuffix("_power")
+    ids = [node.power_id] if node.power_required else []
+    if node.current_required:
+        ids.append(node.current_id)
+    if node.aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
+        if node.power_required:
+            ids.extend(f"{prefix}_{direction}_power" for direction in ("export", "import"))
+        if node.energy_required:
+            ids.extend(f"{prefix}_{direction}_energy" for direction in ("export", "import"))
+    elif node.energy_required:
+        ids.append(f"{prefix}_energy")
+    return tuple(ids)

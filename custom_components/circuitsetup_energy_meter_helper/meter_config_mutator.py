@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from base64 import urlsafe_b64encode
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from difflib import unified_diff
 
 from .config_blocks import (
@@ -25,6 +25,7 @@ from .config_mutator import (
 )
 from .ct_inventory import _esphome_object_id
 from .meter_configuration import (
+    AggregateTotalSource,
     CircuitAggregate,
     EnergyMode,
     MeasurementMethod,
@@ -34,17 +35,27 @@ from .meter_configuration import (
 )
 from .meter_inventory import (
     MeterConfigurationInventory,
+    _legacy_replacement_sources,
     _managed_sensor_items,
     _plain_sensor_scalar,
+    _replacement_metadata,
 )
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
-from .store import VerifiedCalibrationRecord
+from .store import (
+    VerifiedCalibrationRecord,
+    _serialize_outputs,
+    _serialize_total_source,
+)
 from .total_graph import (
     NativeVisibilityOverride,
+    PlannedTotalNode,
     TotalRenderPlan,
+    _active_aggregates,
     _desired_native_outputs,
+    automatic_total_candidates,
     native_total_sources,
     plan_total_graph,
+    resolve_automatic_totals,
 )
 
 
@@ -57,10 +68,14 @@ class ExpectedMeterEntityEvidence:
 
 
 def expected_meter_entity_evidence(
-    requested: MeterConfigurationRequest, topology: MeterTopology
+    requested: MeterConfigurationRequest, topology: MeterTopology,
+    *, document: ESPHomeConfigDocument | None = None,
+    previous: MeterConfigurationRequest | None = None,
 ) -> ExpectedMeterEntityEvidence:
     """Derive reconnect evidence from rendered non-internal ESPHome entity names."""
     validate_meter_configuration(requested, topology)
+    if document is not None:
+        requested, _replacements = _select_render_totals(requested, topology, document, previous)
     friendly_name = requested.meter.friendly_name
     voltage_names = [
         f"{friendly_name} {reference.label} {suffix}"
@@ -68,21 +83,20 @@ def expected_meter_entity_evidence(
         for suffix in ("Voltage", "Frequency")
     ]
     aggregate_names: list[str] = []
-    for aggregate in requested.aggregates:
+    for node in plan_total_graph(requested, topology).ordered_nodes:
+        aggregate = node.aggregate
         prefix = f"{friendly_name} {aggregate.name}"
-        if aggregate.expose_power:
+        if aggregate.outputs.watts:
             aggregate_names.append(f"{prefix} Power")
-        if aggregate.expose_current:
+        if aggregate.outputs.amps:
             aggregate_names.append(f"{prefix} Current")
-        if aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
+        if aggregate.outputs.kwh and aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
             aggregate_names.append(f"{prefix} Energy")
         elif aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
             aggregate_names.extend(
                 (
-                    f"{prefix} Return to Grid Power",
-                    f"{prefix} Return to Grid Energy",
-                    f"{prefix} Import Power",
-                    f"{prefix} Import Energy",
+                    *( (f"{prefix} Return to Grid Power", f"{prefix} Import Power") if aggregate.outputs.watts else ()),
+                    *( (f"{prefix} Return to Grid Energy", f"{prefix} Import Energy") if aggregate.outputs.kwh else ()),
                 )
             )
     names = (*voltage_names, *aggregate_names)
@@ -112,9 +126,9 @@ def build_meter_configuration_mutation(
         raise ConfigMutationError("meter configuration inventory does not match snapshot")
     try:
         validate_meter_configuration(requested, topology)
-        if requested.default_totals != current.configuration.default_totals:
-            current.validate_totals_change(requested)
-        expected_meter_entity_evidence(requested, topology)
+        current.validate_totals_change(requested)
+        expected_meter_entity_evidence(requested, topology,
+            document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
     except ValueError as error:
         raise ConfigMutationError(str(error)) from error
     previous = current.configuration
@@ -123,7 +137,11 @@ def build_meter_configuration_mutation(
         requested.meter.voltage_references != previous.meter.voltage_references
     )
     aggregates_changed = requested.aggregates != previous.aggregates
-    totals_changed = aggregates_changed or requested.default_totals != previous.default_totals
+    totals_changed = (
+        aggregates_changed or requested.default_totals != previous.default_totals
+        or requested.automatic_totals != previous.automatic_totals
+        or automatic_total_candidates(requested) != automatic_total_candidates(previous)
+    )
     managed_totals_upgrade_required = (
         aggregates_changed and not current.capabilities.managed_totals
     )
@@ -139,6 +157,7 @@ def build_meter_configuration_mutation(
             channels=requested.channels,
             aggregates=requested.aggregates,
             default_totals=requested.default_totals,
+            automatic_totals=requested.automatic_totals,
             totals_change_intent=requested.totals_change_intent,
             power_quality=requested.power_quality,
             status_fields=requested.status_fields,
@@ -248,11 +267,13 @@ def build_meter_configuration_mutation(
                 document, [contract_change], {"csemh_config_contract": "2"}
             )
         document = ESPHomeConfigDocument.parse(content)
+        rendered_request, replacements = _select_render_totals(requested, topology, document, previous)
         content = replace_managed_block(
             content,
             "aggregates",
-            _render_native_totals(requested, topology, document)
-            + (_render_aggregates(requested.aggregates) if requested.aggregates else ""),
+            _render_native_totals(rendered_request, topology, document)
+            + replacements
+            + _render_aggregates(plan_total_graph(rendered_request, topology), rendered_request.aggregates, rendered_request),
         )
     rendered_diff = "\n".join(
         part for part in (plan.redacted_diff, _redacted_diff(changes)) if part
@@ -461,14 +482,12 @@ def _aggregate_review_value(configuration: MeterConfigurationRequest) -> dict[st
         aggregate.aggregate_id: {
             "name": aggregate.name,
             "role": aggregate.role.value,
-            "channels": aggregate.channels,
+            "sources": [_serialize_total_source(source) for source in aggregate.sources],
             "measurement_method": aggregate.measurement_method.value,
-            "parent_id": aggregate.parent_id,
             "energy_mode": aggregate.energy_mode.value,
-            "expose_power": aggregate.expose_power,
-            "expose_current": aggregate.expose_current,
+            "outputs": _serialize_outputs(aggregate.outputs),
         }
-        for aggregate in configuration.aggregates
+        for aggregate in _active_aggregates(configuration)
     }
 
 
@@ -550,31 +569,72 @@ def _render_voltage_references(
     return render_voltage_references(entries)
 
 
+def _select_render_totals(
+    requested: MeterConfigurationRequest, topology: MeterTopology,
+    document: ESPHomeConfigDocument, previous: MeterConfigurationRequest | None,
+) -> tuple[MeterConfigurationRequest, str]:
+    """Select explicit custom replacements; unchanged detected rows remain external."""
+    sources = _legacy_replacement_sources(document, topology, requested.channels)
+    selected = set(_replacement_metadata(document, sources))
+    old = {} if previous is None else {item.aggregate_id: item for item in previous.aggregates}
+    if previous is not None:
+        selected.update(item.aggregate_id for item in requested.aggregates
+            if item.aggregate_id in sources and item != old.get(item.aggregate_id))
+        selected.update(source.aggregate_id for item in requested.aggregates if item != old.get(item.aggregate_id)
+            for source in item.sources if isinstance(source, AggregateTotalSource) and source.aggregate_id in sources)
+    configuration = replace(requested, aggregates=tuple(item for item in requested.aggregates
+        if item.aggregate_id not in sources or item.aggregate_id in selected))
+    if not selected:
+        return configuration, ""
+    metadata = urlsafe_b64encode(json.dumps(sorted(selected), separators=(",", ":")).encode()).decode().rstrip("=")
+    body = f"  # csemh-replaced-totals: {metadata}\n" + "".join(
+        f"  - id: !extend {sensor_id}\n    internal: true\n"
+        for aggregate_id in sorted(selected) for sensor_id in sources[aggregate_id]
+    )
+    return configuration, body
+
+
 def _render_aggregates(
-    aggregates: tuple[CircuitAggregate, ...],
+    plan: TotalRenderPlan,
+    aggregates: tuple[CircuitAggregate, ...] = (),
+    configuration: MeterConfigurationRequest | None = None,
 ) -> str:
     entries = {}
-    for order, aggregate in enumerate(aggregates):
+    original_order = {aggregate.aggregate_id: order for order, aggregate in enumerate(aggregates)}
+    automatic_index = len(aggregates)
+    for index, node in enumerate(plan.ordered_nodes):
+        aggregate = node.aggregate
+        order = original_order.get(aggregate.aggregate_id, automatic_index)
+        if aggregate.aggregate_id not in original_order:
+            automatic_index += 1
         metadata = urlsafe_b64encode(json.dumps(
             {
                 "aggregate_id": aggregate.aggregate_id,
                 "name": aggregate.name,
                 "role": aggregate.role.value,
-                "channels": aggregate.channels,
+                "sources": [_serialize_total_source(source) for source in aggregate.sources],
                 "measurement_method": aggregate.measurement_method.value,
-                "parent_id": aggregate.parent_id,
                 "energy_mode": aggregate.energy_mode.value,
-                "expose_power": aggregate.expose_power,
-                "expose_current": aggregate.expose_current,
+                "outputs": _serialize_outputs(aggregate.outputs),
+                "origin": aggregate.origin.value,
                 "order": order,
             },
             separators=(",", ":"),
             sort_keys=True,
         ).encode()).decode().rstrip("=")
-        entries[f"10_{aggregate.aggregate_id}"] = (
-            f"  # csemh-aggregate: {metadata}\n" + _aggregate_entry(aggregate)
+        entries[f"{index:08d}"] = (
+            f"  # csemh-aggregate: {metadata}\n" + _aggregate_entry(node)
         )
-    return render_aggregates(entries)
+    body = render_aggregates(entries)
+    if configuration is not None:
+        candidates = automatic_total_candidates(configuration)
+        if candidates:
+            roles = {str(source.channel): candidate.role.value for candidate in candidates for source in candidate.sources}
+            settings = [{"candidate_id": resolved.candidate.candidate_id, "enabled": resolved.enabled, "outputs": _serialize_outputs(resolved.outputs)}
+                for resolved in resolve_automatic_totals(candidates, configuration.automatic_totals)]
+            metadata = urlsafe_b64encode(json.dumps({"roles": roles, "settings": settings}, separators=(",", ":"), sort_keys=True).encode()).decode().rstrip("=")
+            body = f"  # csemh-automatic-totals: {metadata}\n" + body
+    return body
 
 
 def _render_native_totals(
@@ -652,7 +712,7 @@ def _render_native_totals(
     conflicts = board_energy.keys() & source_ids
     if conflicts:
         raise ConfigMutationError(f"unmanaged sensor conflicts with board energy ID: {', '.join(sorted(conflicts))}")
-    return _render_native_total_overrides(plan) + "".join(
+    body = _render_native_total_overrides(plan) + "".join(
         _daily_energy(
             energy_id,
             f"${{friendly_name}} {source.label} Energy",
@@ -660,6 +720,10 @@ def _render_native_totals(
         )
         for energy_id, source in board_energy.items()
     )
+    if not body:
+        return ""
+    metadata = urlsafe_b64encode(json.dumps(asdict(requested.default_totals), separators=(",", ":"), sort_keys=True).encode()).decode().rstrip("=")
+    return f"  # csemh-native-totals: {metadata}\n" + body
 
 
 def _render_native_total_overrides(plan: TotalRenderPlan) -> str:
@@ -669,11 +733,14 @@ def _render_native_total_overrides(plan: TotalRenderPlan) -> str:
     )
 
 
-def _aggregate_entry(aggregate: CircuitAggregate) -> str:
+def _aggregate_entry(node: PlannedTotalNode) -> str:
+    aggregate = node.aggregate
     identifier = f"csemh_{aggregate.aggregate_id.replace('-', '_')}"
     power_id = f"{identifier}_power"
-    power_expression = _power_expression(aggregate)
-    power_internal = not aggregate.expose_power
+    power_expression = _sum_state(tuple(source.power_id for source in node.sources))
+    if aggregate.measurement_method is MeasurementMethod.ONE_CT_DOUBLE_POWER:
+        power_expression += " * 2.0"
+    power_internal = not aggregate.outputs.watts
     lines = _template_sensor(
         power_id,
         f"${{friendly_name}} {aggregate.name} Power",
@@ -681,22 +748,22 @@ def _aggregate_entry(aggregate: CircuitAggregate) -> str:
         "W",
         "power",
         internal=power_internal,
-    )
+    ) if node.power_required else ""
     lines += _template_sensor(
         f"{identifier}_current",
         f"${{friendly_name}} {aggregate.name} Current",
-        _current_expression(aggregate),
+        _sum_state(tuple(source.current_id for source in node.sources)),
         "A",
         "current",
-        internal=not aggregate.expose_current,
-    )
-    if aggregate.energy_mode is EnergyMode.CONSUMPTION:
+        internal=not aggregate.outputs.amps,
+    ) if node.current_required else ""
+    if node.energy_required and aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
         lines += _daily_energy(
             f"{identifier}_energy",
             f"${{friendly_name}} {aggregate.name} Energy",
             power_id,
         )
-    elif aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
+    elif node.power_required and aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
         import_power_id, export_power_id = (
             f"{identifier}_import_power",
             f"{identifier}_export_power",
@@ -707,40 +774,31 @@ def _aggregate_entry(aggregate: CircuitAggregate) -> str:
             f"std::max(0.0f, -id({power_id}).state)",
             "W",
             "power",
+            internal=power_internal,
         )
         lines += _daily_energy(
             f"{identifier}_export_energy",
             f"${{friendly_name}} {aggregate.name} Return to Grid Energy",
             export_power_id,
-        )
+        ) if node.energy_required else ""
         lines += _template_sensor(
             import_power_id,
             f"${{friendly_name}} {aggregate.name} Import Power",
             f"std::max(0.0f, id({power_id}).state)",
             "W",
             "power",
+            internal=power_internal,
         )
         lines += _daily_energy(
             f"{identifier}_import_energy",
             f"${{friendly_name}} {aggregate.name} Import Energy",
             import_power_id,
-        )
-    elif aggregate.energy_mode is EnergyMode.GENERATION:
-        lines += _daily_energy(
-            f"{identifier}_energy",
-            f"${{friendly_name}} {aggregate.name} Energy",
-            power_id,
-        )
+        ) if node.energy_required else ""
     return lines
 
 
-def _power_expression(aggregate: CircuitAggregate) -> str:
-    expression = " + ".join(f"id(ct{channel}Watts).state" for channel in aggregate.channels)
-    return f"{expression} * 2.0" if aggregate.measurement_method is MeasurementMethod.ONE_CT_DOUBLE_POWER else expression
-
-
-def _current_expression(aggregate: CircuitAggregate) -> str:
-    return " + ".join(f"id(ct{channel}Amps).state" for channel in aggregate.channels)
+def _sum_state(ids: tuple[str, ...]) -> str:
+    return " + ".join(f"id({entity_id}).state" for entity_id in ids)
 
 
 def _energy_power_expression(aggregate: CircuitAggregate, expression: str) -> str:

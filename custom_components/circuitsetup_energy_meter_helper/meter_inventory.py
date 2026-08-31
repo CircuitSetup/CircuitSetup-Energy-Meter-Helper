@@ -42,7 +42,7 @@ from .models import (
     StoredCTSelection,
     VoltageReferenceTopology,
 )
-from .store import LegacyParentLink, StoredMeterConfiguration
+from .store import LegacyParentLink, StoredMeterConfiguration, _outputs, _total_source
 from .topology import (
     TopologyFingerprintMismatch,
     addon_count_from_packages,
@@ -57,6 +57,7 @@ from .total_graph import (
     automatic_total_candidates,
     default_total_settings,
     native_total_sources,
+    plan_total_graph,
     resolve_automatic_totals,
     stale_automatic_total_settings,
 )
@@ -73,6 +74,10 @@ _AGGREGATE_METADATA_PREFIX = "# csemh-aggregate: "
 _AGGREGATE_METADATA_KEYS = {
     "aggregate_id", "name", "role", "channels", "measurement_method",
     "parent_id", "energy_mode", "expose_power", "expose_current", "order",
+}
+_GRAPH_METADATA_KEYS = {
+    "aggregate_id", "name", "role", "sources", "measurement_method",
+    "energy_mode", "outputs", "origin", "order",
 }
 
 ConfigurationSemanticSource = Literal["helper_managed", "legacy_inferred"]
@@ -270,9 +275,23 @@ class MeterConfigurationInventory:
                 configuration = _legacy_request(document, topology, ct_inventory)
                 voltage_topology = voltage_reference_topology_from_legacy(topology)
                 stale = True
-        aggregates, aggregate_warnings, detected_parent_links = _detected_aggregates(
-            document, configuration.channels, configuration.aggregates
-        )
+        before_metadata = configuration
+        try:
+            defaults = _native_totals_metadata(document)
+            if defaults is not None and semantic_source == "helper_managed" and not stale and defaults != configuration.default_totals:
+                raise ValueError("native metadata disagrees with stored outputs")
+            configuration, automatic_ids = _automatic_totals_metadata(
+                document, configuration, authoritative=semantic_source == "helper_managed" and not stale)
+            aggregates, aggregate_warnings, detected_parent_links = _detected_aggregates(
+                document, configuration.channels, configuration.aggregates, topology, configuration
+            )
+            aggregates = tuple(item for item in aggregates if item.aggregate_id not in automatic_ids)
+        except (ValueError, TypeError, KeyError):
+            aggregates, aggregate_warnings, detected_parent_links = (), ("aggregate_semantics_unreadable",), ()
+        if "aggregate_semantics_unreadable" in aggregate_warnings:
+            configuration = before_metadata
+        if "aggregate_semantics_unreadable" not in aggregate_warnings and defaults is not None:
+            configuration = replace(configuration, default_totals=defaults)
         # Recognized legacy automatic sensors already belong to their settings.
         automatic_aggregates = tuple(
             CircuitAggregate(
@@ -306,12 +325,15 @@ class MeterConfigurationInventory:
             aggregate_warnings = tuple(
                 dict.fromkeys((*aggregate_warnings, "aggregate_semantics_unreadable"))
             )
-        if semantic_source != "helper_managed":
+        if semantic_source != "helper_managed" and _native_totals_metadata(document, strict=False) is None:
             normalized_defaults = _source_normalized_default_totals(document, topology)
             visibility_unconfirmed = normalized_defaults is None
             if normalized_defaults is not None:
                 configuration = replace(configuration, default_totals=normalized_defaults)
         capabilities = replace(capabilities, semantic_source=semantic_source)
+        if "aggregate_semantics_unreadable" in aggregate_warnings:
+            capabilities = replace(capabilities, native_totals_writable=False,
+                managed_automatic_totals=False, managed_advanced_totals=False)
         if stale or visibility_unconfirmed or semantic_source != "helper_managed":
             capabilities = replace(
                 capabilities,
@@ -911,16 +933,26 @@ def _detected_aggregates(
     document: ESPHomeConfigDocument,
     channels: tuple[ChannelSettings, ...],
     stored: tuple[CircuitAggregate, ...],
+    topology: MeterTopology,
+    configuration: MeterConfigurationRequest | None = None,
 ) -> tuple[tuple[CircuitAggregate, ...], tuple[str, ...], tuple[LegacyParentLink, ...]]:
     block = document.managed_blocks.get("aggregates")
     detected: tuple[CircuitAggregate, ...] = ()
     warnings: tuple[str, ...] = ()
     hidden_ids: frozenset[str] = frozenset()
     metadata_links: tuple[LegacyParentLink, ...] = ()
+    replaced_ids: frozenset[str] = frozenset()
     if block is not None:
         try:
             metadata, metadata_links = _aggregate_metadata(block.content)
-            decoded = _decode_aggregate_block(document, channels, metadata or ())
+            replaced_ids = _replacement_metadata(document, _legacy_replacement_sources(document, topology, channels))
+            if _has_graph_metadata(block.content) or any(prefix in block.content for prefix in ("# csemh-native-totals:", "# csemh-automatic-totals:", "# csemh-replaced-totals:")):
+                if configuration is None:
+                    raise ValueError("graph recovery requires configuration context")
+                _validate_graph_block(document, topology, configuration, metadata or ())
+                decoded = metadata or ()
+            else:
+                decoded = _decode_aggregate_block(document, channels, metadata or ())
             hidden_ids = frozenset(
                 _plain_sensor_scalar(item["id"].removeprefix("!extend "))
                 for item in _managed_sensor_items(block.content, document.sensor_item_indent)
@@ -928,7 +960,7 @@ def _detected_aggregates(
                 and item.get("internal") == "true"
             )
             if metadata is not None:
-                if not _metadata_matches_rendered(metadata, decoded):
+                if metadata != decoded and not _metadata_matches_rendered(metadata, decoded):
                     raise ValueError("aggregate metadata does not match rendered sensors")
                 detected = metadata
             elif stored:
@@ -941,25 +973,28 @@ def _detected_aggregates(
     elif stored:
         detected = stored
 
+    native_ids = frozenset(sensor_id for source in native_total_sources(topology)
+        for sensor_id in (source.power_id, source.current_id, source.existing_energy_id)
+        if sensor_id is not None)
     explicit_calculations = _explicit_total_calculation_ids(document)
-    total_ids = _generic_total_ids(document) - explicit_calculations - hidden_ids
+    total_ids = _generic_total_ids(document) - explicit_calculations - hidden_ids - native_ids
     enabled = tuple(channel.channel for channel in channels if channel.enabled)
     default_groups = _default_total_groups(document, channels)
-    if (total_ids or default_groups) and not enabled:
+    if (total_ids or any(group[3] not in native_ids for group in default_groups)) and not enabled:
         return (), ("builtin_total_semantics_unreadable",), ()
     energy_power_ids = (
         frozenset() if "totalEnergyDaily" in hidden_ids
         else _default_daily_energy_power_ids(document)
     )
     legacy, parent_links = _legacy_aggregates(
-        document, channels, default_groups, energy_power_ids, hidden_ids
+        document, channels, default_groups, energy_power_ids, hidden_ids, native_ids
     )
     defaults: list[CircuitAggregate] = []
     expose_power = "totalWatts" in total_ids
     expose_current = "totalAmps" in total_ids
     energy_mode = (
         EnergyMode.CONSUMPTION
-        if "totalWatts" in energy_power_ids and "totalWatts" not in explicit_calculations
+        if "totalWatts" in energy_power_ids and "totalWatts" not in explicit_calculations | native_ids
         else EnergyMode.NONE
     )
     if expose_power or expose_current or energy_mode is not EnergyMode.NONE:
@@ -991,16 +1026,16 @@ def _detected_aggregates(
             TotalOrigin.MIGRATED,
         )
         for group_id, label, group_channels, power_id in default_groups
-        if power_id not in hidden_ids
+        if power_id not in native_ids and (power_id not in hidden_ids
         or power_id.replace("Watts", "Amps") not in hidden_ids
-        or power_id in energy_power_ids
+        or power_id in energy_power_ids)
     )
     existing_ids = {aggregate.aggregate_id for aggregate in detected}
     inferred = (*legacy, *(
         aggregate for aggregate in defaults
         if aggregate.aggregate_id not in {item.aggregate_id for item in legacy}
     ))
-    added = tuple(aggregate for aggregate in inferred if aggregate.aggregate_id not in existing_ids)
+    added = tuple(aggregate for aggregate in inferred if aggregate.aggregate_id not in existing_ids | replaced_ids)
     if added:
         warnings = tuple(dict.fromkeys((*warnings, "builtin_total_semantics_inferred")))
     # Legacy parent links are diagnostic-only and must never change formulas here.
@@ -1010,6 +1045,118 @@ def _detected_aggregates(
     return (*detected, *added), warnings, tuple(
         dict.fromkeys((*metadata_links, *inferred_links))
     )
+
+
+def _automatic_totals_metadata(
+    document: ESPHomeConfigDocument, configuration: MeterConfigurationRequest, *, authoritative: bool,
+) -> tuple[MeterConfigurationRequest, frozenset[str]]:
+    block = document.managed_blocks.get("aggregates")
+    prefix = "# csemh-automatic-totals: "
+    payloads = [] if block is None else [line.strip()[len(prefix):] for line in block.content.splitlines() if line.strip().startswith(prefix)]
+    if not payloads:
+        return configuration, frozenset()
+    if len(payloads) != 1:
+        raise ValueError("duplicate automatic metadata")
+    payload = payloads[0]
+    data = json.loads(urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    if not isinstance(data, dict) or set(data) != {"roles", "settings"} or not isinstance(data["roles"], dict) or not isinstance(data["settings"], list):
+        raise ValueError("invalid automatic metadata")
+    known_channels = {str(channel.channel) for channel in configuration.channels}
+    if not data["roles"] or not set(data["roles"]) <= known_channels:
+        raise ValueError("invalid automatic role channels")
+    channels = tuple(replace(channel, role=CircuitRole(data["roles"][str(channel.channel)])) if str(channel.channel) in data["roles"] else channel for channel in configuration.channels)
+    if authoritative and channels != configuration.channels:
+        raise ValueError("automatic metadata disagrees with stored roles")
+    settings = []
+    for item in data["settings"]:
+        if not isinstance(item, dict) or set(item) != {"candidate_id", "enabled", "outputs"} or type(item["candidate_id"]) is not str or type(item["enabled"]) is not bool:
+            raise ValueError("invalid automatic setting metadata")
+        settings.append(AutomaticTotalSettings(item["candidate_id"], item["enabled"], _outputs(item["outputs"], "automatic outputs")))
+    requested = replace(configuration, channels=channels, automatic_totals=tuple(settings))
+    candidates = automatic_total_candidates(requested)
+    if len(settings) != len(candidates) or {setting.candidate_id for setting in settings} != {candidate.candidate_id for candidate in candidates}:
+        raise ValueError("automatic metadata must declare every current candidate exactly once")
+    if data["roles"] != {str(source.channel): candidate.role.value for candidate in candidates for source in candidate.sources}:
+        raise ValueError("automatic metadata contains unrelated roles")
+    if authoritative:
+        resolved = resolve_automatic_totals(candidates, configuration.automatic_totals)
+        if {setting.candidate_id: (setting.enabled, setting.outputs) for setting in settings} != {total.candidate.candidate_id: (total.enabled, total.outputs) for total in resolved}:
+            raise ValueError("automatic metadata disagrees with stored settings")
+        requested = configuration
+    return requested, frozenset(candidate.aggregate_id for candidate in candidates)
+
+
+def _has_graph_metadata(content: str) -> bool:
+    return any(
+        "sources" in json.loads(urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        for line in content.splitlines()
+        if line.strip().startswith(_AGGREGATE_METADATA_PREFIX)
+        for payload in (line.strip()[len(_AGGREGATE_METADATA_PREFIX):],)
+    )
+
+
+def _native_totals_metadata(document: ESPHomeConfigDocument, *, strict: bool = True) -> DefaultTotalsSettings | None:
+    block = document.managed_blocks.get("aggregates")
+    if block is None:
+        return None
+    prefix = "# csemh-native-totals: "
+    payloads = [line.strip()[len(prefix):] for line in block.content.splitlines() if line.strip().startswith(prefix)]
+    if not payloads:
+        return None
+    try:
+        if len(payloads) != 1:
+            raise ValueError("duplicate native total metadata")
+        payload = payloads[0]
+        data = json.loads(urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        if not isinstance(data, dict) or set(data) != {"overall", "boards"} or not isinstance(data["boards"], list):
+            raise ValueError("invalid native total metadata")
+        boards = []
+        for board in data["boards"]:
+            if not isinstance(board, dict) or set(board) != {"board_index", "outputs"}:
+                raise ValueError("invalid native board metadata")
+            boards.append(BoardTotalSettings(board["board_index"], _outputs(board["outputs"], "native board outputs")))
+        return DefaultTotalsSettings(_outputs(data["overall"], "native overall outputs"), tuple(boards))
+    except (ValueError, TypeError, KeyError):
+        if strict:
+            raise
+        return None
+
+
+def _validate_graph_block(
+    document: ESPHomeConfigDocument,
+    topology: MeterTopology,
+    configuration: MeterConfigurationRequest,
+    metadata: tuple[CircuitAggregate, ...],
+) -> None:
+    # Compare only our emitted grammar, including nested filters; never interpret custom YAML.
+    from .meter_config_mutator import (
+        _render_aggregates,
+        _render_native_totals,
+        _select_render_totals,
+    )
+
+    has_automatic = "# csemh-automatic-totals:" in document.managed_blocks["aggregates"].content
+    automatic_ids = {candidate.aggregate_id for candidate in automatic_total_candidates(configuration)} if has_automatic else set()
+    requested = replace(configuration, aggregates=tuple(item for item in metadata if item.aggregate_id not in automatic_ids),
+        automatic_totals=configuration.automatic_totals if has_automatic else (),
+        channels=configuration.channels if has_automatic else tuple(replace(channel, role=CircuitRole.BRANCH) for channel in configuration.channels),
+        default_totals=_native_totals_metadata(document) or configuration.default_totals)
+    validate_meter_configuration(requested, topology, require_multi_reference_acknowledgement=False)
+    requested, replacements = _select_render_totals(requested, topology, document, None)
+    plan = plan_total_graph(requested, topology)
+    if {item.aggregate_id: item for item in metadata} != {node.aggregate.aggregate_id: node.aggregate for node in plan.ordered_nodes}:
+        raise ValueError("automatic metadata does not match generated definitions")
+    expected = _render_native_totals(requested, topology, document) + replacements + _render_aggregates(plan, requested.aggregates, requested if has_automatic else None)
+    block = document.managed_blocks["aggregates"]
+    actual = block.content
+    if document.sensor_item_indent == 0:
+        expected = "\n".join(line[2:] if line else line for line in expected.splitlines())
+
+    def code(content: str) -> list[str]:
+        return [line.rstrip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+
+    if code(actual) != code(expected):
+        raise ValueError("graph metadata does not match rendered sensors")
 
 
 def _aggregate_metadata(
@@ -1028,8 +1175,18 @@ def _aggregate_metadata(
         data = json.loads(
             urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode()
         )
-        if not isinstance(data, dict) or set(data) != _AGGREGATE_METADATA_KEYS:
+        if not isinstance(data, dict) or set(data) not in (_AGGREGATE_METADATA_KEYS, _GRAPH_METADATA_KEYS):
             raise ValueError("aggregate metadata has unexpected fields")
+        if set(data) == _GRAPH_METADATA_KEYS:
+            if type(data["order"]) is not int or data["order"] < 0 or not isinstance(data["sources"], list):
+                raise ValueError("aggregate graph metadata is invalid")
+            aggregates.append((data["order"], CircuitAggregate(
+                data["aggregate_id"], data["name"], CircuitRole(data["role"]),
+                tuple(_total_source(source) for source in data["sources"]),
+                MeasurementMethod(data["measurement_method"]), EnergyMode(data["energy_mode"]),
+                _outputs(data["outputs"], "aggregate outputs"), TotalOrigin(data["origin"]),
+            )))
+            continue
         if any(
             type(data[key]) is not str
             for key in (
@@ -1388,15 +1545,40 @@ def _legacy_template_total_ids(
     )
 
 
+def _legacy_replacement_sources(document: ESPHomeConfigDocument, topology: MeterTopology, channels: tuple[ChannelSettings, ...]) -> dict[str, tuple[str, ...]]:
+    native_ids = frozenset(sensor_id for source in native_total_sources(topology) for sensor_id in (source.power_id, source.current_id))
+    items = _legacy_template_total_items(document, native_ids)
+    accepted, _parents = _legacy_aggregates(document, channels, _default_total_groups(document, channels), frozenset(), excluded_ids=native_ids)
+    return {aggregate.aggregate_id: tuple(sensor_id for sensor_id in items
+        if (match := _LEGACY_TOTAL_ID.fullmatch(sensor_id)) is not None and _legacy_aggregate_id(match["label"]) == aggregate.aggregate_id)
+        for aggregate in accepted}
+
+
+def _replacement_metadata(document: ESPHomeConfigDocument, sources: Mapping[str, tuple[str, ...]]) -> frozenset[str]:
+    block = document.managed_blocks.get("aggregates")
+    prefix = "# csemh-replaced-totals: "
+    payloads = [] if block is None else [line.strip()[len(prefix):] for line in block.content.splitlines() if line.strip().startswith(prefix)]
+    if not payloads:
+        return frozenset()
+    if len(payloads) != 1:
+        raise ValueError("duplicate replacement metadata")
+    payload = payloads[0]
+    ids = json.loads(urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    if not isinstance(ids, list) or any(type(value) is not str for value in ids) or len(ids) != len(set(ids)) or not set(ids) <= sources.keys():
+        raise ValueError("invalid replacement metadata")
+    return frozenset(ids)
+
+
 def _legacy_template_total_items(
     document: ESPHomeConfigDocument,
+    excluded_ids: frozenset[str] = frozenset(),
 ) -> dict[str, dict[str, str]]:
     items: dict[str, dict[str, str]] = {}
     ambiguous: set[str] = set()
     for item in _root_sensor_items(document):
         sensor_id = _plain_sensor_scalar(item.get("id", ""))
         match = _LEGACY_TOTAL_ID.fullmatch(sensor_id)
-        if match is None:
+        if match is None or sensor_id in excluded_ids:
             continue
         kind = match["kind"]
         if (
@@ -1424,8 +1606,9 @@ def _legacy_aggregates(
     default_groups: tuple[tuple[str, str, tuple[int, ...], str], ...],
     energy_power_ids: frozenset[str],
     hidden_ids: frozenset[str] = frozenset(),
+    excluded_ids: frozenset[str] = frozenset(),
 ) -> tuple[tuple[CircuitAggregate, ...], dict[str, str]]:
-    items = _legacy_template_total_items(document)
+    items = _legacy_template_total_items(document, excluded_ids)
     if not items:
         return (), {}
     defaults: dict[str, tuple[tuple[int, ...], str]] = {}

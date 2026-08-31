@@ -13,6 +13,7 @@ from .config_document import (
 from .config_mutator import ConfigMutationError
 
 _ORDER = tuple(MANAGED_BLOCK_MARKERS)
+_EOF_SEPARATOR = "# csemh-original-eof-without-newline"
 
 
 def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
@@ -32,12 +33,15 @@ def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
             document, block_name, block.span.start, block.span.end
         )
         end = _line_end(content, block.span.end)
+        prefix = content[:block.span.start]
+        if end == len(content) and _EOF_SEPARATOR == block.content.splitlines()[1].strip():
+            prefix = prefix.removesuffix(newline)
         if not rendered:
-            return content[: block.span.start] + content[end:]
+            return prefix + content[end:]
         if block_name == "aggregates":
             # Native !extend visibility must follow preserved unmanaged overrides.
             return replace_managed_block(
-                content[: block.span.start] + content[end:], block_name, rendered
+                prefix + content[end:], block_name, rendered
             )
         return (
             content[: block.span.start]
@@ -53,6 +57,8 @@ def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
             snippet=_snippet(block_name, rendered),
         )
     position = end if block_name in {"aggregates", "status_overrides"} else _insertion_position(document, block_name, start)
+    if position == len(content) and content and content[-1] not in "\r\n" and block_name == "aggregates":
+        return content + newline + _block(markers, f"  {_EOF_SEPARATOR}\n" + rendered, newline, item_indent)
     if position == len(content) and content and content[-1] not in "\r\n":
         raise ConfigMutationError(
             "no unambiguous writable sensor block; add snippet at document root",

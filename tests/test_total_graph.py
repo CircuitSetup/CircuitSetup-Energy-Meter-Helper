@@ -1,7 +1,6 @@
 from dataclasses import replace
 
 import pytest
-
 from test_firmware_total_contract import _firmware_root, firmware_contract
 from test_meter_configuration import request
 
@@ -22,9 +21,9 @@ from custom_components.circuitsetup_energy_meter_helper.total_graph import (
     automatic_total_candidates,
     default_total_settings,
     native_total_sources,
+    plan_total_graph,
     resolve_automatic_totals,
     stale_automatic_total_settings,
-    plan_total_graph,
     validate_total_graph,
 )
 
@@ -53,7 +52,7 @@ def advanced(
     *,
     sources: tuple[ChannelTotalSource | NativeTotalSource | AggregateTotalSource, ...],
     method: MeasurementMethod = MeasurementMethod.DIRECT,
-    outputs: TotalOutputSettings = TotalOutputSettings(True, False, True),
+    outputs: TotalOutputSettings = TotalOutputSettings(True, False, True),  # noqa: B008 - frozen value
 ) -> CircuitAggregate:
     return CircuitAggregate(
         aggregate_id, aggregate_id, CircuitRole.CUSTOM, sources, method,
@@ -86,6 +85,21 @@ def test_graph_rejects_missing_native_and_aggregate_sources() -> None:
 def test_graph_rejects_aggregate_ids_reserved_by_native_sources() -> None:
     with pytest.raises(ValueError, match="reserved"):
         validate_total_graph(configuration(advanced("overall", sources=(channel_source(1),))), topology(0))
+
+
+def test_native_board_energy_id_cannot_be_used_by_advanced_total() -> None:
+    # board-main is reserved before its stable energy ID could collide.
+    with pytest.raises(ValueError, match="reserved"):
+        plan_total_graph(configuration(advanced("board-main", sources=(channel_source(1),)), addons=1), topology(1))
+
+
+def test_directional_ids_only_conflict_when_the_sensor_is_emitted() -> None:
+    grid = replace(advanced("grid", sources=(channel_source(1),)), energy_mode=EnergyMode.BIDIRECTIONAL)
+    child = advanced("grid-import", sources=(channel_source(2),))
+    with pytest.raises(ValueError, match="collision"):
+        plan_total_graph(configuration(grid, child), topology(0))
+    hidden = replace(grid, outputs=TotalOutputSettings(False, False, False))
+    assert len(plan_total_graph(configuration(hidden, child), topology(0)).ordered_nodes) == 2
 
 
 @pytest.mark.parametrize(
