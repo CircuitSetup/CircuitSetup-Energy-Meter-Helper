@@ -155,6 +155,7 @@ def _inventory(
     *,
     stored: StoredMeterConfiguration | None = None,
     authoritative: bool = True,
+    stored_semantics_stale: bool = False,
 ) -> MeterConfigurationInventory:
     document = ESPHomeConfigDocument.parse(content)
     return MeterConfigurationInventory.from_document(
@@ -166,6 +167,7 @@ def _inventory(
         sha256(content.encode()).hexdigest(),
         stored_configuration=stored,
         configuration_authoritative=authoritative,
+        stored_semantics_stale=stored_semantics_stale,
     )
 
 
@@ -500,6 +502,71 @@ def test_v14_populated_candidates_stale_settings_and_pending_links_survive_load(
     assert inventory.stale_automatic_total_settings == (stale,)
     assert inventory.configuration.automatic_totals == stored.automatic_totals[:1]
     assert "stored_semantics_stale" not in inventory.warnings
+
+
+@pytest.mark.parametrize("authoritative,resolved", ((True, True), (True, False), (False, True)))
+def test_explicit_stale_flag_discards_matching_stored_totals_before_adoption(
+    authoritative: bool, resolved: bool,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        TotalsChangeIntent,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        TotalsMigrationRecord,
+    )
+
+    content = _document(contract=True)
+    if resolved:
+        content += "sensor:\n" + _explicit_native_definitions()
+    live = _inventory(content, authoritative=authoritative)
+    baseline = live.configuration
+    outputs = TotalOutputSettings(False, False, False)
+    stored = StoredMeterConfiguration(
+        live.source_sha256,
+        baseline.meter,
+        tuple(replace(channel, role=CircuitRole.GRID) if channel.channel in (1, 2) else channel for channel in baseline.channels),
+        replace(baseline.default_totals, overall=outputs),
+        (AutomaticTotalSettings("grid-ct1-ct2", False, outputs),),
+        (_aggregate("stored-only", "Stored only", CircuitRole.CUSTOM, (3,), MeasurementMethod.DIRECT, EnergyMode.NONE),),
+        baseline.power_quality,
+        baseline.status_fields,
+        totals_migration=TotalsMigrationRecord(True, (LegacyParentLink("stored-only", "parent"),)),
+    )
+    inventory = _inventory(content, stored=stored, authoritative=authoritative, stored_semantics_stale=True)
+
+    assert inventory.configuration == baseline
+    assert inventory.capabilities.semantic_source == "legacy_inferred"
+    assert "stored_semantics_stale" in inventory.capabilities.reason_codes
+    assert not inventory.capabilities.managed_totals
+    assert inventory.automatic_candidates == inventory.automatic_totals == ()
+    assert inventory.stale_automatic_total_settings == inventory.legacy_parent_links == ()
+    assert not inventory.totals_parent_review_required
+    assert stored.channels[0].role is CircuitRole.GRID
+    assert stored.default_totals.overall == outputs
+    assert stored.totals_migration.parent_review_required
+    adopted = replace(inventory.configuration, totals_change_intent=TotalsChangeIntent(True))
+    if authoritative and resolved:
+        inventory.validate_totals_change(adopted)
+    else:
+        with pytest.raises(ValueError, match="authoritative, visibility-confirmed"):
+            inventory.validate_totals_change(adopted)
+
+
+@pytest.mark.parametrize("candidate_id", ("grid-ct1-ct2", "unknown"))
+@pytest.mark.parametrize("enabled", (True, False))
+def test_normal_totals_writes_reject_noncurrent_candidates_before_mutation(
+    candidate_id: str, enabled: bool,
+) -> None:
+    inventory = _inventory(_document(contract=True))
+    inventory = replace(inventory, capabilities=replace(
+        inventory.capabilities, native_totals_writable=True,
+        managed_automatic_totals=True, managed_advanced_totals=True,
+    ))
+    draft = replace(inventory.configuration, automatic_totals=(
+        AutomaticTotalSettings(candidate_id, enabled, TotalOutputSettings(True, False, True)),
+    ))
+    with pytest.raises(ValueError, match="no current candidate"):
+        inventory.validate_totals_change(draft)
 
 
 def test_v14_stale_source_does_not_trust_totals_or_reconcile_candidates() -> None:

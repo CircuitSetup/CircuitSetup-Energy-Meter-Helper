@@ -213,6 +213,7 @@ class MeterConfigurationInventory:
         matching = (
             stored_configuration
             if stored_configuration is not None
+            and not stored_semantics_stale
             and config_sha256 == actual_sha256
             and stored_configuration.config_sha256 == actual_sha256
             else None
