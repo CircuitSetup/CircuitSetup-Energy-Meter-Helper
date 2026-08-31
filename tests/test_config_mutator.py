@@ -274,6 +274,41 @@ def test_native_evidence_uses_supported_source_name_overrides() -> None:
     assert "Kitchen meter Total Watts Main" not in names
 
 
+@pytest.mark.parametrize("item_indent", (0, 2))
+@pytest.mark.parametrize("nested", ("filters:\n- multiply: 0.001", "# scaling: preserve this comment"))
+def test_unchanged_meter_preview_preserves_nested_sensor_content(
+    item_indent: int, nested: str,
+) -> None:
+    snapshot = _indentless_contract_snapshot() if item_indent == 0 else _contract_snapshot(generic_totals=True)
+    field_indent = " " * (item_indent + 2)
+    content = snapshot.content.replace(
+        f"{field_indent}unit_of_measurement: kWh\n",
+        "".join(f"{field_indent}{line}\n" for line in nested.splitlines())
+        + f"{field_indent}unit_of_measurement: kWh\n",
+    )
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    current = _inventory(snapshot, _topology())
+
+    preview = build_meter_configuration_mutation(snapshot, current.topology, current, current.configuration)
+
+    assert preview.proposed_content == content
+    assert preview.source_sha256 == snapshot.sha256
+
+
+@pytest.mark.parametrize("invalid_field", ("name: Duplicate name", "invalid-key: value"))
+def test_meter_preview_still_rejects_invalid_direct_sensor_fields(invalid_field: str) -> None:
+    snapshot = _indentless_contract_snapshot()
+    content = snapshot.content.replace(
+        "  unit_of_measurement: kWh\n",
+        f"  filters:\n  - multiply: 0.001\n  {invalid_field}\n  unit_of_measurement: kWh\n",
+    )
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    current = _inventory(snapshot, _topology())
+
+    with pytest.raises(ConfigMutationError, match="native sensor names are not safely writable"):
+        build_meter_configuration_mutation(snapshot, current.topology, current, current.configuration)
+
+
 @pytest.mark.parametrize("visible_current", (False, True))
 def test_unresolved_source_native_evidence_excludes_hidden_and_unknown_totals(
     visible_current: bool,

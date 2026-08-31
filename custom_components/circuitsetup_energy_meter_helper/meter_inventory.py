@@ -1361,7 +1361,8 @@ def _managed_sensor_items(content: str, item_indent: int | None) -> list[dict[st
         fields: dict[str, str] = {}
         for line in lines[start:end]:
             candidate = line[len(prefix) :] if line.startswith(prefix) else line[indent + 2 :] if line.startswith(" " * (indent + 2)) and not line.startswith(" " * (indent + 4)) else ""
-            if not candidate or ":" not in candidate:
+            # Indentless nested sequences and comments are not sensor fields.
+            if not candidate or candidate.startswith(("- ", "#")) or ":" not in candidate:
                 continue
             key, value = candidate.split(":", 1)
             if not re.fullmatch(r"[a-z][a-z0-9_]*", key) or key in fields:
