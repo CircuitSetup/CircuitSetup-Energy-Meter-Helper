@@ -14,7 +14,7 @@ export function totalsEditable(meter: MeterConfiguration, capability: "native_to
 
 export function legacyTotalsNotice(capabilities: MeterConfigurationCapabilities): TemplateResult {
   return html`${capabilities.reason_codes.includes("legacy_custom_totals_unmanaged") || capabilities.reason_codes.includes("legacy_generic_totals_unmanaged")
-    ? html`<p class="warning-band">Arbitrary unmanaged custom totals remain outside helper control. Unchanged custom Watts/Amps retain their source visibility and names. Editing a detected custom total or using it in a changed hierarchy selects a managed replacement: its original Watts/Amps are hidden and the requested helper outputs replace them. Preserved unsupported external custom energy is unchanged and outside the computed entity count.</p>` : nothing}`;
+    ? html`<p class="warning-band">Arbitrary unmanaged custom totals remain outside helper control. Recognized existing Watts/Amps/kWh retain their source visibility, names, and energy links. Supported standalone Watts/Amps can be replaced by helper outputs after explicit editing. Totals with existing energy links or custom native formulas must be edited in ESPHome Device Builder. Preserved unsupported external custom energy remains unchanged and outside the computed entity count.</p>` : nothing}`;
 }
 
 export function totalsMigrationReview(meter: MeterConfiguration, update: (configuration: MeterConfigurationRequest) => void,

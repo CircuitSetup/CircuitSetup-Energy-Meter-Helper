@@ -849,10 +849,11 @@ def test_default_main_totals_are_detected_with_independent_energy() -> None:
     assert native_total_sources(inventory.topology)[0].existing_energy_id == "totalEnergyDaily"
 
 
-def test_exact_native_definition_ids_are_not_imported_as_advanced() -> None:
+def test_matching_native_definitions_are_not_imported_as_advanced() -> None:
     content = _document(contract=True, addon_count=1) + "sensor:\n"
-    for sensor_id, channel in (("totalWattsMain", 1), ("totalWattsAddOn1", 7), ("totalWatts", 1), ("totalCustomWatts", 3)):
-        content += f"  - platform: template\n    id: {sensor_id}\n    name: {sensor_id}\n    lambda: return id(ct{channel}Watts).state;\n    unit_of_measurement: W\n    device_class: power\n"
+    for sensor_id, channels in (("totalWattsMain", range(1, 7)), ("totalWattsAddOn1", range(7, 13)), ("totalWatts", range(1, 13)), ("totalCustomWatts", (3,))):
+        expression = " + ".join(f"id(ct{channel}Watts).state" for channel in channels)
+        content += f"  - platform: template\n    id: {sensor_id}\n    name: {sensor_id}\n    lambda: return {expression};\n    unit_of_measurement: W\n    device_class: power\n"
     inventory = _inventory(content)
     assert [item.aggregate_id for item in inventory.configuration.aggregates] == ["total-custom"]
     baseline = inventory.configuration

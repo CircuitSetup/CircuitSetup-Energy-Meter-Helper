@@ -26,6 +26,7 @@ from .ct_catalog import REPORTING_MULTIPLIERS
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
+from .meter_config_mutator import SourceOwnedTotalEditError
 from .meter_configuration import (
     AggregateTotalSource,
     AutomaticTotalSettings,
@@ -470,6 +471,10 @@ class EntryWebsocketController:
                     msg["source_sha256"],
                     _meter_configuration_request(msg["configuration"]),
                 )
+            except SourceOwnedTotalEditError as error:
+                raise ApiFailure(
+                    "source_owned_totals", "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities."
+                ) from error
             except (ConfigMutationError, ValueError, vol.Invalid) as error:
                 raise ApiFailure(
                     "meter_configuration_invalid", "The meter configuration is invalid"

@@ -788,6 +788,28 @@ describe("server-authoritative total graph", () => {
 });
 
 describe("meter configuration review and summary", () => {
+  it.each(["preview_meter_configuration", "preview_total_graph"])("explains %s source-owned total failures without exposing server details", async (operation) => {
+    const response = meterResponse();
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] } });
+    const call = hass.callWS.bind(hass);
+    hass.callWS = <T>(message: Record<string, unknown>): Promise<T> => String(message.type).endsWith(`/${operation}`)
+      ? Promise.reject({ code: "source_owned_totals", message: "private-source-canary" }) : call<T>(message);
+    const panel = await mount(hass);
+    const state = panel as unknown as { selectedDeviceId: string; setMeterConfiguration(value: typeof response): void;
+      previewCanonicalConfiguration(): Promise<void>; refreshTotalGraph(configuration: MeterConfigurationRequest): Promise<void>;
+      meterConfiguration: typeof response; step: string };
+    state.selectedDeviceId = "meter-1";
+    state.setMeterConfiguration(response);
+    panel.showInventory(response);
+    if (operation === "preview_meter_configuration") await state.previewCanonicalConfiguration();
+    else await state.refreshTotalGraph(state.meterConfiguration.configuration);
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector('[role="alert"]')?.textContent).toContain("Edit these existing totals in ESPHome Device Builder");
+    expect(text(panel)).not.toContain("private-source-canary");
+    expect(text(panel)).not.toContain("Circuit configuration could not be reviewed.");
+    expect(state.step).toBe("ct");
+  });
+
   it.each([
     ["helper YAML", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: true }, "Configuration and calibration are installed in ESPHome.", []],
     ["helper unchanged", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: true, configurationInstalled: false, restart: null, verifiedConfiguration: true }, "Existing calibration was kept unchanged.", []],

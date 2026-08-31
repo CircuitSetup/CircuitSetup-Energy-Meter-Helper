@@ -103,11 +103,12 @@ def summarize_configuration_totals(
             node_owner = owner
         else:
             items = [external[sensor_id] for sensor_id in external_ids.get(aggregate.aggregate_id, ()) if sensor_id in external]
-            public = tuple("Watts" if _plain_sensor_scalar(item.get("device_class", "")) == "power" else "Amps"
+            items.extend(external[f"daily:{sensor_id}"] for sensor_id in external_ids.get(aggregate.aggregate_id, ()) if f"daily:{sensor_id}" in external)
+            public = tuple("Watts" if _plain_sensor_scalar(item.get("device_class", "")) == "power" else "kWh" if _plain_sensor_scalar(item.get("device_class", "")) == "energy" else "Amps"
                 for item in items if item.get("internal", "false") == "false" and item.get("name"))
             internal = tuple("Watts" if _plain_sensor_scalar(item.get("device_class", "")) == "power" else "Amps"
                 for item in items if item.get("internal") == "true")
-            unknown = ("external custom kWh",) if aggregate.energy_mode is not EnergyMode.NONE else ()
+            unknown = ("external custom kWh",) if aggregate.energy_mode is not EnergyMode.NONE and "kWh" not in public else ()
             node_owner = "source_owned"
         result.append(TotalSummary(aggregate.aggregate_id, "aggregate", node_owner, public, internal, unknown))
     return tuple(result)
@@ -144,6 +145,8 @@ def estimate_configuration_impact(
         configuration, topology, document, replacements
     )
     public = len(external)
+    energy += sum(_plain_sensor_scalar(item.get("device_class", "")) == "energy" and item.get("internal", "false") == "false"
+        for item in _source_owned_total_items(configuration, topology, document, replacements).values())
     native_outputs, native_internal = _native_total_accounting(configuration, topology, document, native_visibility_resolved)
     internal += native_internal
     for source in native_total_sources(topology):

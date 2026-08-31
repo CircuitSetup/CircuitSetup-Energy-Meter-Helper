@@ -36,13 +36,16 @@ from .meter_configuration import (
 )
 from .meter_inventory import (
     MeterConfigurationInventory,
+    _custom_native_total_ids,
     _legacy_replacement_sources,
     _managed_sensor_items,
     _native_totals_metadata,
     _plain_sensor_scalar,
     _replacement_metadata,
     _root_sensor_items,
+    _source_daily_energy_items,
     _source_native_visibility,
+    _total_sensor_name,
 )
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import (
@@ -61,6 +64,10 @@ from .total_graph import (
     planned_sensor_ids,
     resolve_automatic_totals,
 )
+
+
+class SourceOwnedTotalEditError(ValueError):
+    """An existing sensor relationship cannot be replaced without changing identity."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,22 +184,6 @@ def expected_meter_entity_evidence(
     )
 
 
-def _total_sensor_name(value: str, friendly_name: str) -> str:
-    """Resolve only supported literal names and the pinned friendly-name substitution."""
-    if value.startswith('"'):
-        value = json.loads(value)
-    elif value.startswith("'") and value.endswith("'"):
-        value = value[1:-1].replace("''", "'")
-    value = value.replace("${friendly_name}", friendly_name)
-    if (
-        not value
-        or value.lower() in {"none", "null", "true", "false"}
-        or any(token in value for token in ("${", "!", "\n", "\r"))
-    ):
-        raise ValueError("total sensor name cannot be resolved safely")
-    return value
-
-
 def _native_total_accounting(
     requested: MeterConfigurationRequest,
     topology: MeterTopology,
@@ -208,11 +199,10 @@ def _native_total_accounting(
     sources = native_total_sources(topology)
     if (
         document is None
-        or native_visibility_resolved is True
-        or (
-            native_visibility_resolved is None
-            and _native_totals_metadata(document) is not None
-        )
+        or (not _custom_native_total_ids(document, topology) and (
+            native_visibility_resolved is True
+            or (native_visibility_resolved is None and _native_totals_metadata(document) is not None)
+        ))
     ):
         outputs = {
             source.source_id: _desired_native_outputs(requested, source)
@@ -268,6 +258,8 @@ def _source_owned_total_items(
         sensor_id = _plain_sensor_scalar(item.get("id", "").removeprefix("!extend "))
         if sensor_id in effective:
             effective[sensor_id]["internal"] = "true"
+    effective.update({f"daily:{power_id}": item
+        for power_id, item in _source_daily_energy_items(document).items() if power_id in sensor_ids})
     return effective
 
 
@@ -277,7 +269,7 @@ def _source_owned_total_evidence(
     document: ESPHomeConfigDocument | None,
     replacements: str,
 ) -> tuple[list[str], int]:
-    """Count supported surviving W/A, never infer ownership of external daily energy."""
+    """Count supported surviving source totals using their actual entity names."""
     effective = _source_owned_total_items(requested, topology, document, replacements)
     names = []
     internal = 0
@@ -312,6 +304,8 @@ def build_meter_configuration_mutation(
         expected_meter_entity_evidence(requested, topology,
             document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration,
             native_visibility_resolved=current.native_visibility_resolved)
+    except SourceOwnedTotalEditError:
+        raise
     except ValueError as error:
         raise ConfigMutationError(str(error)) from error
     previous = current.configuration
@@ -965,12 +959,20 @@ def _select_render_totals(
     """Select explicit custom replacements; unchanged detected rows remain external."""
     sources = _legacy_replacement_sources(document, topology, requested.channels)
     selected = set(_replacement_metadata(document, sources))
+    changed: set[str] = set()
     old = {} if previous is None else {item.aggregate_id: item for item in previous.aggregates}
     if previous is not None:
-        selected.update(item.aggregate_id for item in requested.aggregates
+        changed.update(item.aggregate_id for item in requested.aggregates
             if item.aggregate_id in sources and item != old.get(item.aggregate_id))
-        selected.update(source.aggregate_id for item in requested.aggregates if item != old.get(item.aggregate_id)
-            for source in item.sources if isinstance(source, AggregateTotalSource) and source.aggregate_id in sources)
+        changed.update(source.aggregate_id for item in requested.aggregates if item != old.get(item.aggregate_id)
+            for source in item.sources if isinstance(source, AggregateTotalSource) and source.aggregate_id in sources and source.aggregate_id not in selected)
+    protected = _custom_native_total_ids(document, topology) | {
+        _plain_sensor_scalar(item.get("power_id", "")) for item in _root_sensor_items(document)
+        if _plain_sensor_scalar(item.get("platform", "")) == "total_daily_energy"
+    }
+    if any(protected.intersection(sources[identifier]) for identifier in changed):
+        raise SourceOwnedTotalEditError("Existing source-owned energy or custom native totals must be edited in ESPHome Device Builder to preserve their entity identities")
+    selected.update(changed)
     configuration = replace(requested, aggregates=tuple(item for item in requested.aggregates
         if item.aggregate_id not in sources or item.aggregate_id in selected))
     if not selected:
@@ -1032,6 +1034,8 @@ def _render_native_totals(
     document: ESPHomeConfigDocument,
 ) -> str:
     """Reconcile native visibility against preserved source and add board energy."""
+    if _custom_native_total_ids(document, topology):
+        raise SourceOwnedTotalEditError("Custom native totals must be edited in ESPHome Device Builder before adopting default meter totals")
     plan = plan_total_graph(requested, topology)
     definitions = native_total_sources(topology)
     upstream = {
@@ -1071,12 +1075,7 @@ def _render_native_totals(
             if internal is not None:
                 visibility[sensor_id] = internal == "true"
             elif visibility is native_definitions:
-                name = item.get("name", "").strip("\"'")
-                if (
-                    not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]*", name)
-                    or name.lower() in {"none", "null", "true", "false"}
-                ):
-                    raise ValueError("unresolved native visibility")
+                _total_sensor_name(item.get("name", ""), requested.meter.friendly_name)
                 visibility[sensor_id] = False
     except ValueError as error:
         raise ConfigMutationError("native total visibility is unresolved") from error

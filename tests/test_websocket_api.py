@@ -3340,8 +3340,13 @@ def test_preview_meter_configuration_checks_size_then_admin_before_nested_schema
     asyncio.run(run())
 
 
-def test_controller_routes_full_meter_configuration_without_browser_changes() -> None:
+@pytest.mark.parametrize("source_owned_failure", (False, True))
+@pytest.mark.parametrize("operation", ("preview_meter_configuration", "preview_total_graph"))
+def test_controller_routes_full_meter_configuration_without_browser_changes(source_owned_failure: bool, operation: str) -> None:
     """The browser supplies a schema-validated request, never a change record."""
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        ApiFailure,
+    )
 
     async def run() -> None:
         controller = EntryWebsocketController(
@@ -3357,7 +3362,14 @@ def test_controller_routes_full_meter_configuration_without_browser_changes() ->
                 self, device_id: str, plan_id: str, source_sha256: str, request: object
             ) -> str:
                 received.append((device_id, plan_id, source_sha256, request))
+                if source_owned_failure:
+                    from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+                        SourceOwnedTotalEditError,
+                    )
+                    raise SourceOwnedTotalEditError("private-source-canary")
                 return "previewed"
+
+            async_preview_total_graph = async_preview_meter_configuration
 
         controller.workflow = Workflow()  # type: ignore[assignment]
         request = {
@@ -3387,12 +3399,20 @@ def test_controller_routes_full_meter_configuration_without_browser_changes() ->
         assert await controller.async_call(
             f"{DOMAIN}/get_meter_configuration", {"device_id": "meter"}, "user"
         ) == {"device_id": "meter"}
-        assert await controller.async_call(
-            f"{DOMAIN}/preview_meter_configuration",
+        preview = controller.async_call(
+            f"{DOMAIN}/{operation}",
             {"device_id": "meter", "plan_id": "plan", "source_sha256": "a" * 64,
              "configuration": request},
             "admin",
-        ) == "previewed"
+        )
+        if source_owned_failure:
+            with pytest.raises(ApiFailure) as failure:
+                await preview
+            assert failure.value.code == "source_owned_totals"
+            assert "Device Builder" in failure.value.safe_message
+            assert "private-source-canary" not in failure.value.safe_message
+        else:
+            assert await preview == "previewed"
         assert received and received[0][:3] == ("meter", "plan", "a" * 64)
         assert type(received[0][3]).__name__ == "MeterConfigurationRequest"
 

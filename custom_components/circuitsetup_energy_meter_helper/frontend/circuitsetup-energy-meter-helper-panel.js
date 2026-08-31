@@ -1757,7 +1757,7 @@ function totalsEditable(meter, capability) {
   return meter.capabilities.configuration_authoritative && (meter.capabilities[capability] || meter.configuration.totals_change_intent?.adopt_managed_totals === true && canAdoptTotals(meter));
 }
 function legacyTotalsNotice(capabilities) {
-  return b`${capabilities.reason_codes.includes("legacy_custom_totals_unmanaged") || capabilities.reason_codes.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band">Arbitrary unmanaged custom totals remain outside helper control. Unchanged custom Watts/Amps retain their source visibility and names. Editing a detected custom total or using it in a changed hierarchy selects a managed replacement: its original Watts/Amps are hidden and the requested helper outputs replace them. Preserved unsupported external custom energy is unchanged and outside the computed entity count.</p>` : A}`;
+  return b`${capabilities.reason_codes.includes("legacy_custom_totals_unmanaged") || capabilities.reason_codes.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band">Arbitrary unmanaged custom totals remain outside helper control. Recognized existing Watts/Amps/kWh retain their source visibility, names, and energy links. Supported standalone Watts/Amps can be replaced by helper outputs after explicit editing. Totals with existing energy links or custom native formulas must be edited in ESPHome Device Builder. Preserved unsupported external custom energy remains unchanged and outside the computed entity count.</p>` : A}`;
 }
 function totalsMigrationReview(meter, update, preview = null, fresh = true, readOnly = false, transaction2 = null) {
   const { configuration, totals, capabilities } = meter;
@@ -4912,11 +4912,13 @@ class CircuitSetupPanel extends i$2 {
       };
       this.totalGraphPreview = preview;
       this.totalGraphState = "ready";
+      if (this.error === this.safeErrorMessage({ code: "source_owned_totals" }, "")) this.error = "";
       this.acceptedAutomaticInputs = this.automaticCandidateInputs();
-    } catch {
+    } catch (error) {
       if (!current()) return;
       this.totalGraphPreview = null;
       this.totalGraphState = "invalid";
+      if (error.code === "source_owned_totals") this.fail(error, this.safeErrorMessage(error, ""));
     }
     this.requestUpdate();
   }
@@ -5836,14 +5838,13 @@ class CircuitSetupPanel extends i$2 {
       await operation();
     } catch (error) {
       if (!isCurrent()) return;
-      const code = error.code;
-      const message = code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
-      this.fail(error, message);
+      this.fail(error, this.safeErrorMessage(error, fallback));
     }
     if (isCurrent()) this.requestUpdate();
   }
   safeErrorMessage(error, fallback) {
     const code = error.code;
+    if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
     return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
   }
   fail(_error, safeMessage) {
