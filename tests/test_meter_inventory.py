@@ -249,6 +249,78 @@ def _migrated_for_source(content: str, fixture: dict) -> StoredMeterConfiguratio
     return _deserialize_meter_configuration_payload(raw, topology)
 
 
+def _explicit_native_definitions(addon_count: int = 0) -> str:
+    ids = ["totalWatts", "totalAmps"] if addon_count else []
+    ids.extend(("totalWattsMain", "totalAmpsMain"))
+    for board in range(1, addon_count + 1):
+        ids.extend((f"totalWattsAddOn{board}", f"totalAmpsAddOn{board}"))
+    return (
+        "".join(
+            f"  - platform: template\n    id: {sensor_id}\n    name: Native {sensor_id}\n"
+            for sensor_id in ids
+        )
+        + "  - platform: total_daily_energy\n    id: totalEnergyDaily\n    name: Native daily energy\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "sensors",
+    (
+        "",
+        "sensor:\n  - id: !extend totalEnergyDaily\n    internal: true\n",
+        "sensor:\n  - id: ${unknown_native_id}\n    internal: false\n",
+        "text_sensor:\n" + _explicit_native_definitions(),
+    ),
+)
+def test_v14_missing_native_evidence_cannot_confirm_package_defaults(sensors) -> None:
+    # These familiar paths have no retained repository/revision provenance.
+    content = _document(contract=True) + sensors
+    stored = _migrated_for_source(content, V14_PARENT_FIXTURE)
+    inventory = _inventory(content, stored=stored)
+    assert inventory.capabilities.managed_totals is False
+    assert "native_visibility_unconfirmed" in inventory.capabilities.reason_codes
+    assert inventory.configuration.default_totals == stored.default_totals
+    assert stored.totals_migration.native_visibility_confirmation_required is True
+
+
+@pytest.mark.parametrize("addon_count", (0, 1))
+def test_v14_complete_named_native_definitions_confirm_implicit_public(
+    addon_count,
+) -> None:
+    content = (
+        _document(contract=True, addon_count=addon_count)
+        + "sensor:\n"
+        + _explicit_native_definitions(addon_count)
+    )
+    stored = _migrated_for_source(
+        content, V14_ADDON_FIXTURE if addon_count else V14_PARENT_FIXTURE
+    )
+    inventory = _inventory(content, stored=stored)
+    assert inventory.capabilities.managed_totals is True
+    assert inventory.configuration.default_totals.overall == TotalOutputSettings(
+        True, True, True
+    )
+    assert all(
+        board.outputs == TotalOutputSettings(True, True, False)
+        for board in inventory.configuration.default_totals.boards
+    )
+    assert stored.totals_migration.native_visibility_confirmation_required is True
+
+
+def test_v14_unnamed_native_definition_does_not_imply_public() -> None:
+    content = (
+        _document(contract=True)
+        + "sensor:\n"
+        + _explicit_native_definitions().replace(
+            "    name: Native totalWattsMain\n", ""
+        )
+    )
+    stored = _migrated_for_source(content, V14_PARENT_FIXTURE)
+    inventory = _inventory(content, stored=stored)
+    assert inventory.capabilities.managed_totals is False
+    assert "native_visibility_unconfirmed" in inventory.capabilities.reason_codes
+
+
 @pytest.mark.parametrize("addon_count", (0, 1))
 @pytest.mark.parametrize("renderer", ("b346", "9666"))
 @pytest.mark.parametrize("extend", (False, True))
@@ -280,6 +352,17 @@ def test_v14_matching_source_preserves_renderer_native_visibility(
             for sensor_id in hidden
         )
     )
+    # Resolve the definitions that the historical renderer did not override.
+    board_ids = (
+        "totalWattsMain",
+        "totalAmpsMain",
+        *(("totalWattsAddOn1", "totalAmpsAddOn1") if addon_count else ()),
+    )
+    content += "".join(
+        f"  - id: {sensor_id}\n    internal: {'true' if addon_count else 'false'}\n"
+        for sensor_id in board_ids
+        if sensor_id not in hidden
+    )
     fixture = V14_ADDON_FIXTURE if addon_count else V14_PARENT_FIXTURE
     stored = _migrated_for_source(content, fixture)
     before = _serialize_meter_configuration(
@@ -287,6 +370,7 @@ def test_v14_matching_source_preserves_renderer_native_visibility(
     )
     inventory = _inventory(content, stored=stored)
     assert inventory.capabilities.semantic_source == "helper_managed"
+    assert inventory.capabilities.managed_totals is True
     assert "stored_semantics_stale" not in inventory.warnings
     assert inventory.configuration.default_totals.overall == TotalOutputSettings(
         not addon_count and renderer == "b346",
@@ -308,7 +392,9 @@ def test_v14_matching_source_preserves_renderer_native_visibility(
 def test_v14_ambiguous_visibility_does_not_authorize_totals(internal) -> None:
     content = (
         _document(contract=True)
-        + f"sensor:\n  - id: !extend totalWattsMain\n    internal: {internal}\n"
+        + "sensor:\n"
+        + _explicit_native_definitions()
+        + f"  - id: !extend totalWattsMain\n    internal: {internal}\n"
     )
     stored = _migrated_for_source(content, V14_PARENT_FIXTURE)
     inventory = _inventory(content, stored=stored)
@@ -374,6 +460,7 @@ def test_v14_native_extend_overrides_literal_definition_regardless_of_order(
         _document(contract=True)
         + "sensor:\n"
         + (override + definition if override_first else definition + override)
+        + "  - id: totalAmpsMain\n    internal: false\n  - id: totalEnergyDaily\n    internal: false\n"
     )
     stored = _migrated_for_source(content, V14_PARENT_FIXTURE)
     inventory = _inventory(content, stored=stored)
@@ -381,10 +468,14 @@ def test_v14_native_extend_overrides_literal_definition_regardless_of_order(
     assert inventory.capabilities.managed_totals is True
 
 
-def test_v14_duplicate_native_definitions_leave_visibility_unconfirmed() -> None:
+@pytest.mark.parametrize("id_prefix", ("", "!extend "))
+def test_v14_duplicate_native_definitions_leave_visibility_unconfirmed(
+    id_prefix,
+) -> None:
     content = (
         _document(contract=True)
-        + "sensor:\n  - id: totalWattsMain\n    internal: true\n  - id: totalWattsMain\n    internal: false\n"
+        + f"sensor:\n  - id: {id_prefix}totalWattsMain\n    internal: true\n  - id: {id_prefix}totalWattsMain\n    internal: false\n"
+        + "  - id: totalAmpsMain\n    internal: false\n  - id: totalEnergyDaily\n    internal: false\n"
     )
     stored = _migrated_for_source(content, V14_PARENT_FIXTURE)
     inventory = _inventory(content, stored=stored)
@@ -407,7 +498,9 @@ def test_helper_owned_total_is_recovered_when_matching_storage_is_empty() -> Non
         sha256(content.encode()).hexdigest(),
         baseline.meter,
         channels,
-        baseline.default_totals, (), (),
+        baseline.default_totals,
+        (),
+        (),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -415,7 +508,14 @@ def test_helper_owned_total_is_recovered_when_matching_storage_is_empty() -> Non
     inventory = _inventory(content, stored=stored)
 
     assert inventory.configuration.aggregates[:1] == (
-        _aggregate("mains1", "Mains", CircuitRole.GRID, (1, 2), MeasurementMethod.TWO_CT_SUM, EnergyMode.CONSUMPTION),
+        _aggregate(
+            "mains1",
+            "Mains",
+            CircuitRole.GRID,
+            (1, 2),
+            MeasurementMethod.TWO_CT_SUM,
+            EnergyMode.CONSUMPTION,
+        ),
     )
     assert inventory.configuration.aggregates[1].aggregate_id == "main-total"
     assert "aggregate_semantics_inferred" in inventory.warnings

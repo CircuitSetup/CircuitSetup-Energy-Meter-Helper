@@ -316,41 +316,77 @@ def _source_normalized_default_totals(
     document: ESPHomeConfigDocument, topology: MeterTopology
 ) -> DefaultTotalsSettings | None:
     """Read effective native visibility without changing legacy migration state."""
-    items = _managed_sensor_items(document.content, document.sensor_item_indent)
+    sensor_span = document.writable_sensor_span
+    if sensor_span is None:
+        return None
+    items = _managed_sensor_items(
+        document.content[sensor_span.start : sensor_span.end],
+        document.sensor_item_indent,
+    )
     native_ids = {
         sensor_id
         for definition in native_total_sources(topology)
-        for sensor_id in (definition.power_id, definition.current_id, definition.existing_energy_id)
+        for sensor_id in (
+            definition.power_id,
+            definition.current_id,
+            definition.existing_energy_id,
+        )
         if sensor_id is not None
     }
-    definitions_visibility: dict[str, bool] = {}
-    overrides: dict[str, bool] = {}
+    definitions_visibility: dict[str, bool | None] = {}
+    overrides: dict[str, bool | None] = {}
     for item in items:
         raw_id = item.get("id", "")
         sensor_id = _plain_sensor_scalar(raw_id.removeprefix("!extend "))
-        if sensor_id not in native_ids or "internal" not in item:
+        if sensor_id not in native_ids:
             continue
-        if item["internal"] not in {"true", "false"}:
+        internal = item.get("internal")
+        if internal is not None and internal not in {"true", "false"}:
             return None
-        visibility = overrides if raw_id.startswith("!extend ") else definitions_visibility
+        visibility = (
+            overrides if raw_id.startswith("!extend ") else definitions_visibility
+        )
         if sensor_id in visibility:
             return None
-        visibility[sensor_id] = item["internal"] == "false"
-    def visible(sensor_id: str, upstream: bool) -> bool:
-        return overrides.get(sensor_id, definitions_visibility.get(sensor_id, upstream))
+        name = item.get("name", "")
+        if len(name) >= 2 and name[0] == name[-1] and name[0] in "\"'":
+            name = name[1:-1]
+        # ponytail: literal names only; defer substitution resolution to source adoption.
+        named_definition = (
+            visibility is definitions_visibility
+            and _plain_sensor_scalar(item.get("platform", ""))
+            in {"template", "total_daily_energy"}
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]*", name) is not None
+            and name.lower() not in {"none", "null", "true", "false"}
+        )
+        visibility[sensor_id] = (
+            internal == "false"
+            if internal is not None
+            else True
+            if named_definition
+            else None
+        )
+    effective = {**definitions_visibility, **overrides}
+    # Package filenames discard repository/ref provenance; defaults alone are not evidence.
+    if any(effective.get(sensor_id) is None for sensor_id in native_ids):
+        return None
+
+    def visible(sensor_id: str) -> bool:
+        return cast(bool, effective[sensor_id])
+
     definitions = native_total_sources(topology)
     overall = next(item for item in definitions if item.source_id == "overall")
     overall_outputs = TotalOutputSettings(
-        visible(overall.power_id, overall.upstream_defaults.watts),
-        visible(overall.current_id, overall.upstream_defaults.amps),
-        bool(overall.existing_energy_id and visible(overall.existing_energy_id, overall.upstream_defaults.kwh)),
+        visible(overall.power_id),
+        visible(overall.current_id),
+        bool(overall.existing_energy_id and visible(overall.existing_energy_id)),
     )
     boards = tuple(
         BoardTotalSettings(
             index,
             TotalOutputSettings(
-                visible(definition.power_id, definition.upstream_defaults.watts),
-                visible(definition.current_id, definition.upstream_defaults.amps),
+                visible(definition.power_id),
+                visible(definition.current_id),
                 False,
             ),
         )
