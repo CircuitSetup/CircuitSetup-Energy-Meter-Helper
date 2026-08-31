@@ -180,6 +180,73 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="Overall meter total Watts"]')?.disabled).toBe(false);
   });
 
+  it("shows authoritative legacy source totals after the calibration-only journey without claiming installation", async () => {
+    const legacy = structuredClone(legacyEditableScenario.meterConfiguration!);
+    legacy.capabilities.reason_codes.push("totals_adoption_required", "legacy_custom_totals_unmanaged");
+    legacy.configuration_impact.public_total_entity_count = 7;
+    legacy.configuration_impact.internal_total_sensor_count = 2;
+    const calls: string[] = [];
+    const hass = makeHass({ setup_status: legacyEditableScenario.setup, get_meter_configuration: legacy });
+    const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => { calls.push(String(message.type)); return call<T>(message); };
+    const panel = await mount(hass);
+    panel.showTopology(legacy.topology); await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action=continue]")?.click();
+    await tick(); await panel.updateComplete;
+    [...panel.shadowRoot!.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Keep ESPHome configuration and calibrate only")?.click();
+    await panel.updateComplete;
+    panel.shadowRoot?.querySelector<HTMLInputElement>('[name="calibration-plan"]')?.click();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("#summary-totals-heading")?.textContent).toBe("Legacy read-only totals");
+    expect(panel.shadowRoot?.querySelector(".step-content")?.textContent).toContain("7 public total entities; 2 internal total sensors");
+    expect(panel.shadowRoot?.querySelector(".step-content")?.textContent).toContain("Authoritative source snapshot");
+    expect(panel.shadowRoot?.querySelector(".step-content")?.textContent).toContain("unsupported external custom energy");
+    expect(panel.shadowRoot?.querySelector(".summary-list")?.textContent).toContain("ESPHome configuration was left untouched.");
+    expect(panel.shadowRoot?.querySelector(".summary-list")?.textContent).not.toContain("Installed electrical profile");
+    expect((panel as unknown as { verifiedMeterConfiguration: unknown }).verifiedMeterConfiguration).toBeNull();
+    expect(calls.some((operation) => /preview_|apply_|install_/.test(operation))).toBe(false);
+  });
+
+  it.each(["adoption", "meter setting"])("requires explicit resolution of pending %s before Finish after a no-handoff restart", async (change) => {
+    const restart = { ...activeCalibrationHandoffScenario.restartVerification!, source_handoff_available: false,
+      source_handoff_transaction_id: null, offset_groups: [{ instance_id: "meter_main1", phase_offsets: [[0, 0], [0, 0], [0, 0]] }] };
+    const { panel, state, meter, calls } = await prepare({ restart_and_verify: restart });
+    meter.totals.migration.legacy_parent_links = [{ child_id: "child", proposed_parent_id: "parent" }];
+    state.setMeterConfiguration(meter);
+    const extra = state as unknown as { topology: typeof meter.topology; restart: () => Promise<void>; restartResult: unknown; drafts: Map<number, CtDraft> };
+    extra.topology = meter.topology;
+    state.session = { ...session, has_pending_calibration: true };
+    extra.drafts.set(1, { name: "Calibrated CT", modelId: "model", multiplier: 2, burdenAcknowledged: false, expanded: false });
+    state.meterConfiguration.configuration = { ...state.meterConfiguration.configuration,
+      ...(change === "adoption" ? { totals_change_intent: { adopt_managed_totals: true, legacy_parent_decisions: [] } }
+        : { meter: { ...state.meterConfiguration.configuration.meter, friendly_name: "Pending rename" } }) };
+    const draft = state.meterConfiguration.configuration;
+    await state.finishCurrent(); await extra.restart(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector('[data-action="finish"]')).not.toBeNull();
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="finish"]')?.click();
+    await panel.updateComplete;
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(state.meterConfiguration.configuration).toBe(draft);
+    expect(extra.restartResult).toEqual(restart);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const discard = () => [...panel.shadowRoot!.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Discard local configuration choices and continue calibration")?.click();
+    discard(); await panel.updateComplete;
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(state.meterConfiguration.configuration).toBe(draft);
+    expect(extra.restartResult).toEqual(restart);
+    expect(extra.drafts.get(1)?.multiplier).toBe(2);
+    confirm.mockReturnValue(true); discard(); await tick(); await panel.updateComplete;
+    expect(state.meterConfiguration.configuration.totals_change_intent?.adopt_managed_totals).toBe(false);
+    expect(state.meterConfiguration.configuration.meter.friendly_name).toBe("Energy meter");
+    expect(state.meterConfiguration.totals.migration.legacy_parent_links).toHaveLength(1);
+    expect(extra.restartResult).toEqual(restart);
+    expect(calls.some((message) => /preview_meter_configuration|apply_ct_config|cancel_session/.test(String(message.type)))).toBe(false);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="finish"]')?.click();
+    await panel.updateComplete;
+    expect(state.selectedDeviceId).toBeNull();
+    confirm.mockRestore();
+  });
+
   it.each(["finishCurrent", "finishWithoutCalibration"] as const)("routes metadata-only adoption through the normal transaction from %s", async (finish) => {
     const { state, calls } = await prepare();
     state.meterConfiguration.configuration.totals_change_intent = { adopt_managed_totals: true, legacy_parent_decisions: [] };

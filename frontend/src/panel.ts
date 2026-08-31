@@ -1637,6 +1637,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private finishFlow(message: string): void {
+    if (this.hasUnsupportedCalibrationChanges()) { this.explainCalibrationConfigurationConflict(); return; }
     this.selectDevice(null);
     this.navigate("setup");
     this.announcement = message;
@@ -2218,7 +2219,10 @@ export class CircuitSetupPanel extends LitElement {
         ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back(), this.verifiedMeterConfiguration,
       this.verifiedMeterConfiguration?.configuration_impact ?? null,
       () => this.finishFlow("Meter configuration and calibration are complete."), () => this.keepCalibrationInFlash(),
-      this.workflowContext().configurationMode, this.existingConfigurationChoice, this.configurationInstalled, this.handoffDeclined);
+      this.workflowContext().configurationMode, this.existingConfigurationChoice, this.configurationInstalled, this.handoffDeclined,
+      this.configurationMode === "legacy_editable" && this.sourceMeterConfiguration?.deviceId === this.selectedDeviceId
+        && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256
+        ? this.sourceMeterConfiguration?.meter ?? null : null);
     return html`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct"
       ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;

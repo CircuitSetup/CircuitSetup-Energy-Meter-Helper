@@ -136,6 +136,19 @@ it("labels unresolved installed native visibility as incomplete in summary", () 
   expect(host.textContent).toContain("Counts are confirmed but incomplete: native visibility is unresolved.");
 });
 
+it.each(["legacy_editable", "runtime_only"] as const)("keeps separate source evidence distinct from installation in %s summary", (mode) => {
+  const source = unowned(); source.configuration_impact.public_total_entity_count = 11;
+  host = document.createElement("div");
+  render(summaryStep(source.topology, null, null, new Map(), new Map(), null, true, null, () => {}, () => {},
+    null, null, () => {}, () => {}, mode, "calibrate_only", false, false, source), host);
+  expect(host.querySelector("#summary-totals-heading")?.textContent ?? null).toBe(mode === "legacy_editable" ? "Legacy read-only totals" : null);
+  expect(host.textContent).not.toContain("Installed electrical profile");
+  if (mode === "legacy_editable") {
+    expect(host.textContent).toContain("Authoritative source snapshot");
+    expect(host.textContent).toContain("11 public total entities");
+  }
+});
+
 it("lists exact preview visibility and helper blocks for explicit adoption", () => {
   const meter = unowned(); meter.configuration.totals_change_intent!.adopt_managed_totals = true;
   meter.totals.native_sources.push({ ...meter.totals.native_sources[0]!, source_id: "main", label: "Main Board total", existing_energy_id: null });
