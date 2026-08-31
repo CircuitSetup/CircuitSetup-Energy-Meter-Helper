@@ -1460,6 +1460,26 @@ def test_offset_rendering_preserves_unrelated_source_offset_overrides() -> None:
     assert "offset_voltage: -12" in plan.proposed_content
 
 
+def test_offset_rendering_preserves_unrelated_source_flow_offset_overrides() -> None:
+    source = _snapshot().content + (
+        "unrelated_overrides:\n"
+        "  - {id: !extend unrelated_meter, phase_a: {offset_voltage: -1, offset_current: 2}}\n"
+        "sensor:\n"
+    )
+    snapshot = _snapshot(source)
+    record = replace(
+        _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003))),
+        offset_groups=(
+            VerifiedOffsetGroup("meter_main1", ((-12, 31), (-13, 32), (-14, 33))),
+        ),
+    )
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert "id: !extend unrelated_meter" in plan.proposed_content
+    assert "offset_voltage: -12" in plan.proposed_content
+
+
 def test_uniform_gains_build_surgical_hash_bound_source_mutation() -> None:
     snapshot = _snapshot()
     record = _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003)))

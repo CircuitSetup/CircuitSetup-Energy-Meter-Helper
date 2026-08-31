@@ -56,6 +56,7 @@ _YAML_FLOW_KEY_RE = re.compile(
     rf"[{{,][ \t]*(?:(?:![^\s]+|&[^\s]+)[ \t]+)*"
     rf"(?P<key>{_YAML_KEY_TOKEN})[ \t]*:"
 )
+_YAML_FLOW_ID_RE = re.compile(r"[\{,][ \t]*id[ \t]*:[ \t]*(?P<value>[^,}]+)")
 _PACKAGE_FEATURES = {
     "power_quality": ("power_quality", "power_quality"),
     "status_fields": ("status_fields", "status"),
@@ -1026,7 +1027,14 @@ def _reject_local_offset_overrides(
     }
     for index, line in enumerate(lines):
         if _yaml_flow_keys(line).intersection(offset_fields):
-            raise ConfigMutationError("existing offset overrides are not safely writable")
+            flow_ids = [
+                _yaml_identifier(match["value"])
+                for match in _YAML_FLOW_ID_RE.finditer(line)
+            ]
+            if len(flow_ids) != 1 or flow_ids[0] is None or flow_ids[0] in aliases:
+                raise ConfigMutationError(
+                    "existing offset overrides are not safely writable"
+                )
         item = re.match(r"(?P<indent> *)-\s+", line)
         if item is None:
             continue
