@@ -960,10 +960,16 @@ def parse_offset_table_snapshot(
         else "No stored offset calibrations found"
     )
     failure_terms = (
-        ("Power offset restore failed verification", "Power offset readback failed")
+        (
+            "Power offset restore failed verification",
+            "Power offset calibration restore failed verification",
+            "Power offset calibration restore and config fallback both failed verification",
+            "Power offset readback failed",
+        )
         if power
         else (
             "Offset calibration restore failed verification",
+            "Offset calibration restore and config fallback both failed verification",
             "Offset readback failed",
         )
     )
@@ -979,6 +985,30 @@ def parse_offset_table_snapshot(
     )
     if any("SPI read mismatch" in item.line for item in matching):
         raise LogEvidenceError(f"{kind} snapshot observed SPI read mismatch")
+    row_pattern = _POWER_OFFSET_ROW_RE if power else _OFFSET_ROW_RE
+    verified_term = (
+        "Power offset calibration restore verified."
+        if power
+        else "Offset calibration restore verified."
+    )
+    for item in matching:
+        normalized = re.sub(r"\s+", "", item.line)
+        relevant = (
+            positive_header in item.line
+            or mismatch_header in item.line
+            or columns in normalized
+            or row_pattern.search(item.line) is not None
+            or verified_term in item.line
+            or fallback in item.line
+            or any(term in item.line for term in failure_terms)
+        )
+        if not relevant:
+            continue
+        tags = tuple(_INSTANCE_RE.finditer(item.line))
+        if len(tags) != 1 or item.line.count("[CALIBRATION][") != 1:
+            raise LogEvidenceError(
+                f"{kind} snapshot evidence has an unassignable or duplicate instance tag"
+            )
 
     snapshots: dict[str, OffsetTableSnapshot | None] = {}
     for instance_id in expected_instance_ids:
@@ -1057,8 +1087,8 @@ def parse_offset_clear(
         if power
         else "|Phase|offset_voltage|offset_current|"
     )
-    row_pattern = _POWER_OFFSET_ROW_RE if power else _OFFSET_ROW_RE
     names = ("active", "reactive") if power else ("voltage", "current")
+    row_pattern = _POWER_OFFSET_ROW_RE if power else _OFFSET_ROW_RE
     terminal = "Power offsets cleared." if power else "Offsets cleared."
     failed = (
         "Failed to clear stored power offsets!"
@@ -1108,8 +1138,9 @@ def parse_offset_clear(
         term in (_calibration_payload(item.line) or "")
         for item in window
         for term in (
+            "calibration saved to memory.",
             "Failed to save",
-            f"{kind.title()} readback failed",
+            f"{'Power offset' if power else 'Offset'} readback failed",
             "rollback readback verification failed",
         )
     ):
@@ -1123,6 +1154,9 @@ def parse_offset_clear(
             raise LogEvidenceError(
                 "interleaved clear response for another offset stage"
             )
+        category = _offset_log_category(item.line)
+        if category is not None and category != ("power_offset" if power else "offset"):
+            raise LogEvidenceError("interleaved evidence for another offset stage")
         if (
             clearing in payload
             or no_stored in payload
@@ -1145,6 +1179,16 @@ def parse_offset_clear(
     branch_index = branch_indices[0]
     branch = _calibration_payload(window[branch_index].line)
     assert branch in (clearing, no_stored)
+    column_indices = [
+        index
+        for index, item in enumerate(window)
+        if columns in re.sub(r"\s+", "", item.line)
+    ]
+    if len(column_indices) != 1:
+        raise LogEvidenceError(f"{kind} clear table columns are missing or duplicate")
+    column_index = column_indices[0]
+    if column_index <= branch_index:
+        raise LogEvidenceError(f"{kind} clear evidence is out of order")
     table = _signed_table(window[branch_index:], branch, columns, comparison=False)
     if table is None:
         raise LogEvidenceError(f"{kind} clear table is missing")
@@ -1159,6 +1203,11 @@ def parse_offset_clear(
         for item in window[branch_index:]
         if _calibration_payload(item.line) == failed
     ]
+    row_indices = [
+        index for index, item in enumerate(window) if row_pattern.search(item.line)
+    ]
+    if any(index <= column_index for index in row_indices):
+        raise LogEvidenceError(f"{kind} clear evidence is out of order")
     if (
         any(
             terminal in (_calibration_payload(item.line) or "")
@@ -1184,6 +1233,11 @@ def parse_offset_clear(
         )
     if len(terminals) != 1:
         raise LogEvidenceError(f"{kind} clear terminal is missing or duplicate")
+    terminal_index = window.index(terminals[0])
+    if terminal_index <= column_index or any(
+        index >= terminal_index for index in row_indices
+    ):
+        raise LogEvidenceError(f"{kind} clear evidence is out of order")
     return OffsetClearEvidence(
         connection_generation,
         operation_sequence,
@@ -1278,10 +1332,16 @@ def _restore_offset_category(
         else "No stored offset calibrations found"
     )
     failure_terms = (
-        ("Power offset restore failed verification", "Power offset readback failed")
+        (
+            "Power offset restore failed verification",
+            "Power offset calibration restore failed verification",
+            "Power offset calibration restore and config fallback both failed verification",
+            "Power offset readback failed",
+        )
         if power
         else (
             "Offset calibration restore failed verification",
+            "Offset calibration restore and config fallback both failed verification",
             "Offset readback failed",
         )
     )

@@ -42,6 +42,7 @@ _CALIBRATION_TERMS = (
     "restore",
     "voltage",
     "current",
+    "spi read mismatch",
 )
 _MAX_OFFSET_SNAPSHOT_LINES = 4096
 _MAX_OFFSET_SNAPSHOT_BYTES = 512 * 1024
@@ -214,20 +215,7 @@ class ESPHomeApiSession:
             )
             ensure_attempt_is_live()
 
-            def callback(message: Any) -> None:
-                self._on_log(client, message)
-
-            if dump_config:
-                self._unsubscribe_logs = client.subscribe_logs(
-                    callback,
-                    self._log_level("LOG_LEVEL_DEBUG"),
-                    dump_config=True,
-                )
-            else:
-                self._unsubscribe_logs = client.subscribe_logs(
-                    callback,
-                    self._log_level("LOG_LEVEL_DEBUG"),
-                )
+            self._subscribe_normal_logs(client, dump_config=dump_config)
             ensure_attempt_is_live()
         except BaseException:
             await self._disconnect_failed_client(client)
@@ -563,6 +551,12 @@ class ESPHomeApiSession:
                 else:
                     with suppress(Exception):
                         unsubscribe()
+                if (
+                    client is self._client
+                    and self.connected
+                    and self.connection_generation == generation
+                ):
+                    self._subscribe_normal_logs(client)
 
     async def async_reconnect(self, *, dump_config: bool = False) -> None:
         """Disconnect and create a fresh client from the current ESPHome entry."""
@@ -636,6 +630,25 @@ class ESPHomeApiSession:
                 or self._log_bytes > self._max_log_bytes
             ):
                 self._log_bytes -= len(self._log_lines.popleft().encode("utf-8"))
+
+    def _subscribe_normal_logs(self, client: Any, *, dump_config: bool = False) -> None:
+        """Restore the session's ordinary bounded-log subscriber."""
+        self._clear_log_subscription()
+
+        def callback(message: Any) -> None:
+            self._on_log(client, message)
+
+        if dump_config:
+            self._unsubscribe_logs = client.subscribe_logs(
+                callback,
+                self._log_level("LOG_LEVEL_DEBUG"),
+                dump_config=True,
+            )
+        else:
+            self._unsubscribe_logs = client.subscribe_logs(
+                callback,
+                self._log_level("LOG_LEVEL_DEBUG"),
+            )
 
     async def _async_on_stop(self, client: Any, expected_disconnect: bool) -> None:
         async with self._connection_state_lock:

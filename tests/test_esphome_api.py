@@ -181,6 +181,8 @@ class FakeClient:
 
         def unsubscribe() -> None:
             self.log_unsubscribed += 1
+            if self.on_log is callback:
+                self.on_log = None
             if self.unsubscribe_error is not None:
                 raise self.unsubscribe_error
 
@@ -727,7 +729,66 @@ def test_offset_table_snapshot_cancellation_and_generation_change_stop_capture()
         await first.on_stop(False)
         with pytest.raises(ESPHomeSessionDisconnectedError, match="generation"):
             await pending
-        assert first.log_unsubscribed == 3
+        assert first.log_unsubscribed == 4
+
+    asyncio.run(run())
+
+
+def test_offset_snapshot_restores_normal_log_subscription_after_success_and_cancel() -> (
+    None
+):
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+
+        completed = asyncio.create_task(
+            session.async_offset_table_snapshot(
+                {"meter_main1"}, offset_stage=1, timeout=0.01
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(SimpleNamespace(message="snapshot diagnostic"))
+        await completed
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message="[CALIBRATION][meter_main1] Gain calibration loaded and verified successfully."
+            )
+        )
+        assert "Gain calibration loaded" in session.log_lines[-1]
+
+        cancelled = asyncio.create_task(
+            session.async_offset_table_snapshot({"meter_main1"}, offset_stage=1)
+        )
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message="[CALIBRATION][meter_main1] Offset calibration saved to memory."
+            )
+        )
+        assert "Offset calibration saved" in session.log_lines[-1]
+
+    asyncio.run(run())
+
+
+def test_log_callback_preserves_untagged_spi_read_mismatch() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message="[W][atm90e32] SPI read mismatch: expected 0x55AA, got 0x0000"
+            )
+        )
+        assert "SPI read mismatch" in session.log_lines[-1]
 
     asyncio.run(run())
 
