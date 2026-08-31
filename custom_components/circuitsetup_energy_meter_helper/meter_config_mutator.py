@@ -25,7 +25,6 @@ from .config_mutator import (
 )
 from .ct_inventory import _esphome_object_id
 from .meter_configuration import (
-    ChannelSettings,
     CircuitAggregate,
     EnergyMode,
     MeasurementMethod,
@@ -35,18 +34,17 @@ from .meter_configuration import (
 )
 from .meter_inventory import (
     MeterConfigurationInventory,
-    _default_daily_energy_power_ids,
-    _explicit_total_calculation_ids,
-    _legacy_template_total_ids,
+    _managed_sensor_items,
+    _plain_sensor_scalar,
 )
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import VerifiedCalibrationRecord
-from .topology import addon_count_from_packages
-
-_OFFICIAL_TOTAL_ID = re.compile(
-    r"^\s*(?:-\s*)?id:\s*(?:!extend\s+)?[\"']?"
-    r"(?P<id>total(?:Amps|Watts)(?:Main|AddOn[1-6])?|totalEnergyDaily)"
-    r"[\"']?\s*$"
+from .total_graph import (
+    NativeVisibilityOverride,
+    TotalRenderPlan,
+    _desired_native_outputs,
+    native_total_sources,
+    plan_total_graph,
 )
 
 
@@ -114,6 +112,8 @@ def build_meter_configuration_mutation(
         raise ConfigMutationError("meter configuration inventory does not match snapshot")
     try:
         validate_meter_configuration(requested, topology)
+        if requested.default_totals != current.configuration.default_totals:
+            current.validate_totals_change(requested)
         expected_meter_entity_evidence(requested, topology)
     except ValueError as error:
         raise ConfigMutationError(str(error)) from error
@@ -123,6 +123,7 @@ def build_meter_configuration_mutation(
         requested.meter.voltage_references != previous.meter.voltage_references
     )
     aggregates_changed = requested.aggregates != previous.aggregates
+    totals_changed = aggregates_changed or requested.default_totals != previous.default_totals
     managed_totals_upgrade_required = (
         aggregates_changed and not current.capabilities.managed_totals
     )
@@ -137,6 +138,8 @@ def build_meter_configuration_mutation(
             meter=requested.meter,
             channels=requested.channels,
             aggregates=requested.aggregates,
+            default_totals=requested.default_totals,
+            totals_change_intent=requested.totals_change_intent,
             power_quality=requested.power_quality,
             status_fields=requested.status_fields,
             multi_reference_preparation_acknowledged=(
@@ -233,7 +236,7 @@ def build_meter_configuration_mutation(
                     requested.meter.voltage_references, topology, document
                 ),
             )
-    if aggregates_changed:
+    if totals_changed:
         if managed_totals_upgrade_required:
             document = ESPHomeConfigDocument.parse(content)
             scalar = document.substitutions.get("csemh_config_contract")
@@ -248,9 +251,8 @@ def build_meter_configuration_mutation(
         content = replace_managed_block(
             content,
             "aggregates",
-            _render_aggregates(requested.aggregates, document, previous.channels)
-            if requested.aggregates
-            else "",
+            _render_native_totals(requested, topology, document)
+            + (_render_aggregates(requested.aggregates) if requested.aggregates else ""),
         )
     rendered_diff = "\n".join(
         part for part in (plan.redacted_diff, _redacted_diff(changes)) if part
@@ -270,7 +272,7 @@ def build_meter_configuration_mutation(
                 for reference in requested.meter.voltage_references
             ),
         )
-    if aggregates_changed:
+    if totals_changed:
         rendered_blocks["Aggregate"] = _managed_block_diff(
             source_document.managed_blocks.get("aggregates"),
             proposed_document.managed_blocks.get("aggregates")
@@ -550,13 +552,8 @@ def _render_voltage_references(
 
 def _render_aggregates(
     aggregates: tuple[CircuitAggregate, ...],
-    document: ESPHomeConfigDocument,
-    channels: tuple[ChannelSettings, ...],
 ) -> str:
-    entries = {
-        f"00_{total_id}": _internal_total(total_id)
-        for total_id in _official_total_ids(document, channels)
-    }
+    entries = {}
     for order, aggregate in enumerate(aggregates):
         metadata = urlsafe_b64encode(json.dumps(
             {
@@ -580,40 +577,82 @@ def _render_aggregates(
     return render_aggregates(entries)
 
 
-def _official_total_ids(
-    document: ESPHomeConfigDocument, channels: tuple[ChannelSettings, ...]
-) -> tuple[str, ...]:
-    total_ids: list[str] = []
-    addon_count = addon_count_from_packages(document.package_files)
-    if addon_count is not None:
-        for board in range(addon_count + 1):
-            suffix = "Main" if board == 0 else f"AddOn{board}"
-            total_ids.extend((f"totalAmps{suffix}", f"totalWatts{suffix}"))
-    explicit_ids = [
-        match["id"]
-        for line in document.code_lines
-        if (match := _OFFICIAL_TOTAL_ID.fullmatch(line.rstrip())) is not None
-    ]
-    calculations = _explicit_total_calculation_ids(document)
-    total_ids.extend(
-        total_id for total_id in explicit_ids
-        if total_id != "totalEnergyDaily" and total_id not in calculations
-    )
-    total_ids.extend(_legacy_template_total_ids(document, channels))
-    official_power_ids = {
-        total_id for total_id in total_ids
-        if total_id.startswith("totalWatts") or total_id.endswith("Watts")
+def _render_native_totals(
+    requested: MeterConfigurationRequest,
+    topology: MeterTopology,
+    document: ESPHomeConfigDocument,
+) -> str:
+    """Reconcile native visibility against preserved source and add board energy."""
+    plan = plan_total_graph(requested, topology)
+    definitions = native_total_sources(topology)
+    upstream = {
+        sensor_id: not public
+        for source in definitions
+        for sensor_id, public in (
+            (source.power_id, source.upstream_defaults.watts),
+            (source.current_id, source.upstream_defaults.amps),
+            (source.existing_energy_id, source.upstream_defaults.kwh),
+        )
+        if sensor_id is not None
     }
-    if (
-        "totalEnergyDaily" in explicit_ids
-        and _default_daily_energy_power_ids(document) & official_power_ids
-    ):
-        total_ids.append("totalEnergyDaily")
-    return tuple(dict.fromkeys(total_ids))
+    desired = {**upstream, **{item.sensor_id: item.internal for item in plan.native_visibility}}
+    # The old helper block is replaced, so it cannot supply the preserved base.
+    base = ESPHomeConfigDocument.parse(replace_managed_block(document.content, "aggregates", ""))
+    span = base.writable_sensor_span
+    if span is None:
+        raise ConfigMutationError("native total visibility is not safely writable")
+    native_definitions: dict[str, bool] = {}
+    overrides: dict[str, bool] = {}
+    try:
+        start_line = span.line - 1
+        line_count = len(base.content[span.start:span.end].splitlines())
+        items = _managed_sensor_items(
+            "\n".join(base.code_lines[start_line:start_line + line_count]),
+            base.sensor_item_indent,
+        )
+        for item in items:
+            raw_id = item.get("id", "")
+            sensor_id = _plain_sensor_scalar(raw_id.removeprefix("!extend "))
+            if sensor_id not in upstream:
+                continue
+            visibility = overrides if raw_id.startswith("!extend ") else native_definitions
+            internal = item.get("internal")
+            if sensor_id in visibility or internal not in {None, "true", "false"}:
+                raise ValueError("unresolved native visibility")
+            if internal is not None:
+                visibility[sensor_id] = internal == "true"
+            elif visibility is native_definitions:
+                name = item.get("name", "").strip("\"'")
+                if (
+                    not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]*", name)
+                    or name.lower() in {"none", "null", "true", "false"}
+                ):
+                    raise ValueError("unresolved native visibility")
+                visibility[sensor_id] = False
+    except ValueError as error:
+        raise ConfigMutationError("native total visibility is unresolved") from error
+    effective = {**upstream, **native_definitions, **overrides}
+    plan = replace(plan, native_visibility=tuple(
+        NativeVisibilityOverride(sensor_id, internal)
+        for sensor_id, internal in desired.items()
+        if internal != effective[sensor_id]
+    ))
+    return _render_native_total_overrides(plan) + "".join(
+        _daily_energy(
+            f"csemh_{source.source_id.replace('-', '_')}_energy",
+            f"${{friendly_name}} {source.label} Energy",
+            source.power_id,
+        )
+        for source in definitions
+        if source.existing_energy_id is None and _desired_native_outputs(requested, source).kwh
+    )
 
 
-def _internal_total(total_id: str) -> str:
-    return f"  - id: !extend {total_id}\n    internal: true\n"
+def _render_native_total_overrides(plan: TotalRenderPlan) -> str:
+    return "".join(
+        f"  - id: !extend {item.sensor_id}\n    internal: {str(item.internal).lower()}\n"
+        for item in plan.native_visibility
+    )
 
 
 def _aggregate_entry(aggregate: CircuitAggregate) -> str:

@@ -6,7 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from custom_components.circuitsetup_energy_meter_helper import config_mutator
+from custom_components.circuitsetup_energy_meter_helper import (
+    config_mutator,
+    meter_config_mutator,
+)
+from custom_components.circuitsetup_energy_meter_helper.config_blocks import (
+    replace_managed_block,
+)
 from custom_components.circuitsetup_energy_meter_helper.config_document import (
     ESPHomeConfigDocument,
 )
@@ -26,11 +32,15 @@ from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator imp
     expected_meter_entity_evidence,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
     ElectricalSystem,
     EnergyMode,
     MeasurementMethod,
+    MeterConfigurationRequest,
+    NativeTotalSource,
+    TotalOutputSettings,
     VoltageLayout,
     VoltageReferenceConfig,
 )
@@ -45,6 +55,9 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
 from custom_components.circuitsetup_energy_meter_helper.topology import (
     voltage_reference_topology_from_config,
     voltage_reference_topology_from_configuration,
+)
+from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+    default_total_settings,
 )
 from custom_components.circuitsetup_energy_meter_helper.voltage_transformer_catalog import (
     VoltageTransformerCatalog,
@@ -1760,35 +1773,242 @@ def _assert_daily_energy(block: str, power_id: str) -> None:
         assert line in block
 
 
-def test_default_total_controls_replace_each_builtin_entity() -> None:
-    """Turning all Main total outputs off hides defaults without deleting them."""
-    snapshot = _default_totals_snapshot()
-    topology = _topology()
-    current = _inventory(snapshot, topology)
-    default = current.configuration.aggregates[0]
-    requested = replace(
-        current.configuration,
-        aggregates=(
-            replace(
-                default,
-                energy_mode=EnergyMode.NONE,
-                expose_power=False,
-                expose_current=False,
-            ),
-        ),
+def _native_total_setup(
+    addons: int = 1,
+) -> tuple[ESPHomeConfigSnapshot, MeterTopology, MeterConfigurationInventory]:
+    topology = _topology_for_addons(addons)
+    snapshot = _contract_snapshot_for(topology)
+    configuration = _inventory(snapshot, topology).configuration
+    stored = StoredMeterConfiguration(
+        snapshot.sha256, configuration.meter, configuration.channels,
+        default_total_settings(topology), (), (),
+        configuration.power_quality, configuration.status_fields,
+    )
+    current = _inventory(snapshot, topology, stored=stored)
+    assert current.capabilities.native_totals_writable
+    assert current.configuration.aggregates == ()
+    return snapshot, topology, current
+
+
+def _native_total_body(
+    requested: MeterConfigurationRequest, topology: MeterTopology, content: str,
+) -> str:
+    return meter_config_mutator._render_native_totals(
+        requested, topology, ESPHomeConfigDocument.parse(content)
     )
 
-    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
-    block = plan.proposed_content.split("aggregates v1\n", 1)[1].split(
-        "# End CircuitSetup", 1
-    )[0]
 
-    for total_id in ("totalAmpsMain", "totalWattsMain", "totalEnergyDaily"):
-        assert f"- id: !extend {total_id}\n    internal: true" in block
-    assert "id: csemh_main_total_power" in block
-    assert "id: csemh_main_total_current" in block
-    assert "id: csemh_main_total_current\n    internal: true" in block
-    assert "id: csemh_main_total_energy" not in block
+@pytest.mark.parametrize("addons,power_id", ((0, "totalWattsMain"), (1, "totalWatts")))
+def test_native_total_hide_watts_keeps_kwh(addons: int, power_id: str) -> None:
+    snapshot, topology, current = _native_total_setup(addons)
+    requested = replace(current.configuration, default_totals=replace(
+        current.configuration.default_totals, overall=TotalOutputSettings(False, True, True)
+    ))
+    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    assert f"- id: !extend {power_id}\n    internal: true" in plan.proposed_content
+    assert "!extend totalEnergyDaily" not in plan.proposed_content
+    assert "csemh_board_main_energy" not in plan.proposed_content
+
+
+@pytest.mark.parametrize("source", (ChannelTotalSource("channel", 7), NativeTotalSource("native", "board-addon-1")))
+def test_native_total_unrelated_advanced_total_does_not_hide_root(
+    source: ChannelTotalSource | NativeTotalSource,
+) -> None:
+    snapshot, topology, current = _native_total_setup()
+    requested = replace(current.configuration, aggregates=(CircuitAggregate(
+        "branch", "Branch", CircuitRole.BRANCH, (source,),
+        MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION,
+        TotalOutputSettings(True, True, True),
+    ),))
+    assert _native_total_body(requested, topology, snapshot.content) == ""
+
+
+@pytest.mark.parametrize("indent", ("", "  "))
+def test_native_total_exposes_hidden_board_and_preserves_unmanaged_override(indent: str) -> None:
+    snapshot, topology, current = _native_total_setup()
+    original = "- id: !extend totalWattsAddOn1\n  internal: true\n"
+    original = "".join(indent + line + "\n" for line in original.splitlines())
+    content = snapshot.content.replace("sensor:\n  - platform: uptime\n    name: Uptime\n", "sensor:\n" + original)
+    settings = current.configuration.default_totals
+    requested = replace(current.configuration, default_totals=replace(settings, boards=(
+        settings.boards[0], replace(settings.boards[1], outputs=TotalOutputSettings(True, False, False)),
+    )))
+    body = _native_total_body(requested, topology, content)
+    assert body == "  - id: !extend totalWattsAddOn1\n    internal: false\n"
+    rendered = replace_managed_block(content, "aggregates", body)
+    assert original in rendered
+    assert rendered.index("internal: true") < rendered.index("internal: false")
+    assert replace_managed_block(rendered, "aggregates", _native_total_body(requested, topology, rendered)) == rendered
+
+
+def test_native_total_explicit_hide_overrides_unmanaged_exposure() -> None:
+    snapshot, topology, current = _native_total_setup()
+    original = "  - id: !extend totalWattsAddOn1\n    internal: false\n"
+    content = snapshot.content.replace("logger:\n", original + "logger:\n")
+    requested = current.configuration
+    body = _native_total_body(requested, topology, content)
+    assert body == "  - id: !extend totalWattsAddOn1\n    internal: true\n"
+    rendered = replace_managed_block(content, "aggregates", body)
+    assert original in rendered
+    assert rendered.index("internal: false") < rendered.index("internal: true")
+    assert _native_total_body(requested, topology, rendered) == body
+    settings = requested.default_totals
+    exposed = replace(requested, default_totals=replace(settings, boards=(
+        settings.boards[0], replace(settings.boards[1], outputs=TotalOutputSettings(True, False, False)),
+    )))
+    assert _native_total_body(exposed, topology, rendered) == ""
+    assert replace_managed_block(rendered, "aggregates", "") == content
+
+
+@pytest.mark.parametrize("indent", ("", "  "))
+def test_native_total_existing_block_moves_after_unmanaged_siblings(indent: str) -> None:
+    snapshot, topology, current = _native_total_setup()
+    prefix, rest = snapshot.content.split("sensor:\n", 1)
+    _, suffix = rest.split("logger:\n", 1)
+    original = f"{indent}- id: !extend totalWattsAddOn1\n{indent}  internal: false\n"
+    old = (
+        "# CircuitSetup Energy Meter Helper: aggregates v1\n"
+        f"{indent}- id: !extend totalWattsAddOn1\n{indent}  internal: true\n"
+        "# End CircuitSetup Energy Meter Helper: aggregates v1\n"
+    )
+    content = prefix + "sensor:\n" + old + original + "logger:\n" + suffix
+    body = _native_total_body(current.configuration, topology, content)
+    rendered = replace_managed_block(content, "aggregates", body)
+    assert original in rendered
+    assert rendered.index("internal: false") < rendered.index("internal: true")
+    assert replace_managed_block(rendered, "aggregates", _native_total_body(current.configuration, topology, rendered)) == rendered
+
+
+def test_native_total_replacement_excludes_old_helper_visibility() -> None:
+    snapshot, topology, current = _native_total_setup()
+    requested = replace(current.configuration, default_totals=replace(
+        current.configuration.default_totals, overall=TotalOutputSettings(False, True, True)
+    ))
+    body = _native_total_body(requested, topology, snapshot.content)
+    rendered = replace_managed_block(snapshot.content, "aggregates", body)
+    assert _native_total_body(requested, topology, rendered) == body
+    assert _native_total_body(current.configuration, topology, rendered) == ""
+    assert replace_managed_block(rendered, "aggregates", "") == snapshot.content
+
+
+@pytest.mark.parametrize("addons", (0, 1))
+def test_native_total_upstream_defaults_need_no_override(addons: int) -> None:
+    snapshot, topology, current = _native_total_setup(addons)
+    assert _native_total_body(current.configuration, topology, snapshot.content) == ""
+    assert build_meter_configuration_mutation(snapshot, topology, current, current.configuration).proposed_content == snapshot.content
+
+
+def test_board_energy_uses_native_watts_once_in_stable_board_order() -> None:
+    snapshot, topology, current = _native_total_setup()
+    requested = replace(current.configuration, default_totals=replace(
+        current.configuration.default_totals, boards=tuple(
+            replace(board, outputs=TotalOutputSettings(False, False, True))
+            for board in current.configuration.default_totals.boards
+        ),
+    ))
+    rendered = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
+    assert rendered.count("id: csemh_board_main_energy\n") == 1
+    assert rendered.count("id: csemh_board_addon_1_energy\n") == 1
+    assert rendered.index("id: csemh_board_main_energy") < rendered.index("id: csemh_board_addon_1_energy")
+    assert 'name: "${friendly_name} Main Board total Energy"' in rendered
+    assert 'name: "${friendly_name} Add-on 1 total Energy"' in rendered
+    _assert_daily_energy(rendered, "totalWattsMain")
+    _assert_daily_energy(rendered, "totalWattsAddOn1")
+    assert "!extend totalWattsMain" not in rendered
+    assert "!extend totalWattsAddOn1" not in rendered
+
+
+def test_board_energy_main_only_does_not_duplicate_native_energy() -> None:
+    snapshot, topology, current = _native_total_setup(0)
+    assert "total_daily_energy" not in _native_total_body(current.configuration, topology, snapshot.content)
+
+
+@pytest.mark.parametrize("internal", ("true", "false"))
+def test_native_total_compares_preserved_definition_visibility(internal: str) -> None:
+    snapshot, topology, current = _native_total_setup()
+    original = (
+        "  - platform: template\n    id: totalWattsAddOn1\n"
+        f"    name: Add-on Watts\n    internal: {internal}\n"
+    )
+    content = snapshot.content.replace("logger:\n", original + "logger:\n")
+    body = _native_total_body(current.configuration, topology, content)
+    assert body == ("" if internal == "true" else "  - id: !extend totalWattsAddOn1\n    internal: true\n")
+    assert original in replace_managed_block(content, "aggregates", body)
+
+
+def test_native_total_unresolved_visibility_is_not_guessed() -> None:
+    snapshot, topology, current = _native_total_setup()
+    content = snapshot.content.replace("logger:\n", "  - id: !extend totalWattsAddOn1\n    internal: ${hide_board}\nlogger:\n")
+    with pytest.raises(ConfigMutationError, match="visibility"):
+        _native_total_body(current.configuration, topology, content)
+
+
+def test_native_total_comment_on_preserved_id_does_not_hide_its_visibility() -> None:
+    snapshot, topology, current = _native_total_setup()
+    original = "  - id: !extend totalWattsAddOn1 # keep this override\n    internal: false # public\n"
+    content = snapshot.content.replace("logger:\n", original + "logger:\n")
+    body = _native_total_body(current.configuration, topology, content)
+    assert body == "  - id: !extend totalWattsAddOn1\n    internal: true\n"
+    assert original in replace_managed_block(content, "aggregates", body)
+
+
+@pytest.mark.parametrize("name", ("null", "false", "true"))
+def test_native_total_ambiguous_definition_name_is_readonly(name: str) -> None:
+    snapshot, topology, current = _native_total_setup()
+    content = snapshot.content.replace("logger:\n", f"  - platform: template\n    id: totalWattsAddOn1\n    name: {name}\nlogger:\n")
+    with pytest.raises(ConfigMutationError, match="visibility"):
+        _native_total_body(current.configuration, topology, content)
+
+
+def test_native_total_change_respects_inventory_readonly_authority() -> None:
+    snapshot, topology, _ = _native_total_setup()
+    current = _inventory(snapshot, topology)
+    requested = replace(current.configuration, default_totals=replace(
+        current.configuration.default_totals, overall=TotalOutputSettings(False, True, True)
+    ))
+    with pytest.raises(ConfigMutationError, match="adoption|capability"):
+        build_meter_configuration_mutation(snapshot, topology, current, requested)
+
+
+def test_native_total_keeps_other_managed_blocks_in_canonical_order() -> None:
+    snapshot, topology, current = _native_total_setup()
+    content = snapshot.content
+    for name in ("voltage_references", "phase_overrides", "calibrated_voltage_gains", "status_overrides"):
+        content = replace_managed_block(content, name, f"  - id: unrelated_{name}\n    internal: true\n")
+    requested = replace(current.configuration, default_totals=replace(
+        current.configuration.default_totals, overall=TotalOutputSettings(False, True, True)
+    ))
+    rendered = replace_managed_block(content, "aggregates", _native_total_body(requested, topology, content))
+    names = tuple(name for name in ESPHomeConfigDocument.parse(rendered).managed_blocks if name != "status_overrides")
+    assert names == ("voltage_references", "phase_overrides", "calibrated_voltage_gains", "aggregates")
+    assert replace_managed_block(rendered, "aggregates", "") == content
+
+
+def test_native_total_preserves_status_block_before_unmanaged_siblings() -> None:
+    snapshot, topology, current = _native_total_setup()
+    content = replace_managed_block(snapshot.content, "status_overrides", "  - id: unrelated_status\n    internal: true\n")
+    content = content.replace("logger:\n", "  - id: !extend totalWattsAddOn1\n    internal: false\nlogger:\n")
+    rendered = replace_managed_block(content, "aggregates", _native_total_body(current.configuration, topology, content))
+    assert rendered.index("unrelated_status") < rendered.index("internal: false") < rendered.rindex("internal: true")
+    assert replace_managed_block(rendered, "aggregates", "") == content
+
+
+def test_board_energy_can_be_removed_through_hash_bound_inventory() -> None:
+    snapshot, topology, current = _native_total_setup()
+    settings = current.configuration.default_totals
+    requested = replace(current.configuration, default_totals=replace(settings, boards=(
+        settings.boards[0], replace(settings.boards[1], outputs=TotalOutputSettings(False, False, True)),
+    )))
+    first = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    digest = sha256(first.proposed_content.encode()).hexdigest()
+    stored = StoredMeterConfiguration(
+        digest, requested.meter, requested.channels, requested.default_totals,
+        requested.automatic_totals, requested.aggregates, requested.power_quality, requested.status_fields,
+    )
+    configured_snapshot = replace(snapshot, content=first.proposed_content, sha256=digest)
+    configured = _inventory(configured_snapshot, topology, stored=stored)
+    removed = build_meter_configuration_mutation(configured_snapshot, topology, configured, current.configuration)
+    assert removed.proposed_content == snapshot.content
 
 
 def test_custom_template_totals_are_internalized_before_managed_replacements() -> None:
@@ -2411,60 +2631,23 @@ def test_directional_words_in_aggregate_ids_round_trip(
     }
 
 
-@pytest.mark.parametrize(
-    ("addon_count", "hidden_totals"),
-    (
-        (0, ("totalEnergyDaily",)),
-        (1, ("totalAmps", "totalWatts", "totalEnergyDaily")),
-        (2, ("totalAmps", "totalWatts", "totalEnergyDaily")),
-    ),
-)
-def test_removing_last_aggregate_restores_official_totals(
-    addon_count: int, hidden_totals: tuple[str, ...]
-) -> None:
-    """An empty request removes the owned block rather than retaining its extends."""
-    topology = _topology_for_addons(addon_count)
-    snapshot = _contract_snapshot_for(topology)
-    content = snapshot.content.replace(
-        "sensor:\n",
-        "sensor:\n"
-        + "".join(
-            f"  - id: {total_id}\n"
-            for total_id in hidden_totals
-            if total_id != "totalEnergyDaily"
-        )
-        + (
-            "  - platform: template\n"
-            "    id: totalWatts\n"
-            if "totalEnergyDaily" in hidden_totals and "totalWatts" not in hidden_totals
-            else ""
-        )
-        + (
-            "  - platform: total_daily_energy\n"
-            "    id: totalEnergyDaily\n"
-            "    power_id: totalWatts\n"
-            "    unit_of_measurement: kWh\n"
-            if "totalEnergyDaily" in hidden_totals
-            else ""
-        ),
-        1,
-    )
-    snapshot = replace(
-        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
-    )
-    current = _inventory(snapshot, topology)
-    aggregate = CircuitAggregate(
-        "load", "Load", CircuitRole.BRANCH, (topology.ct_count,),
-        MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION,
-    )
-    requested = _aggregate_request(current, aggregate)
+@pytest.mark.parametrize("addon_count", (0, 1, 2))
+def test_native_total_restoring_defaults_removes_managed_block(addon_count: int) -> None:
+    """Explicit output defaults remove an otherwise empty native total block."""
+    snapshot, topology, current = _native_total_setup(addon_count)
+    requested = replace(current.configuration, default_totals=replace(
+        current.configuration.default_totals, overall=TotalOutputSettings(False, False, False)
+    ))
     first = build_meter_configuration_mutation(snapshot, topology, current, requested)
-    for total_id in hidden_totals:
+    suffix = "Main" if addon_count == 0 else ""
+    for total_id in (f"totalWatts{suffix}", f"totalAmps{suffix}", "totalEnergyDaily"):
         assert f"- id: !extend {total_id}\n    internal: true" in first.proposed_content
     stored = StoredMeterConfiguration(
         sha256(first.proposed_content.encode()).hexdigest(),
         requested.meter,
         requested.channels,
+        requested.default_totals,
+        requested.automatic_totals,
         requested.aggregates,
         requested.power_quality,
         requested.status_fields,
@@ -2475,38 +2658,17 @@ def test_removing_last_aggregate_restores_official_totals(
         sha256=stored.config_sha256,
     )
     configured = _inventory(configured_snapshot, topology, stored=stored)
-    empty = replace(configured.configuration, aggregates=())
     removed = build_meter_configuration_mutation(
-        configured_snapshot, topology, configured, empty
+        configured_snapshot, topology, configured, current.configuration
     )
 
     assert "aggregates v1" not in removed.proposed_content
     assert "internal: true" not in removed.proposed_content
     assert removed.proposed_content == snapshot.content
     assert removed.redacted_diff.startswith("Aggregate\n-  - id: !extend")
-    assert "-  - platform: template" in removed.redacted_diff
-    assert "- load:" in removed.redacted_diff
-
-    empty_stored = StoredMeterConfiguration(
-        sha256(removed.proposed_content.encode()).hexdigest(),
-        empty.meter,
-        empty.channels,
-        empty.aggregates,
-        empty.power_quality,
-        empty.status_fields,
-    )
-    empty_snapshot = replace(
-        snapshot,
-        content=removed.proposed_content,
-        sha256=empty_stored.config_sha256,
-    )
-    empty_current = _inventory(empty_snapshot, topology, stored=empty_stored)
     assert build_meter_configuration_mutation(
-        empty_snapshot, topology, empty_current, empty_current.configuration
-    ).proposed_content == empty_snapshot.content
-    assert "csemh_load_energy" in build_meter_configuration_mutation(
-        empty_snapshot, topology, empty_current, requested
-    ).proposed_content
+        snapshot, topology, current, current.configuration
+    ).proposed_content == snapshot.content
 
 
 def test_removing_last_aggregate_preserves_user_sensor_siblings() -> None:
@@ -2601,35 +2763,14 @@ def test_aggregate_removal_restores_contract_source_without_eof_newline(
     assert removed.proposed_content == content
 
 
-def test_sparse_addon_aggregates_hide_each_effective_official_total_once() -> None:
-    """Add-on channel IDs stay explicit while each stable total gets one override."""
-    snapshot = _package_snapshot()
-    content = snapshot.content.replace(
-        "substitutions:\n", 'substitutions:\n  csemh_config_contract: "2"\n'
-    ).replace(
-        "sensor:\n",
-        "sensor:\n"
-        "  - platform: template\n"
-        "    id: totalAmps\n"
-        "  - platform: template\n"
-        "    id: totalWatts\n"
-        "  - platform: total_daily_energy\n"
-        "    id: totalEnergyDaily\n"
-        "    power_id: totalWatts\n"
-        "    unit_of_measurement: kWh\n"
-        ,
-        1,
-    )
-    snapshot = replace(
-        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
-    )
-    topology = _two_board_topology()
-    current = _inventory(snapshot, topology)
+def test_sparse_addon_aggregates_preserve_official_total_visibility() -> None:
+    """Unrelated CT totals must not hide native totals as a side effect."""
+    snapshot, topology, current = _native_total_setup()
     requested = replace(
         current.configuration,
         aggregates=(
-            CircuitAggregate("main", "Main", CircuitRole.BRANCH, (1,), MeasurementMethod.DIRECT, None, EnergyMode.NONE),
-            CircuitAggregate("addon", "Addon", CircuitRole.BRANCH, (12,), MeasurementMethod.DIRECT, None, EnergyMode.CONSUMPTION),
+            CircuitAggregate("main", "Main", CircuitRole.BRANCH, (ChannelTotalSource("channel", 1),), MeasurementMethod.DIRECT, EnergyMode.NONE, TotalOutputSettings(True, True, False)),
+            CircuitAggregate("addon", "Addon", CircuitRole.BRANCH, (ChannelTotalSource("channel", 12),), MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION, TotalOutputSettings(True, True, True)),
         ),
     )
 
@@ -2641,7 +2782,7 @@ def test_sparse_addon_aggregates_hide_each_effective_official_total_once() -> No
     assert "lambda: return id(ct1Watts).state;" in block
     assert "lambda: return std::max(0.0f, id(ct12Watts).state);" in block
     for total_id in ("totalAmps", "totalWatts", "totalEnergyDaily"):
-        assert block.count(f"- id: !extend {total_id}\n    internal: true") == 1
+        assert f"- id: !extend {total_id}\n    internal: true" not in block
 
 
 def test_aggregate_names_are_yaml_scalars_and_repeated_preview_is_identical() -> None:

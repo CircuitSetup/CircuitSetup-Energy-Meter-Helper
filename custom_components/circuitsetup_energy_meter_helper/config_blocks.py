@@ -34,6 +34,11 @@ def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
         end = _line_end(content, block.span.end)
         if not rendered:
             return content[: block.span.start] + content[end:]
+        if block_name == "aggregates":
+            # Native !extend visibility must follow preserved unmanaged overrides.
+            return replace_managed_block(
+                content[: block.span.start] + content[end:], block_name, rendered
+            )
         return (
             content[: block.span.start]
             + _block(markers, rendered, newline, item_indent)
@@ -47,7 +52,7 @@ def replace_managed_block(content: str, block_name: str, rendered: str) -> str:
             "no unambiguous writable sensor block; add snippet at document root",
             snippet=_snippet(block_name, rendered),
         )
-    position = end if block_name == "status_overrides" else _insertion_position(document, block_name, start)
+    position = end if block_name in {"aggregates", "status_overrides"} else _insertion_position(document, block_name, start)
     if position == len(content) and content and content[-1] not in "\r\n":
         raise ConfigMutationError(
             "no unambiguous writable sensor block; add snippet at document root",
