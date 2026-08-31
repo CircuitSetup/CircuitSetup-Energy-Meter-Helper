@@ -203,7 +203,10 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
     if (!response.ok()) throw new Error(`Backend fixture: ${await response.text()}`);
     return response.json() as Promise<T>;
   };
-  const backend = await backendCall<MeterConfiguration>({ type: "get_meter_configuration" });
+  const base = await backendCall<Omit<MeterConfiguration, "total_details">>({ type: "get_meter_configuration" });
+  const details = await backendCall<Pick<MeterConfiguration, "total_details">>({ type: "get_total_details",
+    plan_id: base.plan_id, source_sha256: base.source_sha256 });
+  const backend: MeterConfiguration = { ...base, ...details };
   const graphFor = (configuration: unknown) => backendCall<TotalGraphPreview>({ type: "preview_total_graph",
     plan_id: backend.plan_id, source_sha256: backend.source_sha256, configuration });
   let reviewedConfiguration: MeterConfigurationRequest | null = null;
@@ -299,16 +302,18 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           freshPlanGeneration += 1;
           if (options.freshSourceChanged) activeSourceSha256 = "f".repeat(64);
         }
-        const live = meterConfiguration(backend, addons, options.scenario, options.guidedMode);
+        const { total_details: _details, ...live } = meterConfiguration(backend, addons, options.scenario, options.guidedMode);
         const configuration = committedConfiguration ?? live.configuration;
         const graph = await graphFor(configuration);
         result = { ...live, plan_id: activePlan ?? "b".repeat(32), source_sha256: activeSourceSha256,
           totals: { ...live.totals, automatic_candidates: graph.automatic_candidates, automatic_totals: graph.automatic_totals,
-            stale_automatic_total_settings: graph.stale_automatic_total_settings }, configuration_impact: graph.configuration_impact, total_details: graph.total_details,
+            stale_automatic_total_settings: graph.stale_automatic_total_settings }, configuration_impact: graph.configuration_impact,
           configuration: refreshingConsumedPlan && options.freshSourceChanged
             ? { ...configuration, meter: { ...configuration.meter, friendly_name: "External meter" } }
             : configuration };
       }
+      else if (operation === "get_total_details") result = { plan_id: frame.plan_id,
+        source_sha256: frame.source_sha256, total_details: backend.total_details };
       else if (operation === "preview_total_graph") {
         result = { ...await graphFor(frame.configuration), plan_id: frame.plan_id, source_sha256: frame.source_sha256 };
         if (options.delayedGraph && (result as TotalGraphPreview).automatic_candidates.some((candidate) => candidate.role === "grid")) {

@@ -1222,7 +1222,7 @@ export class CircuitSetupPanel extends LitElement {
       this.meterConfiguration = { ...meter, configuration: { ...configuration, automatic_totals: automatic },
         totals: { ...meter.totals, automatic_candidates: preview.automatic_candidates, automatic_totals: preview.automatic_totals,
           stale_automatic_total_settings: preview.stale_automatic_total_settings },
-        configuration_impact: preview.configuration_impact, total_details: preview.total_details };
+        configuration_impact: preview.configuration_impact };
       this.totalGraphPreview = preview;
       this.totalGraphState = "ready";
       this.acceptedAutomaticInputs = this.automaticCandidateInputs();

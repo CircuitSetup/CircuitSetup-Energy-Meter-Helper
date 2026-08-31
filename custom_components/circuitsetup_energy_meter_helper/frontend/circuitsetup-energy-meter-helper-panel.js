@@ -777,31 +777,42 @@ function totalsInventory(value, label, count) {
   });
   return item;
 }
-function totalsSummary(value, label, count) {
+function totalsSummary(value, label, nativeIds, aggregateIds) {
   const keys = /* @__PURE__ */ new Set();
   for (const entry of array(value, label, 44)) {
     const row = record(entry, label);
-    exactKeys(row, ["total_id", "kind", "name", "ownership", "public_outputs", "internal_outputs", "unverified_outputs", "sources", "formula", "leaf_channels", "parents"], label);
+    exactKeys(row, ["total_id", "kind", "ownership", "public_outputs", "internal_outputs", "unverified_outputs", ...row.kind === "native_total" ? ["native_sources"] : []], label);
     const key = `${enumeration(row.kind, /* @__PURE__ */ new Set(["native_total", "aggregate"]), label)}:${id(row.total_id, label)}`;
     if (keys.has(key)) throw new Error(`${label} response is invalid`);
     keys.add(key);
-    string(row.name, label);
-    string(row.formula, label);
+    if (!(row.kind === "native_total" ? nativeIds : aggregateIds).has(row.total_id)) throw new Error(`${label} response is invalid`);
     enumeration(row.ownership, /* @__PURE__ */ new Set(["helper_managed", "source_owned"]), label);
     for (const field of ["public_outputs", "internal_outputs", "unverified_outputs"]) {
       const outputs = array(row[field], label, 6);
       outputs.forEach((output) => enumeration(output, /* @__PURE__ */ new Set(["Watts", "Amps", "kWh", "Net Watts", "Import Watts", "Return-to-grid Watts", "Import kWh", "Return-to-grid kWh", "external custom kWh"]), label));
       if (new Set(outputs).size !== outputs.length) throw new Error(`${label} response is invalid`);
     }
-    array(row.sources, label, 82).forEach((source) => string(source, label));
-    array(row.parents, label, 36).forEach((parent) => string(parent, label));
-    if (!leafChannels(row.leaf_channels, label, count).length) throw new Error(`${label} response is invalid`);
+    if (row.kind === "native_total") {
+      const sources = array(row.native_sources, label, 7).map((source) => id(source, label));
+      if (new Set(sources).size !== sources.length || sources.some((source) => source === row.total_id || !nativeIds.has(source))) throw new Error(`${label} response is invalid`);
+    }
   }
+}
+function totalDetails(value, label, inventory) {
+  const response = record(value, label);
+  exactKeys(response, ["plan_id", "source_sha256", "total_details"], label);
+  if (response.plan_id !== inventory.plan_id || response.source_sha256 !== inventory.source_sha256) throw new Error(`${label} response is invalid`);
+  totalsSummary(
+    response.total_details,
+    label,
+    new Set(inventory.totals.native_sources.map((source) => source.source_id)),
+    new Set([...inventory.configuration.aggregates, ...inventory.totals.automatic_candidates].map((total) => total.aggregate_id))
+  );
+  return response.total_details;
 }
 function totalGraphPreview(value, label, planId, sourceSha256, configuration) {
   const item = record(value, label);
-  exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph", "configuration_impact", "total_details"], label);
-  totalsSummary(item.total_details, label, configuration.channels.length);
+  exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph", "configuration_impact"], label);
   configurationImpact(item.configuration_impact, label, configuration.meter.update_interval_s);
   if (item.plan_id !== planId || item.source_sha256 !== sourceSha256) throw new Error(`${label} response is invalid`);
   automaticPreview(item, label);
@@ -841,11 +852,10 @@ function totalGraphPreview(value, label, planId, sourceSha256, configuration) {
 }
 function meterConfiguration(value, label) {
   const response = record(value, label);
-  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "totals", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "total_details", "channels", "catalog"], label);
+  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "totals", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "channels", "catalog"], label);
   const planId = string(response.plan_id, label);
   if (!SERVER_ID.test(planId) || !SHA256.test(string(response.source_sha256, label))) throw new Error(`${label} response is invalid`);
   const planTopology = topology(response.topology, label);
-  totalsSummary(response.total_details, label, planTopology.ct_count);
   const configuration = record(response.configuration, label);
   exactKeys(configuration, ["meter", "channels", "default_totals", "automatic_totals", "aggregates", "power_quality", "status_fields", "multi_reference_preparation_acknowledged", "totals_change_intent"], label);
   const meter = record(configuration.meter, label);
@@ -1436,7 +1446,15 @@ class HelperApi {
     });
     this.getTopology = (deviceId) => this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
     this.getCtInventory = (deviceId) => this.call("get_ct_inventory", (value) => ctInventory(value, "get_ct_inventory"), { device_id: deviceId });
-    this.getMeterConfiguration = (deviceId) => this.call("get_meter_configuration", (value) => meterConfiguration(value, "get_meter_configuration"), { device_id: deviceId });
+    this.getMeterConfiguration = async (deviceId) => {
+      const inventory = await this.call("get_meter_configuration", (value) => meterConfiguration(value, "get_meter_configuration"), { device_id: deviceId });
+      const details = await this.call("get_total_details", (value) => totalDetails(value, "get_total_details", inventory), {
+        device_id: deviceId,
+        plan_id: inventory.plan_id,
+        source_sha256: inventory.source_sha256
+      });
+      return { ...inventory, total_details: details };
+    };
     this.getActiveWork = (deviceId, expectedTopology) => this.call("get_active_work", (value) => activeWork(value, "get_active_work", expectedTopology), { device_id: deviceId });
     this.getSession = (sessionId) => this.call("get_session", (value) => session(value, "get_session"), { session_id: sessionId });
     this.getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (value) => record(value, "get_diagnostics_summary"));
@@ -3289,7 +3307,20 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
   const handoffAction = !handoffDeclined && restart2?.source_authority === "saved_flash" && restart2.config_filename && !hasOffsets && (restart2.source_handoff_available || restart2.source_handoff_firmware_installed);
   const totalsEvidence = meterConfiguration2 ?? (configurationMode !== "runtime_only" && sourceConfiguration?.capabilities.configuration_authoritative ? sourceConfiguration : null);
   const totalsImpact = meterConfiguration2 ? impact : totalsEvidence?.configuration_impact ?? null;
-  const totalName = (id2) => totalsEvidence?.total_details.find((total) => total.kind === "aggregate" && total.total_id === id2)?.name ?? id2;
+  const aggregate = (id2) => totalsEvidence?.configuration.aggregates.find((item) => item.aggregate_id === id2) ?? totalsEvidence?.totals.automatic_candidates.find((item) => item.aggregate_id === id2);
+  const totalName = (id2) => aggregate(id2)?.name ?? id2;
+  const displayedTotals = totalsEvidence?.total_details.map((total) => {
+    const source = total.kind === "native_total" ? { kind: "native_total", source_id: total.total_id } : { kind: "aggregate", aggregate_id: total.total_id };
+    const { totals, configuration } = totalsEvidence;
+    const leaves = sourceLeaves([source], totals, configuration.aggregates).sort((a2, b2) => a2 - b2);
+    const definition = aggregate(total.total_id);
+    const sources = total.kind === "native_total" ? total.native_sources.length ? total.native_sources.map((source_id) => ({ kind: "native_total", source_id })) : leaves.map((channel) => ({ kind: "channel", channel })) : definition.sources;
+    let formula = sourceFormula(sources, totals, configuration.aggregates);
+    if (total.kind === "aggregate" && definition?.measurement_method === "one_ct_double_power") formula = `2 × (${formula}) Watts; measured Amps`;
+    if (total.kind === "aggregate" && definition?.measurement_method === "both_conductors_one_ct") formula += " (both conductors)";
+    const parents = configuration.aggregates.filter((parent) => parent.sources.some((item) => source.kind === "native_total" ? item.kind === "native_total" && item.source_id === source.source_id : item.kind === "aggregate" && item.aggregate_id === source.aggregate_id)).map((parent) => parent.name);
+    return { ...total, name: sourceFormula([source], totals, configuration.aggregates), formula, leaf_channels: leaves, parents };
+  }) ?? [];
   const unmanagedLegacyItems = totalsEvidence?.warnings.filter((warning) => warning.includes("unmanaged"));
   const outcome = summaryOutcome({
     configurationMode,
@@ -3309,7 +3340,7 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
       ${totalsImpact ? b`<p>${totalsImpact.public_total_entity_count} public total entities; ${totalsImpact.internal_total_sensor_count} internal total sensors; ${totalsImpact.energy_entity_count} public energy entities.</p>` : b`<p>Current total counts are unavailable.</p>`}
       ${!totalsEvidence.totals.migration.native_visibility_resolved ? b`<p>Counts are confirmed but incomplete: native visibility is unresolved.</p>` : ""}
       <p>Public outputs are exposed to Home Assistant. Internal dependencies remain in firmware for other totals or energy integration.</p>
-      ${totalsEvidence.total_details.map((total) => b`<article class="total-summary" aria-label=${total.name}>
+      ${displayedTotals.map((total) => b`<article class="total-summary" aria-label=${total.name}>
         <h3>${total.name}</h3>
         <p>${total.ownership === "helper_managed" ? "Helper-managed" : "Read-only source YAML"}</p>
         <p>Public outputs: ${total.public_outputs.join(", ") || "none"}</p>
@@ -4897,8 +4928,7 @@ class CircuitSetupPanel extends i$2 {
           automatic_totals: preview.automatic_totals,
           stale_automatic_total_settings: preview.stale_automatic_total_settings
         },
-        configuration_impact: preview.configuration_impact,
-        total_details: preview.total_details
+        configuration_impact: preview.configuration_impact
       };
       this.totalGraphPreview = preview;
       this.totalGraphState = "ready";

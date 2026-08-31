@@ -77,7 +77,7 @@ it("keeps native Watts for each enabled native kWh output but not advanced energ
       upstream_defaults: { watts: true, amps: true, kwh: false } }, response.totals.native_sources[0]!,
   ];
   response.configuration.default_totals.boards = [{ board_index: 0, outputs: { watts: false, amps: false, kwh: true } }];
-  const preview: import("../src/types").TotalGraphPreview = { total_details: [], plan_id: response.plan_id, source_sha256: response.source_sha256,
+  const preview: import("../src/types").TotalGraphPreview = { plan_id: response.plan_id, source_sha256: response.source_sha256,
     automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], configuration_impact: response.configuration_impact,
     graph: { native_visibility: [], leaf_channels: {}, independent_overlap_warnings: [], ordered_nodes: [{ aggregate: { aggregate_id: "advanced", name: "Advanced", role: "branch", sources: [{ kind: "native_total", source_id: "board-main" }], measurement_method: "direct", energy_mode: "consumption", outputs: { watts: false, amps: false, kwh: true }, origin: "advanced" }, power_id: "advancedPower", current_id: "advancedAmps", sources: [{ label: "Main Board", power_id: "boardPower", current_id: "boardAmps", leaf_channels: [1, 2, 3, 4, 5, 6] }], power_required: true, current_required: false, energy_required: true }] },
   };

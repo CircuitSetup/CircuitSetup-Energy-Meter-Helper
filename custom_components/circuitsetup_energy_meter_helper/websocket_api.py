@@ -69,6 +69,7 @@ READ_COMMANDS = (
     f"{_PREFIX}get_topology",
     f"{_PREFIX}get_ct_inventory",
     f"{_PREFIX}get_meter_configuration",
+    f"{_PREFIX}get_total_details",
     f"{_PREFIX}preview_total_graph",
     f"{_PREFIX}get_active_work",
     f"{_PREFIX}get_session",
@@ -240,6 +241,10 @@ class WorkflowOwner(Protocol):
 
     async def async_get_meter_configuration(self, device_id: str) -> Any: ...
 
+    async def async_get_total_details(
+        self, device_id: str, plan_id: str, source_sha256: str,
+    ) -> Any: ...
+
     async def async_preview_total_graph(
         self, device_id: str, plan_id: str, source_sha256: str,
         requested: MeterConfigurationRequest,
@@ -410,6 +415,9 @@ class EntryWebsocketController:
             return await workflow.async_get_ct_inventory(msg["device_id"])
         if operation == "get_meter_configuration" and workflow is not None:
             return await workflow.async_get_meter_configuration(msg["device_id"])
+        if operation == "get_total_details" and workflow is not None:
+            return await workflow.async_get_total_details(
+                msg["device_id"], msg["plan_id"], msg["source_sha256"])
         if operation == "get_active_work" and workflow is not None:
             return await workflow.async_get_active_work(msg["device_id"])
         if operation == "get_session" and workflow is not None:
@@ -1052,6 +1060,12 @@ def _schema(command: str) -> Any:
         "adopt_device",
     }:
         schema[vol.Required("device_id")] = _ID
+    elif operation == "get_total_details":
+        schema |= {
+            vol.Required("device_id"): _ID,
+            vol.Required("plan_id"): _ID,
+            vol.Required("source_sha256"): _SHA256,
+        }
     elif operation == "preview_ct_config":
         schema |= {
             vol.Required("device_id"): _ID,

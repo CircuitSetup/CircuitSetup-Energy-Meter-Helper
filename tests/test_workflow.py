@@ -764,7 +764,7 @@ def test_total_graph_preview_is_repeatable_read_only_and_recomputes_roles() -> N
     asyncio.run(run())
 
 
-def test_inventory_and_preview_expose_source_aware_summary_without_writes() -> None:
+def test_bound_details_expose_source_aware_summary_without_writes() -> None:
     from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
         sanitize_payload,
     )
@@ -775,25 +775,25 @@ def test_inventory_and_preview_expose_source_aware_summary_without_writes() -> N
         await fixture.initialize("summary")
         before = await fixture.store.async_get_meter_configuration(MAC)
         response = await fixture.workflow.async_get_meter_configuration("meter-1")
-        rows = {row.total_id: row for row in response.get("total_details", ())}
+        calls = list(fixture.builder.calls)
+        details = await fixture.workflow.async_get_total_details("meter-1", response["plan_id"], response["source_sha256"])
+        assert fixture.builder.calls == calls
+        assert "total_details" not in response
+        rows = {row.total_id: row for row in details["total_details"]}
         assert set(rows) == {"overall", "auto-mains", "hidden", "parent", "watts-only"}
         assert rows["auto-mains"].public_outputs == ("Net Watts", "Import Watts", "Return-to-grid Watts", "Import kWh", "Return-to-grid kWh")
         assert rows["hidden"].public_outputs == ()
         assert rows["hidden"].internal_outputs == ("Watts", "Amps")
-        assert rows["hidden"].parents == ("Parent report",)
-        assert rows["parent"].sources == ("Hidden branch",)
-        assert rows["parent"].leaf_channels == (3,)
         assert rows["watts-only"].public_outputs == ("Watts",)
         assert rows["parent"].ownership == "helper_managed"
         assert response["configuration_impact"].energy_entity_count == 4
         preview = await fixture.workflow.async_preview_total_graph("meter-1", response["plan_id"],
             response["source_sha256"], response["configuration"])
-        assert preview["total_details"] == response["total_details"]
-        for payload in (response, preview):
-            transported = sanitize_payload(payload)
-            assert len(transported["total_details"]) == 5
-            assert transported["total_details"][0]["kind"] == "native_total"
-            assert transported["total_details"][0]["public_outputs"] == ["Watts", "Amps", "kWh"]
+        assert sanitize_payload(preview)["configuration_impact"] == sanitize_payload(response["configuration_impact"])
+        transported = sanitize_payload(details)
+        assert len(transported["total_details"]) == 5
+        assert transported["total_details"][0]["kind"] == "native_total"
+        assert transported["total_details"][0]["public_outputs"] == ["Watts", "Amps", "kWh"]
         assert fixture.builder.remote_content
         assert not set(fixture.builder.calls) & {"write", "compile", "upload", "restore"}
         assert await fixture.store.async_get_meter_configuration(MAC) == before
@@ -808,12 +808,11 @@ def test_source_owned_summary_does_not_relabel_watts_or_invent_helper_energy() -
         fixture = Fixture()
         await fixture.initialize("source-only")
         response = await fixture.workflow.async_get_meter_configuration("meter-1")
-        row = next(row for row in response["total_details"] if row.kind == "aggregate")
+        details = await fixture.workflow.async_get_total_details("meter-1", response["plan_id"], response["source_sha256"])
+        row = next(row for row in details["total_details"] if row.kind == "aggregate")
         assert row.ownership == "source_owned"
         assert row.public_outputs == ("Watts",)
         assert row.internal_outputs == ()
-        assert row.sources == ("CT 5", "CT 6")
-        assert row.leaf_channels == (5, 6)
         assert response["configuration_impact"].energy_entity_count == 1
         assert not set(fixture.builder.calls) & {"write", "compile", "upload"}
         assert await fixture.store.async_get_meter_configuration(MAC) is None

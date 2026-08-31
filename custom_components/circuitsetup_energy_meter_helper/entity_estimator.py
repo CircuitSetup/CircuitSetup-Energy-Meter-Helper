@@ -13,11 +13,8 @@ from .meter_config_mutator import (
     _source_owned_total_items,
 )
 from .meter_configuration import (
-    AggregateTotalSource,
     EnergyMode,
-    MeasurementMethod,
     MeterConfigurationRequest,
-    NativeTotalSource,
     validate_meter_configuration,
 )
 from .meter_inventory import (
@@ -48,15 +45,17 @@ class TotalSummary:
 
     total_id: str
     kind: Literal["native_total", "aggregate"]
-    name: str
     ownership: Literal["helper_managed", "source_owned"]
     public_outputs: tuple[str, ...]
     internal_outputs: tuple[str, ...]
     unverified_outputs: tuple[str, ...]
-    sources: tuple[str, ...]
-    formula: str
-    leaf_channels: tuple[int, ...]
-    parents: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeTotalSummary(TotalSummary):
+    """Immediate native dependencies; an empty tuple means direct physical CTs."""
+
+    native_sources: tuple[str, ...]
 
 
 def summarize_configuration_totals(
@@ -71,30 +70,25 @@ def summarize_configuration_totals(
     owner: Literal["helper_managed", "source_owned"] = "helper_managed" if totals_managed else "source_owned"
     native_outputs, _ = _native_total_accounting(selected, topology, document, native_visibility_resolved)
     partial = {} if native_visibility_resolved else _source_native_visibility(document, topology)
-    result = []
-    for native in native_total_sources(topology):
+    result: list[TotalSummary] = []
+    native_catalog = native_total_sources(topology)
+    for native in native_catalog:
         outputs = native_outputs[native.source_id]
         metrics = (("Watts", native.power_id, outputs.watts), ("Amps", native.current_id, outputs.amps),
             ("kWh", native.existing_energy_id, outputs.kwh))
-        sources = tuple(f"CT{channel}" for channel in sorted(native.leaf_channels))
-        result.append(TotalSummary(native.source_id, "native_total", native.label, owner,
+        result.append(NativeTotalSummary(native.source_id, "native_total", owner,
             tuple(label for label, _, visible in metrics if visible),
             tuple(label for label, sensor_id, visible in metrics if not visible and sensor_id is not None
                 and (native_visibility_resolved or partial.get(sensor_id) is False)),
             tuple(label for label, sensor_id, _ in metrics if not native_visibility_resolved
                 and sensor_id is not None and partial.get(sensor_id) is None),
-            sources, " + ".join(sources), tuple(sorted(native.leaf_channels)),
-            tuple(node.aggregate.name for node in graph.ordered_nodes
-                if NativeTotalSource("native_total", native.source_id) in node.aggregate.sources)))
+            tuple(source.source_id for source in native_catalog if source.source_id != "overall")
+                if native.source_id == "overall" else ()))
     external_ids = _legacy_replacement_sources(document, topology, configuration.channels)
     external = _source_owned_total_items(selected, topology, document, replacements)
     generated = {node.aggregate.aggregate_id for node in graph.ordered_nodes}
     for node in full_graph.ordered_nodes:
         aggregate = node.aggregate
-        sources = tuple(source.label for source in node.sources)
-        formula = " + ".join(sources)
-        if aggregate.measurement_method is MeasurementMethod.ONE_CT_DOUBLE_POWER:
-            formula = f"2 × ({formula}) Watts; measured Amps"
         public: tuple[str, ...]
         internal: tuple[str, ...]
         unknown: tuple[str, ...] = ()
@@ -115,11 +109,7 @@ def summarize_configuration_totals(
                 for item in items if item.get("internal") == "true")
             unknown = ("external custom kWh",) if aggregate.energy_mode is not EnergyMode.NONE else ()
             node_owner = "source_owned"
-        result.append(TotalSummary(aggregate.aggregate_id, "aggregate", aggregate.name, node_owner,
-            public, internal, unknown, sources, formula,
-            tuple(sorted(full_graph.leaf_channels[aggregate.aggregate_id])),
-            tuple(parent.aggregate.name for parent in full_graph.ordered_nodes
-                if AggregateTotalSource("aggregate", aggregate.aggregate_id) in parent.aggregate.sources)))
+        result.append(TotalSummary(aggregate.aggregate_id, "aggregate", node_owner, public, internal, unknown))
     return tuple(result)
 
 

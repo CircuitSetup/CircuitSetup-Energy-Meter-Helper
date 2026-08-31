@@ -191,6 +191,9 @@ class Fixture:
             return {"topology": self.topology, "configuration_authoritative": self.name != "runtime-only"}
         if operation == "get_meter_configuration":
             return await self.workflow.async_get_meter_configuration("meter-1")
+        if operation == "get_total_details":
+            return await self.workflow.async_get_total_details(
+                "meter-1", frame["plan_id"], frame["source_sha256"])
         if operation == "get_active_work":
             return {"session": None, "transaction": self.manager.active_status(MAC), "verified_calibration": None}
         if operation in ("preview_total_graph", "preview_meter_configuration"):

@@ -281,30 +281,40 @@ function totalsInventory(value: unknown, label: string, count: number): Record<s
   return item;
 }
 
-function totalsSummary(value: unknown, label: string, count: number): void {
+function totalsSummary(value: unknown, label: string, nativeIds: Set<unknown>, aggregateIds: Set<unknown>): void {
   const keys = new Set<string>();
   for (const entry of array(value, label, 44)) {
     const row = record(entry, label);
-    exactKeys(row, ["total_id", "kind", "name", "ownership", "public_outputs", "internal_outputs", "unverified_outputs", "sources", "formula", "leaf_channels", "parents"], label);
+    exactKeys(row, ["total_id", "kind", "ownership", "public_outputs", "internal_outputs", "unverified_outputs", ...(row.kind === "native_total" ? ["native_sources"] : [])], label);
     const key = `${enumeration(row.kind, new Set(["native_total", "aggregate"]), label)}:${id(row.total_id, label)}`;
     if (keys.has(key)) throw new Error(`${label} response is invalid`);
     keys.add(key);
-    string(row.name, label); string(row.formula, label);
+    if (!(row.kind === "native_total" ? nativeIds : aggregateIds).has(row.total_id)) throw new Error(`${label} response is invalid`);
     enumeration(row.ownership, new Set(["helper_managed", "source_owned"]), label);
     for (const field of ["public_outputs", "internal_outputs", "unverified_outputs"]) {
       const outputs = array(row[field], label, 6);
       outputs.forEach((output) => enumeration(output, new Set(["Watts", "Amps", "kWh", "Net Watts", "Import Watts", "Return-to-grid Watts", "Import kWh", "Return-to-grid kWh", "external custom kWh"]), label));
       if (new Set(outputs).size !== outputs.length) throw new Error(`${label} response is invalid`);
     }
-    array(row.sources, label, 82).forEach((source) => string(source, label));
-    array(row.parents, label, 36).forEach((parent) => string(parent, label));
-    if (!leafChannels(row.leaf_channels, label, count).length) throw new Error(`${label} response is invalid`);
+    if (row.kind === "native_total") {
+      const sources = array(row.native_sources, label, 7).map((source) => id(source, label));
+      if (new Set(sources).size !== sources.length || sources.some((source) => source === row.total_id || !nativeIds.has(source))) throw new Error(`${label} response is invalid`);
+    }
   }
 }
 
+function totalDetails(value: unknown, label: string, inventory: Omit<MeterConfiguration, "total_details">): MeterConfiguration["total_details"] {
+  const response = record(value, label);
+  exactKeys(response, ["plan_id", "source_sha256", "total_details"], label);
+  if (response.plan_id !== inventory.plan_id || response.source_sha256 !== inventory.source_sha256) throw new Error(`${label} response is invalid`);
+  totalsSummary(response.total_details, label,
+    new Set(inventory.totals.native_sources.map((source) => source.source_id)),
+    new Set([...inventory.configuration.aggregates, ...inventory.totals.automatic_candidates].map((total) => total.aggregate_id)));
+  return response.total_details as MeterConfiguration["total_details"];
+}
+
 function totalGraphPreview(value: unknown, label: string, planId: string, sourceSha256: string, configuration: MeterConfigurationRequest): TotalGraphPreview {
-  const item = record(value, label); exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph", "configuration_impact", "total_details"], label);
-  totalsSummary(item.total_details, label, configuration.channels.length);
+  const item = record(value, label); exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph", "configuration_impact"], label);
   configurationImpact(item.configuration_impact, label, configuration.meter.update_interval_s);
   if (item.plan_id !== planId || item.source_sha256 !== sourceSha256) throw new Error(`${label} response is invalid`);
   automaticPreview(item, label);
@@ -316,13 +326,12 @@ function totalGraphPreview(value: unknown, label: string, planId: string, source
   return value as TotalGraphPreview;
 }
 
-function meterConfiguration(value: unknown, label: string): MeterConfiguration {
+function meterConfiguration(value: unknown, label: string): Omit<MeterConfiguration, "total_details"> {
   const response = record(value, label);
-  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "totals", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "total_details", "channels", "catalog"], label);
+  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "totals", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "channels", "catalog"], label);
   const planId = string(response.plan_id, label)!;
   if (!SERVER_ID.test(planId) || !SHA256.test(string(response.source_sha256, label)!)) throw new Error(`${label} response is invalid`);
   const planTopology = topology(response.topology, label);
-  totalsSummary(response.total_details, label, planTopology.ct_count);
   const configuration = record(response.configuration, label);
   exactKeys(configuration, ["meter", "channels", "default_totals", "automatic_totals", "aggregates", "power_quality", "status_fields", "multi_reference_preparation_acknowledged", "totals_change_intent"], label);
   const meter = record(configuration.meter, label);
@@ -399,7 +408,7 @@ function meterConfiguration(value: unknown, label: string): MeterConfiguration {
   const statusFields = array(configuration.status_fields, label, 7);
   const textCount = enabledChannels.filter((entry) => statusFields[Math.floor((Number(entry.channel) - 1) / 6)]).length;
   if (impact.enabled_channel_count !== enabledChannels.length || impact.text_entity_count !== textCount || Number(impact.energy_entity_count) > Number(impact.numeric_entity_count)) throw new Error(`${label} response is invalid`);
-  return value as MeterConfiguration;
+  return value as Omit<MeterConfiguration, "total_details">;
 }
 
 function packageOptions(value: unknown, label: string, boardCount: number): BoardPackageOptions {
@@ -836,8 +845,13 @@ export class HelperApi {
     this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
   public getCtInventory = (deviceId: string) =>
     this.call("get_ct_inventory", (value) => ctInventory(value, "get_ct_inventory"), { device_id: deviceId });
-  public getMeterConfiguration = (deviceId: string) =>
-    this.call("get_meter_configuration", (value) => meterConfiguration(value, "get_meter_configuration"), { device_id: deviceId });
+  public getMeterConfiguration = async (deviceId: string): Promise<MeterConfiguration> => {
+    const inventory = await this.call("get_meter_configuration", (value) => meterConfiguration(value, "get_meter_configuration"), { device_id: deviceId });
+    const details = await this.call("get_total_details", (value) => totalDetails(value, "get_total_details", inventory), {
+      device_id: deviceId, plan_id: inventory.plan_id, source_sha256: inventory.source_sha256,
+    });
+    return { ...inventory, total_details: details };
+  };
   public getActiveWork = (deviceId: string, expectedTopology: MeterTopology) =>
     this.call("get_active_work", (value) => activeWork(value, "get_active_work", expectedTopology), { device_id: deviceId });
   public getSession = (sessionId: string) =>

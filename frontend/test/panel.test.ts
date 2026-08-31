@@ -116,11 +116,26 @@ const offsetReadinessEntities = (voltage = 0) => [0, 1].flatMap((groupOffset) =>
       mean: 0, minimum: 0, maximum: 0, absolute_peak: 0, absolute_spread: 0 } })),
 ]);
 
+const inventoryOnly = (value: ReturnType<typeof meterResponse>) => {
+  const { total_details: _details, ...inventory } = value;
+  return inventory;
+};
+const boundDetails = (message: Record<string, unknown>) => ({
+  plan_id: message.plan_id, source_sha256: message.source_sha256, total_details: [],
+});
 const makeHass = (responses: Record<string, unknown>): HomeAssistant => ({
   callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
     const operation = String(message.type).split("/").at(-1) ?? "";
-    const response = responses[operation] ?? {};
+    const response = await (responses[operation] ?? {});
     if (response instanceof Error) throw response;
+    if (operation === "get_meter_configuration") {
+      const { total_details: _details, ...inventory } = response as ReturnType<typeof meterResponse>;
+      return inventory as T;
+    }
+    if (operation === "get_total_details" && !responses[operation]) {
+      const inventory = await responses.get_meter_configuration as ReturnType<typeof meterResponse>;
+      return { plan_id: inventory.plan_id, source_sha256: inventory.source_sha256, total_details: inventory.total_details } as T;
+    }
     return response as T;
   },
   connection: {
@@ -157,7 +172,7 @@ describe("explicit totals adoption and migration transactions", () => {
     const responses: Record<string, unknown> = { setup_status: { state: "device_discovered", devices: [device] },
       preview_meter_configuration: reviewed(), cancel_session: { ...session, state: "cancelled" }, get_meter_configuration: meter,
       preview_total_graph: { plan_id: meter.plan_id, source_sha256: meter.source_sha256, configuration_impact: meter.configuration_impact,
-        automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } }, ...overrides };
+        automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } }, ...overrides };
     const hass = makeHass(responses); const call = hass.callWS;
     hass.callWS = async <T>(message: Record<string, unknown>) => { calls.push(message); return call<T>(message); };
     const panel = await mount(hass);
@@ -317,8 +332,8 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(text(panel)).not.toContain("Legacy read-only totals");
   });
 
-  it("keeps verified installation truth but withholds stale summary counts if inventory refresh fails", async () => {
-    const { state, panel } = await prepare({ install_ct_config: { ...reviewed(), state: "verified" }, get_meter_configuration: new Error("offline") });
+  it.each(["get_meter_configuration", "get_total_details"])("keeps verified installation truth but withholds stale summary counts if %s fails", async (operation) => {
+    const { state, panel } = await prepare({ install_ct_config: { ...reviewed(), state: "verified" }, [operation]: new Error("offline") });
     state.meterConfiguration.configuration.totals_change_intent = { adopt_managed_totals: true, legacy_parent_decisions: [] };
     state.transaction = reviewed(); await state.transactionAction("install");
     expect(state.configurationInstalled).toBe(true);
@@ -338,6 +353,21 @@ describe("explicit totals adoption and migration transactions", () => {
     const next = meterResponse(); next.configuration.meter.friendly_name = "Next meter";
     state.selectedDeviceId = "next"; state.setMeterConfiguration(next);
     resolve(meterResponse()); await install;
+    expect(state.meterConfiguration.configuration.meter.friendly_name).toBe("Next meter");
+    expect(state.verifiedMeterConfiguration?.configuration.meter.friendly_name).toBe("Next meter");
+  });
+
+  it("ignores late bound details after device selection changes", async () => {
+    const fresh = meterResponse();
+    let resolve!: (value: unknown) => void;
+    const pending = new Promise((done) => { resolve = done; });
+    const { state, calls } = await prepare({ install_ct_config: { ...reviewed(), state: "verified" }, get_total_details: pending });
+    state.transaction = reviewed(); const install = state.transactionAction("install");
+    await vi.waitFor(() => expect(calls.some((call) => String(call.type).endsWith("get_total_details"))).toBe(true));
+    const next = meterResponse(); next.configuration.meter.friendly_name = "Next meter";
+    state.selectedDeviceId = "next"; state.setMeterConfiguration(next);
+    resolve({ plan_id: fresh.plan_id, source_sha256: fresh.source_sha256, total_details: fresh.total_details });
+    await install;
     expect(state.meterConfiguration.configuration.meter.friendly_name).toBe("Next meter");
     expect(state.verifiedMeterConfiguration?.configuration.meter.friendly_name).toBe("Next meter");
   });
@@ -504,7 +534,7 @@ describe("server-authoritative total graph", () => {
     resolveGraph({ plan_id: response.plan_id, source_sha256: response.source_sha256,
       automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [off],
       configuration_impact: { ...response.configuration_impact, numeric_entity_count: 43, approximate_publications_per_second: 8.6 },
-      total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
+      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
     await tick(); await panel.updateComplete;
     expect(state.totalGraphState).toBe("ready");
     expect(text(panel).includes("43 public entities")).toBe(true);
@@ -529,7 +559,7 @@ describe("server-authoritative total graph", () => {
     await state.continueFromMeterSettings();
     resolveGraph({ plan_id: response.plan_id, source_sha256: response.source_sha256,
       automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], configuration_impact: response.configuration_impact,
-      total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
+      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
     await tick();
     expect(state.step).toBe("ct");
     expect(state.totalGraphState).toBe("ready");
@@ -562,7 +592,7 @@ describe("server-authoritative total graph", () => {
       automatic_candidates: [candidate], automatic_totals: [{ candidate, enabled: true, outputs: candidate.recommended_outputs }],
       stale_automatic_total_settings: [],
       configuration_impact: { ...fresh.configuration_impact, numeric_entity_count: 43, approximate_publications_per_second: 8.6 },
-      total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
+      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
     pending.at(-1)!.resolve(preview); await tick(); await panel.updateComplete;
     expect(state.totalGraphState).toBe("ready");
     expect(state.meterConfiguration.configuration.channels[0]!.role).toBe("solar");
@@ -680,7 +710,7 @@ describe("server-authoritative total graph", () => {
     const preview = { plan_id: response.plan_id, source_sha256: response.source_sha256,
       automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [off],
       configuration_impact: { ...response.configuration_impact, numeric_entity_count: 43, approximate_publications_per_second: 8.6 },
-      total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
+      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
     state.updateCircuitConfiguration({ ...state.meterConfiguration.configuration });
     pending[1]!.resolve(preview); await tick(); await panel.updateComplete;
     expect(text(panel)).toContain("43 public entities");
@@ -1220,7 +1250,7 @@ describe("CircuitSetup panel", () => {
         if (operation === "preview_total_graph") return { plan_id: message.plan_id, source_sha256: message.source_sha256,
           automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
           configuration_impact: meterResponse().configuration_impact,
-          total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
+          graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
         if (operation === "preview_meter_configuration") {
           if (message.plan_id !== activePlan) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
           return preview as T;
@@ -1304,7 +1334,7 @@ describe("CircuitSetup panel", () => {
         if (operation === "preview_total_graph") return { plan_id: message.plan_id, source_sha256: message.source_sha256,
           automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
           configuration_impact: meterResponse().configuration_impact,
-          total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
+          graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
         if (operation === "preview_meter_configuration") {
           if (message.plan_id !== activePlan || pendingTransaction) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
           activePlan = null; pendingTransaction = true;
@@ -1319,8 +1349,9 @@ describe("CircuitSetup panel", () => {
         if (operation === "get_meter_configuration") {
           planGeneration += 1;
           activePlan = (planGeneration === 1 ? "c" : "d").repeat(32);
-          return { ...meterResponse(), plan_id: activePlan } as T;
+          return { ...inventoryOnly(meterResponse()), plan_id: activePlan } as T;
         }
+        if (operation === "get_total_details") return boundDetails(message) as T;
         return {} as T;
       },
       connection: { subscribeMessage: async () => () => undefined },
@@ -1398,7 +1429,7 @@ describe("CircuitSetup panel", () => {
         if (operation === "preview_total_graph") return { plan_id: message.plan_id, source_sha256: message.source_sha256,
           automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
           configuration_impact: meterResponse().configuration_impact,
-          total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
+          graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
         if (operation === "preview_meter_configuration") {
           previews.push({ planId: message.plan_id, sourceSha256: message.source_sha256, configuration: message.configuration });
           if (message.plan_id !== activePlan || pendingTransaction) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
@@ -1413,11 +1444,12 @@ describe("CircuitSetup panel", () => {
         if (operation === "get_meter_configuration") {
           activePlan = "c".repeat(32);
           const fresh = meterResponse() as unknown as import("../src/types").MeterConfiguration;
-          return { ...fresh, plan_id: activePlan, source_sha256: "f".repeat(64),
+          return { ...inventoryOnly(fresh as ReturnType<typeof meterResponse>), plan_id: activePlan, source_sha256: "f".repeat(64),
             configuration: { ...fresh.configuration,
               meter: { ...fresh.configuration.meter, friendly_name: "External meter" },
               channels: fresh.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel) } } as T;
         }
+        if (operation === "get_total_details") return boundDetails(message) as T;
         return {} as T;
       },
       connection: { subscribeMessage: async () => () => undefined },
@@ -1532,7 +1564,8 @@ describe("CircuitSetup panel", () => {
         operations.push(operation);
         if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
         if (operation === "install_ct_config") return { ...preview, state: "verified", full_meter_configuration_verified: true } as T;
-        if (operation === "get_meter_configuration") return meterResponse() as T;
+        if (operation === "get_meter_configuration") return inventoryOnly(meterResponse()) as T;
+        if (operation === "get_total_details") return boundDetails(message) as T;
         if (operation === "get_active_work") return { session: null, transaction: null, verified_calibration: null } as T;
         if (operation === "start_session") return { session_id: "session", device_id: "meter-1", state: "safety_required", safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } } as T;
         return {} as T;
@@ -2000,7 +2033,8 @@ describe("CircuitSetup panel", () => {
           ? { state: "device_discovered", devices: [{ ...device, configuration: "meter.yaml" }], bound_device_id: device.entry_id }
           : { state: "no_device", devices: [] }) as T;
         if (operation === "adopt_device") { adopted = true; return { device_id: device.entry_id, configuration: "meter.yaml" } as T; }
-        if (operation === "get_meter_configuration") return meterResponse("split_phase_120_240", 60) as T;
+        if (operation === "get_meter_configuration") return inventoryOnly(meterResponse("split_phase_120_240", 60)) as T;
+        if (operation === "get_total_details") return boundDetails(message) as T;
         if (operation === "get_topology") return { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
           connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name,
           evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] } as T;
@@ -2037,7 +2071,8 @@ describe("CircuitSetup panel", () => {
           adopted = true;
           return { device_id: device.entry_id, configuration: "meter.yaml" } as T;
         }
-        if (operation === "get_meter_configuration") return meterResponse() as T;
+        if (operation === "get_meter_configuration") return inventoryOnly(meterResponse()) as T;
+        if (operation === "get_total_details") return boundDetails(message) as T;
         if (operation === "get_topology") {
           if (!adopted) throw Object.assign(new Error("stale"), { code: "stale_handle" });
           return { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,

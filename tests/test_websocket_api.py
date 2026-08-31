@@ -545,6 +545,8 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         "adopt_device",
     }:
         base["device_id"] = "meter"
+    elif suffix == "get_total_details":
+        base |= {"device_id": "meter", "plan_id": "plan", "source_sha256": "a" * 64}
     elif suffix == "preview_ct_config":
         base |= {
             "device_id": "meter",
@@ -2908,6 +2910,40 @@ def test_ct_preview_schemas_restrict_reporting_multipliers() -> None:
                 assert schema(message)["changes"][0]["reporting_multiplier"] == float(
                     valid
                 )
+
+    asyncio.run(run())
+
+
+def test_total_details_read_route_uses_exact_bound_snapshot_and_public_transport() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        READ_COMMANDS,
+    )
+    from tests.totals_browser_fixture import MAC, Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("summary")
+        inventory = await fixture.workflow.async_get_meter_configuration("meter-1")
+        controller = EntryWebsocketController(ProvisioningCoordinator(FakeHass()), SessionManager(), HelperStore(FakeHass()))
+        controller.workflow = fixture.workflow
+        command = f"{DOMAIN}/get_total_details"
+        assert command in READ_COMMANDS
+        schema = vol.Schema(_schema(command))
+        message = {"type": command, "entry_id": "helper", "device_id": "meter-1",
+            "plan_id": inventory["plan_id"], "source_sha256": inventory["source_sha256"]}
+        for invalid in ({**message, "configuration": {}}, {**message, "source_sha256": "invalid"},
+            {key: value for key, value in message.items() if key != "plan_id"}):
+            with pytest.raises(vol.Invalid):
+                schema(invalid)
+        before = list(fixture.builder.calls)
+        stored = await fixture.store.async_get_meter_configuration(MAC)
+        result = sanitize_payload(await controller.async_call(command, schema(message), "non-admin"))
+        assert set(result) == {"plan_id", "source_sha256", "total_details"}
+        assert result["plan_id"] == inventory["plan_id"]
+        assert len(result["total_details"]) == 5
+        assert result["total_details"][0]["public_outputs"] == ["Watts", "Amps", "kWh"]
+        assert fixture.builder.calls == before
+        assert await fixture.store.async_get_meter_configuration(MAC) == stored
 
     asyncio.run(run())
 

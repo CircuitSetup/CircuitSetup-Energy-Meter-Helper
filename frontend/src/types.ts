@@ -190,22 +190,18 @@ export interface TotalsInventory {
   };
 }
 
-export interface TotalSummary {
+interface TotalOutputEvidence {
   total_id: string;
-  kind: "native_total" | "aggregate";
-  name: string;
   ownership: "helper_managed" | "source_owned";
   public_outputs: string[];
   internal_outputs: string[];
   unverified_outputs: string[];
-  sources: string[];
-  formula: string;
-  leaf_channels: number[];
-  parents: string[];
 }
 
+export type TotalSummary = TotalOutputEvidence &
+  ({ kind: "aggregate" } | { kind: "native_total"; native_sources: string[] });
+
 export interface TotalGraphPreview {
-  total_details: TotalSummary[];
   configuration_impact: ConfigurationImpact;
   plan_id: string;
   source_sha256: string;

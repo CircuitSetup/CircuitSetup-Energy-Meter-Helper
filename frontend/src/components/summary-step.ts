@@ -1,5 +1,6 @@
 import { html, type TemplateResult } from "lit";
-import type { CalibrationResult, ConfigurationImpact, MeterConfiguration, MeterTopology, RestartVerificationResult, SessionStatus, StabilityResult, TransactionStatus } from "../types";
+import type { CalibrationResult, ConfigurationImpact, MeterConfiguration, MeterTopology, RestartVerificationResult, SessionStatus, StabilityResult, TotalSource, TransactionStatus } from "../types";
+import { sourceFormula, sourceLeaves } from "../total-graph";
 import type { ConfigurationMode, ExistingConfigurationChoice } from "../workflow-model";
 import { technicalDetails } from "./technical-details";
 import { legacyTotalsNotice } from "./totals-migration-review";
@@ -43,7 +44,27 @@ export function summaryStep(topology: MeterTopology | null, session: SessionStat
   const handoffAction = !handoffDeclined && restart?.source_authority === "saved_flash" && restart.config_filename && !hasOffsets && (restart.source_handoff_available || restart.source_handoff_firmware_installed);
   const totalsEvidence = meterConfiguration ?? (configurationMode !== "runtime_only" && sourceConfiguration?.capabilities.configuration_authoritative ? sourceConfiguration : null);
   const totalsImpact = meterConfiguration ? impact : totalsEvidence?.configuration_impact ?? null;
-  const totalName = (id: string) => totalsEvidence?.total_details.find((total) => total.kind === "aggregate" && total.total_id === id)?.name ?? id;
+  const aggregate = (id: string) => totalsEvidence?.configuration.aggregates.find((item) => item.aggregate_id === id)
+    ?? totalsEvidence?.totals.automatic_candidates.find((item) => item.aggregate_id === id);
+  const totalName = (id: string) => aggregate(id)?.name ?? id;
+  const displayedTotals = totalsEvidence?.total_details.map((total) => {
+    const source: TotalSource = total.kind === "native_total" ? { kind: "native_total", source_id: total.total_id }
+      : { kind: "aggregate", aggregate_id: total.total_id };
+    const { totals, configuration } = totalsEvidence;
+    const leaves = sourceLeaves([source], totals, configuration.aggregates).sort((a, b) => a - b);
+    const definition = aggregate(total.total_id);
+    const sources: TotalSource[] = total.kind === "native_total"
+      ? total.native_sources.length ? total.native_sources.map((source_id) => ({ kind: "native_total", source_id }))
+        : leaves.map((channel) => ({ kind: "channel", channel }))
+      : definition!.sources;
+    let formula = sourceFormula(sources, totals, configuration.aggregates);
+    if (total.kind === "aggregate" && definition?.measurement_method === "one_ct_double_power") formula = `2 × (${formula}) Watts; measured Amps`;
+    if (total.kind === "aggregate" && definition?.measurement_method === "both_conductors_one_ct") formula += " (both conductors)";
+    const parents = configuration.aggregates.filter((parent) => parent.sources.some((item) =>
+      source.kind === "native_total" ? item.kind === "native_total" && item.source_id === source.source_id
+        : item.kind === "aggregate" && item.aggregate_id === source.aggregate_id)).map((parent) => parent.name);
+    return { ...total, name: sourceFormula([source], totals, configuration.aggregates), formula, leaf_channels: leaves, parents };
+  }) ?? [];
   const unmanagedLegacyItems = totalsEvidence?.warnings.filter((warning) => warning.includes("unmanaged"));
   const outcome = summaryOutcome({ configurationMode, legacyChoice, completedWithoutChanges, configurationInstalled, restart,
     verifiedConfiguration: meterConfiguration !== null, ...(unmanagedLegacyItems ? { unmanagedLegacyItems } : {}) });
@@ -56,7 +77,7 @@ export function summaryStep(topology: MeterTopology | null, session: SessionStat
       ${totalsImpact ? html`<p>${totalsImpact.public_total_entity_count} public total entities; ${totalsImpact.internal_total_sensor_count} internal total sensors; ${totalsImpact.energy_entity_count} public energy entities.</p>` : html`<p>Current total counts are unavailable.</p>`}
       ${!totalsEvidence.totals.migration.native_visibility_resolved ? html`<p>Counts are confirmed but incomplete: native visibility is unresolved.</p>` : ""}
       <p>Public outputs are exposed to Home Assistant. Internal dependencies remain in firmware for other totals or energy integration.</p>
-      ${totalsEvidence.total_details.map((total) => html`<article class="total-summary" aria-label=${total.name}>
+      ${displayedTotals.map((total) => html`<article class="total-summary" aria-label=${total.name}>
         <h3>${total.name}</h3>
         <p>${total.ownership === "helper_managed" ? "Helper-managed" : "Read-only source YAML"}</p>
         <p>Public outputs: ${total.public_outputs.join(", ") || "none"}</p>

@@ -542,13 +542,26 @@ class EntryWorkflow:
                 document=document, previous=inventory.configuration,
                 native_visibility_resolved=inventory.native_visibility_resolved,
             ),
-            "total_details": summarize_configuration_totals(
-                inventory.configuration, inventory.topology, document=document,
-                previous=inventory.configuration, native_visibility_resolved=inventory.native_visibility_resolved,
-                totals_managed=inventory.totals_managed,
-            ),
             "channels": inventory.ct_inventory.channels,
             "catalog": inventory.ct_catalog,
+        }
+
+    async def async_get_total_details(
+        self, device_id: str, plan_id: str, source_sha256: str,
+    ) -> dict[str, Any]:
+        """Read Summary evidence from the same issued inventory snapshot."""
+        plan = self._plan(plan_id, device_id, source_sha256)
+        inventory = plan.inventory
+        return {
+            "plan_id": plan_id,
+            "source_sha256": source_sha256,
+            "total_details": summarize_configuration_totals(
+                inventory.configuration, plan.topology,
+                document=ESPHomeConfigDocument.parse(plan.snapshot.content),
+                previous=inventory.configuration,
+                native_visibility_resolved=inventory.native_visibility_resolved,
+                totals_managed=inventory.totals_managed,
+            ),
         }
 
     async def async_get_ct_inventory(self, device_id: str) -> dict[str, Any]:
@@ -691,11 +704,6 @@ class EntryWorkflow:
             "automatic_totals": resolve_automatic_totals(candidates, current.automatic_totals),
             "stale_automatic_total_settings": stale,
             "configuration_impact": impact,
-            "total_details": summarize_configuration_totals(
-                current, plan.topology, document=ESPHomeConfigDocument.parse(plan.snapshot.content),
-                previous=plan.inventory.configuration, native_visibility_resolved=plan.inventory.native_visibility_resolved,
-                totals_managed=plan.inventory.totals_managed or current.totals_change_intent.adopt_managed_totals,
-            ),
             "graph": {
                 "native_visibility": graph.native_visibility,
                 "ordered_nodes": graph.ordered_nodes,
