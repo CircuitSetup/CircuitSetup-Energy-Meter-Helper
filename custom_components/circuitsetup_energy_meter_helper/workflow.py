@@ -1363,8 +1363,8 @@ class EntryWorkflow:
         finally:
             lease.release()
 
-    @staticmethod
     def _offset_preparation_status(
+        self,
         record: OffsetRecoveryRecord | None,
     ) -> dict[str, Any]:
         prepared = record.preparation if record is not None else None
@@ -1377,6 +1377,7 @@ class EntryWorkflow:
                 record is not None and record.installed and not record.cancelled
             ),
             "cancelled": bool(record is not None and record.cancelled),
+            "action_ready": self._require_offset_recovery().is_action_ready(record),
             "attempted": record.attempted if record is not None else (),
             "completed": tuple(
                 (item.instance_id, item.stage) for item in record.results
@@ -1464,10 +1465,11 @@ class EntryWorkflow:
                     or record.preparation is None
                     or record.preparation.operation_id != operation_id
                     or record.preparation.stage != stage
-                    or not record.installed
-                    or record.cancelled
+                    or not self._require_offset_recovery().is_action_ready(record)
                 ):
-                    raise WorkflowHandleError("installed offset preparation is absent")
+                    raise WorkflowHandleError(
+                        "current Core offset preparation is not ready; new reviewed install required"
+                    )
                 prepared = record.preparation
                 source = await self._require_builder().async_get_config(
                     handle.configuration

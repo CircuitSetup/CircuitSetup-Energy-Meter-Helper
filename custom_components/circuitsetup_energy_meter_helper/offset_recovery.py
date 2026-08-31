@@ -367,7 +367,7 @@ class OffsetRecovery:
     def __init__(self, hass: HomeAssistant, sessions: SessionManager) -> None:
         self._hass = hass
         self._sessions = sessions
-        self._failed_receipts: dict[str, str] = {}
+        self._confirmed_receipts: dict[str, StockOffsetPreparation] = {}
 
     def _path(self, lease: CalibrationLease | ConfigLease) -> Path:
         if isinstance(lease, CalibrationLease):
@@ -405,14 +405,17 @@ class OffsetRecovery:
         record = _decode(data)
         if record.mac != lease.mac:
             raise ValueError("recovery meter identity changed")
-        if (
-            record.preparation is not None
-            and self._failed_receipts.get(lease.mac) == record.preparation.operation_id
-        ):
-            # Failed revocation I/O may leave uncertain disk bytes. Never expose
-            # or use installed authority in this process after such a failure.
-            record = replace(record, cancelled=True)
         return record
+
+    def is_action_ready(self, record: OffsetRecoveryRecord | None) -> bool:
+        """Check Core-local confirmation against a freshly loaded durable receipt."""
+        return bool(
+            record is not None
+            and record.installed
+            and not record.cancelled
+            and record.preparation is not None
+            and self._confirmed_receipts.get(record.mac) == record.preparation
+        )
 
     async def _save(
         self, lease: CalibrationLease | ConfigLease, record: OffsetRecoveryRecord
@@ -584,6 +587,7 @@ class OffsetRecovery:
             targets,
             generation,
         )
+        self._confirmed_receipts.pop(lease.mac, None)
         await self._save(
             lease,
             replace(
@@ -610,7 +614,8 @@ class OffsetRecovery:
             or record.preparation != preparation
             or record.cancelled
             or record.installed is not installed
-            or self._failed_receipts.get(lease.mac) == preparation.operation_id
+            or installed
+            and not self.is_action_ready(record)
         ):
             raise ValueError("stock offset preparation is stale or unavailable")
         return record
@@ -625,17 +630,19 @@ class OffsetRecovery:
             )
         except Exception, asyncio.CancelledError:
             # An uncertain write/readback must not leave installed authorization.
-            self._failed_receipts[lease.mac] = preparation.operation_id
+            self._confirmed_receipts.pop(lease.mac, None)
             await self._save(
                 lease, replace(record, cancelled=True, revision=record.revision + 1)
             )
             raise
+        self._confirmed_receipts[lease.mac] = preparation
 
     async def async_cancel(
         self, lease: CalibrationLease | ConfigLease, preparation: StockOffsetPreparation
     ) -> None:
         self._path(lease)
-        self._failed_receipts[lease.mac] = preparation.operation_id
+        if self._confirmed_receipts.get(lease.mac) == preparation:
+            self._confirmed_receipts.pop(lease.mac)
         record = await self.async_load(lease)
         if record is None or record.preparation != preparation:
             raise ValueError("stock offset preparation changed")

@@ -297,3 +297,53 @@ def test_malformed_existing_private_record_never_resets(
             lease.release()
 
     asyncio.run(run())
+
+
+def test_persisted_receipt_is_not_action_permission_for_a_new_core_owner(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            OffsetRecovery,
+        )
+        from tests.test_stock_offset_preparation import preparation
+        from tests.test_workflow import _workflow
+
+        sessions, recovery, _, manager, preview, prepared = await preparation(tmp_path)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            # Browser reload/native reconnect retain the same concrete Core owner.
+            confirmed = await recovery.async_require(lease, prepared, installed=True)
+            assert confirmed.installed and not confirmed.cancelled
+            data = recovery._path(lease).read_bytes()
+        finally:
+            lease.release()
+        restarted_sessions = SessionManager()
+        restarted = OffsetRecovery(hass_at(tmp_path), restarted_sessions)
+        lease = await restarted_sessions.async_acquire_calibration(MAC)
+        try:
+            with pytest.raises(ValueError):
+                await restarted.async_require(lease, prepared, installed=True)
+            retained = await restarted.async_load(lease)
+            assert retained == confirmed
+            assert restarted._path(lease).read_bytes() == data
+        finally:
+            lease.release()
+        workflow, handle, _, _ = _workflow()
+        workflow._sessions_owner = restarted_sessions
+        workflow._offset_recovery = restarted
+        status = await workflow.async_get_offset_preparation(handle.session_id)
+        assert status["installed"] is True
+        assert status["action_ready"] is False
+        assert status["cancelled"] is False
+        assert handle.stock_offset_pending
+        workflow._sessions_owner = sessions
+        workflow._offset_recovery = recovery
+        assert (await workflow.async_get_offset_preparation(handle.session_id))[
+            "action_ready"
+        ] is True
+
+    asyncio.run(run())

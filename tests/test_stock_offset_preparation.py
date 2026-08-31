@@ -988,7 +988,7 @@ def test_backup_retains_existing_strict_completed_offsets_for_preparation(
             assert sessions.pending_calibration(MAC) == origin
         finally:
             lease.release()
-        # Actual install then full process reload: only the unfinished stock chip runs.
+        # After Core restart the old installed receipt cannot authorize any button.
         builder = Builder(remote_content=source.content)
         manager = ConfigTransactionManager(
             builder,
@@ -1023,6 +1023,61 @@ def test_backup_retains_existing_strict_completed_offsets_for_preparation(
         async def marker(*args: Any) -> None:
             pass
 
+        with pytest.raises(ValueError):
+            await CalibrationEngine(
+                sessions, marker, evidence_timeout=0.025
+            ).async_calibrate_prepared_offset_board(
+                MAC,
+                session,
+                meter,
+                0,
+                prepared,
+                recovery,
+                source_reader=lambda: builder.async_get_config("meter.yaml"),
+            )
+        assert not any(event[0] == "button" for event in session.events)
+        # Repeating the reviewed preparation in this Core preserves the signed
+        # strict result and reauthorizes only the still-unfinished second chip.
+        source = await builder.async_get_config("meter.yaml")
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            retained = await recovery.async_backup(
+                lease, source, _topology(), (observed("meter_main2", 2),)
+            )
+            assert retained.original.content == _snapshot().content
+            assert retained.results[0].phase_values == observed().phase_values
+            assert retained.results[0].register_verified
+            plan = build_offset_table_mutation(
+                source,
+                _topology(),
+                {"meter_main1": observed().phase_values, "meter_main2": ZERO},
+                {},
+                enable_calibration=frozenset(("meter_main2",)),
+            )
+            prepared = await recovery.async_prepare(
+                lease, retained, source, plan, "e" * 32, 1, ("meter_main2",), 2
+            )
+        finally:
+            lease.release()
+        manager = ConfigTransactionManager(
+            builder,
+            Verifier(
+                ReconnectEvidence(
+                    MAC, _topology(), {i: f"CT {i}" for i in range(1, 7)}, 6
+                )
+            ),
+            Persistence(),
+            sessions,
+            offset_recovery=recovery,
+        )
+        preview = await manager.async_preview(
+            MAC, _topology(), plan, source, offset_preparation=prepared
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        meter = replace(meter, connection_generation=3)
+        session = StockSession(meter)
         result = await CalibrationEngine(
             sessions, marker, evidence_timeout=0.025
         ).async_calibrate_prepared_offset_board(
@@ -1192,7 +1247,7 @@ def test_receipt_readback_failure_revokes_written_authorization(
     tmp_path: Path, monkeypatch: Any, revocation_fails: bool
 ) -> None:
     async def run() -> None:
-        sessions, recovery, _builder, manager, preview, prepared = await preparation(
+        sessions, recovery, builder, manager, preview, prepared = await preparation(
             tmp_path
         )
         await manager.async_confirm_write(preview.transaction_id, "admin")
@@ -1230,6 +1285,42 @@ def test_receipt_readback_failure_revokes_written_authorization(
             ).original.content == _snapshot().content
         finally:
             lease.release()
+        # Both failed revocation and a successful cancellation remain unready
+        # after all process-local state is lost, before even native Clear.
+        monkeypatch.setattr(offset_recovery, "write_utf8_file_atomic", original_write)
+        from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
+            CalibrationEngine,
+        )
+        from tests.test_workflow import _workflow
+
+        sessions = SessionManager()
+        recovery = offset_recovery.OffsetRecovery(hass_at(tmp_path), sessions)
+        meter = replace(binding_with_offset_controls(0), connection_generation=2)
+        session = StockSession(meter)
+
+        async def marker(*args: Any) -> None:
+            pass
+
+        with pytest.raises((ValueError, RuntimeError)):
+            await CalibrationEngine(
+                sessions, marker, evidence_timeout=0.025
+            ).async_calibrate_prepared_offset_board(
+                MAC,
+                session,
+                meter,
+                0,
+                prepared,
+                recovery,
+                source_reader=lambda: builder.async_get_config("meter.yaml"),
+            )
+        assert not any(event[0] == "button" for event in session.events)
+        workflow, handle, _, _ = _workflow()
+        workflow._sessions_owner = sessions
+        workflow._offset_recovery = recovery
+        status = await workflow.async_get_offset_preparation(handle.session_id)
+        assert status["action_ready"] is False
+        if revocation_fails:
+            assert status["installed"] is True and status["cancelled"] is False
 
     asyncio.run(run())
 
