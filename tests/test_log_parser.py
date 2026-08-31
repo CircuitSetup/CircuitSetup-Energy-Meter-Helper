@@ -583,6 +583,72 @@ def test_parses_combined_offset_save_and_verification_terminals() -> None:
 
 
 @pytest.mark.parametrize(
+    ("parser", "fixture", "button", "completed"),
+    (
+        (
+            parse_offset_run,
+            "offset_success.log",
+            "1. Run Main Meter 1 Offset Cal",
+            "Offset calibration completed and verified.",
+        ),
+        (
+            parse_power_offset_run,
+            "power_offset_success.log",
+            "2. Run Main Meter 1 Power Offset Cal",
+            "Power offset calibration completed and verified.",
+        ),
+    ),
+)
+def test_stock_offset_save_is_not_claimed_as_register_verification(
+    parser,
+    fixture: str,
+    button: str,
+    completed: str,
+) -> None:
+    lines = [item for item in log_lines(fixture) if completed not in item.line]
+    kwargs = {
+        "connection_generation": 3,
+        "operation_sequence": 8,
+        "target_instance_id": "meter_main1",
+        "button_name": button,
+        "dispatched_after": 10.0,
+    }
+    with pytest.raises(LogEvidenceError, match="terminal"):
+        parser(lines, **kwargs)
+    evidence = parser(lines, **kwargs, allow_unverified=True)
+    assert evidence.flash_saved
+    assert not evidence.register_verified
+    assert tuple(phase.phase for phase in evidence.phases) == ("A", "B", "C")
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "Offset calibration completed and verified. unexpected",
+        "Failed to save offset calibration to memory!",
+        "Offset calibration failed; rollback readback verification failed.",
+    ),
+)
+def test_stock_offset_compatibility_does_not_hide_late_failures(tail: str) -> None:
+    lines = [
+        item
+        for item in log_lines("offset_success.log")
+        if "Offset calibration completed and verified." not in item.line
+    ]
+    lines.append(CalibrationLogLine(3, 8, 100.0, f"[CALIBRATION][meter_main1] {tail}"))
+    with pytest.raises(LogEvidenceError):
+        parse_offset_run(
+            lines,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="1. Run Main Meter 1 Offset Cal",
+            dispatched_after=10.0,
+            allow_unverified=True,
+        )
+
+
+@pytest.mark.parametrize(
     ("generation", "sequence", "start"),
     [(2, 8, 11.0), (3, 7, 11.0), (3, 8, 0.0)],
 )
@@ -614,9 +680,7 @@ def test_offset_run_rejects_stale_or_wrong_correlation(
             "instance",
         ),
         (
-            lambda line: line.replace(
-                "[CALIBRATION][meter_main1]", "[CALIBRATION]"
-            ),
+            lambda line: line.replace("[CALIBRATION][meter_main1]", "[CALIBRATION]"),
             "instance tag",
         ),
     ],
@@ -971,9 +1035,7 @@ def test_restore_rejects_missing_failure_or_out_of_range_offset_evidence(
             expected_instance_ids={"meter_main1"},
             started_after=10.0,
             operation_sequence=0,
-            expected_categories={
-                "meter_main1": {"gain", "offset", "power_offset"}
-            },
+            expected_categories={"meter_main1": {"gain", "offset", "power_offset"}},
         )
 
 
@@ -985,9 +1047,7 @@ def test_gain_only_restore_ignores_unrequested_offset_config_fallback() -> None:
         if "offset calibration from memory" not in item.line.casefold()
         and "offset_active_power" not in item.line
         and "offset_voltage" not in item.line
-        and not (
-            "[atm90e32:378]" in item.line or "[atm90e32:389]" in item.line
-        )
+        and not ("[atm90e32:378]" in item.line or "[atm90e32:389]" in item.line)
     ]
     lines.extend(
         (
@@ -1022,9 +1082,7 @@ def test_offset_restore_rejects_terminal_and_table_from_different_sequences() ->
     lines = [
         CalibrationLogLine(
             item.connection_generation,
-            1
-            if "Offset calibration restore verified." in item.line
-            else 2,
+            1 if "Offset calibration restore verified." in item.line else 2,
             item.arrived_at,
             item.line,
         )
@@ -1124,7 +1182,5 @@ def test_restore_rejects_contradictory_evidence_without_one_expected_instance_ta
             expected_instance_ids={"meter_main1"},
             started_after=10.0,
             operation_sequence=0,
-            expected_categories={
-                "meter_main1": {"gain", "offset", "power_offset"}
-            },
+            expected_categories={"meter_main1": {"gain", "offset", "power_offset"}},
         )

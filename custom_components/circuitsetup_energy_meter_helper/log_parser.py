@@ -404,9 +404,10 @@ def parse_offset_run(
     target_instance_id: str,
     button_name: str,
     dispatched_after: float,
+    allow_unverified: bool = False,
 ) -> OffsetRunEvidence:
     """Parse one strictly correlated voltage/current offset operation."""
-    rows, matching = _parse_offset_operation(
+    rows, matching, register_verified = _parse_offset_operation(
         lines,
         connection_generation=connection_generation,
         operation_sequence=operation_sequence,
@@ -414,6 +415,7 @@ def parse_offset_run(
         button_name=button_name,
         dispatched_after=dispatched_after,
         power=False,
+        allow_unverified=allow_unverified,
     )
     phases = cast(
         tuple[PhaseOffsetEvidence, PhaseOffsetEvidence, PhaseOffsetEvidence],
@@ -428,7 +430,7 @@ def parse_offset_run(
         target_instance_id,
         phases,
         True,
-        True,
+        register_verified,
         matching,
     )
 
@@ -441,9 +443,10 @@ def parse_power_offset_run(
     target_instance_id: str,
     button_name: str,
     dispatched_after: float,
+    allow_unverified: bool = False,
 ) -> PowerOffsetRunEvidence:
     """Parse one strictly correlated active/reactive power-offset operation."""
-    rows, matching = _parse_offset_operation(
+    rows, matching, register_verified = _parse_offset_operation(
         lines,
         connection_generation=connection_generation,
         operation_sequence=operation_sequence,
@@ -451,6 +454,7 @@ def parse_power_offset_run(
         button_name=button_name,
         dispatched_after=dispatched_after,
         power=True,
+        allow_unverified=allow_unverified,
     )
     phases = cast(
         tuple[
@@ -469,7 +473,7 @@ def parse_power_offset_run(
         target_instance_id,
         phases,
         True,
-        True,
+        register_verified,
         matching,
     )
 
@@ -483,7 +487,8 @@ def _parse_offset_operation(
     button_name: str,
     dispatched_after: float,
     power: bool,
-) -> tuple[tuple[tuple[Phase, tuple[int, int]], ...], tuple[str, ...]]:
+    allow_unverified: bool,
+) -> tuple[tuple[tuple[Phase, tuple[int, int]], ...], tuple[str, ...], bool]:
     kind = "power offset" if power else "offset"
     title = "Power Offset Calibration" if power else "Offset Calibration"
     columns = (
@@ -613,6 +618,17 @@ def _parse_offset_operation(
         if _calibration_payload(matching[index].line)
         in (completed, saved_and_completed, failed, rollback_failed)
     ]
+    register_verified = bool(final_indices)
+    if not final_indices and allow_unverified:
+        # Stock firmware reports the save, not register readback. Never turn a
+        # malformed enhanced terminal into a legacy success.
+        if any(completed in item.line for item in matching[header_index:]):
+            raise LogEvidenceError(f"{kind} terminal result is malformed")
+        final_indices = [
+            index
+            for index in range(header_index, len(matching))
+            if _calibration_payload(matching[index].line) == saved
+        ]
     if len(final_indices) != 1:
         raise LogEvidenceError(f"{kind} terminal result is missing or multiple")
     final_index = final_indices[0]
@@ -685,6 +701,7 @@ def _parse_offset_operation(
     return (
         tuple((phase, phase_rows[phase]) for phase in ("A", "B", "C")),
         tuple(item.line for item in block),
+        register_verified,
     )
 
 

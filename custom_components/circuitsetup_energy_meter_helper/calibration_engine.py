@@ -1267,6 +1267,7 @@ class CalibrationEngine:
                 raise ESPHomeSessionDisconnectedError(
                     "connection ended before complete offset evidence"
                 )
+            self._validate_offset_generation(session, generation)
             new_lines = _new_log_lines(baseline, tuple(session.log_lines))
             correlated = tuple(
                 CalibrationLogLine(
@@ -1285,6 +1286,7 @@ class CalibrationEngine:
                     target_instance_id=instance_id,
                     button_name=button_name,
                     dispatched_after=dispatched_after,
+                    allow_unverified=monotonic() >= deadline,
                 )
             except LogEvidenceError:
                 remaining = deadline - monotonic()
