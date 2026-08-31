@@ -2,6 +2,7 @@ import { render } from "lit";
 import "../src/index";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
+import { defaultTotalsSection } from "../src/components/default-totals-section";
 import { currentStep } from "../src/components/current-step";
 import { espWebInstaller } from "../src/components/esp-web-installer";
 import { meterSettingsStep } from "../src/components/meter-settings-step";
@@ -71,6 +72,18 @@ it("gives the firmware activation control the panel target size and focus treatm
   expect(panelStyles.cssText).toContain(".esp-web-installer [slot=\"activate\"]");
   expect(panelStyles.cssText).toContain("min-height: 44px");
   expect(panelStyles.cssText).toContain(".esp-web-installer [slot=\"activate\"]:focus-visible");
+});
+
+it("keeps default total switches explicitly named and visible in the narrow layout", () => {
+  const response = meterResponse();
+  container = document.createElement("div");
+  document.body.append(container);
+  render(defaultTotalsSection(response.configuration, response.totals, true, true, noop), container);
+
+  expect([...container.querySelectorAll<HTMLInputElement>('[role="switch"]')].map((input) => input.getAttribute("aria-label"))).toEqual([
+    "Overall meter total Watts", "Overall meter total Amps", "Overall meter total kWh",
+  ]);
+  expect(panelStyles.cssText).toContain(".default-total-controls { align-items: stretch; flex-direction: column;");
 });
 
 it("keeps Setup Device free of legacy installer and IO0 controls", () => {

@@ -278,6 +278,20 @@ describe("server-authoritative total graph", () => {
     expect(text(panel).includes("Preserved total")).toBe(true);
   });
 
+  it("keeps default meter totals ahead of suggested totals and updates only the draft", async () => {
+    const response = meterResponse();
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as { setMeterConfiguration(value: typeof response): void; meterConfiguration: typeof response };
+    state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
+
+    const overall = panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="Overall meter total Watts"]')!;
+    expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
+    expect(panel.shadowRoot!.textContent!.indexOf("Default meter totals")).toBeLessThan(panel.shadowRoot!.textContent!.indexOf("Automatic totals"));
+    overall.click(); await panel.updateComplete;
+    expect(state.meterConfiguration.configuration.default_totals.overall.watts).toBe(false);
+    expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
+  });
+
   it.each([
     ["native", 41, 3, 0, 1],
     ["automatic bidirectional", 46, 8, 1, 3],

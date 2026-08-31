@@ -114,6 +114,13 @@ export const panelStyles = css`
   .mobile-label { display: none; }
   .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 16px 30px; background: var(--surface-alt); border-top: 1px solid var(--border); }
   .aggregate-list { display: grid; gap: 16px; margin: 14px 0; }
+  .default-totals { display: grid; gap: 12px; margin: 24px 0; }
+  .default-totals h2, .default-totals p { margin: 0; }
+  .default-total-card { margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .default-total-card > legend { padding: 0 8px; }
+  .default-total-controls { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+  .default-total-control { display: flex; align-items: center; gap: 8px; min-height: 44px; font-weight: var(--ha-font-weight-bold, 700); }
+  .native-total-status { color: var(--muted); }
   .aggregate-card { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   .aggregate-card > legend { padding: 0 8px; }
   .aggregate-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 22px; }
@@ -202,6 +209,7 @@ export const panelStyles = css`
     .ct-row > * { min-width: 0; }
     .mobile-label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; }
     .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card, .aggregate-fields, .aggregate-channel-groups { grid-template-columns: 1fr; }
+    .default-total-controls { align-items: stretch; flex-direction: column; }
     .aggregate-channel-group > div { grid-template-columns: 1fr; }
     .existing-configuration .status-list > div { grid-template-columns: 1fr; gap: 2px; }
     .aggregate-actions button { width: 100%; margin-left: 0; }
