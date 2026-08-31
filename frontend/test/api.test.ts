@@ -298,6 +298,42 @@ describe("HelperApi", () => {
     }
   });
 
+  it.each([
+    { total_id: "overall", native_sources: [] },
+    { total_id: "overall", native_sources: ["board-main"] },
+    { total_id: "board-main", native_sources: ["board-addon-1"] },
+  ])("rejects incomplete or misplaced native formula sources: $total_id $native_sources", async (invalid) => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const meter = structuredClone(meterInventory);
+    meter.topology = { ...meter.topology, addon_count: 1, board_count: 2, ct_count: 12, group_count: 4 };
+    meter.configuration.channels.push(...meter.configuration.channels.map((channel) => ({ ...channel, channel: channel.channel + 6 })));
+    meter.channels.push(...meter.channels.map((channel) => ({ ...channel, channel: channel.channel + 6,
+      address: { ...channel.address, channel: channel.channel + 6, board_index: 1 } })));
+    meter.configuration.meter.voltage_references[0]!.group_keys.push("addon1_1", "addon1_2");
+    meter.voltage_topology.references[0]![1].push("addon1_1", "addon1_2");
+    meter.configuration.power_quality.push(true); meter.configuration.status_fields.push(false);
+    meter.configuration.default_totals.boards = [0, 1].map((board_index) => ({ board_index,
+      outputs: { watts: true, amps: true, kwh: true } }));
+    meter.configuration_impact = { ...meter.configuration_impact, enabled_channel_count: 12,
+      numeric_entity_count: 79, approximate_publications_per_second: 79 / 30 };
+    const main = meter.totals.native_sources[0]!;
+    meter.totals.native_sources = [
+      { ...main, leaf_channels: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+      { ...main, source_id: "board-main", label: "Main Board total" },
+      { ...main, source_id: "board-addon-1", label: "Add-on 1 total", leaf_channels: [7, 8, 9, 10, 11, 12] },
+    ];
+    const row = { total_id: "overall", kind: "native_total", ownership: "helper_managed",
+      public_outputs: ["Watts", "Amps", "kWh"], internal_outputs: [], unverified_outputs: [],
+      native_sources: ["board-main", "board-addon-1"] };
+    const valid = [row, { ...row, total_id: "board-main", native_sources: [] },
+      { ...row, total_id: "board-addon-1", native_sources: [] }];
+    hass.responses.get_meter_configuration = meter;
+    hass.responses.get_total_details = { ...detailResponse, total_details: valid };
+    await expect(api.getMeterConfiguration("meter-1")).resolves.toMatchObject({ total_details: valid });
+    hass.responses.get_total_details = { ...detailResponse, total_details: [{ ...row, ...invalid }] };
+    await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_total_details");
+  });
+
   it("loads separately bound details atomically and keeps existing request source shapes", async () => {
     const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
     const leaf = meterInventory.configuration.aggregates[0]!;

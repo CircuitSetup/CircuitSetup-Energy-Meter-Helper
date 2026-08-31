@@ -794,7 +794,7 @@ function totalsSummary(value, label, nativeIds, aggregateIds) {
     }
     if (row.kind === "native_total") {
       const sources = array(row.native_sources, label, 7).map((source) => id(source, label));
-      if (new Set(sources).size !== sources.length || sources.some((source) => source === row.total_id || !nativeIds.has(source))) throw new Error(`${label} response is invalid`);
+      if (sources.length !== (row.total_id === "overall" ? nativeIds.size - 1 : 0) || new Set(sources).size !== sources.length || sources.some((source) => source === row.total_id || !nativeIds.has(source))) throw new Error(`${label} response is invalid`);
     }
   }
 }
