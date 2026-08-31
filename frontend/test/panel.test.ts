@@ -285,6 +285,7 @@ describe("server-authoritative total graph", () => {
     state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
 
     const overall = panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="Overall meter total Watts"]')!;
+    expect(text(panel)).not.toContain("Updating total graph");
     expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
     expect(panel.shadowRoot!.textContent!.indexOf("Default meter totals")).toBeLessThan(panel.shadowRoot!.textContent!.indexOf("Automatic totals"));
     overall.click(); await panel.updateComplete;
@@ -362,6 +363,7 @@ describe("server-authoritative total graph", () => {
     expect(text(panel)).toContain("Updating total graph");
     expect(text(panel)).not.toContain("43 public entities");
     expect(text(panel).includes("Server mains")).toBe(false);
+    expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
     expect(pending).toHaveLength(2);
     const preview = { plan_id: response.plan_id, source_sha256: response.source_sha256,
       automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [off],
@@ -382,6 +384,7 @@ describe("server-authoritative total graph", () => {
     edit("invalid"); pending[3]!.reject(new Error("invalid graph")); await tick(); await panel.updateComplete;
     expect(text(panel)).toContain("Total graph unavailable");
     expect(text(panel)).not.toContain("43 public entities");
+    expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
     expect(state.totalGraphPreview).toBeNull();
     edit("old device"); state.selectedDeviceId = "other-meter";
     pending[4]!.resolve(preview); await tick();

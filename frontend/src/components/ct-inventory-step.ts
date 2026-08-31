@@ -49,6 +49,7 @@ export function ctInventoryStep(
   nativeTotalsWritable = false,
   nativePreview: import("../types").TotalGraphPreview | null = null,
   freshTotals = true,
+  nativeGraphState: "ready" | "pending" | "invalid" = "ready",
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -162,7 +163,7 @@ export function ctInventoryStep(
       </div>
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
-      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativePreview) : nothing}
+      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativePreview, nativeGraphState) : nothing}
       ${configuration ? circuitsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, freshTotals ? totals : null) : nothing}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>

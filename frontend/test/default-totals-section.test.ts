@@ -7,11 +7,11 @@ let container: HTMLDivElement;
 
 afterEach(() => container?.remove());
 
-const mount = (response = meterResponse(), writable = true, readable = true) => {
+const mount = (response = meterResponse(), writable = true, readable = true, graphState: "ready" | "pending" | "invalid" = "ready") => {
   container = document.createElement("div");
   document.body.append(container);
   const update = vi.fn();
-  render(defaultTotalsSection(response.configuration, response.totals, readable, writable, update), container);
+  render(defaultTotalsSection(response.configuration, response.totals, readable, writable, update, null, graphState), container);
   return { update, response };
 };
 
@@ -40,18 +40,33 @@ it("uses catalog board labels, persisted outputs, and internal dependency copy f
     { board_index: 0, outputs: { watts: false, amps: true, kwh: false } },
     { board_index: 1, outputs: { watts: true, amps: false, kwh: false } },
   ];
+  response.configuration.aggregates = [{ aggregate_id: "garage-branch", name: "Garage branch", role: "branch",
+    sources: [{ kind: "native_total", source_id: "board-addon-1" }], measurement_method: "direct", energy_mode: "consumption",
+    outputs: { watts: false, amps: false, kwh: true }, origin: "advanced" }];
   const { update } = mount(response, false);
 
   expect(container.querySelectorAll(".default-total-card")).toHaveLength(3);
   expect(container.textContent).toContain("Service panel");
   expect(container.textContent).toContain("Garage panel");
+  expect(container.textContent).toContain("Service panel + Garage panel");
   expect(container.textContent).toContain("CT1–CT6 + CT7–CT12");
   expect(container.textContent).toContain("Hidden from Home Assistant; retained internally for Overall meter total.");
+  expect(container.textContent).toContain("Garage branch kWh");
   expect(container.querySelector<HTMLInputElement>('[aria-label="Service panel Watts"]')?.checked).toBe(false);
   expect(container.querySelector<HTMLInputElement>('[aria-label="Garage panel Amps"]')?.checked).toBe(false);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="Garage panel kWh"]')).not.toBeNull();
   expect(container.querySelector<HTMLInputElement>('[aria-label="Garage panel Amps"]')?.disabled).toBe(true);
   container.querySelector<HTMLInputElement>('[aria-label="Garage panel Watts"]')?.click();
   expect(update).not.toHaveBeenCalled();
+});
+
+it("distinguishes ready inventory from pending and invalid graph previews", () => {
+  mount();
+  expect(container.textContent).not.toContain("Updating total graph");
+  mount(meterResponse(), true, true, "pending");
+  expect(container.textContent).toContain("Updating total graph");
+  mount(meterResponse(), true, true, "invalid");
+  expect(container.textContent).toContain("Total graph unavailable");
 });
 
 it("patches only the selected board and keeps cards available while visibility is unresolved", () => {
@@ -69,7 +84,7 @@ it("patches only the selected board and keeps cards available while visibility i
   response.totals.migration.native_visibility_resolved = false;
   const { update } = mount(response);
 
-  expect(container.textContent).toContain("Native visibility is not confirmed yet");
+  expect(container.textContent).toContain("Native source visibility is unconfirmed");
   container.querySelector<HTMLInputElement>('[aria-label="Add-on 1 Amps"]')?.click();
   expect(update).toHaveBeenCalledWith(expect.objectContaining({ default_totals: {
     overall: response.configuration.default_totals.overall,
