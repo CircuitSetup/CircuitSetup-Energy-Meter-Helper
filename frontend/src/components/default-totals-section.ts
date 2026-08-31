@@ -23,18 +23,20 @@ export function defaultTotalsSection(
   const consumers = (sourceId: string, output: keyof DefaultTotalsSettings["overall"]) => {
     const names = new Set<string>();
     if (sourceId !== "overall" && (output === "watts" || output === "amps")) names.add("Overall meter total");
+    const native = totals.native_sources.find((source) => source.source_id === sourceId);
+    const settings = sourceId === "overall" ? configuration.default_totals.overall
+      : configuration.default_totals.boards.find((board) => board.board_index === boards.findIndex((source) => source.source_id === sourceId))?.outputs;
+    if (output === "watts" && native && settings?.kwh) names.add(`${native.label} kWh`);
     configuration.aggregates.filter((aggregate) => aggregate.sources.some((source) => source.kind === "native_total" && source.source_id === sourceId))
       .forEach((aggregate) => {
         if (output === "watts" && (aggregate.outputs.watts || aggregate.outputs.kwh)) names.add(aggregate.outputs.kwh ? `${aggregate.name} kWh` : `${aggregate.name} Watts`);
         if (output === "amps" && aggregate.outputs.amps) names.add(`${aggregate.name} Amps`);
       });
-    const native = totals.native_sources.find((source) => source.source_id === sourceId);
     if (native && preview) preview.graph.ordered_nodes.forEach((node) => {
       const used = node.sources.some((source) => source.power_id === native.power_id || source.current_id === native.current_id);
       if (!used) return;
-      if (output === "watts" && node.power_required) names.add(`${node.aggregate.name} Watts`);
+      if (output === "watts" && (node.power_required || node.energy_required)) names.add(`${node.aggregate.name} Watts`);
       if (output === "amps" && node.current_required) names.add(`${node.aggregate.name} Amps`);
-      if (output === "kwh" && node.energy_required) names.add(`${node.aggregate.name} kWh`);
     });
     return [...names];
   };

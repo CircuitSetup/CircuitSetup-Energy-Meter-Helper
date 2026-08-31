@@ -7,11 +7,11 @@ let container: HTMLDivElement;
 
 afterEach(() => container?.remove());
 
-const mount = (response = meterResponse(), writable = true, readable = true, graphState: "ready" | "pending" | "invalid" = "ready") => {
+const mount = (response = meterResponse(), writable = true, readable = true, graphState: "ready" | "pending" | "invalid" = "ready", preview: import("../src/types").TotalGraphPreview | null = null) => {
   container = document.createElement("div");
   document.body.append(container);
   const update = vi.fn();
-  render(defaultTotalsSection(response.configuration, response.totals, readable, writable, update, null, graphState), container);
+  render(defaultTotalsSection(response.configuration, response.totals, readable, writable, update, preview, graphState), container);
   return { update, response };
 };
 
@@ -67,6 +67,26 @@ it("distinguishes ready inventory from pending and invalid graph previews", () =
   expect(container.textContent).toContain("Updating total graph");
   mount(meterResponse(), true, true, "invalid");
   expect(container.textContent).toContain("Total graph unavailable");
+});
+
+it("keeps native Watts for each enabled native kWh output but not advanced energy", () => {
+  const response = meterResponse();
+  response.configuration.default_totals.overall = { watts: false, amps: false, kwh: true };
+  response.totals.native_sources = [
+    { source_id: "board-main", label: "Main Board", leaf_channels: [1, 2, 3, 4, 5, 6], power_id: "boardPower", current_id: "boardAmps", existing_energy_id: null,
+      upstream_defaults: { watts: true, amps: true, kwh: false } }, response.totals.native_sources[0]!,
+  ];
+  response.configuration.default_totals.boards = [{ board_index: 0, outputs: { watts: false, amps: false, kwh: true } }];
+  const preview: import("../src/types").TotalGraphPreview = { plan_id: response.plan_id, source_sha256: response.source_sha256,
+    automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], configuration_impact: response.configuration_impact,
+    graph: { native_visibility: [], leaf_channels: {}, independent_overlap_warnings: [], ordered_nodes: [{ aggregate: { aggregate_id: "advanced", name: "Advanced", role: "branch", sources: [{ kind: "native_total", source_id: "board-main" }], measurement_method: "direct", energy_mode: "consumption", outputs: { watts: false, amps: false, kwh: true }, origin: "advanced" }, power_id: "advancedPower", current_id: "advancedAmps", sources: [{ label: "Main Board", power_id: "boardPower", current_id: "boardAmps", leaf_channels: [1, 2, 3, 4, 5, 6] }], power_required: true, current_required: false, energy_required: true }] },
+  };
+  mount(response, true, true, "ready", preview);
+
+  expect(container.textContent).toContain("retained internally for Overall meter total kWh.");
+  expect(container.textContent).toContain("Main Board kWh");
+  expect(container.textContent).toContain("Advanced Watts");
+  expect(container.textContent).not.toContain("Advanced kWh");
 });
 
 it("patches only the selected board and keeps cards available while visibility is unresolved", () => {
