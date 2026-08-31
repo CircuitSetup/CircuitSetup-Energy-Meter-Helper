@@ -87,7 +87,7 @@ const meterConfiguration: MeterConfiguration = {
       secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }],
     source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1,
   },
-  ct_catalog: inventory.catalog, warnings: ["slow_interval_extends_calibration"],
+  ct_catalog: inventory.catalog, warnings: ["slow_interval_extends_calibration"], total_details: [],
   configuration_impact: { enabled_channel_count: 6, numeric_entity_count: 43, text_entity_count: 0, energy_entity_count: 2, public_total_entity_count: 9, internal_total_sensor_count: 1, approximate_publications_per_second: 43 / 30 },
   channels: inventory.channels as MeterConfiguration["channels"], catalog: inventory.catalog,
 };
@@ -261,7 +261,7 @@ describe("HelperApi", () => {
     const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
     const preview = { plan_id: meterConfiguration.plan_id, source_sha256: meterConfiguration.source_sha256,
       automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
-      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] },
+      total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] },
       configuration_impact: { ...meterConfiguration.configuration_impact, public_total_entity_count: 12, internal_total_sensor_count: 7 } };
     hass.responses.get_meter_configuration = { ...meterConfiguration, configuration_impact: preview.configuration_impact };
     await expect(api.getMeterConfiguration("meter-1")).resolves.toMatchObject({ configuration_impact: preview.configuration_impact });
@@ -277,9 +277,32 @@ describe("HelperApi", () => {
     }
   });
 
+  it("accepts bounded source-aware Summary evidence and rejects malformed rows", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const row = { total_id: "overall", kind: "native_total", name: "Overall meter total", ownership: "source_owned",
+      public_outputs: ["Watts"], internal_outputs: ["Amps"], unverified_outputs: ["kWh"],
+      sources: ["CT1"], formula: "CT1", leaf_channels: [1], parents: [] };
+    hass.responses.get_meter_configuration = { ...meterConfiguration, total_details: [row] };
+    await expect(api.getMeterConfiguration("meter-1")).resolves.toMatchObject({ total_details: [row] });
+    const preview = { plan_id: meterConfiguration.plan_id, source_sha256: meterConfiguration.source_sha256,
+      automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+      configuration_impact: meterConfiguration.configuration_impact, total_details: [row],
+      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
+    for (const rows of [[{ ...row, ownership: "browser" }], [{ ...row, leaf_channels: [43] }],
+      [{ ...row, public_outputs: [true] }], [{ ...row, public_outputs: ["invented"] }],
+      [{ ...row, parents: [false] }], [{ ...row, extra: true }], [row, row], Array(45).fill(row)]) {
+      hass.responses.get_meter_configuration = { ...meterConfiguration, total_details: rows };
+      await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow();
+      hass.responses.preview_total_graph = { ...preview, total_details: rows };
+      await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, meterConfiguration.configuration)).rejects.toThrow();
+    }
+    hass.responses.preview_total_graph = preview;
+    await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, meterConfiguration.configuration)).resolves.toMatchObject({ total_details: [row] });
+  });
+
   it("validates the read-only graph preview and binds it to the requested plan", async () => {
     const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
-    const preview = { plan_id: "b".repeat(32), source_sha256: "a".repeat(64), automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], configuration_impact: meterConfiguration.configuration_impact, graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
+    const preview = { plan_id: "b".repeat(32), source_sha256: "a".repeat(64), automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], configuration_impact: meterConfiguration.configuration_impact, total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
     hass.responses.preview_total_graph = preview;
     await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, meterConfiguration.configuration)).resolves.toEqual(preview);
     expect(hass.messages[0]).toMatchObject({ type: "circuitsetup_energy_meter_helper/preview_total_graph", configuration: meterConfiguration.configuration });

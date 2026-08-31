@@ -153,7 +153,7 @@ it("lists exact preview visibility and helper blocks for explicit adoption", () 
   const meter = unowned(); meter.configuration.totals_change_intent!.adopt_managed_totals = true;
   meter.totals.native_sources.push({ ...meter.totals.native_sources[0]!, source_id: "main", label: "Main Board total", existing_energy_id: null });
   meter.configuration.default_totals.boards = [{ board_index: 0, outputs: { watts: false, amps: false, kwh: true } }];
-  const preview: TotalGraphPreview = { plan_id: meter.plan_id, source_sha256: meter.source_sha256, configuration_impact: meter.configuration_impact,
+  const preview: TotalGraphPreview = { total_details: [], plan_id: meter.plan_id, source_sha256: meter.source_sha256, configuration_impact: meter.configuration_impact,
     automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], graph: {
       native_visibility: [{ sensor_id: "totalWattsMain", internal: true }, { sensor_id: "totalAmpsMain", internal: false }],
       ordered_nodes: [{ aggregate: total("Home", [ct(1)]), power_id: "opaque_w", current_id: "opaque_a", sources: [], power_required: true, current_required: false, energy_required: true }],
@@ -168,7 +168,7 @@ it("lists exact preview visibility and helper blocks for explicit adoption", () 
 
 it("separates requested visibility from the actual source-aware transaction additions", () => {
   const meter = unowned(); meter.configuration.totals_change_intent!.adopt_managed_totals = true;
-  const preview: TotalGraphPreview = { plan_id: meter.plan_id, source_sha256: meter.source_sha256, configuration_impact: meter.configuration_impact,
+  const preview: TotalGraphPreview = { total_details: [], plan_id: meter.plan_id, source_sha256: meter.source_sha256, configuration_impact: meter.configuration_impact,
     automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
     graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
   host = document.createElement("div");

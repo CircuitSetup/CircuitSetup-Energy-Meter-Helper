@@ -67,7 +67,7 @@ from tests.test_store import _CopyingStorage, _record
 MAC = "aabbccddeeff"
 SCENARIOS = (
     "main-only", "one-addon", "automatic-on", "automatic-off", "native-parent",
-    "child-parent", "legacy-parent", "non-helper", "runtime-only", "stale-semantics",
+    "child-parent", "legacy-parent", "non-helper", "runtime-only", "stale-semantics", "summary", "source-only",
 )
 
 
@@ -91,6 +91,10 @@ class Fixture:
             for sensor_id in (source.power_id, source.current_id, source.existing_energy_id)
             if sensor_id is not None
         )
+        if name == "source-only":
+            content += ('  - platform: template\n    id: totalChargerWatts\n    name: Charger Power\n'
+                '    lambda: return id(ct5Watts).state + id(ct6Watts).state;\n'
+                '    unit_of_measurement: W\n    device_class: "power"\n')
         initial = _inventory(content)
         config = initial.configuration
         config = replace(config, meter=replace(config.meter, electrical_system=ElectricalSystem.SPLIT_PHASE_120_240),
@@ -118,6 +122,17 @@ class Fixture:
             if name == "legacy-parent":
                 parent_sources = (ChannelTotalSource("channel", 3),)
             config = replace(config, aggregates=(*children, aggregate("building", "Whole building", parent_sources)))
+        if name == "summary":
+            config = replace(config,
+                channels=tuple(replace(channel, role=CircuitRole.GRID) if channel.channel in (1, 2)
+                    else channel for channel in config.channels),
+                aggregates=(
+                    replace(aggregate("hidden", "Hidden branch", (ChannelTotalSource("channel", 3),)),
+                        outputs=TotalOutputSettings(False, False, False)),
+                    aggregate("parent", "Parent report", (AggregateTotalSource("aggregate", "hidden"),)),
+                    replace(aggregate("watts-only", "Watts only report", (ChannelTotalSource("channel", 4),)),
+                        outputs=TotalOutputSettings(True, False, False)),
+                ))
         self.store = object.__new__(HelperStore)
         self.store._store = _CopyingStorage()
         self.store._update_lock = asyncio.Lock()
@@ -130,7 +145,8 @@ class Fixture:
             config.automatic_totals, config.aggregates, config.power_quality, config.status_fields,
             totals_managed=name not in ("non-helper", "runtime-only"),
             totals_migration=TotalsMigrationRecord(True, (LegacyParentLink("east", "building"),
-                LegacyParentLink("west", "building"))) if name == "legacy-parent" else None)
+                LegacyParentLink("west", "building"))) if name == "legacy-parent" else
+                TotalsMigrationRecord(True, (LegacyParentLink("watts-only", "parent"),)) if name == "summary" else None)
         if name == "legacy-parent":
             legacy = {key: value for key, value in sanitize_payload(stored).items()
                 if key not in ("default_totals", "automatic_totals", "totals_managed", "totals_migration")}
@@ -139,7 +155,8 @@ class Fixture:
                 "energy_mode": "consumption", "expose_power": True, "expose_current": True,
                 "parent_id": "building" if item.aggregate_id != "building" else None} for item in config.aggregates]
             stored = _deserialize_meter_configuration_payload(legacy, topology)
-        await self.store.async_save_verified_meter_configuration(MAC, digest, stored)
+        if name != "source-only":
+            await self.store.async_save_verified_meter_configuration(MAC, digest, stored)
         if name == "stale-semantics":
             # Real store decoding rejects this unsupported stored electrical profile.
             self.store._store.data["meters"][MAC]["meter_configuration"]["meter"]["electrical_system"] = "obsolete"

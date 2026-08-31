@@ -32,6 +32,7 @@ export const meterResponse = (
   line_frequency_hz: 50 | 60 = 60,
   update_interval_s: 1 | 2 | 5 | 10 | 30 | 60 = 5,
 ): MeterConfiguration => ({
+  total_details: [],
   plan_id: "b".repeat(32),
   source_sha256: "a".repeat(64),
   topology: {

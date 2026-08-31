@@ -4,7 +4,10 @@ import { automaticTotalsSection } from "../src/components/automatic-totals-secti
 import { meterResponse } from "./workflow-scenarios";
 
 let container: HTMLDivElement;
-afterEach(() => container?.remove());
+afterEach(() => {
+  container?.remove();
+  expect(document.querySelector(".automatic-totals")).toBeNull();
+});
 
 const mount = (energyMode: "consumption" | "none" = "consumption", parent = false) => {
   const response = meterResponse();
@@ -45,6 +48,7 @@ it("keeps Watts, Amps, and kWh independent and disables kWh when the server says
   const { update } = mount();
   container.querySelector<HTMLInputElement>('[aria-label="Service mains Amps"]')?.click();
   expect(update).toHaveBeenCalledWith(expect.objectContaining({ automatic_totals: [{ candidate_id: "grid-ct1-ct2", enabled: true, outputs: { watts: true, amps: true, kwh: true } }] }));
+  container.remove();
   mount("none");
   expect(container.querySelector<HTMLInputElement>('[aria-label="Service mains kWh"]')?.disabled).toBe(true);
 });

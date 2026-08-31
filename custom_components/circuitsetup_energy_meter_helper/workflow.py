@@ -54,7 +54,10 @@ from .entity_binding import (
     bind_native_meter,
 )
 from .entity_catalog import EntityCatalog
-from .entity_estimator import estimate_configuration_impact
+from .entity_estimator import (
+    estimate_configuration_impact,
+    summarize_configuration_totals,
+)
 from .esphome_api import ESPHomeApiSession
 from .meter_config_mutator import (
     build_meter_configuration_mutation,
@@ -539,6 +542,11 @@ class EntryWorkflow:
                 document=document, previous=inventory.configuration,
                 native_visibility_resolved=inventory.native_visibility_resolved,
             ),
+            "total_details": summarize_configuration_totals(
+                inventory.configuration, inventory.topology, document=document,
+                previous=inventory.configuration, native_visibility_resolved=inventory.native_visibility_resolved,
+                totals_managed=inventory.totals_managed,
+            ),
             "channels": inventory.ct_inventory.channels,
             "catalog": inventory.ct_catalog,
         }
@@ -683,6 +691,11 @@ class EntryWorkflow:
             "automatic_totals": resolve_automatic_totals(candidates, current.automatic_totals),
             "stale_automatic_total_settings": stale,
             "configuration_impact": impact,
+            "total_details": summarize_configuration_totals(
+                current, plan.topology, document=ESPHomeConfigDocument.parse(plan.snapshot.content),
+                previous=plan.inventory.configuration, native_visibility_resolved=plan.inventory.native_visibility_resolved,
+                totals_managed=plan.inventory.totals_managed or current.totals_change_intent.adopt_managed_totals,
+            ),
             "graph": {
                 "native_visibility": graph.native_visibility,
                 "ordered_nodes": graph.ordered_nodes,

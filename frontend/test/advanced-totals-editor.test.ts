@@ -260,7 +260,7 @@ it("recognizes selected sources regardless of server JSON property order", () =>
 
 it("uses current server recursive leaves and independent overlap warnings", () => {
   const response = meterResponse();
-  const preview: TotalGraphPreview = { plan_id: response.plan_id, source_sha256: response.source_sha256,
+  const preview: TotalGraphPreview = { total_details: [], plan_id: response.plan_id, source_sha256: response.source_sha256,
     configuration_impact: response.configuration_impact, automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
     graph: { native_visibility: [], ordered_nodes: [], leaf_channels: { home: [2, 5] }, independent_overlap_warnings: [{ first_id: "home", second_id: "server-aggregate", leaf_channels: [5] }] } };
   mount([total("home", "Home", [ct(2), ct(5)])], true, true, preview);

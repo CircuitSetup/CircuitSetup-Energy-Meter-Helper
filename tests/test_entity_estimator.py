@@ -7,6 +7,7 @@ import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.entity_estimator import (
     estimate_configuration_impact,
+    summarize_configuration_totals,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     AggregateTotalSource,
@@ -48,6 +49,13 @@ def test_unresolved_native_impact_counts_only_confirmed_source_visibility(
     assert impact.public_total_entity_count == int(public_current)
     assert impact.internal_total_sensor_count == 1
     assert impact.energy_entity_count == 0
+    summary = summarize_configuration_totals(current.configuration, current.topology,
+        document=ESPHomeConfigDocument.parse(content), previous=current.configuration,
+        native_visibility_resolved=False, totals_managed=False)
+    assert summary[0].public_outputs == (("Amps",) if public_current else ())
+    assert summary[0].internal_outputs == ("Watts",)
+    assert summary[0].unverified_outputs == (("kWh",) if public_current else ("Amps", "kWh"))
+    assert summary[0].ownership == "source_owned"
 
 
 def test_hash_bound_resolved_native_settings_remain_authoritative() -> None:

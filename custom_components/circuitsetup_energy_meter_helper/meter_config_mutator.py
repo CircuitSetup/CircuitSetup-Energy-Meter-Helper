@@ -240,15 +240,15 @@ def _native_total_accounting(
     }, sum(value is False for value in visibility.values())
 
 
-def _source_owned_total_evidence(
+def _source_owned_total_items(
     requested: MeterConfigurationRequest,
     topology: MeterTopology,
     document: ESPHomeConfigDocument | None,
     replacements: str,
-) -> tuple[list[str], int]:
-    """Count supported surviving W/A, never infer ownership of external daily energy."""
+) -> dict[str, dict[str, str]]:
+    """Effective supported source-owned items, shared by counts and Summary."""
     if document is None:
-        return [], 0
+        return {}
     sensor_ids = {
         sensor_id
         for ids in _legacy_replacement_sources(
@@ -268,6 +268,17 @@ def _source_owned_total_evidence(
         sensor_id = _plain_sensor_scalar(item.get("id", "").removeprefix("!extend "))
         if sensor_id in effective:
             effective[sensor_id]["internal"] = "true"
+    return effective
+
+
+def _source_owned_total_evidence(
+    requested: MeterConfigurationRequest,
+    topology: MeterTopology,
+    document: ESPHomeConfigDocument | None,
+    replacements: str,
+) -> tuple[list[str], int]:
+    """Count supported surviving W/A, never infer ownership of external daily energy."""
+    effective = _source_owned_total_items(requested, topology, document, replacements)
     names = []
     internal = 0
     for item in effective.values():

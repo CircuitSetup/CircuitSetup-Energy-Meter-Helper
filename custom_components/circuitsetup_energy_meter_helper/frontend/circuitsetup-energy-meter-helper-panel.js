@@ -777,9 +777,31 @@ function totalsInventory(value, label, count) {
   });
   return item;
 }
+function totalsSummary(value, label, count) {
+  const keys = /* @__PURE__ */ new Set();
+  for (const entry of array(value, label, 44)) {
+    const row = record(entry, label);
+    exactKeys(row, ["total_id", "kind", "name", "ownership", "public_outputs", "internal_outputs", "unverified_outputs", "sources", "formula", "leaf_channels", "parents"], label);
+    const key = `${enumeration(row.kind, /* @__PURE__ */ new Set(["native_total", "aggregate"]), label)}:${id(row.total_id, label)}`;
+    if (keys.has(key)) throw new Error(`${label} response is invalid`);
+    keys.add(key);
+    string(row.name, label);
+    string(row.formula, label);
+    enumeration(row.ownership, /* @__PURE__ */ new Set(["helper_managed", "source_owned"]), label);
+    for (const field of ["public_outputs", "internal_outputs", "unverified_outputs"]) {
+      const outputs = array(row[field], label, 6);
+      outputs.forEach((output) => enumeration(output, /* @__PURE__ */ new Set(["Watts", "Amps", "kWh", "Net Watts", "Import Watts", "Return-to-grid Watts", "Import kWh", "Return-to-grid kWh", "external custom kWh"]), label));
+      if (new Set(outputs).size !== outputs.length) throw new Error(`${label} response is invalid`);
+    }
+    array(row.sources, label, 82).forEach((source) => string(source, label));
+    array(row.parents, label, 36).forEach((parent) => string(parent, label));
+    if (!leafChannels(row.leaf_channels, label, count).length) throw new Error(`${label} response is invalid`);
+  }
+}
 function totalGraphPreview(value, label, planId, sourceSha256, configuration) {
   const item = record(value, label);
-  exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph", "configuration_impact"], label);
+  exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph", "configuration_impact", "total_details"], label);
+  totalsSummary(item.total_details, label, configuration.channels.length);
   configurationImpact(item.configuration_impact, label, configuration.meter.update_interval_s);
   if (item.plan_id !== planId || item.source_sha256 !== sourceSha256) throw new Error(`${label} response is invalid`);
   automaticPreview(item, label);
@@ -819,10 +841,11 @@ function totalGraphPreview(value, label, planId, sourceSha256, configuration) {
 }
 function meterConfiguration(value, label) {
   const response = record(value, label);
-  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "totals", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "channels", "catalog"], label);
+  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "totals", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "total_details", "channels", "catalog"], label);
   const planId = string(response.plan_id, label);
   if (!SERVER_ID.test(planId) || !SHA256.test(string(response.source_sha256, label))) throw new Error(`${label} response is invalid`);
   const planTopology = topology(response.topology, label);
+  totalsSummary(response.total_details, label, planTopology.ct_count);
   const configuration = record(response.configuration, label);
   exactKeys(configuration, ["meter", "channels", "default_totals", "automatic_totals", "aggregates", "power_quality", "status_fields", "multi_reference_preparation_acknowledged", "totals_change_intent"], label);
   const meter = record(configuration.meter, label);
@@ -3266,6 +3289,7 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
   const handoffAction = !handoffDeclined && restart2?.source_authority === "saved_flash" && restart2.config_filename && !hasOffsets && (restart2.source_handoff_available || restart2.source_handoff_firmware_installed);
   const totalsEvidence = meterConfiguration2 ?? (configurationMode !== "runtime_only" && sourceConfiguration?.capabilities.configuration_authoritative ? sourceConfiguration : null);
   const totalsImpact = meterConfiguration2 ? impact : totalsEvidence?.configuration_impact ?? null;
+  const totalName = (id2) => totalsEvidence?.total_details.find((total) => total.kind === "aggregate" && total.total_id === id2)?.name ?? id2;
   const unmanagedLegacyItems = totalsEvidence?.warnings.filter((warning) => warning.includes("unmanaged"));
   const outcome = summaryOutcome({
     configurationMode,
@@ -3279,12 +3303,24 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
   const boards = (values) => values.flatMap((enabled, board) => enabled ? [board === 0 ? "Main board" : `Add-on ${board}`] : []);
   return b`<section class="step-content" aria-labelledby="step-heading">
     <div class=${restart2 || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${restart2 || completedWithoutChanges ? outcome.calibrationStatus : b`<strong>Restart verification is not complete</strong><p>Summary remains unverified until the server returns authoritative restart evidence.</p>`}</div>
-    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Aggregate energy</dt><dd>${meterConfiguration2.configuration.aggregates.length} aggregates; ${meterConfiguration2.configuration.aggregates.filter((aggregate) => aggregate.energy_mode !== "none").length} energy totals</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"}; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"}</dd></div><div><dt>Reporting and entities</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} public entities, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
+    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"}; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"}</dd></div><div><dt>Reporting and entities</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} public entities, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
     ${totalsEvidence ? b`<section aria-labelledby="summary-totals-heading"><h2 id="summary-totals-heading">${!meterConfiguration2 || totalsEvidence.capabilities.reason_codes.includes("totals_adoption_required") ? "Legacy read-only totals" : "Helper-managed totals"}</h2>
       ${!meterConfiguration2 ? b`<p>Authoritative source snapshot: these totals have not been adopted or verified as installed by this workflow.</p>` : ""}
-      ${totalsImpact ? b`<p>${totalsImpact.public_total_entity_count} public total entities; ${totalsImpact.internal_total_sensor_count} internal total sensors.</p>` : b`<p>Current total counts are unavailable.</p>`}
+      ${totalsImpact ? b`<p>${totalsImpact.public_total_entity_count} public total entities; ${totalsImpact.internal_total_sensor_count} internal total sensors; ${totalsImpact.energy_entity_count} public energy entities.</p>` : b`<p>Current total counts are unavailable.</p>`}
       ${!totalsEvidence.totals.migration.native_visibility_resolved ? b`<p>Counts are confirmed but incomplete: native visibility is unresolved.</p>` : ""}
       <p>Public outputs are exposed to Home Assistant. Internal dependencies remain in firmware for other totals or energy integration.</p>
+      ${totalsEvidence.total_details.map((total) => b`<article class="total-summary" aria-label=${total.name}>
+        <h3>${total.name}</h3>
+        <p>${total.ownership === "helper_managed" ? "Helper-managed" : "Read-only source YAML"}</p>
+        <p>Public outputs: ${total.public_outputs.join(", ") || "none"}</p>
+        ${total.internal_outputs.length ? b`<p>Internal outputs: ${total.internal_outputs.join(", ")}</p>` : ""}
+        ${total.unverified_outputs.length ? b`<p>Unverified outputs: ${total.unverified_outputs.join(", ")}</p>` : ""}
+        <p>Formula: ${total.formula}</p><p>Coverage: ${total.leaf_channels.map((channel) => `CT${channel}`).join(", ")}</p>
+        ${total.parents.length ? b`<p>Feeds into: ${total.parents.join(", ")}</p>` : ""}
+      </article>`)}
+      <h3>Totals migration</h3>
+      ${totalsEvidence.totals.migration.legacy_parent_links.length ? b`<ul>${totalsEvidence.totals.migration.legacy_parent_links.map((link) => b`<li>${totalName(link.child_id)} → ${totalName(link.proposed_parent_id)}: pending review</li>`)}</ul>` : b`<p>No pending legacy relationships.</p>`}
+      ${totalsEvidence.totals.migration.native_visibility_confirmation_required ? b`<p>Native visibility confirmation is pending a verified save.</p>` : ""}
       ${legacyTotalsNotice(totalsEvidence.capabilities)}</section>` : ""}
     ${outcome.warnings.map((warning) => b`<p class="warning-band" role="status">${warning}</p>`)}
     ${technicalDetails(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges)}
@@ -4861,7 +4897,8 @@ class CircuitSetupPanel extends i$2 {
           automatic_totals: preview.automatic_totals,
           stale_automatic_total_settings: preview.stale_automatic_total_settings
         },
-        configuration_impact: preview.configuration_impact
+        configuration_impact: preview.configuration_impact,
+        total_details: preview.total_details
       };
       this.totalGraphPreview = preview;
       this.totalGraphState = "ready";

@@ -3,17 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from .config_document import ESPHomeConfigDocument
 from .meter_config_mutator import (
     _native_total_accounting,
     _select_render_totals,
     _source_owned_total_evidence,
+    _source_owned_total_items,
 )
 from .meter_configuration import (
+    AggregateTotalSource,
     EnergyMode,
+    MeasurementMethod,
     MeterConfigurationRequest,
+    NativeTotalSource,
     validate_meter_configuration,
+)
+from .meter_inventory import (
+    _legacy_replacement_sources,
+    _plain_sensor_scalar,
+    _source_native_visibility,
 )
 from .models import MeterTopology
 from .total_graph import native_total_sources, plan_total_graph
@@ -30,6 +40,87 @@ class ConfigurationImpact:
     approximate_publications_per_second: float
     public_total_entity_count: int
     internal_total_sensor_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class TotalSummary:
+    """Source-aware display evidence; not a second graph or stored configuration."""
+
+    total_id: str
+    kind: Literal["native_total", "aggregate"]
+    name: str
+    ownership: Literal["helper_managed", "source_owned"]
+    public_outputs: tuple[str, ...]
+    internal_outputs: tuple[str, ...]
+    unverified_outputs: tuple[str, ...]
+    sources: tuple[str, ...]
+    formula: str
+    leaf_channels: tuple[int, ...]
+    parents: tuple[str, ...]
+
+
+def summarize_configuration_totals(
+    configuration: MeterConfigurationRequest, topology: MeterTopology, *,
+    document: ESPHomeConfigDocument, previous: MeterConfigurationRequest,
+    native_visibility_resolved: bool, totals_managed: bool,
+) -> tuple[TotalSummary, ...]:
+    """Describe the same selected helper/source outputs as the authoritative estimator."""
+    selected, replacements = _select_render_totals(configuration, topology, document, previous)
+    graph = plan_total_graph(selected, topology)
+    full_graph = plan_total_graph(configuration, topology)
+    owner: Literal["helper_managed", "source_owned"] = "helper_managed" if totals_managed else "source_owned"
+    native_outputs, _ = _native_total_accounting(selected, topology, document, native_visibility_resolved)
+    partial = {} if native_visibility_resolved else _source_native_visibility(document, topology)
+    result = []
+    for native in native_total_sources(topology):
+        outputs = native_outputs[native.source_id]
+        metrics = (("Watts", native.power_id, outputs.watts), ("Amps", native.current_id, outputs.amps),
+            ("kWh", native.existing_energy_id, outputs.kwh))
+        sources = tuple(f"CT{channel}" for channel in sorted(native.leaf_channels))
+        result.append(TotalSummary(native.source_id, "native_total", native.label, owner,
+            tuple(label for label, _, visible in metrics if visible),
+            tuple(label for label, sensor_id, visible in metrics if not visible and sensor_id is not None
+                and (native_visibility_resolved or partial.get(sensor_id) is False)),
+            tuple(label for label, sensor_id, _ in metrics if not native_visibility_resolved
+                and sensor_id is not None and partial.get(sensor_id) is None),
+            sources, " + ".join(sources), tuple(sorted(native.leaf_channels)),
+            tuple(node.aggregate.name for node in graph.ordered_nodes
+                if NativeTotalSource("native_total", native.source_id) in node.aggregate.sources)))
+    external_ids = _legacy_replacement_sources(document, topology, configuration.channels)
+    external = _source_owned_total_items(selected, topology, document, replacements)
+    generated = {node.aggregate.aggregate_id for node in graph.ordered_nodes}
+    for node in full_graph.ordered_nodes:
+        aggregate = node.aggregate
+        sources = tuple(source.label for source in node.sources)
+        formula = " + ".join(sources)
+        if aggregate.measurement_method is MeasurementMethod.ONE_CT_DOUBLE_POWER:
+            formula = f"2 × ({formula}) Watts; measured Amps"
+        public: tuple[str, ...]
+        internal: tuple[str, ...]
+        unknown: tuple[str, ...] = ()
+        if aggregate.aggregate_id in generated:
+            power = ("Net Watts", "Import Watts", "Return-to-grid Watts") if aggregate.energy_mode is EnergyMode.BIDIRECTIONAL else ("Watts",)
+            energy = ("Import kWh", "Return-to-grid kWh") if aggregate.energy_mode is EnergyMode.BIDIRECTIONAL else ("kWh",)
+            public = power if aggregate.outputs.watts else ()
+            public += ("Amps",) if aggregate.outputs.amps else ()
+            public += energy if node.energy_required else ()
+            internal = power if node.power_required and not aggregate.outputs.watts else ()
+            internal += ("Amps",) if node.current_required and not aggregate.outputs.amps else ()
+            node_owner = owner
+        else:
+            items = [external[sensor_id] for sensor_id in external_ids.get(aggregate.aggregate_id, ()) if sensor_id in external]
+            public = tuple("Watts" if _plain_sensor_scalar(item.get("device_class", "")) == "power" else "Amps"
+                for item in items if item.get("internal", "false") == "false" and item.get("name"))
+            internal = tuple("Watts" if _plain_sensor_scalar(item.get("device_class", "")) == "power" else "Amps"
+                for item in items if item.get("internal") == "true")
+            unknown = ("external custom kWh",) if aggregate.energy_mode is not EnergyMode.NONE else ()
+            node_owner = "source_owned"
+        result.append(TotalSummary(aggregate.aggregate_id, "aggregate", aggregate.name, node_owner,
+            public, internal, unknown, sources, formula,
+            tuple(sorted(full_graph.leaf_channels[aggregate.aggregate_id])),
+            tuple(parent.aggregate.name for parent in full_graph.ordered_nodes
+                if AggregateTotalSource("aggregate", aggregate.aggregate_id) in parent.aggregate.sources)))
+    return tuple(result)
 
 
 def estimate_configuration_impact(

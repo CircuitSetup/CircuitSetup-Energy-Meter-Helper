@@ -190,7 +190,22 @@ export interface TotalsInventory {
   };
 }
 
+export interface TotalSummary {
+  total_id: string;
+  kind: "native_total" | "aggregate";
+  name: string;
+  ownership: "helper_managed" | "source_owned";
+  public_outputs: string[];
+  internal_outputs: string[];
+  unverified_outputs: string[];
+  sources: string[];
+  formula: string;
+  leaf_channels: number[];
+  parents: string[];
+}
+
 export interface TotalGraphPreview {
+  total_details: TotalSummary[];
   configuration_impact: ConfigurationImpact;
   plan_id: string;
   source_sha256: string;
@@ -340,6 +355,7 @@ export interface VoltageReferenceTopology {
 }
 
 export interface MeterConfiguration extends CtInventory {
+  total_details: TotalSummary[];
   plan_id: string;
   source_sha256: string;
   topology: MeterTopology;

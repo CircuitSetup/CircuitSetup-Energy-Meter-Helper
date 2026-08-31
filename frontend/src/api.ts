@@ -281,8 +281,30 @@ function totalsInventory(value: unknown, label: string, count: number): Record<s
   return item;
 }
 
+function totalsSummary(value: unknown, label: string, count: number): void {
+  const keys = new Set<string>();
+  for (const entry of array(value, label, 44)) {
+    const row = record(entry, label);
+    exactKeys(row, ["total_id", "kind", "name", "ownership", "public_outputs", "internal_outputs", "unverified_outputs", "sources", "formula", "leaf_channels", "parents"], label);
+    const key = `${enumeration(row.kind, new Set(["native_total", "aggregate"]), label)}:${id(row.total_id, label)}`;
+    if (keys.has(key)) throw new Error(`${label} response is invalid`);
+    keys.add(key);
+    string(row.name, label); string(row.formula, label);
+    enumeration(row.ownership, new Set(["helper_managed", "source_owned"]), label);
+    for (const field of ["public_outputs", "internal_outputs", "unverified_outputs"]) {
+      const outputs = array(row[field], label, 6);
+      outputs.forEach((output) => enumeration(output, new Set(["Watts", "Amps", "kWh", "Net Watts", "Import Watts", "Return-to-grid Watts", "Import kWh", "Return-to-grid kWh", "external custom kWh"]), label));
+      if (new Set(outputs).size !== outputs.length) throw new Error(`${label} response is invalid`);
+    }
+    array(row.sources, label, 82).forEach((source) => string(source, label));
+    array(row.parents, label, 36).forEach((parent) => string(parent, label));
+    if (!leafChannels(row.leaf_channels, label, count).length) throw new Error(`${label} response is invalid`);
+  }
+}
+
 function totalGraphPreview(value: unknown, label: string, planId: string, sourceSha256: string, configuration: MeterConfigurationRequest): TotalGraphPreview {
-  const item = record(value, label); exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph", "configuration_impact"], label);
+  const item = record(value, label); exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph", "configuration_impact", "total_details"], label);
+  totalsSummary(item.total_details, label, configuration.channels.length);
   configurationImpact(item.configuration_impact, label, configuration.meter.update_interval_s);
   if (item.plan_id !== planId || item.source_sha256 !== sourceSha256) throw new Error(`${label} response is invalid`);
   automaticPreview(item, label);
@@ -296,10 +318,11 @@ function totalGraphPreview(value: unknown, label: string, planId: string, source
 
 function meterConfiguration(value: unknown, label: string): MeterConfiguration {
   const response = record(value, label);
-  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "totals", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "channels", "catalog"], label);
+  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "totals", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "total_details", "channels", "catalog"], label);
   const planId = string(response.plan_id, label)!;
   if (!SERVER_ID.test(planId) || !SHA256.test(string(response.source_sha256, label)!)) throw new Error(`${label} response is invalid`);
   const planTopology = topology(response.topology, label);
+  totalsSummary(response.total_details, label, planTopology.ct_count);
   const configuration = record(response.configuration, label);
   exactKeys(configuration, ["meter", "channels", "default_totals", "automatic_totals", "aggregates", "power_quality", "status_fields", "multi_reference_preparation_acknowledged", "totals_change_intent"], label);
   const meter = record(configuration.meter, label);

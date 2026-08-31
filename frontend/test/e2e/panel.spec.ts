@@ -105,7 +105,7 @@ function meterConfiguration(backend: MeterConfiguration, addons: number, scenari
       semantic_source: mode === "legacy" ? "legacy_inferred" : "helper_managed", reason_codes: mode === "legacy" ? ["electrical_profile_requires_confirmation"] : [] },
     voltage_topology: { references: references.map((reference) => [reference.reference_id, reference.group_keys]), source: "legacy" },
     voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 },
-    ct_catalog: live.catalog, totals: backend.totals, warnings: [], configuration_impact: backend.configuration_impact, channels: live.channels, catalog: live.catalog };
+    ct_catalog: live.catalog, totals: backend.totals, total_details: backend.total_details, warnings: [], configuration_impact: backend.configuration_impact, channels: live.channels, catalog: live.catalog };
 }
 
 function transaction(state: string, channel: number, options: { evidence?: string[]; progress?: string[];
@@ -304,7 +304,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         const graph = await graphFor(configuration);
         result = { ...live, plan_id: activePlan ?? "b".repeat(32), source_sha256: activeSourceSha256,
           totals: { ...live.totals, automatic_candidates: graph.automatic_candidates, automatic_totals: graph.automatic_totals,
-            stale_automatic_total_settings: graph.stale_automatic_total_settings }, configuration_impact: graph.configuration_impact,
+            stale_automatic_total_settings: graph.stale_automatic_total_settings }, configuration_impact: graph.configuration_impact, total_details: graph.total_details,
           configuration: refreshingConsumedPlan && options.freshSourceChanged
             ? { ...configuration, meter: { ...configuration.meter, friendly_name: "External meter" } }
             : configuration };
@@ -536,6 +536,60 @@ for (const name of ["main-only", "one-addon"] as const) test(`totals defaults an
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   expect((await fixture.state()).proposed_content).toContain("internal: true");
+});
+
+test("verified Summary shows public outputs, hidden dependencies, formulas, coverage and pending migration", async ({ page }) => {
+  const fixture = await totalsFixture(page, "summary");
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await openInventory(page, fixture.url);
+  await page.getByRole("switch", { name: "Overall meter total Amps", exact: true }).uncheck();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
+  await expect(page.getByText("Installed configuration and totals inventory are verified.")).toBeVisible();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByLabel(/Keep existing calibration/).click();
+  await expect(page.locator("#step-heading")).toHaveText("Setup complete");
+  await expect(page.getByRole("article", { name: "Parent report", exact: true })).toContainText("Public outputs: Watts, Amps, kWh");
+  await expect(page.getByRole("article", { name: "Parent report", exact: true })).toContainText("Formula: Hidden branch");
+  await expect(page.getByRole("article", { name: "Parent report", exact: true })).toContainText("Coverage: CT3");
+  const child = page.getByRole("article", { name: "Hidden branch", exact: true });
+  await expect(child).toContainText("Public outputs: none");
+  await expect(child).toContainText("Internal outputs: Watts, Amps");
+  await expect(child).toContainText("Feeds into: Parent report");
+  await expect(child).toContainText("Helper-managed");
+  await expect(page.getByRole("article", { name: "Mains", exact: true })).toContainText("Net Watts, Import Watts, Return-to-grid Watts, Import kWh, Return-to-grid kWh");
+  await expect(page.getByRole("article", { name: "Watts only report", exact: true })).toContainText("Public outputs: Watts");
+  await expect(page.getByRole("article", { name: "Watts only report", exact: true })).not.toContainText("kWh");
+  await expect(page.locator(".step-content")).toContainText("4 public energy entities");
+  await expect(page.locator(".step-content")).toContainText("Watts only report → Parent report: pending review");
+  expect((await fixture.state()).stored.configuration.totals_migration.legacy_parent_links).toEqual([{ child_id: "watts-only", proposed_parent_id: "parent" }]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(child).toContainText("Coverage: CT3");
+  expect(errors).toEqual([]);
+});
+
+test("source-only legacy and runtime-only Summary do not claim verified managed outputs", async ({ page }) => {
+  for (const name of ["source-only", "runtime-only"]) {
+    const fixture = await totalsFixture(page, name);
+    await page.goto(fixture.url);
+    await page.locator('[data-action="rescan"]').click();
+    await page.locator('[data-action="configure-device"]').first().click();
+    await page.locator('[data-action="continue"]').click();
+    if (name === "source-only") await page.getByRole("button", { name: "Keep ESPHome configuration and calibrate only", exact: true }).click();
+    await page.getByLabel(/Keep existing calibration/).click();
+    if (name === "source-only") {
+      await expect(page.locator("#summary-totals-heading")).toHaveText("Legacy read-only totals");
+      await expect(page.getByRole("article", { name: "Overall meter total", exact: true })).toContainText("Read-only source YAML");
+      await expect(page.locator(".step-content")).toContainText("not been adopted or verified as installed");
+    } else {
+      await expect(page.locator(".total-summary")).toHaveCount(0);
+      await expect(page.locator(".step-content")).toContainText("no authoritative configuration was available");
+    }
+    expect((await fixture.state()).builder_calls).not.toContain("write");
+  }
 });
 
 test("automatic off survives role disappearance, verified install and browser reload", async ({ page }) => {

@@ -58,6 +58,43 @@ from tests.test_store import (
 )
 
 
+@pytest.mark.parametrize("advanced", (False, True))
+@pytest.mark.parametrize("matching", (False, True))
+def test_generated_totals_recover_with_disabled_unused_ct(advanced: bool, matching: bool) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+        build_meter_configuration_mutation,
+    )
+    from tests.test_config_mutator import _inventory as rendered_inventory
+    from tests.test_config_mutator import _native_total_setup
+
+    snapshot, topology, current = _native_total_setup(0)
+    requested = replace(current.configuration,
+        channels=tuple(replace(channel, enabled=False, role=CircuitRole.UNUSED)
+            if channel.channel == 6 else replace(channel, role=CircuitRole.BRANCH)
+            for channel in current.configuration.channels),
+        default_totals=replace(current.configuration.default_totals,
+            overall=TotalOutputSettings(False, True, False)),
+        aggregates=(CircuitAggregate("report", "Report", CircuitRole.CUSTOM,
+            (ChannelTotalSource("channel", 1),), MeasurementMethod.DIRECT,
+            EnergyMode.NONE, TotalOutputSettings(True, False, False)),) if advanced else ())
+    source = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
+    stored = StoredMeterConfiguration(sha256(source.encode()).hexdigest(), requested.meter,
+        requested.channels, requested.default_totals, (), requested.aggregates,
+        requested.power_quality, requested.status_fields)
+    loaded = rendered_inventory(replace(snapshot, content=source, sha256=stored.config_sha256),
+        topology, stored=stored if matching else None)
+    assert "aggregate_semantics_unreadable" not in loaded.warnings
+    assert loaded.configuration.aggregates == requested.aggregates
+    assert loaded.configuration.default_totals == requested.default_totals
+    if matching:
+        assert loaded.configuration.channels[5].role is CircuitRole.UNUSED
+        assert not loaded.configuration.channels[5].enabled
+    assert loaded.automatic_candidates == ()
+    assert loaded.automatic_totals == ()
+    assert loaded.capabilities.managed_advanced_totals is matching
+    assert loaded.totals_managed is matching
+
+
 def test_unowned_matching_record_does_not_resolve_unknown_native_visibility() -> None:
     content = _document(contract=True)
     original = _inventory(content)
@@ -71,6 +108,34 @@ def test_unowned_matching_record_does_not_resolve_unknown_native_visibility() ->
     assert not loaded.capabilities.native_totals_writable
     assert not loaded.native_visibility_resolved
     assert loaded.configuration.channels == original.configuration.channels
+
+
+@pytest.mark.parametrize("corruption", ("duplicate", "malformed", "managed-mismatch"))
+def test_native_visibility_rejects_untrusted_override_precedence(corruption: str) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+        build_meter_configuration_mutation,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
+        _source_normalized_default_totals,
+    )
+    from tests.test_config_mutator import _native_total_setup
+
+    snapshot, topology, current = _native_total_setup(0)
+    overrides = "".join(f"  - id: !extend {sensor_id}\n    internal: false\n"
+        for sensor_id in ("totalWattsMain", "totalAmpsMain", "totalEnergyDaily"))
+    content = snapshot.content.replace("sensor:\n", "sensor:\n" + overrides)
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    current = replace(current, source_sha256=snapshot.sha256)
+    requested = replace(current.configuration, default_totals=replace(current.configuration.default_totals,
+        overall=TotalOutputSettings(False, True, True)))
+    source = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
+    if corruption == "duplicate":
+        source = source.replace("sensor:\n", "sensor:\n  - id: !extend totalWattsMain\n    internal: true\n")
+    elif corruption == "malformed":
+        source = source.replace("internal: false", "internal: unknown", 1)
+    else:
+        source = source.replace("internal: true", "internal: false")
+    assert _source_normalized_default_totals(ESPHomeConfigDocument.parse(source), topology) is None
 
 
 def test_capability_model_has_exact_frozen_slots_contract() -> None:

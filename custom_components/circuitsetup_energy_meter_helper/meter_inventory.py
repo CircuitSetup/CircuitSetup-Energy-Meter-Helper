@@ -412,6 +412,25 @@ def _source_native_visibility(
     document: ESPHomeConfigDocument, topology: MeterTopology
 ) -> dict[str, bool | None]:
     """Read partial native facts; missing or unknown entries are not publications."""
+    managed_visibility: dict[str, bool | None] = {}
+    try:
+        if _native_totals_metadata(document) is not None:
+            block = document.managed_blocks["aggregates"]
+            channels = CTInventory.from_document(document, topology, CTPresetCatalog.load(),
+                sha256(document.content.encode()).hexdigest())
+            recovered, _ = _automatic_totals_metadata(document,
+                _legacy_request(document, topology, channels), authoritative=False)
+            metadata, _ = _aggregate_metadata(block.content)
+            _validate_graph_block(document, topology, recovered, metadata or ())
+            managed_visibility = {
+                _plain_sensor_scalar(item["id"].removeprefix("!extend ")): item["internal"] == "false"
+                for item in _managed_sensor_items(block.content, document.sensor_item_indent)
+                if item.get("id", "").startswith("!extend ") and "internal" in item
+            }
+            document = ESPHomeConfigDocument.parse(
+                document.content[:block.span.start] + document.content[block.span.end:])
+    except (ValueError, TypeError, KeyError):
+        return {}
     sensor_span = document.writable_sensor_span
     if sensor_span is None:
         return {}
@@ -465,7 +484,8 @@ def _source_native_visibility(
             if named_definition
             else None
         )
-    return {**definitions_visibility, **overrides}
+    return {**definitions_visibility, **overrides,
+        **{sensor_id: visible for sensor_id, visible in managed_visibility.items() if sensor_id in native_ids}}
 
 
 def _source_normalized_default_totals(
@@ -1159,7 +1179,7 @@ def _validate_graph_block(
     automatic_ids = {candidate.aggregate_id for candidate in automatic_total_candidates(configuration)} if has_automatic else set()
     requested = replace(configuration, aggregates=tuple(item for item in metadata if item.aggregate_id not in automatic_ids),
         automatic_totals=configuration.automatic_totals if has_automatic else (),
-        channels=configuration.channels if has_automatic else tuple(replace(channel, role=CircuitRole.BRANCH) for channel in configuration.channels),
+        channels=configuration.channels if has_automatic else tuple(replace(channel, role=CircuitRole.BRANCH) if channel.enabled else channel for channel in configuration.channels),
         default_totals=_native_totals_metadata(document) or configuration.default_totals)
     validate_meter_configuration(requested, topology, require_multi_reference_acknowledgement=False)
     requested, replacements = _select_render_totals(requested, topology, document, None)

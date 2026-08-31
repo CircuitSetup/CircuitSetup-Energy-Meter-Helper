@@ -157,7 +157,7 @@ describe("explicit totals adoption and migration transactions", () => {
     const responses: Record<string, unknown> = { setup_status: { state: "device_discovered", devices: [device] },
       preview_meter_configuration: reviewed(), cancel_session: { ...session, state: "cancelled" }, get_meter_configuration: meter,
       preview_total_graph: { plan_id: meter.plan_id, source_sha256: meter.source_sha256, configuration_impact: meter.configuration_impact,
-        automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } }, ...overrides };
+        automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } }, ...overrides };
     const hass = makeHass(responses); const call = hass.callWS;
     hass.callWS = async <T>(message: Record<string, unknown>) => { calls.push(message); return call<T>(message); };
     const panel = await mount(hass);
@@ -504,7 +504,7 @@ describe("server-authoritative total graph", () => {
     resolveGraph({ plan_id: response.plan_id, source_sha256: response.source_sha256,
       automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [off],
       configuration_impact: { ...response.configuration_impact, numeric_entity_count: 43, approximate_publications_per_second: 8.6 },
-      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
+      total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
     await tick(); await panel.updateComplete;
     expect(state.totalGraphState).toBe("ready");
     expect(text(panel).includes("43 public entities")).toBe(true);
@@ -529,7 +529,7 @@ describe("server-authoritative total graph", () => {
     await state.continueFromMeterSettings();
     resolveGraph({ plan_id: response.plan_id, source_sha256: response.source_sha256,
       automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], configuration_impact: response.configuration_impact,
-      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
+      total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
     await tick();
     expect(state.step).toBe("ct");
     expect(state.totalGraphState).toBe("ready");
@@ -562,7 +562,7 @@ describe("server-authoritative total graph", () => {
       automatic_candidates: [candidate], automatic_totals: [{ candidate, enabled: true, outputs: candidate.recommended_outputs }],
       stale_automatic_total_settings: [],
       configuration_impact: { ...fresh.configuration_impact, numeric_entity_count: 43, approximate_publications_per_second: 8.6 },
-      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
+      total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
     pending.at(-1)!.resolve(preview); await tick(); await panel.updateComplete;
     expect(state.totalGraphState).toBe("ready");
     expect(state.meterConfiguration.configuration.channels[0]!.role).toBe("solar");
@@ -680,7 +680,7 @@ describe("server-authoritative total graph", () => {
     const preview = { plan_id: response.plan_id, source_sha256: response.source_sha256,
       automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [off],
       configuration_impact: { ...response.configuration_impact, numeric_entity_count: 43, approximate_publications_per_second: 8.6 },
-      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
+      total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
     state.updateCircuitConfiguration({ ...state.meterConfiguration.configuration });
     pending[1]!.resolve(preview); await tick(); await panel.updateComplete;
     expect(text(panel)).toContain("43 public entities");
@@ -834,7 +834,7 @@ describe("meter configuration review and summary", () => {
     const summary = root.textContent ?? "";
     expect(summary).toContain("Configuration authority");
     expect(summary).toContain("Installed electrical profile");
-    expect(summary).toContain("Aggregate energy");
+    expect(summary).toContain("public energy entities");
     expect(summary).toContain("Installed package scope");
     expect(summary).toContain("Main board");
     expect(summary).toContain("Reporting and entities");
@@ -1220,7 +1220,7 @@ describe("CircuitSetup panel", () => {
         if (operation === "preview_total_graph") return { plan_id: message.plan_id, source_sha256: message.source_sha256,
           automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
           configuration_impact: meterResponse().configuration_impact,
-          graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
+          total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
         if (operation === "preview_meter_configuration") {
           if (message.plan_id !== activePlan) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
           return preview as T;
@@ -1304,7 +1304,7 @@ describe("CircuitSetup panel", () => {
         if (operation === "preview_total_graph") return { plan_id: message.plan_id, source_sha256: message.source_sha256,
           automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
           configuration_impact: meterResponse().configuration_impact,
-          graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
+          total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
         if (operation === "preview_meter_configuration") {
           if (message.plan_id !== activePlan || pendingTransaction) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
           activePlan = null; pendingTransaction = true;
@@ -1398,7 +1398,7 @@ describe("CircuitSetup panel", () => {
         if (operation === "preview_total_graph") return { plan_id: message.plan_id, source_sha256: message.source_sha256,
           automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
           configuration_impact: meterResponse().configuration_impact,
-          graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
+          total_details: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } as T;
         if (operation === "preview_meter_configuration") {
           previews.push({ planId: message.plan_id, sourceSha256: message.source_sha256, configuration: message.configuration });
           if (message.plan_id !== activePlan || pendingTransaction) throw Object.assign(new Error("stale"), { code: "stale_confirmation" });
