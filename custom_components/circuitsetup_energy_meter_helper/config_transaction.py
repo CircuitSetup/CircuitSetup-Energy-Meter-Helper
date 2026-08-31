@@ -182,6 +182,8 @@ class VerifiedPersistence(Protocol):
         record: StoredMeterRecord,
     ) -> bool: ...
 
+    async def async_get_meter_record_fingerprint(self, mac: str) -> str: ...
+
     async def async_get_meter_configuration(
         self, mac: str
     ) -> StoredMeterConfiguration | None: ...
@@ -211,6 +213,8 @@ class VerifiedPersistence(Protocol):
         expected_source_sha256: str,
         configuration: StoredMeterConfiguration,
         record: StoredMeterRecord,
+        *,
+        expected_record_fingerprint: str | None = None,
     ) -> None: ...
 
     async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
@@ -312,6 +316,7 @@ class _ConfigTransaction:
         default_factory=frozenset, repr=False
     )
     meter_record: StoredMeterRecord | None = field(default=None, repr=False)
+    meter_record_fingerprint: str | None = field(default=None, repr=False)
     _legacy_ct_selections: tuple[StoredCTSelection, ...] = field(default=(), repr=False)
     verification_id: str | None = field(default=None, repr=False)
     totals_change_intent: TotalsChangeIntent = field(
@@ -370,6 +375,7 @@ class _ConfigTransaction:
         self.expected_sensor_entities = frozenset()
         self.expected_aggregate_sensor_entities = frozenset()
         self.meter_record = None
+        self.meter_record_fingerprint = None
         self._legacy_ct_selections = ()
         self.preparation_guard = None
         self.closed = True
@@ -499,6 +505,7 @@ class ConfigTransactionManager:
         offset_preparation: StockOffsetPreparation | None = None,
         offset_finalization: StockOffsetFinalization | None = None,
         preparation_guard: Callable[[], None] | None = None,
+        reconcile_stale_metadata: bool = False,
     ) -> TransactionStatus:
         """Retain full content only in memory and return a safe review surface."""
         if (
@@ -526,6 +533,16 @@ class ConfigTransactionManager:
             is not None
         ):
             raise ValueError("stock offset preparation does not match transaction")
+        if type(reconcile_stale_metadata) is not bool or (
+            reconcile_stale_metadata and meter_configuration is None
+        ):
+            raise ValueError("metadata reconciliation requires a full meter configuration")
+        if reconcile_stale_metadata and offset_operation is not None:
+            raise ValueError("metadata reconciliation is only for ordinary configuration")
+        record_fingerprint = (
+            await self._persistence.async_get_meter_record_fingerprint(mac)
+            if reconcile_stale_metadata else None
+        )
         if meter_configuration is not None:
             if not isinstance(meter_configuration, StoredMeterConfiguration):
                 raise TypeError("meter configuration must be StoredMeterConfiguration")
@@ -622,6 +639,7 @@ class ConfigTransactionManager:
             expected_aggregate_sensor_entities,
             _legacy_ct_selections=selections,
             meter_record=_trusted_meter_record(mac, topology, source_snapshot),
+            meter_record_fingerprint=record_fingerprint,
             totals_change_intent=totals_change_intent,
             offset_preparation=offset_preparation,
             offset_finalization=offset_finalization,
@@ -1373,6 +1391,8 @@ class ConfigTransactionManager:
                     transaction.source_sha256,
                     configuration,
                     _meter_record(transaction),
+                    **({"expected_record_fingerprint": transaction.meter_record_fingerprint}
+                       if transaction.meter_record_fingerprint is not None else {}),
                 )
                 return True
             return await self._persistence.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(

@@ -185,6 +185,77 @@ async def finalization_case(
     return sessions, recovery, builder, manager, review, final
 
 
+@pytest.mark.parametrize("purpose", ("offset_preparation", "offset_finalization"))
+def test_offset_preview_rejects_ordinary_metadata_authority_before_work(
+    tmp_path, monkeypatch, purpose
+):
+    from copy import deepcopy
+
+    from tests.test_stock_offset_preparation import preparation
+
+    async def run():
+        store = await current_store()
+        if purpose == "offset_preparation":
+            sessions, recovery, builder, manager, _, binding = await preparation(
+                tmp_path, review=False
+            )
+            manager._persistence = store
+        else:
+            sessions, recovery, builder, manager, _, _ = await finalization_case(
+                tmp_path, store=store, review_final=False
+            )
+        source = await builder.async_get_config("meter.yaml")
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            record = await recovery.async_load(lease)
+            if purpose == "offset_preparation":
+                plan = recovery.build_preparation_plan(record, source, 1, binding.targets)
+            else:
+                plan = recovery.build_finalization_plan(record, source)
+                binding = await recovery.async_review_finalization(
+                    lease, record, source, plan, "a" * 32, 2
+                )
+        finally:
+            lease.release()
+        configuration = rehashed_configuration(
+            await store.async_get_meter_configuration(MAC),
+            sha256(plan.proposed_content.encode()).hexdigest(),
+        )
+        fingerprint_reads = []
+        get_fingerprint = store.async_get_meter_record_fingerprint
+
+        async def fingerprint(mac):
+            fingerprint_reads.append(mac)
+            return await get_fingerprint(mac)
+
+        monkeypatch.setattr(store, "async_get_meter_record_fingerprint", fingerprint)
+        before_store = deepcopy(store._store.data)
+        before_builder = list(builder.calls)
+        before_transactions = sessions._transactions()
+        with pytest.raises(ValueError, match="ordinary"):
+            await manager.async_preview(
+                MAC, _topology(), plan, source,
+                meter_configuration=configuration,
+                reconcile_stale_metadata=True,
+                **{purpose: binding},
+            )
+        assert fingerprint_reads == []
+        assert builder.calls == before_builder
+        assert sessions._transactions() == before_transactions
+        assert store._store.data == before_store
+
+        preview = await manager.async_preview(
+            MAC, _topology(), plan, source, **{purpose: binding}
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        installed = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert installed.state.value == "verified"
+        assert fingerprint_reads == []
+
+    asyncio.run(run())
+
+
 def test_final_receipt_requires_normal_install_and_retains_original_and_candidates(
     tmp_path,
 ):

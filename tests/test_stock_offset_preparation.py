@@ -134,7 +134,7 @@ class StockSession(FakeOffsetSession):
             break
 
 
-async def preparation(tmp_path: Path) -> tuple[Any, ...]:
+async def preparation(tmp_path: Path, *, review: bool = True) -> tuple[Any, ...]:
     from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
         OffsetRecovery,
     )
@@ -171,8 +171,11 @@ async def preparation(tmp_path: Path) -> tuple[Any, ...]:
         reconnect_timeout=0.1,
         reconnect_backoff_initial=0.01,
     )
-    preview = await manager.async_preview(
-        MAC, topology, plan, source, offset_preparation=prepared
+    preview = (
+        await manager.async_preview(
+            MAC, topology, plan, source, offset_preparation=prepared
+        )
+        if review else None
     )
     return sessions, recovery, builder, manager, preview, prepared
 

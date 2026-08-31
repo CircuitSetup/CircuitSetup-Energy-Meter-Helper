@@ -804,6 +804,7 @@ class EntryWorkflow:
             mutation,
             plan.snapshot,
             meter_configuration=configuration,
+            reconcile_stale_metadata=True,
             totals_change_intent=requested.totals_change_intent,
             native_visibility_resolved=plan.inventory.native_visibility_resolved,
             expected_sensor_entities=expected.sensor_entities,
