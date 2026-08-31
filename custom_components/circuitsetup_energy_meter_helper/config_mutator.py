@@ -9,6 +9,13 @@ from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import Protocol
 
+import yaml  # type: ignore[import-untyped]
+from yaml.nodes import (  # type: ignore[import-untyped]
+    MappingNode,
+    ScalarNode,
+    SequenceNode,
+)
+
 from .config_document import (
     MANAGED_BLOCK_MARKERS,
     ConfigScalar,
@@ -56,7 +63,6 @@ _YAML_FLOW_KEY_RE = re.compile(
     rf"[{{,][ \t]*(?:(?:![^\s]+|&[^\s]+)[ \t]+)*"
     rf"(?P<key>{_YAML_KEY_TOKEN})[ \t]*:"
 )
-_YAML_FLOW_ID_RE = re.compile(r"[\{,][ \t]*id[ \t]*:[ \t]*(?P<value>[^,}]+)")
 _PACKAGE_FEATURES = {
     "power_quality": ("power_quality", "power_quality"),
     "status_fields": ("status_fields", "status"),
@@ -1024,14 +1030,11 @@ def _reject_local_offset_overrides(
         "offset_current",
         "offset_active_power",
         "offset_reactive_power",
-    }
+        }
     for index, line in enumerate(lines):
         if _yaml_flow_keys(line).intersection(offset_fields):
-            flow_ids = [
-                _yaml_identifier(match["value"])
-                for match in _YAML_FLOW_ID_RE.finditer(line)
-            ]
-            if len(flow_ids) != 1 or flow_ids[0] is None or flow_ids[0] in aliases:
+            owner_id = _flow_owner_identifier(line)
+            if owner_id is None or owner_id in aliases:
                 raise ConfigMutationError(
                     "existing offset overrides are not safely writable"
                 )
@@ -1060,6 +1063,32 @@ def _reject_local_offset_overrides(
             raise ConfigMutationError("existing offset overrides are not safely writable")
         if _yaml_identifier(ids[0][3]) in aliases:
             raise ConfigMutationError("existing offset overrides are not safely writable")
+
+
+def _flow_owner_identifier(line: str) -> str | None:
+    """Return one direct flow-list owner ID without interpreting nested mappings."""
+    try:
+        sequence = yaml.compose(line)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(sequence, SequenceNode) or len(sequence.value) != 1:
+        return None
+    item = sequence.value[0]
+    if not isinstance(item, MappingNode):
+        return None
+    owners = [
+        value
+        for key, value in item.value
+        if isinstance(key, ScalarNode) and key.value == "id"
+    ]
+    if len(owners) != 1 or not isinstance(owners[0], ScalarNode):
+        return None
+    owner = owners[0]
+    if owner.tag == "!extend":
+        return _yaml_identifier(f"!extend {owner.value}")
+    if owner.tag == "tag:yaml.org,2002:str":
+        return _yaml_identifier(owner.value)
+    return None
 
 
 def _phase_override_lines(

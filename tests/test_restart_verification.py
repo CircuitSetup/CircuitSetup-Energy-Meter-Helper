@@ -1463,7 +1463,7 @@ def test_offset_rendering_preserves_unrelated_source_offset_overrides() -> None:
 def test_offset_rendering_preserves_unrelated_source_flow_offset_overrides() -> None:
     source = _snapshot().content + (
         "unrelated_overrides:\n"
-        "  - {id: !extend unrelated_meter, phase_a: {offset_voltage: -1, offset_current: 2}}\n"
+        "  - {\"id\": !extend unrelated_meter, note: \"id: !extend meter_main1\", phase_a: {id: meter_main1, offset_voltage: -1, offset_current: 2}}\n"
         "sensor:\n"
     )
     snapshot = _snapshot(source)
@@ -1476,7 +1476,7 @@ def test_offset_rendering_preserves_unrelated_source_flow_offset_overrides() -> 
 
     plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
 
-    assert "id: !extend unrelated_meter" in plan.proposed_content
+    assert '"id": !extend unrelated_meter' in plan.proposed_content
     assert "offset_voltage: -12" in plan.proposed_content
 
 
