@@ -2012,16 +2012,21 @@ def test_board_energy_can_be_removed_through_hash_bound_inventory() -> None:
 
 
 @pytest.mark.parametrize("board,energy_id", ((0, "csemh_board_main_energy"), (1, "csemh_board_addon_1_energy")))
-@pytest.mark.parametrize("extend", (False, True))
+@pytest.mark.parametrize("id_form", ("definition", "extend", "anchor", "tag"))
 def test_board_energy_rejects_unmanaged_sensor_id_ownership(
-    board: int, energy_id: str, extend: bool,
+    board: int, energy_id: str, id_form: str,
 ) -> None:
     snapshot, topology, current = _native_total_setup()
     original = (
         f"  - id: !extend {energy_id}\n    name: User Energy\n"
-        if extend else
-        f'  - platform: total_daily_energy\n    id: "{energy_id}" # user owned\n'
-        "    name: User Energy\n    power_id: ct1Watts\n"
+        if id_form == "extend" else
+        "  - platform: total_daily_energy\n    id: "
+        + {
+            "definition": f'"{energy_id}" # user owned',
+            "anchor": f"&user_energy {energy_id}",
+            "tag": f"!!str {energy_id}",
+        }[id_form]
+        + "\n    name: User Energy\n    power_id: ct1Watts\n"
     )
     content = snapshot.content.replace("logger:\n", original + "logger:\n")
     digest = sha256(content.encode()).hexdigest()
@@ -2040,11 +2045,12 @@ def test_board_energy_rejects_unmanaged_sensor_id_ownership(
             for setting in configuration.default_totals.boards
         ),
     ))
-    with pytest.raises(ConfigMutationError, match="unmanaged.*" + energy_id):
+    with pytest.raises(ConfigMutationError, match="unmanaged.*(conflict|unresolved)"):
         build_meter_configuration_mutation(snapshot, topology, current, requested)
     assert snapshot.content == content
     assert original in snapshot.content
     assert _native_total_body(configuration, topology, content) == ""
+    assert build_meter_configuration_mutation(snapshot, topology, current, configuration).proposed_content == content
 
 
 def test_board_energy_own_block_remains_idempotent() -> None:
@@ -2059,6 +2065,22 @@ def test_board_energy_own_block_remains_idempotent() -> None:
     body = _native_total_body(requested, topology, first)
     assert replace_managed_block(first, "aggregates", body) == first
     assert _native_total_body(current.configuration, topology, first) == ""
+
+
+def test_board_energy_preserves_unrelated_resolvable_sensor_id() -> None:
+    snapshot, topology, current = _native_total_setup()
+    requested = replace(current.configuration, default_totals=replace(
+        current.configuration.default_totals, boards=tuple(
+            replace(board, outputs=TotalOutputSettings(False, False, True))
+            for board in current.configuration.default_totals.boards
+        ),
+    ))
+    original = '  - platform: template\n    id: "user_energy"\n    name: User Energy\n'
+    content = snapshot.content.replace("logger:\n", original + "logger:\n")
+    rendered = replace_managed_block(content, "aggregates", _native_total_body(requested, topology, content))
+    assert original in rendered
+    assert rendered.count("id: csemh_board_main_energy\n") == 1
+    assert rendered.count("id: csemh_board_addon_1_energy\n") == 1
 
 
 def test_custom_template_totals_are_internalized_before_managed_replacements() -> None:

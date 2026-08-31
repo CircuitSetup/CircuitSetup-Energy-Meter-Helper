@@ -642,10 +642,14 @@ def _render_native_totals(
         for source in definitions
         if source.existing_energy_id is None and _desired_native_outputs(requested, source).kwh
     }
-    conflicts = board_energy.keys() & {
-        _plain_sensor_scalar(item.get("id", "").removeprefix("!extend "))
+    source_ids = {
+        _plain_sensor_scalar(item["id"].removeprefix("!extend "))
         for item in items
+        if "id" in item
     }
+    if board_energy and "" in source_ids:
+        raise ConfigMutationError("unmanaged sensor ID ownership is unresolved")
+    conflicts = board_energy.keys() & source_ids
     if conflicts:
         raise ConfigMutationError(f"unmanaged sensor conflicts with board energy ID: {', '.join(sorted(conflicts))}")
     return _render_native_total_overrides(plan) + "".join(
