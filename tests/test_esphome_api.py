@@ -42,11 +42,18 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeReconnectError,
     ESPHomeSecurityError,
     ESPHomeSessionDisconnectedError,
+    sanitize_control_text,
 )
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
     FreshWindowError,
     StateUnavailableError,
 )
+
+
+def test_line_preserving_controls_strip_whole_multiline_terminal_sequences() -> None:
+    value = "First\r\n\x1b]hidden\nOSC payload\x07Second\rThird\x00\x85\x1b[31m"
+    assert sanitize_control_text(value) == "FirstSecondThird"
+    assert sanitize_control_text(value, preserve_line_breaks=True) == "First\nSecond\nThird"
 
 
 @dataclass(slots=True)

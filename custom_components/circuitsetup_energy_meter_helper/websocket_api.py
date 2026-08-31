@@ -1562,8 +1562,9 @@ def sanitize_payload(
         )
     if isinstance(value, str):
         had_line_break = "\n" in value or "\r" in value
-        value = sanitize_control_text(value)
-        if _FORBIDDEN_VALUE.search(value):
+        flattened = sanitize_control_text(value)
+        value = sanitize_control_text(value, preserve_line_breaks=True) if _field == "redacted_diff" else flattened
+        if _FORBIDDEN_VALUE.search(flattened) or _FORBIDDEN_VALUE.search(value):
             return "<redacted>"
         if had_line_break and _field != "redacted_diff":
             return "<redacted>"

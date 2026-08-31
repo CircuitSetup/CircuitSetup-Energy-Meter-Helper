@@ -1,12 +1,27 @@
 import { expect, test, type Page } from "@playwright/test";
 import sanitizerContract from "../../../tests/fixtures/task20_sanitized_change.json" with { type: "json" };
-import type { OffsetBoardStatus, RestartVerificationResult, SessionStatus } from "../../src/types";
+import type { MeterConfiguration, MeterConfigurationRequest, OffsetBoardStatus, RestartVerificationResult, SessionStatus, TotalGraphPreview } from "../../src/types";
 
 type Frame = Record<string, unknown> & { id?: number; type: string; response?: unknown };
 type Outcome = "success" | "collision" | "validation" | "compile";
 type Calibration = "main-success" | "addon-indeterminate" | undefined;
 type Scenario = "single-phase-pq" | undefined;
 type GuidedMode = "helper" | "legacy" | "runtime";
+const pageErrors = new WeakMap<Page, string[]>();
+const consoleErrors = new WeakMap<Page, string[]>();
+test.beforeEach(({ page }) => {
+  const errors: string[] = []; pageErrors.set(page, errors);
+  const consoleMessages: string[] = []; consoleErrors.set(page, consoleMessages);
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleMessages.push(`${message.text()} ${JSON.stringify(message.location())}`);
+  });
+});
+test.afterEach(async ({ page }, testInfo) => {
+  const errors = consoleErrors.get(page) ?? [];
+  if (errors.length) await testInfo.attach("browser-console-errors", { body: errors.join("\n"), contentType: "text/plain" });
+  expect(pageErrors.get(page)).toEqual([]);
+});
 
 const hash = "a".repeat(64);
 const FIRMWARE_INDEX_URL = "https://circuitsetup.github.io/ESPWebInstaller/manifests/firmware_index.json";
@@ -66,7 +81,7 @@ function inventory(addons: number, scenario: Scenario = undefined) {
     schema_version: 1 } };
 }
 
-function meterConfiguration(addons: number, scenario: Scenario = undefined, mode: GuidedMode = "helper", builtinTotals = false) {
+function meterConfiguration(backend: MeterConfiguration, addons: number, scenario: Scenario = undefined, mode: GuidedMode = "helper") {
   const live = inventory(addons, scenario); const references = Array.from({ length: addons + 1 }, (_, board) => ({
     reference_id: board ? `addon${board}` : "main", label: board ? `Add-on ${board}` : "Main", phase_label: "A/B",
     nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305,
@@ -79,21 +94,18 @@ function meterConfiguration(addons: number, scenario: Scenario = undefined, mode
     custom_label: channel.selected_model_id === null ? "Custom CT" : null,
     burden_output_acknowledged: channel.selected_model_id === null }));
   const singlePhase = scenario === "single-phase-pq";
-  const numericEntityCount = live.channels.length * 2 + 2 * (addons + 1) + (singlePhase ? 24 : 0) + (builtinTotals ? 1 : 0);
   return { plan_id: "b".repeat(32), source_sha256: live.source_sha256, topology: { ...topology(addons), voltage_layout: "standard" },
     configuration: { meter: { friendly_name: "Energy meter", electrical_system: singlePhase ? "single_phase_230" : "split_phase_120_240", line_frequency_hz: singlePhase ? 50 : 60,
       update_interval_s: 5, voltage_layout: addons ? "multi_reference" : "standard", voltage_references: references.map((reference) => singlePhase ? { ...reference, nominal_voltage_v: 230 } : reference) }, channels,
-      aggregates: builtinTotals ? Array.from({ length: addons + 1 }, (_, board) => ({
-        aggregate_id: board ? `addon${board}-total` : "main-total", name: board ? `Add-on ${board} total` : "Main total",
-        role: "custom", channels: channels.filter((channel) => Math.floor((channel.channel - 1) / 6) === board).map((channel) => channel.channel),
-        measurement_method: "direct", parent_id: null, energy_mode: board ? "none" : "consumption", expose_power: false, expose_current: false,
-      })) : [],
+      default_totals: backend.configuration.default_totals, automatic_totals: [], aggregates: [],
+      totals_change_intent: { adopt_managed_totals: false, legacy_parent_decisions: [] },
       power_quality: Array.from({ length: addons + 1 }, (_value, board) => singlePhase && board === 1), status_fields: Array(addons + 1).fill(false), multi_reference_preparation_acknowledged: false },
-    capabilities: { configuration_authoritative: mode !== "runtime", managed_totals: mode === "helper", multi_reference: true,
+    capabilities: { configuration_authoritative: mode !== "runtime", native_totals_readable: true,
+      native_totals_writable: mode === "helper", managed_automatic_totals: mode === "helper", managed_advanced_totals: mode === "helper", multi_reference: true,
       semantic_source: mode === "legacy" ? "legacy_inferred" : "helper_managed", reason_codes: mode === "legacy" ? ["electrical_profile_requires_confirmation"] : [] },
     voltage_topology: { references: references.map((reference) => [reference.reference_id, reference.group_keys]), source: "legacy" },
     voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 },
-    ct_catalog: live.catalog, warnings: [], configuration_impact: { enabled_channel_count: live.channels.length, numeric_entity_count: numericEntityCount, text_entity_count: 0, energy_entity_count: builtinTotals ? 1 : 0, approximate_publications_per_second: numericEntityCount / 5 }, channels: live.channels, catalog: live.catalog };
+    ct_catalog: live.catalog, totals: backend.totals, warnings: [], configuration_impact: backend.configuration_impact, channels: live.channels, catalog: live.catalog };
 }
 
 function transaction(state: string, channel: number, options: { evidence?: string[]; progress?: string[];
@@ -181,10 +193,21 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
   firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean; scenario?: Scenario;
-  slowClearCalibration?: boolean; guidedMode?: GuidedMode; activeWork?: "normal" | "handoff" | "safety" | "ready"; oneDevice?: boolean; builtinTotals?: boolean } = {}) {
+  slowClearCalibration?: boolean; delayedGraph?: boolean; delayedInventory?: boolean; guidedMode?: GuidedMode; activeWork?: "normal" | "handoff" | "safety" | "ready"; oneDevice?: boolean } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
+  const fixtureUrl = `http://127.0.0.1:${process.env.CSEMH_FIXTURE_PORT ?? 4174}/rpc?fixture=main-only&session=legacy-${crypto.randomUUID()}&addons=${addons}`;
+  const backendCall = async <T>(message: Record<string, unknown>): Promise<T> => {
+    const response = await page.request.post(fixtureUrl, { data: message });
+    if (!response.ok()) throw new Error(`Backend fixture: ${await response.text()}`);
+    return response.json() as Promise<T>;
+  };
+  const backend = await backendCall<MeterConfiguration>({ type: "get_meter_configuration" });
+  const graphFor = (configuration: unknown) => backendCall<TotalGraphPreview>({ type: "preview_total_graph",
+    plan_id: backend.plan_id, source_sha256: backend.source_sha256, configuration });
+  let reviewedConfiguration: MeterConfigurationRequest | null = null;
+  let committedConfiguration: MeterConfigurationRequest | null = null;
   let rescans = 0;
   let boundDeviceId: string | null = null;
   let deviceSeen = false;
@@ -220,7 +243,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
 
   await page.routeWebSocket("**/api/websocket", (socket) => {
     socket.send(JSON.stringify({ type: "auth_required", ha_version: "2026.8.0" }));
-    socket.onMessage((message) => {
+    socket.onMessage(async (message) => {
       const frame = JSON.parse(String(message)) as Frame;
       frames.push(frame);
       if (frame.type === "auth") {
@@ -269,17 +292,28 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         },
       };
       else if (operation === "get_meter_configuration") {
+        if (options.delayedInventory) await new Promise((resolve) => setTimeout(resolve, 800));
         const refreshingConsumedPlan = options.consumePlans && activePlan === null;
         if (options.consumePlans && activePlan === null) {
           activePlan = String.fromCharCode("c".charCodeAt(0) + freshPlanGeneration).repeat(32);
           freshPlanGeneration += 1;
           if (options.freshSourceChanged) activeSourceSha256 = "f".repeat(64);
         }
-        const live = meterConfiguration(addons, options.scenario, options.guidedMode, options.builtinTotals);
+        const live = meterConfiguration(backend, addons, options.scenario, options.guidedMode);
+        const configuration = committedConfiguration ?? live.configuration;
+        const graph = await graphFor(configuration);
         result = { ...live, plan_id: activePlan ?? "b".repeat(32), source_sha256: activeSourceSha256,
+          totals: { ...live.totals, automatic_candidates: graph.automatic_candidates, automatic_totals: graph.automatic_totals,
+            stale_automatic_total_settings: graph.stale_automatic_total_settings }, configuration_impact: graph.configuration_impact,
           configuration: refreshingConsumedPlan && options.freshSourceChanged
-            ? { ...live.configuration, meter: { ...live.configuration.meter, friendly_name: "External meter" } }
-            : live.configuration };
+            ? { ...configuration, meter: { ...configuration.meter, friendly_name: "External meter" } }
+            : configuration };
+      }
+      else if (operation === "preview_total_graph") {
+        result = { ...await graphFor(frame.configuration), plan_id: frame.plan_id, source_sha256: frame.source_sha256 };
+        if (options.delayedGraph && (result as TotalGraphPreview).automatic_candidates.some((candidate) => candidate.role === "grid")) {
+          setTimeout(() => ok(result), 600); return;
+        }
       }
       else if (operation === "get_ct_inventory") result = inventory(addons, options.scenario);
       else if (operation === "get_active_work") result = transactionActive || sessionActive
@@ -309,6 +343,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           return fail("stale_confirmation", "preview plan was already consumed");
         }
         transactionActive = true;
+        reviewedConfiguration = frame.configuration as MeterConfigurationRequest;
         result = currentTransaction = transaction("previewed", 1);
         if (options.consumePlans) {
           activePlan = null;
@@ -333,6 +368,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           transaction_id: String(frame.transaction_id) };
       } else if (operation === "install_ct_config") {
         transactionActive = false;
+        committedConfiguration = reviewedConfiguration;
         result = currentTransaction = { ...transaction("verified", addons ? 42 : 1,
           { progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"] }),
           transaction_id: String(frame.transaction_id) };
@@ -427,8 +463,8 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
 
 const operations = (frames: Frame[]) => frames.map((frame) => frame.type.split("/").at(-1) ?? "");
 
-async function openInventory(page: Page): Promise<void> {
-  await page.goto("/test/harness.html");
+async function openInventory(page: Page, url = "/test/harness.html"): Promise<void> {
+  await page.goto(url);
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
@@ -444,6 +480,237 @@ async function openInventory(page: Page): Promise<void> {
   await page.locator('[data-action="continue-meter-settings"]').click();
   await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
 }
+
+test("native board totals feed an advanced parent without raw CT selection", async ({ page }) => {
+  const fixture = await totalsFixture(page, "one-addon");
+  await openInventory(page, fixture.url);
+  await expect(page.getByRole("switch", { name: "Main Board total Watts", exact: true })).toBeEnabled();
+  await page.locator("#advanced-totals-heading").press("Enter");
+  await page.getByRole("button", { name: "Create aggregate total" }).click();
+  await page.getByLabel("aggregate-1 aggregate name").fill("Whole building");
+  await page.getByLabel("aggregate-1 aggregate method").selectOption("direct");
+  await page.getByLabel("Whole building: Main Board total", { exact: true }).check();
+  await page.getByLabel("Whole building: Add-on 1 total", { exact: true }).check();
+  await page.getByLabel("Whole building Amps", { exact: true }).check();
+  await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("Main Board total + Add-on 1 total");
+  await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("CT1–CT12");
+  await expect(page.getByLabel("Whole building: CT1", { exact: true })).toBeDisabled();
+  await expect(page.locator(".default-totals")).toContainText("retained internally for");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
+  const state = await fixture.state();
+  const request = state.frames.find((frame: Frame) => frame.type.endsWith("/preview_meter_configuration"));
+  expect(request.configuration.aggregates).toEqual([{ aggregate_id: "aggregate-1", name: "Whole building", role: "branch",
+    sources: [{ kind: "native_total", source_id: "board-main" }, { kind: "native_total", source_id: "board-addon-1" }],
+    measurement_method: "direct", energy_mode: "consumption", outputs: { watts: true, amps: true, kwh: true }, origin: "advanced" }]);
+  expect(state.builder_calls).not.toContain("write");
+  expect(state.proposed_content).toContain("id(totalWattsMain).state + id(totalWattsAddOn1).state");
+  expect(state.proposed_content).toContain("power_id: csemh_aggregate_1_power");
+});
+
+async function totalsFixture(page: Page, name: string) {
+  await mockFirmwareIndex(page);
+  const port = process.env.CSEMH_FIXTURE_PORT ?? "4174";
+  const session = `totals-${crypto.randomUUID()}`;
+  const query = new URLSearchParams({ fixture: name, session });
+  const rpc = async (data: Record<string, unknown>) => {
+    const response = await page.request.post(`http://127.0.0.1:${port}/rpc?${query}`, { data });
+    expect(response.ok(), await response.text()).toBe(true);
+    return response.json();
+  };
+  return { url: `/test/harness.html?${query}&fixturePort=${port}`, rpc,
+    state: () => rpc({ type: "fixture_state" }) };
+}
+
+for (const name of ["main-only", "one-addon"] as const) test(`totals defaults and independent native switches: ${name}`, async ({ page }) => {
+  const fixture = await totalsFixture(page, name);
+  await openInventory(page, fixture.url);
+  await expect(page.locator(".default-total-card")).toHaveCount(name === "main-only" ? 1 : 3);
+  for (const output of ["Watts", "Amps", "kWh"]) await expect(page.getByRole("switch", { name: `Overall meter total ${output}`, exact: true })).toBeChecked();
+  if (name === "one-addon") for (const board of ["Main Board", "Add-on 1"]) for (const output of ["Watts", "Amps", "kWh"])
+    await expect(page.getByRole("switch", { name: `${board} total ${output}`, exact: true })).not.toBeChecked();
+  await page.getByRole("switch", { name: "Overall meter total Watts", exact: true }).press("Space");
+  await expect(page.getByRole("switch", { name: "Overall meter total Watts", exact: true })).not.toBeChecked();
+  await expect(page.getByRole("switch", { name: "Overall meter total kWh", exact: true })).toBeChecked();
+  await expect(page.locator(".default-totals")).toContainText("retained internally for Overall meter total kWh");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
+  expect((await fixture.state()).proposed_content).toContain("internal: true");
+});
+
+test("automatic off survives role disappearance, verified install and browser reload", async ({ page }) => {
+  const fixture = await totalsFixture(page, "automatic-on");
+  await openInventory(page, fixture.url);
+  await expect(page.getByRole("switch", { name: "Create Mains total", exact: true })).toBeChecked();
+  await page.getByRole("switch", { name: "Create Mains total", exact: true }).uncheck();
+  await page.getByLabel("CT2 role", { exact: true }).selectOption("branch");
+  await expect(page.getByRole("switch", { name: "Create Mains total", exact: true })).toHaveCount(0);
+  await page.getByLabel("CT2 role", { exact: true }).selectOption("grid");
+  await expect(page.getByRole("switch", { name: "Create Mains total", exact: true })).not.toBeChecked();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
+  await expect(page.getByText("Configuration changes were installed and verified. Continue to safety and calibration.")).toBeVisible();
+  expect((await fixture.state()).stored.configuration.automatic_totals).toEqual([
+    { candidate_id: "grid-ct1-ct2", enabled: false, outputs: { watts: true, amps: false, kwh: true } }]);
+  await openInventory(page, fixture.url);
+  await expect(page.getByRole("switch", { name: "Create Mains total", exact: true })).not.toBeChecked();
+});
+
+test("rapid role changes ignore a late automatic preview and gate Continue on the latest graph", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { delayedGraph: true });
+  await openInventory(page);
+  await page.getByLabel("CT1 role", { exact: true }).selectOption("grid");
+  await page.getByLabel("CT2 role", { exact: true }).selectOption("grid");
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
+  await page.getByLabel("CT3 role", { exact: true }).selectOption("grid");
+  await expect(page.locator(".automatic-totals")).toContainText("cannot be paired automatically");
+  await expect.poll(() => frames.some((frame) => frame.type.endsWith("/preview_total_graph")
+    && (frame.response as TotalGraphPreview | undefined)?.automatic_candidates.some((candidate) => candidate.role === "grid"))).toBe(true);
+  await expect(page.getByRole("switch", { name: "Create Mains total", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  const latest = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!.configuration as MeterConfigurationRequest;
+  expect(latest.channels.filter((channel) => channel.role === "grid").map((channel) => channel.channel)).toEqual([1, 2, 3]);
+});
+
+test("referenced automatic disable uses native confirmation and repairs an invalid parent with keyboard controls", async ({ page }) => {
+  const fixture = await totalsFixture(page, "automatic-on");
+  await openInventory(page, fixture.url);
+  await page.locator("#advanced-totals-heading").press("Enter");
+  await page.getByRole("button", { name: "Create aggregate total" }).click();
+  await page.getByLabel("aggregate-1 aggregate name").fill("Service report");
+  await page.getByLabel("aggregate-1 aggregate method").selectOption("direct");
+  await expect(page.getByLabel("Service report: Mains", { exact: true })).toBeEnabled();
+  await page.getByLabel("Service report: Mains", { exact: true }).press("Space");
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
+  await expect(page.getByLabel("Service report: Mains", { exact: true })).toBeChecked();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("switch", { name: "Create Mains total", exact: true }).click();
+  await expect(page.getByRole("switch", { name: "Create Mains total", exact: true })).toBeChecked();
+  await expect(page.getByLabel("Service report: Mains", { exact: true })).toBeChecked();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("switch", { name: "Create Mains total", exact: true }).click();
+  await expect(page.getByRole("switch", { name: "Create Mains total", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
+  await expect(page.getByLabel("Service report: Mains", { exact: true })).toHaveCount(0);
+  await page.getByLabel("Service report: Overall meter total", { exact: true }).press("Space");
+  await expect(page.getByLabel("Service report: Overall meter total", { exact: true })).toBeChecked();
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
+});
+
+test("nested child formulas block cycles and overlap but allow independent reports on mobile", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const fixture = await totalsFixture(page, "child-parent");
+  await openInventory(page, fixture.url);
+  await page.locator(".default-totals").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("totals-mobile-defaults.png") });
+  if (process.env.CSEMH_QA_DIR) await page.screenshot({ path: `${process.env.CSEMH_QA_DIR}/totals-mobile-defaults.png` });
+  await page.locator("#advanced-totals-heading").press("Enter");
+  await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("East + West");
+  await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("CT1–CT2");
+  await expect(page.getByLabel("Whole building: Overall meter total", { exact: true })).toBeDisabled();
+  await expect(page.getByLabel("East: Whole building", { exact: true })).toBeDisabled();
+  await expect(page.getByLabel("Whole building Feeds into").locator('option[value="east"]')).toHaveAttribute("disabled", "");
+  await page.getByRole("button", { name: "Create aggregate total" }).click();
+  await page.getByLabel("aggregate-1 aggregate name").fill("Independent check");
+  await page.getByLabel("aggregate-1 aggregate method").selectOption("direct");
+  await page.getByLabel("Independent check: CT1", { exact: true }).check();
+  await expect(page.getByLabel("Independent check aggregate", { exact: true })).toContainText("overlap");
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Continue", exact: true }).scrollIntoViewIfNeeded();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("totals-mobile.png"), fullPage: true });
+  await page.locator("#advanced-totals-heading").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("totals-mobile-advanced.png") });
+  if (process.env.CSEMH_QA_DIR) await page.screenshot({ path: `${process.env.CSEMH_QA_DIR}/totals-mobile-advanced.png` });
+  await page.getByLabel("Whole building Feeds into").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("totals-mobile-sources.png") });
+  if (process.env.CSEMH_QA_DIR) await page.screenshot({ path: `${process.env.CSEMH_QA_DIR}/totals-mobile-sources.png` });
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
+});
+
+test("legacy parent decisions remain pending on failure and clear per-link only after success", async ({ page }) => {
+  const fixture = await totalsFixture(page, "legacy-parent");
+  await openInventory(page, fixture.url);
+  const links = page.locator(".totals-migration fieldset");
+  await expect(links).toHaveCount(2);
+  await page.locator("#advanced-totals-heading").press("Enter");
+  await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("CT3");
+  await expect(page.getByLabel("Whole building: East", { exact: true })).not.toBeChecked();
+  await links.first().getByRole("button", { name: "Keep totals independent" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await fixture.rpc({ type: "fixture_outcome", compile: false });
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await expect(page.getByText("Build or install needs attention")).toBeVisible();
+  expect((await fixture.state()).stored.configuration.totals_migration.legacy_parent_links).toHaveLength(2);
+  await page.getByRole("button", { name: "Rollback", exact: true }).click();
+  await fixture.rpc({ type: "fixture_outcome" });
+  await openInventory(page, fixture.url);
+  await expect(links).toHaveCount(2);
+  await links.first().getByRole("button", { name: "Keep totals independent" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
+  await expect.poll(async () => (await fixture.state()).stored.configuration.totals_migration.legacy_parent_links).toEqual([
+    { child_id: "west", proposed_parent_id: "building" }]);
+});
+
+test("non-helper opening performs no write and explicit adoption is a metadata-only transaction", async ({ page }) => {
+  const fixture = await totalsFixture(page, "non-helper");
+  await openInventory(page, fixture.url);
+  await expect(page.getByRole("switch", { name: "Overall meter total Watts", exact: true })).toBeDisabled();
+  expect((await fixture.state()).builder_calls).not.toContain("write");
+  await page.getByRole("button", { name: "Adopt managed totals", exact: true }).click();
+  await expect(page.getByRole("switch", { name: "Overall meter total Watts", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  expect((await fixture.state()).stored.configuration.totals_managed).toBe(false);
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
+  await expect.poll(async () => (await fixture.state()).stored.configuration.totals_managed).toBe(true);
+});
+
+test("adoption exact review identifies source-aware native overrides before any write", async ({ page }) => {
+  const fixture = await totalsFixture(page, "non-helper");
+  await openInventory(page, fixture.url);
+  await page.getByRole("button", { name: "Adopt managed totals", exact: true }).click();
+  await page.getByRole("switch", { name: "Overall meter total Watts", exact: true }).uncheck();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByText("Exact source-aware additions and helper blocks (server transaction diff)", { exact: true }).click();
+  const diff = page.getByLabel("Exact adoption transaction diff", { exact: true });
+  await expect(diff).toContainText("totalWattsMain");
+  await expect(diff).toContainText("internal: true");
+  expect(await diff.textContent()).toContain("\nExact generated total changes\n+ id: !extend totalWattsMain; internal: true");
+  expect((await fixture.state()).builder_calls).not.toContain("write");
+});
+
+test("stale semantics and runtime-only fixtures never write merely by opening", async ({ page }) => {
+  for (const name of ["stale-semantics", "runtime-only"]) {
+    const fixture = await totalsFixture(page, name);
+    await page.goto(fixture.url);
+    await page.locator('[data-action="rescan"]').click();
+    await page.locator('[data-action="configure-device"]').first().click();
+    await page.locator('[data-action="continue"]').click();
+    await expect(page.locator("#step-heading")).toHaveText(name === "runtime-only" ? "Calibration Plan" : "Review Existing Setup");
+    expect((await fixture.state()).builder_calls).not.toContain("write");
+  }
+});
+
+test("disabled automatic and native-parent fixture inventories render saved intent", async ({ page }) => {
+  const off = await totalsFixture(page, "automatic-off");
+  await openInventory(page, off.url);
+  await expect(page.getByRole("switch", { name: "Create Mains total", exact: true })).not.toBeChecked();
+  const parent = await totalsFixture(page, "native-parent");
+  await openInventory(page, parent.url);
+  await page.locator("#advanced-totals-heading").press("Enter");
+  await expect(page.getByLabel("Whole building: Main Board total", { exact: true })).toBeChecked();
+  await expect(page.getByLabel("Whole building: Add-on 1 total", { exact: true })).toBeChecked();
+});
 
 function voltageCalibration(frame: Frame) {
   const referenceId = String(frame.reference_id); const reference = Number(frame.reference_voltage);
@@ -795,7 +1062,7 @@ test("verified configuration continues through calibration and finishes only fro
 });
 
 test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidirectional main service", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { slowClearCalibration: true, builtinTotals: true });
+  const frames = await mockHomeAssistant(page, { slowClearCalibration: true });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
@@ -808,9 +1075,8 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.getByLabel("CT1 role").selectOption("grid");
   await page.getByLabel("CT2 role").selectOption("grid");
   await expect(page.getByLabel("CT3 role")).toHaveValue("branch");
-  await expect(page.getByRole("region", { name: "Automatic totals", exact: true }).getByRole("row", {
-    name: "Mains CT1 + CT2 Power · Current (internal) · Energy", exact: true,
-  })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "Create Mains total", exact: true })).toBeChecked();
+  await expect(page.getByRole("group", { name: "Mains", exact: true })).toContainText("CT1 + CT2");
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
@@ -826,10 +1092,9 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
       { channel: 5, enabled: true, name: "CT5", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
       { channel: 6, enabled: true, name: "CT6", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
     ],
-    aggregates: [
-      { aggregate_id: "main-total", name: "Main total", role: "custom", channels: [1, 2, 3, 4, 5, 6], measurement_method: "direct", parent_id: null, energy_mode: "consumption", expose_power: false, expose_current: false },
-      { aggregate_id: "auto-mains", name: "Mains", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: false },
-    ],
+    default_totals: { overall: { watts: true, amps: true, kwh: true }, boards: [] },
+    automatic_totals: [{ candidate_id: "grid-ct1-ct2", enabled: true, outputs: { watts: true, amps: false, kwh: true } }],
+    aggregates: [], totals_change_intent: { adopt_managed_totals: false, legacy_parent_decisions: [] },
     power_quality: [false], status_fields: [true], multi_reference_preparation_acknowledged: false,
   });
   await page.getByRole("button", { name: "Save and validate configuration" }).click();
@@ -943,12 +1208,10 @@ test("automatic role pairs remain distinct without preset aggregate controls", a
   await page.getByLabel("CT4 role").selectOption("subpanel");
   await page.getByLabel("CT5 role").selectOption("grid");
   await page.getByLabel("CT6 role").selectOption("grid");
-  const totals = page.getByRole("region", { name: "Automatic totals", exact: true });
-  for (const row of [
-    "Mains CT5 + CT6 Power · Current (internal) · Energy",
-    "Subpanel CT3 + CT4 Power · Current (internal) · Energy",
-    "Two-pole circuit CT1 + CT2 Power · Current (internal) · Energy",
-  ]) await expect(totals.getByRole("row", { name: row, exact: true })).toBeVisible();
+  for (const [name, formula] of [["Mains", "CT5 + CT6"], ["Subpanel", "CT3 + CT4"], ["Two-pole circuit", "CT1 + CT2"]]) {
+    await expect(page.getByRole("group", { name: name!, exact: true })).toContainText(formula!);
+    await expect(page.getByRole("switch", { name: `Create ${name} total`, exact: true })).toBeChecked();
+  }
   await page.getByRole("button", { name: "Continue" }).click();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
   expect(preview.configuration).toEqual(expect.objectContaining({
@@ -960,12 +1223,18 @@ test("automatic role pairs remain distinct without preset aggregate controls", a
       expect.objectContaining({ channel: 5, enabled: true, role: "grid" }),
       expect.objectContaining({ channel: 6, enabled: true, role: "grid" }),
     ]),
-    aggregates: [
-      { aggregate_id: "auto-mains", name: "Mains", role: "grid", channels: [5, 6], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: false },
-      { aggregate_id: "auto-subpanel", name: "Subpanel", role: "subpanel", channels: [3, 4], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false },
-      { aggregate_id: "auto-two-pole", name: "Two-pole circuit", role: "two_pole", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false },
+    aggregates: [], automatic_totals: [
+      { candidate_id: "grid-ct5-ct6", enabled: true, outputs: { watts: true, amps: false, kwh: true } },
+      { candidate_id: "subpanel-ct3-ct4", enabled: true, outputs: { watts: true, amps: false, kwh: true } },
+      { candidate_id: "two-pole-ct1-ct2", enabled: true, outputs: { watts: true, amps: false, kwh: true } },
     ],
   }));
+  const graph = frames.filter((frame) => frame.type.endsWith("/preview_total_graph")).at(-1)!.response as TotalGraphPreview;
+  expect(graph.automatic_candidates.map((candidate) => [candidate.aggregate_id, candidate.sources])).toEqual([
+    ["auto-mains", [{ kind: "channel", channel: 5 }, { kind: "channel", channel: 6 }]],
+    ["auto-subpanel", [{ kind: "channel", channel: 3 }, { kind: "channel", channel: 4 }]],
+    ["auto-two-pole", [{ kind: "channel", channel: 1 }, { kind: "channel", channel: 2 }]],
+  ]);
 });
 
 test("42-channel separate install/rebind leads through main CT evidence and exact restart verification", async ({ page }) => {
@@ -1239,6 +1508,19 @@ test("journey 4: legacy manage requires review before migration preview", async 
   await expect(page.getByText("Migration installed.")).toBeVisible();
   await page.getByRole("button", { name: "Finish" }).click();
   await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
+});
+
+test("topology Continue waits for authoritative configuration classification", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { guidedMode: "legacy", delayedInventory: true });
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
+  await expect(page.getByText(/Detected 1 boards with 6 CTs/)).toBeVisible();
+  await expect(page.locator('[data-action="continue"]')).toBeDisabled();
+  await expect(page.locator('[data-action="continue"]')).toBeEnabled();
+  await page.locator('[data-action="continue"]').click();
+  await expect(page.getByRole("button", { name: "Keep ESPHome configuration and calibrate only" })).toBeVisible();
+  expect(mutations(frames)).toEqual([]);
 });
 
 test("journey 5: legacy calibrate-only never previews configuration", async ({ page }) => {

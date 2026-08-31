@@ -14,7 +14,7 @@ const total = (aggregate_id: string, name: string, sources: TotalSource[] = []):
 let container: HTMLDivElement;
 afterEach(() => { container?.remove(); vi.restoreAllMocks(); });
 
-function mount(aggregates = [total("home", "Home")], writable = true, fresh = true, preview: TotalGraphPreview | null = null) {
+function mount(aggregates = [total("home", "Home")], writable = true, fresh = true, preview: TotalGraphPreview | null = null, automaticSourcesFresh = fresh) {
   const response = meterResponse();
   response.configuration.aggregates = aggregates;
   const base = response.totals.native_sources[0]!;
@@ -31,7 +31,7 @@ function mount(aggregates = [total("home", "Home")], writable = true, fresh = tr
   let configuration = response.configuration;
   container = document.createElement("div"); document.body.append(container);
   const update = vi.fn((next: typeof configuration) => { configuration = next; draw(); });
-  const draw = () => render(advancedTotalsEditor(configuration, new Map(), update, writable, "unmanaged_total_present", response.totals, preview, fresh), container);
+  const draw = () => render(advancedTotalsEditor(configuration, new Map(), update, writable, "unmanaged_total_present", response.totals, preview, fresh, automaticSourcesFresh), container);
   draw();
   return { response, update, draw, configuration: () => configuration };
 }
@@ -191,6 +191,14 @@ it("withholds stale automatic choices and coverage while native topology can rep
   expect(card("Home")?.textContent).toMatch(/incomplete|select.*source/i);
   input("Home: Add-on 1 total")?.click();
   expect(state.configuration().aggregates[0]!.sources).toEqual([native("opaque-addon")]);
+});
+
+it("allows a still-current server automatic child to repair an empty parent without claiming fresh counts", () => {
+  const state = mount([total("home", "Home")], true, false, null, true);
+  expect(input("Home: Solar report")?.disabled).toBe(false);
+  input("Home: Solar report")?.click();
+  expect(state.configuration().aggregates[0]!.sources).toEqual([child("server-aggregate")]);
+  expect(card("Home")?.textContent).not.toContain("Coverage: CT4–CT5");
 });
 
 it("keeps unknown sources visible and removable rather than crashing or guessing coverage", () => {

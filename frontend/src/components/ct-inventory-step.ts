@@ -55,6 +55,7 @@ export function ctInventoryStep(
   nativeGraphState: "ready" | "pending" | "invalid" = "ready",
   automaticTotalsWritable = false,
   meterInventory: MeterConfiguration | null = null,
+  automaticSourcesFresh = freshTotals,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -171,7 +172,7 @@ export function ctInventoryStep(
       ${configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : nothing}
       ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativePreview, nativeGraphState) : nothing}
       ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration) : nothing}
-      ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals) : nothing}
+      ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh) : nothing}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>

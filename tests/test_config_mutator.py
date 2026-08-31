@@ -326,12 +326,87 @@ def test_review_totals_uses_human_sources_and_dependency_reasons() -> None:
     assert "Advanced total hierarchy" in review
     assert "East wing + Add-on 1 total" in review
     assert "Watts hidden; retained internally for Whole building" in review
-    assert "csemh_" not in review
+    assert "csemh_" not in review.split("Exact generated total changes")[0]
     installed = replace(snapshot, content=build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content)
     installed = replace(installed, sha256=sha256(installed.content.encode()).hexdigest())
     reloaded = _owned_inventory(installed, topology)
     second = replace(reloaded.configuration, aggregates=tuple(replace(item, name="Updated building") if item.aggregate_id == "parent" else item for item in reloaded.configuration.aggregates))
     assert "external custom kWh" not in build_meter_configuration_mutation(installed, topology, reloaded, second).redacted_diff
+
+
+def test_adoption_review_projects_actual_native_override_and_metadata_without_payload() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        TotalsChangeIntent,
+    )
+
+    snapshot, topology, current = _native_total_setup(0)
+    requested = replace(current.configuration, totals_change_intent=TotalsChangeIntent(True),
+        default_totals=replace(current.configuration.default_totals, overall=TotalOutputSettings(False, True, True)))
+    mutation = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    assert "Exact generated total changes" in mutation.redacted_diff
+    assert "+ id: !extend totalWattsMain; internal: true" in mutation.redacted_diff
+    assert "Managed totals metadata: added" in mutation.redacted_diff
+    assert "csemh-native-totals:" not in mutation.redacted_diff
+    assert "top-secret" not in mutation.redacted_diff
+
+
+def test_technical_total_review_uses_preserved_source_not_firmware_defaults() -> None:
+    snapshot, topology, current = _native_total_setup(1)
+    content = snapshot.content.replace("logger:\n", "  - id: !extend totalWattsAddOn1\n    internal: false\nlogger:\n")
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    current = _owned_inventory(snapshot, topology)
+    settings = current.configuration.default_totals
+    requested = replace(current.configuration, default_totals=replace(settings, boards=(
+        settings.boards[0], replace(settings.boards[1], outputs=TotalOutputSettings(True, False, False)))))
+    mutation = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    technical = mutation.redacted_diff.split("Exact generated total changes")[-1]
+    assert "No total sensor definition changes" in technical
+    assert "+ id: !extend totalWattsAddOn1" not in technical
+    assert "Managed totals metadata: unchanged" in technical
+
+
+def test_technical_total_review_lists_helper_additions_and_removals_without_arbitrary_source() -> None:
+    snapshot, topology, current = _native_total_setup(0)
+    aggregate = CircuitAggregate("branch", "Branch", CircuitRole.BRANCH, (ChannelTotalSource("channel", 1),),
+        MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION, TotalOutputSettings(False, False, True))
+    requested = replace(current.configuration, aggregates=(aggregate,))
+    mutation = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    assert "+ id: csemh_branch_power; platform: template; internal: true" in mutation.redacted_diff
+    assert "+ id: csemh_branch_energy; platform: total_daily_energy; power_id: csemh_branch_power" in mutation.redacted_diff
+    content = mutation.proposed_content.replace("    lambda:", "    # arbitrary-source-canary\n    lambda:")
+    installed = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    # Preserve valid stored intent; source comments/lambdas must never be exposed.
+    stored = StoredMeterConfiguration(installed.sha256, requested.meter, requested.channels, requested.default_totals,
+        requested.automatic_totals, requested.aggregates, requested.power_quality, requested.status_fields)
+    current = _owned_inventory(installed, topology, stored=stored)
+    changed = build_meter_configuration_mutation(installed, topology, current, replace(current.configuration,
+        aggregates=(replace(aggregate, sources=(ChannelTotalSource("channel", 2),)),)))
+    technical = changed.redacted_diff.split("Exact generated total changes")[-1]
+    assert "other definition fields changed (not displayed)" in technical
+    assert "No total sensor definition changes" not in technical
+    assert "lambda:" not in technical and "arbitrary-source-canary" not in technical
+    removed = build_meter_configuration_mutation(installed, topology, current, replace(current.configuration, aggregates=()))
+    assert "- id: csemh_branch_power; platform: template; internal: true" in removed.redacted_diff
+    assert "arbitrary-source-canary" not in removed.redacted_diff
+    assert "lambda:" not in removed.redacted_diff
+
+
+def test_technical_total_review_distinguishes_metadata_only_from_no_block_changes() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AutomaticTotalSettings,
+    )
+
+    snapshot, topology, current = _native_total_setup(0)
+    requested = replace(current.configuration,
+        channels=tuple(replace(channel, role=CircuitRole.GRID) if channel.channel <= 2 else channel
+            for channel in current.configuration.channels),
+        automatic_totals=(AutomaticTotalSettings("grid-ct1-ct2", False, TotalOutputSettings(True, False, True)),))
+    mutation = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    technical = mutation.redacted_diff.split("Exact generated total changes")[-1]
+    assert "No total sensor definition changes" in technical
+    assert "Managed totals metadata: added" in technical
+    assert "csemh-automatic-totals:" in mutation.proposed_content
+    assert "csemh-automatic-totals:" not in mutation.redacted_diff
 
 
 def _owned_inventory(snapshot, topology, *, stored=None):
@@ -457,7 +532,7 @@ sensor:
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
 
     assert [line for line in plan.redacted_diff.splitlines() if not line.startswith(("+", "-", "~"))] == [
-        "Meter", "Voltage reference", "Channel", "Advanced total hierarchy", "Package",
+        "Meter", "Voltage reference", "Channel", "Advanced total hierarchy", "Package", "Exact generated total changes",
     ]
     assert "+ friendly_name: Kitchen meter" in plan.redacted_diff
     assert "+ ct1_name: Kitchen mains" in plan.redacted_diff

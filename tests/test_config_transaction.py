@@ -577,6 +577,76 @@ def test_preview_binds_source_and_exposes_only_bounded_safe_dto() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("outcome", ("source_hash", "validation", "compile", "resume"))
+def test_hierarchical_totals_transaction_preserves_graph_and_public_only_evidence(outcome: str) -> None:
+    """A stale source, failed build or reconnect cannot commit a different graph."""
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        sanitize_payload,
+    )
+    from tests.totals_browser_fixture import MAC, Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("child-parent")
+        inventory = sanitize_payload(await fixture.call({"type": "get_meter_configuration"}))
+        draft = inventory["configuration"]
+        draft["default_totals"]["overall"] = {"watts": False, "amps": False, "kwh": False}
+        for aggregate in draft["aggregates"]:
+            aggregate["outputs"] = {"watts": False, "amps": False, "kwh": aggregate["aggregate_id"] == "building"}
+        before = await fixture.store.async_get_meter_configuration(MAC)
+        source = fixture.builder.remote_content
+        message = {"type": "preview_meter_configuration", "plan_id": inventory["plan_id"],
+            "source_sha256": "f" * 64 if outcome == "source_hash" else inventory["source_sha256"], "configuration": draft}
+        if outcome == "source_hash":
+            from custom_components.circuitsetup_energy_meter_helper.workflow import (
+                WorkflowHandleError,
+            )
+            with pytest.raises(WorkflowHandleError):
+                await fixture.call(message)
+            assert "write" not in fixture.builder.calls
+            assert await fixture.store.async_get_meter_configuration(MAC) == before
+            return
+        preview = await fixture.call(message)
+        retained = fixture.manager._transaction(preview.transaction_id)
+        graph = retained.meter_configuration.aggregates
+        assert graph[-1].sources[0].aggregate_id == "east"
+        assert graph[-1].sources[1].aggregate_id == "west"
+        public_ids = {identifier for identifier, _ in retained.expected_sensor_entities}
+        assert public_ids == {"garage_meter_whole_building_energy"}
+        if outcome == "validation":
+            fixture.builder.validation = [Job(False)]
+        if outcome == "compile":
+            fixture.builder.compile = Job(False)
+        written = await fixture.manager.async_confirm_write(preview.transaction_id, "admin")
+        if outcome == "validation":
+            assert written.state is ConfigTransactionState.ROLLED_BACK
+        else:
+            compiled = await fixture.manager.async_compile(preview.transaction_id)
+            if outcome == "compile":
+                assert compiled.state is ConfigTransactionState.FAILED
+            else:
+                public_evidence = fixture.verifier.evidence
+                fixture.verifier.evidence = replace(public_evidence, sensor_entities=frozenset())
+                interrupted = await fixture.manager.async_confirm_install(preview.transaction_id, "admin")
+                assert interrupted.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+                assert fixture.manager.active_status(MAC).transaction_id == preview.transaction_id
+                assert retained.meter_configuration.aggregates == graph
+                assert await fixture.store.async_get_meter_configuration(MAC) == before
+                fixture.verifier.evidence = public_evidence
+                finished = await fixture.manager.async_confirm_install(preview.transaction_id, "admin")
+                assert finished.state is ConfigTransactionState.VERIFIED
+                assert (await fixture.store.async_get_meter_configuration(MAC)).aggregates == graph
+                return
+        assert await fixture.store.async_get_meter_configuration(MAC) == before
+        rollback = written if outcome == "validation" else await fixture.manager.async_rollback(preview.transaction_id)
+        assert rollback.state is ConfigTransactionState.ROLLED_BACK
+        assert fixture.builder.remote_content == source
+        assert fixture.builder.calls.count("restore") == 1
+        assert "csemh_building_power" not in fixture.builder.remote_content
+
+    asyncio.run(run())
+
+
 def test_preview_preserves_unchanged_hash_bound_ct_selections() -> None:
     """A later CT edit must retain a previously installed CT multiplier."""
 
@@ -974,7 +1044,8 @@ def test_full_reconnect_rejects_duplicate_required_sensor_object_id() -> None:
             configuration.status_fields,),
             _topology(),
         )
-        duplicate = next(iter(expected.sensor_entities))[0]
+        # Source-unresolved native totals are not required by this managed-block fixture.
+        duplicate = min(expected.aggregate_sensor_entities)[0]
         manager = _manager(
             Builder(),
             Persistence(),
@@ -995,6 +1066,7 @@ def test_full_reconnect_rejects_duplicate_required_sensor_object_id() -> None:
             meter_configuration=configuration,
             expected_sensor_entities=expected.sensor_entities,
         )
+        assert duplicate in {identifier for identifier, _ in manager._transaction(preview.transaction_id).expected_sensor_entities}
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
 

@@ -58,6 +58,7 @@ from .total_graph import (
     automatic_total_candidates,
     native_total_sources,
     plan_total_graph,
+    planned_sensor_ids,
     resolve_automatic_totals,
 )
 
@@ -500,6 +501,10 @@ def build_meter_configuration_mutation(
         previous, requested, topology, rendered_diff, rendered_blocks, total_notes,
         source_document=source_document,
     )
+    if totals_changed:
+        review_diff += "\n" + _technical_total_diff(
+            source_document, proposed_document, previous, requested, topology
+        )
     return ConfigMutationPlan(
         plan.configuration,
         plan.source_sha256,
@@ -507,6 +512,74 @@ def build_meter_configuration_mutation(
         review_diff,
         content,
     )
+
+
+def _technical_total_diff(
+    before: ESPHomeConfigDocument,
+    after: ESPHomeConfigDocument,
+    previous: MeterConfigurationRequest,
+    requested: MeterConfigurationRequest,
+    topology: MeterTopology,
+) -> str:
+    """Project actual managed records, never raw source or metadata payloads."""
+    native_ids = {
+        sensor_id
+        for source in native_total_sources(topology)
+        for sensor_id in (source.power_id, source.current_id, source.existing_energy_id)
+        if sensor_id is not None
+    }
+    allowed_ids = native_ids | {
+        f"csemh_{source.source_id.replace('-', '_')}_energy"
+        for source in native_total_sources(topology)
+    } | {
+        sensor_id
+        for configuration in (previous, requested)
+        for node in plan_total_graph(configuration, topology).ordered_nodes
+        for sensor_id in planned_sensor_ids(node)
+    }
+
+    def project(document: ESPHomeConfigDocument) -> tuple[dict[str, dict[str, str]], tuple[str, ...]]:
+        block = document.managed_blocks.get("aggregates")
+        content = block.content if block else ""
+        records = {}
+        for item in _managed_sensor_items(content, document.sensor_item_indent):
+            raw_id = item.get("id", "")
+            extended = raw_id.startswith("!extend ")
+            sensor_id = _plain_sensor_scalar(raw_id.removeprefix("!extend "))
+            if sensor_id not in allowed_ids or (extended and sensor_id not in native_ids):
+                continue
+            fields = [f"id: {'!extend ' if extended else ''}{sensor_id}"]
+            platform = _plain_sensor_scalar(item.get("platform", ""))
+            if platform in {"template", "total_daily_energy"}:
+                fields.append(f"platform: {platform}")
+            if item.get("internal") in {"true", "false"}:
+                fields.append(f"internal: {item['internal']}")
+            power_id = _plain_sensor_scalar(item.get("power_id", ""))
+            if power_id in allowed_ids:
+                fields.append(f"power_id: {power_id}")
+            records["; ".join(fields)] = item
+        # Compare encoded metadata internally, but expose only its change status.
+        metadata = tuple(
+            line.strip() for line in content.splitlines()
+            if re.match(r"\s*# csemh-(?:native-totals|automatic-totals|aggregate|replaced-totals):", line)
+        )
+        return records, metadata
+
+    old_records, old_metadata = project(before)
+    new_records, new_metadata = project(after)
+    changes = [f"- {record}" for record in old_records if record not in new_records]
+    changes += [f"+ {record}" for record in new_records if record not in old_records]
+    changes += [f"~ {record}; other definition fields changed (not displayed)"
+        for record in new_records if record in old_records and new_records[record] != old_records[record]]
+    status = (
+        "unchanged" if old_metadata == new_metadata else
+        "added" if not old_metadata else "removed" if not new_metadata else "updated"
+    )
+    return "\n".join([
+        "Exact generated total changes",
+        *(changes or ["~ No total sensor definition changes"]),
+        f"~ Managed totals metadata: {status}",
+    ])
 
 
 def _grouped_review_diff(

@@ -257,14 +257,31 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(calls.some((message) => String(message.type).endsWith("complete_calibration_without_changes"))).toBe(false);
   });
 
-  it("routes metadata-only rejection through review even with unchanged CT drafts", async () => {
+  it.each(["finishCurrent", "finishWithoutCalibration"] as const)("routes metadata-only rejection through %s even with unchanged CT drafts", async (finish) => {
     const { state, calls } = await prepare({}, false);
     state.meterConfiguration.configuration.totals_change_intent = { adopt_managed_totals: false,
       legacy_parent_decisions: [{ child_id: "child", proposed_parent_id: "parent", accepted: false }] };
     state.session = session;
-    await state.finishCurrent();
+    await state[finish]();
     expect(calls.some((message) => String(message.type).endsWith("preview_meter_configuration"))).toBe(true);
     expect(state.meterConfiguration.configuration.totals_change_intent.legacy_parent_decisions).toHaveLength(1);
+    expect(calls.some((message) => String(message.type).endsWith("complete_calibration_without_changes"))).toBe(false);
+  });
+
+  it.each(["adoption", "keep independent"])("retains metadata-only %s after a failed install and clears it only on verified retry", async (choice) => {
+    const installResult = { ...reviewed(), state: "install_confirmation_required",
+      full_meter_configuration_verified: false, evidence: ["entity_mismatch"] };
+    const { state } = await prepare({ install_ct_config: installResult }, choice === "adoption");
+    const intent = { adopt_managed_totals: choice === "adoption", legacy_parent_decisions: choice === "adoption" ? []
+      : [{ child_id: "child", proposed_parent_id: "parent", accepted: false }] };
+    state.meterConfiguration.configuration.totals_change_intent = intent;
+    state.transaction = reviewed(); await state.transactionAction("install");
+    expect(state.meterConfiguration.configuration.totals_change_intent).toEqual(intent);
+    expect(state.configurationInstalled).toBe(false);
+    Object.assign(installResult, { state: "verified", full_meter_configuration_verified: true, evidence: [] });
+    await state.transactionAction("install");
+    expect(state.configurationInstalled).toBe(true);
+    expect(state.meterConfiguration.configuration.totals_change_intent).toEqual({ adopt_managed_totals: false, legacy_parent_decisions: [] });
   });
 
   it.each(["labels", "calibrate_only"])("does not lose explicit totals intent after switching to %s", async (mode) => {
@@ -417,6 +434,43 @@ afterEach(() => {
 });
 
 describe("server-authoritative total graph", () => {
+  it.each(["role", "enabled", "collision", "device", "plan", "hash", "connection"] as const)(
+    "withholds previously issued repair candidates after %s changes", async (change) => {
+      const response = meterResponse();
+      const candidate: import("../src/types").AutomaticTotalCandidate = { candidate_id: "issued-pair", aggregate_id: "issued-child",
+        name: "Issued child", role: "grid", sources: [{ kind: "channel", channel: 1 }, { kind: "channel", channel: 2 }],
+        measurement_method: "two_ct_sum", energy_mode: "bidirectional", recommended_outputs: { watts: true, amps: false, kwh: true } };
+      response.configuration.channels = response.configuration.channels.map((channel) => ({ ...channel, enabled: true, role: "grid" }));
+      response.totals.automatic_candidates = [candidate];
+      response.totals.automatic_totals = [{ candidate, enabled: true, outputs: candidate.recommended_outputs }];
+      const hass = makeHass({ setup_status: { state: "no_device", devices: [] } }); const call = hass.callWS.bind(hass);
+      hass.callWS = <T>(message: Record<string, unknown>): Promise<T> => String(message.type).endsWith("/preview_total_graph")
+        ? new Promise<T>(() => undefined) : call<T>(message);
+      const panel = await mount(hass);
+      const state = panel as unknown as { selectedDeviceId: string; connectionGeneration: number;
+        setMeterConfiguration(value: typeof response): void; updateCircuitConfiguration(value: MeterConfigurationRequest): void;
+        meterConfiguration: typeof response; totalGraphState: string };
+      state.selectedDeviceId = "meter-1"; state.setMeterConfiguration(response); panel.showInventory(response);
+      const parent: CircuitAggregate = { aggregate_id: "parent", name: "New parent", role: "custom", sources: [],
+        measurement_method: "direct", energy_mode: "consumption", outputs: { watts: true, amps: false, kwh: true }, origin: "advanced" };
+      state.updateCircuitConfiguration({ ...state.meterConfiguration.configuration, aggregates: [parent] });
+      await panel.updateComplete;
+      expect(panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="New parent: Issued child"]')?.disabled).toBe(false);
+      expect(panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+      const configuration = state.meterConfiguration.configuration;
+      if (change === "role" || change === "enabled") state.updateCircuitConfiguration({ ...configuration,
+        channels: configuration.channels.map((item, index) => index === 0 ? { ...item, ...(change === "role" ? { role: "branch" as const } : { enabled: false }) } : item) });
+      if (change === "collision") state.updateCircuitConfiguration({ ...configuration, aggregates: [parent, { ...parent, aggregate_id: candidate.aggregate_id }] });
+      if (change === "device") state.selectedDeviceId = "meter-2";
+      if (change === "plan") state.meterConfiguration = { ...state.meterConfiguration, plan_id: "different-plan" };
+      if (change === "hash") state.meterConfiguration = { ...state.meterConfiguration, source_sha256: "different-hash" };
+      if (change === "connection") state.connectionGeneration++;
+      panel.requestUpdate(); await panel.updateComplete;
+      expect(panel.shadowRoot!.querySelector('[aria-label="New parent: Issued child"]')).toBeNull();
+      expect(panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+      expect(state.totalGraphState).toBe("pending");
+    });
+
   it("gates Continue until the current graph removes inactive settings and resolves counts", async () => {
     const response = meterResponse();
     response.catalog.presets = [{ model_id: "model", label: "Model", rated_current_a: 50, secondary: "50 mA",

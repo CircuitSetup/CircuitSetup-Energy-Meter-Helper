@@ -21,12 +21,13 @@ export function advancedTotalsEditor(
   configuration: MeterConfigurationRequest, drafts: Map<number, CtDraft>,
   update: (configuration: MeterConfigurationRequest) => void, writable: boolean,
   reason: string, totals: TotalsInventory | null, preview: TotalGraphPreview | null = null, fresh = true,
+  automaticSourcesFresh = fresh,
 ): TemplateResult {
   // Catalog entries remain server-owned; settings only determine which issued children are enabled.
   const catalog: TotalsInventory = totals ?? { native_sources: [], automatic_candidates: [], automatic_totals: [],
     stale_automatic_total_settings: [], migration: { parent_review_required: false, legacy_parent_links: [],
       native_visibility_confirmation_required: true, native_visibility_resolved: false } };
-  const enabledAutomatic = (fresh ? catalog.automatic_totals : []).filter((item) =>
+  const enabledAutomatic = (automaticSourcesFresh ? catalog.automatic_totals : []).filter((item) =>
     configuration.automatic_totals.find((setting) => setting.candidate_id === item.candidate.candidate_id)?.enabled ?? item.enabled);
   const available = { ...catalog, automatic_candidates: enabledAutomatic.map((item) => item.candidate) };
   const patch = (aggregate: CircuitAggregate, change: Partial<CircuitAggregate>) => {

@@ -50,9 +50,13 @@ type ZeroconfFactory = Callable[[HomeAssistant], Awaitable[Any]]
 type EntityKey = tuple[int, int]
 
 
-def sanitize_control_text(value: str) -> str:
+def sanitize_control_text(value: str, *, preserve_line_breaks: bool = False) -> str:
     """Remove terminal escape sequences and C0/C1 controls from untrusted text."""
-    return _CONTROL.sub("", _strip_terminal_sequences(value))
+    value = _strip_terminal_sequences(value)
+    if preserve_line_breaks:
+        value = value.replace("\r\n", "\n").replace("\r", "\n")
+        return "\n".join(_CONTROL.sub("", line) for line in value.split("\n"))
+    return _CONTROL.sub("", value)
 
 
 def _strip_terminal_sequences(value: str) -> str:

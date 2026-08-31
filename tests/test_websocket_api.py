@@ -2947,6 +2947,162 @@ def test_total_graph_preview_route_serializes_server_graph_without_transaction()
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("success", (False, True))
+@pytest.mark.parametrize("accepted", (False, True))
+def test_parent_decision_cross_route_persists_only_after_verified_install(success: bool, accepted: bool) -> None:
+    """A typed per-link decision survives preview/routes, not a failed upload."""
+    from dataclasses import replace
+
+    from tests.test_config_transaction import Job
+    from tests.totals_browser_fixture import MAC, Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("legacy-parent")
+        controller = EntryWebsocketController(ProvisioningCoordinator(FakeHass()), SessionManager(), fixture.store)
+        controller.workflow = fixture.workflow
+        controller.transactions = fixture.manager
+
+        async def call(operation: str, **args: Any) -> Any:
+            command = f"{DOMAIN}/{operation}"
+            payload = vol.Schema(_schema(command))({"type": command, "entry_id": "helper", "device_id": "meter-1", **args})
+            return sanitize_payload(await controller.async_call(command, payload, "admin"))
+
+        inventory = await call("get_meter_configuration")
+        before = await fixture.store.async_get_meter_configuration(MAC)
+        config = inventory["configuration"]
+        config["totals_change_intent"]["legacy_parent_decisions"] = [
+            {"child_id": "east", "proposed_parent_id": "building", "accepted": accepted}]
+        if accepted:
+            config["aggregates"][-1]["sources"] = [{"kind": "aggregate", "aggregate_id": "east"}]
+        binding = {"plan_id": inventory["plan_id"], "source_sha256": inventory["source_sha256"], "configuration": config}
+        graph = await call("preview_total_graph", **binding)
+        assert graph["graph"]["leaf_channels"]["building"] == ([1] if accepted else [3])
+        assert await fixture.store.async_get_meter_configuration(MAC) == before
+        status = await call("preview_meter_configuration", **binding)
+        retained = fixture.manager._transaction(status["transaction_id"])
+        fixture.verifier.evidence = replace(fixture.verifier.evidence, topology=retained.topology,
+            ct_names={channel.channel: channel.name for channel in retained.meter_configuration.channels},
+            sensor_entities=retained.expected_sensor_entities)
+        transaction = {"transaction_id": status["transaction_id"], "source_sha256": status["source_sha256"]}
+        fixture.builder.upload = Job(success)
+        await call("apply_ct_config", **transaction)
+        await call("compile_ct_config", **transaction)
+        assert await fixture.store.async_get_meter_configuration(MAC) == before
+        final = await call("install_ct_config", **transaction)
+        after = await fixture.store.async_get_meter_configuration(MAC)
+        if success:
+            assert final["state"] == "verified"
+            assert [(link.child_id, link.proposed_parent_id) for link in after.totals_migration.legacy_parent_links] == [("west", "building")]
+            assert after.totals_migration.parent_review_required
+            assert after.config_sha256 != before.config_sha256
+        else:
+            assert final["state"] == "failed"
+            assert after == before
+        await fixture.manager.sessions.async_unload()
+
+    asyncio.run(run())
+
+
+def test_redacted_diff_preserves_lines_without_weakening_terminal_or_secret_sanitization() -> None:
+    value = "Exact changes\r\n\x1b]hidden\nOSC payload\x07+ id: safe\r~ Metadata added\x00\x85"
+    assert sanitize_payload({"redacted_diff": value}) == {"redacted_diff": "Exact changes\n+ id: safe\n~ Metadata added"}
+    assert sanitize_payload({"detail": value}) == {"detail": "<redacted>"}
+    for unsafe in ("pass\nword=canary", "token:\ncanary", "secret\r\n=canary"):
+        assert sanitize_payload({"redacted_diff": unsafe}) == {"redacted_diff": "<redacted>"}
+    assert len(sanitize_payload({"redacted_diff": "x\n" * 20_000})["redacted_diff"].encode()) <= 32_768
+
+
+def test_largest_total_review_remains_exact_or_visibly_truncated_over_transport() -> None:
+    """The 32-total transport maximum cannot silently lose the technical review."""
+    from dataclasses import replace
+
+    from tests.totals_browser_fixture import MAC, Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("main-only", addons=6)
+        controller = EntryWebsocketController(ProvisioningCoordinator(FakeHass()), SessionManager(), fixture.store)
+        controller.workflow = fixture.workflow
+        controller.transactions = fixture.manager
+
+        async def call(operation: str, **args: Any) -> Any:
+            command = f"{DOMAIN}/{operation}"
+            payload = vol.Schema(_schema(command))({"type": command, "entry_id": "helper", "device_id": "meter-1", **args})
+            return sanitize_payload(await controller.async_call(command, payload, "admin"))
+
+        for prefix in ("before", "after"):
+            inventory = await call("get_meter_configuration")
+            config = inventory["configuration"]
+            config["aggregates"] = [{"aggregate_id": f"{prefix}-{'branch-' * 6}{index}", "name": f"Report {prefix} {index}",
+                "role": "custom", "sources": [{"kind": "channel", "channel": index + 1}], "measurement_method": "direct",
+                "energy_mode": "bidirectional", "outputs": {"watts": True, "amps": True, "kwh": True}, "origin": "advanced"}
+                for index in range(32)]
+            status = await call("preview_meter_configuration", plan_id=inventory["plan_id"], source_sha256=inventory["source_sha256"], configuration=config)
+            transaction = fixture.manager._transaction(status["transaction_id"])
+            raw = transaction.plan.redacted_diff
+            visible = status["redacted_diff"]
+            assert "Exact generated total changes" in visible
+            assert "csemh-aggregate:" not in visible and "lambda:" not in visible
+            assert len(visible.encode()) <= 32_768
+            if len(raw.encode()) > 32_768 or len(raw.splitlines()) > 512:
+                assert visible.endswith("[truncated]")
+            else:
+                assert "Managed totals metadata:" in visible
+                assert f"csemh_{prefix}_branch_branch_branch_branch_branch_branch_31_import_energy" in visible
+            if prefix == "before":
+                fixture.verifier.evidence = replace(fixture.verifier.evidence, topology=transaction.topology,
+                    ct_names={channel.channel: channel.name for channel in transaction.meter_configuration.channels},
+                    current_sensor_count=42,
+                    sensor_entities=transaction.expected_sensor_entities)
+                binding = {"transaction_id": status["transaction_id"], "source_sha256": status["source_sha256"]}
+                await call("apply_ct_config", **binding)
+                await call("compile_ct_config", **binding)
+                assert (await call("install_ct_config", **binding))["state"] == "verified"
+            else:
+                assert len(raw.encode()) > 32_768
+                assert visible.endswith("[truncated]")
+                assert await fixture.store.async_get_meter_configuration(MAC) is not None
+        await fixture.manager.sessions.async_unload()
+
+    asyncio.run(run())
+
+
+def test_browser_fixture_transport_is_local_isolated_and_read_only_on_open() -> None:
+    """Manual fixtures reject foreign origins and isolate explicit reload sessions."""
+    from aiohttp import ClientSession
+    from aiohttp.test_utils import TestServer, unused_port
+
+    from tests.totals_browser_fixture import create_app
+
+    async def run() -> None:
+        port = unused_port()
+        async with TestServer(create_app(port, 4173), host="127.0.0.1", port=port) as server, ClientSession() as client:
+            async with client.get(server.make_url("/health")) as response:
+                assert (await response.json())["service"] == "hierarchical-totals-test-fixture"
+            for headers in ({"Origin": "https://foreign.example"}, {"Host": "foreign.example"}):
+                async with client.get(server.make_url("/health"), headers=headers) as response:
+                    assert response.status == 403
+            async with client.post(server.make_url("/rpc?fixture=main-only"), json={"type": "get_meter_configuration"}) as response:
+                assert response.status == 400
+            url = server.make_url("/api/websocket?fixture=automatic-off&session=one")
+            async with client.ws_connect(url, origin="http://127.0.0.1:4173") as socket:
+                assert (await socket.receive_json())["type"] == "auth_required"
+                await socket.send_json({"type": "auth", "access_token": "playwright-token"})
+                assert (await socket.receive_json())["type"] == "auth_ok"
+                await socket.send_json({"type": "get_meter_configuration", "id": 1})
+                result = (await socket.receive_json())["result"]
+                assert not result["totals"]["automatic_totals"][0]["enabled"]
+            for session, name in (("one", "automatic-off"), ("two", "automatic-on")):
+                async with client.post(server.make_url(f"/rpc?fixture={name}&session={session}"), json={"type": "get_meter_configuration"}) as response:
+                    inventory = await response.json()
+                    assert inventory["totals"]["automatic_totals"][0]["enabled"] is (session == "two")
+                async with client.post(server.make_url(f"/rpc?fixture={name}&session={session}"), json={"type": "fixture_state"}) as response:
+                    assert "write" not in (await response.json())["builder_calls"]
+
+    asyncio.run(run())
+
+
 def test_total_source_request_schema_and_intent_are_strict() -> None:
     from dataclasses import asdict
 

@@ -152,6 +152,7 @@ export class CircuitSetupPanel extends LitElement {
   private totalGraphPreview: TotalGraphPreview | null = null;
   private totalGraphState: "ready" | "pending" | "invalid" = "ready";
   private issuedAutomaticSettings: AutomaticTotalSettings[] = [];
+  private acceptedAutomaticInputs: string | null = null;
   private board = 0;
   private group = 0;
   private channel = 1;
@@ -468,6 +469,7 @@ export class CircuitSetupPanel extends LitElement {
     this.totalGraphPreview = null;
     this.totalGraphState = "ready";
     this.issuedAutomaticSettings = [];
+    this.acceptedAutomaticInputs = null;
     this.board = 0;
     this.resetCalibrationRun();
   }
@@ -1000,6 +1002,7 @@ export class CircuitSetupPanel extends LitElement {
     this.totalGraphPreview = null;
     this.totalGraphState = "ready";
     this.issuedAutomaticSettings = [...this.meterConfiguration.configuration.automatic_totals];
+    this.acceptedAutomaticInputs = this.automaticCandidateInputs();
     if (!this.packageOptionsTouched) this.packageOptions = {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields],
@@ -1133,6 +1136,21 @@ export class CircuitSetupPanel extends LitElement {
     this.requestUpdate();
   }
 
+  private automaticCandidateInputs(): string | null {
+    const meter = this.meterConfiguration;
+    if (!this.api || !this.selectedDeviceId || !meter?.capabilities.configuration_authoritative) return null;
+    const issuedIds = new Set(meter.totals.automatic_candidates.map((item) => item.aggregate_id));
+    // This checks inputs to an issued catalog; it never constructs candidates or a graph.
+    return JSON.stringify({ connection: this.connectionGeneration, device: this.selectedDeviceId,
+      plan: meter.plan_id, hash: meter.source_sha256,
+      channels: meter.configuration.channels.map(({ channel, enabled, role }) => ({ channel, enabled, role })),
+      collisions: meter.configuration.aggregates.map((item) => item.aggregate_id).filter((id) => issuedIds.has(id)).sort() });
+  }
+
+  private automaticSourcesFresh(): boolean {
+    return this.acceptedAutomaticInputs !== null && this.acceptedAutomaticInputs === this.automaticCandidateInputs();
+  }
+
   private hasCanonicalChanges(): boolean {
     const intent = this.meterConfiguration?.configuration.totals_change_intent;
     return Boolean(intent?.adopt_managed_totals || intent?.legacy_parent_decisions.length
@@ -1207,6 +1225,7 @@ export class CircuitSetupPanel extends LitElement {
         configuration_impact: preview.configuration_impact };
       this.totalGraphPreview = preview;
       this.totalGraphState = "ready";
+      this.acceptedAutomaticInputs = this.automaticCandidateInputs();
     } catch {
       if (!current()) return;
       this.totalGraphPreview = null;
@@ -2124,7 +2143,7 @@ export class CircuitSetupPanel extends LitElement {
       this.firmwareCatalog(), this.importFailedDeviceId)}
       ${this.topology ? topologyStep(this.topology, this.selectedProjectVersion(),
         () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.selectedConfigurationAvailable()
-          ? this.loadInventory() : this.navigate("calibration-plan")), this.error === "Topology mismatch", this.pendingAction === "inventory" || this.pendingAction === "session") : nothing}`;
+          ? this.loadInventory() : this.navigate("calibration-plan")), this.error === "Topology mismatch", this.pendingAction.startsWith("topology:") || this.pendingAction === "inventory" || this.pendingAction === "session") : nothing}`;
     if (this.step === "legacy-review" && this.meterConfiguration) return existingConfigurationStep(this.meterConfiguration, {
       configurationFilename: this.selectedConfiguration() ?? "Unavailable",
       projectName: this.selectedProjectName() ?? this.meterConfiguration.topology.project_name,
@@ -2158,7 +2177,7 @@ export class CircuitSetupPanel extends LitElement {
       this.meterConfiguration?.capabilities.native_totals_readable === true, Boolean(this.meterConfiguration && totalsEditable(this.meterConfiguration, "native_totals_writable")),
       this.totalGraphState === "ready" ? this.totalGraphPreview : null, this.totalGraphState === "ready", this.totalGraphState,
       this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true
-        && totalsEditable(this.meterConfiguration, "managed_automatic_totals"), this.meterConfiguration)}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
+        && totalsEditable(this.meterConfiguration, "managed_automatic_totals"), this.meterConfiguration, this.automaticSourcesFresh())}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
     if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return html`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
       <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
       <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>
