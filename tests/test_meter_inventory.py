@@ -2,6 +2,7 @@
 
 import json
 from base64 import urlsafe_b64encode
+from copy import deepcopy
 from dataclasses import fields, replace
 from hashlib import sha256
 from types import SimpleNamespace
@@ -19,24 +20,38 @@ from custom_components.circuitsetup_energy_meter_helper.diagnostics import (
     capture_diagnostics_snapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    AutomaticTotalSettings,
+    ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
     EnergyMode,
     MeasurementMethod,
+    TotalOrigin,
+    TotalOutputSettings,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
     MeterConfigurationCapabilities,
     MeterConfigurationInventory,
+    _detected_aggregates,
     meter_configuration_capabilities,
 )
 from custom_components.circuitsetup_energy_meter_helper.store import (
+    LegacyParentLink,
     StoredMeterConfiguration,
+    _deserialize_meter_configuration_payload,
+    _serialize_meter_configuration,
 )
 from custom_components.circuitsetup_energy_meter_helper.topology import (
     topology_from_config,
 )
 from custom_components.circuitsetup_energy_meter_helper.voltage_transformer_catalog import (
     VoltageTransformerCatalog,
+)
+from tests.test_store import (
+    V14_ADDON_FIXTURE,
+    V14_AUTO_FIXTURE,
+    V14_PARENT_FIXTURE,
+    V14_STALE_FIXTURE,
 )
 
 
@@ -151,6 +166,29 @@ def _inventory(
     )
 
 
+def _aggregate(
+    aggregate_id: str,
+    name: str,
+    role: CircuitRole,
+    channels: tuple[int, ...],
+    method: MeasurementMethod,
+    energy_mode: EnergyMode,
+    watts: bool = True,
+    amps: bool = False,
+) -> CircuitAggregate:
+    """Build strict expected aggregate values without legacy production aliases."""
+    return CircuitAggregate(
+        aggregate_id,
+        name,
+        role,
+        tuple(ChannelTotalSource("channel", channel) for channel in channels),
+        method,
+        energy_mode,
+        TotalOutputSettings(watts, amps, energy_mode is not EnergyMode.NONE),
+        TotalOrigin.MIGRATED,
+    )
+
+
 def _helper_mains_total() -> str:
     return (
         "sensor:\n"
@@ -202,6 +240,158 @@ def test_inventory_without_stored_configuration_is_legacy_inferred() -> None:
     assert _inventory(_document()).capabilities.semantic_source == "legacy_inferred"
 
 
+def _migrated_for_source(content: str, fixture: dict) -> StoredMeterConfiguration:
+    raw = deepcopy(fixture)
+    raw["config_sha256"] = sha256(content.encode()).hexdigest()
+    for reference in raw["meter"]["voltage_references"]:
+        reference["gain_voltage"] = 7305
+    topology = topology_from_config(ESPHomeConfigDocument.parse(content))
+    return _deserialize_meter_configuration_payload(raw, topology)
+
+
+@pytest.mark.parametrize("addon_count", (0, 1))
+@pytest.mark.parametrize("renderer", ("b346", "9666"))
+@pytest.mark.parametrize("extend", (False, True))
+def test_v14_matching_source_preserves_renderer_native_visibility(
+    addon_count, renderer, extend
+) -> None:
+    root_ids = (
+        ("totalWatts", "totalAmps", "totalEnergyDaily")
+        if addon_count
+        else ("totalEnergyDaily",)
+    )
+    hidden = (
+        *root_ids,
+        *(
+            (
+                "totalWattsMain",
+                "totalAmpsMain",
+                *(("totalWattsAddOn1", "totalAmpsAddOn1") if addon_count else ()),
+            )
+            if renderer == "9666"
+            else ()
+        ),
+    )
+    content = (
+        _document(contract=True, addon_count=addon_count)
+        + "sensor:\n"
+        + "".join(
+            f"  - id: {'!extend ' if extend else ''}{sensor_id}\n    internal: true\n"
+            for sensor_id in hidden
+        )
+    )
+    fixture = V14_ADDON_FIXTURE if addon_count else V14_PARENT_FIXTURE
+    stored = _migrated_for_source(content, fixture)
+    before = _serialize_meter_configuration(
+        stored, topology_from_config(ESPHomeConfigDocument.parse(content))
+    )
+    inventory = _inventory(content, stored=stored)
+    assert inventory.capabilities.semantic_source == "helper_managed"
+    assert "stored_semantics_stale" not in inventory.warnings
+    assert inventory.configuration.default_totals.overall == TotalOutputSettings(
+        not addon_count and renderer == "b346",
+        not addon_count and renderer == "b346",
+        False,
+    )
+    assert all(
+        board.outputs == TotalOutputSettings(False, False, False)
+        for board in inventory.configuration.default_totals.boards
+    )
+    assert stored.totals_migration.native_visibility_confirmation_required is True
+    assert _serialize_meter_configuration(stored, inventory.topology) == before
+    assert inventory.totals_parent_review_required is (not addon_count)
+
+
+@pytest.mark.parametrize(
+    "internal", ("${hide_native}", "!lambda return true;", "true # hidden")
+)
+def test_v14_ambiguous_visibility_does_not_authorize_totals(internal) -> None:
+    content = (
+        _document(contract=True)
+        + f"sensor:\n  - id: !extend totalWattsMain\n    internal: {internal}\n"
+    )
+    stored = _migrated_for_source(content, V14_PARENT_FIXTURE)
+    inventory = _inventory(content, stored=stored)
+    assert inventory.capabilities.managed_totals is False
+    assert "native_visibility_unconfirmed" in inventory.capabilities.reason_codes
+    assert stored.totals_migration.native_visibility_confirmation_required is True
+
+
+def test_v14_populated_candidates_stale_settings_and_pending_links_survive_load() -> (
+    None
+):
+    content = _document(contract=True)
+    stored = _migrated_for_source(content, V14_AUTO_FIXTURE)
+    stale = AutomaticTotalSettings(
+        "solar-ct3-ct4", True, TotalOutputSettings(False, True, False)
+    )
+    stored = replace(stored, automatic_totals=(*stored.automatic_totals, stale))
+    inventory = _inventory(content, stored=stored)
+    assert [candidate.candidate_id for candidate in inventory.automatic_candidates] == [
+        "grid-ct1-ct2"
+    ]
+    assert inventory.automatic_totals[0].enabled is True
+    assert inventory.automatic_totals[0].outputs == TotalOutputSettings(
+        True, False, True
+    )
+    assert inventory.stale_automatic_total_settings == (stale,)
+    assert inventory.configuration.automatic_totals == stored.automatic_totals[:1]
+    assert "stored_semantics_stale" not in inventory.warnings
+
+
+def test_v14_stale_source_does_not_trust_totals_or_reconcile_candidates() -> None:
+    content = _document(contract=True)
+    topology = topology_from_config(ESPHomeConfigDocument.parse(content))
+    stored = _deserialize_meter_configuration_payload(V14_STALE_FIXTURE, topology)
+    inventory = _inventory(content, stored=stored)
+    assert inventory.capabilities.managed_totals is False
+    assert inventory.capabilities.semantic_source == "legacy_inferred"
+    assert inventory.automatic_candidates == inventory.automatic_totals == ()
+    assert inventory.legacy_parent_links == ()
+    assert inventory.totals_parent_review_required is False
+    assert not {"child", "parent"}.intersection(
+        item.aggregate_id for item in inventory.configuration.aggregates
+    )
+    assert "stored_semantics_stale" in inventory.warnings
+
+
+def test_v14_runtime_source_cannot_confirm_native_visibility() -> None:
+    content = _document(contract=True)
+    stored = _migrated_for_source(content, V14_PARENT_FIXTURE)
+    inventory = _inventory(content, stored=stored, authoritative=False)
+    assert inventory.capabilities.managed_totals is False
+    assert inventory.configuration.default_totals == stored.default_totals
+    assert stored.totals_migration.native_visibility_confirmation_required is True
+
+
+@pytest.mark.parametrize("override_first", (False, True))
+def test_v14_native_extend_overrides_literal_definition_regardless_of_order(
+    override_first,
+) -> None:
+    definition = "  - platform: template\n    id: totalWattsMain\n    internal: true\n"
+    override = "  - id: !extend totalWattsMain\n    internal: false\n"
+    content = (
+        _document(contract=True)
+        + "sensor:\n"
+        + (override + definition if override_first else definition + override)
+    )
+    stored = _migrated_for_source(content, V14_PARENT_FIXTURE)
+    inventory = _inventory(content, stored=stored)
+    assert inventory.configuration.default_totals.overall.watts is True
+    assert inventory.capabilities.managed_totals is True
+
+
+def test_v14_duplicate_native_definitions_leave_visibility_unconfirmed() -> None:
+    content = (
+        _document(contract=True)
+        + "sensor:\n  - id: totalWattsMain\n    internal: true\n  - id: totalWattsMain\n    internal: false\n"
+    )
+    stored = _migrated_for_source(content, V14_PARENT_FIXTURE)
+    inventory = _inventory(content, stored=stored)
+    assert inventory.capabilities.managed_totals is False
+    assert "native_visibility_unconfirmed" in inventory.capabilities.reason_codes
+
+
 def test_helper_owned_total_is_recovered_when_matching_storage_is_empty() -> None:
     """An empty store record must not hide an aggregate present in owned YAML."""
     content = _document(contract=True) + _helper_mains_total()
@@ -217,7 +407,7 @@ def test_helper_owned_total_is_recovered_when_matching_storage_is_empty() -> Non
         sha256(content.encode()).hexdigest(),
         baseline.meter,
         channels,
-        (),
+        baseline.default_totals, (), (),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -225,15 +415,7 @@ def test_helper_owned_total_is_recovered_when_matching_storage_is_empty() -> Non
     inventory = _inventory(content, stored=stored)
 
     assert inventory.configuration.aggregates[:1] == (
-        CircuitAggregate(
-            "mains1",
-            "Mains",
-            CircuitRole.GRID,
-            (1, 2),
-            MeasurementMethod.TWO_CT_SUM,
-            None,
-            EnergyMode.CONSUMPTION,
-        ),
+        _aggregate("mains1", "Mains", CircuitRole.GRID, (1, 2), MeasurementMethod.TWO_CT_SUM, EnergyMode.CONSUMPTION),
     )
     assert inventory.configuration.aggregates[1].aggregate_id == "main-total"
     assert "aggregate_semantics_inferred" in inventory.warnings
@@ -268,6 +450,42 @@ def test_malformed_owned_total_metadata_fails_closed() -> None:
     assert "aggregate_semantics_unreadable" in inventory.warnings
 
 
+def test_literal_legacy_yaml_metadata_preserves_parent_proposals() -> None:
+    metadata = {"aggregate_id": "mains1", "name": "Mains", "role": "grid", "channels": [1, 2], "measurement_method": "two_ct_sum", "parent_id": "parent", "energy_mode": "consumption", "expose_power": True, "expose_current": False, "order": 0}
+    payload = urlsafe_b64encode(json.dumps(metadata).encode()).decode().rstrip("=")
+    block = _helper_mains_total().replace("# CircuitSetup Energy Meter Helper: aggregates v1\n", f"# CircuitSetup Energy Meter Helper: aggregates v1\n  # csemh-aggregate: {payload}\n")
+    inventory = _inventory(_document(contract=True) + block)
+    assert inventory.configuration.aggregates[0] == _aggregate("mains1", "Mains", CircuitRole.GRID, (1, 2), MeasurementMethod.TWO_CT_SUM, EnergyMode.CONSUMPTION)
+    assert inventory.legacy_parent_links == (LegacyParentLink("mains1", "parent"),)
+    assert inventory.totals_parent_review_required is True
+    assert "aggregate_semantics_unreadable" not in inventory.warnings
+
+
+def test_v14_automatic_owned_yaml_is_not_reimported_as_advanced() -> None:
+    block = _helper_mains_total().replace("csemh_mains1", "csemh_auto_mains").replace("std::max(0.0f, id(ct1Watts).state + id(ct2Watts).state)", "id(ct1Watts).state + id(ct2Watts).state")
+    directions = "".join(
+        f"  - platform: template\n    id: csemh_auto_mains_{direction}_power\n    lambda: return std::max(0.0f, {sign}id(csemh_auto_mains_power).state);\n"
+        f"  - platform: total_daily_energy\n    id: csemh_auto_mains_{direction}_energy\n    power_id: csemh_auto_mains_{direction}_power\n"
+        for direction, sign in (("import", ""), ("export", "-"))
+    )
+    block = block.replace("# End CircuitSetup Energy Meter Helper: aggregates v1", directions + "# End CircuitSetup Energy Meter Helper: aggregates v1")
+    content = _document(contract=True) + block
+    stored = _migrated_for_source(content, V14_AUTO_FIXTURE)
+    inventory = _inventory(content, stored=stored)
+    assert inventory.automatic_totals[0].enabled is True
+    assert "auto-mains" not in {item.aggregate_id for item in inventory.configuration.aggregates}
+    assert "aggregate_semantics_unreadable" not in inventory.warnings
+    assert "main-total" in {item.aggregate_id for item in inventory.configuration.aggregates}
+
+
+def test_native_total_inference_without_enabled_channels_fails_closed() -> None:
+    content = _document(contract=True, generic_totals=True)
+    baseline = _inventory(content).configuration
+    aggregates, warnings, links = _detected_aggregates(ESPHomeConfigDocument.parse(content), tuple(replace(channel, enabled=False) for channel in baseline.channels), ())
+    assert aggregates == links == ()
+    assert "builtin_total_semantics_unreadable" in warnings
+
+
 def test_builtin_meter_totals_require_power_id_before_enabling_energy() -> None:
     """An ambiguous daily-energy ID must not be attached without its power source."""
     content = _document(contract=True).replace(
@@ -282,17 +500,7 @@ def test_builtin_meter_totals_require_power_id_before_enabling_energy() -> None:
     inventory = _inventory(content)
 
     assert inventory.configuration.aggregates == (
-        CircuitAggregate(
-            "meter-total",
-            "Meter total",
-            CircuitRole.CUSTOM,
-            (1, 2, 3, 4, 5, 6),
-            MeasurementMethod.DIRECT,
-            None,
-            EnergyMode.NONE,
-            True,
-            True,
-        ),
+        _aggregate("meter-total", "Meter total", CircuitRole.CUSTOM, (1, 2, 3, 4, 5, 6), MeasurementMethod.DIRECT, EnergyMode.NONE, True, True),
     )
     assert "builtin_total_semantics_inferred" in inventory.warnings
 
@@ -310,17 +518,7 @@ def test_default_main_totals_are_detected_with_independent_energy() -> None:
     inventory = _inventory(content)
 
     assert inventory.configuration.aggregates == (
-        CircuitAggregate(
-            "main-total",
-            "Main total",
-            CircuitRole.CUSTOM,
-            (1, 2, 3, 4, 5, 6),
-            MeasurementMethod.DIRECT,
-            None,
-            EnergyMode.CONSUMPTION,
-            False,
-            False,
-        ),
+        _aggregate("main-total", "Main total", CircuitRole.CUSTOM, (1, 2, 3, 4, 5, 6), MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION, False, False),
     )
 
 
@@ -341,16 +539,8 @@ def test_default_totals_are_grouped_by_board_and_kwh_power_id() -> None:
     inventory = _inventory(content)
 
     assert inventory.configuration.aggregates == (
-        CircuitAggregate(
-            "main-total", "Main total", CircuitRole.CUSTOM,
-            (1, 2, 3, 4, 5, 6), MeasurementMethod.DIRECT,
-            None, EnergyMode.NONE, False, False,
-        ),
-        CircuitAggregate(
-            "addon1-total", "Add-on 1 total", CircuitRole.CUSTOM,
-            (7, 8, 9, 10, 11, 12), MeasurementMethod.DIRECT,
-            None, EnergyMode.CONSUMPTION, False, False,
-        ),
+        _aggregate("main-total", "Main total", CircuitRole.CUSTOM, (1, 2, 3, 4, 5, 6), MeasurementMethod.DIRECT, EnergyMode.NONE, False, False),
+        _aggregate("addon1-total", "Add-on 1 total", CircuitRole.CUSTOM, (7, 8, 9, 10, 11, 12), MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION, False, False),
     )
 
 
@@ -371,14 +561,10 @@ def test_helper_and_official_totals_populate_together_with_global_visibility() -
     }
 
     assert set(aggregates) == {"mains1", "meter-total", "main-total", "addon1-total"}
-    assert aggregates["meter-total"] == CircuitAggregate(
-        "meter-total", "Meter total", CircuitRole.CUSTOM,
-        tuple(range(1, 13)), MeasurementMethod.DIRECT,
-        None, EnergyMode.NONE, True, True,
-    )
+    assert aggregates["meter-total"] == _aggregate("meter-total", "Meter total", CircuitRole.CUSTOM, tuple(range(1, 13)), MeasurementMethod.DIRECT, EnergyMode.NONE, True, True)
     for aggregate_id in ("main-total", "addon1-total"):
-        assert aggregates[aggregate_id].expose_power is False
-        assert aggregates[aggregate_id].expose_current is False
+        assert aggregates[aggregate_id].outputs.watts is False
+        assert aggregates[aggregate_id].outputs.amps is False
         assert aggregates[aggregate_id].energy_mode is EnergyMode.NONE
 
 
@@ -419,28 +605,16 @@ def test_custom_template_totals_preserve_channels_names_and_visibility() -> None
         for aggregate in _inventory(content).configuration.aggregates
     }
 
-    assert aggregates["meter-total"] == CircuitAggregate(
-        "meter-total", "House Total", CircuitRole.CUSTOM,
-        (1, 2), MeasurementMethod.TWO_CT_SUM,
-        None, EnergyMode.NONE, True, False,
-    )
-    assert aggregates["total-charger"] == CircuitAggregate(
-        "total-charger", "Total Charger", CircuitRole.CUSTOM,
-        (5, 6), MeasurementMethod.TWO_CT_SUM,
-        None, EnergyMode.NONE, True, False,
-    )
-    assert aggregates["total-ac1"] == CircuitAggregate(
-        "total-ac1", "Total AC1", CircuitRole.CUSTOM,
-        (7, 8), MeasurementMethod.TWO_CT_SUM,
-        None, EnergyMode.NONE, False, False,
-    )
+    assert aggregates["meter-total"] == _aggregate("meter-total", "House Total", CircuitRole.CUSTOM, (1, 2), MeasurementMethod.TWO_CT_SUM, EnergyMode.NONE, True, False)
+    assert aggregates["total-charger"] == _aggregate("total-charger", "Total Charger", CircuitRole.CUSTOM, (5, 6), MeasurementMethod.TWO_CT_SUM, EnergyMode.NONE, True, False)
+    assert aggregates["total-ac1"] == _aggregate("total-ac1", "Total AC1", CircuitRole.CUSTOM, (7, 8), MeasurementMethod.TWO_CT_SUM, EnergyMode.NONE, False, False)
     for aggregate_id in ("main-total", "addon1-total"):
-        assert aggregates[aggregate_id].expose_power is False
-        assert aggregates[aggregate_id].expose_current is False
+        assert aggregates[aggregate_id].outputs.watts is False
+        assert aggregates[aggregate_id].outputs.amps is False
 
 
 def test_parent_template_total_links_default_board_calculations() -> None:
-    """Default board-total references become editable parent relationships."""
+    """Old parent hints remain proposals, with unchanged flattened formulas."""
     content = _document(contract=True, addon_count=1) + (
         "sensor:\n"
         "  - platform: template\n"
@@ -462,9 +636,12 @@ def test_parent_template_total_links_default_board_calculations() -> None:
         for aggregate in _inventory(content).configuration.aggregates
     }
 
-    assert aggregates["meter-total"].channels == tuple(range(1, 13))
-    assert aggregates["main-total"].parent_id == "meter-total"
-    assert aggregates["addon1-total"].parent_id == "meter-total"
+    assert aggregates["meter-total"].sources == tuple(ChannelTotalSource("channel", channel) for channel in range(1, 13))
+    assert aggregates["main-total"].sources == tuple(ChannelTotalSource("channel", channel) for channel in range(1, 7))
+    assert aggregates["addon1-total"].sources == tuple(ChannelTotalSource("channel", channel) for channel in range(7, 13))
+    assert set(_inventory(content).legacy_parent_links) == {
+        LegacyParentLink("main-total", "meter-total"), LegacyParentLink("addon1-total", "meter-total"),
+    }
 
 
 def test_global_daily_energy_is_detected_in_a_later_root_sensor_section() -> None:
@@ -505,7 +682,7 @@ def test_inventory_warns_only_for_installed_slow_calibration_intervals(
         sha256(content.encode()).hexdigest(),
         replace(baseline.meter, update_interval_s=interval),
         baseline.channels,
-        baseline.aggregates,
+        baseline.default_totals, (), baseline.aggregates,
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -526,7 +703,7 @@ def test_invalid_stored_configuration_falls_back_to_legacy_inferred() -> None:
         sha256(content.encode()).hexdigest(),
         baseline.meter,
         baseline.channels[:-1],
-        baseline.aggregates,
+        baseline.default_totals, (), baseline.aggregates,
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -581,11 +758,7 @@ def test_legacy_inventory_keeps_yaml_ct_values_and_requires_electrical_confirmat
     assert inventory.configuration.meter.update_interval_s == 10
     assert inventory.voltage_topology.references == (("main", ("main_1", "main_2")),)
     assert inventory.configuration.aggregates == (
-        CircuitAggregate(
-            "meter-total", "Meter total", CircuitRole.CUSTOM,
-            (1, 2, 3, 4, 5, 6), MeasurementMethod.DIRECT,
-            None, EnergyMode.NONE, True, False,
-        ),
+        _aggregate("meter-total", "Meter total", CircuitRole.CUSTOM, (1, 2, 3, 4, 5, 6), MeasurementMethod.DIRECT, EnergyMode.NONE, True, False),
     )
     assert inventory.configuration.power_quality == (True,)
     assert inventory.configuration.status_fields == (True,)
@@ -634,15 +807,7 @@ def test_matching_stored_semantics_restore_roles_reference_mapping_and_aggregate
         )
         for channel in baseline.channels
     )
-    aggregate = CircuitAggregate(
-        "grid",
-        "Grid",
-        CircuitRole.GRID,
-        (1,),
-        MeasurementMethod.DIRECT,
-        None,
-        EnergyMode.BIDIRECTIONAL,
-    )
+    aggregate = _aggregate("grid", "Grid", CircuitRole.GRID, (1,), MeasurementMethod.DIRECT, EnergyMode.BIDIRECTIONAL)
     stored = StoredMeterConfiguration(
         sha256(content.encode()).hexdigest(),
         replace(
@@ -652,7 +817,7 @@ def test_matching_stored_semantics_restore_roles_reference_mapping_and_aggregate
             voltage_references=voltage_references,
         ),
         channels,
-        (aggregate,),
+        baseline.default_totals, (), (aggregate,),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -681,15 +846,7 @@ def test_matching_single_reference_restores_semantics_when_physical_gains_agree(
         voltage_cal2=7001,
     )
     baseline = _inventory(content).configuration
-    aggregate = CircuitAggregate(
-        "grid",
-        "Grid",
-        CircuitRole.GRID,
-        (1,),
-        MeasurementMethod.DIRECT,
-        None,
-        EnergyMode.BIDIRECTIONAL,
-    )
+    aggregate = _aggregate("grid", "Grid", CircuitRole.GRID, (1,), MeasurementMethod.DIRECT, EnergyMode.BIDIRECTIONAL)
     stored = StoredMeterConfiguration(
         sha256(content.encode()).hexdigest(),
         baseline.meter,
@@ -702,7 +859,7 @@ def test_matching_single_reference_restores_semantics_when_physical_gains_agree(
             )
             for channel in baseline.channels
         ),
-        (aggregate,),
+        baseline.default_totals, (), (aggregate,),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -724,7 +881,7 @@ def test_single_reference_with_divergent_physical_gains_is_stale() -> None:
         sha256(content.encode()).hexdigest(),
         baseline.meter,
         tuple(replace(channel, role=CircuitRole.GRID) for channel in baseline.channels),
-        (),
+        baseline.default_totals, (), (),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -749,7 +906,7 @@ def test_legacy_and_stored_multi_reference_inventory_never_claims_preparation() 
         sha256(content.encode()).hexdigest(),
         legacy.configuration.meter,
         legacy.configuration.channels,
-        (),
+        legacy.configuration.default_totals, (), (),
         legacy.configuration.power_quality,
         legacy.configuration.status_fields,
     )
@@ -790,7 +947,7 @@ def test_matching_stored_channels_merge_by_channel_identity_not_tuple_order() ->
             )
             for channel in reversed(baseline.channels)
         ),
-        (),
+        baseline.default_totals, (), (),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -825,7 +982,7 @@ def test_matching_stored_voltage_references_merge_gains_by_groups_not_tuple_orde
             voltage_references=tuple(reversed(baseline.meter.voltage_references)),
         ),
         baseline.channels,
-        (),
+        baseline.default_totals, (), (),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -874,7 +1031,7 @@ def test_standard_helper_references_map_gains_by_group_suffix_across_addons() ->
             )
             for channel in baseline.channels
         ),
-        (),
+        baseline.default_totals, (), (),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -912,7 +1069,7 @@ def test_matching_stored_voltage_references_allow_scrambled_group_order() -> Non
             ),
         ),
         baseline.channels,
-        (),
+        baseline.default_totals, (), (),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -952,7 +1109,7 @@ def test_ambiguous_stored_voltage_reference_groups_fall_back_to_legacy_defaults(
             ),
         ),
         baseline.channels,
-        (),
+        baseline.default_totals, (), (),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -974,7 +1131,7 @@ def test_invalid_matching_stored_semantics_fall_back_to_legacy_defaults() -> Non
         sha256(content.encode()).hexdigest(),
         baseline.meter,
         (replace(baseline.channels[0], voltage_reference_id="missing"), *baseline.channels[1:]),
-        (),
+        baseline.default_totals, (), (),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -995,7 +1152,7 @@ def test_duplicate_matching_stored_channels_fall_back_to_legacy_defaults() -> No
         sha256(content.encode()).hexdigest(),
         baseline.meter,
         (baseline.channels[0], baseline.channels[0], *baseline.channels[2:]),
-        (),
+        baseline.default_totals, (), (),
         baseline.power_quality,
         baseline.status_fields,
     )
@@ -1016,7 +1173,7 @@ def test_stale_stored_semantics_are_ignored_and_reported() -> None:
         "f" * 64,
         baseline.meter,
         tuple(replace(channel, role=CircuitRole.GRID) for channel in baseline.channels),
-        (),
+        baseline.default_totals, (), (),
         baseline.power_quality,
         baseline.status_fields,
     )

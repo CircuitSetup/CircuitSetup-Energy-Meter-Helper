@@ -15,23 +15,24 @@ from .config_mutator import package_options_from_document
 from .ct_catalog import CTPresetCatalog
 from .ct_inventory import CTInventory
 from .meter_configuration import (
-    AggregateTotalSource,
     AutomaticTotalSettings,
+    BoardTotalSettings,
     ChannelSettings,
     ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
+    DefaultTotalsSettings,
     ElectricalSystem,
     EnergyMode,
     LineFrequencyHz,
     MeasurementMethod,
     MeterConfigurationRequest,
     MeterSettings,
+    TotalOrigin,
+    TotalOutputSettings,
     UpdateIntervalSeconds,
     VoltageLayout,
     VoltageReferenceConfig,
-    TotalOrigin,
-    TotalOutputSettings,
     validate_meter_configuration,
 )
 from .models import (
@@ -40,7 +41,7 @@ from .models import (
     StoredCTSelection,
     VoltageReferenceTopology,
 )
-from .store import LegacyParentLink, StoredMeterConfiguration, TotalsMigrationRecord
+from .store import LegacyParentLink, StoredMeterConfiguration
 from .topology import (
     TopologyFingerprintMismatch,
     addon_count_from_packages,
@@ -54,9 +55,9 @@ from .total_graph import (
     ResolvedAutomaticTotal,
     automatic_total_candidates,
     default_total_settings,
+    native_total_sources,
     resolve_automatic_totals,
     stale_automatic_total_settings,
-    native_total_sources,
 )
 from .voltage_transformer_catalog import VoltageTransformerCatalog
 
@@ -177,6 +178,11 @@ class MeterConfigurationInventory:
         stale = stored_semantics_stale or (
             stored_configuration is not None and matching is None
         )
+        visibility_unconfirmed = bool(
+            matching is not None
+            and matching.totals_migration is not None
+            and matching.totals_migration.native_visibility_confirmation_required
+        )
         if (
             stored_configuration is not None
             and matching is None
@@ -208,6 +214,7 @@ class MeterConfigurationInventory:
                     normalized_defaults = _source_normalized_default_totals(document, topology)
                     if normalized_defaults is not None:
                         configuration = replace(configuration, default_totals=normalized_defaults)
+                        visibility_unconfirmed = False
                 semantic_source = "helper_managed"
                 voltage_topology = voltage_reference_topology_from_configuration(
                     topology, configuration
@@ -221,6 +228,20 @@ class MeterConfigurationInventory:
         aggregates, aggregate_warnings, detected_parent_links = _detected_aggregates(
             document, configuration.channels, configuration.aggregates
         )
+        # Recognized legacy automatic sensors already belong to their settings.
+        automatic_aggregates = tuple(
+            CircuitAggregate(
+                total.candidate.aggregate_id, total.candidate.name,
+                total.candidate.role, total.candidate.sources,
+                total.candidate.measurement_method, total.candidate.energy_mode,
+                total.outputs, TotalOrigin.MIGRATED,
+            )
+            for total in resolve_automatic_totals(
+                automatic_total_candidates(configuration), configuration.automatic_totals
+            )
+            if total.enabled and not stale and semantic_source == "helper_managed"
+        )
+        aggregates = tuple(item for item in aggregates if item not in automatic_aggregates)
         configuration = replace(configuration, aggregates=aggregates)
         try:
             validate_meter_configuration(
@@ -241,12 +262,19 @@ class MeterConfigurationInventory:
                 dict.fromkeys((*aggregate_warnings, "aggregate_semantics_unreadable"))
             )
         capabilities = replace(capabilities, semantic_source=semantic_source)
+        if stale or visibility_unconfirmed:
+            capabilities = replace(
+                capabilities,
+                managed_totals=False,
+                reason_codes=(*capabilities.reason_codes,
+                    "stored_semantics_stale" if stale else "native_visibility_unconfirmed"),
+            )
         warnings = [*capabilities.reason_codes, *aggregate_warnings]
         if configuration.meter.electrical_system is ElectricalSystem.CUSTOM:
             warnings.append("electrical_profile_requires_confirmation")
         if _has_generic_total(document) and not capabilities.managed_totals:
             warnings.append("legacy_generic_totals_unmanaged")
-        if stale:
+        if stale and "stored_semantics_stale" not in warnings:
             warnings.append("stored_semantics_stale")
         if configuration.meter.update_interval_s in (30, 60):
             warnings.append("slow_interval_extends_calibration")
@@ -272,7 +300,8 @@ class MeterConfigurationInventory:
                 automatic_candidates, configuration.automatic_totals
             ),
             stale_automatic_total_settings=stale_automatic_total_settings(
-                automatic_candidates, configuration.automatic_totals
+                automatic_candidates,
+                matching.automatic_totals if matching is not None and not stale else configuration.automatic_totals,
             ),
             totals_parent_review_required=(
                 bool(parent_links)
@@ -294,6 +323,7 @@ def _source_normalized_default_totals(
         for sensor_id in (definition.power_id, definition.current_id, definition.existing_energy_id)
         if sensor_id is not None
     }
+    definitions_visibility: dict[str, bool] = {}
     overrides: dict[str, bool] = {}
     for item in items:
         raw_id = item.get("id", "")
@@ -302,9 +332,12 @@ def _source_normalized_default_totals(
             continue
         if item["internal"] not in {"true", "false"}:
             return None
-        overrides[sensor_id] = item["internal"] == "false"
+        visibility = overrides if raw_id.startswith("!extend ") else definitions_visibility
+        if sensor_id in visibility:
+            return None
+        visibility[sensor_id] = item["internal"] == "false"
     def visible(sensor_id: str, upstream: bool) -> bool:
-        return overrides.get(sensor_id, upstream)
+        return overrides.get(sensor_id, definitions_visibility.get(sensor_id, upstream))
     definitions = native_total_sources(topology)
     overall = next(item for item in definitions if item.source_id == "overall")
     overall_outputs = TotalOutputSettings(
@@ -355,7 +388,7 @@ def _stored_request(
                 custom_label=stored_channel.custom_label,
             )
         )
-    return MeterConfigurationRequest(
+    request = MeterConfigurationRequest(
         replace(
             stored.meter,
             friendly_name=_value(document, "friendly_name", stored.meter.friendly_name),
@@ -383,11 +416,21 @@ def _stored_request(
         ),
         tuple(channels),
         stored.default_totals,
-        stored.automatic_totals,
+        (),
         stored.aggregates,
         stored.power_quality,
         stored.status_fields,
         stored.multi_reference_preparation_acknowledged,
+    )
+    candidate_ids = {
+        candidate.candidate_id for candidate in automatic_total_candidates(request)
+    }
+    return replace(
+        request,
+        automatic_totals=tuple(
+            setting for setting in stored.automatic_totals
+            if setting.candidate_id in candidate_ids
+        ),
     )
 
 
@@ -793,7 +836,7 @@ def _detected_aggregates(
     enabled = tuple(channel.channel for channel in channels if channel.enabled)
     default_groups = _default_total_groups(document, channels)
     if (total_ids or default_groups) and not enabled:
-        return (), ("builtin_total_semantics_unreadable",)
+        return (), ("builtin_total_semantics_unreadable",), ()
     energy_power_ids = (
         frozenset() if "totalEnergyDaily" in hidden_ids
         else _default_daily_energy_power_ids(document)
@@ -854,7 +897,9 @@ def _detected_aggregates(
     inferred_links = tuple(
         LegacyParentLink(child, parent) for child, parent in parent_links.items()
     )
-    return (*detected, *added), warnings, tuple(dict.fromkeys((*metadata_links, *inferred_links)))
+    return (*detected, *added), warnings, tuple(
+        dict.fromkeys((*metadata_links, *inferred_links))
+    )
 
 
 def _aggregate_metadata(
@@ -1085,14 +1130,12 @@ def _metadata_matches_rendered(
         actual = by_id.get(aggregate.aggregate_id.replace("_", "-"))
         if actual is None or (
             aggregate.name,
-            aggregate.channels,
-            aggregate.expose_power,
-            aggregate.expose_current,
+            aggregate.sources,
+            aggregate.outputs,
         ) != (
             actual.name,
-            actual.channels,
-            actual.expose_power,
-            actual.expose_current,
+            actual.sources,
+            actual.outputs,
         ):
             return False
         if aggregate.measurement_method != actual.measurement_method and {

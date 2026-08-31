@@ -7,18 +7,21 @@ from dataclasses import replace
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
-    ChannelTotalSource,
+    AggregateTotalSource,
+    AutomaticTotalSettings,
     ChannelSettings,
+    ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
     ElectricalSystem,
     EnergyMode,
     MeasurementMethod,
     MeterSettings,
-    VoltageLayout,
-    VoltageReferenceConfig,
+    NativeTotalSource,
     TotalOrigin,
     TotalOutputSettings,
+    VoltageLayout,
+    VoltageReferenceConfig,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import (
     MeterTopology,
@@ -29,23 +32,27 @@ from custom_components.circuitsetup_energy_meter_helper.models import (
     StoredTopologyEvidence,
 )
 from custom_components.circuitsetup_energy_meter_helper.store import (
-    LegacyParentLink,
     STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
     HelperStore,
+    LegacyParentLink,
     MeterConfigurationRead,
     StoredMeterConfiguration,
+    TotalsMigrationRecord,
     VerifiedCalibrationRecord,
     VerifiedGainGroup,
-    _HelperStorage,
     _deserialize_meter_configuration_payload,
+    _HelperStorage,
+    _serialize_meter_configuration,
     migrate_storage,
     serialize_meter_record,
 )
 from custom_components.circuitsetup_energy_meter_helper.topology import (
     legacy_voltage_reference_topology,
 )
-from custom_components.circuitsetup_energy_meter_helper.total_graph import default_total_settings
+from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+    default_total_settings,
+)
 
 MAC = "aabbccddeeff"
 CONFIG_HASH = "a" * 64
@@ -54,13 +61,118 @@ PROPOSED_HASH = "b" * 64
 
 V14_PARENT_FIXTURE = {
     "config_sha256": "a" * 64,
-    "meter": {"friendly_name": "Kitchen meter", "electrical_system": "split_phase_120_240", "line_frequency_hz": 60, "update_interval_s": 5, "voltage_layout": "standard", "voltage_references": [{"reference_id": "main", "label": "Main", "phase_label": "A", "nominal_voltage_v": 120.0, "transformer_model_id": "vt", "gain_voltage": 1, "group_keys": ["main_1", "main_2"]}]},
-    "channels": [{"channel": channel, "enabled": True, "name": f"CT {channel}", "model_id": "ct", "reporting_multiplier": 1.0, "role": "grid" if channel < 3 else "branch", "voltage_reference_id": "main", "custom_gain_ct": None, "custom_label": None} for channel in range(1, 7)],
-    "aggregates": [
-        {"aggregate_id": "child", "name": "Child", "role": "branch", "channels": [1], "measurement_method": "direct", "parent_id": "parent", "energy_mode": "none", "expose_power": True, "expose_current": False},
-        {"aggregate_id": "parent", "name": "Parent", "role": "branch", "channels": [2], "measurement_method": "direct", "parent_id": None, "energy_mode": "consumption", "expose_power": True, "expose_current": True},
+    "meter": {
+        "friendly_name": "Kitchen meter",
+        "electrical_system": "split_phase_120_240",
+        "line_frequency_hz": 60,
+        "update_interval_s": 5,
+        "voltage_layout": "standard",
+        "voltage_references": [
+            {
+                "reference_id": "main",
+                "label": "Main",
+                "phase_label": "A",
+                "nominal_voltage_v": 120.0,
+                "transformer_model_id": "vt",
+                "gain_voltage": 1,
+                "group_keys": ["main_1", "main_2"],
+            }
+        ],
+    },
+    "channels": [
+        {
+            "channel": 1,
+            "enabled": True,
+            "name": "CT 1",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "grid",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
+        {
+            "channel": 2,
+            "enabled": True,
+            "name": "CT 2",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "grid",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
+        {
+            "channel": 3,
+            "enabled": True,
+            "name": "CT 3",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "branch",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
+        {
+            "channel": 4,
+            "enabled": True,
+            "name": "CT 4",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "branch",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
+        {
+            "channel": 5,
+            "enabled": True,
+            "name": "CT 5",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "branch",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
+        {
+            "channel": 6,
+            "enabled": True,
+            "name": "CT 6",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "branch",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
     ],
-    "power_quality": [False], "status_fields": [True],
+    "aggregates": [
+        {
+            "aggregate_id": "child",
+            "name": "Child",
+            "role": "branch",
+            "channels": [1],
+            "measurement_method": "direct",
+            "parent_id": "parent",
+            "energy_mode": "none",
+            "expose_power": True,
+            "expose_current": False,
+        },
+        {
+            "aggregate_id": "parent",
+            "name": "Parent",
+            "role": "branch",
+            "channels": [2],
+            "measurement_method": "direct",
+            "parent_id": None,
+            "energy_mode": "consumption",
+            "expose_power": True,
+            "expose_current": True,
+        },
+    ],
+    "power_quality": [False],
+    "status_fields": [True],
 }
 
 
@@ -68,9 +180,371 @@ def _meter_topology() -> MeterTopology:
     return MeterTopology(0, 1, 6, 2, "wifi", "standard", "meter", ())
 
 
+# Old wire dictionaries, never produced by the current serializer.
+V14_EMPTY_FIXTURE = {**V14_PARENT_FIXTURE, "aggregates": []}
+V14_NORMAL_FIXTURE = {
+    **V14_PARENT_FIXTURE,
+    "aggregates": [
+        {
+            "aggregate_id": "oven",
+            "name": "Oven",
+            "role": "branch",
+            "channels": [3, 4],
+            "measurement_method": "two_ct_sum",
+            "parent_id": None,
+            "energy_mode": "consumption",
+            "expose_power": False,
+            "expose_current": True,
+        },
+    ],
+}
+V14_AUTO_FIXTURE = {
+    **V14_PARENT_FIXTURE,
+    "aggregates": [
+        {
+            "aggregate_id": "auto-mains",
+            "name": "Mains",
+            "role": "grid",
+            "channels": [1, 2],
+            "measurement_method": "two_ct_sum",
+            "parent_id": None,
+            "energy_mode": "bidirectional",
+            "expose_power": True,
+            "expose_current": False,
+        },
+    ],
+}
+V14_EDITED_AUTO_FIXTURE = {
+    **V14_AUTO_FIXTURE,
+    "aggregates": [
+        {
+            "aggregate_id": "auto-mains",
+            "name": "Edited mains",
+            "role": "grid",
+            "channels": [1, 2],
+            "measurement_method": "two_ct_sum",
+            "parent_id": None,
+            "energy_mode": "bidirectional",
+            "expose_power": True,
+            "expose_current": False,
+        },
+    ],
+}
+V14_ADDON_FIXTURE = {
+    **V14_NORMAL_FIXTURE,
+    "meter": {
+        **V14_NORMAL_FIXTURE["meter"],
+        "voltage_references": [
+            {
+                "reference_id": "main",
+                "label": "Main",
+                "phase_label": "A",
+                "nominal_voltage_v": 120.0,
+                "transformer_model_id": "vt",
+                "gain_voltage": 1,
+                "group_keys": ["main_1", "main_2", "addon1_1", "addon1_2"],
+            },
+        ],
+    },
+    "channels": [
+        *V14_NORMAL_FIXTURE["channels"],
+        {
+            "channel": 7,
+            "enabled": True,
+            "name": "CT 7",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "branch",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
+        {
+            "channel": 8,
+            "enabled": True,
+            "name": "CT 8",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "branch",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
+        {
+            "channel": 9,
+            "enabled": True,
+            "name": "CT 9",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "branch",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
+        {
+            "channel": 10,
+            "enabled": True,
+            "name": "CT 10",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "branch",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
+        {
+            "channel": 11,
+            "enabled": True,
+            "name": "CT 11",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "branch",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
+        {
+            "channel": 12,
+            "enabled": True,
+            "name": "CT 12",
+            "model_id": "ct",
+            "reporting_multiplier": 1.0,
+            "role": "branch",
+            "voltage_reference_id": "main",
+            "custom_gain_ct": None,
+            "custom_label": None,
+        },
+    ],
+    "power_quality": [False, False],
+    "status_fields": [True, True],
+}
+V14_STALE_FIXTURE = {**V14_PARENT_FIXTURE, "config_sha256": "f" * 64}
+
+
+@pytest.mark.parametrize(
+    "fixture, ids, enabled",
+    (
+        (V14_EMPTY_FIXTURE, (), False),
+        (V14_NORMAL_FIXTURE, ("oven",), False),
+        (V14_AUTO_FIXTURE, (), True),
+        (V14_EDITED_AUTO_FIXTURE, ("auto-mains",), False),
+        (V14_PARENT_FIXTURE, ("child", "parent"), False),
+        (V14_ADDON_FIXTURE, ("oven",), False),
+    ),
+)
+def test_v14_literal_migration_matrix_roundtrips(fixture, ids, enabled) -> None:
+    before = deepcopy(fixture)
+    topology = (
+        _meter_topology()
+        if len(fixture["channels"]) == 6
+        else MeterTopology(1, 2, 12, 4, "wifi", "standard", "meter", ())
+    )
+    migrated = _deserialize_meter_configuration_payload(fixture, topology)
+    assert tuple(item.aggregate_id for item in migrated.aggregates) == ids
+    assert migrated.automatic_totals == (
+        AutomaticTotalSettings(
+            "grid-ct1-ct2", enabled, TotalOutputSettings(True, False, True)
+        ),
+    )
+    for aggregate in migrated.aggregates:
+        old = next(
+            item
+            for item in fixture["aggregates"]
+            if item["aggregate_id"] == aggregate.aggregate_id
+        )
+        assert aggregate.sources == tuple(
+            ChannelTotalSource("channel", channel) for channel in old["channels"]
+        )
+        assert aggregate.outputs == TotalOutputSettings(
+            old["expose_power"], old["expose_current"], old["energy_mode"] != "none"
+        )
+        assert aggregate.origin is TotalOrigin.MIGRATED
+        assert (
+            aggregate.name,
+            aggregate.role.value,
+            aggregate.measurement_method.value,
+            aggregate.energy_mode.value,
+        ) == (old["name"], old["role"], old["measurement_method"], old["energy_mode"])
+    encoded = _serialize_meter_configuration(migrated, topology)
+    assert _deserialize_meter_configuration_payload(encoded, topology) == migrated
+    assert fixture == before
+    assert migrated.totals_migration.native_visibility_confirmation_required is True
+
+
+@pytest.mark.parametrize(
+    "edit",
+    (
+        {"name": "Edited"},
+        {"channels": [2, 1]},
+        {"channels": [1]},
+        {"role": "branch"},
+        {"measurement_method": "direct"},
+        {"energy_mode": "consumption"},
+        {"expose_current": True},
+        {"expose_power": False},
+        {"parent_id": "other"},
+    ),
+)
+def test_v14_automatic_matching_requires_exact_definition(edit) -> None:
+    fixture = deepcopy(V14_AUTO_FIXTURE)
+    fixture["aggregates"][0].update(edit)
+    if edit == {"channels": [1]}:
+        fixture["aggregates"][0]["measurement_method"] = "direct"
+    migrated = _deserialize_meter_configuration_payload(fixture, _meter_topology())
+    assert migrated.aggregates[0].aggregate_id == "auto-mains"
+    assert migrated.aggregates[0].origin is TotalOrigin.MIGRATED
+    assert all(not setting.enabled for setting in migrated.automatic_totals)
+
+
+def test_v15_roundtrip_preserves_graph_sources_and_stale_settings() -> None:
+    base = _configuration()
+    child = replace(base.aggregates[0], aggregate_id="child")
+    parent = replace(
+        child,
+        aggregate_id="parent",
+        sources=(AggregateTotalSource("aggregate", "child"),),
+        measurement_method=MeasurementMethod.DIRECT,
+        origin=TotalOrigin.ADVANCED,
+    )
+    native = replace(
+        parent,
+        aggregate_id="native",
+        sources=(NativeTotalSource("native_total", "overall"),),
+    )
+    stale = AutomaticTotalSettings(
+        "solar-ct3-ct4", True, TotalOutputSettings(False, True, False)
+    )
+    configuration = replace(
+        base,
+        aggregates=(child, parent, native),
+        automatic_totals=(stale,),
+        totals_migration=TotalsMigrationRecord(
+            True, (LegacyParentLink("child", "parent"),), True
+        ),
+    )
+    raw = _serialize_meter_configuration(configuration, _meter_topology())
+    assert raw["aggregates"][1]["sources"] == [
+        {"kind": "aggregate", "aggregate_id": "child"}
+    ]
+    assert raw["aggregates"][2]["sources"] == [
+        {"kind": "native_total", "source_id": "overall"}
+    ]
+    assert (
+        _deserialize_meter_configuration_payload(raw, _meter_topology())
+        == configuration
+    )
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    (
+        ("outputs", {"watts": 1, "amps": False, "kwh": True}),
+        ("sources", {"channel": 1}),
+        ("sources", [{"kind": "channel", "channel": True}]),
+        (
+            "sources",
+            ({"kind": "channel", "channel": 1}, {"kind": "channel", "channel": 2}),
+        ),
+        ("sources", [{"kind": "native_total", "source_id": "totalWattsMain"}]),
+        ("origin", "automatic"),
+        ("channels", [1, 2]),
+    ),
+)
+def test_v15_rejects_noncanonical_aggregate_payload(field, value) -> None:
+    raw = _serialize_meter_configuration(_configuration(), _meter_topology())
+    raw["aggregates"][0][field] = value
+    with pytest.raises((TypeError, ValueError)):
+        _deserialize_meter_configuration_payload(raw, _meter_topology())
+
+
+@pytest.mark.parametrize(
+    "setting",
+    (
+        {
+            "candidate_id": "solar-ct3-ct4",
+            "enabled": 1,
+            "outputs": {"watts": True, "amps": False, "kwh": True},
+        },
+        {
+            "candidate_id": "bad ID",
+            "enabled": False,
+            "outputs": {"watts": True, "amps": False, "kwh": True},
+        },
+    ),
+)
+def test_v15_stale_settings_still_require_strict_wire_types(setting) -> None:
+    raw = _serialize_meter_configuration(_configuration(), _meter_topology())
+    raw["automatic_totals"] = [setting]
+    with pytest.raises((TypeError, ValueError)):
+        _deserialize_meter_configuration_payload(raw, _meter_topology())
+
+
+def test_v15_stale_settings_must_be_unique() -> None:
+    raw = _serialize_meter_configuration(_configuration(), _meter_topology())
+    raw["automatic_totals"] = [
+        {
+            "candidate_id": "solar-ct3-ct4",
+            "enabled": False,
+            "outputs": {"watts": True, "amps": False, "kwh": True},
+        }
+    ] * 2
+    with pytest.raises((TypeError, ValueError)):
+        _deserialize_meter_configuration_payload(raw, _meter_topology())
+
+
+@pytest.mark.parametrize(
+    "link",
+    (
+        {"child_id": 1, "proposed_parent_id": "parent"},
+        {"child_id": "child", "proposed_parent_id": "bad ID"},
+    ),
+)
+def test_v15_pending_links_require_valid_identifiers(link) -> None:
+    raw = _serialize_meter_configuration(_configuration(), _meter_topology())
+    raw["totals_migration"] = {
+        "parent_review_required": True,
+        "legacy_parent_links": [link],
+        "native_visibility_confirmation_required": True,
+    }
+    with pytest.raises((TypeError, ValueError)):
+        _deserialize_meter_configuration_payload(raw, _meter_topology())
+
+
+def test_v14_storage_load_does_not_rewrite_or_clear_pending_migration() -> None:
+    async def run() -> None:
+        backend = _CopyingStorage()
+        backend.data = {
+            "meters": {
+                MAC: {
+                    **serialize_meter_record(_record()),
+                    "meter_configuration": deepcopy(V14_PARENT_FIXTURE),
+                }
+            }
+        }
+        before = deepcopy(backend.data)
+        store = object.__new__(HelperStore)
+        store._store = backend
+        store._update_lock = asyncio.Lock()
+        first = await store.async_get_meter_configuration(MAC)
+        assert first.totals_migration == TotalsMigrationRecord(
+            True, (LegacyParentLink("child", "parent"),), True
+        )
+        assert await store.async_get_meter_configuration(MAC) == first
+        assert migrate_storage(1, 4, backend.data) == before
+        assert backend.data == before
+        backend.data["meters"][MAC]["meter_configuration"] = (
+            _serialize_meter_configuration(first, _meter_topology())
+        )
+        assert await store.async_get_meter_configuration(MAC) == first
+
+    asyncio.run(run())
+
+
 def test_v14_parent_metadata_does_not_change_runtime_formula() -> None:
     """Changing legacy parent metadata into a source would alter installed readings."""
-    configuration = _deserialize_meter_configuration_payload(V14_PARENT_FIXTURE, _meter_topology())
+    configuration = _deserialize_meter_configuration_payload(
+        V14_PARENT_FIXTURE, _meter_topology()
+    )
 
     child, parent = configuration.aggregates
     assert child.sources == (ChannelTotalSource("channel", 1),)
@@ -81,6 +555,23 @@ def test_v14_parent_metadata_does_not_change_runtime_formula() -> None:
     assert configuration.automatic_totals[0].candidate_id == "grid-ct1-ct2"
     assert configuration.automatic_totals[0].enabled is False
     assert configuration.totals_migration.native_visibility_confirmation_required is True
+    assert configuration.default_totals.overall.kwh is False
+
+
+def test_v14_parent_proposal_can_target_a_recognized_automatic_total() -> None:
+    fixture = {
+        **V14_AUTO_FIXTURE,
+        "aggregates": [
+            *V14_AUTO_FIXTURE["aggregates"],
+            {"aggregate_id": "child", "name": "Child", "role": "branch", "channels": [3], "measurement_method": "direct", "parent_id": "auto-mains", "energy_mode": "none", "expose_power": True, "expose_current": False},
+        ],
+    }
+    migrated = _deserialize_meter_configuration_payload(fixture, _meter_topology())
+    assert tuple(aggregate.aggregate_id for aggregate in migrated.aggregates) == ("child",)
+    assert migrated.aggregates[0].sources == (ChannelTotalSource("channel", 3),)
+    assert migrated.automatic_totals == (AutomaticTotalSettings("grid-ct1-ct2", True, TotalOutputSettings(True, False, True)),)
+    assert migrated.totals_migration == TotalsMigrationRecord(True, (LegacyParentLink("child", "auto-mains"),), True)
+    assert _deserialize_meter_configuration_payload(_serialize_meter_configuration(migrated, _meter_topology()), _meter_topology()) == migrated
 
 
 def _topology() -> StoredTopology:
@@ -1150,8 +1641,8 @@ def test_meter_configuration_bounds_and_evidence_errors_are_normalized() -> None
         )
         await read_with(
             lambda meter: meter["meter_configuration"]["aggregates"][0][
-                "channels"
-            ].extend(range(3, 8))
+                "sources"
+            ].extend({"kind": "channel", "channel": channel} for channel in range(3, 8))
         )
         await read_with(
             lambda meter: meter["meter_configuration"].update(
