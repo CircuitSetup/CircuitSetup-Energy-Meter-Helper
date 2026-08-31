@@ -2011,6 +2011,56 @@ def test_board_energy_can_be_removed_through_hash_bound_inventory() -> None:
     assert removed.proposed_content == snapshot.content
 
 
+@pytest.mark.parametrize("board,energy_id", ((0, "csemh_board_main_energy"), (1, "csemh_board_addon_1_energy")))
+@pytest.mark.parametrize("extend", (False, True))
+def test_board_energy_rejects_unmanaged_sensor_id_ownership(
+    board: int, energy_id: str, extend: bool,
+) -> None:
+    snapshot, topology, current = _native_total_setup()
+    original = (
+        f"  - id: !extend {energy_id}\n    name: User Energy\n"
+        if extend else
+        f'  - platform: total_daily_energy\n    id: "{energy_id}" # user owned\n'
+        "    name: User Energy\n    power_id: ct1Watts\n"
+    )
+    content = snapshot.content.replace("logger:\n", original + "logger:\n")
+    digest = sha256(content.encode()).hexdigest()
+    configuration = current.configuration
+    stored = StoredMeterConfiguration(
+        digest, configuration.meter, configuration.channels, configuration.default_totals,
+        configuration.automatic_totals, configuration.aggregates,
+        configuration.power_quality, configuration.status_fields,
+    )
+    snapshot = replace(snapshot, content=content, sha256=digest)
+    current = _inventory(snapshot, topology, stored=stored)
+    requested = replace(configuration, default_totals=replace(
+        configuration.default_totals, boards=tuple(
+            replace(setting, outputs=TotalOutputSettings(False, False, True))
+            if setting.board_index == board else setting
+            for setting in configuration.default_totals.boards
+        ),
+    ))
+    with pytest.raises(ConfigMutationError, match="unmanaged.*" + energy_id):
+        build_meter_configuration_mutation(snapshot, topology, current, requested)
+    assert snapshot.content == content
+    assert original in snapshot.content
+    assert _native_total_body(configuration, topology, content) == ""
+
+
+def test_board_energy_own_block_remains_idempotent() -> None:
+    snapshot, topology, current = _native_total_setup()
+    requested = replace(current.configuration, default_totals=replace(
+        current.configuration.default_totals, boards=tuple(
+            replace(board, outputs=TotalOutputSettings(False, False, True))
+            for board in current.configuration.default_totals.boards
+        ),
+    ))
+    first = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
+    body = _native_total_body(requested, topology, first)
+    assert replace_managed_block(first, "aggregates", body) == first
+    assert _native_total_body(current.configuration, topology, first) == ""
+
+
 def test_custom_template_totals_are_internalized_before_managed_replacements() -> None:
     """Migration keeps legacy W/A entities from duplicating editable totals."""
     snapshot = _contract_snapshot()

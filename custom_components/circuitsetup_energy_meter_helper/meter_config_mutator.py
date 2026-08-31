@@ -637,14 +637,24 @@ def _render_native_totals(
         for sensor_id, internal in desired.items()
         if internal != effective[sensor_id]
     ))
+    board_energy = {
+        f"csemh_{source.source_id.replace('-', '_')}_energy": source
+        for source in definitions
+        if source.existing_energy_id is None and _desired_native_outputs(requested, source).kwh
+    }
+    conflicts = board_energy.keys() & {
+        _plain_sensor_scalar(item.get("id", "").removeprefix("!extend "))
+        for item in items
+    }
+    if conflicts:
+        raise ConfigMutationError(f"unmanaged sensor conflicts with board energy ID: {', '.join(sorted(conflicts))}")
     return _render_native_total_overrides(plan) + "".join(
         _daily_energy(
-            f"csemh_{source.source_id.replace('-', '_')}_energy",
+            energy_id,
             f"${{friendly_name}} {source.label} Energy",
             source.power_id,
         )
-        for source in definitions
-        if source.existing_energy_id is None and _desired_native_outputs(requested, source).kwh
+        for energy_id, source in board_energy.items()
     )
 
 
