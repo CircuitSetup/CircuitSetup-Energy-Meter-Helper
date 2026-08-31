@@ -466,8 +466,15 @@ class OffsetRecovery:
                 original.original.sha256 != source.sha256
                 and (
                     original.preparation is None
-                    or not original.installed
-                    or source.sha256 != original.preparation.proposed_sha256
+                    or (
+                        # Replacement preview/cancellation or CAS rollback leaves
+                        # this exact prior source valid for backup, not for Run.
+                        source.sha256 != original.preparation.source_sha256
+                        and (
+                            not original.installed
+                            or source.sha256 != original.preparation.proposed_sha256
+                        )
+                    )
                 )
             )
         ):
@@ -537,19 +544,14 @@ class OffsetRecovery:
         await self._save(lease, record)
         return record
 
-    async def async_prepare(
-        self,
-        lease: CalibrationLease,
+    @staticmethod
+    def build_preparation_plan(
         record: OffsetRecoveryRecord,
         source: ESPHomeConfigSnapshot,
-        plan: ConfigMutationPlan,
-        session_id: str,
         stage: Literal[1, 2],
         targets: tuple[str, ...],
-        generation: int,
-    ) -> StockOffsetPreparation:
-        if await self.async_load(lease) != record:
-            raise ValueError("recovery revision changed")
+    ) -> ConfigMutationPlan:
+        """Keep completed tables and selected zero baselines in one construction."""
         zeros = {instance: ZERO_OFFSETS for instance in targets}
         if any(
             item.stage == stage and item.instance_id in targets
@@ -567,14 +569,28 @@ class OffsetRecovery:
             if item.stage == 2
         }
         (rms if stage == 1 else power).update(zeros)
-        expected = build_offset_table_mutation(
+        return build_offset_table_mutation(
             source,
             record.topology,
             rms,
             power,
             enable_calibration=frozenset(targets),
         )
-        if plan != expected:
+
+    async def async_prepare(
+        self,
+        lease: CalibrationLease,
+        record: OffsetRecoveryRecord,
+        source: ESPHomeConfigSnapshot,
+        plan: ConfigMutationPlan,
+        session_id: str,
+        stage: Literal[1, 2],
+        targets: tuple[str, ...],
+        generation: int,
+    ) -> StockOffsetPreparation:
+        if await self.async_load(lease) != record:
+            raise ValueError("recovery revision changed")
+        if plan != self.build_preparation_plan(record, source, stage, targets):
             raise ValueError("preparation plan changed")
         preparation = StockOffsetPreparation(
             uuid4().hex,

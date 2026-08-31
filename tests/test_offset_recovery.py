@@ -203,6 +203,64 @@ def test_raw_offset_plan_preserves_other_stage_and_unselected_chip() -> None:
     assert 'current_cal_ct1: "11143"' in plan.proposed_content
 
 
+@pytest.mark.parametrize("stage", (1, 2))
+def test_owner_candidate_plan_preserves_both_families_and_rejects_completed_targets(
+    tmp_path: Path,
+    stage: int,
+) -> None:
+    import yaml
+
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        CapturedOffsetResult,
+        OffsetRecovery,
+        OffsetRecoveryRecord,
+        SavedOffsetObservation,
+    )
+
+    source = _snapshot()
+    record = OffsetRecoveryRecord(
+        MAC,
+        source,
+        _topology(),
+        (SavedOffsetObservation(source.sha256, observed()),),
+        results=(
+            CapturedOffsetResult(
+                "meter_main1", 1, OLD, 2, "a" * 32, source.sha256, True
+            ),
+            CapturedOffsetResult(
+                "meter_main1",
+                2,
+                ((0, 0), (-32768, 32767), (-1, 1)),
+                2,
+                "b" * 32,
+                source.sha256,
+                False,
+            ),
+        ),
+    )
+    recovery = OffsetRecovery(hass_at(tmp_path), SessionManager())
+    plan = recovery.build_preparation_plan(record, source, stage, ("meter_main2",))
+    parsed = yaml.load(plan.proposed_content, Loader=yaml.BaseLoader)
+    chips = {item["id"]: item for item in parsed["sensor"] if "id" in item}
+    assert chips["meter_main1"]["phase_a"]["offset_voltage"] == "-12"
+    assert chips["meter_main1"]["phase_c"]["offset_current"] == "33"
+    assert chips["meter_main1"]["phase_b"]["offset_active_power"] == "-32768"
+    assert chips["meter_main1"]["phase_b"]["offset_reactive_power"] == "32767"
+    first, second = (
+        ("offset_voltage", "offset_current")
+        if stage == 1
+        else ("offset_active_power", "offset_reactive_power")
+    )
+    for phase in ("phase_a", "phase_b", "phase_c"):
+        assert chips["meter_main2"][phase] == {first: "0", second: "0"}
+    assert chips["meter_main2"]["enable_offset_calibration"] == "true"
+    assert "enable_offset_calibration" not in chips["meter_main1"]
+    assert parsed["substitutions"]["current_cal_ct1"] == "11143"
+    assert "top-secret" not in plan.redacted_diff
+    with pytest.raises(ValueError, match="complete"):
+        recovery.build_preparation_plan(record, source, stage, ("meter_main1",))
+
+
 @pytest.mark.parametrize(
     "bad", ({"meter_main1": ((True, 0), (0, 0), (0, 0))}, {"addon1_1": OLD})
 )

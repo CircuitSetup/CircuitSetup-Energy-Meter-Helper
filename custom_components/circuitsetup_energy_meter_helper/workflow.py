@@ -37,7 +37,6 @@ from .calibration_engine import (
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import (
     CTChangeRequest,
-    build_offset_table_mutation,
     package_options_from_document,
 )
 from .config_transaction import ConfigTransactionManager, ReconnectEvidence
@@ -73,7 +72,6 @@ from .offset_readiness import (
     async_check_offset_readiness,
 )
 from .offset_recovery import (
-    ZERO_OFFSETS,
     OffsetRecovery,
     OffsetRecoveryRecord,
     _validate_source,
@@ -1148,6 +1146,10 @@ class EntryWorkflow:
         handle, revision = self._claim_ready_session(session_id)
         active = False
         try:
+            if handle.stock_offset_pending:
+                raise WorkflowHandleError(
+                    "stock offset preparation requires the receipt-aware resume path"
+                )
             self._validate_offset_target(handle, board_index, stage)
             if handle.offset_skipped:
                 raise WorkflowHandleError("offset calibration is already finalized")
@@ -1286,25 +1288,8 @@ class EntryWorkflow:
                 record = await self._require_offset_recovery().async_backup(
                     lease, source, handle.topology, tuple(captured)
                 )
-                rms = {
-                    item.instance_id: item.phase_values
-                    for item in record.results
-                    if item.stage == 1
-                }
-                power = {
-                    item.instance_id: item.phase_values
-                    for item in record.results
-                    if item.stage == 2
-                }
-                (rms if stage == 1 else power).update(
-                    {instance: ZERO_OFFSETS for instance in targets}
-                )
-                plan = build_offset_table_mutation(
-                    source,
-                    handle.topology,
-                    rms,
-                    power,
-                    enable_calibration=frozenset(targets),
+                plan = self._require_offset_recovery().build_preparation_plan(
+                    record, source, stage, targets
                 )
                 prepared = await self._require_offset_recovery().async_prepare(
                     lease,

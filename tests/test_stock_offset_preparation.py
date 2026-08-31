@@ -454,8 +454,12 @@ def test_receipt_rebind_preserves_gain_groups_and_revision_ownership(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("fail_second", (False, True))
+@pytest.mark.parametrize("reloaded", (False, True))
 def test_workflow_previews_without_dispatch_and_resumes_only_with_physical_ack(
     tmp_path: Path,
+    fail_second: bool,
+    reloaded: bool,
 ) -> None:
     async def run() -> None:
         from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
@@ -472,7 +476,7 @@ def test_workflow_previews_without_dispatch_and_resumes_only_with_physical_ack(
             "meter.yaml",
             _snapshot().sha256,
         )
-        session = StockSession(handle.binding)
+        session = StockSession(handle.binding, fail_second=fail_second)
         session.sessions = sessions
         workflow._api = session
         workflow._builder = Builder(remote_content=_snapshot().content)
@@ -522,8 +526,165 @@ def test_workflow_previews_without_dispatch_and_resumes_only_with_physical_ack(
             1,
             preparation_acknowledged=True,
         )
-        assert result.state.value == "captured_pending_configuration"
+        assert result.state.value == (
+            "partial" if fail_second else "captured_pending_configuration"
+        )
         assert handle.stock_offset_pending
+        if reloaded:
+            old_handle = handle
+            workflow, handle, sessions, _ = _workflow()
+            handle.binding = old_handle.binding
+            handle.configuration = old_handle.configuration
+            handle.configuration_sha256 = old_handle.configuration_sha256
+            handle.timing_policy = old_handle.timing_policy
+            workflow._api = session
+            workflow._offset_recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+            assert not handle.stock_offset_pending
+            await workflow.async_get_offset_preparation(handle.session_id)
+            assert handle.stock_offset_pending
+        session.events.clear()
+        with pytest.raises(KeyError, match="stock"):
+            await workflow.async_calibrate_offset(
+                handle.session_id,
+                0,
+                1,
+                preparation_acknowledged=True,
+                confirm_retry=True,
+            )
+        assert not any(event[0] == "button" for event in session.events)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("rollback", (False, True))
+@pytest.mark.parametrize("reloaded", (False, True))
+def test_replacement_cancel_or_rollback_retains_known_source_for_new_preparation(
+    tmp_path: Path,
+    rollback: bool,
+    reloaded: bool,
+) -> None:
+    async def run() -> None:
+        from hashlib import sha256
+
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            OffsetRecovery,
+        )
+        from tests.test_config_transaction import Job
+
+        sessions, recovery, builder, manager, preview, first = await preparation(
+            tmp_path
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        source = await builder.async_get_config("meter.yaml")
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            await recovery.async_begin_attempt(lease, first, "meter_main1")
+            await recovery.async_capture_result(
+                lease, first, "meter_main1", observed().phase_values, 2, False
+            )
+            record = await recovery.async_backup(
+                lease, source, _topology(), (observed("meter_main2", 2),)
+            )
+            plan = build_offset_table_mutation(
+                source,
+                _topology(),
+                {"meter_main1": observed().phase_values, "meter_main2": ZERO},
+                {},
+                enable_calibration=frozenset(("meter_main2",)),
+            )
+            replacement = await recovery.async_prepare(
+                lease, record, source, plan, "d" * 32, 1, ("meter_main2",), 2
+            )
+        finally:
+            lease.release()
+        assert plan.proposed_content != source.content
+        preview = await manager.async_preview(
+            MAC, _topology(), plan, source, offset_preparation=replacement
+        )
+        if rollback:
+            await manager.async_confirm_write(preview.transaction_id, "admin")
+            builder.compile = Job(False)
+            await manager.async_compile(preview.transaction_id)
+            status = await manager.async_rollback(preview.transaction_id)
+            assert status.state.value == "rolled_back"
+            assert builder.restored_content == source.content
+        else:
+            await manager.async_abandon(preview.transaction_id)
+            lease = await sessions.async_acquire_calibration(MAC)
+            try:
+                await recovery.async_cancel(lease, replacement)
+            finally:
+                lease.release()
+        assert builder.remote_content == source.content
+        assert not sessions.is_config_locked(MAC)
+        if reloaded:
+            sessions = SessionManager()
+            recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            loaded = await recovery.async_load(lease)
+            assert not recovery.is_action_ready(loaded)
+            with pytest.raises(ValueError):
+                await recovery.async_require(lease, first, installed=True)
+            with pytest.raises(ValueError):
+                await recovery.async_require(lease, replacement, installed=True)
+            foreign = source.content + "\n# unrelated edit\n"
+            with pytest.raises(ValueError, match="source changed"):
+                await recovery.async_backup(
+                    lease,
+                    replace(
+                        source,
+                        content=foreign,
+                        sha256=sha256(foreign.encode()).hexdigest(),
+                    ),
+                    _topology(),
+                    (observed("meter_main2", 3),),
+                )
+            retained = await recovery.async_backup(
+                lease,
+                await builder.async_get_config("meter.yaml"),
+                _topology(),
+                (observed("meter_main2", 3),),
+            )
+            assert retained.original.content == _snapshot().content
+            assert retained.results == record.results
+            fresh = await recovery.async_prepare(
+                lease, retained, source, plan, "e" * 32, 1, ("meter_main2",), 3
+            )
+            assert fresh.operation_id not in (
+                first.operation_id,
+                replacement.operation_id,
+            )
+            assert not recovery.is_action_ready(await recovery.async_load(lease))
+        finally:
+            lease.release()
+        builder.compile = Job(True)
+        manager = ConfigTransactionManager(
+            builder,
+            Verifier(
+                ReconnectEvidence(
+                    MAC, _topology(), {i: f"CT {i}" for i in range(1, 7)}, 6
+                )
+            ),
+            Persistence(),
+            sessions,
+            offset_recovery=recovery,
+        )
+        preview = await manager.async_preview(
+            MAC, _topology(), plan, source, offset_preparation=fresh
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            installed = await recovery.async_require(lease, fresh, installed=True)
+            assert installed.results == record.results
+            assert fresh.targets == ("meter_main2",)
+        finally:
+            lease.release()
 
     asyncio.run(run())
 
@@ -889,6 +1050,14 @@ def test_session_start_restores_stock_guard_without_status_call(
             await workflow.async_complete_calibration_without_changes(status.session_id)
         with pytest.raises(KeyError, match="stock"):
             await workflow.async_restart_and_verify(status.session_id)
+        with pytest.raises(KeyError, match="stock"):
+            await workflow.async_calibrate_offset(
+                status.session_id,
+                0,
+                1,
+                preparation_acknowledged=True,
+                confirm_retry=True,
+            )
         assert not sessions.is_config_locked(MAC)
         if drift == "same":
             assert handle.offset_results[(0, 1)].state.value == "partial"
