@@ -29,9 +29,15 @@ from .ct_catalog import (
     raw_gain_for_preset,
 )
 from .ct_inventory import CTInventory
-from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
-from .store import VerifiedCalibrationRecord
+from .models import (
+    ConfigMutationPlan,
+    MeterTopology,
+    PhaseOffsetTable,
+    SubstitutionChange,
+)
+from .store import VerifiedCalibrationRecord, _validate_group_table
 from .topology import (
+    topology_from_config,
     voltage_reference_fingerprint_for_meter,
     voltage_reference_topology_from_config,
 )
@@ -531,6 +537,48 @@ def build_calibrated_gain_mutation(
     )
 
 
+def build_offset_table_mutation(
+    snapshot: ConfigSnapshot,
+    topology: MeterTopology,
+    offsets: Mapping[str, PhaseOffsetTable],
+    power_offsets: Mapping[str, PhaseOffsetTable],
+    *,
+    enable_calibration: frozenset[str] = frozenset(),
+) -> ConfigMutationPlan:
+    """Render captured raw candidates without inventing calibration verification."""
+    if (
+        getattr(snapshot, "configuration_authoritative", True) is not True
+        or sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256
+    ):
+        raise ConfigMutationError("configuration snapshot is not authoritative")
+    source = topology_from_config(
+        ESPHomeConfigDocument.parse(snapshot.content),
+        native_project_name=topology.project_name,
+    )
+    if replace(source, evidence=()) != replace(topology, evidence=()):
+        raise ConfigMutationError("offset topology does not match target")
+    for tables in (offsets, power_offsets):
+        for instance, table in tables.items():
+            _gain_group_address(instance, topology)
+            _validate_group_table(instance, table, signed=True, label="offsets")
+    if not enable_calibration <= set(offsets) | set(power_offsets):
+        raise ConfigMutationError("enabled offset targets must have exact tables")
+    proposed = _apply_calibrated_offsets(
+        snapshot.content,
+        topology,
+        offsets,
+        power_offsets,
+        enable_calibration=enable_calibration,
+    )
+    return ConfigMutationPlan(
+        snapshot.configuration,
+        snapshot.sha256,
+        (),
+        _review_diff((), snapshot.content, proposed),
+        proposed,
+    )
+
+
 def _gain_group_address(instance_id: str, topology: MeterTopology) -> tuple[int, int]:
     match = re.fullmatch(r"meter_main([12])", instance_id)
     if match is not None:
@@ -862,6 +910,8 @@ def _apply_calibrated_offsets(
     power_offsets_by_instance: Mapping[
         str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
     ],
+    *,
+    enable_calibration: frozenset[str] = frozenset(),
 ) -> str:
     """Render verified signed offset tables in one exact helper-owned block."""
     from .config_blocks import render_phase_overrides, replace_managed_block
@@ -871,6 +921,10 @@ def _apply_calibrated_offsets(
         return content
     document = ESPHomeConfigDocument.parse(content)
     entries = _read_calibrated_offset_entries(document, topology)
+    block = document.managed_blocks.get("calibrated_offsets")
+    enabled = set(enable_calibration)
+    if block is not None:
+        enabled.update(re.findall(r"- id: !extend ([\w-]+)\r?\n +enable_offset_calibration: true", block.content))
     _reject_local_offset_overrides(
         replace_managed_block(content, "calibrated_offsets", ""),
         topology,
@@ -883,7 +937,7 @@ def _apply_calibrated_offsets(
         entries.setdefault(instance_id, {})["power"] = values
     rendered = render_phase_overrides(
         {
-            instance_id: _render_calibrated_offset_entry(instance_id, stages)
+            instance_id: _render_calibrated_offset_entry(instance_id, stages, enabled=instance_id in enabled)
             for instance_id, stages in entries.items()
         }
     )
@@ -927,6 +981,8 @@ def _read_calibrated_offset_entries(
             raise ConfigMutationError("managed offsets are invalid")
         _gain_group_address(owner["id"], topology)
         index += 1
+        if index < len(lines) and lines[index] == "    enable_offset_calibration: true":
+            index += 1
         phases: dict[str, dict[str, int]] = {}
         for expected_phase in "abc":
             if index >= len(lines) or (phase := phase_header.fullmatch(lines[index])) is None or phase["phase"] != expected_phase:
@@ -987,10 +1043,14 @@ def _read_calibrated_offset_entries(
 def _render_calibrated_offset_entry(
     instance_id: str,
     stages: Mapping[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]],
+    *,
+    enabled: bool = False,
 ) -> str:
     if set(stages) - {"rms", "power"} or not stages:
         raise ConfigMutationError("managed offsets are invalid")
     body = [f"  - id: !extend {instance_id}"]
+    if enabled:
+        body.append("    enable_offset_calibration: true")
     for phase_index, phase in enumerate("abc"):
         body.append(f"    phase_{phase}:")
         if "rms" in stages:
@@ -1026,6 +1086,7 @@ def _reject_local_offset_overrides(
             aliases.add(substitutions[meter_key].value)
     lines = ESPHomeConfigDocument.parse(content).code_lines
     offset_fields = {
+        "enable_offset_calibration",
         "offset_voltage",
         "offset_current",
         "offset_active_power",

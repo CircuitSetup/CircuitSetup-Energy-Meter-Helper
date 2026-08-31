@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from .device_builder import ESPHomeConfigSnapshot, _wait_for_owned_cleanup
@@ -18,6 +18,9 @@ from .models import (
 )
 
 type PhaseGainTable = tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
+
+if TYPE_CHECKING:
+    from .offset_recovery import OffsetRecoveryRecord
 
 
 @dataclass(slots=True)
@@ -350,6 +353,46 @@ class SessionManager:
         claimed = replace(pending, claimed_revision=pending.revision)
         self._pending_calibrations[lease.mac] = claimed
         return claimed
+
+    def rebind_prepared_calibration(
+        self,
+        lease: CalibrationLease,
+        session: Any,
+        binding: MeterBinding,
+        source: ESPHomeConfigSnapshot,
+        recovery: OffsetRecoveryRecord,
+    ) -> PendingCalibrationOrigin:
+        """Rebase retained strict groups only through an exact installed receipt."""
+        self._require_active_calibration_lease(lease)
+        pending = self._pending_calibrations.get(lease.mac)
+        preparation = recovery.preparation
+        if (
+            pending is None
+            or pending.claimed_revision is not None
+            or recovery.mac != lease.mac
+            or not recovery.installed
+            or recovery.cancelled
+            or preparation is None
+            or source.sha256 != preparation.proposed_sha256
+            or source.configuration != recovery.original.configuration
+            or pending.config_filename != source.configuration
+            or pending.config_sha256
+            not in (preparation.source_sha256, preparation.proposed_sha256)
+            or replace(pending.topology, evidence=())
+            != replace(binding.topology, evidence=())
+            or replace(recovery.topology, evidence=())
+            != replace(binding.topology, evidence=())
+        ):
+            raise ValueError("installed preparation cannot rebind calibration origin")
+        updated = replace(
+            pending,
+            session_identity=id(session),
+            config_sha256=source.sha256,
+            topology=binding.topology,
+            revision=pending.revision + 1,
+        )
+        self._pending_calibrations[lease.mac] = updated
+        return updated
 
     def release_calibration_origin_claim(
         self, lease: CalibrationLease, operation_id: str, revision: int

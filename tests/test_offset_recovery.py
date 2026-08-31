@@ -1,0 +1,299 @@
+"""Private durable stock offset recovery boundaries."""
+
+import asyncio
+import json
+from dataclasses import replace
+from hashlib import sha256
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+    OffsetTableSnapshot,
+)
+from custom_components.circuitsetup_energy_meter_helper.session_manager import (
+    SessionManager,
+)
+from tests.test_config_mutator import _snapshot as base_snapshot
+from tests.test_config_mutator import _topology
+
+MAC = "aabbccddeeff"
+OLD = ((-12, 31), (-13, 32), (-14, 33))
+
+
+def _snapshot() -> Any:
+    snapshot = base_snapshot()
+    content = (
+        "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n    version: '1'\n"
+        + snapshot.content.replace(
+            "substitutions:\n",
+            "substitutions:\n  main_meter_name1: Main Meter 1\n  main_meter_name2: Main Meter 2\n",
+        )
+    )
+    return replace(
+        snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+
+
+def hass_at(path: Path) -> Any:
+    async def executor(function: Any, *args: Any) -> Any:
+        return await asyncio.to_thread(function, *args)
+
+    return SimpleNamespace(
+        config=SimpleNamespace(path=lambda *parts: str(path.joinpath(*parts))),
+        async_add_executor_job=executor,
+    )
+
+
+def observed(instance: str = "meter_main1", generation: int = 1) -> OffsetTableSnapshot:
+    return OffsetTableSnapshot(generation, instance, 1, OLD, "restored", False, False)
+
+
+def test_backup_is_private_durable_and_reloaded_without_replacing_original(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            OffsetRecovery,
+        )
+
+        sessions = SessionManager()
+        recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            record = await recovery.async_backup(
+                lease, _snapshot(), _topology(), (observed(),)
+            )
+            assert record.original.content == _snapshot().content
+            assert record.observations[0].snapshot.phase_values == OLD
+            assert "top-secret" not in repr(record)
+            reloaded = await OffsetRecovery(hass_at(tmp_path), sessions).async_load(
+                lease
+            )
+            assert reloaded == record
+        finally:
+            lease.release()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ("write", "readback"))
+def test_backup_failure_never_returns_a_durable_record(
+    tmp_path: Path, monkeypatch: Any, failure: str
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper import offset_recovery
+
+        def broken(
+            path: str, data: bytes | str, private: bool = False, mode: str = "w"
+        ) -> None:
+            if failure == "write":
+                raise OSError("secret-bearing storage error")
+            assert private and mode == "wb"
+            real(path, b"{}", private=private, mode=mode)
+
+        real = offset_recovery.write_utf8_file_atomic
+        monkeypatch.setattr(offset_recovery, "write_utf8_file_atomic", broken)
+        sessions = SessionManager()
+        recovery = offset_recovery.OffsetRecovery(hass_at(tmp_path), sessions)
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            with pytest.raises(
+                ValueError, match="recovery persistence failed"
+            ) as caught:
+                await recovery.async_backup(
+                    lease, _snapshot(), _topology(), (observed(),)
+                )
+            assert "secret-bearing" not in str(caught.value)
+            if failure == "readback":
+                assert recovery._path(lease).read_bytes() == b"{}"
+        finally:
+            lease.release()
+
+    asyncio.run(run())
+
+
+def test_cancelled_backup_drains_disk_boundary_before_releasing_ownership(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    async def run() -> None:
+        from threading import Event
+
+        from custom_components.circuitsetup_energy_meter_helper import offset_recovery
+
+        started, release = Event(), Event()
+        real = offset_recovery.write_utf8_file_atomic
+
+        def blocked(*args: Any, **kwargs: Any) -> None:
+            started.set()
+            release.wait(5)
+            real(*args, **kwargs)
+
+        monkeypatch.setattr(offset_recovery, "write_utf8_file_atomic", blocked)
+        sessions = SessionManager()
+        recovery = offset_recovery.OffsetRecovery(hass_at(tmp_path), sessions)
+
+        async def backup() -> None:
+            lease = await sessions.async_acquire_calibration(MAC)
+            try:
+                await recovery.async_backup(
+                    lease, _snapshot(), _topology(), (observed(),)
+                )
+                pytest.fail("cancelled backup authorized a subsequent action")
+            finally:
+                lease.release()
+
+        task = asyncio.create_task(backup())
+        await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0.01)
+        assert sessions.is_config_locked(MAC) and not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not sessions.is_config_locked(MAC)
+
+    asyncio.run(run())
+
+
+def test_raw_offset_plan_preserves_other_stage_and_unselected_chip() -> None:
+    from custom_components.circuitsetup_energy_meter_helper import config_mutator
+
+    first = config_mutator.build_offset_table_mutation(
+        _snapshot(),
+        _topology(),
+        {"meter_main2": OLD},
+        {"meter_main1": OLD},
+    )
+    source = replace(
+        _snapshot(),
+        content=first.proposed_content,
+        sha256=sha256(first.proposed_content.encode()).hexdigest(),
+    )
+    plan = config_mutator.build_offset_table_mutation(
+        source,
+        _topology(),
+        {"meter_main1": ((0, 0), (0, 0), (0, 0))},
+        {},
+        enable_calibration=frozenset(("meter_main1",)),
+    )
+    assert "offset_voltage: -12" in plan.proposed_content
+    assert "offset_active_power: -12" in plan.proposed_content
+    assert "offset_voltage: 0" in plan.proposed_content
+    assert (
+        "  - id: !extend meter_main1\n    enable_offset_calibration: true\n"
+        in plan.proposed_content
+    )
+    again = replace(
+        source,
+        content=plan.proposed_content,
+        sha256=sha256(plan.proposed_content.encode()).hexdigest(),
+    )
+    assert (
+        config_mutator.build_offset_table_mutation(
+            again, _topology(), {}, {"meter_main2": OLD}
+        ).proposed_content.count("enable_offset_calibration: true")
+        == 1
+    )
+    assert (
+        "top-secret" in plan.proposed_content and "top-secret" not in plan.redacted_diff
+    )
+    assert 'current_cal_ct1: "11143"' in plan.proposed_content
+
+
+@pytest.mark.parametrize(
+    "bad", ({"meter_main1": ((True, 0), (0, 0), (0, 0))}, {"addon1_1": OLD})
+)
+def test_raw_offset_plan_rejects_untrusted_tables(bad: Any) -> None:
+    from custom_components.circuitsetup_energy_meter_helper import config_mutator
+
+    with pytest.raises(ValueError):
+        config_mutator.build_offset_table_mutation(_snapshot(), _topology(), bad, {})
+
+
+def test_preparation_refuses_unowned_enable_flag_that_could_override_zero_setup() -> (
+    None
+):
+    from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
+        build_offset_table_mutation,
+    )
+
+    source = _snapshot()
+    content = source.content.replace(
+        "sensor:\n",
+        "sensor:\n  - id: !extend meter_main1\n    enable_offset_calibration: false\n",
+    )
+    source = replace(
+        source, content=content, sha256=sha256(content.encode()).hexdigest()
+    )
+    with pytest.raises(ValueError, match="overrides"):
+        build_offset_table_mutation(
+            source,
+            _topology(),
+            {"meter_main1": ((0, 0),) * 3},
+            {},
+            enable_calibration=frozenset(("meter_main1",)),
+        )
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "schema",
+        "source",
+        "table",
+        "stage",
+        "instance",
+        "generation",
+        "extra",
+        "duplicate",
+        "oversized",
+    ),
+)
+def test_malformed_existing_private_record_never_resets(
+    tmp_path: Path, corruption: str
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            OffsetRecovery,
+        )
+
+        sessions = SessionManager()
+        recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            await recovery.async_backup(lease, _snapshot(), _topology(), (observed(),))
+            path = recovery._path(lease)
+            raw = json.loads(path.read_bytes())
+            snapshot = raw["observations"][0]["snapshot"]
+            if corruption == "schema":
+                raw["schema"] = True
+            elif corruption == "source":
+                raw["original"]["content"] += "\n# drift"
+            elif corruption == "table":
+                snapshot["phase_values"][0][0] = 32768
+            elif corruption == "stage":
+                snapshot["offset_stage"] = True
+            elif corruption == "instance":
+                snapshot["instance_id"] = "addon6_1"
+            elif corruption == "generation":
+                snapshot["connection_generation"] = False
+            elif corruption == "extra":
+                raw["unexpected"] = "private"
+            data = json.dumps(raw).encode()
+            if corruption == "duplicate":
+                data = data.replace(b'"schema": 1', b'"schema": 1, "schema": 1')
+            elif corruption == "oversized":
+                data = b" " * (2 * 1048576 + 1)
+            path.write_bytes(data)
+            with pytest.raises(ValueError):
+                await recovery.async_backup(
+                    lease, _snapshot(), _topology(), (observed(),)
+                )
+            assert path.read_bytes() == data
+        finally:
+            lease.release()
+
+    asyncio.run(run())
