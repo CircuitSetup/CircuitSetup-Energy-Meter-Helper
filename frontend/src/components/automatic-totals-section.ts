@@ -2,6 +2,10 @@ import { html, type TemplateResult } from "lit";
 import { sourceFormula } from "../total-graph";
 import type { AutomaticTotalSettings, MeterConfigurationRequest, TotalOutputSettings, TotalsInventory } from "../types";
 
+const automaticRoleLabels = [
+  ["grid", "Mains"], ["solar", "Solar"], ["subpanel", "Subpanel"], ["two_pole", "Two-pole circuit"],
+] as const;
+
 export function automaticTotalsSection(
   configuration: MeterConfigurationRequest,
   totals: TotalsInventory | null,
@@ -13,8 +17,10 @@ export function automaticTotalsSection(
     automatic_totals: configuration.automatic_totals.some((item) => item.candidate_id === candidateId)
       ? configuration.automatic_totals.map((item) => item.candidate_id === candidateId ? { ...item, ...change } : item)
       : [...configuration.automatic_totals, { ...current, ...change }], aggregates });
+  const ambiguousRoles = automaticRoleLabels.filter(([role]) => configuration.channels.filter((channel) => channel.enabled && channel.role === role).length > 2);
   return html`<section class="automatic-totals" aria-labelledby="automatic-totals-heading">
     <h2 id="automatic-totals-heading">Suggested circuit totals</h2>
+    ${ambiguousRoles.map(([, label]) => html`<p class="info-band" role="status">Multiple ${label} CTs cannot be paired automatically. Create the totals under Advanced totals.</p>`)}
     ${totals.automatic_totals.length ? totals.automatic_totals.map((resolved) => {
       const saved = configuration.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id);
       const current = saved ?? { candidate_id: resolved.candidate.candidate_id, enabled: resolved.enabled, outputs: resolved.outputs };

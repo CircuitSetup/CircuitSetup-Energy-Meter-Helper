@@ -49,12 +49,13 @@ it("keeps Watts, Amps, and kWh independent and disables kWh when the server says
   expect(container.querySelector<HTMLInputElement>('[aria-label="Service mains kWh"]')?.disabled).toBe(true);
 });
 
-it("does not guess a candidate for ambiguous roles", () => {
-  const response = meterResponse(); response.configuration.channels[0]!.role = "grid"; response.configuration.channels[1]!.role = "grid";
+it("warns about ambiguous eligible roles without guessing a candidate", () => {
+  const response = meterResponse(); response.configuration.channels.slice(0, 3).forEach((channel) => { channel.role = "subpanel"; });
   container = document.createElement("div"); document.body.append(container);
   render(automaticTotalsSection(response.configuration, response.totals, true, vi.fn()), container);
-  expect(container.textContent).toContain("No server-suggested totals");
+  expect(container.textContent).toContain("Multiple Subpanel CTs cannot be paired automatically. Create the totals under Advanced totals.");
   expect(container.querySelector('[role="switch"]')).toBeNull();
+  expect(response.totals.automatic_candidates).toEqual([]);
 });
 
 it("cancels parent removal without changing the draft or visible switch", () => {
