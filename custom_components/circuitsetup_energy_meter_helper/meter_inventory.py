@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+from base64 import urlsafe_b64decode
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from hashlib import sha256
-from typing import cast
+from typing import Literal, cast
 
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import package_options_from_document
@@ -15,9 +16,12 @@ from .ct_catalog import CTPresetCatalog
 from .ct_inventory import CTInventory
 from .meter_configuration import (
     ChannelSettings,
+    CircuitAggregate,
     CircuitRole,
     ElectricalSystem,
+    EnergyMode,
     LineFrequencyHz,
+    MeasurementMethod,
     MeterConfigurationRequest,
     MeterSettings,
     UpdateIntervalSeconds,
@@ -34,6 +38,7 @@ from .models import (
 from .store import StoredMeterConfiguration
 from .topology import (
     TopologyFingerprintMismatch,
+    addon_count_from_packages,
     channel_address,
     voltage_reference_topology_from_config,
     voltage_reference_topology_from_configuration,
@@ -42,8 +47,19 @@ from .topology import (
 from .voltage_transformer_catalog import VoltageTransformerCatalog
 
 _GENERIC_TOTAL_ID = re.compile(
-    r"^\s*(?:-\s*)?id:\s*[\"']?(?:totalAmps|totalWatts|totalEnergyDaily)[\"']?\s*$"
+    r"^\s*(?:-\s*)?id:\s*(?:!extend\s+)?[\"']?"
+    r"(?P<id>totalAmps|totalWatts|totalEnergyDaily)[\"']?\s*$"
 )
+_LEGACY_TOTAL_ID = re.compile(
+    r"^total(?P<label>[A-Za-z0-9_]{0,48}?)(?P<kind>Watts|Amps)$"
+)
+_AGGREGATE_METADATA_PREFIX = "# csemh-aggregate: "
+_AGGREGATE_METADATA_KEYS = {
+    "aggregate_id", "name", "role", "channels", "measurement_method",
+    "parent_id", "energy_mode", "expose_power", "expose_current", "order",
+}
+
+ConfigurationSemanticSource = Literal["helper_managed", "legacy_inferred"]
 
 
 class VoltageReferenceMismatchError(ValueError):
@@ -57,6 +73,7 @@ class MeterConfigurationCapabilities:
     configuration_authoritative: bool
     managed_totals: bool
     multi_reference: bool
+    semantic_source: ConfigurationSemanticSource
     reason_codes: tuple[str, ...]
 
 
@@ -70,12 +87,16 @@ def meter_configuration_capabilities(
         raise TypeError("config_contract must be an int or None")
     if not configuration_authoritative:
         return MeterConfigurationCapabilities(
-            False, False, False, ("configuration_not_authoritative",)
+            False,
+            False,
+            False,
+            "legacy_inferred",
+            ("configuration_not_authoritative",),
         )
     if config_contract == 2:
-        return MeterConfigurationCapabilities(True, True, True, ())
+        return MeterConfigurationCapabilities(True, True, True, "legacy_inferred", ())
     return MeterConfigurationCapabilities(
-        True, False, True, ("config_contract_upgrade_required",)
+        True, False, True, "legacy_inferred", ("config_contract_upgrade_required",)
     )
 
 
@@ -124,6 +145,7 @@ class MeterConfigurationInventory:
             configuration_authoritative=configuration_authoritative,
             config_contract=_contract(document),
         )
+        semantic_source: ConfigurationSemanticSource = "legacy_inferred"
         matching = (
             stored_configuration
             if stored_configuration is not None
@@ -159,6 +181,7 @@ class MeterConfigurationInventory:
                     topology,
                     require_multi_reference_acknowledgement=False,
                 )
+                semantic_source = "helper_managed"
                 voltage_topology = voltage_reference_topology_from_configuration(
                     topology, configuration
                 )
@@ -168,7 +191,30 @@ class MeterConfigurationInventory:
                 configuration = _legacy_request(document, topology, ct_inventory)
                 voltage_topology = voltage_reference_topology_from_legacy(topology)
                 stale = True
-        warnings = list(capabilities.reason_codes)
+        aggregates, aggregate_warnings = _detected_aggregates(
+            document, configuration.channels, configuration.aggregates
+        )
+        configuration = replace(configuration, aggregates=aggregates)
+        try:
+            validate_meter_configuration(
+                configuration,
+                topology,
+                require_multi_reference_acknowledgement=False,
+            )
+        except (TypeError, ValueError):
+            if not configuration.aggregates:
+                raise
+            configuration = replace(configuration, aggregates=())
+            validate_meter_configuration(
+                configuration,
+                topology,
+                require_multi_reference_acknowledgement=False,
+            )
+            aggregate_warnings = tuple(
+                dict.fromkeys((*aggregate_warnings, "aggregate_semantics_unreadable"))
+            )
+        capabilities = replace(capabilities, semantic_source=semantic_source)
+        warnings = [*capabilities.reason_codes, *aggregate_warnings]
         if configuration.meter.electrical_system is ElectricalSystem.CUSTOM:
             warnings.append("electrical_profile_requires_confirmation")
         if _has_generic_total(document) and not capabilities.managed_totals:
@@ -611,6 +657,682 @@ def _reference_for_channel(
         for reference_id, groups in voltage_topology.references
         if group in groups
     )
+
+
+def _detected_aggregates(
+    document: ESPHomeConfigDocument,
+    channels: tuple[ChannelSettings, ...],
+    stored: tuple[CircuitAggregate, ...],
+) -> tuple[tuple[CircuitAggregate, ...], tuple[str, ...]]:
+    block = document.managed_blocks.get("aggregates")
+    detected: tuple[CircuitAggregate, ...] = ()
+    warnings: tuple[str, ...] = ()
+    hidden_ids: frozenset[str] = frozenset()
+    if block is not None:
+        try:
+            metadata = _aggregate_metadata(block.content)
+            decoded = _decode_aggregate_block(document, channels, metadata or ())
+            hidden_ids = frozenset(
+                _plain_sensor_scalar(item["id"].removeprefix("!extend "))
+                for item in _managed_sensor_items(block.content, document.sensor_item_indent)
+                if item.get("id", "").startswith("!extend ")
+                and item.get("internal") == "true"
+            )
+            if metadata is not None:
+                if not _metadata_matches_rendered(metadata, decoded):
+                    raise ValueError("aggregate metadata does not match rendered sensors")
+                detected = metadata
+            elif stored:
+                detected = stored
+            else:
+                detected = decoded
+                warnings = (("aggregate_semantics_inferred",) if decoded else ())
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return (), ("aggregate_semantics_unreadable",)
+    elif stored:
+        detected = stored
+
+    explicit_calculations = _explicit_total_calculation_ids(document)
+    total_ids = _generic_total_ids(document) - explicit_calculations - hidden_ids
+    enabled = tuple(channel.channel for channel in channels if channel.enabled)
+    default_groups = _default_total_groups(document, channels)
+    if (total_ids or default_groups) and not enabled:
+        return (), ("builtin_total_semantics_unreadable",)
+    energy_power_ids = (
+        frozenset() if "totalEnergyDaily" in hidden_ids
+        else _default_daily_energy_power_ids(document)
+    )
+    legacy, parent_links = _legacy_aggregates(
+        document, channels, default_groups, energy_power_ids, hidden_ids
+    )
+    defaults: list[CircuitAggregate] = []
+    expose_power = "totalWatts" in total_ids
+    expose_current = "totalAmps" in total_ids
+    energy_mode = (
+        EnergyMode.CONSUMPTION
+        if "totalWatts" in energy_power_ids and "totalWatts" not in explicit_calculations
+        else EnergyMode.NONE
+    )
+    if expose_power or expose_current or energy_mode is not EnergyMode.NONE:
+        defaults.append(
+            CircuitAggregate(
+                "meter-total",
+                "Meter total",
+                CircuitRole.CUSTOM,
+                enabled,
+                MeasurementMethod.DIRECT,
+                None,
+                energy_mode,
+                expose_power,
+                expose_current,
+            )
+        )
+    defaults.extend(
+        CircuitAggregate(
+            f"{group_id}-total",
+            f"{label} total",
+            CircuitRole.CUSTOM,
+            group_channels,
+            MeasurementMethod.DIRECT,
+            None,
+            (
+                EnergyMode.CONSUMPTION
+                if power_id in energy_power_ids
+                else EnergyMode.NONE
+            ),
+            False,
+            False,
+        )
+        for group_id, label, group_channels, power_id in default_groups
+        if power_id not in hidden_ids
+        or power_id.replace("Watts", "Amps") not in hidden_ids
+        or power_id in energy_power_ids
+    )
+    existing_ids = {aggregate.aggregate_id for aggregate in detected}
+    inferred = (*legacy, *(
+        aggregate for aggregate in defaults
+        if aggregate.aggregate_id not in {item.aggregate_id for item in legacy}
+    ))
+    added = tuple(aggregate for aggregate in inferred if aggregate.aggregate_id not in existing_ids)
+    if added:
+        warnings = tuple(dict.fromkeys((*warnings, "builtin_total_semantics_inferred")))
+    aggregates = tuple(
+        replace(aggregate, parent_id=parent_links[aggregate.aggregate_id])
+        if aggregate.parent_id is None and aggregate.aggregate_id in parent_links
+        else aggregate
+        for aggregate in (*detected, *added)
+    )
+    return aggregates, warnings
+
+
+def _aggregate_metadata(content: str) -> tuple[CircuitAggregate, ...] | None:
+    payloads = [
+        line.strip()[len(_AGGREGATE_METADATA_PREFIX) :]
+        for line in content.replace("\r\n", "\n").splitlines()
+        if line.strip().startswith(_AGGREGATE_METADATA_PREFIX)
+    ]
+    if not payloads:
+        return None
+    aggregates: list[tuple[int, CircuitAggregate]] = []
+    for payload in payloads:
+        data = json.loads(
+            urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode()
+        )
+        if not isinstance(data, dict) or set(data) != _AGGREGATE_METADATA_KEYS:
+            raise ValueError("aggregate metadata has unexpected fields")
+        if any(
+            type(data[key]) is not str
+            for key in (
+                "aggregate_id",
+                "name",
+                "role",
+                "measurement_method",
+                "energy_mode",
+            )
+        ):
+            raise TypeError("aggregate metadata text fields are invalid")
+        if data["parent_id"] is not None and type(data["parent_id"]) is not str:
+            raise TypeError("aggregate metadata parent is invalid")
+        channels = data["channels"]
+        if not isinstance(channels, list) or any(type(item) is not int for item in channels):
+            raise TypeError("aggregate metadata channels are invalid")
+        if type(data["expose_power"]) is not bool or type(data["expose_current"]) is not bool:
+            raise TypeError("aggregate metadata exposure flags are invalid")
+        if type(data["order"]) is not int or data["order"] < 0:
+            raise TypeError("aggregate metadata order is invalid")
+        aggregates.append(
+            (
+                data["order"],
+                CircuitAggregate(
+                    data["aggregate_id"],
+                    data["name"],
+                    CircuitRole(data["role"]),
+                    tuple(channels),
+                    MeasurementMethod(data["measurement_method"]),
+                    data["parent_id"],
+                    EnergyMode(data["energy_mode"]),
+                    data["expose_power"],
+                    data["expose_current"],
+                ),
+            )
+        )
+    if {order for order, _aggregate in aggregates} != set(range(len(aggregates))):
+        raise ValueError("aggregate metadata order is incomplete")
+    return tuple(aggregate for _order, aggregate in sorted(aggregates))
+
+
+def _decode_aggregate_block(
+    document: ESPHomeConfigDocument,
+    channels: tuple[ChannelSettings, ...],
+    metadata: tuple[CircuitAggregate, ...] = (),
+) -> tuple[CircuitAggregate, ...]:
+    block = document.managed_blocks["aggregates"]
+    items = _managed_sensor_items(block.content, document.sensor_item_indent)
+    by_id = {item.get("id", ""): item for item in items}
+    directional_ids = {
+        f"{sensor_id[:-6]}_{direction}_power"
+        for sensor_id in by_id
+        if sensor_id.startswith("csemh_") and sensor_id.endswith("_power")
+        for direction, sign in (("import", ""), ("export", "-"))
+        if by_id.get(f"{sensor_id[:-6]}_{direction}_power", {}).get("lambda")
+        == f"return std::max(0.0f, {sign}id({sensor_id}).state);"
+    }
+    channel_roles = {channel.channel: channel.role for channel in channels}
+    names = {aggregate.aggregate_id.replace("_", "-"): aggregate.name for aggregate in metadata}
+    aggregates: list[CircuitAggregate] = []
+    for item in items:
+        sensor_id = item.get("id", "")
+        if not sensor_id.startswith("csemh_") or not sensor_id.endswith("_power"):
+            continue
+        base = sensor_id[6:-6]
+        if sensor_id in directional_ids:
+            continue
+        if not re.fullmatch(r"[a-z0-9_]+", base):
+            raise ValueError("aggregate sensor ID is invalid")
+        if item.get("platform") != "template" or item.get("unit_of_measurement") != "W" or item.get("device_class") != "power" or item.get("update_interval") != "${update_time}":
+            raise ValueError("aggregate power sensor is invalid")
+        aggregate_channels, method, clamped = _aggregate_expression(item.get("lambda", ""))
+        roles = {channel_roles.get(channel) for channel in aggregate_channels}
+        role = roles.pop() if len(roles) == 1 else CircuitRole.CUSTOM
+        if role is None or role is CircuitRole.UNUSED:
+            role = CircuitRole.CUSTOM
+        prefix = f"csemh_{base}_"
+        suffixes = ["power", "current", "energy"]
+        for direction in ("import", "export"):
+            if f"{prefix}{direction}_power" in directional_ids:
+                suffixes.extend((f"{direction}_power", f"{direction}_energy"))
+        related = {
+            candidate_id: by_id[candidate_id] for suffix in suffixes
+            if (candidate_id := f"{prefix}{suffix}") in by_id
+        }
+        name = _aggregate_name(item, related, names.get(base.replace("_", "-")))
+        bidirectional = all(
+            f"{prefix}{suffix}" in related
+            for suffix in ("import_power", "import_energy", "export_power", "export_energy")
+        )
+        has_energy = f"{prefix}energy" in related
+        energy_mode = (
+            EnergyMode.BIDIRECTIONAL
+            if bidirectional
+            else EnergyMode.GENERATION
+            if has_energy and role is CircuitRole.SOLAR
+            else EnergyMode.CONSUMPTION
+            if has_energy or clamped
+            else EnergyMode.NONE
+        )
+        aggregates.append(
+            CircuitAggregate(
+                base.replace("_", "-"),
+                name,
+                role,
+                aggregate_channels,
+                method,
+                None,
+                energy_mode,
+                item.get("internal") != "true",
+                f"{prefix}current" in related
+                and related[f"{prefix}current"].get("internal") != "true",
+            )
+        )
+    return tuple(aggregates)
+
+
+def _managed_sensor_items(content: str, item_indent: int | None) -> list[dict[str, str]]:
+    indent = 2 if item_indent is None else item_indent
+    lines = content.replace("\r\n", "\n").splitlines()
+    prefix = " " * indent + "- "
+    starts = [index for index, line in enumerate(lines) if line.startswith(prefix)]
+    items: list[dict[str, str]] = []
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+        fields: dict[str, str] = {}
+        for line in lines[start:end]:
+            candidate = line[len(prefix) :] if line.startswith(prefix) else line[indent + 2 :] if line.startswith(" " * (indent + 2)) and not line.startswith(" " * (indent + 4)) else ""
+            if not candidate or ":" not in candidate:
+                continue
+            key, value = candidate.split(":", 1)
+            if not re.fullmatch(r"[a-z][a-z0-9_]*", key) or key in fields:
+                raise ValueError("aggregate sensor item is invalid")
+            fields[key] = value.strip()
+        items.append(fields)
+    return items
+
+
+def _aggregate_expression(value: str) -> tuple[tuple[int, ...], MeasurementMethod, bool]:
+    if not value.startswith("return ") or not value.endswith(";"):
+        raise ValueError("aggregate lambda is invalid")
+    expression = value[7:-1]
+    clamp_prefix = "std::max(0.0f, "
+    clamped = expression.startswith(clamp_prefix) and expression.endswith(")")
+    if clamped:
+        expression = expression[len(clamp_prefix) : -1]
+    doubled = expression.endswith(" * 2.0")
+    if doubled:
+        expression = expression[:-6]
+    matches = re.findall(r"id\(ct([1-9][0-9]*)Watts\)\.state", expression)
+    expected = " + ".join(f"id(ct{channel}Watts).state" for channel in matches)
+    if not matches or expression != expected:
+        raise ValueError("aggregate lambda is not a supported CT sum")
+    channels = tuple(int(channel) for channel in matches)
+    method = (
+        MeasurementMethod.ONE_CT_DOUBLE_POWER
+        if doubled
+        else MeasurementMethod.TWO_CT_SUM
+        if len(channels) == 2
+        else MeasurementMethod.DIRECT
+    )
+    return channels, method, clamped
+
+
+def _aggregate_name(
+    item: dict[str, str],
+    related: Mapping[str, dict[str, str]],
+    internal_name: str | None = None,
+) -> str:
+    values = [item.get("name"), *(candidate.get("name") for candidate in related.values())]
+    suffixes = (
+        " Return to Grid Power",
+        " Import Power",
+        " Current",
+        " Energy",
+        " Power",
+    )
+    for value in values:
+        if not value:
+            continue
+        decoded = json.loads(value)
+        if not isinstance(decoded, str) or not decoded.startswith("${friendly_name} "):
+            continue
+        for suffix in suffixes:
+            if decoded.endswith(suffix):
+                return decoded[len("${friendly_name} ") : -len(suffix)]
+    if internal_name is not None and all(
+        candidate.get("internal") == "true" and "name" not in candidate
+        for candidate in related.values()
+    ):
+        return internal_name
+    raise ValueError("aggregate name is unavailable")
+
+
+def _metadata_matches_rendered(
+    metadata: tuple[CircuitAggregate, ...], rendered: tuple[CircuitAggregate, ...]
+) -> bool:
+    by_id = {aggregate.aggregate_id: aggregate for aggregate in rendered}
+    if len(by_id) != len(metadata):
+        return False
+    for aggregate in metadata:
+        actual = by_id.get(aggregate.aggregate_id.replace("_", "-"))
+        if actual is None or (
+            aggregate.name,
+            aggregate.channels,
+            aggregate.expose_power,
+            aggregate.expose_current,
+        ) != (
+            actual.name,
+            actual.channels,
+            actual.expose_power,
+            actual.expose_current,
+        ):
+            return False
+        if aggregate.measurement_method != actual.measurement_method and {
+            aggregate.measurement_method, actual.measurement_method
+        } not in (
+            {MeasurementMethod.DIRECT, MeasurementMethod.BOTH_CONDUCTORS_ONE_CT},
+            {MeasurementMethod.DIRECT, MeasurementMethod.TWO_CT_SUM},
+        ):
+            return False
+        if aggregate.energy_mode != actual.energy_mode and {
+            aggregate.energy_mode, actual.energy_mode
+        } != {EnergyMode.CONSUMPTION, EnergyMode.GENERATION}:
+            return False
+    return True
+
+
+def _generic_total_ids(document: ESPHomeConfigDocument) -> frozenset[str]:
+    return frozenset(
+        match["id"]
+        for line in document.code_lines
+        if (match := _GENERIC_TOTAL_ID.fullmatch(line.rstrip())) is not None
+    )
+
+
+def _default_total_groups(
+    document: ESPHomeConfigDocument, channels: tuple[ChannelSettings, ...]
+) -> tuple[tuple[str, str, tuple[int, ...], str], ...]:
+    addon_count = addon_count_from_packages(document.package_files)
+    if addon_count is None:
+        return ()
+    enabled = {channel.channel for channel in channels if channel.enabled}
+    groups = []
+    for board in range(addon_count + 1):
+        suffix = "Main" if board == 0 else f"AddOn{board}"
+        group_channels = tuple(
+            channel for channel in range(board * 6 + 1, board * 6 + 7)
+            if channel in enabled
+        )
+        if group_channels:
+            groups.append(
+                (
+                    "main" if board == 0 else f"addon{board}",
+                    "Main" if board == 0 else f"Add-on {board}",
+                    group_channels,
+                    f"totalWatts{suffix}",
+                )
+            )
+    return tuple(groups)
+
+
+def _default_daily_energy_power_ids(
+    document: ESPHomeConfigDocument,
+) -> frozenset[str]:
+    matches = [
+        _plain_sensor_scalar(item.get("power_id", ""))
+        for item in _root_sensor_items(document)
+        if _plain_sensor_scalar(item.get("platform", "")) == "total_daily_energy"
+        and _plain_sensor_scalar(item.get("id", "")) == "totalEnergyDaily"
+        and _plain_sensor_scalar(item.get("unit_of_measurement", "")) == "kWh"
+    ]
+    return frozenset(matches) if len(matches) == 1 and matches[0] else frozenset()
+
+
+def _root_sensor_items(
+    document: ESPHomeConfigDocument,
+) -> tuple[dict[str, str], ...]:
+    lines = document.code_lines
+    roots = [
+        index
+        for index, line in enumerate(lines)
+        if re.fullmatch(r"sensor\s*:\s*", line)
+    ]
+    items: list[dict[str, str]] = []
+    for root in roots:
+        end = next(
+            (
+                index
+                for index in range(root + 1, len(lines))
+                if re.match(r"^[A-Za-z_][A-Za-z0-9_-]*\s*:", lines[index])
+            ),
+            len(lines),
+        )
+        candidates = [
+            (index, match)
+            for index in range(root + 1, end)
+            if (match := re.fullmatch(
+                r"(?P<indent> *)-\s+(?P<key>[a-z][a-z0-9_]*):\s*(?P<value>.*)",
+                lines[index],
+            )) is not None
+        ]
+        if not candidates:
+            continue
+        item_indent = min(len(match["indent"]) for _index, match in candidates)
+        starts = [
+            (index, match)
+            for index, match in candidates
+            if len(match["indent"]) == item_indent
+        ]
+        for position, (start, match) in enumerate(starts):
+            stop = starts[position + 1][0] if position + 1 < len(starts) else end
+            fields = {match["key"]: match["value"].strip()}
+            for line in lines[start + 1 : stop]:
+                field = re.fullmatch(
+                    rf" {{{item_indent + 2}}}(?P<key>[a-z][a-z0-9_]*):\s*(?P<value>.*)",
+                    line,
+                )
+                if field is None:
+                    continue
+                if field["key"] in fields:
+                    fields = {}
+                    break
+                fields[field["key"]] = field["value"].strip()
+            if fields:
+                items.append(fields)
+    return tuple(items)
+
+
+def _explicit_total_calculation_ids(document: ESPHomeConfigDocument) -> frozenset[str]:
+    """Root formulas must not be replaced by ID-only default assumptions."""
+    return frozenset(
+        sensor_id for item in _root_sensor_items(document)
+        if "lambda" in item
+        and _LEGACY_TOTAL_ID.fullmatch(sensor_id := _plain_sensor_scalar(item.get("id", "")))
+    )
+
+
+def _legacy_template_total_ids(
+    document: ESPHomeConfigDocument, channels: tuple[ChannelSettings, ...]
+) -> tuple[str, ...]:
+    """Return root template W/A totals safe to replace with managed equivalents."""
+    items = _legacy_template_total_items(document)
+    aggregates, _parents = _legacy_aggregates(
+        document, channels, _default_total_groups(document, channels), frozenset()
+    )
+    accepted = {aggregate.aggregate_id for aggregate in aggregates}
+    return tuple(
+        sensor_id for sensor_id in items
+        if (match := _LEGACY_TOTAL_ID.fullmatch(sensor_id)) is not None
+        and _legacy_aggregate_id(match["label"]) in accepted
+    )
+
+
+def _legacy_template_total_items(
+    document: ESPHomeConfigDocument,
+) -> dict[str, dict[str, str]]:
+    items: dict[str, dict[str, str]] = {}
+    ambiguous: set[str] = set()
+    for item in _root_sensor_items(document):
+        sensor_id = _plain_sensor_scalar(item.get("id", ""))
+        match = _LEGACY_TOTAL_ID.fullmatch(sensor_id)
+        if match is None:
+            continue
+        kind = match["kind"]
+        if (
+            _plain_sensor_scalar(item.get("platform", "")) != "template"
+            or _plain_sensor_scalar(item.get("unit_of_measurement", ""))
+            != ("W" if kind == "Watts" else "A")
+            or _plain_sensor_scalar(item.get("device_class", ""))
+            != ("power" if kind == "Watts" else "current")
+            or "filters" in item
+            or _sum_references(item.get("lambda", "")) is None
+        ):
+            continue
+        if sensor_id in items:
+            ambiguous.add(sensor_id)
+        else:
+            items[sensor_id] = item
+    for sensor_id in ambiguous:
+        items.pop(sensor_id, None)
+    return items
+
+
+def _legacy_aggregates(
+    document: ESPHomeConfigDocument,
+    channels: tuple[ChannelSettings, ...],
+    default_groups: tuple[tuple[str, str, tuple[int, ...], str], ...],
+    energy_power_ids: frozenset[str],
+    hidden_ids: frozenset[str] = frozenset(),
+) -> tuple[tuple[CircuitAggregate, ...], dict[str, str]]:
+    items = _legacy_template_total_items(document)
+    if not items:
+        return (), {}
+    defaults: dict[str, tuple[tuple[int, ...], str]] = {}
+    for group_id, _label, group_channels, power_id in default_groups:
+        defaults[power_id] = (group_channels, f"{group_id}-total")
+        defaults[power_id.replace("Watts", "Amps")] = (
+            group_channels,
+            f"{group_id}-total",
+        )
+    enabled = {channel.channel for channel in channels if channel.enabled}
+
+    grouped: dict[str, dict[str, tuple[str, dict[str, str]]]] = {}
+    for sensor_id, item in items.items():
+        match = _LEGACY_TOTAL_ID.fullmatch(sensor_id)
+        assert match is not None
+        grouped.setdefault(match["label"], {})[match["kind"]] = (sensor_id, item)
+    aggregate_ids = [_legacy_aggregate_id(label) for label in grouped]
+    ambiguous_ids = {
+        aggregate_id
+        for aggregate_id in aggregate_ids
+        if aggregate_ids.count(aggregate_id) > 1
+    }
+    aggregates: list[CircuitAggregate] = []
+    parents_by_child: dict[str, set[str]] = {}
+    for label, outputs in grouped.items():
+        if _legacy_aggregate_id(label) in ambiguous_ids:
+            continue
+        if all(
+            sensor_id in hidden_ids and sensor_id not in energy_power_ids
+            for sensor_id, _item in outputs.values()
+        ):
+            continue
+        channels_by_output: list[tuple[int, ...]] = []
+        dependencies_by_output: list[set[str]] = []
+        for kind, (_sensor_id, item) in outputs.items():
+            references = _sum_references(item.get("lambda", "")) or ()
+            members: list[tuple[int, ...]] = []
+            dependencies: set[str] = set()
+            for reference in references:
+                direct = re.fullmatch(
+                    rf"ct(?P<channel>[1-9][0-9]*){kind}", reference
+                )
+                if direct is not None and int(direct["channel"]) in enabled:
+                    members.append((int(direct["channel"]),))
+                elif reference in defaults and kind in reference:
+                    members.append(defaults[reference][0])
+                    dependencies.add(defaults[reference][1])
+                else:
+                    members = []
+                    break
+            if not members:
+                break
+            output_channels = tuple(channel for member in members for channel in member)
+            if len(output_channels) != len(set(output_channels)):
+                break
+            channels_by_output.append(output_channels)
+            dependencies_by_output.append(dependencies)
+        if len(channels_by_output) != len(outputs):
+            continue
+        first = channels_by_output[0]
+        if any(value != first for value in channels_by_output[1:]):
+            continue
+        aggregate_id = _legacy_aggregate_id(label)
+        power = outputs.get("Watts")
+        current = outputs.get("Amps")
+        aggregates.append(
+            CircuitAggregate(
+                aggregate_id,
+                _legacy_aggregate_name(label, outputs),
+                CircuitRole.CUSTOM,
+                first,
+                MeasurementMethod.TWO_CT_SUM
+                if len(first) == 2
+                else MeasurementMethod.DIRECT,
+                None,
+                EnergyMode.CONSUMPTION
+                if power is not None and power[0] in energy_power_ids
+                else EnergyMode.NONE,
+                power is not None
+                and power[0] not in hidden_ids
+                and _plain_sensor_scalar(power[1].get("internal", "")) != "true",
+                current is not None
+                and current[0] not in hidden_ids
+                and _plain_sensor_scalar(current[1].get("internal", "")) != "true",
+            )
+        )
+        if dependencies_by_output and all(
+            dependencies == dependencies_by_output[0]
+            for dependencies in dependencies_by_output[1:]
+        ):
+            for child in dependencies_by_output[0]:
+                if child != aggregate_id:
+                    parents_by_child.setdefault(child, set()).add(aggregate_id)
+    parent_links = {
+        child: next(iter(parents))
+        for child, parents in parents_by_child.items()
+        if len(parents) == 1
+    }
+    return tuple(aggregates), parent_links
+
+
+def _sum_references(value: str) -> tuple[str, ...] | None:
+    match = re.fullmatch(r"\s*return\s+(?P<expression>.+?)\s*;\s*", value)
+    if match is None:
+        return None
+    terms = re.split(r"\s*\+\s*", match["expression"])
+    references = tuple(
+        reference["id"]
+        for term in terms
+        if (reference := re.fullmatch(r"id\((?P<id>[A-Za-z0-9_]+)\)\.state", term))
+        is not None
+    )
+    return references if references and len(references) == len(terms) else None
+
+
+def _legacy_aggregate_id(label: str) -> str:
+    if not label:
+        return "meter-total"
+    value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", f"total{label}")
+    return re.sub(r"[-_]+", "-", value).lower()
+
+
+def _legacy_aggregate_name(
+    label: str, outputs: Mapping[str, tuple[str, dict[str, str]]]
+) -> str:
+    for kind in ("Watts", "Amps"):
+        output = outputs.get(kind)
+        if output is None or not (value := output[1].get("name", "").strip()):
+            continue
+        try:
+            name = (
+                json.loads(value)
+                if value.startswith('"')
+                else value[1:-1].replace("''", "'")
+                if value.startswith("'") and value.endswith("'")
+                else value
+            )
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(name, str):
+            continue
+        for prefix in ("${friendly_name} ", "${disp_name} "):
+            name = name.removeprefix(prefix)
+        for suffix in (f" {kind}", " Power", " Current"):
+            if name.endswith(suffix):
+                candidate = name.removesuffix(suffix).strip()
+                if candidate and len(candidate) <= 64:
+                    return candidate
+    if not label:
+        return "Meter total"
+    words = re.sub(
+        r"(?<=[a-z0-9])(?=[A-Z])", " ", f"Total{label}"
+    ).replace("_", " ")
+    return words
+
+
+def _plain_sensor_scalar(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return value if re.fullmatch(r"[A-Za-z0-9_]+", value) else ""
 
 
 def _stored_channels_by_number(

@@ -63,9 +63,7 @@ OFFSET_TABLE = ((1, 2), (3, 4), (5, 6))
 POWER_OFFSET_TABLE = ((7, 8), (9, 10), (11, 12))
 
 
-def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper() -> (
-    None
-):
+def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() -> None:
     """A foreign device or CT-only handle would bypass the server-owned plan boundary."""
     content = (
         "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
@@ -318,11 +316,10 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert transactions.calls[2][1]["meter_configuration"] == wrapper_configuration
         plan_ids = set(workflow._plans)
         store.stale = True
-        with pytest.raises(WorkflowHandleError, match="stored meter configuration"):
-            await workflow.async_get_meter_configuration("meter")
-        with pytest.raises(WorkflowHandleError, match="stored meter configuration"):
-            await workflow.async_get_ct_inventory("meter")
-        assert set(workflow._plans) == plan_ids
+        stale_result = await workflow.async_get_meter_configuration("meter")
+        assert "stored_semantics_stale" in stale_result["warnings"]
+        assert stale_result["capabilities"].semantic_source == "legacy_inferred"
+        assert set(workflow._plans) != plan_ids
         await workflow.async_close()
 
     asyncio.run(run())
@@ -786,6 +783,18 @@ def test_offset_status_starts_with_capability_board_stages_and_no_pending() -> N
     asyncio.run(run())
 
 
+def test_session_status_exposes_plan_and_standard_skips_offset() -> None:
+    """Standard calibration must retain flash offsets instead of resetting them."""
+    _workflow_instance, handle, _sessions, _api = _workflow()
+    handle.calibration_plan = "standard"
+    handle.offset_skipped = True
+
+    status = handle.status()
+
+    assert status.calibration_plan == "standard"
+    assert status.offset_disposition == "skipped"
+
+
 def test_gain_only_binding_without_offset_capability_reports_unavailable() -> None:
     async def run() -> None:
         workflow, handle, _sessions, _api = _workflow()
@@ -837,6 +846,13 @@ def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
         workflow, handle, _sessions, api = _workflow()
         calls: list[tuple[Any, ...]] = []
 
+        async def sources(instance_ids: set[str], **kwargs: Any) -> dict[str, str]:
+            assert instance_ids == {"meter_main1", "meter_main2"}
+            assert kwargs == {"offset_stage": 1}
+            return {"meter_main1": "flash", "meter_main2": "unknown"}
+
+        api.async_calibration_sources = sources
+
         async def readiness(
             session: Any, binding: Any, board_index: int, stage: int, **kwargs: Any
         ) -> OffsetReadinessResult:
@@ -851,6 +867,11 @@ def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
         )
         result = await workflow.async_check_offset_readiness(handle.session_id, 0, 1)
         assert result.ready
+        assert result.saved_offset_sources == (
+            ("main_1", "flash"),
+            ("main_2", "unknown"),
+        )
+        assert handle.offset_results == {}
         assert calls == [
             (
                 api,
