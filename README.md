@@ -15,3 +15,5 @@ Choose **Standard calibration** to calibrate voltage and current while retaining
 
 Legacy migration is always opt-in. Adopting a legacy configuration marks only the helper-managed parts; unrelated YAML remains untouched.
 
+See [Meter totals](docs/totals.md) for default, Mains, and hierarchical total behavior.
+

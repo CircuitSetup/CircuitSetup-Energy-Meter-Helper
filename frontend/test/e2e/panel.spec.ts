@@ -551,7 +551,7 @@ test("automatic off survives role disappearance, verified install and browser re
   await page.getByRole("button", { name: "Save and validate configuration" }).click();
   await page.getByRole("button", { name: "Build firmware" }).click();
   await page.getByRole("button", { name: "Install on meter", exact: true }).click();
-  await expect(page.getByText("Configuration changes were installed and verified. Continue to safety and calibration.")).toBeVisible();
+  await expect(page.getByText("Installed configuration and totals inventory are verified.")).toBeVisible();
   expect((await fixture.state()).stored.configuration.automatic_totals).toEqual([
     { candidate_id: "grid-ct1-ct2", enabled: false, outputs: { watts: true, amps: false, kwh: true } }]);
   await openInventory(page, fixture.url);

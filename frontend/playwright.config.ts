@@ -1,7 +1,8 @@
 import { defineConfig } from "@playwright/test";
+import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
-const frontend = __dirname;
+const frontend = fileURLToPath(new URL(".", import.meta.url));
 const root = resolve(frontend, "..");
 const port = Number(process.env.CSEMH_E2E_PORT ?? 4173);
 const fixturePort = Number(process.env.CSEMH_FIXTURE_PORT ?? 4174);
