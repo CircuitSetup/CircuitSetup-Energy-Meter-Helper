@@ -37,3 +37,28 @@ export function sourceFormula(sources: readonly TotalSource[], inventory: Totals
     return label;
   }).join(" + ");
 }
+
+/** Resolve physical coverage. Only the actively edited draft may have incomplete CT cardinality. */
+export function sourceLeaves(sources: readonly TotalSource[], inventory: TotalsInventory, aggregates: readonly CircuitAggregate[], path: readonly string[] = [], editingId: string | null = null): number[] {
+  const leaves = sources.flatMap((source): number[] => {
+    if (source.kind === "channel") return [source.channel];
+    if (source.kind === "native_total") {
+      const native = inventory.native_sources.find((item) => item.source_id === source.source_id);
+      if (!native) throw new Error("Unknown native source; remove or replace it.");
+      return native.leaf_channels;
+    }
+    if (path.includes(source.aggregate_id)) throw new Error("Totals cannot form a cycle.");
+    const child = aggregates.find((item) => item.aggregate_id === source.aggregate_id)
+      ?? inventory.automatic_candidates.find((item) => item.aggregate_id === source.aggregate_id);
+    if (!child) throw new Error("Unknown total source; remove or replace it.");
+    const channels = child.sources.filter((item) => item.kind === "channel");
+    const needed = child.measurement_method === "direct" ? null : child.measurement_method === "two_ct_sum" ? 2 : 1;
+    if (child.aggregate_id !== editingId && (!child.sources.length || channels.length && channels.length !== child.sources.length
+      || needed !== null && (channels.length !== needed || channels.length !== child.sources.length))) {
+      throw new Error(`Complete ${child.name}'s measurement method and sources first.`);
+    }
+    return sourceLeaves(child.sources, inventory, aggregates, [...path, source.aggregate_id], editingId);
+  });
+  if (new Set(leaves).size !== leaves.length) throw new Error("Overlapping sources count the same CT more than once.");
+  return leaves;
+}

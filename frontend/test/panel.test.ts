@@ -287,7 +287,7 @@ describe("server-authoritative total graph", () => {
     const overall = panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="Overall meter total Watts"]')!;
     expect(text(panel)).not.toContain("Updating total graph");
     expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
-    expect(panel.shadowRoot!.textContent!.indexOf("Default meter totals")).toBeLessThan(panel.shadowRoot!.textContent!.indexOf("Automatic totals"));
+    expect(panel.shadowRoot!.textContent!.indexOf("Default meter totals")).toBeLessThan(panel.shadowRoot!.textContent!.indexOf("Suggested circuit totals"));
     expect(text(panel)).toContain("Suggested circuit totals");
     overall.click(); await panel.updateComplete;
     expect(state.meterConfiguration.configuration.default_totals.overall.watts).toBe(false);
@@ -404,8 +404,25 @@ describe("server-authoritative total graph", () => {
     const root = document.createElement("div");
     render(ctInventoryStep(response, 0, new Map(), () => undefined, () => undefined, () => undefined, () => undefined,
       false, false, response.configuration, () => undefined, () => undefined, true, "", false, true, response.totals), root);
-    const parent = root.querySelector<HTMLSelectElement>('[aria-label="native-child aggregate parent"]')!;
-    expect([...parent.options].some((option) => option.value === "parent")).toBe(false);
+    const parent = root.querySelector<HTMLSelectElement>('[aria-label="Native child Feeds into"]');
+    expect(parent?.querySelector<HTMLOptionElement>('[value="parent"]')?.disabled).toBe(true);
+  });
+
+  it("retains stable native repair controls when the total graph is invalid", () => {
+    const response = meterResponse();
+    response.configuration.aggregates = [{ aggregate_id: "home", name: "Home", role: "custom", sources: [],
+      measurement_method: "direct", energy_mode: "consumption", outputs: { watts: true, amps: false, kwh: true }, origin: "advanced" }];
+    const root = document.createElement("div");
+    document.body.append(root);
+    const update = vi.fn();
+    render(ctInventoryStep(response, 0, new Map(), () => undefined, () => undefined, () => undefined, () => undefined,
+      false, false, response.configuration, update, () => undefined, true, "", false, false, response.totals, true, true, null, false, "invalid", true), root);
+    const source = root.querySelector<HTMLInputElement>('[aria-label="Home: Overall meter total"]')!;
+    expect(source.disabled).toBe(false);
+    source.click();
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ aggregates: [expect.objectContaining({ sources: [{ kind: "native_total", source_id: "overall" }] })] }));
+    expect(root.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+    expect(root.textContent).not.toContain("Coverage: CT1–CT6");
   });
 
   it("removes direct CT dependencies with confirmation but preserves native physical coverage", async () => {
@@ -743,19 +760,22 @@ describe("CircuitSetup panel", () => {
     expect(root.querySelector('[data-action="add-aggregate"]')).toBeNull();
   });
 
-  it("tables only server-issued automatic totals with explicit off settings", () => {
+  it("shows server-issued suggested totals once with explicit off settings and stale diagnostics", () => {
     const response = meterResponse();
     const candidate: import("../src/types").AutomaticTotalCandidate = { candidate_id: "issued-solar", aggregate_id: "auto-solar",
       name: "Server solar", role: "solar", sources: [{ kind: "channel", channel: 3 }, { kind: "channel", channel: 4 }],
       measurement_method: "two_ct_sum", energy_mode: "generation", recommended_outputs: { watts: true, amps: false, kwh: true } };
     response.totals.automatic_candidates = [candidate];
     response.totals.automatic_totals = [{ candidate, enabled: false, outputs: candidate.recommended_outputs }];
+    response.totals.stale_automatic_total_settings = [{ candidate_id: "retired", enabled: false, outputs: candidate.recommended_outputs }];
     const root = document.createElement("div");
     render(ctInventoryStep(response, 0, new Map(), () => undefined, () => undefined,
       () => undefined, () => undefined, false, false, response.configuration, () => undefined, () => undefined,
       true, "", false, true, response.totals), root);
-    const rows = [...root.querySelectorAll('table[aria-label="Automatic totals"] tbody tr')].map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent));
-    expect(rows).toEqual([["Server solar", "CT3 + CT4", "Off"]]);
+    expect(root.querySelector('table[aria-label="Automatic totals"]')).toBeNull();
+    expect(root.querySelectorAll(".automatic-total-card")).toHaveLength(1);
+    expect(root.querySelector<HTMLInputElement>('[aria-label="Create Server solar total"]')?.checked).toBe(false);
+    expect(root.textContent).toContain("1 inactive automatic settings");
   });
 
   it("creates a custom aggregate with safe consumption defaults", () => {

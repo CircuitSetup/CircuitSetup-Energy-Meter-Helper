@@ -134,6 +134,10 @@ export const panelStyles = css`
   .aggregate-fields input, .aggregate-fields select { width: 100%; padding: 10px; border: 1px solid var(--border); }
   .aggregate-fields small { color: var(--muted); font-weight: var(--ha-font-weight-normal, 400); }
   .aggregate-channels { margin: 18px 0 14px; }
+  .aggregate-sources { margin: 18px 0; min-width: 0; }
+  .aggregate-source-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .source-explanation { display: block; color: var(--muted); }
+  .advanced-totals > .aggregate-list, .advanced-totals > p { margin: 14px; }
   .aggregate-channels > legend { font-size: var(--ha-font-size-l, 16px); }
   .aggregate-channel-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .aggregate-channel-group { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); }
@@ -218,6 +222,7 @@ export const panelStyles = css`
     .default-total-controls { align-items: stretch; flex-direction: column; }
     .automatic-total-controls { align-items: stretch; flex-direction: column; }
     .aggregate-channel-group > div { grid-template-columns: 1fr; }
+    .aggregate-source-options { grid-template-columns: 1fr; }
     .existing-configuration .status-list > div { grid-template-columns: 1fr; gap: 2px; }
     .aggregate-actions button { width: 100%; margin-left: 0; }
     .progress-steps { grid-template-columns: 1fr; gap: 8px; }

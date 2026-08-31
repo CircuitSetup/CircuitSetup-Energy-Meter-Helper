@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
 import { defaultTotalsSection } from "../src/components/default-totals-section";
 import { automaticTotalsSection } from "../src/components/automatic-totals-section";
+import { advancedTotalsEditor } from "../src/components/advanced-totals-editor";
 import { currentStep } from "../src/components/current-step";
 import { espWebInstaller } from "../src/components/esp-web-installer";
 import { meterSettingsStep } from "../src/components/meter-settings-step";
@@ -101,6 +102,24 @@ it("names suggested total controls and keeps them visible in the narrow layout",
     "Create Service mains total", "Service mains Watts", "Service mains Amps", "Service mains kWh",
   ]);
   expect(panelStyles.cssText).toContain(".automatic-total-controls { align-items: stretch; flex-direction: column;");
+});
+
+it("supports keyboard-focused hierarchical source controls and named source groups", () => {
+  const response = meterResponse();
+  response.configuration.aggregates = [{ aggregate_id: "home", name: "Home", role: "custom", sources: [],
+    measurement_method: "direct", energy_mode: "consumption", outputs: { watts: true, amps: false, kwh: true }, origin: "advanced" }];
+  const update = vi.fn();
+  const root = mount(advancedTotalsEditor(response.configuration, new Map(), update, true, "", response.totals));
+  const summary = root.querySelector<HTMLElement>(".advanced-totals > summary")!;
+  summary.focus(); summary.click();
+  expect(document.activeElement).toBe(summary);
+  expect(root.querySelector<HTMLDetailsElement>(".advanced-totals")?.open).toBe(true);
+  const source = root.querySelector<HTMLInputElement>('[aria-label="Home: Overall meter total"]')!;
+  source.focus(); source.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true })); source.click();
+  expect(document.activeElement).toBe(source);
+  expect(update).toHaveBeenCalledWith(expect.objectContaining({ aggregates: [expect.objectContaining({ sources: [{ kind: "native_total", source_id: "overall" }] })] }));
+  expect(source.closest("fieldset")?.querySelector("legend")?.textContent).toBe("Native totals");
+  expect(panelStyles.cssText).toContain(".aggregate-source-options { grid-template-columns: 1fr;");
 });
 
 it("keeps Setup Device free of legacy installer and IO0 controls", () => {
