@@ -489,6 +489,64 @@ def test_parses_esphome_colon_after_offset_button_prefix() -> None:
 
 
 @pytest.mark.parametrize(
+    ("stage", "header", "columns", "comparison", "rows"),
+    (
+        (
+            1,
+            "Offset mismatch: using flash values",
+            "offset_voltage | offset_current",
+            "| | config | flash | config | flash |",
+            (
+                "| A | -1 | 0 | 1 | 0 |",
+                "| B | -1 | 0 | 1 | 0 |",
+                "| C | -1 | 0 | 1 | 0 |",
+            ),
+        ),
+        (
+            2,
+            "Power offset mismatch: using flash values",
+            "offset_active_power | offset_reactive_power",
+            "| | config | flash | config | flash |",
+            (
+                "| A | -1 | 0 | 1 | 0 |",
+                "| B | -1 | 0 | 1 | 0 |",
+                "| C | -1 | 0 | 1 | 0 |",
+            ),
+        ),
+    ),
+)
+def test_offset_snapshot_rejects_ambiguous_tags_only_on_signed_comparison_rows(
+    stage: int,
+    header: str,
+    columns: str,
+    comparison: str,
+    rows: tuple[str, str, str],
+) -> None:
+    source = (header, f"| Phase | {columns} |", comparison, *rows)
+    lines = [
+        CalibrationLogLine(
+            3,
+            4,
+            11.0 + index,
+            f"[W][atm90e32] [CALIBRATION][meter_main1]"
+            f"{' [CALIBRATION][other]' if index > 2 else ''} {line}",
+        )
+        for index, line in enumerate(source)
+    ]
+    with pytest.raises(
+        LogEvidenceError, match="unassignable or duplicate instance tag"
+    ):
+        parse_offset_table_snapshot(
+            lines,
+            connection_generation=3,
+            operation_sequence=4,
+            expected_instance_ids={"meter_main1"},
+            started_after=10.0,
+            offset_stage=stage,
+        )
+
+
+@pytest.mark.parametrize(
     ("fixture", "parser", "button", "guidance"),
     (
         (

@@ -986,6 +986,9 @@ def parse_offset_table_snapshot(
     if any("SPI read mismatch" in item.line for item in matching):
         raise LogEvidenceError(f"{kind} snapshot observed SPI read mismatch")
     row_pattern = _POWER_OFFSET_ROW_RE if power else _OFFSET_ROW_RE
+    comparison_row_pattern = (
+        _POWER_OFFSET_COMPARE_ROW_RE if power else _OFFSET_COMPARE_ROW_RE
+    )
     verified_term = (
         "Power offset calibration restore verified."
         if power
@@ -998,6 +1001,7 @@ def parse_offset_table_snapshot(
             or mismatch_header in item.line
             or columns in normalized
             or row_pattern.search(item.line) is not None
+            or comparison_row_pattern.search(item.line) is not None
             or verified_term in item.line
             or fallback in item.line
             or any(term in item.line for term in failure_terms)
