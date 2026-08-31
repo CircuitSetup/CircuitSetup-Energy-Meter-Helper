@@ -12,7 +12,12 @@ from typing import Any, Literal
 
 from homeassistant.core import HomeAssistant
 
-from .log_parser import parse_calibration_sources
+from .log_parser import (
+    CalibrationLogLine,
+    OffsetTableSnapshot,
+    parse_calibration_sources,
+    parse_offset_table_snapshot,
+)
 from .models import canonical_mac
 from .state_tracker import (
     AbsoluteSensorSampleWindow,
@@ -38,6 +43,8 @@ _CALIBRATION_TERMS = (
     "voltage",
     "current",
 )
+_MAX_OFFSET_SNAPSHOT_LINES = 4096
+_MAX_OFFSET_SNAPSHOT_BYTES = 512 * 1024
 _SECURITY_ERRORS = {
     "EncryptionHelloAPIError",
     "EncryptionPlaintextAPIError",
@@ -459,6 +466,103 @@ class ESPHomeApiSession:
                     "connection changed during status dump"
                 )
             return dict(sources)
+
+    async def async_offset_table_snapshot(
+        self,
+        expected_instance_ids: set[str],
+        *,
+        offset_stage: Literal[1, 2],
+        timeout: float = 5.0,
+    ) -> dict[str, OffsetTableSnapshot | None]:
+        """Capture one bounded fresh dump without depending on the public log ring."""
+        if offset_stage not in (1, 2):
+            raise ValueError("offset stage must be 1 or 2")
+        async with self._lifecycle_lock:
+            client = self._ready_client()
+            generation = self.connection_generation
+            captured: list[CalibrationLogLine] = []
+            captured_bytes = 0
+            overflowed = False
+            capturing = True
+
+            def on_log(message: Any) -> None:
+                nonlocal captured_bytes, capturing, overflowed
+                self._on_log(client, message)
+                if not capturing or client is not self._client or not self.connected:
+                    return
+                raw = message.message
+                text = (
+                    raw.decode("utf-8", "replace")
+                    if isinstance(raw, bytes)
+                    else str(raw)
+                )
+                for raw_line in _strip_terminal_sequences(text).splitlines():
+                    line = sanitize_control_text(raw_line).strip()
+                    if not line:
+                        continue
+                    size = len(line.encode("utf-8"))
+                    if (
+                        len(captured) >= _MAX_OFFSET_SNAPSHOT_LINES
+                        or captured_bytes + size > _MAX_OFFSET_SNAPSHOT_BYTES
+                    ):
+                        overflowed = True
+                        capturing = False
+                        return
+                    captured.append(
+                        CalibrationLogLine(generation, 0, monotonic(), line)
+                    )
+                    captured_bytes += size
+
+            self._clear_log_subscription()
+            unsubscribe = client.subscribe_logs(
+                on_log,
+                self._log_level("LOG_LEVEL_DEBUG"),
+                dump_config=True,
+            )
+            self._unsubscribe_logs = unsubscribe
+            deadline = monotonic() + timeout
+            try:
+                while monotonic() < deadline:
+                    if (
+                        client is not self._client
+                        or not self.connected
+                        or self.connection_generation != generation
+                    ):
+                        raise ESPHomeSessionDisconnectedError(
+                            "connection generation changed during offset table snapshot"
+                        )
+                    if overflowed:
+                        raise ESPHomeApiRepairRequired(
+                            "bounded offset table snapshot exceeded its capture limit"
+                        )
+                    await asyncio.sleep(min(0.05, max(0.0, deadline - monotonic())))
+                if (
+                    client is not self._client
+                    or not self.connected
+                    or self.connection_generation != generation
+                ):
+                    raise ESPHomeSessionDisconnectedError(
+                        "connection generation changed during offset table snapshot"
+                    )
+                if overflowed:
+                    raise ESPHomeApiRepairRequired(
+                        "bounded offset table snapshot exceeded its capture limit"
+                    )
+                return parse_offset_table_snapshot(
+                    captured,
+                    connection_generation=generation,
+                    operation_sequence=0,
+                    expected_instance_ids=expected_instance_ids,
+                    started_after=0.0,
+                    offset_stage=offset_stage,
+                )
+            finally:
+                capturing = False
+                if self._unsubscribe_logs is unsubscribe:
+                    self._clear_log_subscription()
+                else:
+                    with suppress(Exception):
+                        unsubscribe()
 
     async def async_reconnect(self, *, dump_config: bool = False) -> None:
         """Disconnect and create a fresh client from the current ESPHome entry."""
