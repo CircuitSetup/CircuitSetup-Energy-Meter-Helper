@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from hashlib import sha256
 from typing import Any, cast
 
 from homeassistant.core import HomeAssistant
@@ -761,6 +763,15 @@ def _validate_configuration(
     )
 
 
+def _meter_record_fingerprint(mac: str, meters: dict[str, Any]) -> str:
+    """Private exact-record CAS, including identity and absent-versus-null state."""
+    payload = json.dumps(
+        [mac, mac in meters, meters.get(mac)],
+        sort_keys=True, separators=(",", ":"), allow_nan=False,
+    )
+    return sha256(payload.encode()).hexdigest()
+
+
 def _verified_meter_record(
     mac: str,
     expected_source_sha256: str,
@@ -1396,12 +1407,20 @@ class HelperStore:
             return MeterConfigurationRead(None, True)
         return MeterConfigurationRead(configuration, False)
 
+    async def async_get_meter_record_fingerprint(self, mac: str) -> str:
+        """Capture a private ordinary-preview baseline without changing storage."""
+        mac = canonical_mac(mac)
+        async with self._update_lock:
+            return _meter_record_fingerprint(mac, (await self.async_load())["meters"])
+
     async def async_save_verified_meter_configuration(
         self,
         mac: str,
         expected_source_sha256: str,
         configuration: StoredMeterConfiguration,
         record: StoredMeterRecord | None = None,
+        *,
+        expected_record_fingerprint: str | None = None,
     ) -> None:
         """Atomically advance one verified meter record and its full metadata."""
         mac = canonical_mac(mac)
@@ -1413,6 +1432,26 @@ class HelperStore:
             data = await self.async_load()
             meters = data.setdefault("meters", {})
             raw_meter = meters.get(mac)
+            if expected_record_fingerprint is not None:
+                if (
+                    record is None
+                    or not isinstance(expected_record_fingerprint, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", expected_record_fingerprint) is None
+                    or _meter_record_fingerprint(mac, meters) != expected_record_fingerprint
+                ):
+                    raise ValueError("meter record changed since preview")
+                if mac in meters and not isinstance(raw_meter, dict):
+                    raise ValueError("current meter record is invalid")
+                if raw_meter is not None:
+                    if (
+                        _configuration_hash(raw_meter) is None
+                        or raw_meter.get("config_filename") != record.config_filename
+                    ):
+                        raise ValueError("current meter record does not match the source")
+                    # Bridge only the local candidate's source identity. The shared
+                    # validator still checks trusted topology and NEW full metadata;
+                    # stale stored semantics are never saved as current.
+                    raw_meter = {**raw_meter, "config_sha256": expected_source_sha256}
             meters[mac] = _verified_meter_record(
                 mac,
                 expected_source_sha256,
