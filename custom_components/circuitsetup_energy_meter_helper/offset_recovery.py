@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from pathlib import Path
@@ -15,7 +16,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util.file import write_utf8_file_atomic
 
 from .config_document import _MAX_DOCUMENT_BYTES, ESPHomeConfigDocument
-from .config_mutator import _gain_group_address, build_offset_table_mutation
+from .config_mutator import (
+    _gain_group_address,
+    _read_calibrated_offset_entries,
+    build_offset_table_mutation,
+)
 from .device_builder import ESPHomeConfigSnapshot
 from .log_parser import OffsetTableSnapshot
 from .models import ConfigMutationPlan, MeterTopology, PhaseOffsetTable, canonical_mac
@@ -50,6 +55,23 @@ class SavedOffsetObservation:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class StockOffsetFinalization:
+    """Private final review, bound to the exact immutable candidate revision."""
+
+    operation_id: str
+    revision: int
+    transaction_id: str
+    session_id: str
+    original_sha256: str
+    evidence_sha256: str
+    source_sha256: str
+    proposed_sha256: str
+    targets: tuple[str, ...]
+    generation: int
+    verification_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class CapturedOffsetResult:
     instance_id: str
     stage: Literal[1, 2]
@@ -72,6 +94,10 @@ class OffsetRecoveryRecord:
     cancelled: bool = False
     attempted: tuple[str, ...] = ()
     results: tuple[CapturedOffsetResult, ...] = ()
+    finalization: StockOffsetFinalization | None = None
+    final_installed: bool = False
+    final_cancelled: bool = False
+    configuration_selected: bool = False
 
 
 def _hash(value: object) -> str:
@@ -117,7 +143,7 @@ def _validate_observation(
         or snapshot.connection_generation < 1
         or type(snapshot.offset_stage) is not int
         or snapshot.offset_stage not in (1, 2)
-        or snapshot.reported_state not in ("restored", "mismatch")
+        or snapshot.reported_state not in ("restored", "mismatch", "configuration")
         or type(snapshot.register_verified) is not bool
         or type(snapshot.config_differs_from_flash) is not bool
         or snapshot.config_differs_from_flash != (snapshot.reported_state == "mismatch")
@@ -127,6 +153,21 @@ def _validate_observation(
     _validate_group_table(
         snapshot.instance_id, snapshot.phase_values, signed=True, label="offsets"
     )
+
+
+def _final_evidence_hash(record: OffsetRecoveryRecord) -> str:
+    return sha256(
+        json.dumps(
+            {
+                "original": asdict(record.original),
+                "topology": _topology_identity(record.topology),
+                "observations": [asdict(item) for item in record.observations],
+                "results": [asdict(item) for item in record.results],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
 
 
 def _encode(record: OffsetRecoveryRecord) -> bytes:
@@ -214,8 +255,58 @@ def _encode(record: OffsetRecoveryRecord) -> bytes:
             or type(result.register_verified) is not bool
         ):
             raise ValueError("invalid recovery result evidence")
+    final = record.finalization
+    if any(
+        type(value) is not bool
+        for value in (
+            record.final_installed,
+            record.final_cancelled,
+            record.configuration_selected,
+        )
+    ):
+        raise ValueError("invalid finalization state")
+    if final is None:
+        if (
+            record.final_installed
+            or record.final_cancelled
+            or record.configuration_selected
+        ):
+            raise ValueError("finalization identity is absent")
+    else:
+        for value in (final.operation_id, final.transaction_id, final.session_id):
+            if (
+                not isinstance(value, str)
+                or re.fullmatch(r"[0-9a-f]{32}", value) is None
+            ):
+                raise ValueError("invalid finalization identity")
+        for value in (
+            final.original_sha256,
+            final.source_sha256,
+            final.proposed_sha256,
+        ):
+            _hash(value)
+        if (
+            final.original_sha256 != record.original.sha256
+            or final.evidence_sha256 != _final_evidence_hash(record)
+            or type(final.revision) is not int
+            or not 1 <= final.revision <= record.revision
+            or type(final.generation) is not int
+            or final.generation < 1
+            or not final.targets
+            or len(final.targets) > 14
+            or len(set(final.targets)) != len(final.targets)
+            or set(final.targets) != {item.instance_id for item in record.results}
+            or final.verification_id is not None
+            and (
+                not isinstance(final.verification_id, str)
+                or re.fullmatch(r"[0-9a-f]{32}", final.verification_id) is None
+            )
+            or record.configuration_selected
+            and (not record.final_installed or record.final_cancelled)
+        ):
+            raise ValueError("invalid finalization binding")
     raw = asdict(record)
-    raw["schema"] = 1
+    raw["schema"] = 2
     # Evidence labels are not source identity; derive the same supported topology on read.
     raw["topology"] = list(_topology_identity(record.topology))
     encoded = json.dumps(
@@ -234,8 +325,36 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _decode(data: bytes) -> OffsetRecoveryRecord:
     try:
+        decoded = json.loads(data, object_pairs_hook=_unique_object)
+        if (
+            isinstance(decoded, dict)
+            and type(decoded.get("schema")) is int
+            and decoded["schema"] == 1
+        ):
+            # Existing Task7 records remain valid; no legacy field may be replaced.
+            if set(decoded) != {
+                "schema",
+                "mac",
+                "original",
+                "topology",
+                "observations",
+                "revision",
+                "preparation",
+                "installed",
+                "cancelled",
+                "attempted",
+                "results",
+            }:
+                raise ValueError("invalid recovery fields")
+            decoded.update(
+                schema=2,
+                finalization=None,
+                final_installed=False,
+                final_cancelled=False,
+                configuration_selected=False,
+            )
         raw = _exact_mapping(
-            json.loads(data, object_pairs_hook=_unique_object),
+            decoded,
             {
                 "schema",
                 "mac",
@@ -248,10 +367,14 @@ def _decode(data: bytes) -> OffsetRecoveryRecord:
                 "cancelled",
                 "attempted",
                 "results",
+                "finalization",
+                "final_installed",
+                "final_cancelled",
+                "configuration_selected",
             },
             "recovery",
         )
-        if type(raw["schema"]) is not int or raw["schema"] != 1:
+        if type(raw["schema"]) is not int or raw["schema"] != 2:
             raise ValueError("invalid recovery schema")
         identity = raw["topology"]
         if (
@@ -343,6 +466,29 @@ def _decode(data: bytes) -> OffsetRecoveryRecord:
                 tuple(phase) for phase in result["phase_values"]
             )
             results.append(CapturedOffsetResult(**result))
+        final = raw["finalization"]
+        if final is not None:
+            final = _exact_mapping(
+                final,
+                {
+                    "operation_id",
+                    "revision",
+                    "transaction_id",
+                    "session_id",
+                    "original_sha256",
+                    "evidence_sha256",
+                    "source_sha256",
+                    "proposed_sha256",
+                    "targets",
+                    "generation",
+                    "verification_id",
+                },
+                "finalization",
+            )
+            if not isinstance(final["targets"], list):
+                raise ValueError("invalid finalization targets")
+            final["targets"] = tuple(final["targets"])
+            final = StockOffsetFinalization(**final)
         record = OffsetRecoveryRecord(
             raw["mac"],
             original,
@@ -354,6 +500,10 @@ def _decode(data: bytes) -> OffsetRecoveryRecord:
             raw["cancelled"],
             tuple(raw["attempted"]),
             tuple(results),
+            final,
+            raw["final_installed"],
+            raw["final_cancelled"],
+            raw["configuration_selected"],
         )
         _encode(record)
         return record
@@ -368,6 +518,7 @@ class OffsetRecovery:
         self._hass = hass
         self._sessions = sessions
         self._confirmed_receipts: dict[str, StockOffsetPreparation] = {}
+        self._confirmed_final_receipts: dict[str, StockOffsetFinalization] = {}
 
     def _path(self, lease: CalibrationLease | ConfigLease) -> Path:
         if isinstance(lease, CalibrationLease):
@@ -414,6 +565,7 @@ class OffsetRecovery:
             and record.installed
             and not record.cancelled
             and record.preparation is not None
+            and record.finalization is None
             and self._confirmed_receipts.get(record.mac) == record.preparation
         )
 
@@ -423,6 +575,9 @@ class OffsetRecovery:
         path, data = self._path(lease), _encode(record)
         if record.mac != lease.mac:
             raise ValueError("recovery meter identity changed")
+        await self._write(path, data)
+
+    async def _write(self, path: Path, data: bytes) -> None:
 
         def write_and_read() -> None:
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -577,6 +732,359 @@ class OffsetRecovery:
             enable_calibration=frozenset(targets),
         )
 
+    @staticmethod
+    def build_finalization_plan(
+        record: OffsetRecoveryRecord,
+        source: ESPHomeConfigSnapshot,
+        *,
+        gain_plan: ConfigMutationPlan | None = None,
+    ) -> ConfigMutationPlan:
+        """Select exact captured tables and known effective unchanged stages."""
+        _validate_source(source, record.topology)
+        targets = {item.instance_id for item in record.results}
+        if not targets:
+            raise ValueError("captured offset results are absent")
+        tables = {
+            (
+                item.snapshot.instance_id,
+                item.snapshot.offset_stage,
+            ): item.snapshot.phase_values
+            for item in record.observations
+        }
+        tables.update(
+            {
+                (item.instance_id, item.stage): item.phase_values
+                for item in record.results
+            }
+        )
+        if any(
+            (instance, stage) not in tables for instance in targets for stage in (1, 2)
+        ):
+            raise ValueError("both effective offset stages must be known")
+        if gain_plan is not None:
+            if (
+                gain_plan.configuration != source.configuration
+                or gain_plan.source_sha256 != source.sha256
+            ):
+                raise ValueError("gain plan source changed")
+            base = replace(
+                source,
+                content=gain_plan.proposed_content,
+                sha256=sha256(gain_plan.proposed_content.encode()).hexdigest(),
+            )
+        else:
+            base = source
+        plan = build_offset_table_mutation(
+            base,
+            record.topology,
+            {instance: tables[(instance, 1)] for instance in targets},
+            {instance: tables[(instance, 2)] for instance in targets},
+            enable_calibration=dict.fromkeys(targets, False),
+        )
+        return replace(
+            plan,
+            source_sha256=source.sha256,
+            changes=gain_plan.changes if gain_plan is not None else (),
+            redacted_diff=(gain_plan.redacted_diff + plan.redacted_diff)
+            if gain_plan is not None
+            else plan.redacted_diff,
+        )
+
+    async def async_review_finalization(
+        self,
+        lease: CalibrationLease | ConfigLease,
+        record: OffsetRecoveryRecord,
+        source: ESPHomeConfigSnapshot,
+        plan: ConfigMutationPlan,
+        session_id: str,
+        generation: int,
+        *,
+        gain_plan: ConfigMutationPlan | None = None,
+        verification_id: str | None = None,
+    ) -> StockOffsetFinalization:
+        if await self.async_load(lease) != record:
+            raise ValueError("recovery revision changed")
+        if plan != self.build_finalization_plan(record, source, gain_plan=gain_plan):
+            raise ValueError("finalization plan changed")
+        if (gain_plan is None) != (verification_id is None):
+            raise ValueError("finalization gain reservation is absent")
+        eligible = {record.original.sha256}
+        if record.preparation is not None:
+            eligible.add(record.preparation.source_sha256)
+            if record.installed:
+                eligible.add(record.preparation.proposed_sha256)
+        if record.finalization is not None:
+            eligible.add(record.finalization.source_sha256)
+            # Re-reviewing exact final YAML is recovery intent, never action authority.
+            eligible.add(record.finalization.proposed_sha256)
+        if (
+            source.configuration != record.original.configuration
+            or source.sha256 not in eligible
+        ):
+            raise ValueError("finalization source changed")
+        final = StockOffsetFinalization(
+            uuid4().hex,
+            record.revision + 1,
+            uuid4().hex,
+            session_id,
+            record.original.sha256,
+            _final_evidence_hash(record),
+            source.sha256,
+            sha256(plan.proposed_content.encode()).hexdigest(),
+            tuple(sorted({item.instance_id for item in record.results})),
+            generation,
+            verification_id,
+        )
+        self._confirmed_receipts.pop(lease.mac, None)
+        self._confirmed_final_receipts.pop(lease.mac, None)
+        await self._save(
+            lease,
+            replace(
+                record,
+                revision=final.revision,
+                finalization=final,
+                final_installed=False,
+                final_cancelled=False,
+                configuration_selected=False,
+            ),
+        )
+        return final
+
+    def is_finalization_ready(self, record: OffsetRecoveryRecord | None) -> bool:
+        return bool(
+            record is not None
+            and record.finalization is not None
+            and record.final_installed
+            and not record.final_cancelled
+            and self._confirmed_final_receipts.get(record.mac) == record.finalization
+        )
+
+    async def async_require_finalization(
+        self,
+        lease: CalibrationLease | ConfigLease,
+        final: StockOffsetFinalization,
+        *,
+        installed: bool,
+    ) -> OffsetRecoveryRecord:
+        record = await self.async_load(lease)
+        if (
+            record is None
+            or record.finalization != final
+            or record.final_cancelled
+            or record.final_installed is not installed
+            or record.revision
+            != final.revision
+            + int(record.final_installed)
+            + int(record.configuration_selected)
+            or installed
+            and not self.is_finalization_ready(record)
+        ):
+            raise ValueError("stock offset finalization is stale or unavailable")
+        return record
+
+    async def async_mark_final_installed(
+        self, lease: ConfigLease, final: StockOffsetFinalization
+    ) -> None:
+        record = await self.async_require_finalization(lease, final, installed=False)
+        try:
+            await self._save(
+                lease,
+                replace(record, final_installed=True, revision=record.revision + 1),
+            )
+        except Exception, asyncio.CancelledError:
+            self._confirmed_final_receipts.pop(lease.mac, None)
+            await self._save(
+                lease,
+                replace(record, final_cancelled=True, revision=record.revision + 1),
+            )
+            raise
+        self._confirmed_final_receipts[lease.mac] = final
+
+    async def async_cancel_finalization(
+        self, lease: CalibrationLease | ConfigLease, final: StockOffsetFinalization
+    ) -> None:
+        self._path(lease)
+        if self._confirmed_final_receipts.get(lease.mac) == final:
+            self._confirmed_final_receipts.pop(lease.mac)
+        record = await self.async_load(lease)
+        if record is None or record.finalization != final:
+            raise ValueError("stock offset finalization changed")
+        await self._save(
+            lease,
+            replace(
+                record,
+                final_cancelled=True,
+                configuration_selected=False,
+                revision=record.revision + 1,
+            ),
+        )
+
+    async def async_reconcile_finalization(
+        self,
+        lease: CalibrationLease,
+        final: StockOffsetFinalization,
+        api: Any,
+        *,
+        source_reader: Callable[[], Awaitable[ESPHomeConfigSnapshot]],
+        claim_guard: Callable[[], None] = lambda: None,
+        timeout: float = 5.0,
+    ) -> OffsetRecoveryRecord:
+        """Require normal installed receipt and fresh native selection of exact YAML."""
+        record = await self.async_require_finalization(lease, final, installed=True)
+
+        async def check_source() -> ESPHomeConfigSnapshot:
+            claim_guard()
+            source = await source_reader()
+            _validate_source(source, record.topology)
+            if (
+                source.configuration != record.original.configuration
+                or source.sha256 != final.proposed_sha256
+            ):
+                raise ValueError("final offset source changed")
+            claim_guard()
+            return source
+
+        await check_source()
+        generation = api.connection_generation
+        selected = await api.async_offset_configuration_selection(
+            set(final.targets), timeout=timeout
+        )
+        if selected != dict.fromkeys(final.targets, generation):
+            raise ValueError("fresh offset configuration selection is absent")
+        async with api.hold_connection_generation(generation):
+            await check_source()
+            if (
+                await self.async_require_finalization(lease, final, installed=True)
+                != record
+            ):
+                raise ValueError("final offset recovery changed")
+            if record.configuration_selected:
+                return record
+            updated = replace(
+                record, configuration_selected=True, revision=record.revision + 1
+            )
+            try:
+                await self._save(lease, updated)
+                await check_source()
+                if not api.connected or api.connection_generation != generation:
+                    raise ValueError("final offset connection changed")
+                if (
+                    await self.async_require_finalization(lease, final, installed=True)
+                    != updated
+                ):
+                    raise ValueError("final offset recovery changed")
+            except Exception, asyncio.CancelledError:
+                await self.async_cancel_finalization(lease, final)
+                raise
+            return updated
+
+    async def async_load_archive(
+        self, lease: CalibrationLease
+    ) -> OffsetRecoveryRecord | None:
+        path = self._path(lease).with_suffix(".previous.json")
+        try:
+            data = await self._hass.async_add_executor_job(self._read, path)
+        except FileNotFoundError:
+            return None
+        except Exception:  # noqa: BLE001 - redact private archive paths and payloads
+            raise ValueError("recovery archive is unavailable") from None
+        record = _decode(data)
+        if (
+            record.mac != lease.mac
+            or not record.configuration_selected
+            or record.final_cancelled
+        ):
+            raise ValueError("recovery archive is not a finalized operation")
+        return record
+
+    async def async_begin_new_cycle(
+        self,
+        lease: CalibrationLease,
+        api: Any,
+        *,
+        source_reader: Callable[[], Awaitable[ESPHomeConfigSnapshot]],
+        backup_acknowledged: bool,
+        claim_guard: Callable[[], None] = lambda: None,
+        timeout: float = 5.0,
+    ) -> OffsetRecoveryRecord:
+        """Explicit bounded rotation: keep the active operation and one predecessor."""
+        if backup_acknowledged is not True:
+            raise ValueError("new cycle backup acknowledgement is absent")
+        record = await self.async_load(lease)
+        if (
+            record is None
+            or record.finalization is None
+            or not record.configuration_selected
+        ):
+            raise ValueError("unfinished recovery cannot start a new cycle")
+        record = await self.async_reconcile_finalization(
+            lease,
+            record.finalization,
+            api,
+            source_reader=source_reader,
+            claim_guard=claim_guard,
+            timeout=timeout,
+        )
+        await self.async_load_archive(
+            lease
+        )  # Unknown or malformed history is never overwritten.
+        source = await source_reader()
+        _validate_source(source, record.topology)
+        assert record.finalization is not None
+        if (
+            source.sha256 != record.finalization.proposed_sha256
+            or source.configuration != record.original.configuration
+        ):
+            raise ValueError("final offset source changed")
+        entries = _read_calibrated_offset_entries(
+            ESPHomeConfigDocument.parse(source.content), record.topology
+        )
+        generation = api.connection_generation
+        stages: tuple[tuple[Literal[1, 2], str], ...] = ((1, "rms"), (2, "power"))
+        observations = tuple(
+            SavedOffsetObservation(
+                source.sha256,
+                OffsetTableSnapshot(
+                    generation,
+                    instance,
+                    stage,
+                    entries[instance][key],
+                    "configuration",
+                    False,
+                    False,
+                ),
+            )
+            for instance in record.finalization.targets
+            for stage, key in stages
+        )
+        new = OffsetRecoveryRecord(lease.mac, source, record.topology, observations)
+        async with api.hold_connection_generation(generation):
+            claim_guard()
+            await self._write(
+                self._path(lease).with_suffix(".previous.json"), _encode(record)
+            )
+            claim_guard()
+            if (
+                await self.async_load(lease) != record
+                or await source_reader() != source
+            ):
+                raise ValueError("new cycle recovery or source changed")
+            try:
+                await self._save(lease, new)
+                claim_guard()
+                if (
+                    await source_reader() != source
+                    or await self.async_load(lease) != new
+                ):
+                    raise ValueError("new cycle source or recovery changed")
+                claim_guard()
+            except Exception, asyncio.CancelledError:
+                await self._save(lease, record)
+                raise
+        self._confirmed_receipts.pop(lease.mac, None)
+        self._confirmed_final_receipts.pop(lease.mac, None)
+        return new
+
     async def async_prepare(
         self,
         lease: CalibrationLease,
@@ -590,6 +1098,8 @@ class OffsetRecovery:
     ) -> StockOffsetPreparation:
         if await self.async_load(lease) != record:
             raise ValueError("recovery revision changed")
+        if record.finalization is not None:
+            raise ValueError("finalized offsets require an explicit new cycle")
         if plan != self.build_preparation_plan(record, source, stage, targets):
             raise ValueError("preparation plan changed")
         preparation = StockOffsetPreparation(

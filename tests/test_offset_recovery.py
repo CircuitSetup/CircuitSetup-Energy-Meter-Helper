@@ -342,7 +342,8 @@ def test_malformed_existing_private_record_never_resets(
                 raw["unexpected"] = "private"
             data = json.dumps(raw).encode()
             if corruption == "duplicate":
-                data = data.replace(b'"schema": 1', b'"schema": 1, "schema": 1')
+                data = data.replace(b'"schema":', b'"schema": 1, "schema":', 1)
+                assert data.count(b'"schema":') == 2
             elif corruption == "oversized":
                 data = b" " * (2 * 1048576 + 1)
             path.write_bytes(data)

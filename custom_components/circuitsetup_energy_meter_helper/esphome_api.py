@@ -16,6 +16,7 @@ from .log_parser import (
     CalibrationLogLine,
     OffsetTableSnapshot,
     parse_calibration_sources,
+    parse_offset_configuration_selection,
     parse_offset_table_snapshot,
 )
 from .models import canonical_mac
@@ -465,6 +466,31 @@ class ESPHomeApiSession:
         """Capture one bounded fresh dump without depending on the public log ring."""
         if offset_stage not in (1, 2):
             raise ValueError("offset stage must be 1 or 2")
+        generation, captured = await self._async_offset_dump(timeout)
+        return parse_offset_table_snapshot(
+            captured,
+            connection_generation=generation,
+            operation_sequence=0,
+            expected_instance_ids=expected_instance_ids,
+            started_after=0.0,
+            offset_stage=offset_stage,
+        )
+
+    async def async_offset_configuration_selection(
+        self, expected_instance_ids: set[str], *, timeout: float = 5.0
+    ) -> dict[str, int]:
+        """Fresh native per-chip selection proof; not register verification."""
+        generation, captured = await self._async_offset_dump(timeout)
+        return parse_offset_configuration_selection(
+            captured,
+            connection_generation=generation,
+            expected_instance_ids=expected_instance_ids,
+        )
+
+    async def _async_offset_dump(
+        self, timeout: float
+    ) -> tuple[int, list[CalibrationLogLine]]:
+        """Shared bounded raw dump for saved tables and final YAML selection."""
         async with self._lifecycle_lock:
             client = self._ready_client()
             generation = self.connection_generation
@@ -536,14 +562,7 @@ class ESPHomeApiSession:
                     raise ESPHomeApiRepairRequired(
                         "bounded offset table snapshot exceeded its capture limit"
                     )
-                return parse_offset_table_snapshot(
-                    captured,
-                    connection_generation=generation,
-                    operation_sequence=0,
-                    expected_instance_ids=expected_instance_ids,
-                    started_after=0.0,
-                    offset_stage=offset_stage,
-                )
+                return generation, captured
             finally:
                 capturing = False
                 if self._unsubscribe_logs is unsubscribe:

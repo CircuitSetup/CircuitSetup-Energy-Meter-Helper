@@ -194,7 +194,7 @@ class OffsetTableSnapshot:
     instance_id: str
     offset_stage: Literal[1, 2]
     phase_values: tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
-    reported_state: Literal["restored", "mismatch"]
+    reported_state: Literal["restored", "mismatch", "configuration"]
     register_verified: bool
     config_differs_from_flash: bool
 
@@ -258,6 +258,48 @@ def parse_calibration_sources(
         elif any(term in line for term in configuration_terms):
             sources[instance_id] = "configuration"
     return dict(sorted(sources.items()))
+
+
+def parse_offset_configuration_selection(
+    lines: list[CalibrationLogLine] | tuple[CalibrationLogLine, ...],
+    *,
+    connection_generation: int,
+    expected_instance_ids: set[str],
+) -> dict[str, int]:
+    """Prove native YAML selection, never register readback or erased preferences.
+
+    Exact dump producer shared by stock ESPHome 2026.8.1 and optional ATM90E32.
+    The caller must collect the entire fresh bounded dump on one live client.
+    """
+    selected = "Power & Voltage/Current offset calibration is disabled. Using config file values."
+    observed: dict[str, int] = {}
+    for item in lines:
+        if item.connection_generation != connection_generation:
+            raise LogEvidenceError("offset selection generation changed")
+        line = item.line
+        lower = line.lower()
+        if "spi read mismatch" in lower or (
+            ("atm90e32" in lower or "[CALIBRATION]" in line)
+            and ("failed" in lower or "failure" in lower)
+        ):
+            raise LogEvidenceError(
+                "offset configuration selection observed device failure"
+            )
+        if "offset" not in lower:
+            continue
+        tags = tuple(_INSTANCE_RE.finditer(line))
+        if len(tags) != 1 or line.count("[CALIBRATION][") != 1:
+            raise LogEvidenceError("offset configuration selection has ambiguous tags")
+        instance = tags[0]["instance"]
+        if instance not in expected_instance_ids:
+            continue
+        payload = line[tags[0].end() :].strip()
+        if payload != selected or instance in observed:
+            raise LogEvidenceError("offset configuration selection is contradictory")
+        observed[instance] = connection_generation
+    if not expected_instance_ids or set(observed) != expected_instance_ids:
+        raise LogEvidenceError("exact offset configuration selection is absent")
+    return observed
 
 
 def parse_gain_run(

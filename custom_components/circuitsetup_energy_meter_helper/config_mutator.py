@@ -543,7 +543,7 @@ def build_offset_table_mutation(
     offsets: Mapping[str, PhaseOffsetTable],
     power_offsets: Mapping[str, PhaseOffsetTable],
     *,
-    enable_calibration: frozenset[str] = frozenset(),
+    enable_calibration: frozenset[str] | Mapping[str, bool] = frozenset(),
 ) -> ConfigMutationPlan:
     """Render captured raw candidates without inventing calibration verification."""
     if (
@@ -561,8 +561,18 @@ def build_offset_table_mutation(
         for instance, table in tables.items():
             _gain_group_address(instance, topology)
             _validate_group_table(instance, table, signed=True, label="offsets")
-    if not enable_calibration <= set(offsets) | set(power_offsets):
+    if not set(enable_calibration) <= set(offsets) | set(power_offsets):
         raise ConfigMutationError("enabled offset targets must have exact tables")
+    if isinstance(enable_calibration, Mapping):
+        for instance, enabled in enable_calibration.items():
+            if type(enabled) is not bool:
+                raise ConfigMutationError("offset calibration flag must be boolean")
+            if not enabled and (
+                instance not in offsets or instance not in power_offsets
+            ):
+                raise ConfigMutationError(
+                    "disabled offsets require both exact stage tables"
+                )
     proposed = _apply_calibrated_offsets(
         snapshot.content,
         topology,
@@ -911,7 +921,7 @@ def _apply_calibrated_offsets(
         str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
     ],
     *,
-    enable_calibration: frozenset[str] = frozenset(),
+    enable_calibration: frozenset[str] | Mapping[str, bool] = frozenset(),
 ) -> str:
     """Render verified signed offset tables in one exact helper-owned block."""
     from .config_blocks import render_phase_overrides, replace_managed_block
@@ -922,9 +932,20 @@ def _apply_calibrated_offsets(
     document = ESPHomeConfigDocument.parse(content)
     entries = _read_calibrated_offset_entries(document, topology)
     block = document.managed_blocks.get("calibrated_offsets")
-    enabled = set(enable_calibration)
+    enabled: dict[str, bool] = {}
     if block is not None:
-        enabled.update(re.findall(r"- id: !extend ([\w-]+)\r?\n +enable_offset_calibration: true", block.content))
+        enabled.update(
+            (instance, value == "true")
+            for instance, value in re.findall(
+                r"- id: !extend ([\w-]+)\r?\n +enable_offset_calibration: (true|false)",
+                block.content,
+            )
+        )
+    enabled.update(
+        enable_calibration
+        if isinstance(enable_calibration, Mapping)
+        else dict.fromkeys(enable_calibration, True)
+    )
     _reject_local_offset_overrides(
         replace_managed_block(content, "calibrated_offsets", ""),
         topology,
@@ -937,7 +958,7 @@ def _apply_calibrated_offsets(
         entries.setdefault(instance_id, {})["power"] = values
     rendered = render_phase_overrides(
         {
-            instance_id: _render_calibrated_offset_entry(instance_id, stages, enabled=instance_id in enabled)
+            instance_id: _render_calibrated_offset_entry(instance_id, stages, enabled=enabled.get(instance_id))
             for instance_id, stages in entries.items()
         }
     )
@@ -981,7 +1002,10 @@ def _read_calibrated_offset_entries(
             raise ConfigMutationError("managed offsets are invalid")
         _gain_group_address(owner["id"], topology)
         index += 1
-        if index < len(lines) and lines[index] == "    enable_offset_calibration: true":
+        if index < len(lines) and lines[index] in (
+            "    enable_offset_calibration: true",
+            "    enable_offset_calibration: false",
+        ):
             index += 1
         phases: dict[str, dict[str, int]] = {}
         for expected_phase in "abc":
@@ -1044,13 +1068,13 @@ def _render_calibrated_offset_entry(
     instance_id: str,
     stages: Mapping[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]],
     *,
-    enabled: bool = False,
+    enabled: bool | None = None,
 ) -> str:
     if set(stages) - {"rms", "power"} or not stages:
         raise ConfigMutationError("managed offsets are invalid")
     body = [f"  - id: !extend {instance_id}"]
-    if enabled:
-        body.append("    enable_offset_calibration: true")
+    if enabled is not None:
+        body.append(f"    enable_offset_calibration: {str(enabled).lower()}")
     for phase_index, phase in enumerate("abc"):
         body.append(f"    phase_{phase}:")
         if "rms" in stages:

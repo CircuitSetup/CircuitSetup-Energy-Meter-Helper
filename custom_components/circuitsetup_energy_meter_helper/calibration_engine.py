@@ -259,6 +259,32 @@ class CalibrationEngine:
         *,
         substitutions: Mapping[str, str],
     ) -> RestartVerificationResult:
+        return await self._async_verify_after_restart(
+            mac, session, binding, substitutions=substitutions, gains_only=False
+        )
+
+    async def async_verify_gains_after_restart(
+        self,
+        mac: str,
+        session: Any,
+        binding: MeterBinding,
+        *,
+        substitutions: Mapping[str, str],
+    ) -> RestartVerificationResult:
+        """Verify real gains while retaining strict offsets in their original owner."""
+        return await self._async_verify_after_restart(
+            mac, session, binding, substitutions=substitutions, gains_only=True
+        )
+
+    async def _async_verify_after_restart(
+        self,
+        mac: str,
+        session: Any,
+        binding: MeterBinding,
+        *,
+        substitutions: Mapping[str, str],
+        gains_only: bool,
+    ) -> RestartVerificationResult:
         """Restart once and persist only exact flash evidence for changed groups."""
         if self._persist_verified is None:
             raise RestartVerificationError("verified calibration persistence is absent")
@@ -279,8 +305,14 @@ class CalibrationEngine:
                     "server-owned calibration origin is missing"
                 ) from error
             expected_gains = pending.expected_phase_gains
-            expected_offsets = pending.expected_phase_offsets
-            expected_power_offsets = pending.expected_phase_power_offsets
+            if gains_only and not expected_gains:
+                raise RestartVerificationError(
+                    "server-owned gain calibration is missing"
+                )
+            expected_offsets = {} if gains_only else pending.expected_phase_offsets
+            expected_power_offsets = (
+                {} if gains_only else pending.expected_phase_power_offsets
+            )
             expected_instance_ids = (
                 set(expected_gains)
                 | set(expected_offsets)
@@ -416,9 +448,14 @@ class CalibrationEngine:
                     _require_connected_generation(session, generation)
                     await self._persist_verified(record)
                     _require_connected_generation(session, generation)
-                    self.sessions.consume_calibration_origin(
-                        lease, pending.operation_id, pending.revision
-                    )
+                    if gains_only:
+                        self.sessions.consume_calibration_gains(
+                            lease, pending.operation_id, pending.revision
+                        )
+                    else:
+                        self.sessions.consume_calibration_origin(
+                            lease, pending.operation_id, pending.revision
+                        )
                     consumed = True
                     return RestartVerificationResult(record, rebound)
             except ESPHomeSessionDisconnectedError as error:

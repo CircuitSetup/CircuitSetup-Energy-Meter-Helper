@@ -413,6 +413,87 @@ class SessionManager:
         """Return a detached snapshot of the current server-owned aggregate."""
         return self._pending_calibrations.get(canonical_mac(mac))
 
+    def consume_finalized_offsets(
+        self,
+        lease: CalibrationLease,
+        operation_id: str,
+        revision: int,
+        recovery: OffsetRecoveryRecord,
+        source: ESPHomeConfigSnapshot,
+    ) -> None:
+        """Resolve only exact prior strict groups selected in the installed final YAML."""
+        from .offset_recovery import _validate_source
+
+        self._require_active_calibration_lease(lease)
+        pending = self._pending_calibrations.get(lease.mac)
+        final = recovery.finalization
+        _validate_source(source, recovery.topology)
+        if (
+            pending is None
+            or pending.operation_id != operation_id
+            or pending.revision != revision
+            or pending.claimed_revision != revision
+            or recovery.mac != lease.mac
+            or final is None
+            or not recovery.final_installed
+            or recovery.final_cancelled
+            or not recovery.configuration_selected
+            or source.sha256 != final.proposed_sha256
+            or source.configuration != recovery.original.configuration
+            or pending.config_filename != source.configuration
+            or pending.config_sha256 not in (final.source_sha256, final.proposed_sha256)
+            or replace(pending.topology, evidence=())
+            != replace(recovery.topology, evidence=())
+        ):
+            raise ValueError("final offset origin changed before consumption")
+        resolved = {
+            (item.instance_id, item.stage): item.phase_values
+            for item in recovery.results
+            if item.register_verified and item.instance_id in final.targets
+        }
+        rms = tuple(
+            (instance, table)
+            for instance, table in pending.offset_groups
+            if resolved.get((instance, 1)) != table
+        )
+        power = tuple(
+            (instance, table)
+            for instance, table in pending.power_offset_groups
+            if resolved.get((instance, 2)) != table
+        )
+        if pending.gain_groups or rms or power:
+            self._pending_calibrations[lease.mac] = replace(
+                pending,
+                offset_groups=rms,
+                power_offset_groups=power,
+                config_sha256=source.sha256,
+                revision=revision + 1,
+                claimed_revision=None,
+            )
+        else:
+            self._pending_calibrations.pop(lease.mac)
+
+    def consume_calibration_gains(
+        self, lease: CalibrationLease, operation_id: str, revision: int
+    ) -> None:
+        """Consume exactly verified gains, retaining the original strict offset work."""
+        self._require_active_calibration_lease(lease)
+        pending = self._pending_calibrations.get(lease.mac)
+        if (
+            pending is None
+            or pending.operation_id != operation_id
+            or pending.revision != revision
+            or pending.claimed_revision != revision
+            or not pending.gain_groups
+        ):
+            raise RuntimeError("calibration origin changed before gain consumption")
+        if pending.offset_groups or pending.power_offset_groups:
+            self._pending_calibrations[lease.mac] = replace(
+                pending, gain_groups=(), claimed_revision=None, revision=revision + 1
+            )
+        else:
+            self._pending_calibrations.pop(lease.mac)
+
     def consume_calibration_origin(
         self, lease: CalibrationLease, operation_id: str, revision: int
     ) -> None:

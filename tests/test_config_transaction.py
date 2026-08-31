@@ -42,6 +42,7 @@ from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
     MeterTopology,
     StoredCTSelection,
+    StoredMeterRecord,
     SubstitutionChange,
 )
 from custom_components.circuitsetup_energy_meter_helper.session_manager import (
@@ -197,6 +198,15 @@ class UncertainUpdateBuilder(Builder):
 
 
 class Persistence:
+    async def async_advance_offset_configuration_source(
+        self,
+        mac: str,
+        expected_source_sha256: str,
+        proposed_sha256: str,
+        record: StoredMeterRecord,
+    ) -> bool:
+        return False  # This fake has no authoritative meter metadata; real Store tests cover advancement.
+
     def __init__(
         self,
         error: BaseException | None = None,

@@ -205,6 +205,7 @@ class _SessionHandle:
     calibration_plan: CalibrationPlan = "full"
     stock_offset_pending: bool = False
     offset_preparation_id: str | None = None
+    offset_finalization_id: str | None = None
 
     def status(self) -> SessionStatus:
         capability = getattr(self.binding, "offset_capability", None)
@@ -1146,7 +1147,7 @@ class EntryWorkflow:
         handle, revision = self._claim_ready_session(session_id)
         active = False
         try:
-            if handle.stock_offset_pending:
+            if handle.stock_offset_pending or handle.offset_finalization_id is not None:
                 raise WorkflowHandleError(
                     "stock offset preparation requires the receipt-aware resume path"
                 )
@@ -1235,6 +1236,37 @@ class EntryWorkflow:
                     set(targets), offset_stage=stage
                 )
                 generation = handle.binding.connection_generation
+                if (
+                    old is not None
+                    and old.preparation is None
+                    and old.original.sha256 == source.sha256
+                ):
+                    configured = {
+                        item.snapshot.instance_id: replace(
+                            item.snapshot, connection_generation=generation
+                        )
+                        for item in old.observations
+                        if item.source_sha256 == source.sha256
+                        and item.snapshot.reported_state == "configuration"
+                        and item.snapshot.offset_stage == stage
+                        and item.snapshot.instance_id in targets
+                    }
+                    missing = {
+                        instance
+                        for instance in targets
+                        if snapshots.get(instance) is None
+                    }
+                    if missing and missing <= set(configured):
+                        selected = await api.async_offset_configuration_selection(
+                            missing
+                        )
+                        if selected != dict.fromkeys(missing, generation):
+                            raise WorkflowCapabilityUnavailable(
+                                "configured offset tables need fresh selection"
+                            )
+                        snapshots.update(
+                            {instance: configured[instance] for instance in missing}
+                        )
                 captured = []
                 for instance in targets:
                     item = snapshots.get(instance)
@@ -1371,15 +1403,23 @@ class EntryWorkflow:
             else (),
         }
 
-    @staticmethod
     def _restore_offset_progress(
-        handle: _SessionHandle, record: OffsetRecoveryRecord | None
+        self, handle: _SessionHandle, record: OffsetRecoveryRecord | None
     ) -> None:
         if record is None:
             return
-        handle.stock_offset_pending = bool(
-            record.results or record.preparation is not None
+        final = record.finalization
+        handle.offset_finalization_id = (
+            final.operation_id if final is not None else None
         )
+        handle.stock_offset_pending = not (
+            self._require_offset_recovery().is_finalization_ready(record)
+            and record.configuration_selected
+            and final is not None
+            and handle.configuration == record.original.configuration
+            and handle.configuration_sha256 == final.proposed_sha256
+        )
+        handle.stock_offset_pending |= self._sessions_owner.pending_calibration(handle.mac) is not None
         prepared = record.preparation
         handle.offset_preparation_id = (
             prepared.operation_id if prepared is not None else None
@@ -1387,7 +1427,7 @@ class EntryWorkflow:
         if (
             prepared is None
             or handle.configuration != record.original.configuration
-            or handle.configuration_sha256 != prepared.proposed_sha256
+            or handle.configuration_sha256 != (final.proposed_sha256 if final is not None else prepared.proposed_sha256)
             or replace(handle.topology, evidence=())
             != replace(record.topology, evidence=())
         ):
@@ -1421,6 +1461,336 @@ class EntryWorkflow:
                         unfinished,
                         False,
                     )
+
+    async def async_get_offset_finalization(self, session_id: str) -> dict[str, Any]:
+        """Persisted purpose/results only; status never performs native work."""
+        handle = self._session(session_id)
+        lease = await self._sessions_owner.async_acquire_calibration(handle.mac)
+        try:
+            record = await self._require_offset_recovery().async_load(lease)
+            self._restore_offset_progress(handle, record)
+            return self._offset_finalization_status(record)
+        finally:
+            lease.release()
+
+    def _offset_finalization_status(
+        self, record: OffsetRecoveryRecord | None
+    ) -> dict[str, Any]:
+        final = record.finalization if record is not None else None
+        prepared = record.preparation if record is not None else None
+        return {
+            "purpose": "offset_finalization"
+            if final is not None
+            else "offset_preparation",
+            "operation_id": final.operation_id if final is not None else None,
+            "transaction_id": final.transaction_id if final is not None else None,
+            "stage": prepared.stage if prepared is not None else None,
+            "targets": final.targets if final is not None else (),
+            "backup_available": record is not None,
+            "installed": bool(record is not None and record.final_installed),
+            "cancelled": bool(record is not None and record.final_cancelled),
+            "configuration_selected": bool(
+                record is not None and record.configuration_selected
+            ),
+            "action_ready": self._require_offset_recovery().is_finalization_ready(
+                record
+            ),
+            "register_verified": False,
+            "gain_verification_id": final.verification_id
+            if final is not None
+            else None,
+            "board_index": (
+                0
+                if prepared.targets[0].startswith("meter_main")
+                else int(prepared.targets[0].split("_")[0].removeprefix("addon"))
+            )
+            if prepared is not None
+            else None,
+            "results": tuple(
+                (
+                    item.instance_id,
+                    item.stage,
+                    item.phase_values,
+                    item.register_verified,
+                )
+                for item in record.results
+            )
+            if record is not None
+            else (),
+        }
+
+    async def async_preview_offset_finalization(
+        self,
+        session_id: str,
+        *,
+        verification_id: str | None = None,
+        changes: tuple[Mapping[str, Any], ...] = (),
+        package_options: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Review captured stock candidates through the normal configuration owner."""
+        handle, revision = self._claim_ready_session(session_id, allow_verified=True)
+        try:
+            if self.transactions is None:
+                raise WorkflowCapabilityUnavailable(
+                    "stock offset finalization is unavailable"
+                )
+            recovery = self._require_offset_recovery()
+            api = self._require_api()
+            pending = self._sessions_owner.pending_calibration(handle.mac)
+            if pending is not None and pending.gain_groups:
+                raise WorkflowHandleError(
+                    "gains require independent restart verification before final review"
+                )
+            if verification_id is None and (changes or package_options is not None):
+                raise WorkflowHandleError(
+                    "gain verification is required for combined configuration changes"
+                )
+            requests = _ct_change_requests(changes)
+            requested = {item.channel: item for item in requests}
+            if any(
+                requested.get(channel) is None
+                or requested[channel].reporting_multiplier != multiplier
+                for channel, multiplier in handle.pending_reporting_multipliers.items()
+            ):
+                raise WorkflowHandleError(
+                    "calibrated reporting multiplier is missing from final CT changes"
+                )
+
+            def live_session() -> None:
+                if self._session(session_id) is not handle or handle.revoked:
+                    raise WorkflowHandleError("offset finalization session is stale")
+
+            lease = await self._sessions_owner.async_acquire_calibration(handle.mac)
+            try:
+                record = await recovery.async_load(lease)
+                if record is None or not record.results:
+                    raise WorkflowHandleError("captured stock offsets are absent")
+                source = await self._require_builder().async_get_config(
+                    record.original.configuration
+                )
+                targets = {item.instance_id for item in record.results}
+                captured = {(item.instance_id, item.stage) for item in record.results}
+                if record.finalization is None:
+                    observations = []
+                    for stage in (1, 2):
+                        missing = {
+                            instance
+                            for instance in targets
+                            if (instance, stage) not in captured
+                        }
+                        if not missing:
+                            continue
+                        snapshots = await api.async_offset_table_snapshot(
+                            missing, offset_stage=stage
+                        )
+                        for instance in missing:
+                            item = snapshots.get(instance)
+                            if (
+                                item is None
+                                or item.instance_id != instance
+                                or item.offset_stage != stage
+                                or item.connection_generation
+                                != api.connection_generation
+                            ):
+                                raise WorkflowCapabilityUnavailable(
+                                    "both effective offset stages must be known"
+                                )
+                            observations.append(item)
+                    if observations:
+                        record = await recovery.async_backup(
+                            lease, source, handle.topology, tuple(observations)
+                        )
+                self._assert_claim(handle, revision)
+                if verification_id is None:
+                    plan = recovery.build_finalization_plan(record, source)
+                    final = await recovery.async_review_finalization(
+                        lease,
+                        record,
+                        source,
+                        plan,
+                        session_id,
+                        api.connection_generation,
+                    )
+                    transaction = await self.transactions.async_preview(
+                        handle.mac,
+                        handle.topology,
+                        plan,
+                        source,
+                        offset_finalization=final,
+                        preparation_guard=live_session,
+                    )
+            finally:
+                lease.release()
+            if verification_id is not None:
+                transaction = await self.transactions.async_preview_calibrated_gains(
+                    handle.mac,
+                    handle.topology,
+                    verification_id,
+                    requests,
+                    frozenset(handle.calibrated_current_channels),
+                    package_options=package_options,
+                    offset_record=record,
+                    offset_session_id=session_id,
+                    offset_generation=api.connection_generation,
+                    preparation_guard=live_session,
+                )
+                lease = await self._sessions_owner.async_acquire_calibration(handle.mac)
+                try:
+                    reviewed = await recovery.async_load(lease)
+                    if reviewed is None or reviewed.finalization is None:
+                        raise WorkflowHandleError("offset finalization review changed")
+                    final = reviewed.finalization
+                finally:
+                    lease.release()
+            self._assert_claim(handle, revision)
+            handle.stock_offset_pending = True
+            handle.offset_finalization_id = final.operation_id
+            return {
+                "operation_id": final.operation_id,
+                "transaction": transaction,
+                "purpose": "offset_finalization",
+                "targets": final.targets,
+            }
+        except WorkflowHandleError, WorkflowCapabilityUnavailable, CalibrationBusyError:
+            raise
+        except Exception:  # noqa: BLE001 - redact private recovery and source failures
+            raise WorkflowCapabilityUnavailable(
+                "stock offset finalization is unavailable; recovery retained"
+            ) from None
+        finally:
+            self._release_claim(handle, revision)
+
+    async def async_reconcile_offset_finalization(
+        self, session_id: str, operation_id: str, *, timeout: float = 5.0
+    ) -> dict[str, Any]:
+        handle, revision = self._claim_ready_session(session_id, allow_verified=True)
+        try:
+            lease = await self._sessions_owner.async_acquire_calibration(handle.mac)
+            claimed = None
+            consumed = False
+            record = None
+            recovery = self._require_offset_recovery()
+            try:
+                record = await recovery.async_load(lease)
+                if (
+                    record is None
+                    or record.finalization is None
+                    or record.finalization.operation_id != operation_id
+                ):
+                    raise WorkflowHandleError("stock offset finalization changed")
+                api = self._require_api()
+                final = record.finalization
+                if self._sessions_owner.pending_calibration(handle.mac) is not None:
+                    claimed = self._sessions_owner.claim_calibration_origin(
+                        lease, api, handle.binding
+                    )
+
+                def exact_claim() -> None:
+                    self._assert_claim(handle, revision)
+                    if (
+                        claimed is not None
+                        and self._sessions_owner.pending_calibration(handle.mac)
+                        != claimed
+                    ):
+                        raise WorkflowHandleError("pending calibration origin changed")
+
+                generation = api.connection_generation
+                record = await recovery.async_reconcile_finalization(
+                    lease,
+                    final,
+                    api,
+                    source_reader=lambda: self._require_builder().async_get_config(
+                        record.original.configuration
+                    ),
+                    claim_guard=exact_claim,
+                    timeout=timeout,
+                )
+                if claimed is not None:
+                    async with api.hold_connection_generation(generation):
+                        source = await self._require_builder().async_get_config(
+                            record.original.configuration
+                        )
+                        exact_claim()
+                        await recovery.async_require_finalization(
+                            lease, final, installed=True
+                        )
+                        exact_claim()
+                        self._sessions_owner.consume_finalized_offsets(
+                            lease,
+                            claimed.operation_id,
+                            claimed.revision,
+                            record,
+                            source,
+                        )
+                        consumed = True
+                handle.configuration_sha256 = final.proposed_sha256
+                self._restore_offset_progress(handle, record)
+                handle.stock_offset_pending |= (
+                    self._sessions_owner.pending_calibration(handle.mac) is not None
+                )
+                handle.state = "offset_configuration_selected"
+                return self._offset_finalization_status(record)
+            except Exception, asyncio.CancelledError:
+                if record is not None and record.finalization is not None:
+                    await recovery.async_cancel_finalization(lease, record.finalization)
+                raise
+            finally:
+                if (
+                    claimed is not None
+                    and not consumed
+                    and self._sessions_owner.pending_calibration(handle.mac) == claimed
+                ):
+                    self._sessions_owner.release_calibration_origin_claim(
+                        lease, claimed.operation_id, claimed.revision
+                    )
+                lease.release()
+        except WorkflowHandleError, WorkflowCapabilityUnavailable, CalibrationBusyError:
+            raise
+        except Exception:  # noqa: BLE001 - redact private recovery and source failures
+            raise WorkflowCapabilityUnavailable(
+                "stock offset selection is unavailable; recovery retained"
+            ) from None
+        finally:
+            self._release_claim(handle, revision)
+
+    async def async_begin_offset_cycle(
+        self, session_id: str, *, backup_acknowledged: bool, timeout: float = 5.0
+    ) -> dict[str, Any]:
+        handle, revision = self._claim_ready_session(session_id, allow_verified=True)
+        try:
+            lease = await self._sessions_owner.async_acquire_calibration(handle.mac)
+            try:
+                if self._sessions_owner.pending_calibration(handle.mac) is not None:
+                    raise WorkflowHandleError(
+                        "pending calibration groups remain unresolved"
+                    )
+                recovery = self._require_offset_recovery()
+                record = await recovery.async_begin_new_cycle(
+                    lease,
+                    self._require_api(),
+                    source_reader=lambda: self._async_calibration_snapshot(
+                        handle.mac, handle.topology
+                    ),
+                    backup_acknowledged=backup_acknowledged,
+                    claim_guard=lambda: self._assert_claim(handle, revision),
+                    timeout=timeout,
+                )
+                handle.offset_results.clear()
+                handle.offset_skipped = False
+                handle.configuration_sha256 = record.original.sha256
+                handle.state = "ready"
+                self._restore_offset_progress(handle, record)
+                return self._offset_preparation_status(record)
+            finally:
+                lease.release()
+        except WorkflowHandleError, WorkflowCapabilityUnavailable, CalibrationBusyError:
+            raise
+        except Exception:  # noqa: BLE001 - redact private recovery and source failures
+            raise WorkflowCapabilityUnavailable(
+                "new offset cycle is unavailable; recovery retained"
+            ) from None
+        finally:
+            self._release_claim(handle, revision)
 
     async def async_resume_offset_calibration(
         self,
@@ -1682,6 +2052,28 @@ class EntryWorkflow:
         finally:
             self._release_claim(handle, revision)
 
+    async def async_restart_and_verify_gains(self, session_id: str) -> Any:
+        """Independently verify gains without completing pending stock offsets."""
+        handle, revision = self._claim_ready_session(session_id)
+        try:
+            if not handle.stock_offset_pending:
+                raise WorkflowHandleError("pending stock offset recovery is absent")
+            self._assert_claim(handle, revision)
+            result = await self._calibration.async_verify_gains_after_restart(
+                handle.mac,
+                self._require_api(),
+                handle.binding,
+                substitutions=handle.substitutions,
+            )
+            self._assert_claim(handle, revision)
+            handle.binding = result.binding
+            handle.state = "gains_verified_offsets_pending"
+            self._refresh(handle)
+            self._publish(handle)
+            return result.record
+        finally:
+            self._release_claim(handle, revision)
+
     async def async_restart_and_verify(self, session_id: str) -> Any:
         handle, revision = self._claim_ready_session(session_id)
         try:
@@ -1772,7 +2164,7 @@ class EntryWorkflow:
         """Clear only installed, gain-only groups and prove YAML is authoritative."""
         handle, revision = self._claim_ready_session(session_id, allow_verified=True)
         try:
-            if handle.state != "verified":
+            if handle.state not in {"verified", "offset_configuration_selected"} or handle.stock_offset_pending:
                 raise WorkflowHandleError("calibration source handoff is unavailable")
             record = await self._store.async_get_verified_calibration(handle.mac)
             if record is None or record.verification_id != verification_id:
@@ -1829,7 +2221,7 @@ class EntryWorkflow:
         with self._guard(handle.mac):
             handle = self._session_locked(session_id)
             if (
-                handle.offset_preparation_id is not None
+                (handle.offset_preparation_id is not None or handle.offset_finalization_id is not None)
                 and self._sessions_owner.is_config_locked(handle.mac)
                 and not self._sessions_owner.is_calibration_locked(handle.mac)
             ):
@@ -2294,13 +2686,22 @@ class EntryWorkflow:
                         )
             except BaseException as error:  # noqa: BLE001 - finish local scrub
                 errors.append(error)
-        if cancel_preparation and handle.offset_preparation_id is not None:
+        if cancel_preparation and (handle.offset_preparation_id is not None or handle.offset_finalization_id is not None):
             try:
                 lease = await self._sessions_owner.async_acquire_calibration(handle.mac)
                 try:
                     recovery = self._require_offset_recovery()
                     record = await recovery.async_load(lease)
                     if (
+                        record is not None
+                        and record.finalization is not None
+                        and record.finalization.operation_id
+                        == handle.offset_finalization_id
+                    ):
+                        await recovery.async_cancel_finalization(
+                            lease, record.finalization
+                        )
+                    elif (
                         record is not None
                         and record.preparation is not None
                         and record.preparation.operation_id
