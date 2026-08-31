@@ -58,6 +58,21 @@ from tests.test_store import (
 )
 
 
+def test_unowned_matching_record_does_not_resolve_unknown_native_visibility() -> None:
+    content = _document(contract=True)
+    original = _inventory(content)
+    configuration = original.configuration
+    stored = StoredMeterConfiguration(original.source_sha256, configuration.meter,
+        configuration.channels, configuration.default_totals, configuration.automatic_totals,
+        configuration.aggregates, configuration.power_quality, configuration.status_fields,
+        totals_managed=False)
+    loaded = _inventory(content, stored=stored)
+    assert not loaded.capabilities.managed_advanced_totals
+    assert not loaded.capabilities.native_totals_writable
+    assert not loaded.native_visibility_resolved
+    assert loaded.configuration.channels == original.configuration.channels
+
+
 def test_capability_model_has_exact_frozen_slots_contract() -> None:
     assert tuple(field.name for field in fields(MeterConfigurationCapabilities)) == (
         "configuration_authoritative",

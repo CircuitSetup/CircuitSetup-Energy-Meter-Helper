@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 from test_firmware_contract import _contract_fixture
+
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
 from custom_components.circuitsetup_energy_meter_helper.total_graph import (
-    default_total_settings, native_total_sources,
+    default_total_settings,
+    native_total_sources,
 )
 
 ROOT = Path(__file__).parents[1]

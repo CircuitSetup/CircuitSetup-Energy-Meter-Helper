@@ -149,6 +149,7 @@ class MeterConfigurationInventory:
     legacy_parent_links: tuple[LegacyParentLink, ...]
     native_visibility_confirmation_required: bool = False
     native_visibility_resolved: bool = True
+    totals_managed: bool = False
 
     def validate_totals_change(self, requested: MeterConfigurationRequest, *, preview_only: bool = False) -> None:
         """Check explicit decisions against this source-bound inventory, never clear them."""
@@ -276,12 +277,13 @@ class MeterConfigurationInventory:
                 voltage_topology = voltage_reference_topology_from_legacy(topology)
                 stale = True
         before_metadata = configuration
+        totals_managed = bool(matching is not None and matching.totals_managed and not stale)
         try:
             defaults = _native_totals_metadata(document)
-            if defaults is not None and semantic_source == "helper_managed" and not stale and defaults != configuration.default_totals:
+            if defaults is not None and totals_managed and defaults != configuration.default_totals:
                 raise ValueError("native metadata disagrees with stored outputs")
             configuration, automatic_ids = _automatic_totals_metadata(
-                document, configuration, authoritative=semantic_source == "helper_managed" and not stale)
+                document, configuration, authoritative=totals_managed)
             aggregates, aggregate_warnings, detected_parent_links = _detected_aggregates(
                 document, configuration.channels, configuration.aggregates, topology, configuration
             )
@@ -325,7 +327,7 @@ class MeterConfigurationInventory:
             aggregate_warnings = tuple(
                 dict.fromkeys((*aggregate_warnings, "aggregate_semantics_unreadable"))
             )
-        if semantic_source != "helper_managed" and _native_totals_metadata(document, strict=False) is None:
+        if not totals_managed and _native_totals_metadata(document, strict=False) is None:
             normalized_defaults = _source_normalized_default_totals(document, topology)
             visibility_unconfirmed = normalized_defaults is None
             if normalized_defaults is not None:
@@ -334,7 +336,7 @@ class MeterConfigurationInventory:
         if "aggregate_semantics_unreadable" in aggregate_warnings:
             capabilities = replace(capabilities, native_totals_writable=False,
                 managed_automatic_totals=False, managed_advanced_totals=False)
-        if stale or visibility_unconfirmed or semantic_source != "helper_managed":
+        if stale or visibility_unconfirmed or not totals_managed:
             capabilities = replace(
                 capabilities,
                 native_totals_writable=False,
@@ -344,7 +346,7 @@ class MeterConfigurationInventory:
                     *capabilities.reason_codes,
                     *(("stored_semantics_stale",) if stale else ()),
                     *(("native_visibility_unconfirmed",) if visibility_unconfirmed else ()),
-                    *(("totals_adoption_required",) if semantic_source != "helper_managed" else ()),
+                    *(("totals_adoption_required",) if not totals_managed else ()),
                 ),
             )
         native_ids = {
@@ -402,6 +404,7 @@ class MeterConfigurationInventory:
                 migration and migration.native_visibility_confirmation_required
             ),
             native_visibility_resolved=not visibility_unconfirmed,
+            totals_managed=totals_managed,
         )
 
 

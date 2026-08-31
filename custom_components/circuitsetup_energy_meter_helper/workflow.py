@@ -535,7 +535,8 @@ class EntryWorkflow:
             "ct_catalog": inventory.ct_catalog,
             "warnings": inventory.warnings,
             "configuration_impact": estimate_configuration_impact(
-                inventory.configuration, inventory.topology
+                inventory.configuration, inventory.topology,
+                document=document, previous=inventory.configuration,
             ),
             "channels": inventory.ct_inventory.channels,
             "catalog": inventory.ct_catalog,
@@ -670,6 +671,8 @@ class EntryWorkflow:
                 raise ValueError("automatic candidate settings require booleans")
         plan.inventory.validate_totals_change(current, preview_only=True)
         graph = plan_total_graph(current, plan.topology)
+        impact = estimate_configuration_impact(current, plan.topology,
+            document=ESPHomeConfigDocument.parse(plan.snapshot.content), previous=plan.inventory.configuration)
         # IDs are bounded by four roles times all distinct topology CT pairs.
         plan.issued_total_candidate_ids.update(candidate.candidate_id for candidate in candidates)
         return {
@@ -677,6 +680,7 @@ class EntryWorkflow:
             "automatic_candidates": candidates,
             "automatic_totals": resolve_automatic_totals(candidates, current.automatic_totals),
             "stale_automatic_total_settings": stale,
+            "configuration_impact": impact,
             "graph": {
                 "native_visibility": graph.native_visibility,
                 "ordered_nodes": graph.ordered_nodes,
@@ -733,12 +737,17 @@ class EntryWorkflow:
             )
             for channel in requested.channels
         )
+        current_candidate_ids = {item.candidate_id for item in automatic_total_candidates(requested)}
+        stale_settings = {item.candidate_id: item for item in (
+            *plan.inventory.stale_automatic_total_settings,
+            *plan.inventory.configuration.automatic_totals,
+        ) if item.candidate_id not in current_candidate_ids}
         configuration = StoredMeterConfiguration(
             proposed_sha256,
             requested.meter,
             requested.channels,
             requested.default_totals,
-            requested.automatic_totals,
+            (*stale_settings.values(), *requested.automatic_totals),
             requested.aggregates,
             requested.power_quality,
             requested.status_fields,
@@ -749,14 +758,17 @@ class EntryWorkflow:
                 plan.inventory.legacy_parent_links,
                 plan.inventory.native_visibility_confirmation_required,
             ),
+            totals_managed=plan.inventory.totals_managed,
         )
-        expected = expected_meter_entity_evidence(requested, plan.topology)
+        expected = expected_meter_entity_evidence(requested, plan.topology,
+            document=ESPHomeConfigDocument.parse(plan.snapshot.content), previous=plan.inventory.configuration)
         status = await manager.async_preview(
             plan.mac,
             plan.topology,
             mutation,
             plan.snapshot,
             meter_configuration=configuration,
+            totals_change_intent=requested.totals_change_intent,
             expected_sensor_entities=expected.sensor_entities,
             expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
         )

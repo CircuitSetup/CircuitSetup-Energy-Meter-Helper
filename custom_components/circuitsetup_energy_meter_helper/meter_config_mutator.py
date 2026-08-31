@@ -39,6 +39,7 @@ from .meter_inventory import (
     _managed_sensor_items,
     _plain_sensor_scalar,
     _replacement_metadata,
+    _root_sensor_items,
 )
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
 from .store import (
@@ -50,7 +51,6 @@ from .total_graph import (
     NativeVisibilityOverride,
     PlannedTotalNode,
     TotalRenderPlan,
-    _active_aggregates,
     _desired_native_outputs,
     automatic_total_candidates,
     native_total_sources,
@@ -65,17 +65,24 @@ class ExpectedMeterEntityEvidence:
 
     sensor_entities: frozenset[tuple[str, str]]
     aggregate_sensor_entities: frozenset[tuple[str, str]]
+    native_sensor_entities: frozenset[tuple[str, str]]
+    source_owned_sensor_entities: frozenset[tuple[str, str]]
 
 
 def expected_meter_entity_evidence(
-    requested: MeterConfigurationRequest, topology: MeterTopology,
-    *, document: ESPHomeConfigDocument | None = None,
+    requested: MeterConfigurationRequest,
+    topology: MeterTopology,
+    *,
+    document: ESPHomeConfigDocument | None = None,
     previous: MeterConfigurationRequest | None = None,
 ) -> ExpectedMeterEntityEvidence:
     """Derive reconnect evidence from rendered non-internal ESPHome entity names."""
     validate_meter_configuration(requested, topology)
+    replacements = ""
     if document is not None:
-        requested, _replacements = _select_render_totals(requested, topology, document, previous)
+        requested, replacements = _select_render_totals(
+            requested, topology, document, previous
+        )
     friendly_name = requested.meter.friendly_name
     voltage_names = [
         f"{friendly_name} {reference.label} {suffix}"
@@ -83,6 +90,48 @@ def expected_meter_entity_evidence(
         for suffix in ("Voltage", "Frequency")
     ]
     aggregate_names: list[str] = []
+    native_names: dict[str, str] = {}
+    for source in native_total_sources(topology):
+        outputs = _desired_native_outputs(requested, source)
+        suffix = (
+            " Main"
+            if source.source_id == "board-main" or topology.board_count == 1
+            else f" Add-on{source.source_id.rsplit('-', 1)[1]}"
+            if source.source_id != "overall"
+            else ""
+        )
+        if outputs.watts:
+            native_names[source.power_id] = f"{friendly_name} Total Watts{suffix}"
+        if outputs.amps:
+            native_names[source.current_id] = f"{friendly_name} Total Amps{suffix}"
+        if outputs.kwh:
+            if source.existing_energy_id is not None:
+                native_names[source.existing_energy_id] = f"{friendly_name} Total kWh"
+            else:
+                aggregate_names.append(f"{friendly_name} {source.label} Energy")
+    if document is not None and (span := document.writable_sensor_span) is not None:
+        # Read the supported local scalar grammar; explicit names must not become invented defaults.
+        try:
+            items = _managed_sensor_items(
+                document.content[span.start : span.end], document.sensor_item_indent
+            )
+        except ValueError as error:
+            raise ValueError("native sensor names are not safely writable") from error
+        for item in sorted(
+            items, key=lambda item: item.get("id", "").startswith("!extend ")
+        ):
+            sensor_id = _plain_sensor_scalar(
+                item.get("id", "").removeprefix("!extend ")
+            )
+            if sensor_id in native_names and "name" in item:
+                native_names[sensor_id] = _total_sensor_name(
+                    item["name"], friendly_name
+                )
+    aggregate_names.extend(native_names.values())
+    external_names, _ = _source_owned_total_evidence(
+        requested, topology, document, replacements
+    )
+    aggregate_names.extend(external_names)
     for node in plan_total_graph(requested, topology).ordered_nodes:
         aggregate = node.aggregate
         prefix = f"{friendly_name} {aggregate.name}"
@@ -90,13 +139,24 @@ def expected_meter_entity_evidence(
             aggregate_names.append(f"{prefix} Power")
         if aggregate.outputs.amps:
             aggregate_names.append(f"{prefix} Current")
-        if aggregate.outputs.kwh and aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
+        if aggregate.outputs.kwh and aggregate.energy_mode in (
+            EnergyMode.CONSUMPTION,
+            EnergyMode.GENERATION,
+        ):
             aggregate_names.append(f"{prefix} Energy")
         elif aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
             aggregate_names.extend(
                 (
-                    *( (f"{prefix} Return to Grid Power", f"{prefix} Import Power") if aggregate.outputs.watts else ()),
-                    *( (f"{prefix} Return to Grid Energy", f"{prefix} Import Energy") if aggregate.outputs.kwh else ()),
+                    *(
+                        (f"{prefix} Return to Grid Power", f"{prefix} Import Power")
+                        if aggregate.outputs.watts
+                        else ()
+                    ),
+                    *(
+                        (f"{prefix} Return to Grid Energy", f"{prefix} Import Energy")
+                        if aggregate.outputs.kwh
+                        else ()
+                    ),
                 )
             )
     names = (*voltage_names, *aggregate_names)
@@ -105,10 +165,68 @@ def expected_meter_entity_evidence(
         raise ValueError("ESPHome object-ID collision for meter entities")
     return ExpectedMeterEntityEvidence(
         frozenset(zip(object_ids, names, strict=True)),
-        frozenset(
-            (_esphome_object_id(name), name) for name in aggregate_names
-        ),
+        frozenset((_esphome_object_id(name), name) for name in aggregate_names),
+        frozenset((_esphome_object_id(name), name) for name in native_names.values()),
+        frozenset((_esphome_object_id(name), name) for name in external_names),
     )
+
+
+def _total_sensor_name(value: str, friendly_name: str) -> str:
+    """Resolve only supported literal names and the pinned friendly-name substitution."""
+    if value.startswith('"'):
+        value = json.loads(value)
+    elif value.startswith("'") and value.endswith("'"):
+        value = value[1:-1].replace("''", "'")
+    value = value.replace("${friendly_name}", friendly_name)
+    if (
+        not value
+        or value.lower() in {"none", "null", "true", "false"}
+        or any(token in value for token in ("${", "!", "\n", "\r"))
+    ):
+        raise ValueError("total sensor name cannot be resolved safely")
+    return value
+
+
+def _source_owned_total_evidence(
+    requested: MeterConfigurationRequest,
+    topology: MeterTopology,
+    document: ESPHomeConfigDocument | None,
+    replacements: str,
+) -> tuple[list[str], int]:
+    """Count supported surviving W/A, never infer ownership of external daily energy."""
+    if document is None:
+        return [], 0
+    sensor_ids = {
+        sensor_id
+        for ids in _legacy_replacement_sources(
+            document, topology, requested.channels
+        ).values()
+        for sensor_id in ids
+    }
+    items = _root_sensor_items(document)
+    effective: dict[str, dict[str, str]] = {}
+    for item in sorted(
+        items, key=lambda item: item.get("id", "").startswith("!extend ")
+    ):
+        sensor_id = _plain_sensor_scalar(item.get("id", "").removeprefix("!extend "))
+        if sensor_id in sensor_ids:
+            effective.setdefault(sensor_id, {}).update(item)
+    for item in _managed_sensor_items(replacements, 2) if replacements else ():
+        sensor_id = _plain_sensor_scalar(item.get("id", "").removeprefix("!extend "))
+        if sensor_id in effective:
+            effective[sensor_id]["internal"] = "true"
+    names = []
+    internal = 0
+    for item in effective.values():
+        if item.get("internal") == "true":
+            internal += 1
+        elif item.get("internal", "false") == "false" and item.get("name"):
+            names.append(
+                _total_sensor_name(item["name"], requested.meter.friendly_name)
+            )
+        else:
+            raise ValueError("source-owned total visibility cannot be resolved safely")
+    return names, internal
 
 
 def build_meter_configuration_mutation(
@@ -141,9 +259,10 @@ def build_meter_configuration_mutation(
         aggregates_changed or requested.default_totals != previous.default_totals
         or requested.automatic_totals != previous.automatic_totals
         or automatic_total_candidates(requested) != automatic_total_candidates(previous)
+        or requested.totals_change_intent.adopt_managed_totals
     )
     managed_totals_upgrade_required = (
-        aggregates_changed and not current.capabilities.managed_totals
+        aggregates_changed and "config_contract_upgrade_required" in current.capabilities.reason_codes
     )
     if (
         len(requested.meter.voltage_references) > 1
@@ -293,13 +412,39 @@ def build_meter_configuration_mutation(
                 for reference in requested.meter.voltage_references
             ),
         )
+    total_notes: list[str] = []
     if totals_changed:
-        rendered_blocks["Aggregate"] = _managed_block_diff(
-            source_document.managed_blocks.get("aggregates"),
-            proposed_document.managed_blocks.get("aggregates")
+        selected, replacements = _select_render_totals(
+            requested, topology, source_document, previous
         )
+        if replacements:
+            external = _legacy_replacement_sources(
+                source_document, topology, requested.channels
+            )
+            total_notes.extend(
+                f"~ {item.name}: replaces supported custom Watts/Amps"
+                for item in selected.aggregates
+                if item.aggregate_id in external
+            )
+        native_energy = {
+            source.existing_energy_id: source.power_id
+            for source in native_total_sources(topology)
+            if source.existing_energy_id
+        }
+        external_document = ESPHomeConfigDocument.parse(
+            replace_managed_block(source_document.content, "aggregates", "")
+        )
+        if any(
+            _plain_sensor_scalar(item.get("platform", "")) == "total_daily_energy"
+            and native_energy.get(_plain_sensor_scalar(item.get("id", "")))
+            != _plain_sensor_scalar(item.get("power_id", ""))
+            for item in _root_sensor_items(external_document)
+        ):
+            total_notes.append(
+                "~ Existing external custom kWh preserved; unverified and excluded from computed counts"
+            )
     review_diff = _grouped_review_diff(
-        previous, requested, rendered_diff, rendered_blocks
+        previous, requested, topology, rendered_diff, rendered_blocks, total_notes
     )
     return ConfigMutationPlan(
         plan.configuration,
@@ -313,8 +458,10 @@ def build_meter_configuration_mutation(
 def _grouped_review_diff(
     previous: MeterConfigurationRequest,
     requested: MeterConfigurationRequest,
+    topology: MeterTopology,
     rendered_diff: str = "",
     rendered_blocks: dict[str, list[str]] | None = None,
+    total_notes: list[str] | None = None,
 ) -> str:
     """Return semantic, line-oriented review data without YAML secrets or gains."""
     rendered: dict[str, list[str]] = {
@@ -376,12 +523,13 @@ def _grouped_review_diff(
     channel_lines = [*rendered["Channel"], *channel_lines]
     if channel_lines:
         groups.append(("Channel", channel_lines))
-    aggregate_lines = lines(
-        _aggregate_review_value(previous), _aggregate_review_value(requested)
-    )
-    aggregate_lines = [*rendered["Aggregate"], *aggregate_lines]
-    if aggregate_lines:
-        groups.append(("Aggregate", aggregate_lines))
+    total_groups = _total_review_groups(previous, requested, topology)
+    if total_notes:
+        if total_groups and total_groups[-1][0] == "Advanced total hierarchy":
+            total_groups[-1][1].extend(total_notes)
+        else:
+            total_groups.append(("Advanced total hierarchy", total_notes))
+    groups.extend(total_groups)
     package_lines = lines(
         _package_review_value(previous), _package_review_value(requested)
     )
@@ -477,21 +625,113 @@ def _channel_review_value(configuration: MeterConfigurationRequest) -> dict[str,
     }
 
 
-def _aggregate_review_value(configuration: MeterConfigurationRequest) -> dict[str, object]:
-    return {
-        aggregate.aggregate_id: {
-            "name": aggregate.name,
-            "role": aggregate.role.value,
-            "sources": [_serialize_total_source(source) for source in aggregate.sources],
-            "measurement_method": aggregate.measurement_method.value,
-            "energy_mode": aggregate.energy_mode.value,
-            "outputs": _serialize_outputs(aggregate.outputs),
-        }
-        for aggregate in _active_aggregates(configuration)
+def _total_review_groups(
+    previous: MeterConfigurationRequest,
+    requested: MeterConfigurationRequest,
+    topology: MeterTopology,
+) -> list[tuple[str, list[str]]]:
+    """Use planner labels in the primary review, not renderer implementation IDs."""
+    native_lines = []
+    for source in native_total_sources(topology):
+        old, new = (
+            _desired_native_outputs(config, source) for config in (previous, requested)
+        )
+        for field, label in (("watts", "Watts"), ("amps", "Amps"), ("kwh", "kWh")):
+            if getattr(old, field) != getattr(new, field):
+                native_lines.append(
+                    f"~ {source.label}: {label} {'exposed' if getattr(old, field) else 'hidden'} -> {'exposed' if getattr(new, field) else 'hidden'}"
+                )
+    if requested.totals_change_intent.adopt_managed_totals:
+        native_lines.append("~ Explicitly adopt managed totals")
+    groups = [("Default meter totals", native_lines)] if native_lines else []
+    plans = [plan_total_graph(config, topology) for config in (previous, requested)]
+    old_nodes, new_nodes = (
+        {node.aggregate.aggregate_id: node for node in plan.ordered_nodes}
+        for plan in plans
+    )
+    advanced_ids = {
+        item.aggregate_id
+        for config in (previous, requested)
+        for item in config.aggregates
     }
+    for title, advanced in (
+        ("Suggested circuit totals", False),
+        ("Advanced total hierarchy", True),
+    ):
+        changes: list[str] = []
+        for identifier in dict.fromkeys((*old_nodes, *new_nodes)):
+            if (identifier in advanced_ids) != advanced:
+                continue
+            old_node, new_node = old_nodes.get(identifier), new_nodes.get(identifier)
+            if old_node == new_node:
+                continue
+            for sign, node in (("-", old_node), ("+", new_node)):
+                if node is None:
+                    continue
+                aggregate = node.aggregate
+                sources = " + ".join(source.label for source in node.sources)
+                outputs = "; ".join(
+                    f"{label} {'exposed' if enabled else 'hidden'}"
+                    for label, enabled in (
+                        ("Watts", aggregate.outputs.watts),
+                        ("Amps", aggregate.outputs.amps),
+                        ("kWh", aggregate.outputs.kwh),
+                    )
+                )
+                changes.append(
+                    f"{sign} {aggregate.name}: {sources}; {outputs}; {aggregate.energy_mode.value}; {aggregate.measurement_method.value}"
+                )
+        if not advanced:
+            old_settings = {
+                item.candidate.candidate_id: item
+                for item in resolve_automatic_totals(
+                    automatic_total_candidates(previous), previous.automatic_totals
+                )
+            }
+            for item in resolve_automatic_totals(
+                automatic_total_candidates(requested), requested.automatic_totals
+            ):
+                if item != old_settings.get(item.candidate.candidate_id):
+                    changes.append(
+                        f"~ {item.candidate.name}: {'enabled' if item.enabled else 'disabled'}"
+                    )
+        if advanced and changes:
+            for node in plans[1].ordered_nodes:
+                if (
+                    node.aggregate.aggregate_id not in advanced_ids
+                    or node.aggregate.outputs.watts
+                    or not node.power_required
+                ):
+                    continue
+                parents = [
+                    parent.aggregate.name
+                    for parent in plans[1].ordered_nodes
+                    if any(
+                        source.power_id == node.power_id for source in parent.sources
+                    )
+                ]
+                if parents:
+                    changes.append(
+                        f"~ {node.aggregate.name}: Watts hidden; retained internally for {', '.join(parents)}"
+                    )
+        if advanced:
+            for decision in requested.totals_change_intent.legacy_parent_decisions:
+                names = {
+                    item.aggregate_id: item.name
+                    for config in (previous, requested)
+                    for item in config.aggregates
+                }
+                changes.append(
+                    f"~ {names.get(decision.child_id, 'Removed total')} -> {names.get(decision.proposed_parent_id, 'Removed total')}: legacy link {'accepted' if decision.accepted else 'rejected'}"
+                )
+        if changes:
+            groups.append((title, changes))
+    return groups
 
 
-def _package_review_value(configuration: MeterConfigurationRequest) -> dict[str, object]:
+def _package_review_value(
+    configuration: MeterConfigurationRequest,
+) -> dict[str, object]:
     return {
         "main" if board == 0 else f"addon{board}": {
             "power_quality": configuration.power_quality[board],

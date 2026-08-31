@@ -570,6 +570,7 @@ class StoredMeterConfiguration:
     ct_selections: tuple[StoredCTSelection, ...] = ()
     multi_reference_preparation_acknowledged: bool = False
     totals_migration: TotalsMigrationRecord | None = None
+    totals_managed: bool = True
 
     def __post_init__(self) -> None:
         if re.fullmatch(r"[0-9a-f]{64}", self.config_sha256) is None:
@@ -611,6 +612,8 @@ class StoredMeterConfiguration:
             raise TypeError("ct_selections must be a tuple of StoredCTSelection")
         if type(self.multi_reference_preparation_acknowledged) is not bool:
             raise TypeError("multi-reference acknowledgement must be boolean")
+        if type(self.totals_managed) is not bool:
+            raise TypeError("totals ownership must be boolean")
         if self.totals_migration is not None and not isinstance(
             self.totals_migration, TotalsMigrationRecord
         ):
@@ -892,6 +895,7 @@ def _serialize_meter_configuration(
         ],
         "multi_reference_preparation_acknowledged": False,
         "totals_migration": _serialize_totals_migration(configuration.totals_migration),
+        "totals_managed": configuration.totals_managed,
     }
 
 
@@ -1195,7 +1199,7 @@ def _deserialize_v15_meter_configuration(
     data: dict[str, Any], topology: MeterTopology
 ) -> StoredMeterConfiguration:
     required = {"config_sha256", "meter", "channels", "default_totals", "automatic_totals", "aggregates", "power_quality", "status_fields", "totals_migration"}
-    optional = {"ct_selections", "multi_reference_preparation_acknowledged"}
+    optional = {"ct_selections", "multi_reference_preparation_acknowledged", "totals_managed"}
     if not required <= set(data) <= required | optional or any(not isinstance(key, str) for key in data):
         raise ValueError("stored meter configuration payload is invalid")
     # Reuse the strict legacy-shaped decoder for meter/channel validation, then replace totals.
@@ -1246,7 +1250,7 @@ def _deserialize_v15_meter_configuration(
             tuple(LegacyParentLink(**_exact_mapping(link, {"child_id", "proposed_parent_id"}, "legacy parent link")) for link in raw_migration["legacy_parent_links"]),
             raw_migration["native_visibility_confirmation_required"],
         )
-    configuration = replace(base, default_totals=defaults, automatic_totals=automatic, aggregates=tuple(aggregates), totals_migration=migration)
+    configuration = replace(base, default_totals=defaults, automatic_totals=automatic, aggregates=tuple(aggregates), totals_migration=migration, totals_managed=data.get("totals_managed", True))
     _validate_configuration(configuration, topology)
     return configuration
 

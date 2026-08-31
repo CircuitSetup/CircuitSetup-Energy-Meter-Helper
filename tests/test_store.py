@@ -619,6 +619,21 @@ def _configuration() -> StoredMeterConfiguration:
     )
 
 
+def test_totals_ownership_survives_storage_and_rejects_non_boolean() -> None:
+    async def run() -> None:
+        store = object.__new__(HelperStore)
+        store._store = _CopyingStorage()
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+        unowned = replace(_configuration(), totals_managed=False)
+        await store.async_save_verified_meter_configuration(MAC, CONFIG_HASH, unowned)
+        assert (await store.async_get_meter_configuration(MAC)).totals_managed is False
+        raw = store._store.data["meters"][MAC]["meter_configuration"]
+        raw["totals_managed"] = 1
+        assert (await store.async_get_meter_configuration_read(MAC)).stale
+    asyncio.run(run())
+
+
 class _CopyingStorage:
     """Model Home Assistant storage returning independent loaded documents."""
 
@@ -1103,6 +1118,7 @@ def test_verified_meter_configuration_round_trips_without_operation_acknowledgem
             "ct_selections",
             "multi_reference_preparation_acknowledged",
             "totals_migration",
+            "totals_managed",
         }
         assert raw["multi_reference_preparation_acknowledged"] is False  # type: ignore[index]
 

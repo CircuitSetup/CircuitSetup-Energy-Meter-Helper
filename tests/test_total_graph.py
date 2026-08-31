@@ -39,6 +39,20 @@ def channel_source(channel: int) -> ChannelTotalSource:
     return ChannelTotalSource("channel", channel)
 
 
+@pytest.mark.parametrize("role", (CircuitRole.GRID, CircuitRole.SOLAR, CircuitRole.SUBPANEL, CircuitRole.TWO_POLE))
+def test_server_candidate_accepts_explicit_off_settings(role: CircuitRole) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        validate_meter_configuration,
+    )
+
+    original = request()
+    configured = replace(original, channels=tuple(replace(channel, role=role) if channel.channel <= 2 else channel for channel in original.channels))
+    candidate = automatic_total_candidates(configured)[0]
+    configured = replace(configured, automatic_totals=(AutomaticTotalSettings(candidate.candidate_id, False, candidate.recommended_outputs),))
+    validate_meter_configuration(configured, topology(0))
+    assert not plan_total_graph(configured, topology(0)).ordered_nodes
+
+
 def native_source(source_id: str) -> NativeTotalSource:
     return NativeTotalSource("native_total", source_id)
 

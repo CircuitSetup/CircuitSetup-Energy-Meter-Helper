@@ -245,6 +245,67 @@ def _inventory(
     )
 
 
+@pytest.mark.parametrize("addons", (0, 1))
+def test_public_total_evidence_uses_native_firmware_names(addons: int) -> None:
+    from tests.test_meter_configuration import request, topology
+
+    configuration = request(addons=addons)
+    evidence = expected_meter_entity_evidence(configuration, topology(addons))
+    names = {name for _, name in evidence.aggregate_sensor_entities}
+    assert "Kitchen meter Total Watts Main" in names
+    assert "Kitchen meter Total Amps Main" in names
+    assert "Kitchen meter Total kWh" in names
+    if addons:
+        assert "Kitchen meter Total Watts Add-on1" in names
+        assert "Kitchen meter Total Watts" in names
+        assert "Kitchen meter Main Board total Energy" in names
+        assert len(names) == 9
+    else:
+        assert len(names) == 3
+
+
+def test_native_evidence_uses_supported_source_name_overrides() -> None:
+    from tests.test_meter_configuration import request, topology
+
+    document = ESPHomeConfigDocument.parse('sensor:\n  - id: !extend totalWattsMain\n    name: "${friendly_name} Custom watts"\n')
+    evidence = expected_meter_entity_evidence(request(), topology(), document=document)
+    names = {name for _, name in evidence.aggregate_sensor_entities}
+    assert "Kitchen meter Custom watts" in names
+    assert "Kitchen meter Total Watts Main" not in names
+
+
+def test_review_totals_uses_human_sources_and_dependency_reasons() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AggregateTotalSource,
+        NativeTotalSource,
+    )
+    from tests.test_meter_configuration import topology as make_topology
+    topology = make_topology(1)
+    snapshot = _contract_snapshot_for(topology)
+    current = _owned_inventory(snapshot, topology)
+    child = CircuitAggregate("child", "East wing", CircuitRole.CUSTOM,
+        (NativeTotalSource("native_total", "board-main"),), MeasurementMethod.DIRECT,
+        EnergyMode.NONE, TotalOutputSettings(False, False, False))
+    parent = CircuitAggregate("parent", "Whole building", CircuitRole.CUSTOM,
+        (AggregateTotalSource("aggregate", "child"), NativeTotalSource("native_total", "board-addon-1")),
+        MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION, TotalOutputSettings(True, False, True))
+    requested = replace(current.configuration, aggregates=(child, parent),
+        default_totals=replace(current.configuration.default_totals,
+            overall=TotalOutputSettings(True, False, True)))
+    review = build_meter_configuration_mutation(snapshot, topology, current, requested).redacted_diff
+    assert "Default meter totals" in review
+    assert "Overall meter total: Amps exposed -> hidden" in review
+    assert "Advanced total hierarchy" in review
+    assert "East wing + Add-on 1 total" in review
+    assert "Watts hidden; retained internally for Whole building" in review
+    assert "csemh_" not in review
+    installed = replace(snapshot, content=build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content)
+    installed = replace(installed, sha256=sha256(installed.content.encode()).hexdigest())
+    reloaded = _owned_inventory(installed, topology)
+    second = replace(reloaded.configuration, aggregates=tuple(replace(item, name="Updated building") if item.aggregate_id == "parent" else item for item in reloaded.configuration.aggregates))
+    assert "external custom kWh" not in build_meter_configuration_mutation(installed, topology, reloaded, second).redacted_diff
+
+
 def _owned_inventory(snapshot, topology, *, stored=None):
     """Real hash-bound current record for renderer tests, not source adoption tests."""
     if stored is None:
@@ -253,6 +314,25 @@ def _owned_inventory(snapshot, topology, *, stored=None):
             configuration.default_totals, configuration.automatic_totals, configuration.aggregates,
             configuration.power_quality, configuration.status_fields)
     return _inventory(snapshot, topology, stored=stored)
+
+
+def test_explicit_adoption_materializes_enabled_automatic_totals_without_other_changes() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        TotalsChangeIntent,
+    )
+
+    snapshot, topology, current = _native_total_setup(0)
+    content = snapshot.content.replace("logger:\n", "".join(f"  - id: !extend {sensor_id}\n    internal: false\n" for sensor_id in ("totalWattsMain", "totalAmpsMain", "totalEnergyDaily")) + "logger:\n")
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    configuration = replace(current.configuration, channels=tuple(replace(channel, role=CircuitRole.GRID) if channel.channel <= 2 else channel for channel in current.configuration.channels))
+    stored = StoredMeterConfiguration(snapshot.sha256, configuration.meter, configuration.channels,
+        configuration.default_totals, (), (), configuration.power_quality, configuration.status_fields, totals_managed=False)
+    current = _inventory(snapshot, topology, stored=stored)
+    requested = replace(current.configuration, totals_change_intent=TotalsChangeIntent(True))
+    mutation = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    disabled = replace(requested, channels=tuple(replace(channel, role=CircuitRole.BRANCH) for channel in requested.channels))
+    assert "Suggested circuit totals" in build_meter_configuration_mutation(snapshot, topology, current, disabled).redacted_diff
+    assert "id: csemh_auto_mains_import_energy" in mutation.proposed_content
 
 
 def test_noop_is_byte_identical_and_surgical_edit_only_changes_requested_keys() -> None:
@@ -347,13 +427,13 @@ sensor:
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
 
     assert [line for line in plan.redacted_diff.splitlines() if not line.startswith(("+", "-", "~"))] == [
-        "Meter", "Voltage reference", "Channel", "Aggregate", "Package",
+        "Meter", "Voltage reference", "Channel", "Advanced total hierarchy", "Package",
     ]
     assert "+ friendly_name: Kitchen meter" in plan.redacted_diff
     assert "+ ct1_name: Kitchen mains" in plan.redacted_diff
     assert "+ power_quality_main: enabled" in plan.redacted_diff
     assert '+        name: "${friendly_name} Service Voltage"' in plan.redacted_diff
-    assert "+  - platform: template" in plan.redacted_diff
+    assert "+ Kitchen load:" in plan.redacted_diff
     assert "current_cal" not in plan.redacted_diff
     assert "gain_voltage" not in plan.redacted_diff
 
@@ -500,14 +580,8 @@ def test_generalized_mutation_renders_electrical_settings_and_references(
     assert block.count("disabled_by_default: true") == 3
     assert "board_revision" not in plan.proposed_content
 
-    stored = StoredMeterConfiguration(
-        sha256(plan.proposed_content.encode()).hexdigest(),
-        requested.meter,
-        requested.channels,
-        requested.aggregates,
-        requested.power_quality,
-        requested.status_fields,
-    )
+    stored = StoredMeterConfiguration(sha256(plan.proposed_content.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
+    requested.status_fields,)
     rehydrated_snapshot = replace(
         snapshot,
         content=plan.proposed_content,
@@ -583,14 +657,8 @@ def test_generalized_mutation_uses_one_representative_per_reference() -> None:
     ).fingerprint == expected.fingerprint
     assert block.count("\n    frequency:") == 2
 
-    stored = StoredMeterConfiguration(
-        sha256(plan.proposed_content.encode()).hexdigest(),
-        requested.meter,
-        requested.channels,
-        requested.aggregates,
-        requested.power_quality,
-        requested.status_fields,
-    )
+    stored = StoredMeterConfiguration(sha256(plan.proposed_content.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
+    requested.status_fields,)
     rehydrated = _inventory(
         replace(snapshot, content=plan.proposed_content, sha256=stored.config_sha256),
         topology,
@@ -701,14 +769,8 @@ def test_managed_voltage_reference_gains_fail_closed_but_ignore_outside_spoofs()
     malformed = plan.proposed_content.replace(
         "gain_voltage: 7305", "gain_voltage: 111", 1
     )
-    malformed_stored = StoredMeterConfiguration(
-        sha256(malformed.encode()).hexdigest(),
-        requested.meter,
-        requested.channels,
-        requested.aggregates,
-        requested.power_quality,
-        requested.status_fields,
-    )
+    malformed_stored = StoredMeterConfiguration(sha256(malformed.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
+    requested.status_fields,)
     malformed_inventory = _inventory(
         replace(snapshot, content=malformed, sha256=malformed_stored.config_sha256),
         topology,
@@ -778,14 +840,8 @@ def test_authoritative_inventory_emits_voltage_reference_mismatch_for_owned_yaml
     mismatched = plan.proposed_content.replace(
         "main=[main_1,main_2]", "other=[main_1,main_2]", 1
     )
-    stored = StoredMeterConfiguration(
-        sha256(plan.proposed_content.encode()).hexdigest(),
-        requested.meter,
-        requested.channels,
-        requested.aggregates,
-        requested.power_quality,
-        requested.status_fields,
-    )
+    stored = StoredMeterConfiguration(sha256(plan.proposed_content.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
+    requested.status_fields,)
 
     with pytest.raises(VoltageReferenceMismatchError):
         _inventory(
@@ -816,14 +872,8 @@ def test_authoritative_inventory_emits_voltage_reference_mismatch_for_external_g
     )
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
     changed = plan.proposed_content.replace("gain_voltage: 7305", "gain_voltage: 7306", 1)
-    stored = StoredMeterConfiguration(
-        sha256(plan.proposed_content.encode()).hexdigest(),
-        requested.meter,
-        requested.channels,
-        requested.aggregates,
-        requested.power_quality,
-        requested.status_fields,
-    )
+    stored = StoredMeterConfiguration(sha256(plan.proposed_content.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
+    requested.status_fields,)
 
     with pytest.raises(VoltageReferenceMismatchError):
         _inventory(
@@ -854,14 +904,8 @@ def test_unrelated_external_drift_only_marks_stored_semantics_stale() -> None:
     )
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
     changed = plan.proposed_content.replace("logger:\n  level: DEBUG", "logger:\n  level: INFO")
-    stored = StoredMeterConfiguration(
-        sha256(plan.proposed_content.encode()).hexdigest(),
-        requested.meter,
-        requested.channels,
-        requested.aggregates,
-        requested.power_quality,
-        requested.status_fields,
-    )
+    stored = StoredMeterConfiguration(sha256(plan.proposed_content.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
+    requested.status_fields,)
 
     inventory = _inventory(
         replace(
@@ -961,14 +1005,8 @@ def test_managed_voltage_reference_gains_reject_duplicate_or_nested_yaml(
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
     assert callable(mutation)
     tampered = mutation(plan.proposed_content)
-    stored = StoredMeterConfiguration(
-        sha256(tampered.encode()).hexdigest(),
-        requested.meter,
-        requested.channels,
-        requested.aggregates,
-        requested.power_quality,
-        requested.status_fields,
-    )
+    stored = StoredMeterConfiguration(sha256(tampered.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
+    requested.status_fields,)
 
     assert "stored_semantics_stale" in _inventory(
         replace(snapshot, content=tampered, sha256=stored.config_sha256),
@@ -992,14 +1030,8 @@ def test_inventory_requires_caller_digest_to_match_document_before_stored_state(
         ),
     )
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
-    stored = StoredMeterConfiguration(
-        sha256(plan.proposed_content.encode()).hexdigest(),
-        requested.meter,
-        requested.channels,
-        requested.aggregates,
-        requested.power_quality,
-        requested.status_fields,
-    )
+    stored = StoredMeterConfiguration(sha256(plan.proposed_content.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
+    requested.status_fields,)
     tampered = plan.proposed_content.replace("key: top-secret", "key: tampered")
 
     inventory = _inventory(
@@ -1040,14 +1072,8 @@ def test_managed_voltage_reference_gains_allow_harmless_comments() -> None:
         "        disabled_by_default: false # generated\n",
         1,
     )
-    stored = StoredMeterConfiguration(
-        sha256(compatible.encode()).hexdigest(),
-        requested.meter,
-        requested.channels,
-        requested.aggregates,
-        requested.power_quality,
-        requested.status_fields,
-    )
+    stored = StoredMeterConfiguration(sha256(compatible.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
+    requested.status_fields,)
 
     inventory = _inventory(
         replace(snapshot, content=compatible, sha256=stored.config_sha256),
@@ -1899,7 +1925,7 @@ def test_automatic_metadata_preserves_enabled_and_off_without_storage(enabled) -
     mutation = build_meter_configuration_mutation(snapshot, topology, current, requested)
     source = mutation.proposed_content
     if enabled:
-        assert '+ auto-mains:' in mutation.redacted_diff
+        assert '+ Mains:' in mutation.redacted_diff
     assert ("id: csemh_auto_mains_power" in source) == enabled
     installed = replace(snapshot, content=source, sha256=sha256(source.encode()).hexdigest())
     recovered = _inventory(installed, topology)
@@ -1908,7 +1934,7 @@ def test_automatic_metadata_preserves_enabled_and_off_without_storage(enabled) -
     assert tuple(channel.role for channel in recovered.configuration.channels) == tuple(channel.role for channel in requested.channels)
     assert not recovered.capabilities.managed_automatic_totals
     evidence = expected_meter_entity_evidence(requested, topology)
-    assert {name for _, name in evidence.aggregate_sensor_entities} == (
+    assert {name for _, name in evidence.aggregate_sensor_entities - evidence.native_sensor_entities} == (
         {f"{requested.meter.friendly_name} Mains Import Energy", f"{requested.meter.friendly_name} Mains Return to Grid Energy"}
         if enabled else set())
     stored = StoredMeterConfiguration(installed.sha256, requested.meter, requested.channels,
@@ -2267,6 +2293,10 @@ def test_custom_template_totals_are_internalized_before_managed_replacements() -
 
 
 def test_unchanged_custom_total_is_not_copied_during_other_total_edit() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.entity_estimator import (
+        estimate_configuration_impact,
+    )
+
     snapshot, topology, current = _native_total_setup(0)
     custom = "  - platform: template\n    id: totalChargerWatts\n    name: Charger Power\n    lambda: return id(ct5Watts).state + id(ct6Watts).state;\n    unit_of_measurement: W\n    device_class: power\n"
     content = snapshot.content.replace("sensor:\n", "sensor:\n" + custom)
@@ -2282,7 +2312,17 @@ def test_unchanged_custom_total_is_not_copied_during_other_total_edit() -> None:
     assert "csemh_load_power" in source
     evidence = expected_meter_entity_evidence(requested, topology,
         document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
-    assert {name for _, name in evidence.aggregate_sensor_entities} == {f"{requested.meter.friendly_name} Load Power"}
+    assert {name for _, name in evidence.aggregate_sensor_entities - evidence.native_sensor_entities} == {f"{requested.meter.friendly_name} Load Power", "Charger Power"}
+    impact = estimate_configuration_impact(requested, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
+    assert (impact.public_total_entity_count, impact.numeric_entity_count) == (5, 19)
+    selected = replace(requested, aggregates=tuple(replace(item, name="Updated Charger") if item.aggregate_id == "total-charger" else item for item in requested.aggregates))
+    replacement = build_meter_configuration_mutation(snapshot, topology, current, selected)
+    evidence = expected_meter_entity_evidence(selected, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
+    assert "Charger Power" not in {name for _, name in evidence.sensor_entities}
+    assert "Energy meter Updated Charger Power" in {name for _, name in evidence.sensor_entities}
+    impact = estimate_configuration_impact(selected, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
+    assert (impact.public_total_entity_count, impact.numeric_entity_count) == (5, 19)
+    assert "!extend totalChargerWatts\n    internal: true" in replacement.proposed_content
 
 
 def test_parent_selection_replaces_custom_child_and_survives_source_reload() -> None:
@@ -2348,6 +2388,7 @@ def test_custom_daily_energy_id_is_not_hidden_with_default_totals() -> None:
 
     assert "id: !extend totalWattsMain" in plan.proposed_content
     assert "id: !extend totalEnergyDaily" not in plan.proposed_content
+    assert "external custom kWh preserved; unverified and excluded from computed counts" in plan.redacted_diff
 
 
 @pytest.mark.parametrize("current_channel", (2, 7))
@@ -2492,7 +2533,7 @@ def test_replaced_totals_do_not_return_after_reload_or_unrelated_edit(
     owned = ESPHomeConfigDocument.parse(installed.content).managed_blocks["aggregates"].content
     assert ESPHomeConfigDocument.parse(edited.proposed_content).managed_blocks["aggregates"].content == owned
     evidence = expected_meter_entity_evidence(renamed, topology)
-    assert {name for _object_id, name in evidence.aggregate_sensor_entities} == {
+    assert {name for _object_id, name in evidence.aggregate_sensor_entities - evidence.native_sensor_entities} == {
         f"{requested.meter.friendly_name} Mains {suffix}"
         for suffix in (
             "Power", "Import Power", "Import Energy",
@@ -2883,8 +2924,8 @@ def test_native_total_restoring_defaults_removes_managed_block(addon_count: int)
     assert "aggregates v1" not in removed.proposed_content
     assert "internal: true" not in removed.proposed_content
     assert removed.proposed_content == snapshot.content
-    assert removed.redacted_diff.startswith("Aggregate\n-")
-    assert "\n-  - id: !extend" in removed.redacted_diff
+    assert removed.redacted_diff.startswith("Default meter totals\n~")
+    assert "Overall meter total: Watts hidden -> exposed" in removed.redacted_diff
     assert build_meter_configuration_mutation(
         snapshot, topology, current, current.configuration
     ).proposed_content == snapshot.content
@@ -3822,14 +3863,8 @@ def test_gain_only_review_lines_are_redacted_and_keep_one_group_heading() -> Non
         ),
     )
     first = build_meter_configuration_mutation(snapshot, topology, current, custom)
-    stored = StoredMeterConfiguration(
-        sha256(first.proposed_content.encode()).hexdigest(),
-        custom.meter,
-        custom.channels,
-        custom.aggregates,
-        custom.power_quality,
-        custom.status_fields,
-    )
+    stored = StoredMeterConfiguration(sha256(first.proposed_content.encode()).hexdigest(), custom.meter, custom.channels, custom.default_totals, custom.automatic_totals, custom.aggregates, custom.power_quality,
+    custom.status_fields,)
     configured_snapshot = replace(
         snapshot, content=first.proposed_content, sha256=stored.config_sha256
     )

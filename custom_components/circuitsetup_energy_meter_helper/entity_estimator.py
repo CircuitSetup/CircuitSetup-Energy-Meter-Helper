@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .config_document import ESPHomeConfigDocument
+from .meter_config_mutator import _select_render_totals, _source_owned_total_evidence
 from .meter_configuration import (
     EnergyMode,
     MeterConfigurationRequest,
     validate_meter_configuration,
 )
 from .models import MeterTopology
+from .total_graph import _desired_native_outputs, native_total_sources, plan_total_graph
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,13 +24,26 @@ class ConfigurationImpact:
     text_entity_count: int
     energy_entity_count: int
     approximate_publications_per_second: float
+    public_total_entity_count: int
+    internal_total_sensor_count: int
 
 
 def estimate_configuration_impact(
-    configuration: MeterConfigurationRequest, topology: MeterTopology
+    configuration: MeterConfigurationRequest,
+    topology: MeterTopology,
+    *,
+    document: ESPHomeConfigDocument | None = None,
+    previous: MeterConfigurationRequest | None = None,
 ) -> ConfigurationImpact:
     """Count the non-calibration entities rendered by a validated configuration."""
-    validate_meter_configuration(configuration, topology)
+    validate_meter_configuration(
+        configuration, topology, require_multi_reference_acknowledgement=False
+    )
+    replacements = ""
+    if document is not None:
+        configuration, replacements = _select_render_totals(
+            configuration, topology, document, previous
+        )
     numeric = len(configuration.meter.voltage_references) * 2
     text = energy = enabled = 0
     for channel in configuration.channels:
@@ -38,18 +54,41 @@ def estimate_configuration_impact(
             4 if configuration.power_quality[(channel.channel - 1) // 6] else 0
         )
         text += int(configuration.status_fields[(channel.channel - 1) // 6])
-    for aggregate in configuration.aggregates:
-        numeric += int(aggregate.expose_power) + int(aggregate.expose_current)
-        if aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
-            numeric += 1
-            energy += 1
-        elif aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
-            numeric += 4  # import/export clamp power plus their daily energy entities
-            energy += 2
+    external, internal = _source_owned_total_evidence(
+        configuration, topology, document, replacements
+    )
+    public = len(external)
+    for source in native_total_sources(topology):
+        outputs = _desired_native_outputs(configuration, source)
+        public += int(outputs.watts) + int(outputs.amps) + int(outputs.kwh)
+        internal += int(not outputs.watts) + int(not outputs.amps)
+        internal += int(source.existing_energy_id is not None and not outputs.kwh)
+        energy += int(outputs.kwh)
+    for node in plan_total_graph(configuration, topology).ordered_nodes:
+        aggregate = node.aggregate
+        power_count = 3 if aggregate.energy_mode is EnergyMode.BIDIRECTIONAL else 1
+        energy_count = (
+            (2 if aggregate.energy_mode is EnergyMode.BIDIRECTIONAL else 1)
+            if node.energy_required
+            else 0
+        )
+        public += (
+            power_count * int(aggregate.outputs.watts)
+            + int(aggregate.outputs.amps)
+            + energy_count
+        )
+        internal += power_count * int(
+            node.power_required and not aggregate.outputs.watts
+        )
+        internal += int(node.current_required and not aggregate.outputs.amps)
+        energy += energy_count
+    numeric += public
     return ConfigurationImpact(
         enabled,
         numeric,
         text,
         energy,
         (numeric + text) / configuration.meter.update_interval_s,
+        public,
+        internal,
     )

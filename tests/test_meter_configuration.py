@@ -240,6 +240,9 @@ def test_expected_reconnect_entities_use_rendered_names_and_skip_internal_power(
         {
             ("kitchen_meter_main_voltage", "Kitchen meter Main Voltage"),
             ("kitchen_meter_main_frequency", "Kitchen meter Main Frequency"),
+            ("kitchen_meter_total_watts_main", "Kitchen meter Total Watts Main"),
+            ("kitchen_meter_total_amps_main", "Kitchen meter Total Amps Main"),
+            ("kitchen_meter_total_kwh", "Kitchen meter Total kWh"),
             ("kitchen_meter_grid_feed_current", "Kitchen meter Grid feed Current"),
             ("kitchen_meter_grid_feed_energy", "Kitchen meter Grid feed Energy"),
         }

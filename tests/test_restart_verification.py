@@ -1817,11 +1817,14 @@ def test_calibration_preview_handoffs_current_full_metadata_atomically() -> None
             MeterConfigurationRequest(
                 configuration.meter,
                 configuration.channels,
+                configuration.default_totals,
+                configuration.automatic_totals,
                 configuration.aggregates,
                 configuration.power_quality,
                 configuration.status_fields,
             ),
             target,
+            document=ESPHomeConfigDocument.parse(transaction.plan.proposed_content),
         )
         manager._verifier = Verifier(
             ReconnectEvidence(

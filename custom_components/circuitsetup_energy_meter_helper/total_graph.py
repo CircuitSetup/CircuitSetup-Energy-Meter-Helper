@@ -121,7 +121,7 @@ def automatic_total_candidates(
         first, second = sorted(channels)
         candidates.append(
             AutomaticTotalCandidate(
-                f"{role.value}-ct{first}-ct{second}",
+                f"{role.value.replace('_', '-')}-ct{first}-ct{second}",
                 aggregate_id,
                 name,
                 role,

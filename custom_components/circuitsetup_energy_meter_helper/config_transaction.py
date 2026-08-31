@@ -32,7 +32,15 @@ from .device_builder import (
     JobResult,
 )
 from .meter_config_mutator import expected_meter_entity_evidence
-from .meter_configuration import ChannelSettings, MeterConfigurationRequest
+from .meter_configuration import (
+    ChannelSettings,
+    MeterConfigurationRequest,
+    TotalsChangeIntent,
+)
+from .meter_inventory import (
+    MeterConfigurationInventory,
+    _source_normalized_default_totals,
+)
 from .models import (
     ConfigMutationPlan,
     MeterTopology,
@@ -44,12 +52,18 @@ from .models import (
     canonical_mac,
 )
 from .session_manager import ConfigLease, SessionManager
-from .store import StoredMeterConfiguration, VerifiedCalibrationRecord
+from .store import (
+    StoredMeterConfiguration,
+    TotalsMigrationRecord,
+    VerifiedCalibrationRecord,
+)
 from .topology import (
     verified_voltage_reference_fingerprint,
     voltage_reference_fingerprint_for_meter,
     voltage_reference_topology_from_config,
 )
+from .total_graph import automatic_total_candidates
+from .voltage_transformer_catalog import VoltageTransformerCatalog
 
 MAX_VISIBLE_DIFF_BYTES = 32_768
 MAX_VISIBLE_DIFF_LINES = 512
@@ -284,10 +298,11 @@ class _ConfigTransaction:
         default_factory=frozenset, repr=False
     )
     meter_record: StoredMeterRecord | None = field(default=None, repr=False)
-    _legacy_ct_selections: tuple[StoredCTSelection, ...] = field(
-        default=(), repr=False
-    )
+    _legacy_ct_selections: tuple[StoredCTSelection, ...] = field(default=(), repr=False)
     verification_id: str | None = field(default=None, repr=False)
+    totals_change_intent: TotalsChangeIntent = field(
+        default_factory=TotalsChangeIntent, repr=False
+    )
     state: ConfigTransactionState = ConfigTransactionState.PREVIEWED
     rollback_available: bool = False
     evidence: list[TransactionEvidenceCode] = field(default_factory=list)
@@ -334,6 +349,7 @@ class _ConfigTransaction:
         self.plan = None
         self.prior_content = None
         self.meter_configuration = None
+        self.totals_change_intent = TotalsChangeIntent()
         self.expected_sensor_entities = frozenset()
         self.expected_aggregate_sensor_entities = frozenset()
         self.meter_record = None
@@ -456,6 +472,7 @@ class ConfigTransactionManager:
         selections: tuple[StoredCTSelection, ...] = (),
         *,
         meter_configuration: StoredMeterConfiguration | None = None,
+        totals_change_intent: TotalsChangeIntent = TotalsChangeIntent(),  # noqa: B008 - frozen value
         expected_sensor_entities: frozenset[tuple[str, str]] = frozenset(),
         expected_aggregate_sensor_entities: frozenset[tuple[str, str]] = frozenset(),
     ) -> TransactionStatus:
@@ -479,32 +496,68 @@ class ConfigTransactionManager:
             proposed_sha256 = sha256(plan.proposed_content.encode()).hexdigest()
             if meter_configuration.config_sha256 != proposed_sha256:
                 raise ValueError("meter configuration does not match mutation plan")
-            expected = expected_meter_entity_evidence(
-                MeterConfigurationRequest(
-                    meter_configuration.meter,
-                    meter_configuration.channels,
-                    meter_configuration.aggregates,
-                    meter_configuration.power_quality,
-                    meter_configuration.status_fields,
-                    meter_configuration.multi_reference_preparation_acknowledged,
-                ),
-                topology,
+            request = MeterConfigurationRequest(
+                meter_configuration.meter,
+                meter_configuration.channels,
+                meter_configuration.default_totals,
+                (),
+                meter_configuration.aggregates,
+                meter_configuration.power_quality,
+                meter_configuration.status_fields,
+                meter_configuration.multi_reference_preparation_acknowledged,
             )
-            managed_blocks = ESPHomeConfigDocument.parse(
-                plan.proposed_content
-            ).managed_blocks
-            expected_sensor_entities = frozenset()
+            candidate_ids = {
+                item.candidate_id for item in automatic_total_candidates(request)
+            }
+            request = replace(
+                request,
+                automatic_totals=tuple(
+                    item
+                    for item in meter_configuration.automatic_totals
+                    if item.candidate_id in candidate_ids
+                ),
+            )
+            request = replace(request, totals_change_intent=totals_change_intent)
+            if totals_change_intent != TotalsChangeIntent():
+                current = MeterConfigurationInventory.from_document(
+                    "transaction",
+                    ESPHomeConfigDocument.parse(source_snapshot.content),
+                    topology,
+                    CTPresetCatalog.load(),
+                    VoltageTransformerCatalog.load(),
+                    source_snapshot.sha256,
+                    stored_configuration=await self._persistence.async_get_meter_configuration(
+                        mac
+                    ),
+                )
+                current.validate_totals_change(request)
+                meter_configuration = replace(
+                    meter_configuration,
+                    totals_managed=current.totals_managed,
+                    totals_migration=TotalsMigrationRecord(
+                        current.totals_parent_review_required,
+                        current.legacy_parent_links,
+                        current.native_visibility_confirmation_required,
+                    ),
+                )
+            document = ESPHomeConfigDocument.parse(plan.proposed_content)
+            expected = expected_meter_entity_evidence(
+                request, topology, document=document
+            )
+            managed_blocks = document.managed_blocks
+            expected_aggregate_sensor_entities = (
+                expected.aggregate_sensor_entities
+                if "aggregates" in managed_blocks
+                else expected.native_sensor_entities
+                | expected.source_owned_sensor_entities
+            )
+            expected_sensor_entities = expected_aggregate_sensor_entities
             if "voltage_references" in managed_blocks:
                 expected_sensor_entities |= (
                     expected.sensor_entities - expected.aggregate_sensor_entities
                 )
-            if "aggregates" in managed_blocks:
-                expected_sensor_entities |= expected.aggregate_sensor_entities
-            expected_aggregate_sensor_entities = (
-                expected.aggregate_sensor_entities
-                if "aggregates" in managed_blocks
-                else frozenset()
-            )
+            _validate_expected_sensor_entities(expected_sensor_entities)
+            _validate_expected_sensor_entities(expected_aggregate_sensor_entities)
             selections = ()
         else:
             merged = {
@@ -529,6 +582,7 @@ class ConfigTransactionManager:
             expected_aggregate_sensor_entities,
             _legacy_ct_selections=selections,
             meter_record=_trusted_meter_record(mac, topology, source_snapshot),
+            totals_change_intent=totals_change_intent,
         )
         self.sessions._register_transaction(transaction.transaction_id, transaction)
         return _status(transaction)
@@ -572,8 +626,8 @@ class ConfigTransactionManager:
                 verified.config_filename
             )
             document = ESPHomeConfigDocument.parse(snapshot.content)
-            stored_configuration = await self._persistence.async_get_meter_configuration(
-                mac
+            stored_configuration = (
+                await self._persistence.async_get_meter_configuration(mac)
             )
             trusted_voltage_fingerprint = verified_voltage_reference_fingerprint(
                 document,
@@ -598,8 +652,7 @@ class ConfigTransactionManager:
                 verified.topology_addon_count != topology.addon_count
                 or verified.topology_project_name != topology.project_name
                 or verified.topology_connection_type != topology.connection_type
-                or verified.topology_voltage_fingerprint
-                != current_voltage_fingerprint
+                or verified.topology_voltage_fingerprint != current_voltage_fingerprint
             ):
                 raise ConfigMutationError(
                     "verified calibration topology does not match target"
@@ -616,15 +669,15 @@ class ConfigTransactionManager:
             selections: tuple[StoredCTSelection, ...] = ()
             meter_configuration: StoredMeterConfiguration | None = None
             expected_sensor_entities: frozenset[tuple[str, str]] = frozenset()
-            expected_aggregate_sensor_entities: frozenset[tuple[str, str]] = (
-                frozenset()
-            )
+            expected_aggregate_sensor_entities: frozenset[tuple[str, str]] = frozenset()
             has_stored_configuration = (
                 stored_configuration is not None
                 and stored_configuration.config_sha256 == snapshot.sha256
             )
             channels: tuple[ChannelSettings, ...] = (
-                _channels_with_requests(stored_configuration.channels, requested_channels)
+                _channels_with_requests(
+                    stored_configuration.channels, requested_channels
+                )
                 if has_stored_configuration and stored_configuration is not None
                 else ()
             )
@@ -648,27 +701,31 @@ class ConfigTransactionManager:
                         options = package_options_from_document(
                             ESPHomeConfigDocument.parse(plan.proposed_content), topology
                         )
-                        request = MeterConfigurationRequest(
-                            stored_configuration.meter,
-                            channels,
-                            stored_configuration.aggregates,
-                            options["power_quality"],
-                            options["status_fields"],
-                        )
-                        meter_configuration = StoredMeterConfiguration(
-                            proposed_sha256,
-                            request.meter,
-                            request.channels,
-                            request.aggregates,
-                            request.power_quality,
-                            request.status_fields,
-                            selections,
-                            request.multi_reference_preparation_acknowledged,
-                        )
-                        expected = expected_meter_entity_evidence(request, topology)
-                        expected_sensor_entities = expected.sensor_entities
-                        expected_aggregate_sensor_entities = (
-                            expected.aggregate_sensor_entities
+                        defaults = stored_configuration.default_totals
+                        if not stored_configuration.totals_managed or (
+                            stored_configuration.totals_migration is not None
+                            and stored_configuration.totals_migration.native_visibility_confirmation_required
+                        ):
+                            normalized = _source_normalized_default_totals(
+                                document, topology
+                            )
+                            if normalized is not None:
+                                defaults = normalized
+                            elif (
+                                stored_configuration.totals_migration is not None
+                                and stored_configuration.totals_migration.native_visibility_confirmation_required
+                            ):
+                                raise ConfigMutationError(
+                                    "native total visibility must be confirmed before calibration replay"
+                                )
+                        meter_configuration = replace(
+                            stored_configuration,
+                            config_sha256=proposed_sha256,
+                            channels=channels,
+                            default_totals=defaults,
+                            power_quality=options["power_quality"],
+                            status_fields=options["status_fields"],
+                            ct_selections=selections,
                         )
             status = await self.async_preview(
                 mac,
@@ -1081,8 +1138,7 @@ class ConfigTransactionManager:
             self.publish_status(_status(transaction))
             try:
                 installed, cancelled = await self._drain_persistence_commit(
-                    transaction,
-                    self._persist_verified_metadata(transaction, plan)
+                    transaction, self._persist_verified_metadata(transaction, plan)
                 )
             except asyncio.CancelledError:
                 self._finish(
@@ -1117,18 +1173,48 @@ class ConfigTransactionManager:
     ) -> bool:
         """Commit only post-reconnect metadata, including its exact source CAS."""
         if transaction.meter_configuration is not None:
+            configuration = transaction.meter_configuration
+            migration = configuration.totals_migration
+            if migration is not None:
+                reviewed = {
+                    (item.child_id, item.proposed_parent_id)
+                    for item in transaction.totals_change_intent.legacy_parent_decisions
+                }
+                remaining = tuple(
+                    link
+                    for link in migration.legacy_parent_links
+                    if (link.child_id, link.proposed_parent_id) not in reviewed
+                )
+                resolved = (
+                    _source_normalized_default_totals(
+                        ESPHomeConfigDocument.parse(plan.proposed_content),
+                        transaction.topology,
+                    )
+                    is not None
+                )
+                migration = TotalsMigrationRecord(
+                    bool(remaining),
+                    remaining,
+                    migration.native_visibility_confirmation_required and not resolved,
+                )
+            configuration = replace(
+                configuration,
+                totals_migration=migration,
+                totals_managed=configuration.totals_managed
+                or transaction.totals_change_intent.adopt_managed_totals,
+            )
             if transaction.verification_id is None:
                 await self._persistence.async_save_verified_meter_configuration(
                     transaction.mac,
                     transaction.source_sha256,
-                    transaction.meter_configuration,
+                    configuration,
                     _meter_record(transaction),
                 )
                 return True
             return await self._persistence.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
                 transaction.mac,
                 transaction.source_sha256,
-                transaction.meter_configuration,
+                configuration,
                 transaction.verification_id,
                 transaction.transaction_id,
                 _meter_record(transaction),
@@ -1173,8 +1259,7 @@ class ConfigTransactionManager:
             if cancelled:
                 cancellation = asyncio.CancelledError()
                 cancellation.add_note(
-                    "persistence completion also failed with "
-                    f"{type(error).__name__}"
+                    f"persistence completion also failed with {type(error).__name__}"
                 )
                 raise cancellation from error
             raise
@@ -1202,10 +1287,14 @@ class ConfigTransactionManager:
         """Consume the one available rollback and restore through Device Builder once."""
         transaction = self._transaction(transaction_id)
         async with _operation(transaction):
-            if transaction.state not in {
-                ConfigTransactionState.FAILED,
-                ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
-            } or not transaction.rollback_available:
+            if (
+                transaction.state
+                not in {
+                    ConfigTransactionState.FAILED,
+                    ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
+                }
+                or not transaction.rollback_available
+            ):
                 raise RuntimeError("rollback is not available in the current state")
             return await self._rollback_locked(transaction)
 
@@ -1257,7 +1346,9 @@ class ConfigTransactionManager:
         except Exception as error:
             _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
             self._retain_write_recovery(transaction)
-            raise RollbackFailedError("configuration rollback cleanup failed") from error
+            raise RollbackFailedError(
+                "configuration rollback cleanup failed"
+            ) from error
         return self._finish(transaction, ConfigTransactionState.ROLLED_BACK)
 
     async def _rollback_after_cancellation(
@@ -1595,22 +1686,22 @@ def _validate_expected_sensor_entities(
     sensor_entities: frozenset[tuple[str, str]],
 ) -> None:
     """Require bounded, one-to-one native sensor object-ID/name evidence."""
-    if type(sensor_entities) is not frozenset or len(sensor_entities) > 128:
+    # Explicit safety policy, not a universal configuration maximum: source-owned
+    # supported W/A totals are not limited to the 32-row helper request ceiling.
+    # Fail closed; never truncate confirmed surviving publications to fit.
+    if type(sensor_entities) is not frozenset or len(sensor_entities) > 1024:
         raise ValueError("expected sensor entities are invalid")
     object_ids: set[str] = set()
     for pair in sensor_entities:
         if type(pair) is not tuple or len(pair) != 2:
             raise ValueError("expected sensor entities are invalid")
         object_id, _name = pair
-        if (
-            object_id in object_ids
-            or any(
-                type(value) is not str
-                or not value
-                or len(value.encode()) > 120
-                or any(ord(character) < 32 for character in value)
-                for value in pair
-            )
+        if object_id in object_ids or any(
+            type(value) is not str
+            or not value
+            or len(value.encode()) > 120
+            or any(ord(character) < 32 for character in value)
+            for value in pair
         ):
             raise ValueError("expected sensor entities are invalid")
         object_ids.add(object_id)
@@ -1677,13 +1768,9 @@ def _verify_reconnect(
             type(object_id) is not str or not object_id
             for object_id in evidence.duplicate_sensor_object_ids
         )
-        or {
-            object_id for object_id, _name in transaction.expected_sensor_entities
-        }
+        or {object_id for object_id, _name in transaction.expected_sensor_entities}
         & evidence.duplicate_sensor_object_ids
-        or not transaction.expected_sensor_entities.issubset(
-            evidence.sensor_entities
-        )
+        or not transaction.expected_sensor_entities.issubset(evidence.sensor_entities)
     )
     if sensor_evidence_invalid:
         transaction.aggregate_entity_mismatch = _aggregate_entity_evidence_missing(
