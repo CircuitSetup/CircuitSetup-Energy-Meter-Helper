@@ -8,7 +8,7 @@ import { buildInstallStep } from "../src/components/build-install-step";
 import { summaryOutcome, summaryStep } from "../src/components/summary-step";
 import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
-import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, draftsAreValid, recommendedReportingMultiplier, reconcileSplitPhaseAggregates, type CtDraft } from "../src/components/ct-inventory-step";
+import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, draftsAreValid, recommendedReportingMultiplier, type CtDraft } from "../src/components/ct-inventory-step";
 import { meterSettingsStep } from "../src/components/meter-settings-step";
 import type { FirmwareOption } from "../src/firmware-installer";
 import { panelStyles } from "../src/styles";
@@ -159,6 +159,140 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("server-authoritative total graph", () => {
+  it.each([
+    ["native", 41, 3, 0, 1],
+    ["automatic bidirectional", 46, 8, 1, 3],
+    ["advanced and internal", 51, 13, 4, 4],
+  ])("displays %s impact exactly as returned, without inventing role candidates", async (_label, numeric, totals, internal, energy) => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const response = meterResponse();
+    response.configuration.channels[0]!.role = "grid";
+    response.configuration.channels[1]!.role = "grid";
+    response.configuration_impact = { ...response.configuration_impact, numeric_entity_count: Number(numeric),
+      public_total_entity_count: Number(totals), internal_total_sensor_count: Number(internal),
+      energy_entity_count: Number(energy), approximate_publications_per_second: Number(numeric) / 5 };
+    const state = panel as unknown as { setMeterConfiguration(value: typeof response): void; meterConfiguration: typeof response; journeyOrigin: string };
+    state.journeyOrigin = "new_install";
+    state.setMeterConfiguration(response);
+    panel.showInventory(response); await panel.updateComplete;
+    expect(text(panel)).toContain(`${numeric} public entities`);
+    expect(text(panel)).toContain(`${totals} public total entities`);
+    expect(text(panel)).toContain(`${internal} internal total sensors`);
+    expect(state.meterConfiguration.configuration.aggregates).toEqual([]);
+    expect(state.meterConfiguration.totals.automatic_candidates).toEqual([]);
+  });
+
+  it("invalidates initial counts when installer package choices differ from loaded inventory", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const response = meterResponse();
+    const state = panel as unknown as { setMeterConfiguration(value: typeof response): void; packageOptionsTouched: boolean;
+      packageOptions: { power_quality: boolean[]; status_fields: boolean[] }; journeyOrigin: string };
+    state.journeyOrigin = "new_install"; state.packageOptionsTouched = true;
+    state.packageOptions = { power_quality: [false], status_fields: [false] };
+    state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
+    expect(text(panel).includes("41 public entities")).toBe(false);
+  });
+
+  it("labels unresolved native visibility as confirmed incomplete counts", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const response = meterResponse(); response.totals.migration.native_visibility_resolved = false;
+    const state = panel as unknown as { setMeterConfiguration(value: typeof response): void };
+    state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
+    expect(text(panel)).toContain("confirmed public entities");
+    expect(text(panel)).toContain("incomplete");
+  });
+
+  it("keeps graph and counts bound to the newest draft and carries issued off choices through absence", async () => {
+    const response = meterResponse();
+    const candidate: import("../src/types").AutomaticTotalCandidate = { candidate_id: "issued-mains", aggregate_id: "auto-mains",
+      name: "Server mains", role: "grid", sources: [{ kind: "channel", channel: 1 }, { kind: "channel", channel: 2 }],
+      measurement_method: "two_ct_sum", energy_mode: "bidirectional", recommended_outputs: { watts: true, amps: false, kwh: true } };
+    const off = { candidate_id: candidate.candidate_id, enabled: false, outputs: candidate.recommended_outputs };
+    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel);
+    response.configuration.automatic_totals = [off];
+    response.totals.automatic_candidates = [candidate];
+    response.totals.automatic_totals = [{ candidate, enabled: false, outputs: off.outputs }];
+    const pending: Array<{ request: MeterConfigurationRequest; resolve(value: unknown): void; reject(error: Error): void }> = [];
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] } });
+    const call = hass.callWS.bind(hass);
+    hass.callWS = <T>(message: Record<string, unknown>): Promise<T> => String(message.type).endsWith("/preview_total_graph")
+      ? new Promise<T>((resolve, reject) => pending.push({ request: message.configuration as MeterConfigurationRequest, resolve: (value) => resolve(value as T), reject }))
+      : call<T>(message);
+    const panel = await mount(hass);
+    const state = panel as unknown as { selectedDeviceId: string; setMeterConfiguration(value: typeof response): void;
+      updateCircuitConfiguration(value: MeterConfigurationRequest): void; meterConfiguration: typeof response;
+      totalGraphPreview: import("../src/types").TotalGraphPreview | null };
+    state.selectedDeviceId = "meter-1"; state.setMeterConfiguration(response); panel.showInventory(response);
+    const edit = (name: string) => state.updateCircuitConfiguration({ ...state.meterConfiguration.configuration,
+      channels: state.meterConfiguration.configuration.channels.map((channel) => ({ ...channel, name, role: channel.channel <= 2 ? name === "reappear" ? "grid" : "branch" : channel.role })) });
+    edit("older"); edit("newer"); await panel.updateComplete;
+    expect(text(panel)).toContain("Updating total graph");
+    expect(text(panel)).not.toContain("43 public entities");
+    expect(text(panel).includes("Server mains")).toBe(false);
+    expect(pending).toHaveLength(2);
+    const preview = { plan_id: response.plan_id, source_sha256: response.source_sha256,
+      automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [off],
+      configuration_impact: { ...response.configuration_impact, numeric_entity_count: 43, approximate_publications_per_second: 8.6 },
+      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
+    state.updateCircuitConfiguration({ ...state.meterConfiguration.configuration });
+    pending[1]!.resolve(preview); await tick(); await panel.updateComplete;
+    expect(text(panel)).toContain("43 public entities");
+    expect(state.meterConfiguration.configuration.automatic_totals).toEqual([]);
+    pending[0]!.resolve({ ...preview, automatic_candidates: [candidate], automatic_totals: [{ candidate, enabled: true, outputs: off.outputs }],
+      configuration_impact: response.configuration_impact }); await tick();
+    expect(state.meterConfiguration.totals.automatic_candidates).toEqual([]);
+    expect(state.totalGraphPreview?.configuration_impact.numeric_entity_count).toBe(43);
+    edit("reappear"); expect(pending[2]!.request.automatic_totals).toEqual([off]);
+    pending[2]!.resolve({ ...preview, automatic_candidates: [candidate], automatic_totals: [{ candidate, enabled: false, outputs: off.outputs }],
+      stale_automatic_total_settings: [] }); await tick();
+    expect(state.meterConfiguration.configuration.automatic_totals).toEqual([off]);
+    edit("invalid"); pending[3]!.reject(new Error("invalid graph")); await tick(); await panel.updateComplete;
+    expect(text(panel)).toContain("Total graph unavailable");
+    expect(text(panel)).not.toContain("43 public entities");
+    expect(state.totalGraphPreview).toBeNull();
+    edit("old device"); state.selectedDeviceId = "other-meter";
+    pending[4]!.resolve(preview); await tick();
+    expect(state.totalGraphPreview).toBeNull();
+  });
+
+  it("rejects parent overlap using server native coverage, including disabled physical CTs", () => {
+    const response = meterResponse();
+    response.configuration.channels[0] = { ...response.configuration.channels[0]!, enabled: false, role: "unused" };
+    const base: CircuitAggregate = { aggregate_id: "native-child", name: "Native child", role: "custom",
+      sources: [{ kind: "native_total", source_id: "opaque-board" }], measurement_method: "direct",
+      energy_mode: "consumption", outputs: { watts: true, amps: false, kwh: true }, origin: "advanced" };
+    response.totals.native_sources.push({ ...response.totals.native_sources[0]!, source_id: "opaque-board", label: "Other native", leaf_channels: [1] });
+    response.configuration.aggregates = [base, { ...base, aggregate_id: "parent", name: "Parent",
+      sources: [{ kind: "native_total", source_id: "overall" }] }];
+    const root = document.createElement("div");
+    render(ctInventoryStep(response, 0, new Map(), () => undefined, () => undefined, () => undefined, () => undefined,
+      false, false, response.configuration, () => undefined, () => undefined, true, "", false, true, response.totals), root);
+    const parent = root.querySelector<HTMLSelectElement>('[aria-label="native-child aggregate parent"]')!;
+    expect([...parent.options].some((option) => option.value === "parent")).toBe(false);
+  });
+
+  it("removes direct CT dependencies with confirmation but preserves native physical coverage", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const response = meterResponse();
+    const base: CircuitAggregate = { aggregate_id: "child", name: "Child", role: "branch", sources: [{ kind: "channel", channel: 1 }],
+      measurement_method: "direct", energy_mode: "consumption", outputs: { watts: true, amps: false, kwh: true }, origin: "advanced" };
+    response.configuration.aggregates = [base,
+      { ...base, aggregate_id: "parent", name: "Parent", sources: [{ kind: "aggregate", aggregate_id: "child" }] },
+      { ...base, aggregate_id: "native", name: "Native", sources: [{ kind: "native_total", source_id: "overall" }] },
+      { ...base, aggregate_id: "unfinished", name: "Unfinished", sources: [] }];
+    const state = panel as unknown as { setMeterConfiguration(value: typeof response): void; disableCircuit(channel: number): void; meterConfiguration: typeof response };
+    state.setMeterConfiguration(response);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    state.disableCircuit(1);
+    expect(state.meterConfiguration.configuration.channels[0]!.enabled).toBe(true);
+    confirm.mockReturnValue(true); state.disableCircuit(1);
+    expect(state.meterConfiguration.configuration.aggregates).toEqual([response.configuration.aggregates[2], response.configuration.aggregates[3]]);
+    expect(state.meterConfiguration.totals.native_sources[0]!.leaf_channels).toEqual([1, 2, 3, 4, 5, 6]);
+    confirm.mockRestore();
+  });
+});
+
 describe("meter configuration review and summary", () => {
   it.each([
     ["helper YAML", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: true }, "Configuration and calibration are installed in ESPHome.", []],
@@ -219,7 +353,7 @@ describe("meter configuration review and summary", () => {
 
   it("reviews physical, semantic, package, and entity details without threshold controls", () => {
     const meter = meterResponse() as unknown as import("../src/types").MeterConfiguration;
-    meter.configuration.aggregates = [{ aggregate_id: "main-service", name: "Main service", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true }];
+    meter.configuration.aggregates = [{ aggregate_id: "main-service", name: "Main service", role: "grid", sources: [{ kind: "channel" as const, channel: 1 }, { kind: "channel" as const, channel: 2 }], measurement_method: "two_ct_sum", energy_mode: "bidirectional", outputs: { watts: true, amps: true, kwh: true }, origin: "advanced" as const }];
     const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "Meter:\n+ interval: 5", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: true } as import("../src/types").TransactionStatus;
     const root = document.createElement("div");
     render(configReview(transaction, meter.configuration, meter.configuration_impact), root);
@@ -441,9 +575,9 @@ describe("CircuitSetup panel", () => {
 
   it("allows aggregate channels to overlap but rejects disabled circuits", () => {
     const configuration = meterResponse().configuration as MeterConfigurationRequest;
-    const aggregate = { aggregate_id: "main-service", name: "Main service", role: "grid" as const, channels: [1, 2], measurement_method: "two_ct_sum" as const, parent_id: null, energy_mode: "bidirectional" as const, expose_power: true, expose_current: true };
+    const aggregate = { aggregate_id: "main-service", name: "Main service", role: "grid" as const, sources: [{ kind: "channel" as const, channel: 1 }, { kind: "channel" as const, channel: 2 }], measurement_method: "two_ct_sum" as const, energy_mode: "bidirectional" as const, outputs: { watts: true, amps: true, kwh: true }, origin: "advanced" as const };
     expect(circuitConfigurationIsValid({ ...configuration, aggregates: [aggregate] }, 6)).toBe(true);
-    expect(circuitConfigurationIsValid({ ...configuration, aggregates: [aggregate, { ...aggregate, aggregate_id: "overlap", channels: [2, 3] }] }, 6)).toBe(true);
+    expect(circuitConfigurationIsValid({ ...configuration, aggregates: [aggregate, { ...aggregate, aggregate_id: "overlap", sources: [{ kind: "channel" as const, channel: 2 }, { kind: "channel" as const, channel: 3 }] }] }, 6)).toBe(true);
     expect(circuitConfigurationIsValid({ ...configuration, channels: [{ ...configuration.channels[0]!, enabled: false, role: "unused" }, ...configuration.channels.slice(1)], aggregates: [aggregate] }, 6)).toBe(false);
   });
 
@@ -462,7 +596,7 @@ describe("CircuitSetup panel", () => {
   it("keeps existing aggregates reviewable but disables edits without managed totals", () => {
     const response = meterResponse();
     const configuration = response.configuration as MeterConfigurationRequest;
-    configuration.aggregates = [{ aggregate_id: "main-service", name: "Main service", role: "grid", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true }];
+    configuration.aggregates = [{ aggregate_id: "main-service", name: "Main service", role: "grid", sources: [{ kind: "channel" as const, channel: 1 }, { kind: "channel" as const, channel: 2 }], measurement_method: "two_ct_sum", energy_mode: "bidirectional", outputs: { watts: true, amps: true, kwh: true }, origin: "advanced" as const }];
     const root = document.createElement("div");
     render(ctInventoryStep(response as unknown as CtInventory, 0, new Map(), () => undefined, () => undefined, () => undefined, () => undefined, false, false, configuration, () => undefined, () => undefined, false, "unmanaged_total_present"), root);
     expect(root.textContent).toContain("Aggregate editing unavailable");
@@ -473,30 +607,19 @@ describe("CircuitSetup panel", () => {
     expect(root.querySelector('[data-action="add-aggregate"]')).toBeNull();
   });
 
-  it("tables every detected total with sources and internal outputs", () => {
+  it("tables only server-issued automatic totals with explicit off settings", () => {
     const response = meterResponse();
-    const configuration = response.configuration as MeterConfigurationRequest;
-    configuration.aggregates = [
-      { aggregate_id: "house", name: "House Total", role: "custom", channels: [1, 2, 3, 4], measurement_method: "direct", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false },
-      { aggregate_id: "main-total", name: "Main total", role: "custom", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: "house", energy_mode: "none", expose_power: false, expose_current: false },
-      { aggregate_id: "addon1-total", name: "Add-on 1 total", role: "custom", channels: [3, 4], measurement_method: "two_ct_sum", parent_id: "house", energy_mode: "none", expose_power: false, expose_current: false },
-    ];
+    const candidate: import("../src/types").AutomaticTotalCandidate = { candidate_id: "issued-solar", aggregate_id: "auto-solar",
+      name: "Server solar", role: "solar", sources: [{ kind: "channel", channel: 3 }, { kind: "channel", channel: 4 }],
+      measurement_method: "two_ct_sum", energy_mode: "generation", recommended_outputs: { watts: true, amps: false, kwh: true } };
+    response.totals.automatic_candidates = [candidate];
+    response.totals.automatic_totals = [{ candidate, enabled: false, outputs: candidate.recommended_outputs }];
     const root = document.createElement("div");
-
-    render(ctInventoryStep(response as unknown as CtInventory, 0, new Map(), () => undefined, () => undefined,
-      () => undefined, () => undefined, false, false, configuration, () => undefined, () => undefined, true), root);
-
-    const table = root.querySelector<HTMLTableElement>('table[aria-label="Automatic totals"]');
-    expect([...table?.querySelectorAll("th") ?? []].map((cell) => cell.textContent)).toEqual(["Name", "CTs / meter", "Outputs"]);
-    const rows = [...table?.querySelectorAll("tbody tr") ?? []].map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent));
-    expect(rows).toEqual([
-      ["House Total", "Main total + Add-on 1 total", "Power · Current (internal) · Energy"],
-      ["Main total", "CT1 + CT2", "Power (internal) · Current (internal)"],
-      ["Add-on 1 total", "CT3 + CT4", "Power (internal) · Current (internal)"],
-    ]);
-    expect((root.querySelector('[aria-label="main-total aggregate role"]') as HTMLSelectElement).value).toBe("custom");
-    expect((root.querySelector('[aria-label="main-total aggregate method"]') as HTMLSelectElement).value).toBe("two_ct_sum");
-    expect((root.querySelector('[aria-label="house aggregate energy"]') as HTMLSelectElement).value).toBe("consumption");
+    render(ctInventoryStep(response, 0, new Map(), () => undefined, () => undefined,
+      () => undefined, () => undefined, false, false, response.configuration, () => undefined, () => undefined,
+      true, "", false, true, response.totals), root);
+    const rows = [...root.querySelectorAll('table[aria-label="Automatic totals"] tbody tr')].map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent));
+    expect(rows).toEqual([["Server solar", "CT3 + CT4", "Off"]]);
   });
 
   it("creates a custom aggregate with safe consumption defaults", () => {
@@ -512,12 +635,10 @@ describe("CircuitSetup panel", () => {
       aggregate_id: "aggregate-1",
       name: "Aggregate total 1",
       role: "branch",
-      channels: [],
+      sources: [],
       measurement_method: "two_ct_sum",
-      parent_id: null,
       energy_mode: "consumption",
-      expose_power: true,
-      expose_current: false,
+      outputs: { watts: true, amps: false, kwh: true }, origin: "advanced" as const,
     }]);
   });
 
@@ -537,7 +658,7 @@ describe("CircuitSetup panel", () => {
       name: index === 0 ? "Kitchen" : index === 6 ? "Garage" : `CT${index + 1}`,
       address: { ...response.channels[index % 6]!.address, channel: index + 1, board_index: Math.floor(index / 6) },
     }));
-    configuration.aggregates = [{ aggregate_id: "house-load", name: "House load", role: "branch", channels: [1, 7], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false }];
+    configuration.aggregates = [{ aggregate_id: "house-load", name: "House load", role: "branch", sources: [{ kind: "channel" as const, channel: 1 }, { kind: "channel" as const, channel: 7 }], measurement_method: "two_ct_sum", energy_mode: "consumption", outputs: { watts: true, amps: false, kwh: true }, origin: "advanced" as const }];
     const panel = document.createElement("circuitsetup-energy-meter-helper-panel") as CircuitSetupPanel;
     document.body.append(panel);
     (panel as unknown as { meterConfiguration: typeof response }).meterConfiguration = response;
@@ -571,57 +692,7 @@ describe("CircuitSetup panel", () => {
     expect(root.querySelector('[aria-label="Preset channels"]')).toBeNull();
   });
 
-  it.each([
-    ["grid", "auto-mains", [1, 2], "bidirectional"],
-    ["solar", "auto-solar", [7, 8], "generation"],
-    ["subpanel", "auto-subpanel", [1, 8], "consumption"],
-    ["two_pole", "auto-two-pole", [7, 8], "consumption"],
-  ] as const)("pairs %s CTs without treating board and meter totals as manual claims", (role, aggregateId, pair, energyMode) => {
-    const configuration = meterResponse().configuration;
-    configuration.channels = Array.from({ length: 12 }, (_, index) => ({
-      ...configuration.channels[index % 6]!, channel: index + 1, name: `CT${index + 1}`,
-      enabled: index % 6 !== 5,
-      role: index % 6 === 5 ? "unused" : pair.some((channel) => channel === index + 1) ? role : "branch",
-    }));
-    configuration.meter.voltage_references[0]!.group_keys.push("addon1_1", "addon1_2");
-    configuration.power_quality.push(false);
-    configuration.status_fields.push(false);
-    const defaults: CircuitAggregate[] = [
-      { aggregate_id: "main-total", name: "Main total", role: "custom", channels: [1, 2, 3, 4, 5], measurement_method: "direct", parent_id: "meter-total", energy_mode: "consumption", expose_power: false, expose_current: false },
-      { aggregate_id: "addon1-total", name: "Add-on 1 total", role: "custom", channels: [7, 8, 9, 10, 11], measurement_method: "direct", parent_id: "meter-total", energy_mode: "none", expose_power: false, expose_current: false },
-      { aggregate_id: "meter-total", name: "Meter total", role: "custom", channels: [1, 2, 3, 4, 5, 7, 8, 9, 10, 11], measurement_method: "direct", parent_id: null, energy_mode: "none", expose_power: true, expose_current: true },
-    ];
-    configuration.aggregates = defaults;
-
-    const result = reconcileSplitPhaseAggregates(configuration);
-
-    expect(result.configuration.aggregates).toEqual([...defaults, expect.objectContaining({
-      aggregate_id: aggregateId, role, channels: [...pair], energy_mode: energyMode, measurement_method: "two_ct_sum",
-    })]);
-    expect(circuitConfigurationIsValid(result.configuration, 12)).toBe(true);
-    expect(reconcileSplitPhaseAggregates(result.configuration, result.managed).changed).toBe(false);
-    const visible = { ...result.configuration, aggregates: result.configuration.aggregates.map((aggregate) =>
-      defaults.includes(aggregate) ? { ...aggregate, expose_power: true, expose_current: true } : aggregate) };
-    expect(reconcileSplitPhaseAggregates(visible, result.managed).configuration.aggregates).toEqual(visible.aggregates);
-  });
-
-  it.each([
-    { aggregate_id: "manual-total" },
-    { name: "Manual service" },
-    { role: "grid" },
-    { energy_mode: "bidirectional" },
-    { channels: [1, 2] },
-  ] satisfies Partial<CircuitAggregate>[])("keeps customized default totals as manual channel claims: %j", (patch) => {
-    const configuration = meterResponse().configuration;
-    configuration.channels = configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel);
-    const manual: CircuitAggregate = { aggregate_id: "main-total", name: "Main total", role: "custom", channels: [1, 2, 3, 4, 5, 6],
-      measurement_method: "direct", parent_id: null, energy_mode: "consumption", expose_power: false, expose_current: false, ...patch };
-    configuration.aggregates = [manual];
-
-    expect(reconcileSplitPhaseAggregates(configuration).configuration.aggregates).toEqual([manual]);
-  });
-
-  it("reconciles split-phase role pairs and derives nominal voltage without overwriting other meter settings", async () => {
+  it("derives nominal voltage without overwriting settings or inventing role totals", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const state = panel as unknown as Record<string, unknown> & {
       setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
@@ -629,7 +700,7 @@ describe("CircuitSetup panel", () => {
     const response = meterResponse("split_phase_120_240", 60, 10) as unknown as import("../src/types").MeterConfiguration;
     response.configuration.meter = { ...response.configuration.meter, friendly_name: "Garage meter",
       voltage_references: [{ ...response.configuration.meter.voltage_references[0]!, nominal_voltage_v: 240 }] };
-    const manual = { aggregate_id: "manual-load", name: "Manual load", role: "branch" as const, channels: [3], measurement_method: "direct" as const, parent_id: null, energy_mode: "consumption" as const, expose_power: true, expose_current: false };
+    const manual = { aggregate_id: "manual-load", name: "Manual load", role: "branch" as const, sources: [{ kind: "channel" as const, channel: 3 }], measurement_method: "direct" as const, energy_mode: "consumption" as const, outputs: { watts: true, amps: false, kwh: true }, origin: "advanced" as const };
     response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2
       ? { ...channel, role: "grid" }
       : [4, 5].includes(channel.channel) ? { ...channel, role: "solar" } : channel);
@@ -642,28 +713,7 @@ describe("CircuitSetup panel", () => {
     expect(configuration.meter).toMatchObject({ friendly_name: "Garage meter", line_frequency_hz: 60, update_interval_s: 10,
       voltage_references: [{ nominal_voltage_v: 120 }] });
     expect(configuration.aggregates).toContainEqual(manual);
-    expect(configuration.aggregates).toContainEqual({
-      aggregate_id: "auto-mains",
-      name: "Mains",
-      role: "grid",
-      channels: [1, 2],
-      measurement_method: "two_ct_sum",
-      parent_id: null,
-      energy_mode: "bidirectional",
-      expose_power: true,
-      expose_current: false,
-    });
-    expect(configuration.aggregates).toContainEqual({
-      aggregate_id: "auto-solar",
-      name: "Solar",
-      role: "solar",
-      channels: [4, 5],
-      measurement_method: "two_ct_sum",
-      parent_id: null,
-      energy_mode: "generation",
-      expose_power: true,
-      expose_current: false,
-    });
+    expect(configuration.aggregates).toEqual([manual]);
   });
 
   it("keeps an existing helper-managed meter read-only through ordinary navigation", async () => {
@@ -684,136 +734,10 @@ describe("CircuitSetup panel", () => {
 
     expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration).toEqual(loaded);
     expect(state.canonicalConfigurationChanged).toBe(false);
-    expect(state.managedAutomaticAggregates).toEqual([]);
 
     state.updateCircuitConfiguration(loaded, false);
     expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration).toEqual(loaded);
     expect(state.canonicalConfigurationChanged).toBe(false);
-  });
-
-  it("previews an automatic aggregate imported without installer edits", async () => {
-    const previews: MeterConfigurationRequest[] = [];
-    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
-    const hass: HomeAssistant = {
-      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
-        const operation = String(message.type).split("/").at(-1) ?? "";
-        if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
-        if (operation === "preview_meter_configuration") {
-          previews.push(message.configuration as MeterConfigurationRequest);
-          return preview as T;
-        }
-        return {} as T;
-      },
-      connection: { subscribeMessage: async () => () => undefined },
-    };
-    const panel = await mount(hass);
-    const state = panel as unknown as Record<string, unknown> & {
-      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
-      continueFromCt(): Promise<void>;
-    };
-    const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;
-    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel);
-    state.selectedDeviceId = "meter-1";
-    state.topology = response.topology;
-    state.journeyOrigin = "new_install";
-    state.setMeterConfiguration(response);
-    panel.showInventory(response as unknown as CtInventory);
-
-    await state.continueFromCt();
-
-    expect(previews).toHaveLength(1);
-    expect(previews[0]?.aggregates).toContainEqual(expect.objectContaining({ aggregate_id: "auto-mains", channels: [1, 2] }));
-  });
-
-  it("does not append an automatic aggregate over a preserved reserved ID", async () => {
-    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
-    const state = panel as unknown as Record<string, unknown> & {
-      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
-    };
-    const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;
-    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel);
-    const collision = { aggregate_id: "auto-mains", name: "Manual reserved total", role: "branch" as const, channels: [3], measurement_method: "direct" as const, parent_id: null, energy_mode: "consumption" as const, expose_power: true, expose_current: false };
-    response.configuration.aggregates = [collision];
-
-    state.setMeterConfiguration(response);
-
-    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.aggregates).toEqual([collision]);
-  });
-
-  it("preserves a channel edit to an automatic reserved-ID aggregate", async () => {
-    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
-    const state = panel as unknown as Record<string, unknown> & {
-      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
-      updateCircuitConfiguration(configuration: MeterConfigurationRequest): void;
-    };
-    const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;
-    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel);
-    state.journeyOrigin = "new_install";
-    state.setMeterConfiguration(response);
-    const current = () => (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration;
-    const automatic = current().aggregates.find((aggregate) => aggregate.aggregate_id === "auto-mains")!;
-
-    state.updateCircuitConfiguration({ ...current(), aggregates: current().aggregates.map((aggregate) =>
-      aggregate === automatic ? { ...aggregate, channels: [1, 3] } : aggregate) });
-
-    expect(current().aggregates).toContainEqual({ ...automatic, channels: [1, 3] });
-  });
-
-  it("rebuilds supported split-phase aggregates and removes stale automatic pairs", async () => {
-    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
-    const state = panel as unknown as Record<string, unknown> & {
-      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
-      updateCircuitConfiguration(configuration: MeterConfigurationRequest): void;
-    };
-    state.setMeterConfiguration(meterResponse() as unknown as import("../src/types").MeterConfiguration);
-    const current = () => (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration;
-    const setRoles = (role: "solar" | "subpanel" | "two_pole", channels: number[]) => state.updateCircuitConfiguration({ ...current(),
-      channels: current().channels.map((channel) => channels.includes(channel.channel) ? { ...channel, role } : { ...channel, role: "branch" }) });
-
-    setRoles("solar", [1, 2]);
-    expect(current().aggregates).toContainEqual({ aggregate_id: "auto-solar", name: "Solar", role: "solar", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "generation", expose_power: true, expose_current: false });
-    setRoles("subpanel", [1, 2]);
-    expect(current().aggregates).toContainEqual({ aggregate_id: "auto-subpanel", name: "Subpanel", role: "subpanel", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false });
-    setRoles("two_pole", [1, 2]);
-    expect(current().aggregates).toContainEqual({ aggregate_id: "auto-two-pole", name: "Two-pole circuit", role: "two_pole", channels: [1, 2], measurement_method: "two_ct_sum", parent_id: null, energy_mode: "consumption", expose_power: true, expose_current: false });
-
-    state.updateCircuitConfiguration({ ...current(), channels: current().channels.map((channel) => channel.channel === 2 ? { ...channel, role: "branch" } : channel) });
-    expect(current().aggregates).not.toContainEqual(expect.objectContaining({ aggregate_id: "auto-two-pole" }));
-    state.updateCircuitConfiguration({ ...current(), meter: { ...current().meter, electrical_system: "single_phase_230" }, channels: current().channels.map((channel) => channel.channel <= 2 ? { ...channel, role: "grid" } : channel) });
-    expect(current().aggregates).not.toContainEqual(expect.objectContaining({ aggregate_id: "auto-mains" }));
-  });
-
-  it("rebuilds mains and solar totals for a custom electrical profile", async () => {
-    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
-    const state = panel as unknown as Record<string, unknown> & {
-      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
-    };
-    const response = meterResponse("custom") as unknown as import("../src/types").MeterConfiguration;
-    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2
-      ? { ...channel, role: "grid" } : [3, 4].includes(channel.channel) ? { ...channel, role: "solar" } : channel);
-
-    state.journeyOrigin = "new_install";
-    state.setMeterConfiguration(response);
-
-    const aggregates = (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.aggregates;
-    expect(aggregates).toContainEqual(expect.objectContaining({ aggregate_id: "auto-mains", role: "grid", channels: [1, 2], energy_mode: "bidirectional" }));
-    expect(aggregates).toContainEqual(expect.objectContaining({ aggregate_id: "auto-solar", role: "solar", channels: [3, 4], energy_mode: "generation" }));
-  });
-
-  it("does not claim manual aggregate channels or build partial automatic pairs", async () => {
-    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
-    const state = panel as unknown as Record<string, unknown> & {
-      setMeterConfiguration(configuration: import("../src/types").MeterConfiguration): void;
-    };
-    const response = meterResponse() as unknown as import("../src/types").MeterConfiguration;
-    response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 3 ? { ...channel, role: "grid" } : channel);
-    const manual = { aggregate_id: "manual-service", name: "Manual service", role: "grid" as const, channels: [1, 2], measurement_method: "two_ct_sum" as const, parent_id: null, energy_mode: "bidirectional" as const, expose_power: true, expose_current: true };
-    response.configuration.aggregates = [manual];
-
-    state.setMeterConfiguration(response);
-
-    const configuration = (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration;
-    expect(configuration.aggregates).toEqual([manual]);
   });
 
   it("reuses the canonical meter plan when advancing to CTs and preview", async () => {
@@ -874,7 +798,7 @@ describe("CircuitSetup panel", () => {
 
     state.journeyOrigin = "existing_meter";
     state.setMeterConfiguration({ ...configuration, capabilities: { ...configuration.capabilities,
-      semantic_source: "legacy_inferred", managed_totals: false } });
+      semantic_source: "legacy_inferred", managed_automatic_totals: false, managed_advanced_totals: false } });
     expect(state.meterProfileConfirmed).toBe(false);
     await state.continueFromMeterSettings();
     expect(state.step).toBe("meter");
@@ -1036,7 +960,7 @@ describe("CircuitSetup panel", () => {
     state.updateDraft(1, { name: "Stale channel" });
     const stale = (state.meterConfiguration as import("../src/types").MeterConfiguration).configuration;
     state.updateCircuitConfiguration({ ...stale, aggregates: [{ aggregate_id: "stale-total", name: "Stale total", role: "grid",
-      channels: [1], measurement_method: "direct", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true }] });
+      sources: [{ kind: "channel" as const, channel: 1 }], measurement_method: "direct", energy_mode: "bidirectional", outputs: { watts: true, amps: true, kwh: true }, origin: "advanced" as const }] });
     state.setPackageOptions({ power_quality: [false], status_fields: [true] });
     await state.continueFromCt();
 
@@ -1058,7 +982,7 @@ describe("CircuitSetup panel", () => {
 
     expect(previews).toHaveLength(2);
     expect(previews[1]).toMatchObject({ planId: "c".repeat(32), sourceSha256: "f".repeat(64),
-      configuration: { meter: { friendly_name: "Reviewed external meter" }, aggregates: [expect.objectContaining({ aggregate_id: "auto-mains", channels: [1, 2] })],
+      configuration: { meter: { friendly_name: "Reviewed external meter" }, aggregates: [],
         power_quality: [true], status_fields: [false] } });
     expect(JSON.stringify(previews[1]?.configuration)).not.toContain("Stale draft");
     expect(JSON.stringify(previews[1]?.configuration)).not.toContain("Stale channel");
@@ -1477,7 +1401,6 @@ describe("CircuitSetup panel", () => {
     expect((state.meterConfiguration as typeof legacy).configuration).toEqual(legacy.configuration);
     expect(state.verifiedMeterConfiguration).toBeNull();
     expect(state.canonicalConfigurationChanged).toBe(false);
-    expect(state.managedAutomaticAggregates).toEqual([]);
     expect(state.transaction).toBeNull();
     const beforeChoice = [...operations];
 
@@ -1486,7 +1409,6 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
     expect((state.meterConfiguration as typeof legacy).configuration).toEqual(legacy.configuration);
-    expect(state.managedAutomaticAggregates).toEqual([]);
     expect(state.transaction).toBeNull();
     expect(operations).toEqual(beforeChoice);
 
@@ -1789,24 +1711,18 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
   });
 
-  it("renders live package impact and a textual high-count warning", async () => {
+  it("renders source-aware package impact and a textual high-count warning", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const response = meterResponse();
-    const state = panel as unknown as { meterConfiguration: typeof response; inventory: { plan_id: string; source_sha256: string; channels: typeof response.channels; catalog: typeof response.catalog }; packageOptions: { power_quality: boolean[]; status_fields: boolean[] } };
-    state.meterConfiguration = response;
-    state.inventory = { plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.catalog };
-    (response.configuration as MeterConfigurationRequest).power_quality = [false];
-    (response.configuration as MeterConfigurationRequest).status_fields = [false];
-    panel.showState("ct");
-    await panel.updateComplete;
+    const state = panel as unknown as { setMeterConfiguration(value: typeof response): void };
+    response.configuration_impact = { ...response.configuration_impact, numeric_entity_count: 14, approximate_publications_per_second: 2.8 };
+    state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
     expect(text(panel)).toContain("14 public entities");
-    (response.configuration as MeterConfigurationRequest).power_quality = [true];
-    (response.configuration as MeterConfigurationRequest).status_fields = [true];
-    (response.configuration as MeterConfigurationRequest).aggregates = Array.from({ length: 20 }, (_, index) => ({ aggregate_id: `grid-${index}`, name: `Grid ${index}`, role: "grid" as const, channels: [1], measurement_method: "direct" as const, parent_id: null, energy_mode: "bidirectional" as const, expose_power: true, expose_current: true }));
-    panel.requestUpdate();
-    await panel.updateComplete;
+    response.configuration_impact = { ...response.configuration_impact, numeric_entity_count: 210, text_entity_count: 6,
+      public_total_entity_count: 24, internal_total_sensor_count: 2, approximate_publications_per_second: 43.2 };
+    state.setMeterConfiguration(response); await panel.updateComplete;
     expect(text(panel)).toContain("Warning: high entity count.");
-    expect(text(panel)).toContain("public entities");
+    expect(text(panel)).toContain("216 public entities");
   });
 
   it("routes accepted safety acknowledgement to the Offset step", async () => {

@@ -3,6 +3,7 @@ import type {
   BoardPackageOptions,
   CalibrationResult,
   ConnectionType,
+  ConfigurationImpact,
   CtChange,
   CtInventory,
   LabelUpdateResult,
@@ -197,6 +198,19 @@ function totalOutputs(value: unknown, label: string): void {
   for (const key of ["watts", "amps", "kwh"]) boolean(item[key], label);
 }
 
+function configurationImpact(value: unknown, label: string, updateInterval: number): ConfigurationImpact {
+  const impact = record(value, label);
+  const counts = ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count", "public_total_entity_count", "internal_total_sensor_count"] as const;
+  exactKeys(impact, [...counts, "approximate_publications_per_second"], label);
+  for (const key of counts) if (integer(impact[key], label) < 0) throw new Error(`${label} response is invalid`);
+  const publications = number(impact.approximate_publications_per_second, label);
+  const expected = (Number(impact.numeric_entity_count) + Number(impact.text_entity_count)) / updateInterval;
+  if (publications < 0 || Math.abs(publications - expected) > Number.EPSILON * Math.max(1, publications, expected) * 8
+    || Number(impact.energy_entity_count) > Number(impact.numeric_entity_count)
+    || Number(impact.public_total_entity_count) > Number(impact.numeric_entity_count)) throw new Error(`${label} response is invalid`);
+  return value as ConfigurationImpact;
+}
+
 function leafChannels(value: unknown, label: string, count = 42): number[] {
   const channels = array(value, label, 42).map((entry) => integer(entry, label));
   if (new Set(channels).size !== channels.length || channels.some((entry) => entry < 1 || entry > count)) throw new Error(`${label} response is invalid`);
@@ -267,8 +281,9 @@ function totalsInventory(value: unknown, label: string, count: number): Record<s
   return item;
 }
 
-function totalGraphPreview(value: unknown, label: string, planId: string, sourceSha256: string): TotalGraphPreview {
-  const item = record(value, label); exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph"], label);
+function totalGraphPreview(value: unknown, label: string, planId: string, sourceSha256: string, configuration: MeterConfigurationRequest): TotalGraphPreview {
+  const item = record(value, label); exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph", "configuration_impact"], label);
+  configurationImpact(item.configuration_impact, label, configuration.meter.update_interval_s);
   if (item.plan_id !== planId || item.source_sha256 !== sourceSha256) throw new Error(`${label} response is invalid`);
   automaticPreview(item, label);
   const graph = record(item.graph, label); exactKeys(graph, ["native_visibility", "ordered_nodes", "leaf_channels", "independent_overlap_warnings"], label);
@@ -356,7 +371,7 @@ function meterConfiguration(value: unknown, label: string): MeterConfiguration {
   const ctCatalog = record(response.ct_catalog, label); exactKeys(ctCatalog, ["presets", "source_repository", "source_ref", "schema_version"], label);
   ctInventory({ plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.ct_catalog }, label);
   const warnings = array(response.warnings, label, 32).map((warning) => string(warning, label)!);
-  const impact = record(response.configuration_impact, label); exactKeys(impact, ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count", "approximate_publications_per_second"], label); for (const key of ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count"] as const) if (integer(impact[key], label) < 0) throw new Error(`${label} response is invalid`); const publications = number(impact.approximate_publications_per_second, label); const expectedPublications = (Number(impact.numeric_entity_count) + Number(impact.text_entity_count)) / updateInterval; if (publications < 0 || Math.abs(publications - expectedPublications) > Number.EPSILON * Math.max(1, publications, expectedPublications) * 8) throw new Error(`${label} response is invalid`);
+  const impact = configurationImpact(response.configuration_impact, label, updateInterval);
   const enabledChannels = channels.map((entry) => record(entry, label)).filter((entry) => entry.enabled);
   const statusFields = array(configuration.status_fields, label, 7);
   const textCount = enabledChannels.filter((entry) => statusFields[Math.floor((Number(entry.channel) - 1) / 6)]).length;
@@ -846,7 +861,7 @@ export class HelperApi {
     });
 
   public previewTotalGraph = (deviceId: string, planId: string, sourceSha256: string, configuration: MeterConfigurationRequest) =>
-    this.call("preview_total_graph", (value) => totalGraphPreview(value, "preview_total_graph", planId, sourceSha256), {
+    this.call("preview_total_graph", (value) => totalGraphPreview(value, "preview_total_graph", planId, sourceSha256, configuration), {
       device_id: deviceId, plan_id: planId, source_sha256: sourceSha256, configuration,
     });
   public setHaLabels = (deviceId: string, planId: string, sourceSha256: string, changes: Array<{ channel: number; name: string }>) =>

@@ -191,6 +191,7 @@ export interface TotalsInventory {
 }
 
 export interface TotalGraphPreview {
+  configuration_impact: ConfigurationImpact;
   plan_id: string;
   source_sha256: string;
   automatic_candidates: AutomaticTotalCandidate[];
@@ -324,6 +325,8 @@ export type ConfigurationSemanticSource =
   | "legacy_inferred";
 
 export interface ConfigurationImpact {
+  public_total_entity_count: number;
+  internal_total_sensor_count: number;
   enabled_channel_count: number;
   numeric_entity_count: number;
   text_entity_count: number;

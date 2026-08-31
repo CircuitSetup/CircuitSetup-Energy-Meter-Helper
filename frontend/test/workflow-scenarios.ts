@@ -74,16 +74,29 @@ export const meterResponse = (
       burden_output_acknowledged: false,
     })),
     aggregates: [],
+    default_totals: { overall: { watts: true, amps: true, kwh: true }, boards: [] },
+    automatic_totals: [],
+    totals_change_intent: { adopt_managed_totals: false, legacy_parent_decisions: [] },
     power_quality: [true],
     status_fields: [false],
     multi_reference_preparation_acknowledged: false,
   },
   capabilities: {
     configuration_authoritative: true,
-    managed_totals: true,
+    native_totals_readable: true,
+    native_totals_writable: true,
+    managed_automatic_totals: true,
+    managed_advanced_totals: true,
     multi_reference: true,
     semantic_source: "helper_managed",
     reason_codes: [],
+  },
+  totals: {
+    native_sources: [{ source_id: "overall", label: "Overall meter total", leaf_channels: [1, 2, 3, 4, 5, 6],
+      power_id: "totalWattsMain", current_id: "totalAmpsMain", existing_energy_id: "totalEnergyDaily",
+      upstream_defaults: { watts: true, amps: true, kwh: true } }],
+    automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+    migration: { parent_review_required: false, legacy_parent_links: [], native_visibility_confirmation_required: false, native_visibility_resolved: true },
   },
   voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" },
   voltage_transformer_catalog: {
@@ -108,10 +121,12 @@ export const meterResponse = (
   warnings: [],
   configuration_impact: {
     enabled_channel_count: 6,
-    numeric_entity_count: 38,
+    numeric_entity_count: 41,
     text_entity_count: 0,
-    energy_entity_count: 0,
-    approximate_publications_per_second: 7.6,
+    energy_entity_count: 1,
+    public_total_entity_count: 3,
+    internal_total_sensor_count: 0,
+    approximate_publications_per_second: 41 / update_interval_s,
   },
   channels: Array.from({ length: 6 }, (_, index) => ({
     channel: index + 1,
@@ -201,7 +216,8 @@ const helperDevice = configuredDevice();
 const helperConfiguration = meterResponse();
 const legacyConfiguration = meterResponse();
 legacyConfiguration.capabilities.semantic_source = "legacy_inferred";
-legacyConfiguration.capabilities.managed_totals = false;
+legacyConfiguration.capabilities.managed_automatic_totals = false;
+legacyConfiguration.capabilities.managed_advanced_totals = false;
 legacyConfiguration.capabilities.reason_codes = ["electrical_profile_requires_confirmation"];
 legacyConfiguration.warnings = ["electrical_profile_requires_confirmation"];
 

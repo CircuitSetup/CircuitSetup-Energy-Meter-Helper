@@ -88,7 +88,7 @@ const meterConfiguration: MeterConfiguration = {
     source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1,
   },
   ct_catalog: inventory.catalog, warnings: ["slow_interval_extends_calibration"],
-  configuration_impact: { enabled_channel_count: 6, numeric_entity_count: 43, text_entity_count: 0, energy_entity_count: 2, approximate_publications_per_second: 43 / 30 },
+  configuration_impact: { enabled_channel_count: 6, numeric_entity_count: 43, text_entity_count: 0, energy_entity_count: 2, public_total_entity_count: 9, internal_total_sensor_count: 1, approximate_publications_per_second: 43 / 30 },
   channels: inventory.channels as MeterConfiguration["channels"], catalog: inventory.catalog,
 };
 const transaction = { transaction_id: "tx-1", state: "previewed", source_sha256: "a".repeat(64),
@@ -257,9 +257,29 @@ describe("HelperApi", () => {
     });
   });
 
+  it("validates server impact counts and publication arithmetic against each requested interval", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const preview = { plan_id: meterConfiguration.plan_id, source_sha256: meterConfiguration.source_sha256,
+      automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] },
+      configuration_impact: { ...meterConfiguration.configuration_impact, public_total_entity_count: 12, internal_total_sensor_count: 7 } };
+    hass.responses.get_meter_configuration = { ...meterConfiguration, configuration_impact: preview.configuration_impact };
+    await expect(api.getMeterConfiguration("meter-1")).resolves.toMatchObject({ configuration_impact: preview.configuration_impact });
+    for (const interval of [1, 10, 60] as const) {
+      const configuration = { ...meterConfiguration.configuration, meter: { ...meterConfiguration.configuration.meter, update_interval_s: interval } };
+      const valid = { ...preview.configuration_impact, approximate_publications_per_second: 43 / interval };
+      hass.responses.preview_total_graph = { ...preview, configuration_impact: valid };
+      await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, configuration)).resolves.toMatchObject({ configuration_impact: valid });
+      for (const patch of [{ public_total_entity_count: -1 }, { internal_total_sensor_count: 1.5 }, { public_total_entity_count: true }, { internal_total_sensor_count: undefined }, { approximate_publications_per_second: 43 / 30 }, { extra: 1 }]) {
+        hass.responses.preview_total_graph = { ...preview, configuration_impact: { ...valid, ...patch } };
+        await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, configuration)).rejects.toThrow("preview_total_graph");
+      }
+    }
+  });
+
   it("validates the read-only graph preview and binds it to the requested plan", async () => {
     const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
-    const preview = { plan_id: "b".repeat(32), source_sha256: "a".repeat(64), automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
+    const preview = { plan_id: "b".repeat(32), source_sha256: "a".repeat(64), automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], configuration_impact: meterConfiguration.configuration_impact, graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
     hass.responses.preview_total_graph = preview;
     await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, meterConfiguration.configuration)).resolves.toEqual(preview);
     expect(hass.messages[0]).toMatchObject({ type: "circuitsetup_energy_meter_helper/preview_total_graph", configuration: meterConfiguration.configuration });

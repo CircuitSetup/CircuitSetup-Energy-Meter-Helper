@@ -3,7 +3,7 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import { HelperApi, type HomeAssistant } from "./api";
 import { buildInstallStep } from "./components/build-install-step";
 import { calibrationPlanStep } from "./components/calibration-plan-step";
-import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, reconcileSplitPhaseAggregates, type CtDraft } from "./components/ct-inventory-step";
+import { changesFromDrafts, circuitConfigurationIsValid, ctInventoryStep, type CtDraft } from "./components/ct-inventory-step";
 import { currentStep } from "./components/current-step";
 import { meterSettingsStep } from "./components/meter-settings-step";
 import { espWebInstaller } from "./components/esp-web-installer";
@@ -19,7 +19,6 @@ import { topologyMismatch, topologyStep } from "./components/topology-step";
 import { voltageStep } from "./components/voltage-step";
 import { workflowProgress } from "./components/workflow-progress";
 import { chooseFirmwareVersion, fetchFirmwareIndex, resolveFirmwareOptions, type FirmwareIndex, type FirmwareOption } from "./firmware-installer";
-import { configurationImpact } from "./configuration-impact";
 import { panelStyles } from "./styles";
 import {
   calibrationSubsteps,
@@ -40,7 +39,8 @@ import {
 import type {
   CalibrationResult,
   BoardPackageOptions,
-  CircuitAggregate,
+  AutomaticTotalSettings,
+  TotalGraphPreview,
   ConnectionType,
   ElectricalSystem,
   LineFrequencyHz,
@@ -147,7 +147,9 @@ export class CircuitSetupPanel extends LitElement {
   private meterNominalVoltageTouched = new Set<string>();
   private canonicalConfigurationChanged = false;
   private legacyCircuitSemanticsConfirmed = false;
-  private managedAutomaticAggregates: CircuitAggregate[] = [];
+  private totalGraphPreview: TotalGraphPreview | null = null;
+  private totalGraphState: "ready" | "pending" | "invalid" = "ready";
+  private issuedAutomaticSettings: AutomaticTotalSettings[] = [];
   private board = 0;
   private group = 0;
   private channel = 1;
@@ -460,7 +462,9 @@ export class CircuitSetupPanel extends LitElement {
     this.meterNominalVoltageTouched = new Set();
     this.canonicalConfigurationChanged = false;
     this.configurationInstalled = false;
-    this.managedAutomaticAggregates = [];
+    this.totalGraphPreview = null;
+    this.totalGraphState = "ready";
+    this.issuedAutomaticSettings = [];
     this.board = 0;
     this.resetCalibrationRun();
   }
@@ -988,22 +992,25 @@ export class CircuitSetupPanel extends LitElement {
       ...editable,
       configuration: { ...editable.configuration, ...this.packageOptions },
     } : editable;
-    const reconciliation = !existingReadOnly && this.configurationMode === "helper_managed" && this.meterConfiguration.capabilities.managed_totals
-      ? reconcileSplitPhaseAggregates(this.meterConfiguration.configuration) : null;
-    this.managedAutomaticAggregates = reconciliation?.managed ?? [];
-    if (reconciliation) this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation.configuration };
+    this.totalGraphPreview = null;
+    this.totalGraphState = "ready";
+    this.issuedAutomaticSettings = [...this.meterConfiguration.configuration.automatic_totals];
     if (!this.packageOptionsTouched) this.packageOptions = {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields],
     };
     this.canonicalConfigurationChanged = !existingReadOnly
-      && (this.packageOptionsTouched || (this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter) || reconciliation?.changed === true);
+      && (this.packageOptionsTouched || (this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter));
     this.meterSettingsDraft = { ...this.meterConfiguration.configuration.meter,
       authoritative: configuration.capabilities.configuration_authoritative, warnings: configuration.warnings };
     this.multiReferencePreparationAcknowledged = false;
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = new Set();
     this.initializeInventory(this.meterConfiguration);
+    if (JSON.stringify(this.meterConfiguration.configuration) !== JSON.stringify(configuration.configuration)) {
+      this.totalGraphState = "pending";
+      void this.refreshTotalGraph(this.meterConfiguration.configuration);
+    }
   }
 
   private chooseExistingConfiguration(choice: ExistingConfigurationChoice): void {
@@ -1111,12 +1118,45 @@ export class CircuitSetupPanel extends LitElement {
 
   private updateCircuitConfiguration(configuration: MeterConfigurationRequest, changed = true): void {
     if (!this.meterConfiguration) return;
-    const reconciliation = changed && (this.configurationMode === "helper_managed" || this.legacyCircuitSemanticsConfirmed)
-      && this.configurationMode !== "runtime_only" && this.meterConfiguration.capabilities.configuration_authoritative
-      ? reconcileSplitPhaseAggregates(configuration, this.managedAutomaticAggregates.length ? this.managedAutomaticAggregates : null) : null;
-    this.managedAutomaticAggregates = reconciliation?.managed ?? [];
-    this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation?.configuration ?? configuration };
-    this.canonicalConfigurationChanged ||= changed || reconciliation?.changed === true;
+    const unchanged = JSON.stringify(configuration) === JSON.stringify(this.meterConfiguration.configuration);
+    this.canonicalConfigurationChanged ||= changed;
+    if (unchanged) { this.requestUpdate(); return; }
+    this.meterConfiguration = { ...this.meterConfiguration, configuration };
+    this.totalGraphPreview = null;
+    this.totalGraphState = "pending";
+    void this.refreshTotalGraph(configuration);
+    this.requestUpdate();
+  }
+
+  private async refreshTotalGraph(configuration: MeterConfigurationRequest): Promise<void> {
+    if (!this.api || !this.selectedDeviceId || !this.meterConfiguration?.capabilities.configuration_authoritative
+      || this.configurationMode === "runtime_only") { this.totalGraphState = "invalid"; return; }
+    const api = this.api; const deviceId = this.selectedDeviceId; const generation = this.operationGeneration;
+    const meter = this.meterConfiguration;
+    const settings = new Map(this.issuedAutomaticSettings.map((item) => [item.candidate_id, item]));
+    configuration.automatic_totals.forEach((item) => settings.set(item.candidate_id, item));
+    this.issuedAutomaticSettings = [...settings.values()];
+    const current = () => this.ownsOperation(generation, api, deviceId)
+      && this.meterConfiguration?.configuration === configuration
+      && this.meterConfiguration.plan_id === meter.plan_id && this.meterConfiguration.source_sha256 === meter.source_sha256;
+    try {
+      const preview = await api.previewTotalGraph(deviceId, meter.plan_id, meter.source_sha256,
+        { ...configuration, automatic_totals: this.issuedAutomaticSettings });
+      if (!current()) return;
+      const automatic = preview.automatic_totals.map((item) => ({ candidate_id: item.candidate.candidate_id, enabled: item.enabled, outputs: item.outputs }));
+      automatic.forEach((item) => settings.set(item.candidate_id, item));
+      this.issuedAutomaticSettings = [...settings.values()];
+      this.meterConfiguration = { ...meter, configuration: { ...configuration, automatic_totals: automatic },
+        totals: { ...meter.totals, automatic_candidates: preview.automatic_candidates, automatic_totals: preview.automatic_totals,
+          stale_automatic_total_settings: preview.stale_automatic_total_settings },
+        configuration_impact: preview.configuration_impact };
+      this.totalGraphPreview = preview;
+      this.totalGraphState = "ready";
+    } catch {
+      if (!current()) return;
+      this.totalGraphPreview = null;
+      this.totalGraphState = "invalid";
+    }
     this.requestUpdate();
   }
 
@@ -1152,24 +1192,35 @@ export class CircuitSetupPanel extends LitElement {
 
   private disableCircuit(channel: number): void {
     if (!this.meterConfiguration) return;
-    const affected = this.meterConfiguration.configuration.aggregates.filter((aggregate) => aggregate.channels.includes(channel));
-    const invalid = affected.filter((aggregate) => {
-      const remaining = aggregate.channels.filter((item) => item !== channel).length;
-      return !remaining || aggregate.measurement_method === "two_ct_sum" && remaining !== 2
-        || (aggregate.measurement_method === "one_ct_double_power" || aggregate.measurement_method === "both_conductors_one_ct") && remaining !== 1;
-    });
-    const removed = invalid.map((aggregate) => aggregate.name);
-    if (affected.length && !window.confirm(`Marking CT${channel} unused removes it from ${affected.map((aggregate) => aggregate.name).join(", ")}${removed.length ? ` and deletes invalid aggregate ${removed.join(", ")}` : ""}. Continue?`)) {
-      this.requestUpdate();
-      return;
+    const configuration = this.meterConfiguration.configuration;
+    const removedIds = new Set<string>();
+    const changedIds = new Set(configuration.aggregates.filter((aggregate) => aggregate.sources.some((source) => source.kind === "channel" && source.channel === channel)).map((aggregate) => aggregate.aggregate_id));
+    // Native sources retain their server-described physical coverage when a CT is disabled.
+    let aggregates = configuration.aggregates.map((aggregate) => ({ ...aggregate,
+      sources: aggregate.sources.filter((source) => source.kind !== "channel" || source.channel !== channel) }));
+    let removed: boolean;
+    do {
+      removed = false;
+      aggregates = aggregates.filter((aggregate) => {
+        const needed = aggregate.measurement_method === "two_ct_sum" ? 2 : aggregate.measurement_method === "direct" ? undefined : 1;
+        if (changedIds.has(aggregate.aggregate_id) && (!aggregate.sources.length || needed !== undefined && aggregate.sources.length !== needed)) {
+          removedIds.add(aggregate.aggregate_id); removed = true; return false;
+        }
+        return true;
+      }).map((aggregate) => {
+        const sources = aggregate.sources.filter((source) => source.kind !== "aggregate" || !removedIds.has(source.aggregate_id));
+        if (sources.length !== aggregate.sources.length) changedIds.add(aggregate.aggregate_id);
+        return { ...aggregate, sources };
+      });
+    } while (removed);
+    const affected = configuration.aggregates.filter((aggregate) => removedIds.has(aggregate.aggregate_id)
+      || aggregate.sources.some((source) => source.kind === "channel" && source.channel === channel
+        || source.kind === "aggregate" && removedIds.has(source.aggregate_id)));
+    if (affected.length && !window.confirm(`Marking CT${channel} unused changes ${affected.map((aggregate) => aggregate.name).join(", ")}${removedIds.size ? " and deletes totals with invalid sources" : ""}. Continue?`)) {
+      this.requestUpdate(); return;
     }
-    const removedIds = new Set(invalid.map((aggregate) => aggregate.aggregate_id));
-    this.updateCircuitConfiguration({ ...this.meterConfiguration.configuration,
-      channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel
-        ? { ...item, enabled: false, role: "unused" } : item),
-      aggregates: this.meterConfiguration.configuration.aggregates.filter((aggregate) => !invalid.includes(aggregate)).map((aggregate) => ({ ...aggregate,
-        parent_id: aggregate.parent_id !== null && removedIds.has(aggregate.parent_id) ? null : aggregate.parent_id,
-        channels: aggregate.channels.filter((item) => item !== channel) })), });
+    this.updateCircuitConfiguration({ ...configuration, aggregates,
+      channels: configuration.channels.map((item) => item.channel === channel ? { ...item, enabled: false, role: "unused" } : item) });
   }
 
   private hasPackageChanges(): boolean {
@@ -1999,12 +2050,12 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.meterProfileConfirmed = value; this.requestUpdate(); },
       this.configurationMode ?? "helper_managed",
     );
-    if (this.step === "ct" && this.inventory) { const impact = this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null; const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0; return html`${impact ? html`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? html`<strong>Warning: high entity count. </strong>` : nothing}${impact.enabled_channel_count} enabled channels; ${total} public entities (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : nothing}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
+    if (this.step === "ct" && this.inventory) { const impact = this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null; const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0; return html`${impact ? html`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? html`<strong>Warning: high entity count. </strong>` : nothing}${impact.enabled_channel_count} enabled channels; ${total} ${this.meterConfiguration?.totals.migration.native_visibility_resolved ? "public entities" : "confirmed public entities (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : this.meterConfiguration ? html`<p role="status">${this.totalGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</p>` : nothing}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
       (board) => { this.board = board; this.requestUpdate(); },
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session",
       this.labelOnly ? null : this.meterConfiguration?.configuration ?? null, (configuration) => this.updateCircuitConfiguration(configuration), (channel) => this.disableCircuit(channel),
       this.configurationMode !== "runtime_only" && (this.meterConfiguration?.capabilities.configuration_authoritative ?? true), this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "", this.configurationMode === "legacy_editable",
-      this.configurationMode !== "legacy_editable" || this.existingConfigurationChoice !== "manage_with_helper" || this.labelOnly || this.legacyCircuitSemanticsConfirmed)}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
+      this.configurationMode !== "legacy_editable" || this.existingConfigurationChoice !== "manage_with_helper" || this.labelOnly || this.legacyCircuitSemanticsConfirmed, this.totalGraphState === "ready" ? this.meterConfiguration?.totals ?? null : null)}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
     if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return html`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
       <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
       <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>
@@ -2015,7 +2066,7 @@ export class CircuitSetupPanel extends LitElement {
       () => void (this.calibrationHandoff && this.transaction?.state === "verified" && this.restartResult?.source_handoff_firmware_installed
         ? this.clearCalibrationHandoff() : this.transactionAction("install")), () => void this.transactionAction("rollback"), () => this.back(),
       () => this.navigate(this.step === "save-calibration" ? "summary" : "calibration-plan"), this.meterConfiguration?.configuration ?? null,
-      this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null,
+      this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null,
       this.pendingAction === "review-back", this.reviewCorrection !== null, this.pendingAction,
       this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper");
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
@@ -2061,7 +2112,7 @@ export class CircuitSetupPanel extends LitElement {
       this.completedWithoutChanges, this.selectedProjectVersion(),
       () => void (this.restartResult?.source_handoff_firmware_installed
         ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()), () => this.back(), this.verifiedMeterConfiguration,
-      this.verifiedMeterConfiguration ? configurationImpact(this.verifiedMeterConfiguration.configuration, this.verifiedMeterConfiguration.topology) : null,
+      this.verifiedMeterConfiguration?.configuration_impact ?? null,
       () => this.finishFlow("Meter configuration and calibration are complete."), () => this.keepCalibrationInFlash(),
       this.workflowContext().configurationMode, this.existingConfigurationChoice, this.configurationInstalled, this.handoffDeclined);
     return html`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct"
