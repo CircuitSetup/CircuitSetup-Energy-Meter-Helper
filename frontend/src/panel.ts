@@ -15,6 +15,7 @@ import { safetyStep } from "./components/safety-step";
 import { setupDeviceStep } from "./components/setup-device-step";
 import { summaryOutcome, summaryStep } from "./components/summary-step";
 import { technicalDetails } from "./components/technical-details";
+import { totalsEditable } from "./components/totals-migration-review";
 import { topologyMismatch, topologyStep } from "./components/topology-step";
 import { voltageStep } from "./components/voltage-step";
 import { workflowProgress } from "./components/workflow-progress";
@@ -141,6 +142,7 @@ export class CircuitSetupPanel extends LitElement {
   private meterSettingsDraft: MeterSettingsDraft | null = null;
   private meterConfiguration: MeterConfiguration | null = null;
   private verifiedMeterConfiguration: MeterConfiguration | null = null;
+  private sourceMeterConfiguration: { deviceId: string; meter: MeterConfiguration } | null = null;
   private multiReferencePreparationAcknowledged = false;
   private meterProfileConfirmed = false;
   private meterFrequencyTouched = false;
@@ -455,6 +457,7 @@ export class CircuitSetupPanel extends LitElement {
     this.meterSettingsDraft = null;
     this.meterConfiguration = null;
     this.verifiedMeterConfiguration = null;
+    this.sourceMeterConfiguration = null;
     this.packageOptionsTouched = false;
     this.multiReferencePreparationAcknowledged = false;
     this.meterProfileConfirmed = this.configurationMode === "helper_managed";
@@ -584,8 +587,8 @@ export class CircuitSetupPanel extends LitElement {
       legacyChoice: this.existingConfigurationChoice
         ?? (this.configurationMode === null && mode === "legacy_editable" ? "manage_with_helper" : null),
       calibrationPlan: this.session?.calibration_plan ?? this.calibrationPlan ?? "full",
-      canonicalConfigurationChanged: this.canonicalConfigurationChanged,
-      normalTransactionRequired: this.canonicalConfigurationChanged || normalTransaction !== null,
+      canonicalConfigurationChanged: this.hasCanonicalChanges(),
+      normalTransactionRequired: this.hasCanonicalChanges() || normalTransaction !== null,
       normalTransactionActive: normalTransaction !== null
         && !["verified", "rolled_back"].includes(normalTransaction.state),
       normalTransactionVerified: normalTransaction?.state === "verified",
@@ -962,6 +965,8 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private setMeterConfiguration(configuration: MeterConfiguration): void {
+    this.sourceMeterConfiguration = this.selectedDeviceId && configuration.capabilities.configuration_authoritative
+      ? { deviceId: this.selectedDeviceId, meter: structuredClone(configuration) } : null;
     this.configurationMode = configurationModeFor({
       journeyOrigin: this.journeyOrigin,
       semanticSource: configuration.capabilities.semantic_source,
@@ -1126,6 +1131,56 @@ export class CircuitSetupPanel extends LitElement {
     this.totalGraphState = "pending";
     void this.refreshTotalGraph(configuration);
     this.requestUpdate();
+  }
+
+  private hasCanonicalChanges(): boolean {
+    const intent = this.meterConfiguration?.configuration.totals_change_intent;
+    return Boolean(intent?.adopt_managed_totals || intent?.legacy_parent_decisions.length
+      || this.existingConfigurationChoice !== "calibrate_only" && !this.labelOnly && this.canonicalConfigurationChanged);
+  }
+
+  private hasUnsupportedCalibrationChanges(): boolean {
+    const meter = this.meterConfiguration;
+    if (!meter) return false;
+    const intent = meter.configuration.totals_change_intent;
+    if (intent?.adopt_managed_totals || intent?.legacy_parent_decisions.length) return true;
+    const source = this.sourceMeterConfiguration?.meter;
+    if (!source) return this.canonicalConfigurationChanged;
+    const unsupported = (configuration: MeterConfigurationRequest) => ({ meter: configuration.meter,
+      channels: configuration.channels.map(({ channel, enabled, role, voltage_reference_id }) => ({ channel, enabled, role, voltage_reference_id })),
+      default_totals: configuration.default_totals, automatic_totals: configuration.automatic_totals, aggregates: configuration.aggregates });
+    return JSON.stringify(unsupported(meter.configuration)) !== JSON.stringify(unsupported(source.configuration));
+  }
+
+  private totalsIntentNeedsResolution(): boolean {
+    return this.hasCanonicalChanges() && (this.labelOnly || this.existingConfigurationChoice === "calibrate_only");
+  }
+
+  private explainTotalsModeConflict(): void {
+    this.fail(new Error(), "Pending totals choices are outside the selected calibration-only or labels-only mode. No configuration or calibration was changed. Explicitly discard the local choices, or return to configuration editing before reviewing them.");
+  }
+
+  private explainCalibrationConfigurationConflict(): void {
+    this.fail(new Error(), "Local configuration choices cannot be included in calibration-only saving. Keep your gains and either cancel this action or explicitly discard those local choices to continue calibration. Stored legacy proposals remain pending for a later totals review.");
+  }
+
+  private discardUnsupportedCalibrationChanges(): void {
+    const baseline = this.sourceMeterConfiguration;
+    if (!baseline || baseline.deviceId !== this.selectedDeviceId || baseline.meter.source_sha256 !== this.meterConfiguration?.source_sha256) {
+      this.fail(new Error(), "The source baseline no longer matches this meter. No choices or calibration were discarded. Reload the selected meter before reviewing local choices.");
+      return;
+    }
+    if (!window.confirm("Discard uncommitted meter, circuit-role and totals choices to continue calibration? Calibration gains, CT names/models/multipliers and package choices are kept. Stored legacy proposals are not resolved.")) return;
+    const source = structuredClone(baseline.meter.configuration);
+    const current = this.meterConfiguration.configuration;
+    this.canonicalConfigurationChanged = false;
+    this.updateCircuitConfiguration({ ...source,
+      channels: source.channels.map((channel) => ({ ...current.channels.find((item) => item.channel === channel.channel) ?? channel,
+        enabled: channel.enabled, role: channel.role, voltage_reference_id: channel.voltage_reference_id })),
+      power_quality: [...this.packageOptions.power_quality], status_fields: [...this.packageOptions.status_fields] }, false);
+    this.meterSettingsDraft = { ...source.meter, authoritative: true, warnings: baseline.meter.warnings };
+    this.error = "";
+    this.announcement = "Unsupported local configuration choices discarded. Calibration gains, CT changes and package choices were kept; stored legacy proposals remain pending.";
   }
 
   private async refreshTotalGraph(configuration: MeterConfigurationRequest): Promise<void> {
@@ -1320,7 +1375,7 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.labelOnly && this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.legacyCircuitSemanticsConfirmed) {
       return this.fail(new Error(), "Confirm that you reviewed used and unused channels and circuit roles before continuing.");
     }
-    if (this.meterConfiguration && !this.labelOnly && this.canonicalConfigurationChanged) return this.previewCanonicalConfiguration();
+    if (this.meterConfiguration && this.hasCanonicalChanges()) return this.previewCanonicalConfiguration();
     const changes = changesFromDrafts(this.inventory, this.drafts);
     if (this.labelOnly && changes.length) {
       const labels = changes.map(({ channel, name }) => ({ channel, name }));
@@ -1340,12 +1395,13 @@ export class CircuitSetupPanel extends LitElement {
       this.pendingAction = "";
       if (this.error) return;
     }
-    if (this.meterConfiguration && this.canonicalConfigurationChanged) return this.previewCanonicalConfiguration();
+    if (this.meterConfiguration && this.hasCanonicalChanges()) return this.previewCanonicalConfiguration();
     this.navigate("calibration-plan");
   }
 
   private async previewCanonicalConfiguration(): Promise<void> {
     if (!this.api || !this.inventory || !this.selectedDeviceId || !this.meterConfiguration) return;
+    if (this.totalsIntentNeedsResolution()) { this.explainTotalsModeConflict(); return; }
     const configuration = this.meterConfiguration.configuration;
     if (!circuitConfigurationIsValid(configuration, this.inventory.channels.length)) return this.fail(new Error(), "Complete the circuit and aggregate assignments before review.");
     this.pendingAction = "session";
@@ -1361,6 +1417,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private async reviewCalibrationHandoff(): Promise<void> {
     if (!this.api || !this.session || !this.restartResult?.source_handoff_available || this.pendingAction) return;
+    if (this.hasUnsupportedCalibrationChanges()) { this.explainCalibrationConfigurationConflict(); return; }
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const verificationId = this.restartResult.verification_id; const generation = ++this.operationGeneration;
     this.clearSubscription("transaction");
@@ -1476,23 +1533,57 @@ export class CircuitSetupPanel extends LitElement {
         this.navigate("summary");
       } else if (action === "install" && transaction.state === "verified") {
         this.configurationInstalled = true;
-        if (this.meterConfiguration) this.verifiedMeterConfiguration = { ...this.meterConfiguration,
-          capabilities: this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper"
-            ? { ...this.meterConfiguration.capabilities, semantic_source: "helper_managed" }
-            : this.meterConfiguration.capabilities,
-          configuration: { ...this.meterConfiguration.configuration, multi_reference_preparation_acknowledged: false } };
-        if (this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper") {
-          this.configurationMode = "helper_managed";
-        }
+        this.verifiedMeterConfiguration = null;
+        this.sourceMeterConfiguration = null;
         this.acceptInstalledDrafts();
         this.canonicalConfigurationChanged = false;
+        if (transaction.full_meter_configuration_verified && this.meterConfiguration) {
+          const meter = this.meterConfiguration;
+          const decisions = meter.configuration.totals_change_intent?.legacy_parent_decisions ?? [];
+          const links = meter.totals.migration.legacy_parent_links.filter((link) => !decisions.some((decision) =>
+            decision.child_id === link.child_id && decision.proposed_parent_id === link.proposed_parent_id));
+          this.meterConfiguration = { ...meter,
+            configuration: { ...meter.configuration, totals_change_intent: { adopt_managed_totals: false, legacy_parent_decisions: [] } },
+            totals: { ...meter.totals, migration: { ...meter.totals.migration, legacy_parent_links: links, parent_review_required: links.length > 0 } } };
+        }
         this.announcement = "Configuration changes were installed and verified. Continue to safety and calibration.";
+        if (this.meterConfiguration?.capabilities.configuration_authoritative && transaction.full_meter_configuration_verified) {
+          await this.refreshInstalledConfiguration();
+        }
       }
     }, action === "install" && this.calibrationHandoff
       ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values."
       : "This confirmation is stale. Reload the CT inventory before making another change.",
     () => this.ownsOperation(generation, api, deviceId));
     if (this.pendingAction === action) this.pendingAction = "";
+    this.requestUpdate();
+  }
+
+  private async refreshInstalledConfiguration(): Promise<void> {
+    if (!this.api || !this.selectedDeviceId || !this.configurationInstalled || this.transaction?.state !== "verified"
+      || !this.transaction.full_meter_configuration_verified || this.configurationMode === "runtime_only") return;
+    const api = this.api; const deviceId = this.selectedDeviceId; const generation = this.operationGeneration;
+    const transaction = this.transaction;
+    const current = () => this.ownsOperation(generation, api, deviceId) && this.transaction?.state === "verified"
+      && this.transaction.transaction_id === transaction.transaction_id && this.transaction.source_sha256 === transaction.source_sha256;
+    this.totalGraphState = "pending";
+    this.requestUpdate();
+    try {
+      const fresh = await api.getMeterConfiguration(deviceId);
+      if (!current()) return;
+      if (!fresh.capabilities.configuration_authoritative) throw new Error("Fresh configuration is not authoritative");
+      this.packageOptionsTouched = false;
+      this.setMeterConfiguration(fresh);
+      this.verifiedMeterConfiguration = fresh;
+      this.canonicalConfigurationChanged = false;
+      this.error = "";
+      this.announcement = "Installed configuration and totals inventory are verified.";
+    } catch {
+      if (!current()) return;
+      this.verifiedMeterConfiguration = null;
+      this.totalGraphState = "invalid";
+      this.error = "Installed configuration is verified, but fresh totals inventory could not be loaded. Retry inventory refresh; do not reinstall.";
+    }
     this.requestUpdate();
   }
 
@@ -1674,11 +1765,13 @@ export class CircuitSetupPanel extends LitElement {
 
   private async finishCurrent(): Promise<void> {
     if (!this.session || this.finishBusy) return;
+    if (this.totalsIntentNeedsResolution()) { this.explainTotalsModeConflict(); return; }
     if (this.session.has_pending_calibration) {
       this.navigate("restart");
+      if (this.hasUnsupportedCalibrationChanges()) this.explainCalibrationConfigurationConflict();
       return;
     }
-    if (this.calibrationDraftChanges().length) {
+    if (this.calibrationDraftChanges().length || this.hasCanonicalChanges() || this.hasPackageChanges()) {
       await this.finishWithoutCalibration();
       return;
     }
@@ -1793,6 +1886,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private keepCalibrationInFlash(): void {
+    if (this.hasUnsupportedCalibrationChanges()) { this.explainCalibrationConfigurationConflict(); return; }
     ++this.operationGeneration;
     if (this.pendingAction === "calibration-handoff") this.pendingAction = "";
     this.clearSubscription("transaction");
@@ -1904,13 +1998,15 @@ export class CircuitSetupPanel extends LitElement {
 
   private async finishWithoutCalibration(): Promise<void> {
     if (this.pendingAction) return;
+    if (this.totalsIntentNeedsResolution()) { this.explainTotalsModeConflict(); return; }
     this.pendingAction = "finish";
     this.requestUpdate();
     const changes = this.calibrationDraftChanges();
     try {
       await this.cancelSession(null);
       if (this.error) return;
-      if (changes.length || this.hasPackageChanges()) await this.reviewChanges();
+      if (this.meterConfiguration && this.hasCanonicalChanges()) await this.previewCanonicalConfiguration();
+      else if (changes.length || this.hasPackageChanges()) await this.reviewChanges();
       else this.finishFlow("No changes were made. Select another device to configure.");
     } finally {
       this.pendingAction = "";
@@ -2056,12 +2152,12 @@ export class CircuitSetupPanel extends LitElement {
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session",
       this.labelOnly ? null : this.meterConfiguration?.configuration ?? null, (configuration) => this.updateCircuitConfiguration(configuration), (channel) => this.disableCircuit(channel),
       this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true
-        && this.meterConfiguration.capabilities.managed_advanced_totals, this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "", this.configurationMode === "legacy_editable",
+        && totalsEditable(this.meterConfiguration, "managed_advanced_totals"), this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "", this.configurationMode === "legacy_editable",
       (!this.meterConfiguration || this.totalGraphState === "ready") && (this.configurationMode !== "legacy_editable" || this.existingConfigurationChoice !== "manage_with_helper" || this.labelOnly || this.legacyCircuitSemanticsConfirmed), this.meterConfiguration?.totals ?? null,
-      this.meterConfiguration?.capabilities.native_totals_readable === true, this.meterConfiguration?.capabilities.native_totals_writable === true,
+      this.meterConfiguration?.capabilities.native_totals_readable === true, Boolean(this.meterConfiguration && totalsEditable(this.meterConfiguration, "native_totals_writable")),
       this.totalGraphState === "ready" ? this.totalGraphPreview : null, this.totalGraphState === "ready", this.totalGraphState,
       this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true
-        && this.meterConfiguration.capabilities.managed_automatic_totals)}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
+        && totalsEditable(this.meterConfiguration, "managed_automatic_totals"), this.meterConfiguration)}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
     if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return html`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
       <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
       <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>
@@ -2074,12 +2170,14 @@ export class CircuitSetupPanel extends LitElement {
       () => this.navigate(this.step === "save-calibration" ? "summary" : "calibration-plan"), this.meterConfiguration?.configuration ?? null,
       this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null,
       this.pendingAction === "review-back", this.reviewCorrection !== null, this.pendingAction,
-      this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper");
+      this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper", this.meterConfiguration,
+      this.totalGraphState === "ready" ? this.totalGraphPreview : null);
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back(), this.pendingAction === "safety");
     if (this.step === "calibration-plan") return calibrationPlanStep(this.calibrationPlan, (plan) => {
       this.calibrationPlan = plan;
-      if (plan === "keep_existing") {
+        if (plan === "keep_existing") {
+          if (this.hasCanonicalChanges()) { void this.previewCanonicalConfiguration(); return; }
         this.completedWithoutChanges = true;
         this.navigate("summary");
       } else void this.startSession(plan as "standard" | "full");
@@ -2171,6 +2269,12 @@ export class CircuitSetupPanel extends LitElement {
             </li>`)}
           </ol></nav>` : nothing}
           ${this.error ? html`<div class="error-panel" role="alert" tabindex="-1"><strong>${this.error}</strong></div>` : nothing}
+          ${this.totalsIntentNeedsResolution() || this.hasUnsupportedCalibrationChanges() && (this.session?.has_pending_calibration || this.restartResult)
+            && ["restart", "save-calibration", "summary"].includes(this.step) ? html`<button class="secondary"
+              ?disabled=${Boolean(this.pendingAction)} @click=${() => this.discardUnsupportedCalibrationChanges()}>Discard local configuration choices and continue calibration</button>` : nothing}
+          ${this.configurationInstalled && this.transaction?.state === "verified" && this.transaction.full_meter_configuration_verified
+            && !this.verifiedMeterConfiguration && this.configurationMode !== "runtime_only" ? html`<button class="secondary"
+              ?disabled=${this.totalGraphState === "pending"} @click=${() => void this.refreshInstalledConfiguration()}>Retry totals inventory refresh</button>` : nothing}
           ${this.stepBody()}
           ${!["setup", "legacy-review", "meter", "voltage", "current", "summary"].includes(this.step) ? technicalDetails(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.completedWithoutChanges) : nothing}
           <div class="sr-status" role="status" aria-live="polite">${this.announcement}</div>

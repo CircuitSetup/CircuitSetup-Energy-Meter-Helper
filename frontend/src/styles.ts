@@ -125,6 +125,8 @@ export const panelStyles = css`
   .default-total-card { margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   .default-total-card > legend { padding: 0 8px; }
   .default-total-controls { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+  .totals-migration fieldset { margin-block: 12px; min-width: 0; }
+  .migration-actions { display: flex; flex-wrap: wrap; gap: 10px; }
   .default-total-control { display: flex; align-items: center; gap: 8px; min-height: 44px; font-weight: var(--ha-font-weight-bold, 700); }
   .native-total-status { color: var(--muted); }
   .aggregate-card { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }

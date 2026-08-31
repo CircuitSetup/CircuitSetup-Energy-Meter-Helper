@@ -1,22 +1,29 @@
 import { html, type TemplateResult } from "lit";
-import type { ConfigurationImpact, MeterConfigurationRequest, TransactionStatus } from "../types";
+import type { ConfigurationImpact, MeterConfigurationRequest, TotalsInventory, TransactionStatus } from "../types";
+import { sourceFormula } from "../total-graph";
 
-const aggregateFormula = (aggregate: MeterConfigurationRequest["aggregates"][number]): string => {
-  const channels = aggregate.channels.map((channel) => `CT${channel}`);
-  if (aggregate.measurement_method === "one_ct_double_power") return `2 × ${channels[0] ?? "CT"}`;
-  if (aggregate.measurement_method === "both_conductors_one_ct") return `${channels[0] ?? "CT"} (both conductors)`;
-  return channels.join(" + ");
-};
+const emptyTotals: TotalsInventory = { native_sources: [], automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+  migration: { parent_review_required: false, legacy_parent_links: [], native_visibility_confirmation_required: false, native_visibility_resolved: false } };
 
 export function configReview(
   status: TransactionStatus | null,
   configuration: MeterConfigurationRequest | null = null,
   impact: ConfigurationImpact | null = null,
+  totals: TotalsInventory | null = null,
 ): TemplateResult {
   const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split("\n");
   const channels = configuration?.channels ?? [];
   const pqBoards = configuration?.power_quality.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
   const statusBoards = configuration?.status_fields.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
+  const formula = (aggregate: MeterConfigurationRequest["aggregates"][number]) => {
+    let value: string;
+    try { value = sourceFormula(aggregate.sources, totals ?? emptyTotals, configuration?.aggregates ?? []); }
+    catch { return "Source labels unavailable; refresh the configuration review."; }
+    return aggregate.measurement_method === "one_ct_double_power" ? `2 × ${value}`
+      : aggregate.measurement_method === "both_conductors_one_ct" ? `${value} (both conductors)` : value;
+  };
+  const outputs = (value: { watts: boolean; amps: boolean; kwh: boolean }) =>
+    `${value.watts ? "Public" : "Hidden"} Watts; ${value.amps ? "public" : "hidden"} Amps; ${value.kwh ? "public" : "hidden"} kWh`;
   return html`
     <section class="review-region" aria-labelledby="review-heading">
       <h2 id="review-heading">Review changes</h2>
@@ -29,8 +36,15 @@ export function configReview(
         ${configuration.meter.voltage_references.length > 1 ? html`<p class=${configuration.multi_reference_preparation_acknowledged ? "info-band" : "warning-band"}>Multi-reference hardware preparation: ${configuration.multi_reference_preparation_acknowledged ? "acknowledged" : "not acknowledged"}.</p>` : ""}
         <h3>Channels</h3>
         <ul class="status-list">${channels.map((channel) => html`<li>CT${channel.channel} ${channel.name}: ${channel.enabled ? `${channel.role.replaceAll("_", " ")} on ${channel.voltage_reference_id}; ${channel.model_id || "no model"} × ${channel.reporting_multiplier}; burden ${channel.burden_output_acknowledged ? "acknowledged" : "not acknowledged"}` : "unused"}</li>`)}</ul>
-        <h3>Aggregates</h3>
-        ${configuration.aggregates.length ? html`<ul class="status-list">${configuration.aggregates.map((aggregate) => html`<li>${aggregate.name} = ${aggregateFormula(aggregate)} · ${aggregate.measurement_method.replaceAll("_", " ")} · ${aggregate.energy_mode} energy${aggregate.parent_id ? ` · parent ${aggregate.parent_id}` : ""}</li>`)}</ul>` : html`<p class="info-band">No aggregate totals are configured.</p>`}
+        <h3>Default meter totals</h3>
+        <ul><li>Overall meter total: ${outputs(configuration.default_totals.overall)}</li>${configuration.default_totals.boards.map((board) => html`<li>${board.board_index === 0 ? "Main Board" : `Add-on ${board.board_index}`} total: ${outputs(board.outputs)}</li>`)}</ul>
+        <h3>Suggested circuit totals</h3>
+        <ul>${totals?.automatic_totals.map((item) => html`<li>${item.candidate.name}: ${item.enabled ? outputs(item.outputs) : "Disabled"}</li>`)}</ul>
+        <h3>Advanced total hierarchy</h3>
+        ${configuration.aggregates.length ? html`<ul class="status-list">${configuration.aggregates.map((aggregate) => html`<li>${aggregate.name} = ${formula(aggregate)} · ${aggregate.measurement_method.replaceAll("_", " ")} · ${aggregate.energy_mode} energy · ${outputs(aggregate.outputs)}</li>`)}</ul>` : html`<p class="info-band">No aggregate totals are configured.</p>`}
+        <h3>Legacy relationship migration</h3>
+        <ul>${configuration.totals_change_intent?.legacy_parent_decisions.map((decision) => html`<li>${configuration.aggregates.find((item) => item.aggregate_id === decision.child_id)?.name ?? decision.child_id} → ${configuration.aggregates.find((item) => item.aggregate_id === decision.proposed_parent_id)?.name ?? decision.proposed_parent_id}: ${decision.accepted ? "Use this parent relationship" : "Keep totals independent"}; awaiting successful commit.</li>`)}</ul>
+        ${impact ? html`<p>${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors. Hidden outputs can remain internal dependencies.</p>` : html`<p>Current total counts are unavailable.</p>`}
         <h3>Package and entity impact</h3>
         <dl class="status-list"><div><dt>Power quality</dt><dd>${pqBoards.length ? `Boards ${pqBoards.join(", ")}` : "Not selected"}</dd></div><div><dt>Phase status</dt><dd>${statusBoards.length ? `Boards ${statusBoards.join(", ")}` : "Not selected"}</dd></div>${impact ? html`<div><dt>Entity impact</dt><dd>${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text, ${impact.energy_entity_count} energy; ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec</dd></div>` : ""}</dl>
       ` : ""}

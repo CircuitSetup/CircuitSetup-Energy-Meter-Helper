@@ -1,10 +1,11 @@
 import { html, nothing, type TemplateResult } from "lit";
-import type { ChannelSettings, CircuitAggregate, CircuitRole, CtChange, CtInventory, CtPreset, MeterConfigurationRequest, TotalsInventory } from "../types";
+import type { ChannelSettings, CircuitAggregate, CircuitRole, CtChange, CtInventory, CtPreset, MeterConfiguration, MeterConfigurationRequest, TotalsInventory } from "../types";
 import { derivedParentId, reparentAggregate } from "../total-graph";
 import { moveTab } from "./tab-keyboard";
 import { defaultTotalsSection } from "./default-totals-section";
 import { automaticTotalsSection } from "./automatic-totals-section";
 import { advancedTotalsEditor } from "./advanced-totals-editor";
+import { totalsMigrationReview } from "./totals-migration-review";
 
 export interface CtDraft {
   name: string;
@@ -53,6 +54,7 @@ export function ctInventoryStep(
   freshTotals = true,
   nativeGraphState: "ready" | "pending" | "invalid" = "ready",
   automaticTotalsWritable = false,
+  meterInventory: MeterConfiguration | null = null,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -166,6 +168,7 @@ export function ctInventoryStep(
       </div>
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
+      ${configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : nothing}
       ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativePreview, nativeGraphState) : nothing}
       ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration) : nothing}
       ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals) : nothing}

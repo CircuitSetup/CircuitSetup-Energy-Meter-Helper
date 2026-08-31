@@ -142,6 +142,196 @@ const mount = async (hass: HomeAssistant) => {
 
 const text = (panel: CircuitSetupPanel) => panel.shadowRoot?.textContent ?? "";
 
+describe("explicit totals adoption and migration transactions", () => {
+  const session = { session_id: "session", device_id: "meter-1", state: "ready", has_pending_calibration: false,
+    safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] }, offset_capability: { status: "unavailable", repair_reason: null },
+    offset_disposition: "skipped", offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "skipped" }, { stage: 2, state: "skipped" }] }] };
+  const reviewed = () => ({ transaction_id: "1".repeat(32), state: "previewed" as const, source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "Explicit totals review", rollback_available: true, evidence: [], progress: [], validation_detail: null,
+    upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: true });
+  const prepare = async (overrides: Record<string, unknown> = {}, adoption = true) => {
+    const meter = meterResponse();
+    if (adoption) Object.assign(meter.capabilities, { native_totals_writable: false, managed_automatic_totals: false,
+      managed_advanced_totals: false, reason_codes: ["totals_adoption_required"] });
+    const calls: Record<string, unknown>[] = [];
+    const responses: Record<string, unknown> = { setup_status: { state: "device_discovered", devices: [device] },
+      preview_meter_configuration: reviewed(), cancel_session: { ...session, state: "cancelled" }, get_meter_configuration: meter,
+      preview_total_graph: { plan_id: meter.plan_id, source_sha256: meter.source_sha256, configuration_impact: meter.configuration_impact,
+        automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } }, ...overrides };
+    const hass = makeHass(responses); const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => { calls.push(message); return call<T>(message); };
+    const panel = await mount(hass);
+    const state = panel as unknown as { selectedDeviceId: string; session: unknown; transaction: import("../src/types").TransactionStatus | null;
+      meterConfiguration: typeof meter; verifiedMeterConfiguration: typeof meter | null; configurationInstalled: boolean; canonicalConfigurationChanged: boolean;
+      setMeterConfiguration: (value: typeof meter) => void; finishCurrent: () => Promise<void>; finishWithoutCalibration: () => Promise<void>;
+      transactionAction: (action: "apply" | "compile" | "install" | "rollback") => Promise<void>; updateCircuitConfiguration: (value: typeof meter.configuration) => void };
+    state.selectedDeviceId = "meter-1"; state.setMeterConfiguration(meter); panel.showState("ct"); await panel.updateComplete;
+    return { meter, panel, state, calls };
+  };
+
+  it("keeps detected total controls read-only until explicit adoption without load-time mutation", async () => {
+    const { panel, state, calls } = await prepare();
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="Overall meter total Watts"]')?.disabled).toBe(true);
+    expect(calls.some((message) => /preview|apply/.test(String(message.type)))).toBe(false);
+    [...panel.shadowRoot!.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Adopt managed totals")?.click();
+    await tick(); await panel.updateComplete;
+    expect(state.meterConfiguration.configuration.totals_change_intent?.adopt_managed_totals).toBe(true);
+    expect(state.meterConfiguration.capabilities.native_totals_writable).toBe(false);
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="Overall meter total Watts"]')?.disabled).toBe(false);
+  });
+
+  it.each(["finishCurrent", "finishWithoutCalibration"] as const)("routes metadata-only adoption through the normal transaction from %s", async (finish) => {
+    const { state, calls } = await prepare();
+    state.meterConfiguration.configuration.totals_change_intent = { adopt_managed_totals: true, legacy_parent_decisions: [] };
+    state.session = session;
+    await state[finish]();
+    expect(calls.find((message) => String(message.type).endsWith("preview_meter_configuration"))).toMatchObject({
+      plan_id: "b".repeat(32), source_sha256: "a".repeat(64), configuration: expect.objectContaining({ totals_change_intent: { adopt_managed_totals: true, legacy_parent_decisions: [] } }) });
+    expect(calls.some((message) => String(message.type).endsWith("complete_calibration_without_changes"))).toBe(false);
+  });
+
+  it("routes metadata-only rejection through review even with unchanged CT drafts", async () => {
+    const { state, calls } = await prepare({}, false);
+    state.meterConfiguration.configuration.totals_change_intent = { adopt_managed_totals: false,
+      legacy_parent_decisions: [{ child_id: "child", proposed_parent_id: "parent", accepted: false }] };
+    state.session = session;
+    await state.finishCurrent();
+    expect(calls.some((message) => String(message.type).endsWith("preview_meter_configuration"))).toBe(true);
+    expect(state.meterConfiguration.configuration.totals_change_intent.legacy_parent_decisions).toHaveLength(1);
+  });
+
+  it.each(["labels", "calibrate_only"])("does not lose explicit totals intent after switching to %s", async (mode) => {
+    const { state, panel, calls } = await prepare();
+    Object.assign(state, mode === "labels" ? { labelOnly: true } : { existingConfigurationChoice: "calibrate_only" });
+    state.meterConfiguration.configuration.totals_change_intent = { adopt_managed_totals: true, legacy_parent_decisions: [] };
+    state.session = session; await state.finishCurrent();
+    expect(calls.some((call) => String(call.type).endsWith("preview_meter_configuration"))).toBe(false);
+    expect(calls.some((call) => String(call.type).endsWith("complete_calibration_without_changes"))).toBe(false);
+    expect(calls.some((call) => String(call.type).endsWith("cancel_session"))).toBe(false);
+    expect(state.meterConfiguration.configuration.totals_change_intent.adopt_managed_totals).toBe(true);
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("[role=alert]")?.textContent).toContain("outside the selected calibration-only or labels-only mode");
+    expect([...panel.shadowRoot!.querySelectorAll("button")].some((button) => button.textContent === "Discard local configuration choices and continue calibration")).toBe(true);
+  });
+
+  it.each(["apply", "compile", "rollback"] as const)("retains pending migration choices after %s failure/rollback", async (action) => {
+    const operation = action === "apply" ? "apply_ct_config" : action === "compile" ? "compile_ct_config" : "rollback_ct_config";
+    const { state } = await prepare({ [operation]: { ...reviewed(), state: action === "compile" ? "failed" : "rolled_back" } });
+    state.meterConfiguration.configuration.totals_change_intent!.adopt_managed_totals = true;
+    state.transaction = reviewed(); await state.transactionAction(action);
+    expect(state.meterConfiguration.configuration.totals_change_intent!.adopt_managed_totals).toBe(true);
+  });
+
+  it("uses fresh server inventory after verified installation without promoting draft ownership", async () => {
+    const fresh = meterResponse(); fresh.configuration_impact.public_total_entity_count = 17;
+    const { state, panel } = await prepare({ install_ct_config: { ...reviewed(), state: "verified" }, get_meter_configuration: fresh });
+    state.meterConfiguration.configuration.totals_change_intent!.adopt_managed_totals = true;
+    state.transaction = reviewed(); await state.transactionAction("install");
+    expect(state.verifiedMeterConfiguration?.configuration_impact.public_total_entity_count).toBe(17);
+    expect(state.meterConfiguration.configuration.totals_change_intent?.adopt_managed_totals).toBe(false);
+    panel.showState("ct"); await panel.updateComplete;
+    expect(text(panel)).not.toContain("Legacy read-only totals");
+  });
+
+  it("keeps verified installation truth but withholds stale summary counts if inventory refresh fails", async () => {
+    const { state, panel } = await prepare({ install_ct_config: { ...reviewed(), state: "verified" }, get_meter_configuration: new Error("offline") });
+    state.meterConfiguration.configuration.totals_change_intent = { adopt_managed_totals: true, legacy_parent_decisions: [] };
+    state.transaction = reviewed(); await state.transactionAction("install");
+    expect(state.configurationInstalled).toBe(true);
+    expect(state.transaction?.state).toBe("verified");
+    expect(state.verifiedMeterConfiguration).toBeNull();
+    expect(text(panel)).toContain("Installed configuration is verified, but fresh totals inventory could not be loaded");
+    expect([...panel.shadowRoot!.querySelectorAll("button")].some((button) => button.textContent === "Retry totals inventory refresh")).toBe(true);
+    expect(state.meterConfiguration.configuration.totals_change_intent.adopt_managed_totals).toBe(false);
+  });
+
+  it("ignores a late installed inventory response after device selection changes", async () => {
+    let resolve!: (value: ReturnType<typeof meterResponse>) => void;
+    const pending = new Promise<ReturnType<typeof meterResponse>>((done) => { resolve = done; });
+    const { state, calls } = await prepare({ install_ct_config: { ...reviewed(), state: "verified" }, get_meter_configuration: pending });
+    state.transaction = reviewed(); const install = state.transactionAction("install");
+    await vi.waitFor(() => expect(calls.some((call) => String(call.type).endsWith("get_meter_configuration"))).toBe(true));
+    const next = meterResponse(); next.configuration.meter.friendly_name = "Next meter";
+    state.selectedDeviceId = "next"; state.setMeterConfiguration(next);
+    resolve(meterResponse()); await install;
+    expect(state.meterConfiguration.configuration.meter.friendly_name).toBe("Next meter");
+    expect(state.verifiedMeterConfiguration?.configuration.meter.friendly_name).toBe("Next meter");
+  });
+
+  it("accepts fresh inventory across equivalent verified transaction subscription updates", async () => {
+    let resolve!: (value: ReturnType<typeof meterResponse>) => void;
+    const pending = new Promise<ReturnType<typeof meterResponse>>((done) => { resolve = done; });
+    const { state, calls } = await prepare({ install_ct_config: { ...reviewed(), state: "verified" }, get_meter_configuration: pending });
+    state.transaction = reviewed(); const install = state.transactionAction("install");
+    await vi.waitFor(() => expect(calls.some((call) => String(call.type).endsWith("get_meter_configuration"))).toBe(true));
+    state.transaction = { ...reviewed(), state: "verified" };
+    const fresh = meterResponse(); fresh.configuration_impact.public_total_entity_count = 19;
+    resolve(fresh); await install;
+    expect(state.verifiedMeterConfiguration?.configuration_impact.public_total_entity_count).toBe(19);
+  });
+
+  it("preserves pending gains and totals choices at Current and refuses an incomplete calibration handoff", async () => {
+    const { state, panel, calls } = await prepare();
+    state.session = { ...session, has_pending_calibration: true };
+    state.meterConfiguration.configuration.totals_change_intent = { adopt_managed_totals: true, legacy_parent_decisions: [] };
+    await state.finishCurrent(); await panel.updateComplete;
+    expect(text(panel)).toContain("Local configuration choices cannot be included in calibration-only saving");
+    const extra = state as unknown as { restartResult: unknown; reviewCalibrationHandoff: () => Promise<void> };
+    extra.restartResult = { ...activeCalibrationHandoffScenario.restartVerification, source_handoff_available: true };
+    await extra.reviewCalibrationHandoff();
+    expect(calls.some((call) => String(call.type).endsWith("preview_calibrated_gains"))).toBe(false);
+    expect(state.meterConfiguration.configuration.totals_change_intent.adopt_managed_totals).toBe(true);
+    expect(state.session).toMatchObject({ has_pending_calibration: true });
+  });
+
+  it("requires confirmation to discard only unsupported local choices while preserving calibration payload and stored proposals", async () => {
+    const { state, panel, calls, meter } = await prepare({ preview_calibrated_gains: reviewed() });
+    meter.totals.migration.legacy_parent_links = [{ child_id: "child", proposed_parent_id: "parent" }];
+    state.setMeterConfiguration(meter);
+    meter.configuration.meter.friendly_name = "Changed outside the immutable baseline";
+    const extra = state as unknown as { restartResult: unknown; drafts: Map<number, CtDraft>; packageOptions: { power_quality: boolean[]; status_fields: boolean[] };
+      reviewCalibrationHandoff: () => Promise<void> };
+    state.session = { ...session, has_pending_calibration: true };
+    extra.restartResult = { ...activeCalibrationHandoffScenario.restartVerification, source_handoff_available: true };
+    extra.drafts.set(1, { name: "Preserved calibration CT", modelId: "model", multiplier: 2, burdenAcknowledged: false, expanded: false });
+    extra.packageOptions = { power_quality: [false], status_fields: [true] };
+    state.meterConfiguration.configuration = { ...state.meterConfiguration.configuration,
+      meter: { ...state.meterConfiguration.configuration.meter, friendly_name: "Unsupported local rename" },
+      totals_change_intent: { adopt_managed_totals: true, legacy_parent_decisions: [{ child_id: "child", proposed_parent_id: "parent", accepted: false }] } };
+    await state.finishCurrent(); await panel.updateComplete;
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const discard = () => [...panel.shadowRoot!.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Discard local configuration choices and continue calibration")?.click();
+    discard();
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(state.meterConfiguration.configuration.totals_change_intent?.adopt_managed_totals).toBe(true);
+    confirm.mockReturnValue(true); discard(); await tick(); await panel.updateComplete;
+    expect(state.meterConfiguration.configuration.meter.friendly_name).toBe("Energy meter");
+    expect(state.meterConfiguration.configuration.totals_change_intent?.adopt_managed_totals).toBe(false);
+    expect(state.meterConfiguration.totals.migration.legacy_parent_links).toEqual([{ child_id: "child", proposed_parent_id: "parent" }]);
+    expect(state.session).toMatchObject({ has_pending_calibration: true });
+    await extra.reviewCalibrationHandoff();
+    expect(calls.find((call) => String(call.type).endsWith("preview_calibrated_gains"))).toMatchObject({
+      changes: [expect.objectContaining({ channel: 1, name: "Preserved calibration CT", reporting_multiplier: 2 })],
+      package_options: { power_quality: [false], status_fields: [true] } });
+    confirm.mockRestore();
+  });
+
+  it.each(["device", "source"])("does not discard local choices against a mismatched %s baseline", async (mismatch) => {
+    const { state, panel } = await prepare();
+    state.session = { ...session, has_pending_calibration: true };
+    state.meterConfiguration.configuration.totals_change_intent = { adopt_managed_totals: true, legacy_parent_decisions: [] };
+    if (mismatch === "device") state.selectedDeviceId = "another-meter";
+    else state.meterConfiguration.source_sha256 = "c".repeat(64);
+    await state.finishCurrent(); await panel.updateComplete;
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    [...panel.shadowRoot!.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Discard local configuration choices and continue calibration")?.click();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(state.meterConfiguration.configuration.totals_change_intent.adopt_managed_totals).toBe(true);
+    expect(state.session).toMatchObject({ has_pending_calibration: true });
+    confirm.mockRestore();
+  });
+});
+
 const contrastRatio = (first: string, second: string): number => {
   const luminance = (color: string) => {
     const channels = color.slice(1).match(/../g)!.map((value) => Number.parseInt(value, 16) / 255)
@@ -1221,6 +1411,7 @@ describe("CircuitSetup panel", () => {
         operations.push(operation);
         if (operation === "setup_status") return { state: "no_device", devices: [] } as T;
         if (operation === "install_ct_config") return { ...preview, state: "verified", full_meter_configuration_verified: true } as T;
+        if (operation === "get_meter_configuration") return meterResponse() as T;
         if (operation === "get_active_work") return { session: null, transaction: null, verified_calibration: null } as T;
         if (operation === "start_session") return { session_id: "session", device_id: "meter-1", state: "safety_required", safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } } as T;
         return {} as T;

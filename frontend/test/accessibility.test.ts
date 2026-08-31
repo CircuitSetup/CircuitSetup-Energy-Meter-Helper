@@ -5,6 +5,7 @@ import { ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-st
 import { defaultTotalsSection } from "../src/components/default-totals-section";
 import { automaticTotalsSection } from "../src/components/automatic-totals-section";
 import { advancedTotalsEditor } from "../src/components/advanced-totals-editor";
+import { totalsMigrationReview } from "../src/components/totals-migration-review";
 import { currentStep } from "../src/components/current-step";
 import { espWebInstaller } from "../src/components/esp-web-installer";
 import { meterSettingsStep } from "../src/components/meter-settings-step";
@@ -28,6 +29,18 @@ const topology: MeterTopology = {
 };
 
 const noop = () => undefined;
+
+it("groups legacy choices by relationship with a described disabled acceptance button", () => {
+  const meter = meterResponse();
+  meter.configuration.aggregates = ["child", "parent"].map((id, index) => ({ aggregate_id: id, name: id, role: "custom",
+    sources: [{ kind: "channel", channel: index + 1 }], measurement_method: "direct", energy_mode: "none", outputs: { watts: true, amps: false, kwh: false }, origin: "migrated" }));
+  meter.totals.migration.legacy_parent_links = [{ child_id: "child", proposed_parent_id: "parent" }];
+  const root = mount(totalsMigrationReview(meter, noop));
+  expect(root.querySelector("fieldset legend")?.textContent).toBe("child → parent");
+  const button = [...root.querySelectorAll("button")].find((item) => item.textContent === "Use this parent relationship")!;
+  expect(button.disabled).toBe(true);
+  expect(root.querySelector(`#${button.getAttribute("aria-describedby")}`)?.textContent).toContain("cannot mix CTs");
+});
 let container: HTMLDivElement;
 
 afterEach(() => container?.remove());

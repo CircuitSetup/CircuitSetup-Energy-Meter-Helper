@@ -1,7 +1,8 @@
 import { html, type TemplateResult } from "lit";
-import type { ConfigurationImpact, MeterConfigurationRequest, TransactionStatus } from "../types";
+import type { ConfigurationImpact, MeterConfiguration, MeterConfigurationRequest, TotalGraphPreview, TransactionStatus } from "../types";
 import type { TransactionPurpose } from "../workflow-model";
 import { configReview } from "./config-review-step";
+import { totalsMigrationReview } from "./totals-migration-review";
 
 export function buildInstallStep(
   purpose: Exclude<TransactionPurpose, null>,
@@ -18,6 +19,8 @@ export function buildInstallStep(
   correctionPending = false,
   pendingAction = "",
   legacyMigration = false,
+  meterInventory: MeterConfiguration | null = null,
+  totalPreview: TotalGraphPreview | null = null,
 ): TemplateResult {
   if (!status) return html`
     <section class="step-content" aria-labelledby="step-heading">
@@ -46,7 +49,8 @@ export function buildInstallStep(
   return html`
     <section class="step-content" aria-labelledby="step-heading">
       <h2>${labels.heading}</h2>
-      ${configReview(status, configuration, impact)}
+      ${configReview(status, configuration, impact, meterInventory?.totals)}
+      ${meterInventory ? totalsMigrationReview(meterInventory, () => undefined, totalPreview, impact !== null, true, status) : ""}
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
           <strong>Build or install needs attention</strong>
