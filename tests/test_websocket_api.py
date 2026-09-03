@@ -614,6 +614,18 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         base |= {"device_id": "meter", "calibration_plan": "standard"}
     elif suffix == "preview_calibrated_gains":
         base |= {"session_id": "3" * 32, "verification_id": "1" * 32}
+    elif suffix in {"get_offset_preparation", "get_offset_finalization", "restart_and_verify_gains", "preview_offset_finalization"}:
+        base["session_id"] = "3" * 32
+    elif suffix == "begin_offset_cycle":
+        base |= {"session_id": "3" * 32, "backup_acknowledged": True}
+    elif suffix == "reconcile_offset_finalization":
+        base |= {"session_id": "3" * 32, "operation_id": "4" * 32}
+    elif suffix in {"preview_offset_preparation", "resume_offset_calibration"}:
+        base |= {"session_id": "3" * 32, "board_index": 0, "stage": 1}
+        if suffix == "preview_offset_preparation":
+            base["backup_acknowledged"] = True
+        else:
+            base |= {"operation_id": "4" * 32, "preparation_acknowledged": True}
     elif suffix == "clear_calibration_flash":
         base |= {
             "session_id": "3" * 32,
@@ -3419,6 +3431,74 @@ def test_controller_routes_full_meter_configuration_without_browser_changes(sour
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("operation", ("preview_meter_configuration", "preview_total_graph"))
+def test_controller_maps_preview_assertions_to_meter_configuration_invalid(operation: str) -> None:
+    """Preview handlers should convert assertion failures into configuration invalid errors."""
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        ApiFailure,
+    )
+
+    async def run() -> None:
+        controller = EntryWebsocketController(
+            ProvisioningCoordinator(FakeHass()), SessionManager(), HelperStore(FakeHass())
+        )
+        received: list[object] = []
+
+        class Workflow:
+            async def async_get_meter_configuration(self, device_id: str) -> dict[str, str]:
+                return {"device_id": device_id}
+
+            async def async_preview_meter_configuration(
+                self, device_id: str, plan_id: str, source_sha256: str, request: object
+            ) -> str:
+                received.append((device_id, plan_id, source_sha256, request))
+                raise AssertionError("private-canary")
+
+            async_preview_total_graph = async_preview_meter_configuration
+
+        controller.workflow = Workflow()  # type: ignore[assignment]
+        request = {
+            "meter": {
+                "friendly_name": "Garage Meter",
+                "electrical_system": "split_phase_120_240",
+                "line_frequency_hz": 60,
+                "update_interval_s": 5,
+                "voltage_layout": "standard",
+                "voltage_references": [
+                    {
+                        "reference_id": "main", "label": "Main", "phase_label": "A",
+                        "nominal_voltage_v": 120.0, "transformer_model_id": "default",
+                        "gain_voltage": 7305, "group_keys": ["main_1", "main_2"],
+                    }
+                ],
+            },
+            "channels": [
+                {"channel": 1, "enabled": True, "name": "Mains", "model_id": "custom",
+                 "reporting_multiplier": 1.0, "role": "branch", "voltage_reference_id": "main",
+                 "custom_gain_ct": 27518, "custom_label": "Mains CT", "burden_output_acknowledged": False}
+            ],
+            "aggregates": [], "power_quality": [True], "status_fields": [False],
+            "default_totals": {"overall": {"watts": True, "amps": True, "kwh": True}, "boards": []},
+            "automatic_totals": [],
+        }
+        assert await controller.async_call(
+            f"{DOMAIN}/get_meter_configuration", {"device_id": "meter"}, "admin"
+        ) == {"device_id": "meter"}
+        with pytest.raises(ApiFailure) as failure:
+            await controller.async_call(
+                f"{DOMAIN}/{operation}",
+                {"device_id": "meter", "plan_id": "plan", "source_sha256": "a" * 64,
+                 "configuration": request},
+                "admin",
+            )
+        assert failure.value.code == "meter_configuration_invalid"
+        assert failure.value.safe_message == "The meter configuration is invalid"
+        assert received and received[0][:3] == ("meter", "plan", "a" * 64)
+        assert type(received[0][3]).__name__ == "MeterConfigurationRequest"
+
+    asyncio.run(run())
+
+
 def test_start_session_persists_standard_or_full_calibration_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4174,6 +4254,73 @@ def test_verified_session_cannot_be_reopened_through_public_routes(
         await workflow.async_close()
         await sessions.async_unload()
 
+    asyncio.run(run())
+
+
+def test_stock_offset_routes_preserve_confirmations_and_private_boundary() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        calls = []
+
+        class Workflow:
+            def __getattr__(self, name: str) -> Any:
+                async def call(*args: Any, **kwargs: Any) -> Any:
+                    calls.append((name, args, kwargs))
+                    return {"operation": name, "action_ready": False, "raw_logs": "private"}
+                return call
+
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+        controller.workflow = Workflow()
+        connection = FakeConnection()
+        for operation in (
+            "get_offset_preparation", "get_offset_finalization", "preview_offset_preparation",
+            "resume_offset_calibration", "preview_offset_finalization", "restart_and_verify_gains",
+            "reconcile_offset_finalization", "begin_offset_cycle",
+        ):
+            command = f"{DOMAIN}/{operation}"
+            assert command in ALL_COMMANDS
+            handler, schema = hass.data["websocket_api"][command]
+            valid = _message(command)
+            for key in ("allow_unverified", "offset_preparation", "offset_finalization", "reconcile_stale_metadata", "purpose", "verified_calibration"):
+                with pytest.raises(vol.Invalid):
+                    schema(valid | {key: True})
+            with pytest.raises(vol.Invalid):
+                schema(valid | {"session_id": "not-server-issued"})
+            for key in ("backup_acknowledged", "preparation_acknowledged"):
+                if key in valid:
+                    for value in (False, 1, "yes"):
+                        with pytest.raises(vol.Invalid):
+                            schema(valid | {key: value})
+            if command in MUTATION_COMMANDS:
+                with pytest.raises(Unauthorized):
+                    handler(hass, FakeConnection(admin=False), schema(valid))
+            await _invoke(hass, connection, valid)
+            assert connection.results[-1][1] == {"operation": f"async_{operation}", "action_ready": False}
+            assert calls[-1][0] == f"async_{operation}"
+            assert calls[-1][1][0] == "3" * 32
+        assert calls[2][2] == {"backup_acknowledged": True}
+        assert calls[3][1] == ("3" * 32, "4" * 32, 0, 1)
+        assert calls[3][2] == {"preparation_acknowledged": True}
+        assert calls[4][2] == {"verification_id": None, "changes": (), "package_options": None}
+        assert calls[-1][2] == {"backup_acknowledged": True}
+    asyncio.run(run())
+
+
+def test_stock_preparation_transaction_purpose_survives_terminal_cleanup(tmp_path: Path) -> None:
+    from tests.test_stock_offset_preparation import preparation
+
+    async def run() -> None:
+        sessions, _recovery, _builder, manager, preview, _prepared = await preparation(tmp_path)
+        try:
+            assert preview.purpose == "offset_preparation"
+            owned = manager._transaction(preview.transaction_id)
+            abandoned = await manager.async_abandon(preview.transaction_id)
+            assert abandoned.purpose == "offset_preparation"
+            assert owned.purpose == "offset_preparation"
+            assert owned.prior_content is None
+        finally:
+            await sessions.async_unload()
     asyncio.run(run())
 
 
