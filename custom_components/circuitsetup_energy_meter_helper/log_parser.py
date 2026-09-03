@@ -188,6 +188,19 @@ class RestoreEvidence:
     power_offset_config_differs_from_flash: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class OffsetTableSnapshot:
+    """Safe, per-stage projection of a fresh reported offset table."""
+
+    connection_generation: int
+    instance_id: str
+    offset_stage: Literal[1, 2]
+    phase_values: tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
+    reported_state: Literal["restored", "mismatch", "configuration"]
+    register_verified: bool
+    config_differs_from_flash: bool
+
+
 def parse_calibration_sources(
     lines: tuple[str, ...],
     expected_instance_ids: set[str],

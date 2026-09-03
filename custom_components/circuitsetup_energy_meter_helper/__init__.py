@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 from aiohasupervisor import SupervisorError
 from homeassistant.config_entries import ConfigEntry
@@ -83,7 +83,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         controller.set_diagnostics_provider(
             lambda: async_get_config_entry_diagnostics(hass, entry)
         )
-        controller.workflow = workflow
+        controller.workflow = cast(Any, workflow)
         controller.transactions = transactions
         runtime: dict[str, Any] = {
             "provisioning": coordinator,
