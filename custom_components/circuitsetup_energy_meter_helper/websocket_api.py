@@ -74,6 +74,8 @@ READ_COMMANDS = (
     f"{_PREFIX}preview_total_graph",
     f"{_PREFIX}get_active_work",
     f"{_PREFIX}get_session",
+    f"{_PREFIX}get_offset_preparation",
+    f"{_PREFIX}get_offset_finalization",
     f"{_PREFIX}get_diagnostics_summary",
 )
 MUTATION_COMMANDS = (
@@ -93,6 +95,12 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}check_stability",
     f"{_PREFIX}check_offset_readiness",
     f"{_PREFIX}calibrate_offset",
+    f"{_PREFIX}preview_offset_preparation",
+    f"{_PREFIX}resume_offset_calibration",
+    f"{_PREFIX}preview_offset_finalization",
+    f"{_PREFIX}reconcile_offset_finalization",
+    f"{_PREFIX}begin_offset_cycle",
+    f"{_PREFIX}restart_and_verify_gains",
     f"{_PREFIX}skip_offset_calibration",
     f"{_PREFIX}calibrate_voltage",
     f"{_PREFIX}calibrate_current",
@@ -128,6 +136,8 @@ _OWNERSHIP_CREATION_OPERATIONS = frozenset(
         "preview_ct_config",
         "preview_calibrated_gains",
         "start_session",
+        "preview_offset_preparation",
+        "preview_offset_finalization",
     )
 )
 
@@ -148,6 +158,7 @@ _ALLOWED_CHANGE_PATH = re.compile(
 )
 _LEGACY_CHANGE_PATHS = {
     "calibrated_voltage_gains": "meter.calibrated_voltage_gains",
+    "calibrated_offsets": "meter.calibrated_offsets",
     "friendly_name": "meter.friendly_name",
     "update_time": "meter.update_interval_s",
     "electric_freq": "meter.line_frequency_hz",
@@ -289,6 +300,31 @@ class WorkflowOwner(Protocol):
     ) -> Any: ...
 
     async def async_skip_offset_calibration(self, session_id: str) -> Any: ...
+
+    async def async_get_offset_preparation(self, session_id: str) -> Any: ...
+
+    async def async_get_offset_finalization(self, session_id: str) -> Any: ...
+
+    async def async_preview_offset_preparation(
+        self, session_id: str, board_index: int, stage: OffsetReadinessStage,
+        *, backup_acknowledged: bool,
+    ) -> Any: ...
+
+    async def async_resume_offset_calibration(
+        self, session_id: str, operation_id: str, board_index: int, stage: OffsetReadinessStage,
+        *, preparation_acknowledged: bool,
+    ) -> Any: ...
+
+    async def async_preview_offset_finalization(
+        self, session_id: str, *, verification_id: str | None = None,
+        changes: tuple[Mapping[str, Any], ...] = (), package_options: Mapping[str, Any] | None = None,
+    ) -> Any: ...
+
+    async def async_reconcile_offset_finalization(self, session_id: str, operation_id: str) -> Any: ...
+
+    async def async_begin_offset_cycle(self, session_id: str, *, backup_acknowledged: bool) -> Any: ...
+
+    async def async_restart_and_verify_gains(self, session_id: str) -> Any: ...
 
     async def async_calibrate_voltage(
         self,
@@ -475,7 +511,7 @@ class EntryWebsocketController:
                 raise ApiFailure(
                     "source_owned_totals", "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities."
                 ) from error
-            except (ConfigMutationError, ValueError, vol.Invalid) as error:
+            except (AssertionError, ConfigMutationError, ValueError, vol.Invalid) as error:
                 raise ApiFailure(
                     "meter_configuration_invalid", "The meter configuration is invalid"
                 ) from error
@@ -522,6 +558,30 @@ class EntryWebsocketController:
             )
         if operation == "skip_offset_calibration" and workflow is not None:
             return await workflow.async_skip_offset_calibration(msg["session_id"])
+        if operation == "get_offset_preparation" and workflow is not None:
+            return await workflow.async_get_offset_preparation(msg["session_id"])
+        if operation == "get_offset_finalization" and workflow is not None:
+            return await workflow.async_get_offset_finalization(msg["session_id"])
+        if operation == "preview_offset_preparation" and workflow is not None:
+            return await workflow.async_preview_offset_preparation(
+                msg["session_id"], msg["board_index"], msg["stage"], backup_acknowledged=msg["backup_acknowledged"],
+            )
+        if operation == "resume_offset_calibration" and workflow is not None:
+            return await workflow.async_resume_offset_calibration(
+                msg["session_id"], msg["operation_id"], msg["board_index"], msg["stage"],
+                preparation_acknowledged=msg["preparation_acknowledged"],
+            )
+        if operation == "preview_offset_finalization" and workflow is not None:
+            return await workflow.async_preview_offset_finalization(
+                msg["session_id"], verification_id=msg.get("verification_id"),
+                changes=tuple(msg.get("changes", ())), package_options=msg.get("package_options"),
+            )
+        if operation == "reconcile_offset_finalization" and workflow is not None:
+            return await workflow.async_reconcile_offset_finalization(msg["session_id"], msg["operation_id"])
+        if operation == "begin_offset_cycle" and workflow is not None:
+            return await workflow.async_begin_offset_cycle(msg["session_id"], backup_acknowledged=msg["backup_acknowledged"])
+        if operation == "restart_and_verify_gains" and workflow is not None:
+            return await workflow.async_restart_and_verify_gains(msg["session_id"])
         if operation == "calibrate_voltage" and workflow is not None:
             return await workflow.async_calibrate_voltage(
                 msg["session_id"],
@@ -791,6 +851,7 @@ class _Router:
                     allow_transaction_change_keys=(
                         msg["type"] in _TRANSACTION_STATUS_COMMANDS
                     ),
+                    allow_nested_transaction=operation in {"get_active_work", "preview_offset_preparation", "preview_offset_finalization"},
                 ),
             )
         except asyncio.CancelledError as error:
@@ -1147,10 +1208,10 @@ def _schema(command: str) -> Any:
             vol.Required("device_id"): _ID,
             vol.Required("calibration_plan"): vol.In(("standard", "full")),
         }
-    elif operation == "preview_calibrated_gains":
+    elif operation in {"preview_calibrated_gains", "preview_offset_finalization"}:
         schema |= {
             vol.Required("session_id"): _SERVER_ID,
-            vol.Required("verification_id"): _SERVER_ID,
+            (vol.Required("verification_id") if operation == "preview_calibrated_gains" else vol.Optional("verification_id")): _SERVER_ID,
             vol.Optional("changes", default=[]): vol.All(
                 [
                     {
@@ -1195,9 +1256,9 @@ def _schema(command: str) -> Any:
             vol.Optional("target_ids"): vol.All([_ID], vol.Length(min=1, max=8)),
         }
         return vol.All(vol.Schema(schema), _validate_stability_schema)
-    elif operation in {"check_offset_readiness", "calibrate_offset"}:
+    elif operation in {"check_offset_readiness", "calibrate_offset", "preview_offset_preparation", "resume_offset_calibration"}:
         schema |= {
-            vol.Required("session_id"): _ID,
+            vol.Required("session_id"): _SERVER_ID if operation in {"preview_offset_preparation", "resume_offset_calibration"} else _ID,
             vol.Required("board_index"): vol.All(
                 _strict_integer, vol.Range(min=0, max=6)
             ),
@@ -1206,6 +1267,17 @@ def _schema(command: str) -> Any:
         if operation == "calibrate_offset":
             schema[vol.Required("preparation_acknowledged")] = _literal_true
             schema[vol.Optional("confirm_retry", default=False)] = bool
+        elif operation == "preview_offset_preparation":
+            schema[vol.Required("backup_acknowledged")] = _literal_true
+        elif operation == "resume_offset_calibration":
+            schema[vol.Required("operation_id")] = _SERVER_ID
+            schema[vol.Required("preparation_acknowledged")] = _literal_true
+    elif operation in {"get_offset_preparation", "get_offset_finalization", "restart_and_verify_gains", "reconcile_offset_finalization", "begin_offset_cycle"}:
+        schema[vol.Required("session_id")] = _SERVER_ID
+        if operation == "reconcile_offset_finalization":
+            schema[vol.Required("operation_id")] = _SERVER_ID
+        if operation == "begin_offset_cycle":
+            schema[vol.Required("backup_acknowledged")] = _literal_true
     elif operation == "calibrate_voltage":
         schema |= {
             vol.Required("session_id"): _ID,
@@ -1559,6 +1631,7 @@ def sanitize_payload(
     value: Any,
     *,
     allow_transaction_change_keys: bool = False,
+    allow_nested_transaction: bool = False,
     _depth: int = 0,
     _field: str = "",
     _allow_change_key: bool = False,
@@ -1615,7 +1688,7 @@ def sanitize_payload(
                 raise ValueError("payload keys collide after sanitization")
             if (
                 allow_transaction_change_keys
-                and _depth == 0
+                and _depth <= 1
                 and key == "changes"
                 and isinstance(item, tuple | list)
             ):
@@ -1631,6 +1704,7 @@ def sanitize_payload(
             else:
                 result[key] = sanitize_payload(
                     item,
+                    allow_transaction_change_keys=allow_nested_transaction and _depth == 0 and key == "transaction",
                     _depth=_depth + 1,
                     _field=key,
                 )
