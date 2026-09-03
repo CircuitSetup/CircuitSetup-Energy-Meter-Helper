@@ -1,6 +1,6 @@
 import { render } from "lit";
 import { afterEach, expect, it, vi } from "vitest";
-import { totalsMigrationReview } from "../src/components/totals-migration-review";
+import { totalsEditable, totalsMigrationReview } from "../src/components/totals-migration-review";
 import { configReview } from "../src/components/config-review-step";
 import { summaryStep } from "../src/components/summary-step";
 import type { CircuitAggregate, MeterConfiguration, TotalGraphPreview, TotalSource } from "../src/types";
@@ -97,6 +97,19 @@ it.each(["authority", "contract", "visibility"])("does not offer adoption withou
   if (missing === "visibility") meter.totals.migration.native_visibility_resolved = false;
   mount(meter); expect(button("Adopt managed totals")).toBeUndefined();
   expect(host.textContent).toContain("Legacy read-only totals");
+});
+
+it("adopts supported source totals without pretending custom native defaults are writable", () => {
+  const meter = unowned();
+  meter.capabilities.reason_codes.push("config_contract_upgrade_required", "source_totals_adoptable");
+  meter.totals.migration.native_visibility_resolved = false;
+  const state = mount(meter);
+  expect(totalsEditable(state.meter(), "managed_advanced_totals")).toBe(false);
+  button("Adopt managed totals")?.click();
+  expect(state.meter().configuration.totals_change_intent?.adopt_managed_totals).toBe(true);
+  expect(totalsEditable(state.meter(), "managed_advanced_totals")).toBe(true);
+  expect(totalsEditable(state.meter(), "native_totals_writable")).toBe(false);
+  expect(host.textContent).toContain("new kWh counters");
 });
 
 it("hides the banner only when the fresh inventory no longer has pending links", () => {

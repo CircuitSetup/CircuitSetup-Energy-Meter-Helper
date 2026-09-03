@@ -23,7 +23,11 @@ from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator imp
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     AggregateTotalSource,
+    ChannelTotalSource,
+    CircuitRole,
     ElectricalSystem,
+    NativeTotalSource,
+    TotalOutputSettings,
     TotalsChangeIntent,
 )
 from tests.test_meter_inventory import (
@@ -169,8 +173,125 @@ def test_unchanged_custom_totals_preview_preserves_all_original_sensors() -> Non
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("edit", ("outputs", "members", "remove", "disable_member", "parent"))
+def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str) -> None:
+    """Exercise the real transaction and Store; only Builder/device IO are fake."""
+    from tests.test_config_transaction import _evidence
+
+    async def run() -> None:
+        source = _existing_custom_totals()
+        topology = _inventory(source).topology
+        workflow, plan, store, builder, verifier = await _persisted_totals_workflow(source, topology=topology)
+        original = plan.inventory.configuration
+        house, charger, ac1, ac2 = original.aggregates
+        channels = original.channels
+        aggregates = original.aggregates
+        if edit == "outputs":
+            aggregates = (replace(house, outputs=TotalOutputSettings(False, True, False)), charger, ac1, ac2)
+        elif edit == "members":
+            aggregates = (replace(house, sources=(ChannelTotalSource("channel", 3), ChannelTotalSource("channel", 4))), charger, ac1, ac2)
+        elif edit in {"remove", "disable_member"}:
+            aggregates = (house, ac1, ac2)
+            if edit == "disable_member":
+                channels = tuple(replace(item, enabled=False, role=CircuitRole.UNUSED) if item.channel == 5 else item for item in channels)
+        else:
+            aggregates = (*aggregates, replace(charger, aggregate_id="parent", name="Parent",
+                sources=(AggregateTotalSource("aggregate", "total-charger"),)))
+        requested = replace(original, channels=channels, aggregates=aggregates,
+            meter=replace(original.meter, electrical_system=ElectricalSystem.SPLIT_PHASE_120_240),
+            totals_change_intent=TotalsChangeIntent(adopt_managed_totals=True))
+        preview = await workflow._async_preview_meter_configuration(plan, requested)
+        manager = workflow.transactions
+        transaction = manager._transaction(preview.transaction_id)
+        verifier.evidence = replace(_evidence(), topology=topology, current_sensor_count=topology.ct_count,
+            ct_names={item.channel: item.name for item in requested.channels},
+            sensor_entities=transaction.expected_sensor_entities)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        installed = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert installed.state.value == "verified", installed
+        workflow, loaded, _, _, _ = await _persisted_totals_workflow(builder.remote_content, store, topology)
+        assert loaded.inventory.totals_managed
+        assert loaded.inventory.capabilities.managed_advanced_totals
+        assert not loaded.inventory.capabilities.native_totals_writable
+        assert {item.aggregate_id: item for item in loaded.inventory.configuration.aggregates} == {
+            item.aggregate_id: item for item in requested.aggregates}
+        refreshed = loaded.inventory.configuration
+        second = replace(refreshed, aggregates=tuple(replace(item, name="Second edit") if item.aggregate_id == "total-ac2" else item for item in refreshed.aggregates))
+        assert (await workflow._async_preview_meter_configuration(loaded, second)).state.value == "previewed"
+
+    asyncio.run(run())
+
+
+def test_custom_native_subset_cannot_be_used_as_whole_meter_source() -> None:
+    inventory = _inventory(_existing_custom_totals())
+    previous = inventory.configuration
+    requested = replace(previous, aggregates=(*previous.aggregates, replace(previous.aggregates[0],
+        aggregate_id="whole", name="Whole", sources=(NativeTotalSource("native_total", "overall"),))))
+    with pytest.raises(ValueError, match="custom formula"):
+        _select_render_totals(requested, inventory.topology, ESPHomeConfigDocument.parse(_existing_custom_totals()), previous)
+
+
+@pytest.mark.parametrize("target", (None, "meter-total", "total-charger", "total-ac1", "total-ac2"))
+@pytest.mark.parametrize("energy_ids", (False, True))
+def test_adopt_and_edit_existing_totals_round_trip(target: str | None, energy_ids: bool) -> None:
+    source = _existing_custom_totals(energy_ids=energy_ids)
+
+    async def run() -> None:
+        workflow, plan, _, builder, _ = await _persisted_totals_workflow(source, topology=_inventory(source).topology)
+        requested = replace(plan.inventory.configuration,
+            meter=replace(plan.inventory.configuration.meter, electrical_system=ElectricalSystem.SPLIT_PHASE_120_240),
+            totals_change_intent=TotalsChangeIntent(adopt_managed_totals=True),
+            aggregates=tuple(replace(item, name="Edited total") if item.aggregate_id == target else item
+                for item in plan.inventory.configuration.aggregates))
+        result = await workflow._async_preview_meter_configuration(plan, requested)
+        transaction = workflow.transactions._transaction(result.transaction_id)
+        proposed = transaction.plan.proposed_content
+        recovered = _inventory(proposed)
+        assert {item.aggregate_id: item for item in recovered.configuration.aggregates} == {
+            item.aggregate_id: item for item in requested.aggregates}
+        assert "aggregate_semantics_unreadable" not in recovered.warnings
+        assert not recovered.capabilities.native_totals_writable
+        assert "lambda: return id(ct1Watts).state + id(ct2Watts).state ;" in proposed
+        impact = estimate_configuration_impact(requested, plan.inventory.topology,
+            document=ESPHomeConfigDocument.parse(source), previous=plan.inventory.configuration,
+            native_visibility_resolved=False)
+        assert impact.public_total_entity_count == 9
+        assert impact.energy_entity_count == 4
+        assert builder.remote_content == source
+
+    asyncio.run(run())
+
+
+def test_rename_legacy_custom_ct_preserves_gain_without_new_hardware_acknowledgement() -> None:
+    source = _existing_custom_totals().replace("27519", "27518")
+
+    async def run() -> None:
+        workflow, plan, _, builder, _ = await _persisted_totals_workflow(source, topology=_inventory(source).topology)
+        original = plan.inventory.configuration
+        assert original.channels[0].model_id == "custom"
+        assert not original.channels[0].burden_output_acknowledged
+        requested = replace(original, meter=replace(original.meter,
+            electrical_system=ElectricalSystem.SPLIT_PHASE_120_240),
+            channels=tuple(replace(item, name=f"Renamed CT{item.channel}") for item in original.channels))
+        result = await workflow._async_preview_meter_configuration(plan, requested)
+        proposed = ESPHomeConfigDocument.parse(workflow.transactions._transaction(result.transaction_id).plan.proposed_content)
+        before = ESPHomeConfigDocument.parse(source)
+        for item in original.channels:
+            assert proposed.substitutions[f"current_cal_ct{item.channel}"].value == before.substitutions[f"current_cal_ct{item.channel}"].value
+            assert proposed.substitutions[f"ct{item.channel}_name"].value == f"Renamed CT{item.channel}"
+        assert builder.remote_content == source
+        for fields in ({"custom_gain_ct": 12345}, {"reporting_multiplier": 2.0}, {"custom_label": "Different CT"}):
+            workflow, plan, _, _, _ = await _persisted_totals_workflow(source, topology=_inventory(source).topology)
+            changed = replace(requested, channels=(replace(requested.channels[0], **fields), *requested.channels[1:]))
+            with pytest.raises(ValueError, match="acknowledgement"):
+                await workflow._async_preview_meter_configuration(plan, changed)
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("change", ("direct", "parent", "hidden_energy"))
-def test_existing_energy_relationship_cannot_be_silently_replaced(change: str) -> None:
+def test_editing_existing_energy_relationship_selects_its_power_for_replacement(change: str) -> None:
     source = _existing_custom_totals()
     if change == "hidden_energy":
         source = source.replace("name: Total Charger kWh\n", "name: Total Charger kWh\n    internal: true\n")
@@ -182,8 +303,9 @@ def test_existing_energy_relationship_cannot_be_silently_replaced(change: str) -
         requested = replace(previous, aggregates=(*previous.aggregates, changed))
     else:
         requested = replace(previous, aggregates=tuple(replace(item, name="Renamed") if item == charger else item for item in previous.aggregates))
-    with pytest.raises(ValueError, match="Device Builder"):
-        _select_render_totals(requested, inventory.topology, ESPHomeConfigDocument.parse(source), previous)
+    selected, body = _select_render_totals(requested, inventory.topology, ESPHomeConfigDocument.parse(source), previous)
+    assert charger.aggregate_id in {item.aggregate_id for item in selected.aggregates}
+    assert "!extend totalChargerWatts" in body
 
 
 def test_retained_energy_replacement_metadata_can_still_be_read_unchanged() -> None:
@@ -217,13 +339,15 @@ def test_adopting_genuine_native_totals_preserves_source_owned_energy() -> None:
     asyncio.run(run())
 
 
-def test_custom_native_totals_do_not_gain_adoption_authority_from_detection() -> None:
+def test_custom_native_totals_adoption_does_not_authorize_default_visibility_changes() -> None:
     inventory = _inventory(_existing_custom_totals())
     assert len(inventory.configuration.aggregates) == 4
     assert not inventory.capabilities.native_totals_writable
-    with pytest.raises(ValueError, match="contract support"):
-        inventory.validate_totals_change(replace(inventory.configuration,
-            totals_change_intent=TotalsChangeIntent(adopt_managed_totals=True)))
+    requested = replace(inventory.configuration, totals_change_intent=TotalsChangeIntent(adopt_managed_totals=True))
+    inventory.validate_totals_change(requested)
+    with pytest.raises(ValueError, match="native total visibility"):
+        inventory.validate_totals_change(replace(requested, default_totals=replace(requested.default_totals,
+            overall=replace(requested.default_totals.overall, watts=not requested.default_totals.overall.watts))))
 
 
 @pytest.mark.parametrize("invalid", ("hidden", "unknown_id", "unknown_name", "duplicate", "overridden_units"))

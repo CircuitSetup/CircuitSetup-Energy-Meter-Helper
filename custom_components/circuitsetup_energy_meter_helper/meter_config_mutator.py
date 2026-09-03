@@ -30,6 +30,7 @@ from .meter_configuration import (
     EnergyMode,
     MeasurementMethod,
     MeterConfigurationRequest,
+    NativeTotalSource,
     TotalOutputSettings,
     VoltageReferenceConfig,
     validate_meter_configuration,
@@ -42,6 +43,7 @@ from .meter_inventory import (
     _native_totals_metadata,
     _plain_sensor_scalar,
     _replacement_metadata,
+    _root_sensor_blocks,
     _root_sensor_items,
     _source_daily_energy_items,
     _source_native_visibility,
@@ -260,6 +262,11 @@ def _source_owned_total_items(
             effective[sensor_id]["internal"] = "true"
     effective.update({f"daily:{power_id}": item
         for power_id, item in _source_daily_energy_items(document).items() if power_id in sensor_ids})
+    replaced_powers = {item["id"].removeprefix("!extend ")
+        for item in _managed_sensor_items(replacements, 2) if item.get("id", "").startswith("!extend ")} if replacements else set()
+    for power_id in replaced_powers:
+        if f"daily:{power_id}" in effective:
+            effective[f"daily:{power_id}"] = {**effective[f"daily:{power_id}"], "internal": "true"}
     return effective
 
 
@@ -321,7 +328,8 @@ def build_meter_configuration_mutation(
         or requested.totals_change_intent.adopt_managed_totals
     )
     managed_totals_upgrade_required = (
-        aggregates_changed and "config_contract_upgrade_required" in current.capabilities.reason_codes
+        (aggregates_changed or requested.totals_change_intent.adopt_managed_totals)
+        and "config_contract_upgrade_required" in current.capabilities.reason_codes
     )
     if (
         len(requested.meter.voltage_references) > 1
@@ -403,6 +411,11 @@ def build_meter_configuration_mutation(
         snapshot,
         topology,
         ct_changes,
+        # Server-derived from the source-bound inventory, never a client acknowledgement.
+        preserved_gain_channels=frozenset(new.channel
+            for old, new in zip(previous.channels, requested.channels, strict=True)
+            if (old.model_id, old.custom_gain_ct, old.custom_label, old.reporting_multiplier)
+            == (new.model_id, new.custom_gain_ct, new.custom_label, new.reporting_multiplier)),
         package_options=package_options,
         phase_channels={
             channel.channel: (channel.enabled, channel.reporting_multiplier)
@@ -446,10 +459,11 @@ def build_meter_configuration_mutation(
             )
         document = ESPHomeConfigDocument.parse(content)
         rendered_request, replacements = _select_render_totals(requested, topology, document, previous)
+        content = _hide_replaced_daily_energy(document, replacements)
         content = replace_managed_block(
             content,
             "aggregates",
-            _render_native_totals(rendered_request, topology, document)
+            (_render_native_totals(rendered_request, topology, document) if current.native_visibility_resolved else "")
             + replacements
             + _render_aggregates(plan_total_graph(rendered_request, topology), rendered_request.aggregates, rendered_request),
         )
@@ -481,7 +495,7 @@ def build_meter_configuration_mutation(
                 source_document, topology, requested.channels
             )
             total_notes.extend(
-                f"~ {item.name}: replaces supported custom Watts/Amps"
+                f"~ {item.name}: replaces source Watts/Amps/kWh with helper entities; old sensors retained internally, new kWh counters start independently"
                 for item in selected.aggregates
                 if item.aggregate_id in external
             )
@@ -962,16 +976,17 @@ def _select_render_totals(
     changed: set[str] = set()
     old = {} if previous is None else {item.aggregate_id: item for item in previous.aggregates}
     if previous is not None:
+        changed.update(identifier for identifier in old.keys() - {item.aggregate_id for item in requested.aggregates}
+            if identifier in sources)
         changed.update(item.aggregate_id for item in requested.aggregates
             if item.aggregate_id in sources and item != old.get(item.aggregate_id))
         changed.update(source.aggregate_id for item in requested.aggregates if item != old.get(item.aggregate_id)
             for source in item.sources if isinstance(source, AggregateTotalSource) and source.aggregate_id in sources and source.aggregate_id not in selected)
-    protected = _custom_native_total_ids(document, topology) | {
-        _plain_sensor_scalar(item.get("power_id", "")) for item in _root_sensor_items(document)
-        if _plain_sensor_scalar(item.get("platform", "")) == "total_daily_energy"
-    }
-    if any(protected.intersection(sources[identifier]) for identifier in changed):
-        raise SourceOwnedTotalEditError("Existing source-owned energy or custom native totals must be edited in ESPHome Device Builder to preserve their entity identities")
+    custom_native = _custom_native_total_ids(document, topology)
+    invalid_native = {item.source_id for item in native_total_sources(topology) if item.power_id in custom_native or item.current_id in custom_native}
+    if any(isinstance(source, NativeTotalSource) and source.source_id in invalid_native
+        for item in requested.aggregates for source in item.sources):
+        raise SourceOwnedTotalEditError("This native total has a custom formula; select its detected existing total instead")
     selected.update(changed)
     configuration = replace(requested, aggregates=tuple(item for item in requested.aggregates
         if item.aggregate_id not in sources or item.aggregate_id in selected))
@@ -982,7 +997,44 @@ def _select_render_totals(
         f"  - id: !extend {sensor_id}\n    internal: true\n"
         for aggregate_id in sorted(selected) for sensor_id in sources[aggregate_id]
     )
+    # Validate every linked daily sensor before changing any source visibility.
+    _replacement_daily_energy(document, body)
     return configuration, body
+
+
+def _replacement_daily_energy(document: ESPHomeConfigDocument, replacements: str) -> tuple[tuple[int, int, dict[str, str]], ...]:
+    powers = {item["id"].removeprefix("!extend ") for item in _managed_sensor_items(replacements, 2)
+        if item.get("id", "").startswith("!extend ")} if replacements else set()
+    supported = _source_daily_energy_items(document, include_hidden=True)
+    selected = []
+    for start, stop, fields in _root_sensor_blocks(document):
+        power = _plain_sensor_scalar(fields.get("power_id", ""))
+        if _plain_sensor_scalar(fields.get("platform", "")) != "total_daily_energy" or power not in powers:
+            continue
+        if power not in supported:
+            raise SourceOwnedTotalEditError("The existing total has ambiguous energy settings; no source sensors were changed")
+        sensor_id = _plain_sensor_scalar(fields.get("id", ""))
+        if sensor_id and any(item.get("id") == f"!extend {sensor_id}" for item in _root_sensor_items(document)):
+            raise SourceOwnedTotalEditError("The existing energy sensor has an external override; no source sensors were changed")
+        selected.append((start, stop, fields))
+    return tuple(selected)
+
+
+def _hide_replaced_daily_energy(document: ESPHomeConfigDocument, replacements: str) -> str:
+    """Retain original energy definitions (including ID-less ones), hidden in place."""
+    lines = list(document.lines)
+    for start, stop, fields in reversed(_replacement_daily_energy(document, replacements)):
+        if fields.get("internal") == "true":
+            continue
+        indent = len(document.code_lines[start]) - len(document.code_lines[start].lstrip()) + 2
+        if "internal" in fields:
+            index = next(index for index in range(start + 1, stop)
+                if re.match(rf"^ {{{indent}}}internal:", document.code_lines[index]))
+            lines[index] = re.sub(r"(internal:\s*)false\b", r"\g<1>true", lines[index], count=1)
+        else:
+            newline = "\r\n" if lines[start].endswith("\r\n") else "\n"
+            lines.insert(start + 1, " " * indent + "internal: true" + newline)
+    return "".join(lines)
 
 
 def _render_aggregates(

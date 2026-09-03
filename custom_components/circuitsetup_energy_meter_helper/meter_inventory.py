@@ -157,10 +157,13 @@ class MeterConfigurationInventory:
         intent = requested.totals_change_intent
         if intent.adopt_managed_totals and (
             not self.capabilities.configuration_authoritative
-            or "config_contract_upgrade_required" in self.capabilities.reason_codes
-            or not self.native_visibility_resolved
+            or ("source_totals_adoptable" not in self.capabilities.reason_codes and (
+                "config_contract_upgrade_required" in self.capabilities.reason_codes
+                or not self.native_visibility_resolved))
         ):
             raise ValueError("totals adoption requires authoritative, visibility-confirmed contract support")
+        if requested.default_totals != self.configuration.default_totals and not self.native_visibility_resolved:
+            raise ValueError("managed native total visibility must be resolved before adoption or changing default outputs")
         pending = {(link.child_id, link.proposed_parent_id) for link in self.legacy_parent_links}
         parents = {aggregate.aggregate_id: aggregate for aggregate in requested.aggregates}
         accepted = {(decision.child_id, decision.proposed_parent_id) for decision in intent.legacy_parent_decisions if decision.accepted}
@@ -327,7 +330,7 @@ class MeterConfigurationInventory:
             aggregate_warnings = tuple(
                 dict.fromkeys((*aggregate_warnings, "aggregate_semantics_unreadable"))
             )
-        if not totals_managed and _native_totals_metadata(document, strict=False) is None:
+        if (not totals_managed or _custom_native_total_ids(document, topology)) and _native_totals_metadata(document, strict=False) is None:
             normalized_defaults = _source_normalized_default_totals(document, topology)
             visibility_unconfirmed = normalized_defaults is None
             if normalized_defaults is not None:
@@ -357,6 +360,13 @@ class MeterConfigurationInventory:
             capabilities = replace(capabilities, reason_codes=(
                 *capabilities.reason_codes, "legacy_custom_totals_unmanaged"
             ))
+        if (configuration_authoritative and not stale and document.writable_sensor_span is not None
+            and "aggregate_semantics_unreadable" not in aggregate_warnings
+            and _legacy_replacement_sources(document, topology, configuration.channels)):
+            capabilities = replace(capabilities,
+                managed_automatic_totals=totals_managed,
+                managed_advanced_totals=totals_managed,
+                reason_codes=(*capabilities.reason_codes, "source_totals_adoptable"))
         warnings = [*capabilities.reason_codes, *aggregate_warnings]
         if configuration.meter.electrical_system is ElectricalSystem.CUSTOM:
             warnings.append("electrical_profile_requires_confirmation")
@@ -1205,7 +1215,8 @@ def _validate_graph_block(
     plan = plan_total_graph(requested, topology)
     if {item.aggregate_id: item for item in metadata} != {node.aggregate.aggregate_id: node.aggregate for node in plan.ordered_nodes}:
         raise ValueError("automatic metadata does not match generated definitions")
-    expected = _render_native_totals(requested, topology, document) + replacements + _render_aggregates(plan, requested.aggregates, requested if has_automatic else None)
+    native = _render_native_totals(requested, topology, document) if _native_totals_metadata(document) is not None else ""
+    expected = native + replacements + _render_aggregates(plan, requested.aggregates, requested if has_automatic else None)
     block = document.managed_blocks["aggregates"]
     actual = block.content
     if document.sensor_item_indent == 0:
@@ -1529,13 +1540,18 @@ def _default_daily_energy_power_ids(
 def _root_sensor_items(
     document: ESPHomeConfigDocument,
 ) -> tuple[dict[str, str], ...]:
+    return tuple(fields for _start, _stop, fields in _root_sensor_blocks(document))
+
+
+def _root_sensor_blocks(document: ESPHomeConfigDocument) -> tuple[tuple[int, int, dict[str, str]], ...]:
+    """Read root sensor fields with their line ranges for bounded source edits."""
     lines = document.code_lines
     roots = [
         index
         for index, line in enumerate(lines)
         if re.fullmatch(r"sensor\s*:\s*", line)
     ]
-    items: list[dict[str, str]] = []
+    items: list[tuple[int, int, dict[str, str]]] = []
     for root in roots:
         end = next(
             (
@@ -1576,11 +1592,11 @@ def _root_sensor_items(
                     break
                 fields[field["key"]] = field["value"].strip()
             if fields:
-                items.append(fields)
+                items.append((start, stop, fields))
     return tuple(items)
 
 
-def _source_daily_energy_items(document: ESPHomeConfigDocument) -> dict[str, dict[str, str]]:
+def _source_daily_energy_items(document: ESPHomeConfigDocument, *, include_hidden: bool = False) -> dict[str, dict[str, str]]:
     """Recognize named source-owned kWh by its power reference, not an optional ID."""
     if block := document.managed_blocks.get("aggregates"):
         document = ESPHomeConfigDocument.parse(
@@ -1624,7 +1640,7 @@ def _source_daily_energy_items(document: ESPHomeConfigDocument) -> dict[str, dic
             continue
         candidates[power_id] = effective
     return {power_id: item for power_id, item in candidates.items()
-        if power_id not in ambiguous and item.get("internal", "false") == "false"}
+        if power_id not in ambiguous and (include_hidden or item.get("internal", "false") == "false")}
 
 
 def _custom_native_total_ids(document: ESPHomeConfigDocument, topology: MeterTopology) -> frozenset[str]:
@@ -1674,6 +1690,8 @@ def _legacy_template_total_ids(
 
 
 def _legacy_replacement_sources(document: ESPHomeConfigDocument, topology: MeterTopology, channels: tuple[ChannelSettings, ...]) -> dict[str, tuple[str, ...]]:
+    # Source ownership does not disappear when the user disables a member CT.
+    channels = tuple(replace(channel, enabled=True) for channel in channels)
     native_ids = frozenset(sensor_id for source in native_total_sources(topology) for sensor_id in (source.power_id, source.current_id)) - _custom_native_total_ids(document, topology)
     items = _legacy_template_total_items(document, native_ids)
     accepted, _parents = _legacy_aggregates(document, channels, _default_total_groups(document, channels), frozenset(), excluded_ids=native_ids)
