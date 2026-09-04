@@ -7,6 +7,7 @@ import re
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
+from math import isfinite
 from time import monotonic
 from typing import Any, Literal
 
@@ -14,6 +15,8 @@ from homeassistant.core import HomeAssistant
 
 from .log_parser import (
     CalibrationLogLine,
+    MeterCommunicationError,
+    MeterCommunicationParser,
     OffsetTableSnapshot,
     parse_calibration_sources,
     parse_offset_configuration_selection,
@@ -576,6 +579,52 @@ class ESPHomeApiSession:
                     and self.connection_generation == generation
                 ):
                     self._subscribe_normal_logs(client)
+
+    async def async_check_meter_communication(
+        self, expected_chips: int, *, timeout: float = 30.0
+    ) -> None:
+        """Verify every chip from a fresh config dump, not a cached boot log."""
+        if type(expected_chips) is not int or not 1 <= expected_chips <= 14:
+            raise ValueError("invalid expected meter chip count")
+        if not isfinite(timeout) or timeout <= 0:
+            raise ValueError("meter communication timeout must be positive")
+        async with self._lifecycle_lock:
+            client = self._ready_client()
+            parser = MeterCommunicationParser()
+
+            def callback(message: Any) -> None:
+                self._on_log(client, message)
+                if client is not self._client or not self.connected:
+                    return
+                raw = message.message
+                text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+                for line in text.splitlines():
+                    parser.feed(sanitize_control_text(line))
+
+            self._clear_log_subscription()
+            try:
+                self._unsubscribe_logs = client.subscribe_logs(
+                    callback, self._log_level("LOG_LEVEL_DEBUG"), dump_config=True
+                )
+                deadline = monotonic() + timeout
+                while len(parser.checked_cs_pins) < expected_chips:
+                    self._ready_client()
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(0.05, remaining))
+                if parser.failed:
+                    raise MeterCommunicationError(tuple(sorted(parser.failed_cs_pins)))
+                self._ready_client()
+                if len(parser.checked_cs_pins) != expected_chips:
+                    raise TimeoutError("Meter chip communication evidence is incomplete")
+            finally:
+                self._clear_log_subscription()
+                if client is self._client and client is not None and self.connected:
+                    self._unsubscribe_logs = client.subscribe_logs(
+                        lambda message: self._on_log(client, message),
+                        self._log_level("LOG_LEVEL_DEBUG"),
+                    )
 
     async def async_reconnect(self, *, dump_config: bool = False) -> None:
         """Disconnect and create a fresh client from the current ESPHome entry."""

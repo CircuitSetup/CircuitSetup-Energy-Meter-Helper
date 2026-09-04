@@ -486,6 +486,22 @@ describe("HelperApi", () => {
     await expect(api.getCtInventory("meter-1")).rejects.toThrow("get_ct_inventory");
   });
 
+  it("validates structured SPI failure pins without accepting raw diagnostic text", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    const failed = { ...transaction, evidence: ["meter_communication_failed"], communication_failed_cs_pins: [0, 16] };
+    hass.responses.preview_ct_config = failed;
+    await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({
+      communication_failed_cs_pins: [0, 16],
+    });
+    for (const pins of [[-1], [64], ["GPIO5"], [1, 1], Array.from({ length: 15 }, (_, i) => i), null]) {
+      hass.responses.preview_ct_config = { ...failed, communication_failed_cs_pins: pins };
+      await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
+    }
+    hass.responses.preview_ct_config = { ...failed, evidence: [] };
+    await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).rejects.toThrow("preview_ct_config");
+  });
+
   it("requires complete aggregate verification transaction fields", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");

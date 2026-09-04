@@ -2497,6 +2497,41 @@ def test_stale_rollback_cannot_release_new_lease() -> None:
     asyncio.run(run())
 
 
+def test_spi_failure_retains_pin_evidence_and_blocks_verified_persistence() -> None:
+    from custom_components.circuitsetup_energy_meter_helper import log_parser
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        sanitize_payload,
+    )
+
+    async def run() -> None:
+        builder = Builder()
+        persistence = Persistence()
+        manager = _manager(
+            builder, persistence, evidence=log_parser.MeterCommunicationError((0, 16))
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert status.evidence == (TransactionEvidenceCode.METER_COMMUNICATION_FAILED,)
+        assert status.communication_failed_cs_pins == (0, 16)
+        assert status.rollback_available
+        assert not persistence.saved
+        assert "device_verified" not in status.progress
+        assert sanitize_payload(status)["communication_failed_cs_pins"] == [0, 16]
+
+        manager._verifier.evidence = _evidence()
+        recovered = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert recovered.state is ConfigTransactionState.VERIFIED
+        assert recovered.communication_failed_cs_pins == ()
+        assert recovered.evidence == ()
+        assert persistence.saved
+
+    asyncio.run(run())
+
+
 def test_concurrent_edit_does_not_restore_foreign_content() -> None:
     class ChangedBuilder(Builder):
         async def async_update_config(

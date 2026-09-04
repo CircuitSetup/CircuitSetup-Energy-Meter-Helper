@@ -25,6 +25,54 @@ from custom_components.circuitsetup_energy_meter_helper.log_parser import (
 FIXTURES = Path(__file__).parent / "fixtures" / "logs"
 
 
+def test_meter_communication_correlates_only_atm90e32_blocks() -> None:
+    from custom_components.circuitsetup_energy_meter_helper import log_parser
+
+    parser = log_parser.MeterCommunicationParser()
+    for line in (
+        "[E][ethernet:123]: Communication failed",
+        "[C][atm90e32:411]: ATM90E32:",
+        "[C][atm90e32:413]:   CS Pin: GPIO5",
+        "[E][ethernet:123]: Communication failed",
+        "[C][atm90e32:419]:   Update Interval: 5.0s",
+        "[C][atm90e32:411]: ATM90E32:",
+        "[C][atm90e32:413]:   CS Pin: GPIO0 (Output: YES)",
+        "[E][atm90e32:415]: Communication failed",
+        "[C][atm90e32:419]:   Update Interval: 5.0s",
+        "[C][atm90e32:411]: ATM90E32:",
+        "[C][atm90e32:413]:   CS Pin: 16",
+        "[E][atm90e32:415]: Communication with ATM90E32 failed!",
+        "[C][atm90e32:419]:   Update Interval: 5.0s",
+        "[C][other_spi:123]:   CS Pin: GPIO22",
+        "[E][other_spi:124]: Communication failed",
+    ):
+        parser.feed(line)
+
+    assert parser.checked_cs_pins == {0, 5, 16}
+    assert parser.failed_cs_pins == {0, 16}
+    assert parser.failed
+
+
+def test_meter_communication_does_not_reuse_a_pin_from_an_incomplete_block() -> None:
+    from custom_components.circuitsetup_energy_meter_helper import log_parser
+
+    parser = log_parser.MeterCommunicationParser()
+    for line in (
+        "ATM90E32:",
+        "CS Pin: GPIO5",
+        "Update Interval: 5s",
+        "ATM90E32:",
+        "CS Pin: GPIO999",
+        "Communication failed",
+        "Update Interval: 5s",
+    ):
+        parser.feed(line)
+
+    assert parser.failed
+    assert parser.failed_cs_pins == set()
+    assert parser.checked_cs_pins == {5}
+
+
 @pytest.mark.parametrize("stage,kind", ((1, "offset"), (2, "power offset")))
 def test_detects_saved_offsets_separately_from_gain_and_other_stage(
     stage: int, kind: str

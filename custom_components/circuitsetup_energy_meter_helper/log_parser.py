@@ -81,6 +81,53 @@ class LogEvidenceError(ValueError):
     """A correlated ATM90E32 evidence block is absent or contradictory."""
 
 
+class MeterCommunicationError(RuntimeError):
+    """Fresh ATM90E32 SPI failure evidence, without arbitrary device log text."""
+
+    def __init__(self, cs_pins: tuple[int, ...]) -> None:
+        if (
+            len(cs_pins) > 14
+            or any(type(pin) is not int or not 0 <= pin <= 63 for pin in cs_pins)
+            or len(set(cs_pins)) != len(cs_pins)
+        ):
+            raise ValueError("invalid meter CS pins")
+        self.cs_pins = tuple(sorted(cs_pins))
+        super().__init__("Meter chip SPI communication failed")
+
+
+class MeterCommunicationParser:
+    """Consume one dump-config stream; retain only bounded chip/pin evidence."""
+
+    def __init__(self) -> None:
+        self.checked_cs_pins: set[int] = set()
+        self.failed_cs_pins: set[int] = set()
+        self.failed = False
+        self._active = False
+        self._pin: int | None = None
+
+    def feed(self, line: str) -> None:
+        payload = re.sub(r"^(?:\[[^\]]*\])+\s*:?\s*", "", line).strip()
+        if payload.casefold() == "atm90e32:":
+            self._active, self._pin = True, None
+            return
+        tagged_meter = re.search(r"\[atm90e32(?::\d+)?\]", line, re.IGNORECASE) is not None
+        if line.startswith("[") and not tagged_meter:
+            return
+        if payload.casefold().startswith("cs pin:") and (self._active or tagged_meter):
+            match = re.fullmatch(r"CS Pin:\s*(?:GPIO)?(\d{1,2})(?:\s+.*)?", payload, re.IGNORECASE)
+            self._active = True
+            self._pin = int(match[1]) if match and int(match[1]) <= 63 else None
+        elif re.fullmatch(r"Communication(?: with ATM90E32)? failed[.!]?", payload, re.IGNORECASE):
+            if self._active or tagged_meter:
+                self.failed = True
+                if self._pin is not None:
+                    self.failed_cs_pins.add(self._pin)
+        elif self._active and payload.casefold().startswith("update interval:"):
+            if self._pin is not None:
+                self.checked_cs_pins.add(self._pin)
+            self._active, self._pin = False, None
+
+
 @dataclass(frozen=True, slots=True)
 class CalibrationLogLine:
     connection_generation: int

@@ -57,6 +57,7 @@ export function ctInventoryStep(
   meterInventory: MeterConfiguration | null = null,
   automaticSourcesFresh = freshTotals,
   existingConfiguration: MeterConfigurationRequest | null = null,
+  skip: () => void = () => undefined,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -178,8 +179,9 @@ export function ctInventoryStep(
       ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState) : nothing}
       ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration) : nothing}
       ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh) : nothing}
-      <footer class="action-footer">
+      <footer class="action-footer offset-footer">
         <button class="secondary" @click=${back}>Back</button>
+        <button class="secondary" data-action="skip-ct" ?disabled=${busy} @click=${skip}>Skip to Calibration</button>
         <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
       </footer>
     </section>

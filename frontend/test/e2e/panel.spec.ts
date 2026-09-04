@@ -200,7 +200,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   const fixtureUrl = `http://127.0.0.1:${process.env.CSEMH_FIXTURE_PORT ?? 4174}/rpc?fixture=main-only&session=legacy-${crypto.randomUUID()}&addons=${addons}`;
   const backendCall = async <T>(message: Record<string, unknown>): Promise<T> => {
     const response = await page.request.post(fixtureUrl, { data: message });
-    if (!response.ok()) throw new Error(`Backend fixture: ${await response.text()}`);
+    if (!response.ok()) throw Object.assign(new Error(`Backend fixture: ${await response.text()}`), { status: response.status() });
     return response.json() as Promise<T>;
   };
   const base = await backendCall<Omit<MeterConfiguration, "total_details">>({ type: "get_meter_configuration" });
@@ -317,7 +317,12 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       else if (operation === "get_total_details") result = { plan_id: frame.plan_id,
         source_sha256: frame.source_sha256, total_details: backend.total_details };
       else if (operation === "preview_total_graph") {
-        result = { ...await graphFor(frame.configuration), plan_id: frame.plan_id, source_sha256: frame.source_sha256 };
+        try {
+          result = { ...await graphFor(frame.configuration), plan_id: frame.plan_id, source_sha256: frame.source_sha256 };
+        } catch (error) {
+          if ((error as { status?: number }).status === 400) return fail("invalid_format", "Invalid configuration draft");
+          throw error;
+        }
         if (options.delayedGraph && (result as TotalGraphPreview).automatic_candidates.some((candidate) => candidate.role === "grid")) {
           setTimeout(() => ok(result), 600); return;
         }
@@ -1076,6 +1081,47 @@ test("compile failure blocks upload after a distinct apply acknowledgement", asy
   expect(operations(frames).filter((value) => value === "apply_ct_config")).toHaveLength(1);
   expect(operations(frames).filter((value) => value === "compile_ct_config")).toHaveLength(1);
   expect(operations(frames)).not.toContain("install_ct_config");
+});
+
+test("centered CT skip preserves drafts and starts calibration with saved targets", async ({ page }) => {
+  const frames = await mockHomeAssistant(page);
+  await openInventory(page);
+  await page.getByLabel("CT1 name", { exact: true }).fill("");
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
+  const skip = page.getByRole("button", { name: "Skip to Calibration", exact: true });
+  const footer = page.locator(".action-footer");
+  const skipBox = await skip.boundingBox();
+  const footerBox = await footer.boundingBox();
+  expect(Math.abs(skipBox!.x + skipBox!.width / 2 - footerBox!.x - footerBox!.width / 2)).toBeLessThan(2);
+  await skip.click();
+  await page.getByRole("radio", { name: /Full calibration/ }).click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
+  await expect(page.getByLabel("CT1 name", { exact: true })).toHaveValue("");
+  await skip.click();
+  await page.getByRole("radio", { name: /Full calibration/ }).click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Offset", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Skip offset calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Voltage", exact: true })).toBeVisible();
+  await page.locator('.reference-block input').fill("120");
+  await page.getByRole("button", { name: "Check stability", exact: true }).click();
+  await expect.poll(() => frames.filter((frame) => frame.type.endsWith("/check_stability")).length).toBeGreaterThan(0);
+  expect(frames.find((frame) => frame.type.endsWith("/check_stability"))).toMatchObject({ target: "voltage", target_id: "main" });
+  await page.getByRole("button", { name: "Calibrate voltage", exact: true }).click();
+  await expect(page.getByText("Voltage calibration complete for Main Board.")).toBeVisible();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByLabel("CT1 reference", { exact: true }).fill("5");
+  await page.getByRole("button", { name: "Check stability", exact: true }).click();
+  await page.getByRole("button", { name: "Calibrate current", exact: true }).click();
+  await expect.poll(() => operations(frames).includes("calibrate_current")).toBe(true);
+  expect(operations(frames)).not.toContain("preview_meter_configuration");
+  expect(operations(frames)).not.toContain("set_ha_labels");
 });
 
 test("verified configuration continues through calibration and finishes only from Summary", async ({ page }) => {

@@ -35,7 +35,9 @@ export function buildInstallStep(
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
-    ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch"].includes(code)) === true;
+    ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
+  const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
+  const failedPins = status?.communication_failed_cs_pins ?? [];
   const waitingForStartup = state === "reconnecting";
   const latestProgress = status?.upload_progress.slice().reverse().find((item) => item.percentage !== null)
     ?? status?.upload_progress.at(-1) ?? null;
@@ -55,8 +57,19 @@ export function buildInstallStep(
       ${meterInventory ? totalsMigrationReview(meterInventory, () => undefined, totalPreview, impact !== null, true, status) : ""}
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
-          <strong>Build or install needs attention</strong>
-          <p>${status?.evidence.join(", ") || "The operation did not complete."}</p>
+          <strong>${communicationFailure ? "Meter chip communication failed" : "Build or install needs attention"}</strong>
+          ${communicationFailure ? html`<p>The ESP32 reconnected, but reported that it could not establish SPI communication with
+            ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
+            This is the connection between the ESP32 and the meter chip, not a Wi-Fi or Home Assistant connection problem.</p>
+            <ol>
+              <li>Power down the meter and ESP32 before touching boards or changing jumpers. Do not touch exposed mains wiring.</li>
+              <li>Confirm the correct ESP32 model for your meter board and firmware is installed. Check its orientation, make sure both header rows are fully seated and aligned, and look for bent pins or poor contact.</li>
+              <li>If an add-on board is affected, check its CS jumpers: each jumper must be in the correct position and make firm contact. Match the default CS-pin assignments for your board and connection type, or the explicit overrides in your configuration. Main-board CS pins should also match the configuration.</li>
+              <li>If the ESP32 model, seating, and CS assignments are correct, try another known-good ESP32 with the correct firmware.</li>
+              <li>If an add-on still fails, move its CS jumper to a different unused, supported CS pin and update the configuration to match before rebuilding and installing. A fault that follows the GPIO points to the ESP32 pin or its connection; a fault that stays with the same add-on on a known-good GPIO points to that add-on board or meter chip.</li>
+            </ol>
+            <p>After correcting the hardware or configuration, power up and use Retry Install. This uploads the firmware again and repeats startup verification.</p>
+          ` : html`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? html`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}

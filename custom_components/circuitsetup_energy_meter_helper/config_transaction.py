@@ -31,6 +31,7 @@ from .device_builder import (
     JobProgressStage,
     JobResult,
 )
+from .log_parser import MeterCommunicationError
 from .meter_config_mutator import expected_meter_entity_evidence
 from .meter_configuration import (
     ChannelSettings,
@@ -112,6 +113,7 @@ class TransactionEvidenceCode(StrEnum):
     COMPILE_FAILED = "compile_failed"
     UPLOAD_FAILED = "upload_failed"
     RECONNECT_UNAVAILABLE = "reconnect_unavailable"
+    METER_COMMUNICATION_FAILED = "meter_communication_failed"
     IDENTITY_MISMATCH = "identity_mismatch"
     TOPOLOGY_MISMATCH = "topology_mismatch"
     ENTITY_MISMATCH = "entity_mismatch"
@@ -135,6 +137,7 @@ class TransactionProgress(StrEnum):
 
 _RETRYABLE_INSTALL_EVIDENCE = {
     TransactionEvidenceCode.RECONNECT_UNAVAILABLE,
+    TransactionEvidenceCode.METER_COMMUNICATION_FAILED,
     TransactionEvidenceCode.ENTITY_MISMATCH,
     TransactionEvidenceCode.SENSOR_COUNT_MISMATCH,
 }
@@ -295,6 +298,7 @@ class TransactionStatus:
     aggregate_entity_mismatch: bool = False
     full_meter_configuration_verified: bool = False
     purpose: TransactionPurpose = "install_configuration"
+    communication_failed_cs_pins: tuple[int, ...] = ()
 
 
 @dataclass(slots=True)
@@ -334,6 +338,7 @@ class _ConfigTransaction:
     upload_progress: list[JobProgress] = field(default_factory=list)
     aggregate_entity_mismatch: bool = False
     lease: ConfigLease | None = field(default=None, repr=False)
+    communication_failed_cs_pins: tuple[int, ...] = ()
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     active_tasks: set[asyncio.Task[object]] = field(default_factory=set, repr=False)
     reservation_release: Callable[[], Awaitable[bool]] | None = field(
@@ -1181,6 +1186,7 @@ class ConfigTransactionManager:
                 if code not in _RETRYABLE_INSTALL_EVIDENCE
             ]
             transaction.aggregate_entity_mismatch = False
+            transaction.communication_failed_cs_pins = ()
             transaction.state = ConfigTransactionState.INSTALLING
             self.publish_status(_status(transaction))
             plan, _ = _sensitive(transaction)
@@ -1218,6 +1224,11 @@ class ConfigTransactionManager:
                             verification = await self._verifier.async_verify(
                                 transaction.mac
                             )
+                    except MeterCommunicationError as communication_error:
+                        transaction.communication_failed_cs_pins = communication_error.cs_pins
+                        return self._retain_install_retry(
+                            transaction, TransactionEvidenceCode.METER_COMMUNICATION_FAILED
+                        )
                     except Exception:  # noqa: BLE001 - external verifier boundary
                         error = TransactionEvidenceCode.RECONNECT_UNAVAILABLE
                     else:
@@ -1834,6 +1845,7 @@ def _status(transaction: _ConfigTransaction) -> TransactionStatus:
         transaction.meter_configuration is not None
         and transaction.state is ConfigTransactionState.VERIFIED,
         transaction.purpose,
+        transaction.communication_failed_cs_pins,
     )
 
 

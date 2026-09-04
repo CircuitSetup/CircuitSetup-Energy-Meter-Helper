@@ -419,6 +419,7 @@ export interface TransactionStatus {
   upload_progress: Array<{ stage: string; percentage: number | null }>;
   aggregate_entity_mismatch: boolean;
   full_meter_configuration_verified: boolean;
+  communication_failed_cs_pins?: number[];
 }
 
 export interface PreflightIssue {
