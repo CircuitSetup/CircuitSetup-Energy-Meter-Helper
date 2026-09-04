@@ -12,7 +12,7 @@ from http.cookies import SimpleCookie
 from statistics import pstdev
 from threading import RLock
 from time import monotonic
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from aioesphomeapi.model import build_device_unique_id
@@ -88,6 +88,7 @@ from .topology import (
 from .voltage_transformer_catalog import VoltageTransformerCatalog
 
 DEFAULT_HANDLE_TTL = 15 * 60.0
+CalibrationPlan = Literal["standard", "full"]
 MAX_HANDLE_TTL = 60 * 60.0
 MAX_PLAN_HANDLES = 8
 ESPHOME_DEVICE_BUILDER_SLUG = "5c53de3b_esphome"
@@ -147,6 +148,7 @@ class SessionStatus:
     offset_disposition: str = "not_started"
     offset_boards: tuple[dict[str, Any], ...] = ()
     has_pending_calibration: bool = False
+    calibration_plan: CalibrationPlan = "full"
 
 
 @dataclass(slots=True)
@@ -178,6 +180,7 @@ class _SessionHandle:
     timing_policy: CalibrationTimingPolicy = field(
         default_factory=lambda: CalibrationTimingPolicy(5, 3)
     )
+    calibration_plan: CalibrationPlan = "full"
 
     def status(self) -> SessionStatus:
         capability = getattr(self.binding, "offset_capability", None)
@@ -232,6 +235,7 @@ class _SessionHandle:
             },
             disposition,
             boards,
+            calibration_plan=self.calibration_plan,
         )
 
     def _offset_stage_state(self, board_index: int, stage: int) -> str:
@@ -462,8 +466,6 @@ class EntryWorkflow:
         )
         selections = await self._store.async_get_ct_selections(mac)
         stored_read = await self._store.async_get_meter_configuration_read(mac)
-        if stored_read.stale:
-            raise WorkflowHandleError("stored meter configuration is stale")
         plan_id = uuid4().hex
         inventory = MeterConfigurationInventory.from_document(
             plan_id,
@@ -472,12 +474,14 @@ class EntryWorkflow:
             ct_catalog,
             voltage_catalog,
             snapshot.sha256,
-            stored_configuration=stored_read.configuration,
+            stored_configuration=(
+                None if stored_read.stale else stored_read.configuration
+            ),
             stored_ct_selections=selections,
             reporting_multipliers=_stored_reporting_multipliers(
                 selections, snapshot.sha256
             ),
-            stored_semantics_stale=False,
+            stored_semantics_stale=stored_read.stale,
         )
         self._discard_device_plans(mac)
         while len(self._plans) >= MAX_PLAN_HANDLES:
@@ -736,7 +740,11 @@ class EntryWorkflow:
             results.append({"channel": channel, "state": "unchanged" if previous == label else "updated"})
         return {"mode": "home_assistant_labels", "results": results}
 
-    async def async_start_session(self, device_id: str) -> SessionStatus:
+    async def async_start_session(
+        self, device_id: str, calibration_plan: CalibrationPlan = "full"
+    ) -> SessionStatus:
+        if calibration_plan not in {"standard", "full"}:
+            raise WorkflowHandleError("calibration plan is invalid")
         device = self._device(device_id)
         api = self._require_api()
         await api.async_connect()
@@ -850,6 +858,8 @@ class EntryWorkflow:
                 ),
                 3,
             ),
+            offset_skipped=calibration_plan == "standard",
+            calibration_plan=calibration_plan,
         )
         with self._guard(mac):
             self._prune_device_sessions_locked(mac)
@@ -955,6 +965,19 @@ class EntryWorkflow:
         try:
             self._validate_offset_target(handle, board_index, stage)
             api = self._require_api()
+            group_keys = tuple(
+                group.key
+                for group in handle.binding.groups[
+                    board_index * 2 : board_index * 2 + 2
+                ]
+            )
+            instance_ids = {key.replace("main_", "meter_main") for key in group_keys}
+            source_reader = getattr(api, "async_calibration_sources", None)
+            sources = (
+                await source_reader(instance_ids, offset_stage=stage)
+                if source_reader is not None
+                else {}
+            )
             result = await async_check_offset_readiness(
                 api,
                 handle.binding,
@@ -970,7 +993,13 @@ class EntryWorkflow:
             ):
                 raise WorkflowHandleError("offset readiness evidence is stale")
             self._refresh(handle)
-            return result
+            return replace(
+                result,
+                saved_offset_sources=tuple(
+                    (key, sources.get(key.replace("main_", "meter_main"), "unknown"))
+                    for key in group_keys
+                ),
+            )
         finally:
             self._release_claim(handle, revision)
 

@@ -605,6 +605,40 @@ def test_missing_saved_gain_evidence_remains_unknown_for_workflow_reconciliation
     asyncio.run(run())
 
 
+def test_fresh_offset_sources_ignore_cached_status_and_survive_large_dump() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message="[CALIBRATION][meter_main2] Restored offset calibration from memory"
+            )
+        )
+        pending = asyncio.create_task(
+            session.async_calibration_sources(
+                {"meter_main1", "meter_main2"}, offset_stage=1, timeout=0.01
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.dump_configs[-1] is True
+        client.on_log(
+            SimpleNamespace(
+                message="[CALIBRATION][meter_main1] Restored offset calibration from memory"
+            )
+        )
+        for index in range(250):
+            client.on_log(
+                SimpleNamespace(
+                    message=f"[CALIBRATION][addon1_1] offset diagnostic {index}"
+                )
+            )
+        assert await pending == {"meter_main1": "flash", "meter_main2": "unknown"}
+
+    asyncio.run(run())
+
+
 def test_shutdown_cancels_waiters_unsubscribes_logs_and_is_idempotent() -> None:
     async def run() -> None:
         client = FakeClient(acknowledge_numbers=False)

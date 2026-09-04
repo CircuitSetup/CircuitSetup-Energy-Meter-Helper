@@ -36,6 +36,71 @@ def _content(newline: str = "\n") -> str:
     )
 
 
+def _legacy_source() -> str:
+    """Representative legacy source with unrelated user-owned YAML."""
+    return (
+        "substitutions:\n"
+        "  ct1_name: Legacy mains\n"
+        "  current_cal_ct1: 27519\n"
+        "sensor:\n"
+        "  - id: totalWatts\n"
+        "    name: Custom total\n"
+        "    lambda: return {};\n"
+        "  - id: custom_filtered\n"
+        "    name: User filter\n"
+        "    filters:\n"
+        "      - lambda: return x;\n"
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "  - id: !extend meter_main1\n"
+        "    gain_voltage: 7305\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+
+
+def test_legacy_read_only_inventory_source_is_byte_exact() -> None:
+    """Reviewing a legacy source does not normalize or rewrite it."""
+    source = _legacy_source()
+    unchanged = replace_managed_block(
+        source,
+        "voltage_references",
+        "  - id: !extend meter_main1\n    gain_voltage: 7305\n",
+    )
+    assert unchanged == source
+
+
+def test_legacy_gain_only_handoff_preserves_unowned_yaml() -> None:
+    """A gain-only handoff changes only the owned gain block."""
+    source = _legacy_source()
+    updated = replace_managed_block(
+        source,
+        "voltage_references",
+        "  - id: !extend meter_main1\n    gain_voltage: 7310\n",
+    )
+    assert "current_cal_ct1: 27519" in updated
+    assert "id: totalWatts" in updated
+    assert "id: custom_filtered" in updated
+    assert "gain_voltage: 7310" in updated
+    assert "gain_voltage: 7305" not in updated
+
+
+def test_legacy_opt_in_migration_preserves_generic_and_custom_totals() -> None:
+    """Full migration may replace owned blocks, never unrelated user sensors."""
+    source = _legacy_source()
+    updated = replace_managed_block(
+        replace_managed_block(
+            source,
+            "voltage_references",
+            "  - id: !extend meter_main1\n    gain_voltage: 7310\n",
+        ),
+        "aggregates",
+        "  - id: !extend helper_total\n    name: Helper total\n",
+    )
+    assert "id: totalWatts" in updated
+    assert "id: custom_filtered" in updated
+    assert "name: Custom total" in updated
+    assert "name: User filter" in updated
+
+
 def test_inserts_absent_block_at_start_of_sensor_section() -> None:
     """A missing block stays ahead of user-owned sensor content."""
     content = _content()

@@ -64,15 +64,6 @@ def _strip_terminal_sequences(value: str) -> str:
     return _ANSI_CSI.sub("", _ANSI_OSC.sub("", value))
 
 
-def _new_log_lines(
-    baseline: tuple[str, ...], current: tuple[str, ...]
-) -> tuple[str, ...]:
-    overlap = min(len(baseline), len(current))
-    while overlap and baseline[-overlap:] != current[:overlap]:
-        overlap -= 1
-    return current[overlap:]
-
-
 class ESPHomeApiRepairRequired(RuntimeError):
     """The selected ESPHome entry cannot safely supply a secondary client."""
 
@@ -414,30 +405,61 @@ class ESPHomeApiSession:
             raise ESPHomeSessionDisconnectedError(str(error)) from error
 
     async def async_calibration_sources(
-        self, expected_instance_ids: set[str], *, timeout: float = 5.0
+        self,
+        expected_instance_ids: set[str],
+        *,
+        timeout: float = 5.0,
+        offset_stage: Literal[1, 2] | None = None,
     ) -> dict[str, Literal["flash", "configuration", "unknown"]]:
         """Request current ATM90E32 dump-config source evidence."""
         async with self._lifecycle_lock:
             client = self._ready_client()
-            baseline = self.log_lines
+            sources = parse_calibration_sources(
+                (), expected_instance_ids, offset_stage=offset_stage
+            )
+
+            def on_log(message: Any) -> None:
+                self._on_log(client, message)
+                if client is not self._client or not self.connected:
+                    return
+                raw = message.message
+                text = (
+                    raw.decode("utf-8", "replace")
+                    if isinstance(raw, bytes)
+                    else str(raw)
+                )
+                # Consume fresh messages directly: a full dump can exceed the log ring.
+                observed = parse_calibration_sources(
+                    tuple(_strip_terminal_sequences(text).splitlines()),
+                    expected_instance_ids,
+                    offset_stage=offset_stage,
+                )
+                sources.update(
+                    (key, value)
+                    for key, value in observed.items()
+                    if value != "unknown"
+                )
+
             self._clear_log_subscription()
             self._unsubscribe_logs = client.subscribe_logs(
-                lambda message: self._on_log(client, message),
+                on_log,
                 self._log_level("LOG_LEVEL_DEBUG"),
                 dump_config=True,
             )
             deadline = monotonic() + timeout
             while monotonic() < deadline:
-                sources = parse_calibration_sources(
-                    _new_log_lines(baseline, self.log_lines), expected_instance_ids
-                )
+                if self._ready_client() is not client:
+                    raise ESPHomeSessionDisconnectedError(
+                        "connection changed during status dump"
+                    )
                 if all(source != "unknown" for source in sources.values()):
-                    return sources
+                    return dict(sources)
                 await asyncio.sleep(min(0.05, max(0.0, deadline - monotonic())))
-            sources = parse_calibration_sources(
-                _new_log_lines(baseline, self.log_lines), expected_instance_ids
-            )
-            return sources
+            if self._ready_client() is not client:
+                raise ESPHomeSessionDisconnectedError(
+                    "connection changed during status dump"
+                )
+            return dict(sources)
 
     async def async_check_meter_communication(
         self, expected_chips: int, *, timeout: float = 30.0

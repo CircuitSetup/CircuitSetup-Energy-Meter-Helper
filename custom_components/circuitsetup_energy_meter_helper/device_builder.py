@@ -12,6 +12,7 @@ from hashlib import sha256
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from aiohttp import WSMessage, WSMessageTypeError, WSMsgType
 from awesomeversion import AwesomeVersion
 
 
@@ -50,6 +51,8 @@ class WebSocket(Protocol):
     async def send_json(self, message: dict[str, Any]) -> None: ...
 
     async def receive_json(self) -> dict[str, Any] | None: ...
+
+    async def receive(self) -> WSMessage: ...
 
     async def close(self) -> None: ...
 
@@ -486,7 +489,16 @@ class DeviceBuilderClient:
 
     async def _listen(self, websocket: WebSocket) -> None:
         try:
-            while message := await websocket.receive_json():
+            while True:
+                frame = await websocket.receive()
+                if frame.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
+                    break
+                if frame.type is not WSMsgType.TEXT:
+                    await websocket.close()
+                    raise WSMessageTypeError("Device Builder sent a non-text message")
+                message = frame.json()
+                if not message:
+                    break
                 message_id = message.get("message_id")
                 if (
                     isinstance(message_id, str)

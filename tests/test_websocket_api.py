@@ -18,7 +18,7 @@ import voluptuous as vol
 from aioesphomeapi import ButtonInfo as ApiButtonInfo
 from aioesphomeapi import NumberInfo as ApiNumberInfo
 from aioesphomeapi import SensorInfo as ApiSensorInfo
-from aiohttp import ClientConnectionError
+from aiohttp import ClientConnectionError, WSMessage, WSMsgType
 from homeassistant.components.hassio import HassIO
 from homeassistant.components.hassio.const import DATA_COMPONENT
 from homeassistant.const import __version__ as HA_VERSION
@@ -55,6 +55,9 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     VoltageReferenceConfig,
+)
+from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
+    MeterConfigurationCapabilities,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
@@ -454,6 +457,12 @@ class BuilderTransportWebSocket:
     async def receive_json(self) -> dict[str, Any] | None:
         return await self.received.get()
 
+    async def receive(self) -> WSMessage:
+        message = await self.receive_json()
+        if message is None:
+            return WSMessage(WSMsgType.CLOSED, None, None)
+        return WSMessage(WSMsgType.TEXT, json.dumps(message), None)
+
     async def close(self) -> None:
         await self.received.put(None)
 
@@ -595,8 +604,10 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
             "transaction_id": "transaction",
             "source_sha256": "a" * 64,
         }
-    elif suffix in {"get_active_work", "start_session"}:
+    elif suffix == "get_active_work":
         base["device_id"] = "meter"
+    elif suffix == "start_session":
+        base |= {"device_id": "meter", "calibration_plan": "standard"}
     elif suffix == "preview_calibrated_gains":
         base |= {"session_id": "3" * 32, "verification_id": "1" * 32}
     elif suffix == "clear_calibration_flash":
@@ -1086,7 +1097,9 @@ def test_adoption_rebind_blocks_work_creation_until_the_live_controller_exists(
             await self.release_adoption.wait()
             return {"device_id": "new-meter", "configuration": "new-meter.yaml"}
 
-        async def async_start_session(self, _device_id: str) -> dict[str, str]:
+        async def async_start_session(
+            self, _device_id: str, _calibration_plan: str
+        ) -> dict[str, str]:
             self.calls.append((self.label, "start_session"))
             return {"created_by": self.label}
 
@@ -3102,6 +3115,51 @@ def test_controller_routes_full_meter_configuration_without_browser_changes() ->
         assert type(received[0][3]).__name__ == "MeterConfigurationRequest"
 
     asyncio.run(run())
+
+
+def test_start_session_persists_standard_or_full_calibration_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        standard = await workflow.async_start_session("meter", "standard")
+        assert standard.calibration_plan == "standard"
+        assert standard.offset_disposition == "skipped"
+        await workflow.async_cancel_session(standard.session_id)
+        full = await workflow.async_start_session("meter", "full")
+        assert full.calibration_plan == "full"
+        assert full.offset_disposition == "not_started"
+        with pytest.raises(WorkflowHandleError, match="calibration plan"):
+            await workflow.async_start_session("other", "invalid")  # type: ignore[arg-type]
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_get_meter_configuration_serializes_only_public_semantic_provenance() -> None:
+    """Semantic provenance is a bounded literal without stored configuration data."""
+    payload = sanitize_payload(
+        {
+            "capabilities": MeterConfigurationCapabilities(
+                True, True, True, "helper_managed", ()
+            )
+        }
+    )
+
+    assert payload == {
+        "capabilities": {
+            "configuration_authoritative": True,
+            "managed_totals": True,
+            "multi_reference": True,
+            "semantic_source": "helper_managed",
+            "reason_codes": [],
+        }
+    }
+    assert payload["capabilities"]["semantic_source"] in {
+        "helper_managed",
+        "legacy_inferred",
+    }
+    assert "stored" not in repr(payload).casefold()
 
 
 def test_new_session_waits_for_same_meter_cancellation_cleanup(

@@ -30,7 +30,7 @@ export function voltageStep(
   const boardLabel = board === 0 ? "Main Board" : `Add-on ${board}`;
   return html`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
-      ${calibrationProgress(referenceReady, stability, complete ? results[0] ?? null : null)}
+      ${calibrationProgress(referenceReady, stability, complete ? results[0] ?? null : null, session?.calibration_plan ?? "full")}
       <div class="board-tabs" role="tablist" aria-label="Voltage calibration boards">
         ${Array.from({ length: topology?.board_count ?? 1 }, (_, index) => html`<button role="tab" data-voltage-board
           id=${`voltage-board-tab-${index}`} aria-controls="voltage-board-panel"
@@ -43,12 +43,12 @@ export function voltageStep(
       ${calibrationSourceEvidence(session, sourceIds, "Voltage", completedInstanceIds)}
       <div class="reference-block">
         ${Array.from({ length: count }, (_, index) => html`<label>${referenceLabels[index] ?? (count === 1 ? "Trusted instrument" : `Voltage ${index + 1}`)} trusted reference
-          <input type="number" min="0.01" step="0.01" .value=${references[index] ? String(references[index]) : ""}
+          <span>V</span><input aria-label=${`${referenceLabels[index] ?? "Voltage"} reference (V)`} type="number" min="0.01" step="0.01" .value=${references[index] ? String(references[index]) : ""}
             @input=${(event: Event) => setReference(index, Number((event.target as HTMLInputElement).value))} /></label>`)}
       </div>
       <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy}>${busy ? "Loading live voltage data…" : "Check stability"}</button>
         <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability?.stable || terminal || complete && !retry}>${retry ? "Retry voltage calibration" : "Calibrate voltage"}</button></div>
-      ${stability ? html`<div class=${stability.stable ? "success-band" : "warning-band"} role="status">${stability.stable ? "Live data loaded" : "Live data is unavailable"}</div>` : ""}
+      ${stability ? html`<div class=${stability.stable ? "success-band" : "warning-band"} role="status">${stability.stable ? "Stable and ready for calibration." : stability.windows.length ? "Data is changing too much; keep the load and reference steady." : "Waiting for live data…"}</div>` : ""}
       ${stabilityEvidence(stability)}
       ${complete ? html`<div class="success-band" role="status">Voltage calibration complete for ${boardLabel}.</div>` : ""}
       ${results.map((result) => calibrationEvidence(result))}

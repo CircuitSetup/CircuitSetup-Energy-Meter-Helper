@@ -70,7 +70,8 @@ const meterConfiguration: MeterConfiguration = {
     power_quality: [true], status_fields: [false], multi_reference_preparation_acknowledged: false,
   },
   capabilities: {
-    configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [],
+    configuration_authoritative: true, managed_totals: true, multi_reference: true,
+    semantic_source: "helper_managed", reason_codes: [],
   },
   voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" },
   voltage_transformer_catalog: {
@@ -137,6 +138,7 @@ const readinessEntities = (board: number, voltage = 0): OffsetReadinessResult["e
   ];
 });
 const readiness = { stage: 1, ready: true, connection_generation: 4,
+  saved_offset_sources: [["main_1", "flash"], ["main_2", "unknown"]],
   entities: readinessEntities(0), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
     zero_voltage_spread_volts: 0.5, zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
     voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2 } };
@@ -208,6 +210,31 @@ describe("HelperApi", () => {
       voltage_transformer_catalog: { presets: [{ default_gain_voltage: 7305 }] }, ct_catalog: inventory.catalog,
       warnings: ["slow_interval_extends_calibration"], channels: inventory.channels, catalog: inventory.catalog,
     });
+  });
+
+  it("accepts overlapping aggregate memberships from the meter configuration API", async () => {
+    const hass = new FakeHass();
+    const configuration = {
+      ...meterConfiguration.configuration,
+      aggregates: [
+        ...meterConfiguration.configuration.aggregates,
+        {
+          ...meterConfiguration.configuration.aggregates[0]!,
+          aggregate_id: "meter-total",
+          name: "Meter total",
+          channels: [1, 2, 3, 4, 5, 6],
+          measurement_method: "direct" as const,
+        },
+      ],
+    };
+    hass.responses.get_meter_configuration = {
+      ...meterConfiguration,
+      configuration,
+      configuration_impact: configurationImpact(configuration, topology),
+    };
+
+    await expect(new HelperApi(hass, "entry-1").getMeterConfiguration("meter-1"))
+      .resolves.toMatchObject({ configuration: { aggregates: [{ aggregate_id: "main-load" }, { aggregate_id: "meter-total" }] } });
   });
 
   it("sends the exact full meter preview payload", async () => {
@@ -443,21 +470,36 @@ describe("HelperApi", () => {
 
   it("loads the authoritative active work for one device", async () => {
     const hass = new FakeHass();
+    const activeTransaction = {
+      ...transaction,
+      changes: [{ key: "channel.1.name", old_value: "CT1", new_value: "Main load" }],
+    };
     hass.responses.get_active_work = {
       session,
-      transaction,
+      transaction: activeTransaction,
       verified_calibration: restart,
     };
     const api = new HelperApi(hass, "entry-1");
 
     const active = await api.getActiveWork("meter-1", topology);
 
-    expect(active).toEqual({ session, transaction, verified_calibration: restart });
+    expect(active).toEqual({ session, transaction: activeTransaction, verified_calibration: restart });
     expect(hass.messages).toEqual([{
       type: "circuitsetup_energy_meter_helper/get_active_work",
       entry_id: "entry-1",
       device_id: "meter-1",
     }]);
+
+    for (const invalid of [
+      { session: null, transaction: null, verified_calibration: null,
+        changes: [{ key: "channel.1.name", old_value: "CT1", new_value: "Main load" }] },
+      { session: null, transaction: { ...activeTransaction,
+        nested: { changes: [{ key: "channel.1.name", old_value: "CT1", new_value: "Main load" }] } },
+      verified_calibration: null },
+    ]) {
+      hass.responses.get_active_work = invalid;
+      await expect(api.getActiveWork("meter-1", topology)).rejects.toThrow("private field key refused");
+    }
   });
 
   it("sends the exact Task 19 command identifiers and confirmation handles", async () => {
@@ -630,9 +672,22 @@ describe("HelperApi", () => {
   it("accepts Stage 2 present-voltage evidence for the exact requested board", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
-    hass.responses.check_offset_readiness = { ...readiness, stage: 2, entities: readinessEntities(1, 120) };
+    hass.responses.check_offset_readiness = { ...readiness, stage: 2, entities: readinessEntities(1, 120),
+      saved_offset_sources: [["addon1_1", "configuration"], ["addon1_2", "flash"]] };
 
     await expect(api.checkOffsetReadiness("session-1", 1, 2)).resolves.toMatchObject({ stage: 2, ready: true });
+  });
+
+  it.each([
+    [["main_1", "flash"], ["main_1", "unknown"]],
+    [["addon1_1", "flash"], ["main_2", "unknown"]],
+    [["main_1", "verified"], ["main_2", "unknown"]],
+    [["main_1", "flash"]],
+  ])("rejects invalid per-chip saved-offset source observations: %j", async (...sources) => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    hass.responses.check_offset_readiness = { ...readiness, saved_offset_sources: sources };
+    await expect(api.checkOffsetReadiness("session-1", 0, 1)).rejects.toThrow("check_offset_readiness");
   });
 
   it("accepts backend-coherent Stage 1 voltage-present failure evidence", async () => {

@@ -1,9 +1,12 @@
 """Tests for the pinned ESPHome Device Builder websocket client."""
 
 import asyncio
+import json
 from hashlib import sha256
 
 import pytest
+from aiohttp import ClientSession, WSMessage, WSMessageTypeError, WSMsgType, web
+from aiohttp.test_utils import TestServer
 from awesomeversion import AwesomeVersion
 
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
@@ -34,6 +37,12 @@ class FakeWebSocket:
 
     async def receive_json(self) -> dict | None:
         return await self._received.get()
+
+    async def receive(self) -> WSMessage:
+        message = await self.receive_json()
+        if message is None:
+            return WSMessage(WSMsgType.CLOSED, None, None)
+        return WSMessage(WSMsgType.TEXT, json.dumps(message), None)
 
     async def send_result(self, message_id: str, result: dict) -> None:
         await self._received.put({"message_id": message_id, "result": result})
@@ -369,6 +378,78 @@ def test_disconnect_fails_pending_request() -> None:
         await ws.close()
         with pytest.raises(ConnectionError):
             await request
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("close_mode", ("peer", "client", "abrupt", "binary"))
+def test_real_websocket_disconnect_settles_listener_and_allows_reconnect(
+    close_mode: str,
+) -> None:
+    """Real close frames fail callers without leaving a crashed listener task."""
+
+    async def run() -> None:
+        sockets: list[web.WebSocketResponse] = []
+        requests_received = asyncio.Event()
+
+        async def handler(request: web.Request) -> web.WebSocketResponse:
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            sockets.append(ws)
+            await ws.send_json({"server_version": "2026.8.0", "requires_auth": False})
+            received = 0
+            async for frame in ws:
+                message = frame.json()
+                if len(sockets) > 1:
+                    await ws.send_json(
+                        {"message_id": message["message_id"], "result": {"configured": []}}
+                    )
+                else:
+                    received += 1
+                    if received == 2:
+                        requests_received.set()
+            return ws
+
+        app = web.Application()
+        app.router.add_get("/ws", handler)
+        async with TestServer(app) as server, ClientSession() as session:
+            client = DeviceBuilderClient(str(server.make_url("")), connect=session.ws_connect)
+            await client.async_connect()
+            listener = client._listener
+            transport = client._ws
+            assert listener is not None
+            assert transport is not None
+            pending = [
+                asyncio.create_task(client.async_list_devices()),
+                asyncio.create_task(client.async_validate("meter.yaml")),
+            ]
+            try:
+                await asyncio.wait_for(requests_received.wait(), 5)
+                if close_mode == "client":
+                    await client.async_disconnect()
+                elif close_mode == "peer":
+                    await sockets[0].close()
+                elif close_mode == "binary":
+                    await sockets[0].send_bytes(b'{"unexpected": true}')
+                else:
+                    assert sockets[0]._req.transport is not None
+                    sockets[0]._req.transport.close()
+                results = await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True), 5
+                )
+                assert all(isinstance(result, ConnectionError) for result in results)
+                if close_mode == "binary":
+                    with pytest.raises(WSMessageTypeError):
+                        await asyncio.wait_for(listener, 5)
+                else:
+                    await asyncio.wait_for(listener, 5)
+                assert transport.closed
+                assert not client.connected
+                await client.async_connect()
+                assert await client.async_list_devices() == {"configured": []}
+            finally:
+                await client.async_disconnect()
+                await asyncio.gather(*pending, return_exceptions=True)
 
     asyncio.run(run())
 
