@@ -56,6 +56,7 @@ export function ctInventoryStep(
   automaticTotalsWritable = false,
   meterInventory: MeterConfiguration | null = null,
   automaticSourcesFresh = freshTotals,
+  existingConfiguration: MeterConfigurationRequest | null = null,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -93,6 +94,9 @@ export function ctInventoryStep(
             const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
             const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : undefined);
             const dirty = isDirty(channel, draft);
+            const existing = existingConfiguration?.channels.find((item) => item.channel === channel.channel);
+            const retained = keepsExistingCtSettings(draft, existing);
+            const valid = labelOnly ? Boolean(draft.name.trim()) : validDraft(inventory, draft, existing);
             const recommendation = preset ? recommendedReportingMultiplier(preset.rated_current_a) : null;
             const effectiveRange = draft.multiplier * 65.535;
             const circuit = configuration?.channels.find((item) => item.channel === channel.channel);
@@ -118,7 +122,7 @@ export function ctInventoryStep(
                       preserveExistingGain: false,
                       multiplier: draft.multiplierMode === "manual" ? draft.multiplier : selectedPreset ? recommendedReportingMultiplier(selectedPreset.rated_current_a) ?? draft.multiplier : draft.multiplier,
                       multiplierMode: draft.multiplierMode ?? "automatic",
-                      burdenAcknowledged: channel.selection_verified_against_config
+                      burdenAcknowledged: (existing ? existing.burden_output_acknowledged : channel.selection_verified_against_config)
                         && modelId === channel.selected_model_id
                         && (modelId === "custom" || selectedPreset?.requires_burden_jumper_cut === true),
                       expanded: true,
@@ -126,8 +130,8 @@ export function ctInventoryStep(
                   }}>
                   <option value="" ?selected=${draft.modelId === ""}>Choose model</option>
                   ${inventory.catalog.presets.map((item) => html`<option value=${item.model_id} ?selected=${draft.modelId === item.model_id}>${item.label}</option>`)}
-                  <option value="custom" ?selected=${draft.modelId === "custom"}>Custom</option>
-                </select>${preset ? html`<small>${preset.rated_current_a} A</small>` : nothing}<button class="row-toggle" aria-label=${`CT${channel.channel} technical details`} aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>${draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}</button><span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
+                  <option value="custom" ?selected=${draft.modelId === "custom"}>${retained && existing?.model_id === "custom" && !existing.burden_output_acknowledged ? "Keep existing gain" : "Custom"}</option>
+                </select>${preset ? html`<small>${preset.rated_current_a} A</small>` : nothing}<button class="row-toggle" aria-label=${`CT${channel.channel} technical details`} aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>${!valid ? "Needs attention" : draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}</button><span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
                 <span role="cell"><span class="mobile-label">Range status</span>${draft.preserveExistingGain ? "Existing gain kept" : recommendation === null && preset ? "Rating exceeds ×8 range" : effectiveRange < (preset?.rated_current_a ?? 0) ? `Too small: ${effectiveRange} A` : `Up to ${effectiveRange} A`}</span>
               </div>
               ${allowPreserveExistingGain && !channel.selection_verified_against_config && channel.raw_gain_ct > 0 ? html`<label class="check-row preserve-gain"><input type="checkbox" aria-label=${`CT${channel.channel} keep existing gain`} ?disabled=${labelOnly} .checked=${draft.preserveExistingGain === true}
@@ -140,7 +144,8 @@ export function ctInventoryStep(
                 <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} ?disabled=${labelOnly} .value=${draft.customLabel ?? ""}
                   @input=${(event: Event) => update(channel.channel, { customLabel: (event.target as HTMLInputElement).value })} /></label>
               </div>` : nothing}
-              ${draft.expanded && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<div class="warning-band">
+              ${draft.expanded && retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : nothing}
+              ${draft.expanded && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<div class="warning-band">
                 <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
                   ?disabled=${labelOnly}
                   .checked=${draft.burdenAcknowledged}
@@ -175,7 +180,7 @@ export function ctInventoryStep(
       ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh) : nothing}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
+        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
       </footer>
     </section>
   `;
@@ -242,21 +247,27 @@ function isDirty(channel: CtInventory["channels"][number], draft: CtDraft): bool
       || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));
 }
 
-function validDraft(inventory: CtInventory, draft: CtDraft): boolean {
+function keepsExistingCtSettings(draft: CtDraft, existing?: ChannelSettings): boolean {
+  return Boolean(existing && draft.modelId === existing.model_id && draft.multiplier === existing.reporting_multiplier
+    && (draft.customGainCt ?? null) === existing.custom_gain_ct
+    && (draft.customLabel?.trim() || null) === existing.custom_label);
+}
+
+function validDraft(inventory: CtInventory, draft: CtDraft, existing?: ChannelSettings): boolean {
   if (draft.preserveExistingGain) return true;
   if (!draft.name.trim() || !draft.modelId || ![1, 2, 4, 8].includes(draft.multiplier)) return false;
   if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt! >= 1 && draft.customGainCt! <= 65535
-    && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel!) && draft.burdenAcknowledged;
+    && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel!) && (draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
   const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
   return Boolean(preset) && effectiveRangeIsSafe(preset!, draft.multiplier)
-    && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged);
+    && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
 }
 
 function effectiveRangeIsSafe(preset: CtPreset, multiplier: number): boolean {
   return multiplier * 65.535 >= preset.rated_current_a;
 }
 
-export function draftsAreValid(inventory: CtInventory, drafts: Map<number, CtDraft>, labelOnly = false): boolean {
+export function draftsAreValid(inventory: CtInventory, drafts: Map<number, CtDraft>, labelOnly = false, existingConfiguration: MeterConfigurationRequest | null = null): boolean {
   if (labelOnly) return [...drafts].every(([channel, draft]) => {
     const current = inventory.channels.find((item) => item.channel === channel);
     return Boolean(current) && Boolean(draft.name.trim());
@@ -264,7 +275,7 @@ export function draftsAreValid(inventory: CtInventory, drafts: Map<number, CtDra
   for (const channel of inventory.channels) {
     const draft = drafts.get(channel.channel);
     if (!draft) return false;
-    if (!validDraft(inventory, draft)) return false;
+    if (!validDraft(inventory, draft, existingConfiguration?.channels.find((item) => item.channel === channel.channel))) return false;
   }
   return true;
 }

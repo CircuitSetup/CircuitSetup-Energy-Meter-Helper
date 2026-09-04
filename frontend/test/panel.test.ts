@@ -3971,6 +3971,59 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
   });
 
+  it("continues with unchanged existing custom CTs without inventing burden acknowledgements", async () => {
+    const meter = meterResponse();
+    meter.configuration.channels = meter.configuration.channels.map((channel) => ({ ...channel,
+      model_id: "custom", custom_gain_ct: 27518, custom_label: channel.name, burden_output_acknowledged: false }));
+    meter.channels = meter.channels.map((channel) => ({ ...channel, raw_gain_ct: 27518,
+      selected_model_id: null, selection_verified_against_config: false }));
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as { journeyOrigin: string; selectedDeviceId: string;
+      totalGraphState: string; meterConfiguration: typeof meter; drafts: Map<number, CtDraft>;
+      setMeterConfiguration(value: typeof meter): void; continueFromCt(): Promise<void>;
+      updateDraft(channel: number, patch: Partial<CtDraft>): void };
+    state.journeyOrigin = "existing_meter"; state.selectedDeviceId = device.entry_id;
+    state.setMeterConfiguration(meter); panel.showInventory(meter); state.totalGraphState = "ready";
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
+    expect([...state.drafts.values()].every((draft) => !draft.burdenAcknowledged)).toBe(true);
+    expect(panel.shadowRoot?.querySelector<HTMLOptionElement>('[aria-label="CT3 model"] option:checked')?.textContent).toBe("Keep existing gain");
+    for (const patch of [{ customGainCt: 28000 }, { multiplier: 2 }, { customLabel: "Different CT" }]) {
+      const drafts = new Map(state.drafts).set(3, { ...state.drafts.get(3)!, ...patch });
+      expect(draftsAreValid(meter, drafts, false, meter.configuration)).toBe(false);
+    }
+    state.journeyOrigin = "new_install"; panel.requestUpdate(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+    state.journeyOrigin = "existing_meter"; state.selectedDeviceId = "different-meter";
+    panel.requestUpdate(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+    state.selectedDeviceId = device.entry_id;
+    state.meterConfiguration = { ...state.meterConfiguration, source_sha256: "c".repeat(64) };
+    panel.requestUpdate(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+    state.meterConfiguration = { ...state.meterConfiguration, source_sha256: meter.source_sha256 };
+    state.updateDraft(3, { expanded: true });
+    await state.continueFromCt(); await panel.updateComplete;
+    expect(text(panel)).toContain("Choose calibration");
+
+    panel.showInventory(meter);
+    state.updateDraft(3, { name: "Existing circuit", expanded: true });
+    state.totalGraphState = "ready"; await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
+    expect(text(panel)).toContain("Existing CT settings retained");
+    state.updateDraft(3, { customGainCt: 28000 });
+    state.totalGraphState = "ready"; await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT3 technical details"]')?.textContent).toBe("Needs attention");
+    panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT3 model"]')?.dispatchEvent(new Event("change"));
+    state.totalGraphState = "ready"; await panel.updateComplete;
+    expect(state.drafts.get(3)?.burdenAcknowledged).toBe(false);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+    state.updateDraft(3, { burdenAcknowledged: true });
+    state.totalGraphState = "ready"; await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
+  });
+
   it("emits renamed preserved CTs without changing their CT settings", () => {
     const inventory = meterResponse() as CtInventory;
     inventory.channels = [{ ...inventory.channels[0]!, selected_model_id: null,

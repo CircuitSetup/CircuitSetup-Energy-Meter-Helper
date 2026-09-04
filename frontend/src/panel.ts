@@ -1141,6 +1141,7 @@ export class CircuitSetupPanel extends LitElement {
     const current = this.drafts.get(channel);
     if (!current) return;
     this.drafts = new Map(this.drafts).set(channel, { ...current, ...patch });
+    if (Object.keys(patch).every((key) => key === "expanded")) return this.requestUpdate();
     if (this.meterConfiguration && !this.labelOnly) {
       const draft = { ...current, ...patch };
       if (draft.preserveExistingGain && this.meterConfiguration.configuration.channels
@@ -2342,7 +2343,10 @@ export class CircuitSetupPanel extends LitElement {
       this.meterConfiguration?.capabilities.native_totals_readable === true, Boolean(this.meterConfiguration && totalsEditable(this.meterConfiguration, "native_totals_writable")),
       this.totalGraphState === "ready" ? this.totalGraphPreview : null, this.totalGraphState === "ready", this.totalGraphState,
       this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true
-        && totalsEditable(this.meterConfiguration, "managed_automatic_totals"), this.meterConfiguration, this.automaticSourcesFresh())}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
+        && totalsEditable(this.meterConfiguration, "managed_automatic_totals"), this.meterConfiguration, this.automaticSourcesFresh(),
+      this.journeyOrigin === "existing_meter" && this.sourceMeterConfiguration?.deviceId === this.selectedDeviceId
+        && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256
+        ? this.sourceMeterConfiguration?.meter.configuration ?? null : null)}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing}`; }
     if (this.step === "save-calibration" && !this.transaction && this.offsetRecoveryPending()) return html`<section class="step-content" aria-labelledby="offset-final-heading">
       <h2 id="offset-final-heading">Review captured offset configuration</h2>
       <p>Captured results are retained with the private backup. Both RMS and power tables must be known for every affected chip before disabling native offset restore. Unknown evidence is not zero.</p>

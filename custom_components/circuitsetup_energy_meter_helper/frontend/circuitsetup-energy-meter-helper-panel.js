@@ -2339,7 +2339,7 @@ function recommendedReportingMultiplier(ratedCurrentA) {
   return ratedCurrentA <= 65.535 ? 1 : ratedCurrentA <= 131.07 ? 2 : ratedCurrentA <= 262.14 ? 4 : ratedCurrentA <= 524.28 ? 8 : null;
 }
 const resultingGain = (preset, multiplier, customGain) => (preset?.default_gain_ct ?? customGain) == null || !Number.isFinite(multiplier) || multiplier <= 0 ? null : Math.round((preset?.default_gain_ct ?? customGain) / multiplier);
-function ctInventoryStep(inventory, board, drafts, setBoard, update, back, review, labelOnly = false, busy = false, configuration = null, updateConfiguration = () => void 0, disableChannel = () => void 0, managedTotals = true, managedTotalsReason = "", allowPreserveExistingGain = false, continueAllowed = true, totals = null, nativeTotalsReadable = false, nativeTotalsWritable = false, nativePreview = null, freshTotals = true, nativeGraphState = "ready", automaticTotalsWritable = false, meterInventory = null, automaticSourcesFresh = freshTotals) {
+function ctInventoryStep(inventory, board, drafts, setBoard, update, back, review, labelOnly = false, busy = false, configuration = null, updateConfiguration = () => void 0, disableChannel = () => void 0, managedTotals = true, managedTotalsReason = "", allowPreserveExistingGain = false, continueAllowed = true, totals = null, nativeTotalsReadable = false, nativeTotalsWritable = false, nativePreview = null, freshTotals = true, nativeGraphState = "ready", automaticTotalsWritable = false, meterInventory = null, automaticSourcesFresh = freshTotals, existingConfiguration = null) {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
   const referenceByGroup = new Map(configuration?.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference])) ?? []);
@@ -2377,6 +2377,9 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
     const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
     const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : void 0);
     const dirty = isDirty(channel, draft);
+    const existing = existingConfiguration?.channels.find((item) => item.channel === channel.channel);
+    const retained = keepsExistingCtSettings(draft, existing);
+    const valid = labelOnly ? Boolean(draft.name.trim()) : validDraft(inventory, draft, existing);
     const recommendation = preset ? recommendedReportingMultiplier(preset.rated_current_a) : null;
     const effectiveRange = draft.multiplier * 65.535;
     const circuit = configuration?.channels.find((item) => item.channel === channel.channel);
@@ -2400,14 +2403,14 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
         preserveExistingGain: false,
         multiplier: draft.multiplierMode === "manual" ? draft.multiplier : selectedPreset ? recommendedReportingMultiplier(selectedPreset.rated_current_a) ?? draft.multiplier : draft.multiplier,
         multiplierMode: draft.multiplierMode ?? "automatic",
-        burdenAcknowledged: channel.selection_verified_against_config && modelId === channel.selected_model_id && (modelId === "custom" || selectedPreset?.requires_burden_jumper_cut === true),
+        burdenAcknowledged: (existing ? existing.burden_output_acknowledged : channel.selection_verified_against_config) && modelId === channel.selected_model_id && (modelId === "custom" || selectedPreset?.requires_burden_jumper_cut === true),
         expanded: true
       });
     }}>
                   <option value="" ?selected=${draft.modelId === ""}>Choose model</option>
                   ${inventory.catalog.presets.map((item) => b`<option value=${item.model_id} ?selected=${draft.modelId === item.model_id}>${item.label}</option>`)}
-                  <option value="custom" ?selected=${draft.modelId === "custom"}>Custom</option>
-                </select>${preset ? b`<small>${preset.rated_current_a} A</small>` : A}<button class="row-toggle" aria-label=${`CT${channel.channel} technical details`} aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>${draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}</button><span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
+                  <option value="custom" ?selected=${draft.modelId === "custom"}>${retained && existing?.model_id === "custom" && !existing.burden_output_acknowledged ? "Keep existing gain" : "Custom"}</option>
+                </select>${preset ? b`<small>${preset.rated_current_a} A</small>` : A}<button class="row-toggle" aria-label=${`CT${channel.channel} technical details`} aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>${!valid ? "Needs attention" : draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}</button><span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
                 <span role="cell"><span class="mobile-label">Range status</span>${draft.preserveExistingGain ? "Existing gain kept" : recommendation === null && preset ? "Rating exceeds ×8 range" : effectiveRange < (preset?.rated_current_a ?? 0) ? `Too small: ${effectiveRange} A` : `Up to ${effectiveRange} A`}</span>
               </div>
               ${allowPreserveExistingGain && !channel.selection_verified_against_config && channel.raw_gain_ct > 0 ? b`<label class="check-row preserve-gain"><input type="checkbox" aria-label=${`CT${channel.channel} keep existing gain`} ?disabled=${labelOnly} .checked=${draft.preserveExistingGain === true}
@@ -2420,7 +2423,8 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                 <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} ?disabled=${labelOnly} .value=${draft.customLabel ?? ""}
                   @input=${(event) => update(channel.channel, { customLabel: event.target.value })} /></label>
               </div>` : A}
-              ${draft.expanded && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
+              ${draft.expanded && retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : A}
+              ${draft.expanded && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
                 <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
                   ?disabled=${labelOnly}
                   .checked=${draft.burdenAcknowledged}
@@ -2455,7 +2459,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh) : A}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
+        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
       </footer>
     </section>
   `;
@@ -2511,17 +2515,20 @@ function isDirty(channel, draft) {
   if (draft.preserveExistingGain) return draft.name !== channel.name;
   return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier || draft.modelId === "custom" && (resultingGain(void 0, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));
 }
-function validDraft(inventory, draft) {
+function keepsExistingCtSettings(draft, existing) {
+  return Boolean(existing && draft.modelId === existing.model_id && draft.multiplier === existing.reporting_multiplier && (draft.customGainCt ?? null) === existing.custom_gain_ct && (draft.customLabel?.trim() || null) === existing.custom_label);
+}
+function validDraft(inventory, draft, existing) {
   if (draft.preserveExistingGain) return true;
   if (!draft.name.trim() || !draft.modelId || ![1, 2, 4, 8].includes(draft.multiplier)) return false;
-  if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt >= 1 && draft.customGainCt <= 65535 && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel) && draft.burdenAcknowledged;
+  if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt >= 1 && draft.customGainCt <= 65535 && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel) && (draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
   const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
-  return Boolean(preset) && effectiveRangeIsSafe(preset, draft.multiplier) && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged);
+  return Boolean(preset) && effectiveRangeIsSafe(preset, draft.multiplier) && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
 }
 function effectiveRangeIsSafe(preset, multiplier) {
   return multiplier * 65.535 >= preset.rated_current_a;
 }
-function draftsAreValid(inventory, drafts, labelOnly = false) {
+function draftsAreValid(inventory, drafts, labelOnly = false, existingConfiguration = null) {
   if (labelOnly) return [...drafts].every(([channel, draft]) => {
     const current = inventory.channels.find((item) => item.channel === channel);
     return Boolean(current) && Boolean(draft.name.trim());
@@ -2529,7 +2536,7 @@ function draftsAreValid(inventory, drafts, labelOnly = false) {
   for (const channel of inventory.channels) {
     const draft = drafts.get(channel.channel);
     if (!draft) return false;
-    if (!validDraft(inventory, draft)) return false;
+    if (!validDraft(inventory, draft, existingConfiguration?.channels.find((item) => item.channel === channel.channel))) return false;
   }
   return true;
 }
@@ -4955,6 +4962,7 @@ class CircuitSetupPanel extends i$2 {
     const current = this.drafts.get(channel);
     if (!current) return;
     this.drafts = new Map(this.drafts).set(channel, { ...current, ...patch });
+    if (Object.keys(patch).every((key) => key === "expanded")) return this.requestUpdate();
     if (this.meterConfiguration && !this.labelOnly) {
       const draft = { ...current, ...patch };
       if (draft.preserveExistingGain && this.meterConfiguration.configuration.channels.find((item) => item.channel === channel)?.name === draft.name) return this.requestUpdate();
@@ -6323,7 +6331,8 @@ class CircuitSetupPanel extends i$2 {
         this.totalGraphState,
         this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true && totalsEditable(this.meterConfiguration, "managed_automatic_totals"),
         this.meterConfiguration,
-        this.automaticSourcesFresh()
+        this.automaticSourcesFresh(),
+        this.journeyOrigin === "existing_meter" && this.sourceMeterConfiguration?.deviceId === this.selectedDeviceId && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256 ? this.sourceMeterConfiguration?.meter.configuration ?? null : null
       )}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? b`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event) => {
         this.legacyCircuitSemanticsConfirmed = event.target.checked;
         if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration);
