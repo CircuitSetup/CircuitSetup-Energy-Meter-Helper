@@ -106,6 +106,7 @@ export class CircuitSetupPanel extends LitElement {
   private lineFrequencyHz: LineFrequencyHz | null = 60;
   private electricalProfileConfirmed = false;
   private meterSettingsDraft: MeterSettingsDraft | null = null;
+  private calibrationMeterSettings: MeterSettingsDraft | null = null;
   private meterConfiguration: MeterConfiguration | null = null;
   private verifiedMeterConfiguration: MeterConfiguration | null = null;
   private multiReferencePreparationAcknowledged = false;
@@ -378,6 +379,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private resetCalibrationRun(): void {
+    this.calibrationMeterSettings = null;
     this.safetyAcknowledged = false;
     this.stabilityByTarget = new Map();
     this.calibrationByTarget = new Map();
@@ -1269,7 +1271,7 @@ export class CircuitSetupPanel extends LitElement {
     this.requestUpdate();
   }
 
-  private async startSession(): Promise<void> {
+  private async startSession(skipCircuitChanges = false): Promise<void> {
     if (!this.api || !this.selectedDeviceId || this.sessionStarting || this.pendingAction) return;
     this.sessionStarting = true;
     this.pendingAction = "session";
@@ -1295,6 +1297,14 @@ export class CircuitSetupPanel extends LitElement {
           await this.subscribeTransaction(this.connectionGeneration);
           if (this.session) await this.subscribeSession(this.connectionGeneration);
           return;
+        }
+        if (skipCircuitChanges) {
+          const saved = await api.getMeterConfiguration(deviceId);
+          if (!this.ownsOperation(generation, api, deviceId)) return;
+          // Calibration targets must match the saved device configuration, not pending edits.
+          this.calibrationMeterSettings = { ...saved.configuration.meter,
+            authoritative: saved.capabilities.configuration_authoritative, warnings: saved.warnings };
+          this.topology = saved.topology;
         }
         if (this.session) {
           this.navigate(this.session.state === "safety_required" || this.session.state === "preflight_failed"
@@ -1571,17 +1581,17 @@ export class CircuitSetupPanel extends LitElement {
 
   private voltageReferenceIds(): string[] {
     const groups = this.voltageGroupKeys();
-    const references = this.meterSettingsDraft?.voltage_references.filter((reference) => reference.group_keys.some((key) => groups.includes(key))) ?? [];
+    const references = (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.filter((reference) => reference.group_keys.some((key) => groups.includes(key))) ?? [];
     if (references.length) return references.map((reference) => reference.reference_id);
     return this.topology?.voltage_layout === "two_voltages" ? groups : [this.board === 0 ? "main" : `addon${this.board}`];
   }
 
   private voltageReferenceLabel(referenceId: string): string {
-    return this.meterSettingsDraft?.voltage_references.find((reference) => reference.reference_id === referenceId)?.label ?? referenceId;
+    return (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.find((reference) => reference.reference_id === referenceId)?.label ?? referenceId;
   }
 
   private voltageReferenceComplete(referenceId: string): boolean {
-    const groups = this.meterSettingsDraft?.voltage_references.find((reference) => reference.reference_id === referenceId)?.group_keys ?? [referenceId];
+    const groups = (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.find((reference) => reference.reference_id === referenceId)?.group_keys ?? [referenceId];
     return groups.every((group) => this.calibrationByTarget.get(`voltage:${group}`)?.state === "applied_pending_restart_verification");
   }
 
@@ -1802,7 +1812,7 @@ export class CircuitSetupPanel extends LitElement {
       (board) => { this.board = board; this.requestUpdate(); },
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session",
       this.labelOnly ? null : this.meterConfiguration?.configuration ?? null, (configuration) => this.updateCircuitConfiguration(configuration), (channel) => this.disableCircuit(channel),
-      this.meterConfiguration?.capabilities.managed_totals ?? true, this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "")}`; }
+      this.meterConfiguration?.capabilities.managed_totals ?? true, this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "", () => void this.startSession(true))}`; }
     if (this.step === "build") return buildInstallStep(this.transaction,
       () => void this.transactionAction("apply"), () => void this.transactionAction("compile"),
       () => void this.transactionAction("install"), () => void this.transactionAction("rollback"), () => void this.backFromBuild(),
@@ -1823,7 +1833,7 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.offsetRetryConfirmed = value; this.requestUpdate(); },
       () => void this.checkOffsetReadiness(), () => void this.calibrateOffset(), () => void this.reconnectSession(),
       () => void this.skipOffset(), () => this.back(), () => this.navigate("voltage"));
-    if (this.step === "voltage") return html`${this.meterSettingsDraft?.warnings.includes("slow_interval_extends_calibration") ? html`<div class="warning-band" role="status">This meter uses a ${this.meterSettingsDraft.update_interval_s}-second update interval. Calibration takes longer; keep the reference stable until each check finishes.</div>` : nothing}${voltageStep(this.topology, this.session, this.board, this.voltageReferenceIds().map((id, index) => this.voltageReferences instanceof Map ? this.voltageReferences.get(id) ?? 0 : this.voltageReferences[index] ?? 0), this.voltageReferenceIds().map((id) => this.voltageReferenceLabel(id)), this.stabilityFor("voltage"), this.voltageResultsForBoard(), this.voltageBusy,
+    if (this.step === "voltage") return html`${(this.calibrationMeterSettings ?? this.meterSettingsDraft)?.warnings.includes("slow_interval_extends_calibration") ? html`<div class="warning-band" role="status">This meter uses a ${(this.calibrationMeterSettings ?? this.meterSettingsDraft)!.update_interval_s}-second update interval. Calibration takes longer; keep the reference stable until each check finishes.</div>` : nothing}${voltageStep(this.topology, this.session, this.board, this.voltageReferenceIds().map((id, index) => this.voltageReferences instanceof Map ? this.voltageReferences.get(id) ?? 0 : this.voltageReferences[index] ?? 0), this.voltageReferenceIds().map((id) => this.voltageReferenceLabel(id)), this.stabilityFor("voltage"), this.voltageResultsForBoard(), this.voltageBusy,
       (value) => { this.board = value; this.requestUpdate(); },
       (index, value) => { const id = this.voltageReferenceIds()[index]; if (id) this.voltageReferences = new Map(this.voltageReferences).set(id, value); this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}
       <footer class="action-footer offset-footer"><button class="secondary" @click=${() => this.back()}>Back</button>

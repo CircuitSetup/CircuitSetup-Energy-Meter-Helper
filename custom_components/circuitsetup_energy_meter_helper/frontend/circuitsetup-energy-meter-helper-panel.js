@@ -1534,7 +1534,7 @@ const moveTab = (event, index) => {
   tabs[next]?.focus();
 };
 const resultingGain = (preset, multiplier, customGain) => (preset?.default_gain_ct ?? customGain) == null || !Number.isFinite(multiplier) || multiplier <= 0 ? null : Math.round((preset?.default_gain_ct ?? customGain) / multiplier);
-function ctInventoryStep(inventory, board, drafts, setBoard, update, back, review, labelOnly = false, busy = false, configuration = null, updateConfiguration = () => void 0, disableChannel = () => void 0, managedTotals = true, managedTotalsReason = "") {
+function ctInventoryStep(inventory, board, drafts, setBoard, update, back, review, labelOnly = false, busy = false, configuration = null, updateConfiguration = () => void 0, disableChannel = () => void 0, managedTotals = true, managedTotalsReason = "", skip = () => void 0) {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
   const referenceByGroup = new Map(configuration?.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference])) ?? []);
@@ -1641,8 +1641,9 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
       ${configuration ? circuitsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason) : A}
-      <footer class="action-footer">
+      <footer class="action-footer offset-footer">
         <button class="secondary" @click=${back}>Back</button>
+        <button class="secondary" data-action="skip-ct" ?disabled=${busy} @click=${skip}>Skip to Calibration</button>
         <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
       </footer>
     </section>
@@ -2979,6 +2980,7 @@ class CircuitSetupPanel extends i$2 {
     this.lineFrequencyHz = 60;
     this.electricalProfileConfirmed = false;
     this.meterSettingsDraft = null;
+    this.calibrationMeterSettings = null;
     this.meterConfiguration = null;
     this.verifiedMeterConfiguration = null;
     this.multiReferencePreparationAcknowledged = false;
@@ -3236,6 +3238,7 @@ class CircuitSetupPanel extends i$2 {
     }
   }
   resetCalibrationRun() {
+    this.calibrationMeterSettings = null;
     this.safetyAcknowledged = false;
     this.stabilityByTarget = /* @__PURE__ */ new Map();
     this.calibrationByTarget = /* @__PURE__ */ new Map();
@@ -4121,7 +4124,7 @@ class CircuitSetupPanel extends i$2 {
     if (this.pendingAction === action) this.pendingAction = "";
     this.requestUpdate();
   }
-  async startSession() {
+  async startSession(skipCircuitChanges = false) {
     if (!this.api || !this.selectedDeviceId || this.sessionStarting || this.pendingAction) return;
     this.sessionStarting = true;
     this.pendingAction = "session";
@@ -4147,6 +4150,16 @@ class CircuitSetupPanel extends i$2 {
           await this.subscribeTransaction(this.connectionGeneration);
           if (this.session) await this.subscribeSession(this.connectionGeneration);
           return;
+        }
+        if (skipCircuitChanges) {
+          const saved = await api.getMeterConfiguration(deviceId);
+          if (!this.ownsOperation(generation, api, deviceId)) return;
+          this.calibrationMeterSettings = {
+            ...saved.configuration.meter,
+            authoritative: saved.capabilities.configuration_authoritative,
+            warnings: saved.warnings
+          };
+          this.topology = saved.topology;
         }
         if (this.session) {
           this.navigate(this.session.state === "safety_required" || this.session.state === "preflight_failed" ? "safety" : this.session.state === "applied_pending_restart_verification" ? "restart" : this.session.state === "verified" && this.restartResult ? "summary" : ["completed", "skipped"].includes(this.session.offset_disposition ?? "") ? "voltage" : "offset");
@@ -4452,15 +4465,15 @@ class CircuitSetupPanel extends i$2 {
   }
   voltageReferenceIds() {
     const groups = this.voltageGroupKeys();
-    const references = this.meterSettingsDraft?.voltage_references.filter((reference) => reference.group_keys.some((key) => groups.includes(key))) ?? [];
+    const references = (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.filter((reference) => reference.group_keys.some((key) => groups.includes(key))) ?? [];
     if (references.length) return references.map((reference) => reference.reference_id);
     return this.topology?.voltage_layout === "two_voltages" ? groups : [this.board === 0 ? "main" : `addon${this.board}`];
   }
   voltageReferenceLabel(referenceId) {
-    return this.meterSettingsDraft?.voltage_references.find((reference) => reference.reference_id === referenceId)?.label ?? referenceId;
+    return (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.find((reference) => reference.reference_id === referenceId)?.label ?? referenceId;
   }
   voltageReferenceComplete(referenceId) {
-    const groups = this.meterSettingsDraft?.voltage_references.find((reference) => reference.reference_id === referenceId)?.group_keys ?? [referenceId];
+    const groups = (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.find((reference) => reference.reference_id === referenceId)?.group_keys ?? [referenceId];
     return groups.every((group) => this.calibrationByTarget.get(`voltage:${group}`)?.state === "applied_pending_restart_verification");
   }
   voltageGroupKeys() {
@@ -4704,7 +4717,8 @@ class CircuitSetupPanel extends i$2 {
         (configuration) => this.updateCircuitConfiguration(configuration),
         (channel) => this.disableCircuit(channel),
         this.meterConfiguration?.capabilities.managed_totals ?? true,
-        this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? ""
+        this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "",
+        () => void this.startSession(true)
       )}`;
     }
     if (this.step === "build") return buildInstallStep(
@@ -4771,7 +4785,7 @@ class CircuitSetupPanel extends i$2 {
       () => this.back(),
       () => this.navigate("voltage")
     );
-    if (this.step === "voltage") return b`${this.meterSettingsDraft?.warnings.includes("slow_interval_extends_calibration") ? b`<div class="warning-band" role="status">This meter uses a ${this.meterSettingsDraft.update_interval_s}-second update interval. Calibration takes longer; keep the reference stable until each check finishes.</div>` : A}${voltageStep(
+    if (this.step === "voltage") return b`${(this.calibrationMeterSettings ?? this.meterSettingsDraft)?.warnings.includes("slow_interval_extends_calibration") ? b`<div class="warning-band" role="status">This meter uses a ${(this.calibrationMeterSettings ?? this.meterSettingsDraft).update_interval_s}-second update interval. Calibration takes longer; keep the reference stable until each check finishes.</div>` : A}${voltageStep(
       this.topology,
       this.session,
       this.board,

@@ -327,6 +327,69 @@ describe("ESP Web Tools installer", () => {
 });
 
 describe("CircuitSetup panel", () => {
+  it("skips CT drafts with centered navigation and saved calibration metadata", async () => {
+    const panel = await mount(makeHass({}));
+    const saved = meterResponse();
+    const state = panel as unknown as Record<string, any>;
+    state.selectedDeviceId = "meter-1";
+    state.topology = saved.topology;
+    state.meterSettingsDraft = { ...saved.configuration.meter,
+      voltage_references: [{ ...saved.configuration.meter.voltage_references[0], reference_id: "unsaved" }] };
+    const draft = state.meterSettingsDraft;
+    const session = { session_id: "session", device_id: "meter-1", state: "safety_required", safety_acknowledged: false,
+      preflight: { issues: [], zeroed_roles: [] } };
+    let resolveMetadata!: (value: unknown) => void;
+    state.api = {
+      getActiveWork: vi.fn().mockResolvedValue({ session: null, transaction: null }),
+      getMeterConfiguration: vi.fn().mockImplementation(() => new Promise((resolve) => { resolveMetadata = resolve; })),
+      startSession: vi.fn().mockResolvedValue(session),
+    };
+    state.subscribeSession = vi.fn();
+    panel.showInventory(saved as unknown as CtInventory);
+    state.drafts.get(1).multiplier = 0;
+    await panel.updateComplete;
+    const buttons = [...panel.shadowRoot!.querySelectorAll<HTMLButtonElement>(".action-footer button")];
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual(["Back", "Skip to Calibration", "Continue"]);
+    expect(buttons[1]!.parentElement?.classList.contains("offset-footer")).toBe(true);
+    expect(buttons[2]!.disabled).toBe(true);
+    buttons[1]!.click();
+    await tick(); await panel.updateComplete;
+    expect(panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="skip-ct"]')!.disabled).toBe(true);
+    expect(state.api.startSession).not.toHaveBeenCalled();
+    resolveMetadata(saved);
+    await tick(); await panel.updateComplete;
+    expect(state.api.getMeterConfiguration).toHaveBeenCalledWith("meter-1");
+    expect(state.api.startSession).toHaveBeenCalledExactlyOnceWith("meter-1");
+    expect(state.step).toBe("safety");
+    expect(state.topology).toEqual(saved.topology);
+    expect(state.voltageReferenceIds()).toEqual(["main"]);
+    expect(state.voltageReferenceLabel("main")).toBe("Main");
+    expect(state.meterSettingsDraft).toBe(draft);
+    expect(state.drafts.get(1).multiplier).toBe(0);
+    state.resetCalibrationRun();
+    expect(state.voltageReferenceIds()).toEqual(["unsaved"]);
+  });
+
+  it("keeps CT drafts available when skip metadata cannot be loaded", async () => {
+    const panel = await mount(makeHass({}));
+    const state = panel as unknown as Record<string, any>;
+    state.selectedDeviceId = "meter-1";
+    state.topology = meterResponse().topology;
+    state.api = {
+      getActiveWork: vi.fn().mockResolvedValue({ session: null, transaction: null }),
+      getMeterConfiguration: vi.fn().mockRejectedValue(new Error("offline")),
+      startSession: vi.fn(),
+    };
+    panel.showInventory(meterResponse() as unknown as CtInventory);
+    await panel.updateComplete;
+    panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="skip-ct"]')!.click();
+    await tick(); await panel.updateComplete;
+    expect(state.step).toBe("ct");
+    expect(state.api.startSession).not.toHaveBeenCalled();
+    expect(state.error).toBeTruthy();
+    expect(panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="skip-ct"]')!.disabled).toBe(false);
+  });
+
   it("explains that voltage-reference configuration must match physical wiring", () => {
     const response = meterResponse();
     const root = document.createElement("div");

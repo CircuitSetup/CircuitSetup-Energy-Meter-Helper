@@ -668,6 +668,44 @@ test("compile failure blocks upload after a distinct apply acknowledgement", asy
   expect(operations(frames)).not.toContain("install_ct_config");
 });
 
+test("centered CT skip preserves drafts and starts calibration with saved targets", async ({ page }) => {
+  const frames = await mockHomeAssistant(page);
+  await openInventory(page);
+  await page.getByLabel("CT1 name", { exact: true }).fill("");
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
+  const skip = page.getByRole("button", { name: "Skip to Calibration", exact: true });
+  const footer = page.locator(".action-footer");
+  const skipBox = await skip.boundingBox();
+  const footerBox = await footer.boundingBox();
+  expect(Math.abs(skipBox!.x + skipBox!.width / 2 - footerBox!.x - footerBox!.width / 2)).toBeLessThan(2);
+  await skip.click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
+  await expect(page.getByLabel("CT1 name", { exact: true })).toHaveValue("");
+  await skip.click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Offset", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Skip offset calibration" }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Voltage", exact: true })).toBeVisible();
+  await page.locator('.reference-block input').fill("120");
+  await page.getByRole("button", { name: "Check stability", exact: true }).click();
+  await expect.poll(() => frames.filter((frame) => frame.type.endsWith("/check_stability")).length).toBeGreaterThan(0);
+  expect(frames.find((frame) => frame.type.endsWith("/check_stability"))).toMatchObject({ target: "voltage", target_id: "main" });
+  await page.getByRole("button", { name: "Calibrate voltage", exact: true }).click();
+  await expect(page.getByText("Voltage calibration complete for Main Board.")).toBeVisible();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByLabel("CT1 reference", { exact: true }).fill("5");
+  await page.getByRole("button", { name: "Check stability", exact: true }).click();
+  await page.getByRole("button", { name: "Calibrate current", exact: true }).click();
+  await expect.poll(() => operations(frames).includes("calibrate_current")).toBe(true);
+  expect(operations(frames)).not.toContain("preview_meter_configuration");
+  expect(operations(frames)).not.toContain("set_ha_labels");
+});
+
 test("verified configuration continues through calibration and finishes only from Summary", async ({ page }) => {
   const frames = await mockHomeAssistant(page);
   await page.goto("/test/harness.html");

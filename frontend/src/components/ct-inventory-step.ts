@@ -32,6 +32,7 @@ export function ctInventoryStep(
   disableChannel: (channel: number) => void = () => undefined,
   managedTotals = true,
   managedTotalsReason = "",
+  skip: () => void = () => undefined,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -142,8 +143,9 @@ export function ctInventoryStep(
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
       ${configuration ? circuitsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason) : nothing}
-      <footer class="action-footer">
+      <footer class="action-footer offset-footer">
         <button class="secondary" @click=${back}>Back</button>
+        <button class="secondary" data-action="skip-ct" ?disabled=${busy} @click=${skip}>Skip to Calibration</button>
         <button class="primary" data-action="continue" ?disabled=${busy || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
       </footer>
     </section>
