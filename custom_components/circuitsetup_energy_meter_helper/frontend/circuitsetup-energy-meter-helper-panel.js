@@ -5676,7 +5676,7 @@ class CircuitSetupPanel extends i$2 {
         this.navigate("install-configuration");
         await this.subscribeTransaction(this.connectionGeneration);
       },
-      `Board ${board + 1} Stage ${stage} preparation is unavailable. Exact saved/effective per-chip tables for this stage are required; unknown evidence is not zero. Recovery is retained.`,
+      `Board ${board + 1} Stage ${stage} preparation could not be reviewed. Check ESPHome Device Builder and the meter connection, then retry. Existing recovery data, if any, is retained.`,
       () => this.ownsOperation(generation, api, deviceId)
     );
     this.offsetBusy = false;
@@ -6208,6 +6208,7 @@ class CircuitSetupPanel extends i$2 {
   }
   safeErrorMessage(error, fallback) {
     const code = error.code;
+    if (code === "offset_tables_unavailable") return "Meter diagnostics did not provide complete offset tables for this stage. Stock ESPHome can omit these before the first offset calibration. Preparation requires firmware with read-only offset-table reporting. You can choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data, if any, is unchanged.";
     if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
     return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
   }

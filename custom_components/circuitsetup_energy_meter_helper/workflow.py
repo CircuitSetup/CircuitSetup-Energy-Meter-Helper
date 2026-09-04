@@ -137,6 +137,10 @@ class WorkflowCapabilityUnavailable(RuntimeError):
     """A required external runtime owner is genuinely absent."""
 
 
+class OffsetTablesUnavailable(WorkflowCapabilityUnavailable):
+    """Fresh diagnostics did not supply complete tables for a safe offset backup."""
+
+
 class WorkflowHandleError(KeyError):
     """A server-issued plan or session handle is stale, foreign, or expired."""
 
@@ -1277,7 +1281,7 @@ class EntryWorkflow:
                         or item.instance_id != instance
                         or item.offset_stage != stage
                     ):
-                        raise WorkflowCapabilityUnavailable(
+                        raise OffsetTablesUnavailable(
                             "fresh exact saved offset tables are unavailable"
                         )
                     captured.append(item)
@@ -1312,7 +1316,7 @@ class EntryWorkflow:
                                 or item.instance_id != instance
                                 or item.offset_stage != completed_stage
                             ):
-                                raise WorkflowCapabilityUnavailable(
+                                raise OffsetTablesUnavailable(
                                     "completed saved offset tables are unavailable"
                                 )
                             captured.append(item)

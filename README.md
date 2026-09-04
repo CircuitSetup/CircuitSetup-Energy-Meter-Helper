@@ -15,6 +15,8 @@ Choose **Standard calibration** to calibrate voltage and current while retaining
 
 Stock ESPHome offset calibration uses a private backup and a reviewed zero-offset configuration installation before an explicit calibration run. Captured results are retained for a final reviewed YAML installation; retries prepare only unfinished chips. Confirming the installed configuration does not claim register readback. Firmware with offset verification can also report verified register evidence. Installing firmware can replace flash-only calibration values, so review the summary before installing.
 
+Offset preparation requires complete per-chip tables from a fresh diagnostic dump. Stock ESPHome 2026.8.2 omits these tables before the first offset calibration, so first-time preparation is unavailable on that firmware. Missing tables are never treated as zero, and the helper does not press Clear to discover them. Firmware with read-only offset-table reporting is required for this path; **Skip offset calibration** continues with voltage/current calibration.
+
 Legacy migration is always opt-in. Adopting a legacy configuration marks only the helper-managed parts; unrelated YAML remains untouched.
 
 See [Meter totals](docs/totals.md) for default, Mains, and hierarchical total behavior.

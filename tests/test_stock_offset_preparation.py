@@ -26,6 +26,62 @@ from tests.test_preflight import binding_with_offset_controls
 ZERO = ((0, 0), (0, 0), (0, 0))
 
 
+@pytest.mark.parametrize("stage", (1, 2))
+def test_first_stock_preparation_reports_missing_tables_without_writes(
+    tmp_path: Path, stage: int
+) -> None:
+    async def run() -> None:
+        from unittest.mock import AsyncMock
+
+        from custom_components.circuitsetup_energy_meter_helper.diagnostics import (
+            _error_code,
+        )
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            OffsetRecovery,
+        )
+        from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+            _send_safe_error,
+        )
+        from custom_components.circuitsetup_energy_meter_helper.workflow import (
+            OffsetTablesUnavailable,
+        )
+        from tests.test_websocket_api import FakeConnection
+        from tests.test_workflow import _workflow
+
+        workflow, handle, sessions, _ = _workflow()
+        handle.binding = binding_with_offset_controls(0)
+        handle.configuration = "meter.yaml"
+        handle.configuration_sha256 = _snapshot().sha256
+        session = StockSession(handle.binding)
+        session.snapshot_unknown = True
+        workflow._api = session
+        builder = workflow._builder = Builder(remote_content=_snapshot().content)
+        recovery = workflow._offset_recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+        preview = AsyncMock()
+        workflow.transactions = SimpleNamespace(async_preview=preview)
+
+        with pytest.raises(OffsetTablesUnavailable) as raised:
+            await workflow.async_preview_offset_preparation(
+                handle.session_id, 0, stage, backup_acknowledged=True
+            )
+        connection = FakeConnection()
+        _send_safe_error(connection, 1, raised.value)
+        assert _error_code(raised.value) == "offset_tables_unavailable"
+        assert connection.errors == [
+            (1, "offset_tables_unavailable", "Complete offset tables are unavailable")
+        ]
+        assert not any(event[0] == "button" for event in session.events)
+        assert "write" not in builder.calls
+        preview.assert_not_awaited()
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            assert await recovery.async_load(lease) is None
+        finally:
+            lease.release()
+
+    asyncio.run(run())
+
+
 class StockSession(FakeOffsetSession):
     def __init__(
         self,

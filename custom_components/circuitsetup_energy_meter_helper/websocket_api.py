@@ -59,6 +59,7 @@ from .store import HelperStore
 from .topology import topology_from_native
 from .workflow import (
     CalibrationPlan,
+    OffsetTablesUnavailable,
     WorkflowCapabilityUnavailable,
     WorkflowHandleError,
 )
@@ -1782,6 +1783,8 @@ def _send_safe_error(
         code, message = "stale_confirmation", "The confirmation is stale or invalid"
     elif isinstance(error, WorkflowHandleError):
         code, message = "stale_handle", "The selected device changed or is no longer available"
+    elif isinstance(error, OffsetTablesUnavailable):
+        code, message = "offset_tables_unavailable", "Complete offset tables are unavailable"
     elif isinstance(error, WorkflowCapabilityUnavailable):
         code, message = "capability_unavailable", "This capability is not available"
     elif isinstance(error, KeyError | ResourceNotFound):

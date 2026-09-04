@@ -2391,6 +2391,26 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector(".sr-status")?.textContent).not.toContain("applied_pending_restart_verification");
   });
 
+  it.each(["offset_tables_unavailable", "operation_failed"])("explains offset preparation failure %s without claiming a backup", async (code) => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const preview = vi.fn().mockRejectedValue({ code, message: "private backend details" });
+    const state = panel as unknown as { api: unknown; session: unknown; offsetBackupAcknowledged: boolean;
+      reviewOffsetPreparation(): Promise<void>; transaction: unknown };
+    state.api = { previewOffsetPreparation: preview };
+    state.session = { session_id: "session" };
+    state.offsetBackupAcknowledged = true;
+    await state.reviewOffsetPreparation();
+    await panel.updateComplete;
+    expect(preview).toHaveBeenCalledOnce();
+    expect(text(panel)).not.toContain("private backend details");
+    expect(text(panel)).not.toContain("Recovery is retained.");
+    expect(text(panel)).toContain(code === "offset_tables_unavailable"
+      ? "Stock ESPHome can omit these before the first offset calibration"
+      : "preparation could not be reviewed");
+    if (code === "operation_failed") expect(text(panel)).not.toContain("Stock ESPHome");
+    expect(state.transaction).toBeNull();
+  });
+
   it("renders ordered offset preparation, gates Stage 2, and bounds seven-board tabs", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     const state = panel as unknown as Record<string, unknown>;
