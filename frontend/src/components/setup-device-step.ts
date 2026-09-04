@@ -29,9 +29,12 @@ export function setupDeviceStep(
         <div class="meter-list">
           ${snapshot.devices.map((device) => html`
             <div class="meter-row">
-              <span><strong>${device.title}</strong><small>${device.project_name} · ${device.project_version ?? "version unavailable"}</small></span>
-              <span>${device.configuration ? "Managed in ESPHome Device Builder" : device.importable ? "Import available" : "Calibration only — no editable source."}</span>
-              ${!device.configuration && !device.importable ? html`<small>The meter is connected, but ESPHome source editing is unavailable. Calibration remains in meter flash and may be replaced by a future firmware install.</small>` : ""}
+              <div class="meter-details">
+                <strong>${device.title}</strong>
+                <small>${device.project_name} · ${device.project_version ?? "version unavailable"}</small>
+                <small class="meter-status">${device.configuration ? "Managed in ESPHome Device Builder" : device.importable ? "Import available" : "Calibration only — no editable source."}</small>
+                ${!device.configuration && !device.importable ? html`<small>The meter is connected, but ESPHome source editing is unavailable. Calibration remains in meter flash and may be replaced by a future firmware install.</small>` : ""}
+              </div>
               ${device.importable && !device.configuration
                 ? html`<button class="primary" data-action="import-device" ?disabled=${Boolean(busyAction)}
                     @click=${() => adopt(device.entry_id)}>${busyAction === `adopt:${device.entry_id}` ? "Importing configuration…" : importFailedDeviceId === device.entry_id ? "Retry import" : "Import configuration"}</button>`

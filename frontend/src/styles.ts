@@ -92,9 +92,13 @@ export const panelStyles = css`
   .error-panel, .recovery-panel { display: grid; gap: 6px; margin-top: 16px; padding: 16px; border: 1px solid var(--danger); border-radius: var(--radius); color: var(--danger); background: var(--surface); }
   .error-panel span, .error-panel li, .recovery-panel p { color: var(--text); }
   .meter-list { display: grid; gap: 10px; }
-  .meter-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); cursor: pointer; }
+  .meter-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px 24px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   .meter-row.selected { border-color: var(--accent); background: var(--surface-alt); }
+  .meter-details { min-width: 0; overflow-wrap: anywhere; }
+  .meter-details strong { display: block; font-size: var(--ha-font-size-l, 16px); }
   .meter-row small { display: block; color: var(--muted); }
+  .meter-status { margin-top: 6px; }
+  .meter-row > button { justify-self: start; }
   .identity-strip { display: flex; flex-wrap: wrap; gap: 16px 28px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   table { width: 100%; border-collapse: collapse; }
   th, td { padding: 12px; border-bottom: 1px solid var(--border); text-align: left; }
@@ -214,6 +218,7 @@ export const panelStyles = css`
     .product-title { font-size: 23px; text-align: center; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
     .mobile-progress { display: flex; justify-content: space-between; align-items: center; margin: 0 -18px 24px; padding: 12px 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
     h1 { font-size: 22px; }
+    .meter-row { grid-template-columns: minmax(0, 1fr); }
     .addon-options { grid-template-columns: repeat(7, minmax(42px, 1fr)); gap: 6px; }
     .addon-options label { min-height: 52px; }
     .ct-header { display: none; }
