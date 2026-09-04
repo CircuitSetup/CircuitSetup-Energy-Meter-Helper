@@ -20,6 +20,38 @@ const tick = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
+it("shows affected SPI pins and hardware troubleshooting without allowing Continue", () => {
+  const host = document.createElement("div");
+  const retry = vi.fn();
+  const noop = () => undefined;
+  const status = {
+    transaction_id: "tx", state: "install_confirmation_required", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: true,
+    evidence: ["meter_communication_failed"], communication_failed_cs_pins: [0, 16],
+    progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [],
+    aggregate_entity_mismatch: false, full_meter_configuration_verified: false,
+  } as import("../src/types").TransactionStatus;
+  render(buildInstallStep("install_configuration", status, noop, noop, retry, noop, noop, noop), host);
+  const warning = host.querySelector(".recovery-panel");
+  expect(warning?.textContent).toContain("Meter chip communication failed");
+  expect(warning?.textContent).toContain("GPIO0, GPIO16");
+  expect(warning?.textContent).toContain("SPI");
+  expect(warning?.textContent).toContain("Power down");
+  expect(warning?.textContent).toContain("correct ESP32");
+  expect(warning?.textContent).toContain("default CS-pin assignments");
+  expect(warning?.textContent).toContain("known-good ESP32");
+  expect(warning?.textContent).toContain("update the configuration to match");
+  expect(warning?.textContent).toContain("stays with the same add-on");
+  expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+  [...host.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.click();
+  expect(retry).toHaveBeenCalledOnce();
+
+  render(buildInstallStep("install_configuration", { ...status, state: "verified", evidence: [], communication_failed_cs_pins: [] },
+    noop, noop, noop, noop, noop, noop), host);
+  expect(host.querySelector(".recovery-panel")).toBeNull();
+  expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
+});
+
 it("renders purpose-specific configuration installation controls", () => {
   const host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "- old\n+ new", rollback_available: true, evidence: ["source_checked"], progress: [], validation_detail: { code: null, error_record_count: 0, reported_error_count: 0, warning_record_count: 1, reported_warning_count: 1 }, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
@@ -151,6 +183,20 @@ const contrastRatio = (first: string, second: string): number => {
   const values = [luminance(first), luminance(second)];
   return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
 };
+
+it("offers install retry after reconnect verification is exhausted", () => {
+  const root = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: true, evidence: ["reconnect_unavailable"], progress: ["firmware_compiled", "ota_uploaded"],
+    validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), root);
+
+  expect(root.textContent).toContain("Build or install needs attention");
+  expect([...root.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.disabled).toBe(false);
+  expect([...root.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
+});
 
 beforeEach(() => vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(firmwareResponse()))));
 
@@ -375,6 +421,74 @@ describe("ESP Web Tools installer", () => {
 });
 
 describe("CircuitSetup panel", () => {
+  it("skips CT drafts with centered navigation and saved calibration metadata", async () => {
+    const panel = await mount(makeHass({}));
+    const saved = meterResponse();
+    const state = panel as unknown as Record<string, any>;
+    state.selectedDeviceId = "meter-1";
+    state.topology = saved.topology;
+    state.meterSettingsDraft = { ...saved.configuration.meter,
+      voltage_references: [{ ...saved.configuration.meter.voltage_references[0], reference_id: "unsaved" }] };
+    const draft = state.meterSettingsDraft;
+    const session = { session_id: "session", device_id: "meter-1", state: "safety_required", safety_acknowledged: false,
+      preflight: { issues: [], zeroed_roles: [] } };
+    let resolveMetadata!: (value: unknown) => void;
+    state.api = {
+      getActiveWork: vi.fn().mockResolvedValue({ session: null, transaction: null }),
+      getMeterConfiguration: vi.fn().mockImplementation(() => new Promise((resolve) => { resolveMetadata = resolve; })),
+      startSession: vi.fn().mockResolvedValue(session),
+    };
+    state.subscribeSession = vi.fn();
+    panel.showInventory(saved as unknown as CtInventory);
+    state.drafts.get(1).multiplier = 0;
+    await panel.updateComplete;
+    const buttons = [...panel.shadowRoot!.querySelectorAll<HTMLButtonElement>(".action-footer button")];
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual(["Back", "Skip to Calibration", "Continue"]);
+    expect(buttons[1]!.parentElement?.classList.contains("offset-footer")).toBe(true);
+    expect(buttons[2]!.disabled).toBe(true);
+    buttons[1]!.click();
+    await panel.updateComplete;
+    expect(state.step).toBe("calibration-plan");
+    const start = state.startSession("full", state.skipCircuitChanges);
+    await tick(); await panel.updateComplete;
+    expect(state.pendingAction).toBe("session");
+    expect(state.api.startSession).not.toHaveBeenCalled();
+    resolveMetadata(saved);
+    await start;
+    await tick(); await panel.updateComplete;
+    expect(state.api.getMeterConfiguration).toHaveBeenCalledWith("meter-1");
+    expect(state.api.startSession).toHaveBeenCalledExactlyOnceWith("meter-1", "full");
+    expect(state.step).toBe("safety");
+    expect(state.topology).toEqual(saved.topology);
+    expect(state.voltageReferenceIds()).toEqual(["main"]);
+    expect(state.voltageReferenceLabel("main")).toBe("Main");
+    expect(state.meterSettingsDraft).toBe(draft);
+    expect(state.drafts.get(1).multiplier).toBe(0);
+    state.resetCalibrationRun();
+    expect(state.voltageReferenceIds()).toEqual(["unsaved"]);
+  });
+
+  it("keeps CT drafts available when skip metadata cannot be loaded", async () => {
+    const panel = await mount(makeHass({}));
+    const state = panel as unknown as Record<string, any>;
+    state.selectedDeviceId = "meter-1";
+    state.topology = meterResponse().topology;
+    state.api = {
+      getActiveWork: vi.fn().mockResolvedValue({ session: null, transaction: null }),
+      getMeterConfiguration: vi.fn().mockRejectedValue(new Error("offline")),
+      startSession: vi.fn(),
+    };
+    panel.showInventory(meterResponse() as unknown as CtInventory);
+    await panel.updateComplete;
+    panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="skip-ct"]')!.click();
+    await state.startSession("full", state.skipCircuitChanges);
+    await tick(); await panel.updateComplete;
+    expect(state.step).toBe("calibration-plan");
+    expect(state.api.startSession).not.toHaveBeenCalled();
+    expect(state.error).toBeTruthy();
+    expect(state.pendingAction).toBe("");
+  });
+
   it("explains that voltage-reference configuration must match physical wiring", () => {
     const response = meterResponse();
     const root = document.createElement("div");

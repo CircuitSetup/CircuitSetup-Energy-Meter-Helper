@@ -1415,11 +1415,13 @@ class EntryWorkflow:
             substitutions = {
                 key: scalar.value for key, scalar in document.substitutions.items()
             }
-            catalog = EntityCatalog(api.entities, api.connection_generation)
-            binding = bind_meter(catalog, topology, substitutions)
         else:
             topology = handle.topology
-            catalog = EntityCatalog(api.entities, api.connection_generation)
+        await api.async_check_meter_communication(topology.group_count)
+        catalog = EntityCatalog(api.entities, api.connection_generation)
+        if handle is None:
+            binding = bind_meter(catalog, topology, substitutions)
+        else:
             binding = handle.binding.rebind(catalog, handle.substitutions)
             handle.binding = binding
         sensors = catalog.by_kind("sensor")

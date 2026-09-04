@@ -433,8 +433,10 @@ def _workflow(
     return workflow, handle, sessions, api
 
 
+@pytest.mark.parametrize("communication_failed", [False, True])
 def test_reconnect_evidence_reports_configured_ct_names(
     monkeypatch: pytest.MonkeyPatch,
+    communication_failed: bool,
 ) -> None:
     """The API exposes the configured CT label with its sensor suffix."""
     workflow, handle, _sessions, api = _workflow()
@@ -457,14 +459,36 @@ def test_reconnect_evidence_reports_configured_ct_names(
     async def reconnect() -> None:
         return None
 
+    checked: list[int] = []
+
+    async def check_communication(expected_chips: int) -> None:
+        from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+            MeterCommunicationError,
+        )
+
+        checked.append(expected_chips)
+        if communication_failed:
+            raise MeterCommunicationError((0,))
+
     api.async_reconnect = reconnect
+    api.async_check_meter_communication = check_communication
     monkeypatch.setattr(
         "custom_components.circuitsetup_energy_meter_helper.workflow.EntityCatalog",
         lambda *_args: SimpleNamespace(by_kind=lambda kind: sensors if kind == "sensor" else ()),
     )
 
+    if communication_failed:
+        from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+            MeterCommunicationError,
+        )
+
+        with pytest.raises(MeterCommunicationError):
+            asyncio.run(workflow.async_verify(MAC))
+        assert checked == [2]
+        return
     evidence = asyncio.run(workflow.async_verify(MAC))
 
+    assert checked == [2]
     assert evidence.ct_names == {
         channel: f"CT {channel}" for channel in range(1, 7)
     }

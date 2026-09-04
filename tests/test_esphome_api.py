@@ -1079,6 +1079,74 @@ def test_disconnect_future_is_armed_before_restart_and_reconnect_dumps_config() 
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("failed_pins", [(), (0, 16)])
+def test_meter_communication_checks_fresh_complete_dump_despite_log_eviction(
+    failed_pins: tuple[int, ...],
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper import log_parser
+
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client], max_log_lines=2, max_log_bytes=100)
+        await session.async_connect()
+        assert client.on_log is not None
+        client.on_log(SimpleNamespace(message="ATM90E32:\nCS Pin: GPIO22\nCommunication failed"))
+        pending = asyncio.create_task(
+            session.async_check_meter_communication(4, timeout=0.1)
+        )
+        await asyncio.sleep(0)
+        assert client.dump_configs[-1] is True
+        assert client.on_log is not None
+        for pin in (5, 4, 0, 16):
+            client.on_log(SimpleNamespace(message=f"ATM90E32:\nCS Pin: GPIO{pin}"))
+            if pin in failed_pins:
+                client.on_log(SimpleNamespace(message="[E][atm90e32:123]: Communication failed"))
+            client.on_log(SimpleNamespace(message="[C][atm90e32:125]: Update Interval: 5s"))
+            client.on_log(SimpleNamespace(message="Voltage sensor: 120\n" * 250))
+        if failed_pins:
+            with pytest.raises(log_parser.MeterCommunicationError) as caught:
+                await pending
+            assert caught.value.cs_pins == failed_pins
+        else:
+            await pending
+        assert client.dump_configs[-1] is None
+        assert len(session.log_lines) <= 2
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+def test_meter_communication_disconnect_after_dump_never_means_healthy() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(session.async_check_meter_communication(2))
+        await asyncio.sleep(0)
+        assert client.on_log is not None and client.on_stop is not None
+        client.on_log(SimpleNamespace(message=(
+            "ATM90E32:\nCS Pin: GPIO5\nUpdate Interval: 5s\n"
+            "ATM90E32:\nCS Pin: GPIO4\nUpdate Interval: 5s\n"
+        )))
+        await client.on_stop(False)
+        with pytest.raises(ESPHomeApiRepairRequired):
+            await pending
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+def test_meter_communication_missing_dump_never_means_healthy() -> None:
+    async def run() -> None:
+        session = make_session([FakeClient()])
+        await session.async_connect()
+        with pytest.raises(TimeoutError):
+            await session.async_check_meter_communication(2, timeout=0.01)
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
 def test_reconnect_wraps_transient_client_start_failure_for_bounded_retry() -> None:
     async def run() -> None:
         session = make_session(
