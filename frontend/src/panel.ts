@@ -757,6 +757,7 @@ export class CircuitSetupPanel extends LitElement {
     this.importFailedDeviceId = null;
     this.error = "";
     this.requestUpdate();
+    let fallback = "Adoption is unavailable for this meter.";
     try {
       await api.adoptDevice(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -765,16 +766,20 @@ export class CircuitSetupPanel extends LitElement {
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.setup = setup;
       this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
+      fallback = "Meter setup could not be loaded.";
       await this.subscribeSetup(connectionGeneration, api);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      fallback = "Meter settings could not be loaded.";
       const importedConfiguration = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.setMeterConfiguration(importedConfiguration);
+      fallback = "Topology evidence could not be loaded.";
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = null;
       this.announcement = "Meter imported into ESPHome Builder.";
       this.showTopologyResult(result);
+      fallback = "Saved work could not be loaded.";
       await this.restoreActiveWork(api, deviceId, generation);
     } catch (error) {
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -783,7 +788,7 @@ export class CircuitSetupPanel extends LitElement {
         ? "Finish or cancel current work before importing another meter."
         : error instanceof Error && error.message === "helper rebind timed out"
           ? "Import completed, but Home Assistant is still reconnecting. Retry import or reload the helper."
-          : this.safeErrorMessage(error, "Adoption is unavailable for this meter.");
+          : this.safeErrorMessage(error, fallback);
       this.fail(error, message);
     } finally {
       if (this.ownsOperation(generation, api, deviceId)) {
@@ -816,6 +821,7 @@ export class CircuitSetupPanel extends LitElement {
   private async loadTopology(): Promise<void> {
     if (!this.api || !this.selectedDeviceId) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const generation = ++this.operationGeneration;
+    let fallback = "Topology evidence could not be loaded.";
     await this.run(async () => {
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -823,12 +829,14 @@ export class CircuitSetupPanel extends LitElement {
       if (!this.selectedConfigurationAvailable()) {
         this.configurationMode = "runtime_only";
       } else {
+        fallback = "Meter settings could not be loaded.";
         const configuration = await api.getMeterConfiguration(deviceId);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.setMeterConfiguration(configuration);
       }
+      fallback = "Saved work could not be loaded.";
       await this.restoreActiveWork(api, deviceId, generation);
-    }, "Topology evidence could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
+    }, () => fallback, () => this.ownsOperation(generation, api, deviceId));
   }
 
   private async restoreActiveWork(api: HelperApi, deviceId: string, generation: number): Promise<void> {
@@ -2262,7 +2270,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private async run(
     operation: () => Promise<void>,
-    fallback: string,
+    fallback: string | (() => string),
     isCurrent: () => boolean = () => true,
   ): Promise<void> {
     this.error = "";
@@ -2270,7 +2278,7 @@ export class CircuitSetupPanel extends LitElement {
       await operation();
     } catch (error) {
       if (!isCurrent()) return;
-      this.fail(error, this.safeErrorMessage(error, fallback));
+      this.fail(error, this.safeErrorMessage(error, typeof fallback === "function" ? fallback() : fallback));
     }
     if (isCurrent()) this.requestUpdate();
   }

@@ -379,7 +379,7 @@ class MeterConfigurationInventory:
             warnings.append("stored_semantics_stale")
         if configuration.meter.update_interval_s in (30, 60):
             warnings.append("slow_interval_extends_calibration")
-        automatic_candidates = () if stale else automatic_total_candidates(configuration)
+        automatic_candidates = automatic_total_candidates(configuration)
         migration = matching.totals_migration if matching is not None else None
         parent_links = (
             migration.legacy_parent_links if migration is not None and not stale

@@ -2057,6 +2057,31 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector(".existing-configuration")).toBeNull();
   });
 
+  it.each([true, false])("identifies settings failures accurately when opening a meter (rebind=%s)", async (rebind) => {
+    const meter = meterResponse();
+    const configured = { ...device, configuration: "meter.yaml" };
+    const responses: Record<string, unknown> = {
+      setup_status: { state: "device_discovered", devices: [configured], bound_device_id: device.entry_id },
+      adopt_device: { device_id: device.entry_id, configuration: "meter.yaml" },
+      get_topology: meter.topology,
+      get_meter_configuration: new Error("private server detail"),
+      get_active_work: { session: null, transaction: null, verified_calibration: null },
+    };
+    const panel = await mount(makeHass(responses));
+    const state = panel as unknown as { error: string; adopt: (id: string) => Promise<void>; configureDevice: (id: string) => Promise<void> };
+    if (rebind) await state.adopt(device.entry_id);
+    else await state.configureDevice(device.entry_id);
+    await panel.updateComplete;
+    expect(state.error).toBe("Meter settings could not be loaded.");
+    expect(text(panel)).not.toContain("private server detail");
+    expect(text(panel)).not.toContain("Adoption is unavailable");
+    expect(text(panel)).not.toContain("Topology evidence could not be loaded");
+
+    responses.get_meter_configuration = meter;
+    await state.configureDevice(device.entry_id);
+    expect(state.error).toBe("");
+  });
+
   it("loads imported meter configuration before topology after adoption", async () => {
     const operations: string[] = [];
     let adopted = false;

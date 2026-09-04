@@ -4573,6 +4573,7 @@ class CircuitSetupPanel extends i$2 {
     this.importFailedDeviceId = null;
     this.error = "";
     this.requestUpdate();
+    let fallback = "Adoption is unavailable for this meter.";
     try {
       await api.adoptDevice(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -4581,21 +4582,25 @@ class CircuitSetupPanel extends i$2 {
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.setup = setup2;
       this.setupDeviceIds = new Set(setup2.devices.map((device2) => device2.entry_id));
+      fallback = "Meter setup could not be loaded.";
       await this.subscribeSetup(connectionGeneration, api);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      fallback = "Meter settings could not be loaded.";
       const importedConfiguration = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.setMeterConfiguration(importedConfiguration);
+      fallback = "Topology evidence could not be loaded.";
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = null;
       this.announcement = "Meter imported into ESPHome Builder.";
       this.showTopologyResult(result);
+      fallback = "Saved work could not be loaded.";
       await this.restoreActiveWork(api, deviceId, generation);
     } catch (error) {
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = deviceId;
-      const message = error.code === "device_busy" ? "Finish or cancel current work before importing another meter." : error instanceof Error && error.message === "helper rebind timed out" ? "Import completed, but Home Assistant is still reconnecting. Retry import or reload the helper." : this.safeErrorMessage(error, "Adoption is unavailable for this meter.");
+      const message = error.code === "device_busy" ? "Finish or cancel current work before importing another meter." : error instanceof Error && error.message === "helper rebind timed out" ? "Import completed, but Home Assistant is still reconnecting. Retry import or reload the helper." : this.safeErrorMessage(error, fallback);
       this.fail(error, message);
     } finally {
       if (this.ownsOperation(generation, api, deviceId)) {
@@ -4630,6 +4635,7 @@ class CircuitSetupPanel extends i$2 {
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const generation = ++this.operationGeneration;
+    let fallback = "Topology evidence could not be loaded.";
     await this.run(async () => {
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -4637,12 +4643,14 @@ class CircuitSetupPanel extends i$2 {
       if (!this.selectedConfigurationAvailable()) {
         this.configurationMode = "runtime_only";
       } else {
+        fallback = "Meter settings could not be loaded.";
         const configuration = await api.getMeterConfiguration(deviceId);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.setMeterConfiguration(configuration);
       }
+      fallback = "Saved work could not be loaded.";
       await this.restoreActiveWork(api, deviceId, generation);
-    }, "Topology evidence could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
+    }, () => fallback, () => this.ownsOperation(generation, api, deviceId));
   }
   async restoreActiveWork(api, deviceId, generation) {
     if (!this.topology) return;
@@ -6186,7 +6194,7 @@ class CircuitSetupPanel extends i$2 {
       await operation();
     } catch (error) {
       if (!isCurrent()) return;
-      this.fail(error, this.safeErrorMessage(error, fallback));
+      this.fail(error, this.safeErrorMessage(error, typeof fallback === "function" ? fallback() : fallback));
     }
     if (isCurrent()) this.requestUpdate();
   }

@@ -1517,6 +1517,34 @@ def test_stale_stored_semantics_are_ignored_and_reported() -> None:
     assert "stored_semantics_stale" in inventory.warnings
 
 
+@pytest.mark.parametrize("stale", (False, True))
+def test_source_automatic_totals_remain_coherent_when_saved_metadata_is_stale(stale: bool) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+        build_meter_configuration_mutation,
+    )
+    from tests.test_config_mutator import _native_total_setup
+
+    snapshot, topology, current = _native_total_setup(5)
+    requested = replace(current.configuration,
+        channels=tuple(replace(channel, role=CircuitRole.GRID) if channel.channel in (1, 2)
+            else channel for channel in current.configuration.channels),
+        automatic_totals=(AutomaticTotalSettings("grid-ct1-ct2", True, TotalOutputSettings(True, True, True)),))
+    source = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
+    stored = StoredMeterConfiguration("f" * 64, requested.meter, requested.channels,
+        requested.default_totals, requested.automatic_totals, (), requested.power_quality, requested.status_fields)
+    loaded = MeterConfigurationInventory.from_document("a" * 32,
+        ESPHomeConfigDocument.parse(source), topology, current.ct_catalog,
+        current.voltage_transformer_catalog, sha256(source.encode()).hexdigest(),
+        stored_configuration=stored if stale else None)
+
+    assert loaded.configuration.automatic_totals == requested.automatic_totals
+    assert [candidate.candidate_id for candidate in loaded.automatic_candidates] == ["grid-ct1-ct2"]
+    assert loaded.automatic_totals[0].enabled
+    assert loaded.stale_automatic_total_settings == ()
+    assert not loaded.capabilities.managed_automatic_totals
+    assert ("stored_semantics_stale" in loaded.warnings) is stale
+
+
 def test_inventory_rejects_malformed_active_ct_configuration() -> None:
     """Ignoring a missing active CT gain would create an unsafe partial plan."""
     content = _document().replace("  current_cal_ct6: 27524\n", "")
