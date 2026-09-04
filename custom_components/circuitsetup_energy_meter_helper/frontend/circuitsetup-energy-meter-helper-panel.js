@@ -1751,13 +1751,13 @@ function configReview(status, configuration = null, impact = null, totals = null
   `;
 }
 function canAdoptTotals(meter) {
-  return meter.capabilities.configuration_authoritative && meter.totals.migration.native_visibility_resolved && !meter.capabilities.reason_codes.includes("config_contract_upgrade_required");
+  return meter.capabilities.configuration_authoritative && (meter.capabilities.reason_codes.includes("source_totals_adoptable") || meter.totals.migration.native_visibility_resolved && !meter.capabilities.reason_codes.includes("config_contract_upgrade_required"));
 }
 function totalsEditable(meter, capability) {
-  return meter.capabilities.configuration_authoritative && (meter.capabilities[capability] || meter.configuration.totals_change_intent?.adopt_managed_totals === true && canAdoptTotals(meter));
+  return meter.capabilities.configuration_authoritative && (capability !== "native_totals_writable" || meter.totals.migration.native_visibility_resolved) && (meter.capabilities[capability] || meter.configuration.totals_change_intent?.adopt_managed_totals === true && canAdoptTotals(meter));
 }
 function legacyTotalsNotice(capabilities) {
-  return b`${capabilities.reason_codes.includes("legacy_custom_totals_unmanaged") || capabilities.reason_codes.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band">Arbitrary unmanaged custom totals remain outside helper control. Recognized existing Watts/Amps/kWh retain their source visibility, names, and energy links. Supported standalone Watts/Amps can be replaced by helper outputs after explicit editing. Totals with existing energy links or custom native formulas must be edited in ESPHome Device Builder. Preserved unsupported external custom energy remains unchanged and outside the computed entity count.</p>` : A}`;
+  return b`${capabilities.reason_codes.includes("legacy_custom_totals_unmanaged") || capabilities.reason_codes.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band">Arbitrary unmanaged custom totals remain outside helper control. Recognized existing Watts/Amps/kWh remain unchanged until edited. After adoption, editing a supported total creates replacement helper entities and new kWh counters; its original sensors are retained internally. Unresolved native default totals remain read-only. Preserved unsupported external custom energy remains unchanged and outside the computed entity count. Review these changes before saving.</p>` : A}`;
 }
 function totalsMigrationReview(meter, update, preview = null, fresh = true, readOnly = false, transaction2 = null) {
   const { configuration, totals, capabilities } = meter;
@@ -1769,7 +1769,7 @@ function totalsMigrationReview(meter, update, preview = null, fresh = true, read
   return b`
     ${adoptionRequired ? b`<section class="totals-migration" aria-labelledby="totals-adoption-heading">
       <h2 id="totals-adoption-heading">Legacy read-only totals</h2>
-      <p>Detected official native totals are read-only until explicit adoption. Opening this page does not change their formulas, visibility or ownership.</p>
+      <p>Detected totals are read-only until explicit adoption. Opening this page does not change their formulas, visibility or ownership. Supported source totals can be adopted independently of unresolved native defaults.</p>
       ${canAdoptTotals(meter) && !readOnly ? b`<button class="secondary" ?disabled=${intent.adopt_managed_totals}
         @click=${() => {
     if (canAdoptTotals(meter) && !intent.adopt_managed_totals) update({ ...configuration, totals_change_intent: { ...intent, adopt_managed_totals: true } });

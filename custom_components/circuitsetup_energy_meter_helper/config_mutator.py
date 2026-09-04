@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import re
-import yaml  # type: ignore[import-untyped]
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import Protocol
-from yaml.nodes import MappingNode, ScalarNode, SequenceNode  # type: ignore[import-untyped]
+
+import yaml  # type: ignore[import-untyped]
+from yaml.nodes import (  # type: ignore[import-untyped]
+    MappingNode,
+    ScalarNode,
+    SequenceNode,
+)
 
 from .config_document import (
     MANAGED_BLOCK_MARKERS,

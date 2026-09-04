@@ -26,6 +26,7 @@ from custom_components.circuitsetup_energy_meter_helper.meter_configuration impo
     ChannelTotalSource,
     CircuitRole,
     ElectricalSystem,
+    MeasurementMethod,
     NativeTotalSource,
     TotalOutputSettings,
     TotalsChangeIntent,
@@ -196,6 +197,7 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
                 channels = tuple(replace(item, enabled=False, role=CircuitRole.UNUSED) if item.channel == 5 else item for item in channels)
         else:
             aggregates = (*aggregates, replace(charger, aggregate_id="parent", name="Parent",
+                measurement_method=MeasurementMethod.DIRECT,
                 sources=(AggregateTotalSource("aggregate", "total-charger"),)))
         requested = replace(original, channels=channels, aggregates=aggregates,
             meter=replace(original.meter, electrical_system=ElectricalSystem.SPLIT_PHASE_120_240),
@@ -299,7 +301,8 @@ def test_editing_existing_energy_relationship_selects_its_power_for_replacement(
     previous = inventory.configuration
     charger = next(item for item in previous.aggregates if item.aggregate_id == "total-charger")
     if change == "parent":
-        changed = replace(charger, aggregate_id="parent", name="Parent", sources=(AggregateTotalSource("aggregate", charger.aggregate_id),))
+        changed = replace(charger, aggregate_id="parent", name="Parent", measurement_method=MeasurementMethod.DIRECT,
+            sources=(AggregateTotalSource("aggregate", charger.aggregate_id),))
         requested = replace(previous, aggregates=(*previous.aggregates, changed))
     else:
         requested = replace(previous, aggregates=tuple(replace(item, name="Renamed") if item == charger else item for item in previous.aggregates))
