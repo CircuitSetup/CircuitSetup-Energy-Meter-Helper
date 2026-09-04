@@ -11,10 +11,13 @@ from custom_components.circuitsetup_energy_meter_helper.log_parser import (
     CalibrationLogLine,
     LogEvidenceError,
     OffsetRunEvidence,
+    OffsetTableSnapshot,
     PowerOffsetRunEvidence,
     parse_calibration_sources,
     parse_gain_run,
+    parse_offset_clear,
     parse_offset_run,
+    parse_offset_table_snapshot,
     parse_power_offset_run,
     parse_restore,
 )
@@ -486,6 +489,64 @@ def test_parses_esphome_colon_after_offset_button_prefix() -> None:
 
 
 @pytest.mark.parametrize(
+    ("stage", "header", "columns", "comparison", "rows"),
+    (
+        (
+            1,
+            "Offset mismatch: using flash values",
+            "offset_voltage | offset_current",
+            "| | config | flash | config | flash |",
+            (
+                "| A | -1 | 0 | 1 | 0 |",
+                "| B | -1 | 0 | 1 | 0 |",
+                "| C | -1 | 0 | 1 | 0 |",
+            ),
+        ),
+        (
+            2,
+            "Power offset mismatch: using flash values",
+            "offset_active_power | offset_reactive_power",
+            "| | config | flash | config | flash |",
+            (
+                "| A | -1 | 0 | 1 | 0 |",
+                "| B | -1 | 0 | 1 | 0 |",
+                "| C | -1 | 0 | 1 | 0 |",
+            ),
+        ),
+    ),
+)
+def test_offset_snapshot_rejects_ambiguous_tags_only_on_signed_comparison_rows(
+    stage: int,
+    header: str,
+    columns: str,
+    comparison: str,
+    rows: tuple[str, str, str],
+) -> None:
+    source = (header, f"| Phase | {columns} |", comparison, *rows)
+    lines = [
+        CalibrationLogLine(
+            3,
+            4,
+            11.0 + index,
+            f"[W][atm90e32] [CALIBRATION][meter_main1]"
+            f"{' [CALIBRATION][other]' if index > 2 else ''} {line}",
+        )
+        for index, line in enumerate(source)
+    ]
+    with pytest.raises(
+        LogEvidenceError, match="unassignable or duplicate instance tag"
+    ):
+        parse_offset_table_snapshot(
+            lines,
+            connection_generation=3,
+            operation_sequence=4,
+            expected_instance_ids={"meter_main1"},
+            started_after=10.0,
+            offset_stage=stage,
+        )
+
+
+@pytest.mark.parametrize(
     ("fixture", "parser", "button", "guidance"),
     (
         (
@@ -583,6 +644,73 @@ def test_parses_combined_offset_save_and_verification_terminals() -> None:
 
 
 @pytest.mark.parametrize(
+    ("parser", "fixture", "button", "completed"),
+    (
+        (
+            parse_offset_run,
+            "offset_success.log",
+            "1. Run Main Meter 1 Offset Cal",
+            "Offset calibration completed and verified.",
+        ),
+        (
+            parse_power_offset_run,
+            "power_offset_success.log",
+            "2. Run Main Meter 1 Power Offset Cal",
+            "Power offset calibration completed and verified.",
+        ),
+    ),
+)
+def test_stock_offset_save_is_not_claimed_as_register_verification(
+    parser,
+    fixture: str,
+    button: str,
+    completed: str,
+) -> None:
+    lines = [item for item in log_lines(fixture) if completed not in item.line]
+    kwargs = {
+        "connection_generation": 3,
+        "operation_sequence": 8,
+        "target_instance_id": "meter_main1",
+        "button_name": button,
+        "dispatched_after": 10.0,
+    }
+    with pytest.raises(LogEvidenceError, match="terminal"):
+        parser(lines, **kwargs)
+    evidence = parser(lines, **kwargs, allow_unverified=True)
+    assert evidence.flash_saved
+    assert not evidence.register_verified
+    assert tuple(phase.phase for phase in evidence.phases) == ("A", "B", "C")
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "Offset calibration completed and verified. unexpected",
+        "Failed to save offset calibration to memory!",
+        "Offset calibration failed; rollback readback verification failed.",
+        "SPI read mismatch: expected 0x55AA, got 0x0000",
+    ),
+)
+def test_stock_offset_compatibility_does_not_hide_late_failures(tail: str) -> None:
+    lines = [
+        item
+        for item in log_lines("offset_success.log")
+        if "Offset calibration completed and verified." not in item.line
+    ]
+    lines.append(CalibrationLogLine(3, 8, 100.0, f"[CALIBRATION][meter_main1] {tail}"))
+    with pytest.raises(LogEvidenceError):
+        parse_offset_run(
+            lines,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name="1. Run Main Meter 1 Offset Cal",
+            dispatched_after=10.0,
+            allow_unverified=True,
+        )
+
+
+@pytest.mark.parametrize(
     ("generation", "sequence", "start"),
     [(2, 8, 11.0), (3, 7, 11.0), (3, 8, 0.0)],
 )
@@ -614,9 +742,7 @@ def test_offset_run_rejects_stale_or_wrong_correlation(
             "instance",
         ),
         (
-            lambda line: line.replace(
-                "[CALIBRATION][meter_main1]", "[CALIBRATION]"
-            ),
+            lambda line: line.replace("[CALIBRATION][meter_main1]", "[CALIBRATION]"),
             "instance tag",
         ),
     ],
@@ -971,9 +1097,7 @@ def test_restore_rejects_missing_failure_or_out_of_range_offset_evidence(
             expected_instance_ids={"meter_main1"},
             started_after=10.0,
             operation_sequence=0,
-            expected_categories={
-                "meter_main1": {"gain", "offset", "power_offset"}
-            },
+            expected_categories={"meter_main1": {"gain", "offset", "power_offset"}},
         )
 
 
@@ -985,9 +1109,7 @@ def test_gain_only_restore_ignores_unrequested_offset_config_fallback() -> None:
         if "offset calibration from memory" not in item.line.casefold()
         and "offset_active_power" not in item.line
         and "offset_voltage" not in item.line
-        and not (
-            "[atm90e32:378]" in item.line or "[atm90e32:389]" in item.line
-        )
+        and not ("[atm90e32:378]" in item.line or "[atm90e32:389]" in item.line)
     ]
     lines.extend(
         (
@@ -1022,9 +1144,7 @@ def test_offset_restore_rejects_terminal_and_table_from_different_sequences() ->
     lines = [
         CalibrationLogLine(
             item.connection_generation,
-            1
-            if "Offset calibration restore verified." in item.line
-            else 2,
+            1 if "Offset calibration restore verified." in item.line else 2,
             item.arrived_at,
             item.line,
         )
@@ -1039,6 +1159,363 @@ def test_offset_restore_rejects_terminal_and_table_from_different_sequences() ->
             started_after=10.0,
             operation_sequence=1,
             expected_categories={"meter_main1": {"offset"}},
+        )
+
+
+def test_stock_offset_restore_table_requires_explicit_unverified_opt_in() -> None:
+    lines = [
+        item
+        for item in log_lines("restore_positive.log", sequence=0)
+        if "Offset calibration restore verified." not in item.line
+    ]
+    arguments = {
+        "connection_generation": 3,
+        "expected_instance_ids": {"meter_main1"},
+        "started_after": 10.0,
+        "operation_sequence": 0,
+        "expected_categories": {"meter_main1": {"offset"}},
+    }
+
+    with pytest.raises(LogEvidenceError, match="offset restore verification"):
+        parse_restore(lines, **arguments)
+
+    evidence = parse_restore(lines, **arguments, allow_unverified_offset_tables=True)[
+        "meter_main1"
+    ]
+    assert evidence.phase_offsets == ((-12, 31), (-13, 32), (-14, 33))
+    assert not evidence.offset_register_verified
+
+
+def test_stock_offset_snapshot_uses_flash_mismatch_values_and_preserves_zeroes() -> (
+    None
+):
+    source = (
+        "[W][atm90e32:311] [CALIBRATION][addon1_2] Offset mismatch: using flash values",
+        "[W][atm90e32:314] [CALIBRATION][addon1_2] | Phase | offset_voltage | offset_current |",
+        "[W][atm90e32:315] [CALIBRATION][addon1_2] | | config | flash | config | flash |",
+        "[W][atm90e32:319] [CALIBRATION][addon1_2] | A | -10 | 0 | 30 | 0 |",
+        "[W][atm90e32:319] [CALIBRATION][addon1_2] | B | -10 | 0 | 30 | 0 |",
+        "[W][atm90e32:319] [CALIBRATION][addon1_2] | C | -10 | 0 | 30 | 0 |",
+    )
+    lines = [
+        CalibrationLogLine(
+            3,
+            4,
+            11.0 + index,
+            line,
+        )
+        for index, line in enumerate(source)
+    ]
+
+    snapshot = parse_offset_table_snapshot(
+        lines,
+        connection_generation=3,
+        operation_sequence=4,
+        expected_instance_ids={"addon1_2"},
+        started_after=10.0,
+        offset_stage=1,
+    )["addon1_2"]
+
+    assert snapshot == OffsetTableSnapshot(
+        3,
+        "addon1_2",
+        1,
+        ((0, 0), (0, 0), (0, 0)),
+        "mismatch",
+        False,
+        True,
+    )
+
+
+def test_offset_snapshot_keeps_silence_unavailable_and_rejects_delayed_spi_failure() -> (
+    None
+):
+    assert parse_offset_table_snapshot(
+        (),
+        connection_generation=3,
+        operation_sequence=4,
+        expected_instance_ids={"meter_main1"},
+        started_after=10.0,
+        offset_stage=1,
+    ) == {"meter_main1": None}
+
+    lines = log_lines("restore_positive.log", sequence=4)
+    lines.append(
+        CalibrationLogLine(
+            3, 4, 99.0, "[W][atm90e32] SPI read mismatch: expected 0x55AA, got 0x0000"
+        )
+    )
+    with pytest.raises(LogEvidenceError, match="SPI read mismatch"):
+        parse_offset_table_snapshot(
+            lines,
+            connection_generation=3,
+            operation_sequence=4,
+            expected_instance_ids={"meter_main1"},
+            started_after=10.0,
+            offset_stage=1,
+        )
+
+
+def test_offset_snapshot_rejects_duplicate_tags_and_unassignable_readback_failure() -> (
+    None
+):
+    duplicated = [
+        CalibrationLogLine(
+            item.connection_generation,
+            item.operation_sequence,
+            item.arrived_at,
+            item.line.replace(
+                "[CALIBRATION][meter_main1]",
+                "[CALIBRATION][meter_main1] [CALIBRATION][other]",
+            ),
+        )
+        for item in log_lines("restore_positive.log", sequence=4)
+    ]
+    arguments = {
+        "connection_generation": 3,
+        "operation_sequence": 4,
+        "expected_instance_ids": {"meter_main1"},
+        "started_after": 10.0,
+        "offset_stage": 1,
+    }
+    with pytest.raises(
+        LogEvidenceError, match="unassignable or duplicate instance tag"
+    ):
+        parse_offset_table_snapshot(duplicated, **arguments)
+
+    unassignable_failure = log_lines("restore_positive.log", sequence=4)
+    unassignable_failure.append(
+        CalibrationLogLine(
+            3,
+            4,
+            99.0,
+            "[E][atm90e32] Offset readback failed for Phase A: offset_voltage 1/0",
+        )
+    )
+    with pytest.raises(LogEvidenceError, match="unassignable"):
+        parse_offset_table_snapshot(unassignable_failure, **arguments)
+
+
+@pytest.mark.parametrize(
+    ("stage", "failure"),
+    (
+        (1, "Offset calibration restore and config fallback both failed verification."),
+        (
+            2,
+            "Power offset calibration restore failed verification; config values verified.",
+        ),
+    ),
+)
+def test_stock_snapshot_and_opt_in_restore_reject_actual_enhanced_failures(
+    stage: int, failure: str
+) -> None:
+    lines = log_lines("restore_positive.log", sequence=4)
+    lines.append(
+        CalibrationLogLine(
+            3, 4, 99.0, f"[E][atm90e32] [CALIBRATION][meter_main1] {failure}"
+        )
+    )
+    with pytest.raises(LogEvidenceError, match="restore failed"):
+        parse_offset_table_snapshot(
+            lines,
+            connection_generation=3,
+            operation_sequence=4,
+            expected_instance_ids={"meter_main1"},
+            started_after=10.0,
+            offset_stage=stage,
+        )
+    category = "power_offset" if stage == 2 else "offset"
+    with pytest.raises(LogEvidenceError, match="restore failed"):
+        parse_restore(
+            lines,
+            connection_generation=3,
+            expected_instance_ids={"meter_main1"},
+            started_after=10.0,
+            operation_sequence=4,
+            expected_categories={"meter_main1": {category}},
+            allow_unverified_offset_tables=True,
+        )
+
+
+def test_offset_clear_parser_is_stage_isolated_and_marks_no_stored_as_noop() -> None:
+    rows = (
+        "[I][atm90e32.button:051] z1. Clear Main Meter 1 Offset Cal",
+        "[I][atm90e32:1176] [CALIBRATION][meter_main1] No stored offset calibrations to clear. Current values:",
+        "[I][atm90e32:1178] [CALIBRATION][meter_main1] | Phase | offset_voltage | offset_current |",
+        "[I][atm90e32:1181] [CALIBRATION][meter_main1] | A | 0 | 0 |",
+        "[I][atm90e32:1181] [CALIBRATION][meter_main1] | B | 0 | 0 |",
+        "[I][atm90e32:1181] [CALIBRATION][meter_main1] | C | 0 | 0 |",
+    )
+    lines = [
+        CalibrationLogLine(3, 9, 11.0 + index, line) for index, line in enumerate(rows)
+    ]
+
+    evidence = parse_offset_clear(
+        lines,
+        connection_generation=3,
+        operation_sequence=9,
+        target_instance_id="meter_main1",
+        button_name="z1. Clear Main Meter 1 Offset Cal",
+        dispatched_after=10.0,
+        offset_stage=1,
+    )
+    assert evidence.no_stored and not evidence.cleared
+    assert evidence.phase_values == ((0, 0), (0, 0), (0, 0))
+
+    wrong_stage = [
+        CalibrationLogLine(
+            item.connection_generation,
+            item.operation_sequence,
+            item.arrived_at,
+            item.line.replace(
+                "offset_voltage | offset_current",
+                "offset_active_power | offset_reactive_power",
+            ),
+        )
+        for item in lines
+    ]
+    with pytest.raises(LogEvidenceError, match="another offset stage"):
+        parse_offset_clear(
+            wrong_stage,
+            connection_generation=3,
+            operation_sequence=9,
+            target_instance_id="meter_main1",
+            button_name="z1. Clear Main Meter 1 Offset Cal",
+            dispatched_after=10.0,
+            offset_stage=1,
+        )
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    (
+        "Failed to clear stored offsets!",
+        "Failed to save offset calibration to memory!",
+        "Offset readback failed for Phase A: expected 0x0000, got 0x0001",
+        "Offset calibration failed; rollback readback verification failed.",
+        "SPI read mismatch: expected 0x55AA, got 0x0000",
+    ),
+)
+def test_offset_clear_parser_requires_one_clean_clear_terminal(diagnostic: str) -> None:
+    rows = (
+        "[I][atm90e32.button:051] z1. Clear Main Meter 1 Offset Cal",
+        "[I][atm90e32:1188] [CALIBRATION][meter_main1] Clearing stored offset calibrations and restoring config-defined values",
+        "[I][atm90e32:1190] [CALIBRATION][meter_main1] | Phase | offset_voltage | offset_current |",
+        "[I][atm90e32:1200] [CALIBRATION][meter_main1] | A | 0 | 0 |",
+        "[I][atm90e32:1200] [CALIBRATION][meter_main1] | B | 0 | 0 |",
+        "[I][atm90e32:1200] [CALIBRATION][meter_main1] | C | 0 | 0 |",
+        "[I][atm90e32:1219] [CALIBRATION][meter_main1] Offsets cleared.",
+    )
+    lines = [
+        CalibrationLogLine(3, 9, 11.0 + index, line) for index, line in enumerate(rows)
+    ]
+
+    clean = parse_offset_clear(
+        lines,
+        connection_generation=3,
+        operation_sequence=9,
+        target_instance_id="meter_main1",
+        button_name="z1. Clear Main Meter 1 Offset Cal",
+        dispatched_after=10.0,
+        offset_stage=1,
+    )
+    assert clean.cleared and not clean.no_stored
+
+    lines.append(
+        CalibrationLogLine(
+            3, 9, 99.0, f"[E][atm90e32] [CALIBRATION][meter_main1] {diagnostic}"
+        )
+    )
+    with pytest.raises(LogEvidenceError):
+        parse_offset_clear(
+            lines,
+            connection_generation=3,
+            operation_sequence=9,
+            target_instance_id="meter_main1",
+            button_name="z1. Clear Main Meter 1 Offset Cal",
+            dispatched_after=10.0,
+            offset_stage=1,
+        )
+
+
+def test_power_clear_rejects_actual_readback_and_clear_requires_ordered_isolated_evidence() -> (
+    None
+):
+    power_rows = (
+        "[I][atm90e32.button:052] z2. Clear Main Meter 1 Power Offset Cal",
+        "[I][atm90e32:1238] [CALIBRATION][meter_main1] Clearing stored power offsets and restoring config-defined values",
+        "[I][atm90e32:1240] [CALIBRATION][meter_main1] | Phase | offset_active_power | offset_reactive_power |",
+        "[I][atm90e32:1250] [CALIBRATION][meter_main1] | A | 0 | 0 |",
+        "[I][atm90e32:1250] [CALIBRATION][meter_main1] | B | 0 | 0 |",
+        "[I][atm90e32:1250] [CALIBRATION][meter_main1] | C | 0 | 0 |",
+        "[I][atm90e32:1269] [CALIBRATION][meter_main1] Power offsets cleared.",
+    )
+    power_lines = [
+        CalibrationLogLine(3, 9, 11.0 + index, line)
+        for index, line in enumerate(power_rows)
+    ]
+    power_lines.append(
+        CalibrationLogLine(
+            3,
+            9,
+            99.0,
+            "[E][atm90e32] [CALIBRATION][meter_main1] Power offset readback failed for Phase A: offset_active_power 1/0",
+        )
+    )
+    with pytest.raises(LogEvidenceError, match="readback"):
+        parse_offset_clear(
+            power_lines,
+            connection_generation=3,
+            operation_sequence=9,
+            target_instance_id="meter_main1",
+            button_name="z2. Clear Main Meter 1 Power Offset Cal",
+            dispatched_after=10.0,
+            offset_stage=2,
+        )
+
+    rows = (
+        "[I][atm90e32.button:051] z1. Clear Main Meter 1 Offset Cal",
+        "[I][atm90e32:1188] [CALIBRATION][meter_main1] Clearing stored offset calibrations and restoring config-defined values",
+        "[I][atm90e32:1219] [CALIBRATION][meter_main1] Offsets cleared.",
+        "[I][atm90e32:1190] [CALIBRATION][meter_main1] | Phase | offset_voltage | offset_current |",
+        "[I][atm90e32:1200] [CALIBRATION][meter_main1] | A | 0 | 0 |",
+        "[I][atm90e32:1200] [CALIBRATION][meter_main1] | B | 0 | 0 |",
+        "[I][atm90e32:1200] [CALIBRATION][meter_main1] | C | 0 | 0 |",
+    )
+    unordered = [
+        CalibrationLogLine(3, 9, 11.0 + index, line) for index, line in enumerate(rows)
+    ]
+    with pytest.raises(LogEvidenceError, match="order"):
+        parse_offset_clear(
+            unordered,
+            connection_generation=3,
+            operation_sequence=9,
+            target_instance_id="meter_main1",
+            button_name="z1. Clear Main Meter 1 Offset Cal",
+            dispatched_after=10.0,
+            offset_stage=1,
+        )
+    interleaved = (
+        unordered[:2]
+        + [
+            CalibrationLogLine(
+                3,
+                9,
+                12.5,
+                "[I][atm90e32] [CALIBRATION][meter_main1] Power offset calibration saved to memory.",
+            )
+        ]
+        + unordered[2:]
+    )
+    with pytest.raises(LogEvidenceError):
+        parse_offset_clear(
+            interleaved,
+            connection_generation=3,
+            operation_sequence=9,
+            target_instance_id="meter_main1",
+            button_name="z1. Clear Main Meter 1 Offset Cal",
+            dispatched_after=10.0,
+            offset_stage=1,
         )
 
 
@@ -1124,7 +1601,5 @@ def test_restore_rejects_contradictory_evidence_without_one_expected_instance_ta
             expected_instance_ids={"meter_main1"},
             started_after=10.0,
             operation_sequence=0,
-            expected_categories={
-                "meter_main1": {"gain", "offset", "power_offset"}
-            },
+            expected_categories={"meter_main1": {"gain", "offset", "power_offset"}},
         )

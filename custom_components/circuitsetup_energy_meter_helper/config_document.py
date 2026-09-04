@@ -65,6 +65,10 @@ MANAGED_BLOCK_MARKERS = {
         "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1",
         "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1",
     ),
+    "calibrated_offsets": (
+        "# CircuitSetup Energy Meter Helper: calibrated offsets v1",
+        "# End CircuitSetup Energy Meter Helper: calibrated offsets v1",
+    ),
     "aggregates": (
         "# CircuitSetup Energy Meter Helper: aggregates v1",
         "# End CircuitSetup Energy Meter Helper: aggregates v1",

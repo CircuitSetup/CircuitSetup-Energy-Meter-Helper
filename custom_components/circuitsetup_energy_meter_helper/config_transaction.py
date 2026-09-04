@@ -12,7 +12,7 @@ from enum import StrEnum
 from hashlib import sha256
 from math import isfinite
 from time import monotonic
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from .config_document import ESPHomeConfigDocument
@@ -50,6 +50,12 @@ from .models import (
     StoredTopologyEvidence,
     SubstitutionChange,
     canonical_mac,
+)
+from .offset_recovery import (
+    OffsetRecovery,
+    OffsetRecoveryRecord,
+    StockOffsetFinalization,
+    StockOffsetPreparation,
 )
 from .session_manager import ConfigLease, SessionManager
 from .store import (
@@ -168,6 +174,14 @@ class DeviceBuilder(Protocol):
 
 
 class VerifiedPersistence(Protocol):
+    async def async_advance_offset_configuration_source(
+        self,
+        mac: str,
+        expected_source_sha256: str,
+        proposed_sha256: str,
+        record: StoredMeterRecord,
+    ) -> bool: ...
+
     async def async_get_meter_record_fingerprint(self, mac: str) -> str: ...
 
     async def async_get_meter_configuration(
@@ -261,6 +275,9 @@ class ValidationDetail:
     warning_record_count: int
 
 
+type TransactionPurpose = Literal["install_configuration", "save_calibration", "offset_preparation", "offset_finalization"]
+
+
 @dataclass(frozen=True, slots=True)
 class TransactionStatus:
     """The complete and deliberately YAML-free public transaction surface."""
@@ -277,6 +294,7 @@ class TransactionStatus:
     upload_progress: tuple[JobProgress, ...] = ()
     aggregate_entity_mismatch: bool = False
     full_meter_configuration_verified: bool = False
+    purpose: TransactionPurpose = "install_configuration"
 
 
 @dataclass(slots=True)
@@ -326,6 +344,10 @@ class _ConfigTransaction:
     persistence_commit_started: bool = field(default=False, repr=False)
     expiry_cleanup_started: bool = field(default=False, repr=False)
     closed: bool = field(default=False, repr=False)
+    offset_preparation: StockOffsetPreparation | None = field(default=None, repr=False)
+    offset_finalization: StockOffsetFinalization | None = field(default=None, repr=False)
+    preparation_guard: Callable[[], None] | None = field(default=None, repr=False)
+    purpose: TransactionPurpose = "install_configuration"
 
     async def async_release_reservation(self) -> None:
         """Drain an exact pre-write release even if this caller is cancelled."""
@@ -360,6 +382,7 @@ class _ConfigTransaction:
         self.meter_record = None
         self.meter_record_fingerprint = None
         self._legacy_ct_selections = ()
+        self.preparation_guard = None
         self.closed = True
 
     @property
@@ -392,6 +415,7 @@ class ConfigTransactionManager:
         reconnect_backoff_initial: float = DEFAULT_RECONNECT_BACKOFF_INITIAL,
         confirmation_ttl: float = DEFAULT_CONFIRMATION_TTL,
         clock: Callable[[], float] = monotonic,
+        offset_recovery: OffsetRecovery | None = None,
     ) -> None:
         if not 1.0 <= confirmation_ttl <= MAX_CONFIRMATION_TTL:
             raise ValueError("confirmation TTL must be between 1 and 3600 seconds")
@@ -409,6 +433,7 @@ class ConfigTransactionManager:
         self._reconnect_backoff_initial = reconnect_backoff_initial
         self._confirmation_ttl = confirmation_ttl
         self._clock = clock
+        self._offset_recovery = offset_recovery
         self._subscribers: dict[str, set[Callable[[TransactionStatus], None]]] = {}
 
     def assert_confirmation(
@@ -482,6 +507,9 @@ class ConfigTransactionManager:
         native_visibility_resolved: bool | None = None,
         expected_sensor_entities: frozenset[tuple[str, str]] = frozenset(),
         expected_aggregate_sensor_entities: frozenset[tuple[str, str]] = frozenset(),
+        offset_preparation: StockOffsetPreparation | None = None,
+        offset_finalization: StockOffsetFinalization | None = None,
+        preparation_guard: Callable[[], None] | None = None,
         reconcile_stale_metadata: bool = False,
     ) -> TransactionStatus:
         """Retain full content only in memory and return a safe review surface."""
@@ -498,10 +526,24 @@ class ConfigTransactionManager:
         if not expected_aggregate_sensor_entities <= expected_sensor_entities:
             raise ValueError("aggregate sensor entities are invalid")
         mac = canonical_mac(mac)
+        if offset_preparation is not None and offset_finalization is not None:
+            raise ValueError("offset transaction has conflicting purposes")
+        offset_operation = offset_preparation or offset_finalization
+        if offset_operation is not None and (
+            self._offset_recovery is None
+            or offset_operation.source_sha256 != source_snapshot.sha256
+            or offset_operation.proposed_sha256
+            != sha256(plan.proposed_content.encode()).hexdigest()
+            or self.sessions._get_transaction(offset_operation.transaction_id)
+            is not None
+        ):
+            raise ValueError("stock offset preparation does not match transaction")
         if type(reconcile_stale_metadata) is not bool or (
             reconcile_stale_metadata and meter_configuration is None
         ):
             raise ValueError("metadata reconciliation requires a full meter configuration")
+        if reconcile_stale_metadata and offset_operation is not None:
+            raise ValueError("metadata reconciliation is only for ordinary configuration")
         record_fingerprint = (
             await self._persistence.async_get_meter_record_fingerprint(mac)
             if reconcile_stale_metadata else None
@@ -586,7 +628,9 @@ class ConfigTransactionManager:
             merged.update({selection.channel: selection for selection in selections})
             selections = tuple(merged[channel] for channel in sorted(merged))
         transaction = _ConfigTransaction(
-            uuid4().hex,
+            offset_operation.transaction_id
+            if offset_operation is not None
+            else uuid4().hex,
             self._clock() + self._confirmation_ttl,
             mac,
             topology,
@@ -602,6 +646,10 @@ class ConfigTransactionManager:
             meter_record=_trusted_meter_record(mac, topology, source_snapshot),
             meter_record_fingerprint=record_fingerprint,
             totals_change_intent=totals_change_intent,
+            offset_preparation=offset_preparation,
+            offset_finalization=offset_finalization,
+            preparation_guard=preparation_guard,
+            purpose="offset_preparation" if offset_preparation is not None else "offset_finalization" if offset_finalization is not None else "install_configuration",
         )
         self.sessions._register_transaction(transaction.transaction_id, transaction)
         return _status(transaction)
@@ -615,6 +663,10 @@ class ConfigTransactionManager:
         calibrated_current_channels: frozenset[int] = frozenset(),
         *,
         package_options: Mapping[str, Any] | None = None,
+        offset_record: OffsetRecoveryRecord | None = None,
+        offset_session_id: str | None = None,
+        offset_generation: int | None = None,
+        preparation_guard: Callable[[], None] | None = None,
     ) -> TransactionStatus:
         """Re-read YAML and open the normal reviewed transaction for final gains."""
         mac = canonical_mac(mac)
@@ -685,6 +737,28 @@ class ConfigTransactionManager:
                 package_options=package_options,
                 trusted_voltage_fingerprint=trusted_voltage_fingerprint,
             )
+            finalization = None
+            if offset_record is not None:
+                if (
+                    self._offset_recovery is None
+                    or offset_session_id is None
+                    or offset_generation is None
+                ):
+                    raise ConfigMutationError("offset finalization context is absent")
+                gain_plan = plan
+                plan = self._offset_recovery.build_finalization_plan(
+                    offset_record, snapshot, gain_plan=gain_plan
+                )
+                finalization = await self._offset_recovery.async_review_finalization(
+                    lease,
+                    offset_record,
+                    snapshot,
+                    plan,
+                    offset_session_id,
+                    offset_generation,
+                    gain_plan=gain_plan,
+                    verification_id=verification_id,
+                )
             selections: tuple[StoredCTSelection, ...] = ()
             meter_configuration: StoredMeterConfiguration | None = None
             expected_sensor_entities: frozenset[tuple[str, str]] = frozenset()
@@ -763,9 +837,13 @@ class ConfigTransactionManager:
                 native_visibility_resolved=native_visibility_resolved,
                 expected_sensor_entities=expected_sensor_entities,
                 expected_aggregate_sensor_entities=expected_aggregate_sensor_entities,
+                offset_finalization=finalization,
+                preparation_guard=preparation_guard,
             )
             transaction = self._transaction(status.transaction_id)
             transaction.verification_id = verification_id
+            if finalization is None:
+                transaction.purpose = "save_calibration"
             transaction.reservation_release = lambda: (
                 self._persistence.async_release_verified_calibration(
                     mac, verification_id, transaction.transaction_id
@@ -777,7 +855,7 @@ class ConfigTransactionManager:
                     raise ConfigMutationError(
                         "verified calibration has already been used"
                     )
-            return status
+            return _status(transaction)
         except BaseException as error:
             if transaction is not None and not transaction.closed:
                 cleanup_error: BaseException | None = None
@@ -827,6 +905,7 @@ class ConfigTransactionManager:
             transaction.lease = await self.sessions.async_acquire_config(
                 transaction.mac
             )
+            await self._check_offset_preparation(transaction, proposed=False)
             try:
                 verification_current = (
                     transaction.verification_id is None
@@ -1038,6 +1117,7 @@ class ConfigTransactionManager:
         if transaction.state is not ConfigTransactionState.VALIDATED:
             raise RuntimeError("compile is not legal in the current state")
         plan, _ = _sensitive(transaction)
+        await self._check_offset_preparation(transaction, proposed=True)
         transaction.upload_progress.clear()
         self.publish_status(_status(transaction))
         try:
@@ -1057,6 +1137,7 @@ class ConfigTransactionManager:
             status = _status(transaction)
             self.publish_status(status)
             return status
+        await self._check_offset_preparation(transaction, proposed=True)
         transaction.upload_progress.clear()
         transaction.state = ConfigTransactionState.COMPILED
         _progress(transaction, TransactionProgress.FIRMWARE_COMPILED)
@@ -1092,6 +1173,7 @@ class ConfigTransactionManager:
                         "YAML handoff is unavailable; offset calibration remains "
                         "saved in flash"
                     )
+            await self._check_offset_preparation(transaction, proposed=True)
             transaction.upload_progress.clear()
             transaction.evidence[:] = [
                 code
@@ -1189,6 +1271,44 @@ class ConfigTransactionManager:
                 if cancelled:
                     raise asyncio.CancelledError
                 return status
+            if transaction.offset_preparation is not None or transaction.offset_finalization is not None:
+                revoked = cancelled
+                if transaction.preparation_guard is not None:
+                    try:
+                        transaction.preparation_guard()
+                    except Exception:  # noqa: BLE001 - stale workflow claim revokes authority
+                        revoked = True
+                if revoked:
+
+                    async def revoke_receipt() -> bool:
+                        assert (
+                            self._offset_recovery is not None
+                            and transaction.lease is not None
+                        )
+                        if transaction.offset_finalization is not None:
+                            await self._offset_recovery.async_cancel_finalization(
+                                transaction.lease, transaction.offset_finalization
+                            )
+                        else:
+                            assert transaction.offset_preparation is not None
+                            await self._offset_recovery.async_cancel(
+                                transaction.lease, transaction.offset_preparation
+                            )
+                        return True
+
+                    try:
+                        await self._drain_persistence_commit(
+                            transaction, revoke_receipt()
+                        )
+                    finally:
+                        status = self._finish(
+                            transaction,
+                            ConfigTransactionState.FAILED,
+                            TransactionEvidenceCode.CANCELLED,
+                        )
+                    if cancelled:
+                        raise asyncio.CancelledError
+                    return status
             _progress(transaction, TransactionProgress.METADATA_PERSISTED)
             status = self._finish(transaction, ConfigTransactionState.VERIFIED)
             if cancelled:
@@ -1198,7 +1318,50 @@ class ConfigTransactionManager:
     async def _persist_verified_metadata(
         self, transaction: _ConfigTransaction, plan: ConfigMutationPlan
     ) -> bool:
+        installed = await self._persist_configuration_metadata(transaction, plan)
+        if installed and transaction.offset_finalization is not None:
+            await self._check_offset_preparation(transaction, proposed=True)
+            assert self._offset_recovery is not None and transaction.lease is not None
+            await self._offset_recovery.async_mark_final_installed(
+                transaction.lease, transaction.offset_finalization
+            )
+            try:
+                await self._check_offset_preparation(
+                    transaction, proposed=True, final_installed=True
+                )
+            except Exception, asyncio.CancelledError:
+                await self._offset_recovery.async_cancel_finalization(
+                    transaction.lease, transaction.offset_finalization
+                )
+                raise
+        return installed
+
+    async def _persist_configuration_metadata(
+        self, transaction: _ConfigTransaction, plan: ConfigMutationPlan
+    ) -> bool:
         """Commit only post-reconnect metadata, including its exact source CAS."""
+        await self._check_offset_preparation(transaction, proposed=True)
+        if transaction.offset_preparation is not None or (
+            transaction.offset_finalization is not None
+            and transaction.verification_id is None
+        ):
+            await self._persistence.async_advance_offset_configuration_source(
+                transaction.mac,
+                transaction.source_sha256,
+                sha256(plan.proposed_content.encode()).hexdigest(),
+                _meter_record(transaction),
+            )
+            await self._check_offset_preparation(transaction, proposed=True)
+            if transaction.offset_finalization is not None:
+                return True
+        if transaction.offset_preparation is not None:
+            # Preparation is not final calibration metadata. Its private receipt is
+            # committed only here, after the normal successful OTA/reconnect path.
+            assert self._offset_recovery is not None and transaction.lease is not None
+            await self._offset_recovery.async_mark_installed(
+                transaction.lease, transaction.offset_preparation
+            )
+            return True
         if transaction.meter_configuration is not None:
             configuration = transaction.meter_configuration
             migration = configuration.totals_migration
@@ -1269,6 +1432,62 @@ class ConfigTransactionManager:
             transaction.verification_id,
             transaction.transaction_id,
         )
+
+    async def _check_offset_preparation(
+        self, transaction: _ConfigTransaction, *, proposed: bool, final_installed: bool = False
+    ) -> None:
+        preparation = transaction.offset_preparation or transaction.offset_finalization
+        if preparation is None:
+            return
+        try:
+            if self._offset_recovery is None or transaction.lease is None:
+                raise ValueError("stock offset preparation is unavailable")
+            if transaction.preparation_guard is not None:
+                transaction.preparation_guard()
+            if isinstance(preparation, StockOffsetFinalization):
+                record = await self._offset_recovery.async_require_finalization(
+                    transaction.lease, preparation, installed=final_installed
+                )
+                if preparation.verification_id != transaction.verification_id:
+                    raise ValueError("finalization gain reservation changed")
+            else:
+                record = await self._offset_recovery.async_require(
+                    transaction.lease, preparation, installed=False
+                )
+            if replace(record.topology, evidence=()) != replace(
+                transaction.topology, evidence=()
+            ):
+                raise ValueError("stock offset topology changed")
+            plan, prior = _sensitive(transaction)
+            source = await self._device_builder.async_get_config(plan.configuration)
+            content = plan.proposed_content if proposed else prior
+            if (
+                getattr(source, "configuration_authoritative", True) is not True
+                or source.configuration != plan.configuration
+                or source.content != content
+                or source.sha256 != sha256(content.encode()).hexdigest()
+            ):
+                raise ValueError("stock offset preparation source changed")
+            if transaction.preparation_guard is not None:
+                transaction.preparation_guard()
+        except BaseException as error:
+            if transaction.write_started:
+                self._retain_write_recovery(transaction)
+            else:
+                try:
+                    await transaction.async_release_reservation()
+                finally:
+                    if not transaction.reservation_claimed:
+                        self._finish(
+                            transaction,
+                            ConfigTransactionState.FAILED,
+                            TransactionEvidenceCode.SOURCE_CHANGED,
+                        )
+            if isinstance(error, Exception):
+                raise ValueError(  # noqa: TRY004 - sanitize an external failure, not an invalid argument type
+                    "stock offset preparation is stale or unavailable"
+                ) from None
+            raise
 
     async def _drain_persistence_commit(
         self, transaction: _ConfigTransaction, commit: Coroutine[Any, Any, bool]
@@ -1614,6 +1833,7 @@ def _status(transaction: _ConfigTransaction) -> TransactionStatus:
         transaction.aggregate_entity_mismatch,
         transaction.meter_configuration is not None
         and transaction.state is ConfigTransactionState.VERIFIED,
+        transaction.purpose,
     )
 
 

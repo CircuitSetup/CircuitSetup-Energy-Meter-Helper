@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from hashlib import sha256
@@ -1331,6 +1332,76 @@ class HelperStore:
                     serialized["meter_configuration"] = previous["meter_configuration"]
             meters[record.mac] = serialized
             await self._store.async_save(data)
+
+    async def async_advance_offset_configuration_source(
+        self,
+        mac: str,
+        expected_source_sha256: str,
+        proposed_sha256: str,
+        record: StoredMeterRecord,
+    ) -> bool:
+        """Advance only current metadata after a verified offset-only installation.
+
+        False means missing/stale/invalid metadata was left untouched; failed I/O
+        raises and must prevent an install receipt. This never alters calibration.
+        """
+        mac = canonical_mac(mac)
+        if (
+            not isinstance(record, StoredMeterRecord)
+            or record.mac != mac
+            or record.config_sha256 != expected_source_sha256
+            or _configuration_hash({"config_sha256": expected_source_sha256}) is None
+            or _configuration_hash({"config_sha256": proposed_sha256}) is None
+        ):
+            raise ValueError("offset metadata source identity is invalid")
+        async with self._update_lock:
+            data = await self.async_load()
+            raw = data.get("meters", {}).get(mac)
+            if (
+                not isinstance(raw, dict)
+                or _configuration_hash(raw) != expected_source_sha256
+            ):
+                return False
+            try:
+                topology = _current_topology(raw)
+                if (
+                    raw.get("mac") != mac
+                    or raw.get("config_filename") != record.config_filename
+                    or record.config_filename is None
+                    or _topology_identity(topology)
+                    != _topology_identity(
+                        _current_topology(serialize_meter_record(record))
+                    )
+                ):
+                    return False
+                selections = raw.get("ct_selections", [])
+                if not isinstance(selections, list) or any(
+                    not isinstance(item, dict) for item in selections
+                ):
+                    return False
+                for item in selections:
+                    selection = StoredCTSelection(**item)
+                    if selection.config_sha256 != expected_source_sha256:
+                        return False
+                configuration = raw.get("meter_configuration")
+                if configuration is not None:
+                    if _configuration_hash(configuration) != expected_source_sha256:
+                        return False
+                    _deserialize_meter_configuration(configuration, topology)
+            except KeyError, TypeError, ValueError:
+                return False
+            updated = deepcopy(raw)
+            updated["config_sha256"] = proposed_sha256
+            for item in updated.get("ct_selections", []):
+                item["config_sha256"] = proposed_sha256
+            if configuration is not None:
+                updated["meter_configuration"]["config_sha256"] = proposed_sha256
+                for item in updated["meter_configuration"].get("ct_selections", []):
+                    item["config_sha256"] = proposed_sha256
+            if updated != raw:
+                data["meters"][mac] = updated
+                await self._store.async_save(data)
+            return True
 
     async def async_save_verified_ct_selections(
         self, mac: str, selections: tuple[StoredCTSelection, ...]

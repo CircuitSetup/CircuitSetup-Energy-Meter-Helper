@@ -30,7 +30,7 @@ export function buildInstallStep(
   `;
   const labels = purpose === "save_calibration"
     ? { heading: "Save verified calibration", apply: "Write verified gains to ESPHome", compile: "Build firmware", install: "Install calibrated firmware" }
-    : { heading: legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
+    : { heading: purpose === "offset_preparation" ? "Install offset preparation" : purpose === "offset_finalization" ? "Install captured offsets" : legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
   const state = status.state;
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
@@ -49,6 +49,8 @@ export function buildInstallStep(
   return html`
     <section class="step-content" aria-labelledby="step-heading">
       <h2>${labels.heading}</h2>
+      ${purpose === "offset_preparation" ? html`<p>This installs a reviewed zero baseline for only the unfinished chips. Installation does not run calibration. Return to the same board and stage, acknowledge physical preparation again, and check measured readiness before explicit Run.</p>` : ""}
+      ${purpose === "offset_finalization" ? html`<p>Captured signed offsets, including zeros, are installed with native offset restore disabled. Confirm configuration selection after installation; this is not register readback and does not clear saved gain calibration.</p>` : ""}
       ${configReview(status, configuration, impact, meterInventory?.totals)}
       ${meterInventory ? totalsMigrationReview(meterInventory, () => undefined, totalPreview, impact !== null, true, status) : ""}
       ${state === "failed" || retryableInstall ? html`

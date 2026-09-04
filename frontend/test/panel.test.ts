@@ -22,7 +22,7 @@ const tick = async () => {
 
 it("renders purpose-specific configuration installation controls", () => {
   const host = document.createElement("div");
-  const status = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "- old\n+ new", rollback_available: true, evidence: ["source_checked"], progress: [], validation_detail: { code: null, error_record_count: 0, reported_error_count: 0, warning_record_count: 1, reported_warning_count: 1 }, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const status = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "- old\n+ new", rollback_available: true, evidence: ["source_checked"], progress: [], validation_detail: { code: null, error_record_count: 0, reported_error_count: 0, warning_record_count: 1, reported_warning_count: 1 }, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
 
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
@@ -42,6 +42,19 @@ it("renders purpose-specific configuration installation controls", () => {
   expect(host.textContent).toContain("Install reviewed helper configuration");
 });
 
+it("uses normal explicit install controls for stock preparation without flash clearing", () => {
+  const host = document.createElement("div");
+  const noop = () => undefined;
+  const status = { transaction_id: "1".repeat(32), purpose: "offset_preparation", state: "verified", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  render(buildInstallStep("offset_preparation", status, noop, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Install offset preparation");
+  expect(host.textContent).toContain("does not run calibration");
+  expect(host.textContent).not.toContain("Retry clearing");
+  render(buildInstallStep("offset_finalization", { ...status, purpose: "offset_finalization" }, noop, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Install captured offsets");
+  expect(host.textContent).toContain("not register readback");
+});
+
 it("blocks an install route without an active review", () => {
   const host = document.createElement("div");
   const back = vi.fn();
@@ -56,7 +69,7 @@ it("blocks an install route without an active review", () => {
 
 it("renders the live Install percentage", () => {
   const host = document.createElement("div");
-  const status = { transaction_id: "1".repeat(32), state: "installing", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 48 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const status = { transaction_id: "1".repeat(32), state: "installing", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 48 }], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
 
@@ -67,7 +80,7 @@ it("renders the live Install percentage", () => {
 
 it("reports that the meter is rebooting while startup is verified", () => {
   const host = document.createElement("div");
-  const status = { transaction_id: "1".repeat(32), state: "reconnecting", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 100 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const status = { transaction_id: "1".repeat(32), state: "reconnecting", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 100 }], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
 
@@ -77,7 +90,7 @@ it("reports that the meter is rebooting while startup is verified", () => {
 
 it("does not relabel retained Compile progress while Install starts", () => {
   const host = document.createElement("div");
-  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled"], validation_detail: null, upload_progress: [{ stage: "transfer", percentage: 65 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled"], validation_detail: null, upload_progress: [{ stage: "transfer", percentage: 65 }], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
 
@@ -88,7 +101,7 @@ it("does not relabel retained Compile progress while Install starts", () => {
 
 it.each(["entity_mismatch", "reconnect_unavailable"] as const)("shows only the latest determinate Install progress and allows %s retry", (evidence) => {
   const host = document.createElement("div");
-  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [evidence], progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 99 }, { stage: "uploading", percentage: 100 }, { stage: "uploading", percentage: null }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [evidence], progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 99 }, { stage: "uploading", percentage: 100 }, { stage: "uploading", percentage: null }], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
 
@@ -163,7 +176,7 @@ describe("explicit totals adoption and migration transactions", () => {
     offset_disposition: "skipped", offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "skipped" }, { stage: 2, state: "skipped" }] }] };
   const reviewed = () => ({ transaction_id: "1".repeat(32), state: "previewed" as const, source_sha256: "a".repeat(64),
     changes: [], redacted_diff: "Explicit totals review", rollback_available: true, evidence: [], progress: [], validation_detail: null,
-    upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: true });
+    upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: true });
   const prepare = async (overrides: Record<string, unknown> = {}, adoption = true) => {
     const meter = meterResponse();
     if (adoption) Object.assign(meter.capabilities, { native_totals_writable: false, managed_automatic_totals: false,
@@ -511,7 +524,7 @@ describe("server-authoritative total graph", () => {
     const writes: MeterConfigurationRequest[] = [];
     const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: response.source_sha256,
       changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null,
-      upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const hass = makeHass({ setup_status: { state: "no_device", devices: [] } }); const call = hass.callWS.bind(hass);
     hass.callWS = <T>(message: Record<string, unknown>): Promise<T> => {
       if (String(message.type).endsWith("/preview_total_graph")) return new Promise<T>((resolve) => { resolveGraph = (value) => resolve(value as T); });
@@ -870,7 +883,7 @@ describe("meter configuration review and summary", () => {
   it("reviews physical, semantic, package, and entity details without threshold controls", () => {
     const meter = meterResponse() as unknown as import("../src/types").MeterConfiguration;
     meter.configuration.aggregates = [{ aggregate_id: "main-service", name: "Main service", role: "grid", sources: [{ kind: "channel" as const, channel: 1 }, { kind: "channel" as const, channel: 2 }], measurement_method: "two_ct_sum", energy_mode: "bidirectional", outputs: { watts: true, amps: true, kwh: true }, origin: "advanced" as const }];
-    const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "Meter:\n+ interval: 5", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: true } as import("../src/types").TransactionStatus;
+    const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "Meter:\n+ interval: 5", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: true } as import("../src/types").TransactionStatus;
     const root = document.createElement("div");
     render(configReview(transaction, meter.configuration, meter.configuration_impact), root);
     const review = root.textContent ?? "";
@@ -913,7 +926,7 @@ describe("meter configuration review and summary", () => {
     expect(text(panel)).not.toContain("50 Hz");
 
     state.verifiedMeterConfiguration = null;
-    state.transaction = { transaction_id: "1".repeat(32), state: "failed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    state.transaction = { transaction_id: "1".repeat(32), state: "failed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     panel.requestUpdate(); await panel.updateComplete;
     expect(text(panel)).not.toContain("Installed electrical profile");
   });
@@ -1262,7 +1275,7 @@ describe("CircuitSetup panel", () => {
   it("reuses the canonical meter plan when advancing to CTs and preview", async () => {
     const operations: Array<{ operation: string; planId: unknown }> = [];
     let activePlan = "b".repeat(32);
-    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
@@ -1347,7 +1360,7 @@ describe("CircuitSetup panel", () => {
     let planGeneration = 0;
     let releaseAbandon: () => void = () => undefined;
     const abandonGate = new Promise<void>((resolve) => { releaseAbandon = resolve; });
-    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
@@ -1413,7 +1426,7 @@ describe("CircuitSetup panel", () => {
   });
 
   it("keeps a failed review cancellation visible and does not discard edits", async () => {
-    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
@@ -1443,7 +1456,7 @@ describe("CircuitSetup panel", () => {
     const previews: Array<{ planId: unknown; sourceSha256: unknown; configuration: unknown }> = [];
     let activePlan: string | null = "b".repeat(32);
     let pendingTransaction = false;
-    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
@@ -1578,7 +1591,7 @@ describe("CircuitSetup panel", () => {
   });
 
   it("keeps a verified install on the selected meter until Continue opens calibration plan", async () => {
-    const preview = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const preview = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const operations: string[] = [];
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
@@ -1624,7 +1637,7 @@ describe("CircuitSetup panel", () => {
   it("shows Compile as busy while the firmware build is pending", async () => {
     let finishCompile!: (value: unknown) => void;
     const pendingCompile = new Promise((resolve) => { finishCompile = resolve; });
-    const validated = { transaction_id: "1".repeat(32), state: "validated", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: ["write_verified"], progress: ["config_validated"], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const validated = { transaction_id: "1".repeat(32), state: "validated", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: ["write_verified"], progress: ["config_validated"], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
         const operation = String(message.type).split("/").at(-1) ?? "";
@@ -2429,6 +2442,7 @@ describe("CircuitSetup panel", () => {
       connection: { subscribeMessage: async () => () => undefined },
     });
     const state = panel as unknown as Record<string, unknown>;
+    state.configurationMode = "runtime_only";
     state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
       connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name, evidence: [] };
     state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
@@ -2781,7 +2795,7 @@ describe("CircuitSetup panel", () => {
             { key: "package.addon7.power_quality", old_value: "enabled", new_value: "disabled" },
           ],
           redacted_diff: "+ power quality", rollback_available: true, evidence: [],
-          progress: operation === "apply_ct_config" ? ["config_validated"] : [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as T;
+          progress: operation === "apply_ct_config" ? ["config_validated"] : [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as T;
         return {} as T;
       },
       connection: { subscribeMessage: async () => () => undefined },
@@ -3864,7 +3878,7 @@ describe("CircuitSetup panel", () => {
     const state = panel as unknown as Record<string, unknown>;
     state.transaction = { transaction_id: "tx", state: "previewed", source_sha256: "a".repeat(64),
       changes: [], redacted_diff: "- current_cal_ct1: 27518\n+ current_cal_ct1: 13759\n+     phase_a:",
-      rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
 
     panel.showState("install-configuration"); await panel.updateComplete;
 
@@ -4066,7 +4080,7 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(hass);
     const state = panel as unknown as Record<string, unknown>;
     state.selectedDeviceId = "meter-1";
-    state.transaction = { transaction_id: "tx", state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    state.transaction = { transaction_id: "tx", state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
     panel.remove(); document.body.append(panel); await tick(); await panel.updateComplete;
     expect(operations).toEqual(["subscribe_setup", "subscribe_setup", "subscribe_config_transaction", "subscribe_session"]);
@@ -4080,7 +4094,7 @@ describe("CircuitSetup panel", () => {
     const session = { session_id: "session-active", device_id: "meter-1", state: "ready",
       safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
     const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const hass: HomeAssistant = {
       callWS: async <T>(message: Record<string, unknown>) => {
         const operation = String(message.type).split("/").at(-1) ?? "";
@@ -4127,13 +4141,13 @@ describe("CircuitSetup panel", () => {
     const generation = state.connectionGeneration as number;
     state.selectedDeviceId = "meter-1";
     state.transaction = { transaction_id: "tx-old", state: "previewed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     await state.subscribeTransaction(generation);
     state.transaction = { transaction_id: "tx-new", state: "previewed", source_sha256: "b".repeat(64),
-      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     await state.subscribeTransaction(generation);
     callbacks[1]?.({ transaction_id: "tx-old", state: "failed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false });
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false });
     expect((state.transaction as { transaction_id: string }).transaction_id).toBe("tx-new");
     expect(unsubscriptions).toContain(1);
 
@@ -4291,7 +4305,7 @@ describe("CircuitSetup panel", () => {
   it("enters recovery after a rejected restart and only offers an available rollback", async () => {
     let rollbackCalls = 0;
     const failedTransaction = { transaction_id: "tx", state: "failed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const rolledBack = { ...failedTransaction, state: "rolled_back", rollback_available: false };
     const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] },
       restart_and_verify: new Error("private backend detail"), rollback_ct_config: rolledBack });
@@ -4407,7 +4421,7 @@ describe("CircuitSetup panel", () => {
     state.transaction = { transaction_id: "tx", state: "rolled_back", source_sha256: "a".repeat(64),
       changes: [], redacted_diff: "", rollback_available: false, evidence: ["validation_failed"], progress: [],
       validation_detail: { code: 2, reported_error_count: null, reported_warning_count: null,
-        error_record_count: 0, warning_record_count: 0 }, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+        error_record_count: 0, warning_record_count: 0 }, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
 
     panel.showState("install-configuration"); await panel.updateComplete;
 
@@ -4428,7 +4442,7 @@ describe("CircuitSetup panel", () => {
     state.transaction = { transaction_id: "tx", state: "installing", source_sha256: "a".repeat(64), changes: [],
       redacted_diff: "", rollback_available: true, evidence: ["write_verified"], progress: ["firmware_compiled"],
       validation_detail: { code: 0, reported_error_count: 0, reported_warning_count: 1, error_record_count: 0, warning_record_count: 1 },
-      upload_progress: [{ stage: "uploading", percentage: 65 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      upload_progress: [{ stage: "uploading", percentage: 65 }], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     state.stabilityByTarget = new Map([["current:1", { target: "current", target_id: "1", stable: true,
       windows: [{ samples: [9.9, 10, 10.1], mean: 10, standard_deviation: 0.08, range_percent: 2 }] }]]);
     state.calibrationByTarget = new Map([["current:1", { state: "applied_pending_restart_verification", group_key: "meter_main1", phase: null,
@@ -4456,7 +4470,7 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled,
       restart_and_verify: restartResult, preview_calibrated_gains: { transaction_id: "5".repeat(32), state: "previewed",
       source_sha256: "a".repeat(64), changes: [], redacted_diff: "- old\n+ new", rollback_available: false,
-        evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } }));
+        evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } }));
     const state = panel as unknown as Record<string, unknown> & { cancelSession(): Promise<void>; restart(): Promise<void> };
     state.session = { ...cancelled, state: "ready" };
     await state.cancelSession(); await panel.updateComplete;
@@ -4548,7 +4562,7 @@ describe("CircuitSetup panel", () => {
       evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] } as const;
     const transactionId = "2".repeat(32);
     const preview = { transaction_id: transactionId, state: "previewed", source_sha256: "a".repeat(64),
-      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "save_calibration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const restartResult = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
       topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
       topology_voltage_layout: "two_groups", connection_generation: 4,
@@ -4641,7 +4655,7 @@ describe("CircuitSetup panel", () => {
     let previewCalls = 0;
     const preview = { transaction_id: "5".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
       changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [],
-      validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+      validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const restart = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
       topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
       topology_voltage_layout: "two_groups", connection_generation: 4, groups: [], verification_id: "1".repeat(32),

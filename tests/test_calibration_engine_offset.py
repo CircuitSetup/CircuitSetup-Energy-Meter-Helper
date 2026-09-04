@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -29,6 +30,7 @@ from custom_components.circuitsetup_energy_meter_helper.session_manager import (
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
     AbsoluteSensorSampleWindow,
 )
+from tests.test_log_parser import log_lines
 from tests.test_preflight import binding, binding_with_offset_controls
 
 MAC = "aabbccddeeff"
@@ -40,6 +42,80 @@ POWER_TABLES = (
     ((101, -201), (102, -202), (103, -203)),
     ((111, -211), (112, -212), (113, -213)),
 )
+
+
+@pytest.mark.parametrize("late_failure", (False, True))
+def test_stock_offset_collection_waits_for_full_window(late_failure: bool) -> None:
+    async def run() -> None:
+        session = SimpleNamespace(
+            connected=True,
+            connection_generation=3,
+            log_lines=[
+                item.line
+                for item in log_lines("offset_success.log")
+                if "Offset calibration completed and verified." not in item.line
+            ],
+        )
+        _, persist = _marker_writer([])
+        engine = CalibrationEngine(SessionManager(), persist, evidence_timeout=0.06)
+        pending = asyncio.create_task(
+            engine._poll_offset(
+                session,
+                (),
+                3,
+                8,
+                "meter_main1",
+                "1. Run Main Meter 1 Offset Cal",
+                10.0,
+                1,
+            )
+        )
+        await asyncio.sleep(0)
+        assert not pending.done()
+        if late_failure:
+            session.log_lines.append(
+                "[CALIBRATION][meter_main1] Failed to save offset calibration to memory!"
+            )
+            with pytest.raises(LogEvidenceError, match="save failure"):
+                await pending
+        else:
+            evidence = await pending
+            assert evidence.flash_saved and not evidence.register_verified
+
+    asyncio.run(run())
+
+
+def test_stock_offset_collection_rejects_reconnect_during_window() -> None:
+    async def run() -> None:
+        session = SimpleNamespace(
+            connected=True,
+            connection_generation=3,
+            log_lines=[
+                item.line
+                for item in log_lines("offset_success.log")
+                if "Offset calibration completed and verified." not in item.line
+            ],
+        )
+        _, persist = _marker_writer([])
+        engine = CalibrationEngine(SessionManager(), persist, evidence_timeout=0.06)
+        pending = asyncio.create_task(
+            engine._poll_offset(
+                session,
+                (),
+                3,
+                8,
+                "meter_main1",
+                "1. Run Main Meter 1 Offset Cal",
+                10.0,
+                1,
+            )
+        )
+        await asyncio.sleep(0)
+        session.connection_generation += 1
+        with pytest.raises(CalibrationError, match="stale after reconnect"):
+            await pending
+
+    asyncio.run(run())
 
 
 def _window(

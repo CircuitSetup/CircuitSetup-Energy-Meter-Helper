@@ -505,7 +505,7 @@ const CONTROL$1 = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const PROPERTY_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const SETUP_STATES = /* @__PURE__ */ new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]);
 const TRANSACTION_STATES = /* @__PURE__ */ new Set(["previewed", "write_confirmed", "written", "validated", "compiled", "install_confirmation_required", "installing", "reconnecting", "verified", "rolled_back", "failed"]);
-const SESSION_STATES = /* @__PURE__ */ new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "partial", "indeterminate", "verified", "cancelled"]);
+const SESSION_STATES = /* @__PURE__ */ new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "partial", "indeterminate", "verified", "cancelled", "gains_verified_offsets_pending", "offset_configuration_selected", "captured_pending_configuration"]);
 const CONNECTIONS$1 = /* @__PURE__ */ new Set(["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]);
 const ELECTRICAL_SYSTEMS = /* @__PURE__ */ new Set(["split_phase_120_240", "single_phase_230", "three_phase", "custom"]);
 const VOLTAGE_LAYOUTS = /* @__PURE__ */ new Set(["standard", "multi_reference", "custom"]);
@@ -531,7 +531,7 @@ const TRANSACTION_OPERATIONS = /* @__PURE__ */ new Set(["preview_ct_config", "pr
 const OFFSET_CAPABILITIES = /* @__PURE__ */ new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = /* @__PURE__ */ new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = /* @__PURE__ */ new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
-const OFFSET_RESULT_STATES = /* @__PURE__ */ new Set(["applied_pending_restart_verification", "partial", "indeterminate"]);
+const OFFSET_RESULT_STATES = /* @__PURE__ */ new Set(["applied_pending_restart_verification", "captured_pending_configuration", "partial", "indeterminate"]);
 function record(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} response is invalid`);
   return value;
@@ -1055,12 +1055,13 @@ function ctInventory(value, label) {
 }
 function transaction(value, label) {
   const item = record(value, label);
-  exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified"], label);
+  exactKeys(item, ["purpose", "transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified"], label);
   string(item.transaction_id, label);
   enumeration(item.state, TRANSACTION_STATES, label);
   if (!SHA256.test(string(item.source_sha256, label))) throw new Error(`${label} response is invalid`);
   boolean(item.rollback_available, label);
   if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
+  enumeration(item.purpose, /* @__PURE__ */ new Set(["install_configuration", "save_calibration", "offset_preparation", "offset_finalization"]), label);
   array(item.changes, label).forEach((entry) => {
     const change = record(entry, label);
     exactKeys(change, ["key", "old_value", "new_value"], label);
@@ -1270,12 +1271,68 @@ function offsetCalibration(value, label, expectedBoard, expectedStage) {
   const all = [...completed, ...unfinished];
   const retryAllowed = boolean(item.retry_allowed, label);
   if (all.length !== 2 || new Set(all).size !== 2 || all.some((key) => !groupKeys2.includes(key))) throw new Error(`${label} response is invalid`);
-  if (state === "applied_pending_restart_verification") {
+  if (state === "applied_pending_restart_verification" || state === "captured_pending_configuration") {
     if (completed.length !== 2 || unfinished.length !== 0 || retryAllowed || item.error !== null) throw new Error(`${label} response is invalid`);
   } else {
     string(item.error, label);
-    if (!retryAllowed || completed.length !== (state === "partial" ? 1 : 0)) throw new Error(`${label} response is invalid`);
+    if (completed.length !== (state === "partial" ? 1 : 0)) throw new Error(`${label} response is invalid`);
   }
+  return value;
+}
+function offsetInstances(value, label, maximum = 14) {
+  const values = array(value, label, maximum).map((item) => string(item, label));
+  if (new Set(values).size !== values.length || values.some((item) => !/^(meter_main[12]|addon[1-6]_[12])$/.test(item))) throw new Error(`${label} response is invalid`);
+  return values;
+}
+function offsetId(value, label) {
+  if (value !== null && !SERVER_ID.test(string(value, label))) throw new Error(`${label} response is invalid`);
+}
+function offsetPreparation(value, label) {
+  const item = record(value, label);
+  exactKeys(item, ["backup_available", "operation_id", "stage", "targets", "installed", "cancelled", "action_ready", "attempted", "completed"], label);
+  offsetId(item.operation_id, label);
+  const targets = offsetInstances(item.targets, label, 2);
+  const attempted = offsetInstances(item.attempted, label, 2);
+  if (item.stage !== null && item.stage !== 1 && item.stage !== 2) throw new Error(`${label} response is invalid`);
+  for (const key of ["backup_available", "installed", "cancelled", "action_ready"]) boolean(item[key], label);
+  const completed = array(item.completed, label, 28).map((entry) => {
+    const pair = array(entry, label, 2);
+    if (pair.length !== 2 || pair[1] !== 1 && pair[1] !== 2) throw new Error(`${label} response is invalid`);
+    offsetInstances([pair[0]], label);
+    return `${pair[0]}:${pair[1]}`;
+  });
+  if (new Set(completed).size !== completed.length || attempted.some((id2) => !targets.includes(id2)) || item.operation_id === null !== (item.stage === null) || item.operation_id === null !== (targets.length === 0) || item.action_ready && (!item.installed || item.cancelled || !item.backup_available || item.operation_id === null)) throw new Error(`${label} response is invalid`);
+  return value;
+}
+function offsetFinalization(value, label) {
+  const item = record(value, label);
+  exactKeys(item, ["purpose", "operation_id", "transaction_id", "stage", "board_index", "targets", "backup_available", "installed", "cancelled", "configuration_selected", "action_ready", "register_verified", "gain_verification_id", "results"], label);
+  enumeration(item.purpose, /* @__PURE__ */ new Set(["offset_preparation", "offset_finalization"]), label);
+  for (const key of ["operation_id", "transaction_id", "gain_verification_id"]) offsetId(item[key], label);
+  const targets = offsetInstances(item.targets, label);
+  for (const key of ["backup_available", "installed", "cancelled", "configuration_selected", "action_ready"]) boolean(item[key], label);
+  if (item.register_verified !== false || item.stage !== null && item.stage !== 1 && item.stage !== 2 || item.board_index !== null && (integer(item.board_index, label) < 0 || item.board_index > 6) || item.board_index === null !== (item.stage === null) || item.operation_id === null !== (item.transaction_id === null) || item.operation_id === null !== (targets.length === 0) || item.purpose === "offset_preparation" !== (item.operation_id === null) || item.action_ready && (!item.installed || item.cancelled || !item.backup_available || item.operation_id === null)) throw new Error(`${label} response is invalid`);
+  const results = array(item.results, label, 28).map((entry) => {
+    const result = array(entry, label, 4);
+    if (result.length !== 4 || result[1] !== 1 && result[1] !== 2) throw new Error(`${label} response is invalid`);
+    offsetInstances([result[0]], label);
+    signedTable(result[2], label);
+    boolean(result[3], label);
+    return `${result[0]}:${result[1]}`;
+  });
+  if (new Set(results).size !== results.length) throw new Error(`${label} response is invalid`);
+  return value;
+}
+function offsetPreview(value, label, stage, board) {
+  const item = record(value, label);
+  const preparing = stage !== void 0;
+  exactKeys(item, preparing ? ["operation_id", "stage", "targets", "backup_available", "transaction"] : ["purpose", "operation_id", "targets", "transaction"], label);
+  offsetId(item.operation_id, label);
+  if (item.operation_id === null) throw new Error(`${label} response is invalid`);
+  const targets = offsetInstances(item.targets, label, preparing ? 2 : 14);
+  const status = transaction(item.transaction, label);
+  const expected = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
+  if (!targets.length || preparing && (item.stage !== stage || item.backup_available !== true || status.purpose !== "offset_preparation" || targets.some((id2) => !expected.includes(id2))) || !preparing && (item.purpose !== "offset_finalization" || status.purpose !== "offset_finalization")) throw new Error(`${label} response is invalid`);
   return value;
 }
 function stability(value, label, expectedTarget, expectedTargetId) {
@@ -1523,6 +1580,34 @@ class HelperApi {
       confirm_retry: confirmRetry
     });
     this.skipOffsetCalibration = (sessionId) => this.call("skip_offset_calibration", (value) => session(value, "skip_offset_calibration"), { session_id: sessionId });
+    this.getOffsetPreparation = (sessionId) => this.call("get_offset_preparation", (value) => offsetPreparation(value, "get_offset_preparation"), { session_id: sessionId });
+    this.getOffsetFinalization = (sessionId) => this.call("get_offset_finalization", (value) => offsetFinalization(value, "get_offset_finalization"), { session_id: sessionId });
+    this.previewOffsetPreparation = (sessionId, boardIndex, stage, backupAcknowledged) => this.call(
+      "preview_offset_preparation",
+      (value) => offsetPreview(value, "preview_offset_preparation", stage, boardIndex),
+      { session_id: sessionId, board_index: boardIndex, stage, backup_acknowledged: backupAcknowledged }
+    );
+    this.resumeOffsetCalibration = (sessionId, operationId, boardIndex, stage, preparationAcknowledged) => this.call(
+      "resume_offset_calibration",
+      (value) => offsetCalibration(value, "resume_offset_calibration", boardIndex, stage),
+      { session_id: sessionId, operation_id: operationId, board_index: boardIndex, stage, preparation_acknowledged: preparationAcknowledged }
+    );
+    this.previewOffsetFinalization = (sessionId, verificationId, changes = [], packageOptions2) => this.call(
+      "preview_offset_finalization",
+      (value) => offsetPreview(value, "preview_offset_finalization"),
+      { session_id: sessionId, ...verificationId ? { verification_id: verificationId, changes, ...packageOptions2 ? { package_options: packageOptions2 } : {} } : {} }
+    );
+    this.reconcileOffsetFinalization = (sessionId, operationId) => this.call(
+      "reconcile_offset_finalization",
+      (value) => offsetFinalization(value, "reconcile_offset_finalization"),
+      { session_id: sessionId, operation_id: operationId }
+    );
+    this.beginOffsetCycle = (sessionId, backupAcknowledged) => this.call(
+      "begin_offset_cycle",
+      (value) => offsetPreparation(value, "begin_offset_cycle"),
+      { session_id: sessionId, backup_acknowledged: backupAcknowledged }
+    );
+    this.restartAndVerifyGains = (sessionId, expectedTopology) => this.call("restart_and_verify_gains", (value) => restart(value, "restart_and_verify_gains", expectedTopology), { session_id: sessionId });
     this.calibrateVoltage = (sessionId, referenceId, referenceVoltage, confirmIteration) => {
       if (!referenceId || !Number.isFinite(referenceVoltage) || referenceVoltage < 1 || referenceVoltage > 600) return Promise.reject(new Error("calibrate_voltage reference is invalid"));
       return this.call("calibrate_voltage", (value) => {
@@ -1622,7 +1707,7 @@ class HelperApi {
       0,
       "",
       false,
-      operation === "get_active_work"
+      ["get_active_work", "preview_offset_preparation", "preview_offset_finalization"].includes(operation)
     );
     return validator(result);
   }
@@ -1825,7 +1910,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       <footer class="action-footer"><button class="secondary" @click=${back}>Back</button></footer>
     </section>
   `;
-  const labels = purpose === "save_calibration" ? { heading: "Save verified calibration", apply: "Write verified gains to ESPHome", compile: "Build firmware", install: "Install calibrated firmware" } : { heading: legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
+  const labels = purpose === "save_calibration" ? { heading: "Save verified calibration", apply: "Write verified gains to ESPHome", compile: "Build firmware", install: "Install calibrated firmware" } : { heading: purpose === "offset_preparation" ? "Install offset preparation" : purpose === "offset_finalization" ? "Install captured offsets" : legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
   const state = status.state;
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
@@ -1839,6 +1924,8 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
   return b`
     <section class="step-content" aria-labelledby="step-heading">
       <h2>${labels.heading}</h2>
+      ${purpose === "offset_preparation" ? b`<p>This installs a reviewed zero baseline for only the unfinished chips. Installation does not run calibration. Return to the same board and stage, acknowledge physical preparation again, and check measured readiness before explicit Run.</p>` : ""}
+      ${purpose === "offset_finalization" ? b`<p>Captured signed offsets, including zeros, are installed with native offset restore disabled. Confirm configuration selection after installation; this is not register readback and does not clear saved gain calibration.</p>` : ""}
       ${configReview(status, configuration, impact, meterInventory?.totals)}
       ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true, status) : ""}
       ${state === "failed" || retryableInstall ? b`
@@ -3021,13 +3108,18 @@ function existingConfigurationStep(configuration, metadata, onManage, onCalibrat
 }
 const boardLabel = (index) => index === 0 ? "Main Board" : `Add-on ${index}`;
 const groupKeys = (board) => board === 0 ? ["main_1", "main_2"] : [`addon${board}_1`, `addon${board}_2`];
-function offsetStep(topology2, session2, board, stage, acknowledged, retryConfirmed, readiness, result, busy, selectBoard, selectStage, setAcknowledged, setRetryConfirmed, check, calibrate, reconnect, skip, back, continueToVoltage) {
+function offsetStep(topology2, session2, board, stage, acknowledged, retryConfirmed, readiness, result, busy, selectBoard, selectStage, setAcknowledged, setRetryConfirmed, check, calibrate, reconnect, skip, back, continueToVoltage, stock = null) {
   const capability = session2?.offset_capability;
   const boards = session2?.offset_boards ?? [];
   const finalized = session2?.offset_disposition === "completed" || session2?.offset_disposition === "skipped" || session2?.offset_disposition === "partial" && session2.state === "applied_pending_restart_verification";
   const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
-  const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate";
+  const preparation = stock?.preparation;
+  const selectedInstances = groupKeys(board).map((id2) => id2.replace("main_", "meter_main"));
+  const matching = preparation?.stage === stage && preparation.targets.length > 0 && preparation.targets.every((id2) => selectedInstances.includes(id2));
+  const attempted = Boolean(matching && preparation?.attempted.length);
+  const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate" || attempted && stageState !== "completed";
+  const actionReady = !stock || Boolean(matching && preparation?.action_ready && !attempted);
   const unavailable = capability?.status !== "available";
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
@@ -3061,7 +3153,17 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
         </div>
         <div id="offset-board-panel" role="tabpanel" aria-labelledby=${`offset-board-tab-${board}`}>
           <h2>Optional offset calibration · Stage ${stage} · ${boardLabel(board)}</h2>
-          <p>Offset calibration is optional and requires changing the power and wiring state as described below. Offset values remain stored in meter flash.</p>
+          <p>Offset calibration is optional and requires changing the power and wiring state as described below. ${stock ? "Captured values remain pending until reviewed configuration installation and selection are confirmed." : "Offset values remain stored in meter flash."}</p>
+          ${stock ? b`<section class="measurement-evidence" aria-label="Offset preparation backup">
+            <h3>Backup and preparation</h3>
+            <p>${preparation?.backup_available ? "Private backup retained; captured results are preserved." : "A private backup is required before installing the selected zero baseline."}</p>
+            <p>Preparation requires exact saved/effective per-chip tables for Stage ${stage}. Missing evidence is unavailable, not zero. Saved-source labels alone do not authorize calibration.</p>
+            ${matching && preparation?.installed ? b`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review and install a fresh preparation for unfinished chips; retained values are not lost."}</p>` : A}
+            <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event) => stock.setBackup(event.target.checked)}> I acknowledge the private backup and reviewed zero-baseline installation.</label>
+            <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
+              @click=${stock.prepare}>${recovery ? "Review unfinished-chip preparation" : "Review offset preparation"}</button>
+            ${attempted ? b`<p>This receipt was already attempted. Retry requires a new reviewed installation for only unfinished chips; completed values, including zeros, are retained.</p>` : A}
+          </section>` : A}
           <div class="warning-band"><strong>Warning:</strong> An open-circuit current-output CT on a live conductor can be hazardous. De-energize conductors before unplugging any CT.</div>
           ${stage === 1 ? b`
             <p>First, de-energize all conductors. Then unplug the voltage transformer/AC voltage input and CT inputs, power the meter from USB only, then check that every voltage/current phase reads near zero.</p>
@@ -3077,7 +3179,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
               ${busy ? "Checking measured readiness…" : "Check measured readiness"}
             </button>
             <button class="primary" data-action="calibrate-offset"
-              ?disabled=${busy || !acknowledged || !readiness?.ready || stageState === "completed" || recovery && !retryConfirmed}
+              ?disabled=${busy || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
               @click=${calibrate}>${result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
           </div>
           ${readiness ? b`
@@ -3107,7 +3209,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
             <table><thead><tr><th>Chip</th><th>Previously saved offsets</th><th>This run</th><th>Backend evidence</th></tr></thead><tbody>
               ${keys.map((key) => b`<tr><td>${key}</td>
                 <td>${!readiness ? "Check measured readiness to inspect saved offsets." : tableByGroup.has(key) || stageState === "completed" ? "Fresh calibration saved during this session." : savedSources.get(key) === "flash" ? "Saved offsets detected; this run will recalibrate this chip." : savedSources.get(key) === "configuration" ? "Configuration offsets reported; this run will calibrate this chip." : "Saved-offset status unknown; this run still requires fresh calibration."}</td>
-                <td>${tableByGroup.has(key) || stageState === "completed" ? "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
+                <td>${tableByGroup.has(key) || stageState === "completed" ? stock ? "Captured; pending configuration installation." : "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
                 <td>${tableByGroup.has(key) ? tableByGroup.get(key).map(([first, second]) => `${first}/${second}`).join(", ") : "—"}</td></tr>`)}
             </tbody></table>
           </section>
@@ -3120,7 +3222,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
         </div>
       `}
       <footer class="action-footer offset-footer">
-        <button class="secondary" @click=${back}>Back</button>
+        <button class="secondary" ?disabled=${busy} @click=${back}>Back</button>
         <button class="secondary" data-action="skip-offset" ?disabled=${busy || finalized} @click=${skip}>Skip offset calibration</button>
         <button class="primary" ?disabled=${busy || !finalized} @click=${continueToVoltage}>Continue</button>
       </footer>
@@ -3274,6 +3376,14 @@ function summaryOutcome(input) {
   const migrated = input.legacyChoice === "manage_with_helper" && input.verifiedConfiguration;
   const warnings = input.unmanagedLegacyItems?.length ? [`Unmanaged legacy items: ${input.unmanagedLegacyItems.join(", ")}.`] : [];
   const heading = input.legacyChoice !== null ? "Review complete" : "Setup complete";
+  if (input.offsetFinalization?.backup_available) return {
+    heading,
+    configurationStatus: input.offsetFinalization.installed ? "Offset configuration installed in ESPHome." : "Offset installation pending.",
+    migrationStatus: migrated ? "Migration installed." : null,
+    calibrationStatus: input.offsetFinalization.configuration_selected && input.offsetFinalization.action_ready ? "Offsets are installed and configuration-selected; register readback is not verified." : "Captured offsets are retained; final configuration selection needs confirmation.",
+    authorityMessage: `Offsets: ${input.offsetFinalization.configuration_selected ? "configuration selected" : "pending configuration"}. Gains: ${input.restart?.source_authority.replaceAll("_", " ") ?? "unchanged"}. Offset selection does not clear gain flash.`,
+    warnings
+  };
   if (offset) return { heading, configurationStatus: calibrationOnly ? "ESPHome configuration was left untouched." : "Configuration authority is unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Offset calibration remains stored in meter flash by design.", authorityMessage: "Offset calibration remains stored in meter flash by design.", warnings: [...warnings, "Offset calibration remains stored in meter flash by design."] };
   if (input.completedWithoutChanges) return { heading, configurationStatus: input.configurationInstalled ? "Configuration installed in ESPHome." : input.configurationMode === "runtime_only" ? "ESPHome source was not changed because no authoritative configuration was available." : calibrationOnly ? "ESPHome configuration was left untouched." : input.verifiedConfiguration ? "Helper-managed configuration was left unchanged." : "Configuration was left unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Existing calibration was kept unchanged.", authorityMessage: "No restart-verified calibration record was required.", warnings };
   if (input.configurationMode === "runtime_only") return { heading: "Setup complete", configurationStatus: "ESPHome source was not changed because no authoritative configuration was available.", migrationStatus: null, calibrationStatus: "Calibration is stored in meter flash. Installing firmware may replace it.", authorityMessage: "No authoritative ESPHome source is available.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
@@ -3282,9 +3392,10 @@ function summaryOutcome(input) {
   if (input.restart?.source_authority === "configuration") return { heading, configurationStatus: "Configuration installed in ESPHome.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Configuration and calibration are installed in ESPHome.", authorityMessage: "Calibration is stored in ESPHome.", warnings };
   return { heading, configurationStatus: input.verifiedConfiguration ? "Configuration authority is available." : "Configuration authority is unavailable.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Calibration is stored in meter flash. Installing firmware may replace it.", authorityMessage: "Calibration is stored in meter flash.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
 }
-function summaryStep(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges, projectVersion, saveCalibration, back, meterConfiguration2 = null, impact = null, finish = () => void 0, keepCalibrationInFlash = () => void 0, configurationMode = "helper_managed", legacyChoice = null, configurationInstalled = false, handoffDeclined = false, sourceConfiguration = null) {
+function summaryStep(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges, projectVersion, saveCalibration, back, meterConfiguration2 = null, impact = null, finish = () => void 0, keepCalibrationInFlash = () => void 0, configurationMode = "helper_managed", legacyChoice = null, configurationInstalled = false, handoffDeclined = false, sourceConfiguration = null, offsetFinalization2 = null, newCycleAcknowledged = false, setNewCycleAcknowledged = () => void 0, newCycle = () => void 0, busy = false) {
   const hasOffsets = Boolean(restart2?.offset_groups?.length || restart2?.power_offset_groups?.length);
-  const handoffAction = !handoffDeclined && restart2?.source_authority === "saved_flash" && restart2.config_filename && !hasOffsets && (restart2.source_handoff_available || restart2.source_handoff_firmware_installed);
+  const handoffAction = !offsetFinalization2?.backup_available && !handoffDeclined && restart2?.source_authority === "saved_flash" && restart2.config_filename && !hasOffsets && (restart2.source_handoff_available || restart2.source_handoff_firmware_installed);
+  const offsetComplete = offsetFinalization2?.configuration_selected && offsetFinalization2.action_ready && session2?.has_pending_calibration === false;
   const totalsEvidence = meterConfiguration2 ?? (configurationMode !== "runtime_only" && sourceConfiguration?.capabilities.configuration_authoritative ? sourceConfiguration : null);
   const totalsImpact = meterConfiguration2 ? impact : totalsEvidence?.configuration_impact ?? null;
   const aggregate = (id2) => totalsEvidence?.configuration.aggregates.find((item) => item.aggregate_id === id2) ?? totalsEvidence?.totals.automatic_candidates.find((item) => item.aggregate_id === id2);
@@ -3308,12 +3419,19 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
     completedWithoutChanges,
     configurationInstalled,
     restart: restart2,
+    offsetFinalization: offsetFinalization2,
     verifiedConfiguration: meterConfiguration2 !== null,
     ...unmanagedLegacyItems ? { unmanagedLegacyItems } : {}
   });
   const boards = (values) => values.flatMap((enabled, board) => enabled ? [board === 0 ? "Main board" : `Add-on ${board}`] : []);
   return b`<section class="step-content" aria-labelledby="step-heading">
-    <div class=${restart2 || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${restart2 || completedWithoutChanges ? outcome.calibrationStatus : b`<strong>Restart verification is not complete</strong><p>Summary remains unverified until the server returns authoritative restart evidence.</p>`}</div>
+    <div class=${offsetComplete || restart2 || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${offsetFinalization2?.backup_available || restart2 || completedWithoutChanges ? outcome.calibrationStatus : b`<strong>Restart verification is not complete</strong><p>Summary remains unverified until the server returns authoritative restart evidence.</p>`}</div>
+    ${offsetFinalization2?.backup_available ? b`<section aria-label="Retained offset calibration"><h2>Offset configuration and retained backup</h2>
+      <table><thead><tr><th>Chip</th><th>Stage</th><th>ABC values</th><th>Actual prior register verification</th></tr></thead><tbody>${offsetFinalization2.results.map(([id2, stage, table, verified]) => b`<tr><td>${id2}</td><td>${stage}</td><td>${table.map(([a2, b2]) => `${a2}/${b2}`).join(", ")}</td><td>${verified ? "Verified at capture" : "Not verified"}</td></tr>`)}</tbody></table>
+      <p>Backup retention keeps the active operation and one prior finalized operation. Older finalized archives rotate only when you explicitly start a new cycle; opening or reloading never rotates them.</p>
+      <label class="check-row"><input type="checkbox" .checked=${newCycleAcknowledged} @change=${(event) => setNewCycleAcknowledged(event.target.checked)}> I acknowledge a new offset cycle and backup retention.</label>
+      <button class="secondary" ?disabled=${busy || !newCycleAcknowledged || !offsetComplete} @click=${newCycle}>Start new offset cycle</button>
+    </section>` : ""}
     <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"}; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"}</dd></div><div><dt>Reporting and entities</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} public entities, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
     ${totalsEvidence ? b`<section aria-labelledby="summary-totals-heading"><h2 id="summary-totals-heading">${!meterConfiguration2 || totalsEvidence.capabilities.reason_codes.includes("totals_adoption_required") ? "Legacy read-only totals" : "Helper-managed totals"}</h2>
       ${!meterConfiguration2 ? b`<p>Authoritative source snapshot: these totals have not been adopted or verified as installed by this workflow.</p>` : ""}
@@ -3703,6 +3821,7 @@ function workflowRoutes(context) {
   if (context.calibrationPlan === "standard" || context.calibrationPlan === "full") {
     routes.push("safety");
     if (context.calibrationPlan === "full") routes.push("offset");
+    if (context.transactionPurpose === "offset_preparation" && !routes.includes("install-configuration")) routes.push("install-configuration");
     routes.push("voltage", "current");
     if (restartRequired(context)) routes.push("restart");
     if (context.configurationMode !== "runtime_only" && saveCalibrationRequired(context)) {
@@ -3740,6 +3859,14 @@ function previousWorkflowRoute(context, activeRoute) {
   return index > 0 ? routes[index - 1] : null;
 }
 function resumeWorkflowRoute(context) {
+  if (context.transactionPurpose === "offset_preparation") return "install-configuration";
+  if (context.transactionPurpose === "offset_finalization") return "save-calibration";
+  if (context.normalTransactionActive) return "install-configuration";
+  if (context.offsetConfigurationSelected && !context.offsetRecoveryPending) return "summary";
+  if (context.sessionState === "safety_required" || context.sessionState === "preflight_failed") return "safety";
+  if (context.offsetRecoveryPending) {
+    return context.sessionState === "gains_verified_offsets_pending" || ["completed", "skipped"].includes(context.offsetDisposition ?? "") ? "save-calibration" : "offset";
+  }
   if (context.transactionPurpose === "save_calibration" && (context.handoffAvailable || context.handoffInstalled)) {
     return "save-calibration";
   }
@@ -3764,7 +3891,7 @@ function restartRequired(context) {
   return !context.completedWithoutCalibration && (context.pendingCalibration || context.restartVerification || context.sessionState === "applied_pending_restart_verification" || context.sessionState === "verified");
 }
 function saveCalibrationRequired(context) {
-  return context.handoffAvailable || context.handoffInstalled || context.transactionPurpose === "save_calibration";
+  return context.offsetRecoveryPending || context.offsetConfigurationSelected || context.transactionPurpose === "offset_finalization" || context.handoffAvailable || context.handoffInstalled || context.transactionPurpose === "save_calibration";
 }
 function statusFor(index, current) {
   if (current < 0 || index > current) return "upcoming";
@@ -3886,6 +4013,9 @@ class CircuitSetupPanel extends i$2 {
     this.offsetStage = 1;
     this.offsetAcknowledged = [false, false];
     this.offsetRetryConfirmed = false;
+    this.offsetBackupAcknowledged = false;
+    this.offsetPreparation = null;
+    this.offsetFinalization = null;
     this.drafts = /* @__PURE__ */ new Map();
     this.reviewCorrection = null;
     this.labelOnly = false;
@@ -4138,6 +4268,9 @@ class CircuitSetupPanel extends i$2 {
     this.offsetStage = 1;
     this.offsetAcknowledged = [false, false];
     this.offsetRetryConfirmed = false;
+    this.offsetBackupAcknowledged = false;
+    this.offsetPreparation = null;
+    this.offsetFinalization = null;
     this.finishBusy = false;
     this.restartBusy = false;
     this.voltageSkipped = false;
@@ -4278,7 +4411,7 @@ class CircuitSetupPanel extends i$2 {
       semanticSource: this.meterConfiguration?.capabilities.semantic_source ?? null,
       runtimeOnly
     });
-    const purpose = this.transactionPurpose ?? (this.transaction ? this.calibrationHandoff ? "save_calibration" : "install_configuration" : null);
+    const purpose = this.transaction?.purpose ?? this.transactionPurpose;
     const normalTransaction = purpose === "install_configuration" ? this.transaction : null;
     return {
       journeyOrigin: this.journeyOrigin,
@@ -4296,7 +4429,9 @@ class CircuitSetupPanel extends i$2 {
       restartVerification: this.restartResult !== null,
       handoffAvailable: this.restartResult?.source_handoff_available ?? false,
       handoffInstalled: this.restartResult?.source_handoff_firmware_installed ?? false,
-      completedWithoutCalibration: this.completedWithoutChanges
+      completedWithoutCalibration: this.completedWithoutChanges,
+      offsetRecoveryPending: this.offsetRecoveryPending(),
+      offsetConfigurationSelected: this.offsetFinalization?.configuration_selected === true
     };
   }
   progressContext() {
@@ -4516,12 +4651,20 @@ class CircuitSetupPanel extends i$2 {
     this.session = active.session?.state === "cancelled" ? null : active.session;
     this.transaction = active.transaction;
     this.safetyAcknowledged = this.session?.safety_acknowledged ?? false;
-    this.calibrationHandoff = Boolean(this.transaction && active.verified_calibration && active.verified_calibration.source_handoff_transaction_id === this.transaction.transaction_id);
-    this.transactionPurpose = this.transaction ? this.calibrationHandoff ? "save_calibration" : "install_configuration" : null;
+    this.calibrationHandoff = this.transaction?.purpose === "save_calibration";
+    this.transactionPurpose = this.transaction?.purpose ?? null;
     if (this.transactionPurpose === "install_configuration" && this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === null) this.existingConfigurationChoice = "manage_with_helper";
-    this.restartResult = this.calibrationHandoff || this.session?.state === "verified" ? active.verified_calibration : null;
+    this.restartResult = active.verified_calibration;
     if (this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === null && (this.session || this.calibrationHandoff || this.restartResult)) this.existingConfigurationChoice = "calibrate_only";
     if (!this.transaction && !this.session && !this.restartResult) return;
+    if (!this.transaction || ["previewed", "verified", "rolled_back", "failed"].includes(this.transaction.state)) {
+      await this.refreshOffsetRecovery(api, generation, true);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (this.transaction?.state === "verified" && this.transaction.purpose.startsWith("offset_")) {
+        this.transaction = null;
+        this.transactionPurpose = null;
+      }
+    }
     this.navigate(resumeWorkflowRoute(this.workflowContext()));
     if (this.transaction) await this.subscribeTransaction(this.connectionGeneration);
     if (this.session) await this.subscribeSession(this.connectionGeneration);
@@ -4554,6 +4697,29 @@ class CircuitSetupPanel extends i$2 {
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
+    if (current?.purpose.startsWith("offset_")) {
+      if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
+        this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first.");
+        return;
+      }
+      const generation2 = ++this.operationGeneration;
+      this.pendingAction = "review-back";
+      this.requestUpdate();
+      await this.run(async () => {
+        if (current.state === "previewed") await api.abandonCtConfig(deviceId, current.transaction_id, current.source_sha256);
+        if (!this.ownsOperation(generation2, api, deviceId)) return;
+        this.clearSubscription("transaction");
+        this.transaction = null;
+        this.transactionPurpose = null;
+        await this.refreshOffsetRecovery(api, generation2);
+        if (!this.ownsOperation(generation2, api, deviceId)) return;
+        this.offsetBackupAcknowledged = false;
+        this.navigate(current.purpose === "offset_preparation" ? "offset" : "save-calibration");
+      }, "The review could not be cancelled. Recovery and captured values are retained.", () => this.ownsOperation(generation2, api, deviceId));
+      this.pendingAction = "";
+      this.requestUpdate();
+      return;
+    }
     if (current && current.state !== "previewed") {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
@@ -5244,7 +5410,19 @@ class CircuitSetupPanel extends i$2 {
           }
           this.sourcePackageOptions = restored;
         }
-        if (action === "install" && this.calibrationHandoff && transaction2.state === "verified" && this.session && this.topology && this.restartResult) {
+        if (action === "install" && transaction2.state === "verified" && transaction2.purpose.startsWith("offset_")) {
+          this.clearSubscription("transaction");
+          this.offsetAcknowledged = [false, false];
+          this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
+          this.offsetBackupAcknowledged = false;
+          this.offsetRetryConfirmed = false;
+          await this.refreshOffsetRecovery(api, generation, true);
+          if (!this.ownsOperation(generation, api, deviceId)) return;
+          this.transaction = null;
+          this.transactionPurpose = null;
+          this.navigate(transaction2.purpose === "offset_preparation" ? "offset" : "save-calibration");
+          this.announcement = transaction2.purpose === "offset_preparation" ? "Preparation installed. Acknowledge physical preparation again and check measured readiness before Run." : "Captured offsets installed. Confirm the installed configuration selection; register readback is not verified.";
+        } else if (action === "install" && this.calibrationHandoff && transaction2.state === "verified" && this.session && this.topology && this.restartResult) {
           this.restartResult = {
             ...this.restartResult,
             source_handoff_available: false,
@@ -5335,9 +5513,9 @@ class CircuitSetupPanel extends i$2 {
         this.session = active.session?.state === "cancelled" ? null : active.session;
         this.transaction = active.transaction;
         this.safetyAcknowledged = this.session?.safety_acknowledged ?? false;
-        this.calibrationHandoff = Boolean(this.transaction && active.verified_calibration && active.verified_calibration.source_handoff_transaction_id === this.transaction.transaction_id);
-        this.transactionPurpose = this.transaction ? this.calibrationHandoff ? "save_calibration" : "install_configuration" : null;
-        this.restartResult = this.calibrationHandoff || this.session?.state === "verified" ? active.verified_calibration : null;
+        this.calibrationHandoff = this.transaction?.purpose === "save_calibration";
+        this.transactionPurpose = this.transaction?.purpose ?? null;
+        this.restartResult = active.verified_calibration;
         if (this.transaction) {
           this.navigate(resumeWorkflowRoute(this.workflowContext()));
           await this.subscribeTransaction(this.connectionGeneration);
@@ -5345,6 +5523,8 @@ class CircuitSetupPanel extends i$2 {
           return;
         }
         if (this.session) {
+          await this.refreshOffsetRecovery(api, generation, true);
+          if (!this.ownsOperation(generation, api, deviceId)) return;
           this.navigate(resumeWorkflowRoute(this.workflowContext()));
           await this.subscribeSession(this.connectionGeneration);
           return;
@@ -5353,6 +5533,8 @@ class CircuitSetupPanel extends i$2 {
         if (!this.ownsOperation(generation, api, deviceId) || session2.device_id !== deviceId) return;
         this.session = session2;
         this.calibrationPlan = session2.calibration_plan ?? plan;
+        await this.refreshOffsetRecovery(api, generation, true);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
         this.navigate(resumeWorkflowRoute(this.workflowContext()));
         await this.subscribeSession(this.connectionGeneration);
       }, "Calibration session could not be started.", () => this.ownsOperation(generation, api, deviceId));
@@ -5363,6 +5545,10 @@ class CircuitSetupPanel extends i$2 {
     }
   }
   finishFlow(message) {
+    if (this.offsetRecoveryPending()) {
+      this.navigate("save-calibration");
+      return;
+    }
     if (this.hasUnsupportedCalibrationChanges()) {
       this.explainCalibrationConfigurationConflict();
       return;
@@ -5414,6 +5600,155 @@ class CircuitSetupPanel extends i$2 {
   offsetKey(board = this.board, stage = this.offsetStage) {
     return `${board}:${stage}`;
   }
+  stockOffsetMode() {
+    return Boolean(this.offsetPreparation?.backup_available || this.offsetFinalization?.backup_available || this.configurationMode !== "runtime_only" && this.selectedConfigurationAvailable() && this.session?.offset_capability?.status === "available");
+  }
+  offsetRecoveryPending() {
+    return Boolean((this.offsetPreparation?.backup_available || this.offsetFinalization?.backup_available) && !(this.offsetFinalization?.configuration_selected && this.offsetFinalization.action_ready && this.session?.has_pending_calibration === false));
+  }
+  async refreshOffsetRecovery(api, generation, restoreSelection = false) {
+    if (!this.session || !this.stockOffsetMode()) return;
+    const deviceId = this.selectedDeviceId;
+    const sessionId = this.session.session_id;
+    const preparation = await api.getOffsetPreparation(sessionId);
+    const finalization = await api.getOffsetFinalization(sessionId);
+    const session2 = await api.getSession(sessionId);
+    if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId || session2.session_id !== sessionId || session2.device_id !== deviceId) return;
+    this.offsetPreparation = preparation;
+    this.offsetFinalization = finalization;
+    this.session = session2;
+    if (restoreSelection && finalization.board_index !== null && finalization.stage !== null) {
+      this.board = finalization.board_index;
+      this.offsetStage = finalization.stage;
+    }
+    const results = /* @__PURE__ */ new Map();
+    for (let board = 0; board < (this.topology?.board_count ?? 0); ++board) for (const stage of [1, 2]) {
+      const groups = board === 0 ? ["main_1", "main_2"] : [`addon${board}_1`, `addon${board}_2`];
+      const tables = finalization.results.filter(([id2, family]) => family === stage && groups.includes(id2.replace("meter_main", "main_"))).map(([id2, , table]) => [id2.replace("meter_main", "main_"), table]);
+      const unfinished = groups.filter((key) => !tables.some(([id2]) => id2 === key));
+      if (tables.length) results.set(this.offsetKey(board, stage), {
+        board_index: board,
+        stage,
+        state: unfinished.length ? "partial" : "captured_pending_configuration",
+        expected_tables: tables,
+        unfinished_group_keys: unfinished,
+        retry_allowed: false,
+        error: unfinished.length ? "Captured values retained; unfinished chips require a new reviewed preparation." : null
+      });
+    }
+    this.offsetResultByTarget = results;
+  }
+  async reviewOffsetPreparation() {
+    if (!this.api || !this.session || this.offsetBusy || this.pendingAction || !this.offsetBackupAcknowledged) return;
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const sessionId = this.session.session_id;
+    const board = this.board;
+    const stage = this.offsetStage;
+    const generation = ++this.operationGeneration;
+    this.offsetBusy = true;
+    this.requestUpdate();
+    await this.run(
+      async () => {
+        const review = await api.previewOffsetPreparation(sessionId, board, stage, true);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        this.transaction = review.transaction;
+        this.transactionPurpose = review.transaction.purpose;
+        this.calibrationHandoff = false;
+        this.offsetAcknowledged = [false, false];
+        this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
+        this.navigate("install-configuration");
+        await this.subscribeTransaction(this.connectionGeneration);
+      },
+      `Board ${board + 1} Stage ${stage} preparation is unavailable. Exact saved/effective per-chip tables for this stage are required; unknown evidence is not zero. Recovery is retained.`,
+      () => this.ownsOperation(generation, api, deviceId)
+    );
+    this.offsetBusy = false;
+    this.requestUpdate();
+  }
+  async reviewOffsetFinalization() {
+    if (!this.api || !this.session || this.pendingAction) return;
+    if (this.hasUnsupportedCalibrationChanges()) {
+      this.explainCalibrationConfigurationConflict();
+      return;
+    }
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
+    this.pendingAction = "offset-finalization";
+    this.requestUpdate();
+    await this.run(
+      async () => {
+        const review = await api.previewOffsetFinalization(
+          sessionId,
+          this.restartResult?.source_handoff_available ? this.restartResult.verification_id : void 0,
+          this.calibrationDraftChanges(),
+          this.hasPackageChanges() ? this.packageOptions : void 0
+        );
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        this.transaction = review.transaction;
+        this.transactionPurpose = review.transaction.purpose;
+        this.calibrationHandoff = false;
+        this.navigate("save-calibration");
+        await this.subscribeTransaction(this.connectionGeneration);
+      },
+      "Final review is unavailable. Both RMS and power tables must be known for each selected chip; verify pending gains first if needed. Unknown evidence is not zero. Captured values are retained.",
+      () => this.ownsOperation(generation, api, deviceId)
+    );
+    this.pendingAction = "";
+    this.requestUpdate();
+  }
+  async reconcileOffsetFinalization() {
+    if (!this.api || !this.session || !this.offsetFinalization?.operation_id || this.pendingAction) return;
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const sessionId = this.session.session_id;
+    const operationId = this.offsetFinalization.operation_id;
+    const generation = ++this.operationGeneration;
+    this.pendingAction = "offset-selection";
+    this.requestUpdate();
+    await this.run(
+      async () => {
+        await api.reconcileOffsetFinalization(sessionId, operationId);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        await this.refreshOffsetRecovery(api, generation);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        if (this.offsetRecoveryPending()) throw new Error("Pending groups remain");
+        this.navigate("summary");
+      },
+      "Offset selection could not be confirmed or calibration groups remain pending. Retained values are not lost. A new backend owner requires a fresh reviewed final installation.",
+      () => this.ownsOperation(generation, api, deviceId)
+    );
+    this.pendingAction = "";
+    this.requestUpdate();
+  }
+  async beginOffsetCycle() {
+    if (!this.api || !this.session || !this.offsetBackupAcknowledged || this.pendingAction) return;
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
+    this.pendingAction = "offset-cycle";
+    this.requestUpdate();
+    await this.run(
+      async () => {
+        await api.beginOffsetCycle(sessionId, true);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        this.offsetAcknowledged = [false, false];
+        this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
+        this.offsetBackupAcknowledged = false;
+        this.offsetRetryConfirmed = false;
+        await this.refreshOffsetRecovery(api, generation, true);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.navigate("offset");
+      },
+      "A new cycle could not be started. Confirm the current final installation and resolve pending work first; backups and results are retained.",
+      () => this.ownsOperation(generation, api, deviceId)
+    );
+    this.pendingAction = "";
+    this.requestUpdate();
+  }
   async checkOffsetReadiness() {
     if (!this.api || !this.session || this.offsetBusy || !this.offsetAcknowledged[this.offsetStage - 1]) return;
     const api = this.api;
@@ -5451,21 +5786,23 @@ class CircuitSetupPanel extends i$2 {
     const prior = this.offsetResultByTarget.get(key);
     const stageState = this.session.offset_boards?.[board]?.stages[stage - 1]?.state;
     const retryRequired = Boolean(prior?.retry_allowed) || stageState === "partial" || stageState === "indeterminate";
-    if (this.offsetAcknowledged[stage - 1] !== true || retryRequired && !this.offsetRetryConfirmed) return;
+    if (this.offsetAcknowledged[stage - 1] !== true || !this.offsetReadinessByTarget.get(key)?.ready || !this.stockOffsetMode() && retryRequired && !this.offsetRetryConfirmed) return;
     const generation = ++this.operationGeneration;
     this.offsetBusy = true;
     this.requestUpdate();
     try {
       await this.run(
         async () => {
-          const result = await api.calibrateOffset(sessionId, board, stage, true, retryRequired);
+          const prepared = this.offsetPreparation;
+          if (this.stockOffsetMode() && (!prepared?.action_ready || !prepared.operation_id || prepared.stage !== stage || prepared.attempted.length || !prepared.targets.every((id2) => (board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`]).includes(id2)))) return;
+          const result = this.stockOffsetMode() ? await api.resumeOffsetCalibration(sessionId, prepared.operation_id, board, stage, true) : await api.calibrateOffset(sessionId, board, stage, true, retryRequired);
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
           this.offsetResultByTarget = new Map(this.offsetResultByTarget).set(key, result);
           const boards = (this.session.offset_boards ?? []).map((item) => item.board_index !== board ? item : {
             ...item,
             stages: item.stages.map((entry) => entry.stage !== stage ? entry : {
               ...entry,
-              state: result.state === "applied_pending_restart_verification" ? "completed" : result.state
+              state: result.state === "applied_pending_restart_verification" || result.state === "captured_pending_configuration" ? "completed" : result.state
             })
           });
           const states = boards.flatMap((item) => item.stages.map((entry) => entry.state));
@@ -5480,6 +5817,7 @@ class CircuitSetupPanel extends i$2 {
           this.offsetReadinessByTarget = new Map(this.offsetReadinessByTarget);
           this.offsetReadinessByTarget.delete(key);
           this.offsetRetryConfirmed = false;
+          if (this.stockOffsetMode()) await this.refreshOffsetRecovery(api, generation);
           this.announcement = result.state === "applied_pending_restart_verification" ? `Board ${board + 1} Stage ${stage} saved; restart verification required.` : `Board ${board + 1} Stage ${stage} requires recovery before retry.`;
         },
         "Offset calibration did not complete. Reconnect and inspect before another attempt.",
@@ -5514,6 +5852,10 @@ class CircuitSetupPanel extends i$2 {
     if (!this.session || this.finishBusy) return;
     if (this.totalsIntentNeedsResolution()) {
       this.explainTotalsModeConflict();
+      return;
+    }
+    if (this.offsetRecoveryPending()) {
+      this.navigate("save-calibration");
       return;
     }
     if (this.session.has_pending_calibration) {
@@ -5714,7 +6056,7 @@ class CircuitSetupPanel extends i$2 {
         async () => {
           let result;
           try {
-            result = await api.restartAndVerify(sessionId, topology2);
+            result = this.offsetRecoveryPending() ? await api.restartAndVerifyGains(sessionId, topology2) : await api.restartAndVerify(sessionId, topology2);
           } catch (error) {
             if (this.ownsOperation(generation, api, deviceId) && this.session?.session_id === sessionId && this.topology === topology2) {
               this.restartResult = null;
@@ -5725,7 +6067,7 @@ class CircuitSetupPanel extends i$2 {
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId || this.topology !== topology2) return;
           this.restartResult = result;
           this.completedWithoutChanges = false;
-          this.session = { ...this.session, state: "verified" };
+          this.session = { ...this.session, state: this.offsetRecoveryPending() ? "gains_verified_offsets_pending" : "verified" };
         },
         "Restart verification failed; review recovery evidence before rollback.",
         () => this.ownsOperation(generation, api, deviceId)
@@ -5735,7 +6077,9 @@ class CircuitSetupPanel extends i$2 {
       this.requestUpdate();
     }
     const restartResult = this.restartResult;
-    if (restartResult?.source_handoff_available) {
+    if (this.offsetRecoveryPending() && restartResult) {
+      this.navigate("save-calibration");
+    } else if (restartResult?.source_handoff_available) {
       this.navigate("save-calibration");
     } else if (restartResult) {
       this.navigate("summary");
@@ -5788,6 +6132,10 @@ class CircuitSetupPanel extends i$2 {
         const session2 = await api.getSession(sessionId);
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
         this.session = session2;
+        this.offsetAcknowledged = [false, false];
+        this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
+        await this.refreshOffsetRecovery(api, generation, true);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
         this.announcement = `Session reconnected with state ${this.session.state}.`;
       },
       "Session reconnection failed. Retry only after checking the meter connection.",
@@ -5965,13 +6313,26 @@ class CircuitSetupPanel extends i$2 {
         else this.requestUpdate();
       }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : A}` : A}`;
     }
+    if (this.step === "save-calibration" && !this.transaction && this.offsetRecoveryPending()) return b`<section class="step-content" aria-labelledby="offset-final-heading">
+      <h2 id="offset-final-heading">Review captured offset configuration</h2>
+      <p>Captured results are retained with the private backup. Both RMS and power tables must be known for every affected chip before disabling native offset restore. Unknown evidence is not zero.</p>
+      ${this.offsetFinalization?.installed ? b`<p>${this.offsetFinalization.action_ready ? "Final configuration is installed. Confirm fresh configuration selection below; installation is not register readback." : "Final configuration was installed, but its receipt is unconfirmed in this backend owner. Retained values are not lost. Review and install the final configuration again, even if unchanged, before confirming selection."}</p>` : A}
+      ${this.offsetFinalization?.results.length ? b`<table aria-label="Retained offset results"><thead><tr><th>Chip</th><th>Stage</th><th>ABC values</th><th>Actual prior register verification</th></tr></thead><tbody>
+        ${this.offsetFinalization.results.map(([id2, stage, table, verified]) => b`<tr><td>${id2}</td><td>${stage}</td><td>${table.map(([a2, b2]) => `${a2}/${b2}`).join(", ")}</td><td>${verified ? "Verified at capture" : "Not verified"}</td></tr>`)}
+      </tbody></table>` : A}
+      <p>${this.restartResult ? `Gain authority: ${this.restartResult.source_authority.replaceAll("_", " ")}. Offset configuration selection never clears gain flash.` : "If gains were also calibrated, restart and verify gains only before the combined review. This does not verify stock offsets."}</p>
+      <footer class="action-footer"><button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => this.navigate("offset", true)}>Back to offset stages</button>
+      ${!this.restartResult ? b`<button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => void this.restart()}>${this.restartBusy ? "Restarting and verifying gains…" : "Restart and verify gains only"}</button>` : A}
+      <button class="primary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy || !this.offsetFinalization?.results.length} @click=${() => void this.reviewOffsetFinalization()}>Review captured offsets for installation</button>
+      ${this.offsetFinalization?.action_ready ? b`<button class="primary" ?disabled=${Boolean(this.pendingAction)} @click=${() => void this.reconcileOffsetFinalization()}>Confirm installed offset selection</button>` : A}</footer>
+    </section>`;
     if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return b`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
       <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
       <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>
       <footer class="action-footer"><button class="secondary" data-action="keep-calibration-flash" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => this.keepCalibrationInFlash()}>Keep calibration in meter flash</button><button class="primary" data-action="review-calibration-handoff" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => void this.reviewCalibrationHandoff()}>${this.pendingAction === "calibration-handoff" ? "Preparing YAML review…" : "Review and save calibration to YAML"}</button></footer>
     </section>`;
     if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep(
-      this.step === "save-calibration" ? "save_calibration" : "install_configuration",
+      this.transaction?.purpose ?? (this.step === "save-calibration" ? "save_calibration" : "install_configuration"),
       this.transaction,
       () => void this.transactionAction("apply"),
       () => void this.transactionAction("compile"),
@@ -6048,7 +6409,16 @@ class CircuitSetupPanel extends i$2 {
       () => void this.reconnectSession(),
       () => void this.skipOffset(),
       () => this.back(),
-      () => this.navigate("voltage")
+      () => this.navigate("voltage"),
+      this.stockOffsetMode() ? {
+        preparation: this.offsetPreparation,
+        backupAcknowledged: this.offsetBackupAcknowledged,
+        setBackup: (value) => {
+          this.offsetBackupAcknowledged = value;
+          this.requestUpdate();
+        },
+        prepare: () => void this.reviewOffsetPreparation()
+      } : null
     );
     if (this.step === "voltage") return b`${this.meterSettingsDraft?.warnings.includes("slow_interval_extends_calibration") ? b`<div class="warning-band" role="status">This meter uses a ${this.meterSettingsDraft.update_interval_s}-second update interval. Calibration takes longer; keep the reference stable until each check finishes.</div>` : A}${voltageStep(
       this.topology,
@@ -6146,7 +6516,15 @@ class CircuitSetupPanel extends i$2 {
       this.existingConfigurationChoice,
       this.configurationInstalled,
       this.handoffDeclined,
-      this.configurationMode === "legacy_editable" && this.sourceMeterConfiguration?.deviceId === this.selectedDeviceId && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256 ? this.sourceMeterConfiguration?.meter ?? null : null
+      this.configurationMode === "legacy_editable" && this.sourceMeterConfiguration?.deviceId === this.selectedDeviceId && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256 ? this.sourceMeterConfiguration?.meter ?? null : null,
+      this.offsetFinalization,
+      this.offsetBackupAcknowledged,
+      (value) => {
+        this.offsetBackupAcknowledged = value;
+        this.requestUpdate();
+      },
+      () => void this.beginOffsetCycle(),
+      Boolean(this.pendingAction)
     );
     return b`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct" ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;

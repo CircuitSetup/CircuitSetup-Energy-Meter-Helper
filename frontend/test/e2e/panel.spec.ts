@@ -218,7 +218,9 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   let nextSetupStatusUnavailable = false;
   let setupSubscriptionGeneration = 0;
   let currentTransaction = transaction("previewed", addons ? 42 : 1);
-  let currentSession = session("safety_required", false, addons);
+  let currentSession = session(options.activeWork === "handoff" ? "verified" : options.activeWork === "ready" ? "ready" : "safety_required",
+    options.activeWork === "handoff" || options.activeWork === "ready", addons, false,
+    options.activeWork ? "skipped" : "not_started", options.activeWork ? "standard" : "full");
   let currentRestart: RestartVerificationResult | null = null;
   let resumeRestart: RestartVerificationResult | null = null;
   let transactionActive = false;
@@ -328,7 +330,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         ? { session: null, transaction: { ...transaction("validated", 1), changes: [] }, verified_calibration: null }
         : options.activeWork === "handoff"
           ? { session: session("verified", true, addons, false, "skipped", "standard"),
-            transaction: { ...transaction("previewed", 1), transaction_id: "d".repeat(32), changes: [] },
+            transaction: { ...transaction("previewed", 1), purpose: "save_calibration", transaction_id: "d".repeat(32), changes: [] },
             verified_calibration: { ...restart(addons), source_authority: "configuration",
               source_handoff_available: false, source_handoff_transaction_id: "d".repeat(32),
               source_handoff_firmware_installed: true } }
@@ -356,7 +358,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         }
       } else if (operation === "preview_calibrated_gains") {
         transactionActive = true;
-        result = currentTransaction = { ...transaction("previewed", 1), transaction_id: "d".repeat(32) };
+        result = currentTransaction = { ...transaction("previewed", 1), purpose: "save_calibration", transaction_id: "d".repeat(32) };
         if (currentRestart) resumeRestart = { ...currentRestart, source_authority: "configuration",
           source_handoff_available: false, source_handoff_transaction_id: currentTransaction.transaction_id,
           source_handoff_firmware_installed: true };
@@ -364,19 +366,19 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         result = currentTransaction = { ...(outcome === "validation"
           ? transaction("failed", addons ? 42 : 1, { evidence: ["validation_failed"], rollback: true, validation: true })
           : transaction("validated", addons ? 42 : 1, { progress: ["config_written", "config_validated"], rollback: true })),
-          transaction_id: String(frame.transaction_id) };
+          purpose: currentTransaction.purpose, transaction_id: String(frame.transaction_id) };
       } else if (operation === "compile_ct_config") {
         result = currentTransaction = { ...(outcome === "compile"
           ? transaction("failed", addons ? 42 : 1, { evidence: ["compile_failed"], progress: ["config_written", "config_validated"], rollback: true })
           : transaction("install_confirmation_required", addons ? 42 : 1,
             { progress: ["config_written", "config_validated", "firmware_compiled"], rollback: true })),
-          transaction_id: String(frame.transaction_id) };
+          purpose: currentTransaction.purpose, transaction_id: String(frame.transaction_id) };
       } else if (operation === "install_ct_config") {
         transactionActive = false;
         committedConfiguration = reviewedConfiguration;
         result = currentTransaction = { ...transaction("verified", addons ? 42 : 1,
           { progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"] }),
-          transaction_id: String(frame.transaction_id) };
+          purpose: currentTransaction.purpose, transaction_id: String(frame.transaction_id) };
       }
       else if (operation === "abandon_ct_config") {
         if (options.consumePlans && !pendingPreview) return fail("stale_confirmation", "no pending preview");
@@ -399,6 +401,11 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           frame.calibration_plan === "standard" ? "skipped" : "not_started", frame.calibration_plan === "standard" ? "standard" : "full");
       }
       else if (operation === "acknowledge_safety") result = currentSession = { ...currentSession, state: "ready", safety_acknowledged: true };
+      else if (operation === "get_offset_preparation") result = { backup_available: false, operation_id: null, stage: null,
+        targets: [], installed: false, cancelled: false, action_ready: false, attempted: [], completed: [] };
+      else if (operation === "get_offset_finalization") result = { purpose: "offset_preparation", operation_id: null, transaction_id: null,
+        stage: null, board_index: null, targets: [], backup_available: false, installed: false, cancelled: false,
+        configuration_selected: false, action_ready: false, register_verified: false, gain_verification_id: null, results: [] };
       else if (operation === "check_offset_readiness") result = offsetReadiness(frame);
       else if (operation === "calibrate_offset") {
         const board = Number(frame.board_index); const stage = Number(frame.stage) as 1 | 2;
@@ -1357,8 +1364,10 @@ test("add-on CT42 indeterminate disconnect never auto-represses calibration", as
   expect(frames.find((frame) => frame.type.endsWith("/calibrate_current"))).toMatchObject({ references: [{ channel: 42,
     reference: 25 }], confirm_iteration: true });
   expect(operations(frames)).not.toContain("restart_and_verify");
+  const priorSessionReads = operations(frames).filter((value) => value === "get_session").length;
   await page.getByRole("button", { name: "Reconnect and inspect" }).click();
-  await expect.poll(() => operations(frames).filter((value) => value === "get_session").length).toBe(1);
+  await expect(page.getByRole("status").filter({ hasText: "Session reconnected with state" })).toBeVisible();
+  expect(operations(frames).filter((value) => value === "get_session").length).toBeGreaterThan(priorSessionReads);
   expect(operations(frames).filter((value) => value === "calibrate_current")).toHaveLength(1);
 });
 
@@ -1515,11 +1524,10 @@ test("restart handoff can be kept in flash before any YAML preview", async ({ pa
   expect(operations(frames)).not.toContain("clear_calibration_flash");
 });
 
-test("journey 3: helper-managed full calibration keeps flash authority when not handed off", async ({ page }) => {
-  const frames = await mockHomeAssistant(page);
-  await openInventory(page);
+test("journey 3: runtime-only full calibration keeps verified offsets in flash", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { guidedMode: "runtime" });
+  await openGuidedMeter(page);
   expect(mutations(frames)).toEqual([]);
-  await page.getByRole("button", { name: "Continue" }).click();
   await page.getByLabel(/Full calibration/).click();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
   await page.getByRole("checkbox").check();

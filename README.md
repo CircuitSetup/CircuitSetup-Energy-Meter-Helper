@@ -11,7 +11,9 @@ The helper adapts the setup path to the meter it finds:
 
 Configuration authority and calibration authority are separate. Configuration is authoritative only when the helper can read and safely update the ESPHome source. Calibration can be authoritative in the meter's flash even when configuration cannot be edited.
 
-Choose **Standard calibration** to calibrate voltage and current while retaining the current offset values. Choose **Full calibration** when offsets also need adjustment; it follows offset, voltage, then current. Offset calibration remains stored in flash. Installing firmware can replace flash-only calibration values, so review the summary before installing.
+Choose **Standard calibration** to calibrate voltage and current while retaining the current offset values. Choose **Full calibration** when offsets also need adjustment; it follows offset, voltage, then current.
+
+Stock ESPHome offset calibration uses a private backup and a reviewed zero-offset configuration installation before an explicit calibration run. Captured results are retained for a final reviewed YAML installation; retries prepare only unfinished chips. Confirming the installed configuration does not claim register readback. Firmware with offset verification can also report verified register evidence. Installing firmware can replace flash-only calibration values, so review the summary before installing.
 
 Legacy migration is always opt-in. Adopting a legacy configuration marks only the helper-managed parts; unrelated YAML remains untouched.
 

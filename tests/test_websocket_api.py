@@ -3559,18 +3559,22 @@ def test_new_session_waits_for_same_meter_cancellation_cleanup(
         cleanup_release = asyncio.Event()
         original_finalize = workflow._async_finalize_revoked
 
-        async def delayed_finalize(handle: Any, active_task: Any) -> None:
+        async def delayed_finalize(
+            handle: Any, active_task: Any, *, cancel_preparation: bool = False
+        ) -> None:
             cleanup_started.set()
             await cleanup_release.wait()
-            await original_finalize(handle, active_task)
+            await original_finalize(
+                handle, active_task, cancel_preparation=cancel_preparation
+            )
 
         workflow._async_finalize_revoked = delayed_finalize  # type: ignore[method-assign]
         cancelling = asyncio.create_task(
             workflow.async_cancel_session(first.session_id)
         )
-        await cleanup_started.wait()
-        starting = asyncio.create_task(workflow.async_start_session("meter"))
         try:
+            await asyncio.wait_for(cleanup_started.wait(), timeout=1.0)
+            starting = asyncio.create_task(workflow.async_start_session("meter"))
             await asyncio.sleep(0)
             await asyncio.sleep(0)
             assert not starting.done()
@@ -3776,6 +3780,8 @@ def test_cancel_session_reports_attached_reference_cleanup_failure_after_scrub()
                 self.active_task: asyncio.Task[None] | None = task
                 self.expires_at = float("inf")
                 self.substitutions = {"secret": "value"}
+                self.offset_preparation_id = None
+                self.offset_finalization_id = None
 
             def status(self) -> Any:
                 return SimpleNamespace(state=self.state)

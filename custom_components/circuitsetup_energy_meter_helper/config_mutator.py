@@ -514,6 +514,14 @@ def build_calibrated_gain_mutation(
         },
         frozenset(instance_id for instance_id, _, _, _ in addressed),
     )
+    proposed_content = _apply_calibrated_offsets(
+        proposed_content,
+        topology,
+        _verified_offset_tables(topology, verified.offset_groups, "phase_offsets"),
+        _verified_offset_tables(
+            topology, verified.power_offset_groups, "phase_power_offsets"
+        ),
+    )
     if (
         "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1"
         in snapshot.content
@@ -1663,7 +1671,7 @@ def _yaml_key(token: str) -> str:
 
 
 def _yaml_identifier(rest: str) -> str | None:
-    value = rest.strip()
+    value = re.sub(r"\s+#.*$", "", rest).strip()
     while (decorator := re.match(r"^(?P<token>![^\s]+|&[^\s]+)\s+", value)) is not None:
         if decorator.group("token").startswith("!") and decorator.group("token") != "!extend":
             return None
@@ -1813,8 +1821,11 @@ def _review_diff(
     substitution_diff = _redacted_diff(changes)
     multiplier_diff = _reporting_multiplier_diff(prior_content, proposed_content)
     voltage_diff = _calibrated_voltage_gain_diff(prior_content, proposed_content)
+    offset_diff = _calibrated_offset_diff(prior_content, proposed_content)
     return "\n".join(
-        part for part in (substitution_diff, multiplier_diff, voltage_diff) if part
+        part
+        for part in (substitution_diff, multiplier_diff, voltage_diff, offset_diff)
+        if part
     )
 
 
@@ -1833,6 +1844,23 @@ def _calibrated_voltage_gain_diff(prior_content: str, proposed_content: str) -> 
     if prior == proposed:
         return ""
     return proposed or "managed calibrated voltage gains removed"
+
+
+def _calibrated_offset_diff(prior_content: str, proposed_content: str) -> str:
+    start = "# CircuitSetup Energy Meter Helper: calibrated offsets v1"
+    end = "# End CircuitSetup Energy Meter Helper: calibrated offsets v1"
+
+    def block(content: str) -> str:
+        offset = content.find(start)
+        if offset < 0:
+            return ""
+        finish = content.find(end, offset)
+        return content[offset : finish + len(end)] if finish >= 0 else content[offset:]
+
+    prior, proposed = block(prior_content), block(proposed_content)
+    if prior == proposed:
+        return ""
+    return proposed or "managed calibrated offsets removed"
 
 
 def _reporting_multiplier_diff(prior_content: str, proposed_content: str) -> str:

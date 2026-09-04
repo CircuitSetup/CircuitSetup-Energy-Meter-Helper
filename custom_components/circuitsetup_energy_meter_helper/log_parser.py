@@ -29,9 +29,7 @@ _COMPARE_ROW_RE = re.compile(
     r"(?P<flash_current>\d+)\s*\|"
 )
 _MISMATCH_RE = re.compile(r"Mismatch detected for Phase (?P<phase>[ABC])!")
-_BUTTON_RE = re.compile(
-    r"\[[^\]]*atm90e32\.button[^\]]*\]\s*:?\s*(?P<button>.+?)\s*$"
-)
+_BUTTON_RE = re.compile(r"\[[^\]]*atm90e32\.button[^\]]*\]\s*:?\s*(?P<button>.+?)\s*$")
 _OFFSET_ROW_RE = re.compile(
     r"\|\s*(?P<phase>[ABC])\s*\|\s*(?P<voltage>[+-]?\d+)\s*\|\s*"
     r"(?P<current>[+-]?\d+)\s*\|\s*$"
@@ -201,6 +199,20 @@ class OffsetTableSnapshot:
     config_differs_from_flash: bool
 
 
+@dataclass(frozen=True, slots=True)
+class OffsetClearEvidence:
+    """Strictly correlated native clear response; this authorizes nothing."""
+
+    connection_generation: int
+    operation_sequence: int
+    instance_id: str
+    offset_stage: Literal[1, 2]
+    phase_values: tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
+    cleared: bool
+    no_stored: bool
+    matching_lines: tuple[str, ...]
+
+
 def parse_calibration_sources(
     lines: tuple[str, ...],
     expected_instance_ids: set[str],
@@ -248,6 +260,48 @@ def parse_calibration_sources(
     return dict(sorted(sources.items()))
 
 
+def parse_offset_configuration_selection(
+    lines: list[CalibrationLogLine] | tuple[CalibrationLogLine, ...],
+    *,
+    connection_generation: int,
+    expected_instance_ids: set[str],
+) -> dict[str, int]:
+    """Prove native YAML selection, never register readback or erased preferences.
+
+    Exact dump producer shared by stock ESPHome 2026.8.1 and optional ATM90E32.
+    The caller must collect the entire fresh bounded dump on one live client.
+    """
+    selected = "Power & Voltage/Current offset calibration is disabled. Using config file values."
+    observed: dict[str, int] = {}
+    for item in lines:
+        if item.connection_generation != connection_generation:
+            raise LogEvidenceError("offset selection generation changed")
+        line = item.line
+        lower = line.lower()
+        if "spi read mismatch" in lower or (
+            ("atm90e32" in lower or "[CALIBRATION]" in line)
+            and ("failed" in lower or "failure" in lower)
+        ):
+            raise LogEvidenceError(
+                "offset configuration selection observed device failure"
+            )
+        if "offset" not in lower:
+            continue
+        tags = tuple(_INSTANCE_RE.finditer(line))
+        if len(tags) != 1 or line.count("[CALIBRATION][") != 1:
+            raise LogEvidenceError("offset configuration selection has ambiguous tags")
+        instance = tags[0]["instance"]
+        if instance not in expected_instance_ids:
+            continue
+        payload = line[tags[0].end() :].strip()
+        if payload != selected or instance in observed:
+            raise LogEvidenceError("offset configuration selection is contradictory")
+        observed[instance] = connection_generation
+    if not expected_instance_ids or set(observed) != expected_instance_ids:
+        raise LogEvidenceError("exact offset configuration selection is absent")
+    return observed
+
+
 def parse_gain_run(
     lines: list[CalibrationLogLine] | tuple[CalibrationLogLine, ...],
     *,
@@ -287,9 +341,7 @@ def parse_gain_run(
 
     terminal_seen = False
     operation_end = len(matching)
-    for index, item in enumerate(
-        matching[button_index + 1 :], start=button_index + 1
-    ):
+    for index, item in enumerate(matching[button_index + 1 :], start=button_index + 1):
         instance = _instance(item.line)
         if terminal_seen and "3. Run " in item.line and " Gain Cal" in item.line:
             operation_end = index
@@ -417,9 +469,10 @@ def parse_offset_run(
     target_instance_id: str,
     button_name: str,
     dispatched_after: float,
+    allow_unverified: bool = False,
 ) -> OffsetRunEvidence:
     """Parse one strictly correlated voltage/current offset operation."""
-    rows, matching = _parse_offset_operation(
+    rows, matching, register_verified = _parse_offset_operation(
         lines,
         connection_generation=connection_generation,
         operation_sequence=operation_sequence,
@@ -427,12 +480,12 @@ def parse_offset_run(
         button_name=button_name,
         dispatched_after=dispatched_after,
         power=False,
+        allow_unverified=allow_unverified,
     )
     phases = cast(
         tuple[PhaseOffsetEvidence, PhaseOffsetEvidence, PhaseOffsetEvidence],
         tuple(
-            PhaseOffsetEvidence(phase, values[0], values[1])
-            for phase, values in rows
+            PhaseOffsetEvidence(phase, values[0], values[1]) for phase, values in rows
         ),
     )
     return OffsetRunEvidence(
@@ -441,7 +494,7 @@ def parse_offset_run(
         target_instance_id,
         phases,
         True,
-        True,
+        register_verified,
         matching,
     )
 
@@ -454,9 +507,10 @@ def parse_power_offset_run(
     target_instance_id: str,
     button_name: str,
     dispatched_after: float,
+    allow_unverified: bool = False,
 ) -> PowerOffsetRunEvidence:
     """Parse one strictly correlated active/reactive power-offset operation."""
-    rows, matching = _parse_offset_operation(
+    rows, matching, register_verified = _parse_offset_operation(
         lines,
         connection_generation=connection_generation,
         operation_sequence=operation_sequence,
@@ -464,6 +518,7 @@ def parse_power_offset_run(
         button_name=button_name,
         dispatched_after=dispatched_after,
         power=True,
+        allow_unverified=allow_unverified,
     )
     phases = cast(
         tuple[
@@ -482,7 +537,7 @@ def parse_power_offset_run(
         target_instance_id,
         phases,
         True,
-        True,
+        register_verified,
         matching,
     )
 
@@ -496,7 +551,8 @@ def _parse_offset_operation(
     button_name: str,
     dispatched_after: float,
     power: bool,
-) -> tuple[tuple[tuple[Phase, tuple[int, int]], ...], tuple[str, ...]]:
+    allow_unverified: bool,
+) -> tuple[tuple[tuple[Phase, tuple[int, int]], ...], tuple[str, ...], bool]:
     kind = "power offset" if power else "offset"
     title = "Power Offset Calibration" if power else "Offset Calibration"
     columns = (
@@ -567,6 +623,8 @@ def _parse_offset_operation(
         for item in matching
     ):
         raise LogEvidenceError(f"wrong button interleaved with {kind} operation")
+    if any("SPI read mismatch" in item.line for item in matching):
+        raise LogEvidenceError(f"{kind} operation observed SPI read mismatch")
 
     def is_header(item: CalibrationLogLine) -> bool:
         return title in item.line and "====" in item.line
@@ -591,11 +649,15 @@ def _parse_offset_operation(
             raise LogEvidenceError("interleaved ATM90E32 instance in operation window")
         category = _offset_log_category(item.line)
         if category is not None and instance != target_instance_id:
-            raise LogEvidenceError(f"{kind} evidence is missing the target instance tag")
+            raise LogEvidenceError(
+                f"{kind} evidence is missing the target instance tag"
+            )
         if category is not None and category != selected_category:
             raise LogEvidenceError("interleaved offset calibration category")
         if is_evidence(item) and instance != target_instance_id:
-            raise LogEvidenceError(f"{kind} evidence is missing the target instance tag")
+            raise LogEvidenceError(
+                f"{kind} evidence is missing the target instance tag"
+            )
 
     header_indices = [
         index
@@ -626,6 +688,17 @@ def _parse_offset_operation(
         if _calibration_payload(matching[index].line)
         in (completed, saved_and_completed, failed, rollback_failed)
     ]
+    register_verified = bool(final_indices)
+    if not final_indices and allow_unverified:
+        # Stock firmware reports the save, not register readback. Never turn a
+        # malformed enhanced terminal into a legacy success.
+        if any(completed in item.line for item in matching[header_index:]):
+            raise LogEvidenceError(f"{kind} terminal result is malformed")
+        final_indices = [
+            index
+            for index in range(header_index, len(matching))
+            if _calibration_payload(matching[index].line) == saved
+        ]
     if len(final_indices) != 1:
         raise LogEvidenceError(f"{kind} terminal result is missing or multiple")
     final_index = final_indices[0]
@@ -648,7 +721,9 @@ def _parse_offset_operation(
         elif _SIGNED_ROW_LIKE_RE.search(item.line):
             raise LogEvidenceError(f"malformed or extra {kind} row")
     if set(phase_rows) != {"A", "B", "C"}:
-        raise LogEvidenceError(f"{kind} evidence must contain exactly phases A, B, and C")
+        raise LogEvidenceError(
+            f"{kind} evidence must contain exactly phases A, B, and C"
+        )
 
     save_success_indices = [
         index
@@ -698,6 +773,7 @@ def _parse_offset_operation(
     return (
         tuple((phase, phase_rows[phase]) for phase in ("A", "B", "C")),
         tuple(item.line for item in block),
+        register_verified,
     )
 
 
@@ -708,10 +784,9 @@ def parse_restore(
     expected_instance_ids: set[str],
     started_after: float,
     operation_sequence: int | None = None,
-    expected_categories: dict[
-        str, set[Literal["gain", "offset", "power_offset"]]
-    ]
+    expected_categories: dict[str, set[Literal["gain", "offset", "power_offset"]]]
     | None = None,
+    allow_unverified_offset_tables: bool = False,
 ) -> dict[str, RestoreEvidence]:
     """Parse verified flash restore evidence for every expected category."""
     if expected_categories is None:
@@ -777,8 +852,7 @@ def parse_restore(
             or _POWER_OFFSET_ROW_RE.search(item.line) is not None
             or _OFFSET_COMPARE_ROW_RE.search(item.line) is not None
             or _POWER_OFFSET_COMPARE_ROW_RE.search(item.line) is not None
-            or "|Phase|voltage_gain|current_gain|"
-            in re.sub(r"\s+", "", item.line)
+            or "|Phase|voltage_gain|current_gain|" in re.sub(r"\s+", "", item.line)
         )
 
     for item in matching:
@@ -865,14 +939,14 @@ def parse_restore(
             expected="offset" in categories,
             power=False,
             instance_id=instance_id,
+            allow_unverified=allow_unverified_offset_tables,
         )
-        phase_power_offsets, power_verified, power_differs = (
-            _restore_offset_category(
-                instance_lines,
-                expected="power_offset" in categories,
-                power=True,
-                instance_id=instance_id,
-            )
+        phase_power_offsets, power_verified, power_differs = _restore_offset_category(
+            instance_lines,
+            expected="power_offset" in categories,
+            power=True,
+            instance_id=instance_id,
+            allow_unverified=allow_unverified_offset_tables,
         )
         evidence[instance_id] = RestoreEvidence(
             connection_generation,
@@ -891,6 +965,335 @@ def parse_restore(
             power_differs,
         )
     return evidence
+
+
+def parse_offset_table_snapshot(
+    lines: list[CalibrationLogLine] | tuple[CalibrationLogLine, ...],
+    *,
+    connection_generation: int,
+    operation_sequence: int,
+    expected_instance_ids: set[str],
+    started_after: float,
+    offset_stage: Literal[1, 2],
+) -> dict[str, OffsetTableSnapshot | None]:
+    """Read one fresh offset stage without mistaking missing evidence for zero."""
+    if offset_stage not in (1, 2):
+        raise ValueError("offset stage must be 1 or 2")
+    power = offset_stage == 2
+    kind = "power offset" if power else "offset"
+    positive_header = (
+        "Restored power offset calibration from memory"
+        if power
+        else "Restored offset calibration from memory"
+    )
+    mismatch_header = (
+        "Power offset mismatch: using flash values"
+        if power
+        else "Offset mismatch: using flash values"
+    )
+    columns = (
+        "|Phase|offset_active_power|offset_reactive_power|"
+        if power
+        else "|Phase|offset_voltage|offset_current|"
+    )
+    fallback = (
+        "No stored power offsets found"
+        if power
+        else "No stored offset calibrations found"
+    )
+    failure_terms = (
+        (
+            "Power offset restore failed verification",
+            "Power offset calibration restore failed verification",
+            "Power offset calibration restore and config fallback both failed verification",
+            "Power offset readback failed",
+        )
+        if power
+        else (
+            "Offset calibration restore failed verification",
+            "Offset calibration restore and config fallback both failed verification",
+            "Offset readback failed",
+        )
+    )
+    matching = sorted(
+        (
+            item
+            for item in lines
+            if item.connection_generation == connection_generation
+            and item.operation_sequence == operation_sequence
+            and item.arrived_at > started_after
+        ),
+        key=lambda item: item.arrived_at,
+    )
+    if any("SPI read mismatch" in item.line for item in matching):
+        raise LogEvidenceError(f"{kind} snapshot observed SPI read mismatch")
+    row_pattern = _POWER_OFFSET_ROW_RE if power else _OFFSET_ROW_RE
+    comparison_row_pattern = (
+        _POWER_OFFSET_COMPARE_ROW_RE if power else _OFFSET_COMPARE_ROW_RE
+    )
+    verified_term = (
+        "Power offset calibration restore verified."
+        if power
+        else "Offset calibration restore verified."
+    )
+    for item in matching:
+        normalized = re.sub(r"\s+", "", item.line)
+        relevant = (
+            positive_header in item.line
+            or mismatch_header in item.line
+            or columns in normalized
+            or row_pattern.search(item.line) is not None
+            or comparison_row_pattern.search(item.line) is not None
+            or verified_term in item.line
+            or fallback in item.line
+            or any(term in item.line for term in failure_terms)
+        )
+        if not relevant:
+            continue
+        tags = tuple(_INSTANCE_RE.finditer(item.line))
+        if len(tags) != 1 or item.line.count("[CALIBRATION][") != 1:
+            raise LogEvidenceError(
+                f"{kind} snapshot evidence has an unassignable or duplicate instance tag"
+            )
+
+    snapshots: dict[str, OffsetTableSnapshot | None] = {}
+    for instance_id in expected_instance_ids:
+        instance_lines = [
+            item for item in matching if _instance(item.line) == instance_id
+        ]
+        has_table_evidence = any(
+            positive_header in item.line
+            or mismatch_header in item.line
+            or columns in re.sub(r"\s+", "", item.line)
+            for item in instance_lines
+        )
+        has_fallback = any(fallback in item.line for item in instance_lines)
+        if not has_table_evidence:
+            if any(
+                any(term in item.line for term in failure_terms)
+                for item in instance_lines
+            ):
+                raise LogEvidenceError(f"{instance_id}: {kind} snapshot restore failed")
+            # A stock dump can omit this table entirely. A reported fallback is
+            # still unavailable here, never a manufactured all-zero table.
+            snapshots[instance_id] = None
+            continue
+        if has_fallback:
+            raise LogEvidenceError(f"{instance_id}: {kind} snapshot is contradictory")
+        rows, verified, differs = _restore_offset_category(
+            instance_lines,
+            expected=True,
+            power=power,
+            instance_id=instance_id,
+            allow_unverified=True,
+        )
+        if rows is None:
+            raise LogEvidenceError(f"{instance_id}: {kind} snapshot table is missing")
+        snapshots[instance_id] = OffsetTableSnapshot(
+            connection_generation,
+            instance_id,
+            offset_stage,
+            rows,
+            "mismatch"
+            if any(mismatch_header in item.line for item in instance_lines)
+            else "restored",
+            verified,
+            differs,
+        )
+    return snapshots
+
+
+def parse_offset_clear(
+    lines: list[CalibrationLogLine] | tuple[CalibrationLogLine, ...],
+    *,
+    connection_generation: int,
+    operation_sequence: int,
+    target_instance_id: str,
+    button_name: str,
+    dispatched_after: float,
+    offset_stage: Literal[1, 2],
+) -> OffsetClearEvidence:
+    """Parse one exact selected-stage clear response without dispatching it."""
+    if offset_stage not in (1, 2):
+        raise ValueError("offset stage must be 1 or 2")
+    power = offset_stage == 2
+    kind = "power offset" if power else "offset"
+    clearing = (
+        "Clearing stored power offsets and restoring config-defined values"
+        if power
+        else "Clearing stored offset calibrations and restoring config-defined values"
+    )
+    no_stored = (
+        "No stored power offsets to clear. Current values:"
+        if power
+        else "No stored offset calibrations to clear. Current values:"
+    )
+    columns = (
+        "|Phase|offset_active_power|offset_reactive_power|"
+        if power
+        else "|Phase|offset_voltage|offset_current|"
+    )
+    names = ("active", "reactive") if power else ("voltage", "current")
+    row_pattern = _POWER_OFFSET_ROW_RE if power else _OFFSET_ROW_RE
+    terminal = "Power offsets cleared." if power else "Offsets cleared."
+    failed = (
+        "Failed to clear stored power offsets!"
+        if power
+        else "Failed to clear stored offsets!"
+    )
+    other_markers = (
+        (
+            "Clearing stored offset calibrations",
+            "No stored offset calibrations to clear",
+            "Offsets cleared.",
+        )
+        if power
+        else (
+            "Clearing stored power offsets",
+            "No stored power offsets to clear",
+            "Power offsets cleared.",
+        )
+    )
+    matching = sorted(
+        (
+            item
+            for item in lines
+            if item.connection_generation == connection_generation
+            and item.operation_sequence == operation_sequence
+            and item.arrived_at > dispatched_after
+        ),
+        key=lambda item: item.arrived_at,
+    )
+    buttons = [
+        index
+        for index, item in enumerate(matching)
+        if _button_text(item.line) == button_name
+    ]
+    if len(buttons) != 1:
+        raise LogEvidenceError(f"matching {kind} clear button is missing or duplicate")
+    button_index = buttons[0]
+    if any(
+        (found := _button_text(item.line)) is not None and found != button_name
+        for item in matching
+    ):
+        raise LogEvidenceError(f"wrong button interleaved with {kind} clear")
+    window = matching[button_index:]
+    if any("SPI read mismatch" in item.line for item in window):
+        raise LogEvidenceError(f"{kind} clear observed SPI read mismatch")
+    if any(
+        term in (_calibration_payload(item.line) or "")
+        for item in window
+        for term in (
+            "calibration saved to memory.",
+            "Failed to save",
+            f"{'Power offset' if power else 'Offset'} readback failed",
+            "rollback readback verification failed",
+        )
+    ):
+        raise LogEvidenceError(f"{kind} clear observed save or readback failure")
+    for item in window[1:]:
+        instance = _instance(item.line)
+        payload = _calibration_payload(item.line) or ""
+        if instance is not None and instance != target_instance_id:
+            raise LogEvidenceError("interleaved ATM90E32 instance in clear response")
+        if any(marker in payload for marker in other_markers):
+            raise LogEvidenceError(
+                "interleaved clear response for another offset stage"
+            )
+        category = _offset_log_category(item.line)
+        if category is not None and category != ("power_offset" if power else "offset"):
+            raise LogEvidenceError("interleaved evidence for another offset stage")
+        if (
+            clearing in payload
+            or no_stored in payload
+            or columns in re.sub(r"\s+", "", item.line)
+            or row_pattern.search(item.line) is not None
+            or terminal in payload
+            or failed in payload
+        ) and instance != target_instance_id:
+            raise LogEvidenceError(
+                f"{kind} clear evidence is missing the target instance tag"
+            )
+
+    branch_indices = [
+        index
+        for index, item in enumerate(window)
+        if _calibration_payload(item.line) in (clearing, no_stored)
+    ]
+    if len(branch_indices) != 1:
+        raise LogEvidenceError(f"{kind} clear branch is missing or duplicate")
+    branch_index = branch_indices[0]
+    branch = _calibration_payload(window[branch_index].line)
+    assert branch in (clearing, no_stored)
+    column_indices = [
+        index
+        for index, item in enumerate(window)
+        if columns in re.sub(r"\s+", "", item.line)
+    ]
+    if len(column_indices) != 1:
+        raise LogEvidenceError(f"{kind} clear table columns are missing or duplicate")
+    column_index = column_indices[0]
+    if column_index <= branch_index:
+        raise LogEvidenceError(f"{kind} clear evidence is out of order")
+    table = _signed_table(window[branch_index:], branch, columns, comparison=False)
+    if table is None:
+        raise LogEvidenceError(f"{kind} clear table is missing")
+    values = _signed_phase_pairs(table, row_pattern, names, f"{kind} clear")
+    terminals = [
+        item
+        for item in window[branch_index:]
+        if _calibration_payload(item.line) == terminal
+    ]
+    failures = [
+        item
+        for item in window[branch_index:]
+        if _calibration_payload(item.line) == failed
+    ]
+    row_indices = [
+        index for index, item in enumerate(window) if row_pattern.search(item.line)
+    ]
+    if any(index <= column_index for index in row_indices):
+        raise LogEvidenceError(f"{kind} clear evidence is out of order")
+    if (
+        any(
+            terminal in (_calibration_payload(item.line) or "")
+            for item in window[branch_index:]
+        )
+        and not terminals
+    ):
+        raise LogEvidenceError(f"{kind} clear terminal is malformed")
+    if failures:
+        raise LogEvidenceError(f"{kind} clear failed")
+    if branch == no_stored:
+        if terminals:
+            raise LogEvidenceError(f"{kind} no-stored response has a clear terminal")
+        return OffsetClearEvidence(
+            connection_generation,
+            operation_sequence,
+            target_instance_id,
+            offset_stage,
+            values,
+            False,
+            True,
+            tuple(item.line for item in window),
+        )
+    if len(terminals) != 1:
+        raise LogEvidenceError(f"{kind} clear terminal is missing or duplicate")
+    terminal_index = window.index(terminals[0])
+    if terminal_index <= column_index or any(
+        index >= terminal_index for index in row_indices
+    ):
+        raise LogEvidenceError(f"{kind} clear evidence is out of order")
+    return OffsetClearEvidence(
+        connection_generation,
+        operation_sequence,
+        target_instance_id,
+        offset_stage,
+        values,
+        True,
+        False,
+        tuple(item.line for item in window),
+    )
 
 
 def _instance(line: str) -> str | None:
@@ -946,9 +1349,8 @@ def _restore_offset_category(
     expected: bool,
     power: bool,
     instance_id: str,
-) -> tuple[
-    tuple[tuple[int, int], tuple[int, int], tuple[int, int]] | None, bool, bool
-]:
+    allow_unverified: bool = False,
+) -> tuple[tuple[tuple[int, int], tuple[int, int], tuple[int, int]] | None, bool, bool]:
     kind = "power offset" if power else "offset"
     positive_header = (
         "Restored power offset calibration from memory"
@@ -976,10 +1378,16 @@ def _restore_offset_category(
         else "No stored offset calibrations found"
     )
     failure_terms = (
-        ("Power offset restore failed verification", "Power offset readback failed")
+        (
+            "Power offset restore failed verification",
+            "Power offset calibration restore failed verification",
+            "Power offset calibration restore and config fallback both failed verification",
+            "Power offset readback failed",
+        )
         if power
         else (
             "Offset calibration restore failed verification",
+            "Offset calibration restore and config fallback both failed verification",
             "Offset readback failed",
         )
     )
@@ -988,7 +1396,7 @@ def _restore_offset_category(
     category_observed = any(
         positive_header in item.line
         or mismatch_header in item.line
-        or _calibration_payload(item.line) == verified_term
+        or verified_term in item.line
         or fallback_term in item.line
         or any(term in item.line for term in failure_terms)
         for item in lines
@@ -1007,7 +1415,15 @@ def _restore_offset_category(
         return None, False, False
 
     verified = [payload for payload in payloads if payload == verified_term]
-    if len(verified) != 1:
+    malformed_verified = any(
+        payload is not None and verified_term in payload and payload != verified_term
+        for payload in payloads
+    )
+    if malformed_verified:
+        raise LogEvidenceError(
+            f"{instance_id}: {kind} restore verification is malformed"
+        )
+    if len(verified) != 1 and not (allow_unverified and not verified):
         raise LogEvidenceError(
             f"{instance_id}: {kind} restore verification is missing or duplicate"
         )
@@ -1021,9 +1437,7 @@ def _restore_offset_category(
         rows = _signed_phase_pairs(positive_block, row_pattern, pair_names, kind)
         differs = False
     elif mismatch_block is not None:
-        pattern = (
-            _POWER_OFFSET_COMPARE_ROW_RE if power else _OFFSET_COMPARE_ROW_RE
-        )
+        pattern = _POWER_OFFSET_COMPARE_ROW_RE if power else _OFFSET_COMPARE_ROW_RE
         comparison_names = (
             ("config_active", "flash_active", "config_reactive", "flash_reactive")
             if power
@@ -1039,7 +1453,7 @@ def _restore_offset_category(
         )
     else:
         raise LogEvidenceError(f"{instance_id}: missing {kind} restore table")
-    return rows, True, differs
+    return rows, len(verified) == 1, differs
 
 
 def _signed_table(
@@ -1061,10 +1475,13 @@ def _signed_table(
         block.append(item)
     normalized = [re.sub(r"\s+", "", item.line) for item in block]
     if sum(columns in line for line in normalized) != 1:
-        raise LogEvidenceError(f"signed table columns are missing or duplicate: {header}")
-    if comparison and sum(
-        "|config|flash|config|flash|" in line for line in normalized
-    ) != 1:
+        raise LogEvidenceError(
+            f"signed table columns are missing or duplicate: {header}"
+        )
+    if (
+        comparison
+        and sum("|config|flash|config|flash|" in line for line in normalized) != 1
+    ):
         raise LogEvidenceError(f"signed comparison columns are missing: {header}")
     return block
 
@@ -1080,7 +1497,9 @@ def _signed_phase_pairs(
         if match := pattern.search(item.line):
             phase = match.group("phase")
             if phase in rows:
-                raise LogEvidenceError(f"duplicate {context} restore row for phase {phase}")
+                raise LogEvidenceError(
+                    f"duplicate {context} restore row for phase {phase}"
+                )
             rows[phase] = (
                 _signed_16(match.group(names[0]), context),
                 _signed_16(match.group(names[1]), context),
@@ -1109,7 +1528,9 @@ def _signed_comparison_rows(
         if match := pattern.search(item.line):
             phase = match.group("phase")
             if phase in rows:
-                raise LogEvidenceError(f"duplicate {context} restore row for phase {phase}")
+                raise LogEvidenceError(
+                    f"duplicate {context} restore row for phase {phase}"
+                )
             config = (
                 _signed_16(match.group(names[0]), context),
                 _signed_16(match.group(names[2]), context),

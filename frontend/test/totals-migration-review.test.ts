@@ -187,7 +187,7 @@ it("separates requested visibility from the actual source-aware transaction addi
   host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "previewed" as const, source_sha256: meter.source_sha256,
     changes: [], redacted_diff: "+ id: !extend totalWattsMain\n+ internal: false", rollback_available: false, evidence: [], progress: [],
-    validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
   render(totalsMigrationReview(meter, () => {}, preview, true, true, status), host);
   expect(host.textContent).toContain("Requested visibility changes versus firmware defaults");
   expect(host.querySelector('[aria-label="Exact adoption transaction diff"]')?.textContent).toContain("+ id: !extend totalWattsMain");

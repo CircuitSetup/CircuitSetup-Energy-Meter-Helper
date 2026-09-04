@@ -96,7 +96,7 @@ const detailResponse = { plan_id: meterConfiguration.plan_id, source_sha256: met
   total_details: meterConfiguration.total_details };
 const transaction = { transaction_id: "tx-1", state: "previewed", source_sha256: "a".repeat(64),
   changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [],
-  aggregate_entity_mismatch: false, full_meter_configuration_verified: true };
+  purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: true };
 const session = { session_id: "session-1", device_id: "meter-1", state: "ready", safety_acknowledged: true,
   preflight: { issues: [], zeroed_roles: ["reference"] }, entity_role_counts: {},
   offset_capability: { status: "available", repair_reason: null }, offset_disposition: "not_started",
@@ -185,6 +185,51 @@ function validResponse(operation: string): unknown {
 }
 
 describe("HelperApi", () => {
+  it("accepts server purpose and captured stock results without inventing retry or register proof", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    hass.responses.preview_ct_config = { ...transaction, purpose: "offset_preparation" };
+    await expect(api.previewCtConfig("meter-1", "plan", "a".repeat(64), [])).resolves.toMatchObject({ purpose: "offset_preparation" });
+    hass.responses.calibrate_offset = { ...offsetResult, state: "captured_pending_configuration" };
+    await expect(api.calibrateOffset("session-1", 0, 1, true, false)).resolves.toMatchObject({ state: "captured_pending_configuration", retry_allowed: false });
+    hass.responses.calibrate_offset = { ...offsetResult, state: "partial", expected_tables: offsetResult.expected_tables.slice(0, 1),
+      unfinished_group_keys: ["main_2"], error: "Calibration incomplete", retry_allowed: false };
+    await expect(api.calibrateOffset("session-1", 0, 1, true, false)).resolves.toMatchObject({ state: "partial", retry_allowed: false });
+    for (const state of ["gains_verified_offsets_pending", "offset_configuration_selected"]) {
+      hass.responses.get_session = { ...session, state };
+      await expect(api.getSession("session-1")).resolves.toMatchObject({ state });
+    }
+  });
+
+  it("validates exact stock status and nested normal review boundaries", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const status = { backup_available: true, operation_id: "4".repeat(32), stage: 1,
+      targets: ["meter_main1", "meter_main2"], installed: true, cancelled: false, action_ready: false,
+      attempted: ["meter_main1"], completed: [["meter_main1", 1]] };
+    hass.responses.get_offset_preparation = status;
+    await expect(api.getOffsetPreparation("3".repeat(32))).resolves.toEqual(status);
+    hass.responses.preview_offset_preparation = { operation_id: status.operation_id, stage: 1,
+      targets: status.targets, backup_available: true, transaction: { ...transaction, purpose: "offset_preparation",
+        changes: [{ key: "meter.calibrated_offsets", old_value: "existing", new_value: "zero" }] } };
+    await expect(api.previewOffsetPreparation("3".repeat(32), 0, 1, true)).resolves.toMatchObject({ transaction: { purpose: "offset_preparation" } });
+    expect(hass.messages.at(-1)).toEqual({ type: "circuitsetup_energy_meter_helper/preview_offset_preparation", entry_id: "entry-1",
+      session_id: "3".repeat(32), board_index: 0, stage: 1, backup_acknowledged: true });
+    for (const invalid of [{ ...status, action_ready: true, installed: false }, { ...status, stage: true },
+      { ...status, operation_id: "bad" }, { ...status, targets: ["meter_main1", "meter_main1"] }, { ...status, private_binding: {} }]) {
+      hass.responses.get_offset_preparation = invalid;
+      await expect(api.getOffsetPreparation("3".repeat(32))).rejects.toThrow();
+    }
+    const final = { purpose: "offset_finalization", operation_id: status.operation_id, transaction_id: "5".repeat(32),
+      stage: 1, board_index: 0, targets: status.targets, backup_available: true, installed: true, cancelled: false,
+      configuration_selected: true, action_ready: false, register_verified: false, gain_verification_id: null,
+      results: [["meter_main1", 1, [[0, 0], [-32768, 32767], [1, -1]], false]] };
+    hass.responses.get_offset_finalization = final;
+    await expect(api.getOffsetFinalization("3".repeat(32))).resolves.toEqual(final);
+    for (const invalid of [{ ...final, register_verified: true }, { ...final, results: [...final.results, ...final.results] },
+      { ...final, results: [["meter_main1", 1, [[0, 0], [0, 0], [0, 32768]], false]] }, { ...final, raw_logs: [] }]) {
+      hass.responses.get_offset_finalization = invalid;
+      await expect(api.getOffsetFinalization("3".repeat(32))).rejects.toThrow();
+    }
+  });
   it("accepts voltage stability windows for every group assigned to one reference", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
@@ -446,7 +491,7 @@ describe("HelperApi", () => {
     const api = new HelperApi(hass, "entry-1");
     hass.responses.preview_ct_config = transaction;
     await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({
-      aggregate_entity_mismatch: false, full_meter_configuration_verified: true,
+      purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: true,
     });
     for (const field of ["aggregate_entity_mismatch", "full_meter_configuration_verified"] as const) {
       const invalid = { ...transaction } as Partial<typeof transaction>;

@@ -15,6 +15,10 @@ import type {
   ElectricalSystem,
   LineFrequencyHz,
   OffsetCalibrationResult,
+  OffsetPreparationStatus,
+  OffsetFinalizationStatus,
+  OffsetPreparationPreview,
+  OffsetFinalizationPreview,
   OffsetReadinessResult,
   OffsetTable,
   RestartVerificationResult,
@@ -43,7 +47,7 @@ const CONTROL = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const PROPERTY_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const SETUP_STATES = new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]);
 const TRANSACTION_STATES = new Set(["previewed", "write_confirmed", "written", "validated", "compiled", "install_confirmation_required", "installing", "reconnecting", "verified", "rolled_back", "failed"]);
-const SESSION_STATES = new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "partial", "indeterminate", "verified", "cancelled"]);
+const SESSION_STATES = new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "partial", "indeterminate", "verified", "cancelled", "gains_verified_offsets_pending", "offset_configuration_selected", "captured_pending_configuration"]);
 const CONNECTIONS = new Set(["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]);
 const ELECTRICAL_SYSTEMS = new Set(["split_phase_120_240", "single_phase_230", "three_phase", "custom"]);
 const VOLTAGE_LAYOUTS = new Set(["standard", "multi_reference", "custom"]);
@@ -69,7 +73,7 @@ const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_conf
 const OFFSET_CAPABILITIES = new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
-const OFFSET_RESULT_STATES = new Set(["applied_pending_restart_verification", "partial", "indeterminate"]);
+const OFFSET_RESULT_STATES = new Set(["applied_pending_restart_verification", "captured_pending_configuration", "partial", "indeterminate"]);
 
 type PublicRecord = Record<string, unknown>;
 type Validator<T> = (value: unknown) => T;
@@ -433,7 +437,8 @@ function ctInventory(value: unknown, label: string): CtInventory {
   return value as CtInventory;
 }
 function transaction(value: unknown, label: string): TransactionStatus {
-  const item = record(value, label); exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified"], label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); if (!SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`); boolean(item.rollback_available, label); if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
+  const item = record(value, label); exactKeys(item, ["purpose", "transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified"], label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); if (!SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`); boolean(item.rollback_available, label); if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
+  enumeration(item.purpose, new Set(["install_configuration", "save_calibration", "offset_preparation", "offset_finalization"]), label);
   array(item.changes, label).forEach((entry) => { const change = record(entry, label); exactKeys(change, ["key", "old_value", "new_value"], label); const key = string(change.key, label); if (!CHANGE_KEY.test(key!)) throw new Error(`${label} response is invalid`); if (change.old_value !== null) string(change.old_value, label); string(change.new_value, label); });
   array(item.evidence, label).forEach((entry) => enumeration(entry, TRANSACTION_EVIDENCE, label)); array(item.progress, label).forEach((entry) => enumeration(entry, TRANSACTION_PROGRESS, label));
   if (item.validation_detail !== null) { const detail = record(item.validation_detail, label); exactKeys(detail, ["code", "reported_error_count", "reported_warning_count", "error_record_count", "warning_record_count"], label); for (const key of ["reported_error_count", "reported_warning_count"] as const) if (detail[key] !== null) integer(detail[key], label); if (detail.code !== null) integer(detail.code, label); integer(detail.error_record_count, label); integer(detail.warning_record_count, label); }
@@ -593,14 +598,78 @@ function offsetCalibration(value: unknown, label: string, expectedBoard: number,
   const unfinished = array(item.unfinished_group_keys, label, 2).map((entry) => string(entry, label)!);
   const all = [...completed, ...unfinished]; const retryAllowed = boolean(item.retry_allowed, label);
   if (all.length !== 2 || new Set(all).size !== 2 || all.some((key) => !groupKeys.includes(key))) throw new Error(`${label} response is invalid`);
-  if (state === "applied_pending_restart_verification") {
+  if (state === "applied_pending_restart_verification" || state === "captured_pending_configuration") {
     if (completed.length !== 2 || unfinished.length !== 0 || retryAllowed || item.error !== null) throw new Error(`${label} response is invalid`);
   } else {
     string(item.error, label);
-    if (!retryAllowed || completed.length !== (state === "partial" ? 1 : 0)) throw new Error(`${label} response is invalid`);
+    if (completed.length !== (state === "partial" ? 1 : 0)) throw new Error(`${label} response is invalid`);
   }
   return value as OffsetCalibrationResult;
 }
+function offsetInstances(value: unknown, label: string, maximum = 14): string[] {
+  const values = array(value, label, maximum).map((item) => string(item, label)!);
+  if (new Set(values).size !== values.length || values.some((item) => !/^(meter_main[12]|addon[1-6]_[12])$/.test(item))) throw new Error(`${label} response is invalid`);
+  return values;
+}
+
+function offsetId(value: unknown, label: string): void {
+  if (value !== null && !SERVER_ID.test(string(value, label)!)) throw new Error(`${label} response is invalid`);
+}
+
+function offsetPreparation(value: unknown, label: string): OffsetPreparationStatus {
+  const item = record(value, label);
+  exactKeys(item, ["backup_available", "operation_id", "stage", "targets", "installed", "cancelled", "action_ready", "attempted", "completed"], label);
+  offsetId(item.operation_id, label);
+  const targets = offsetInstances(item.targets, label, 2);
+  const attempted = offsetInstances(item.attempted, label, 2);
+  if (item.stage !== null && item.stage !== 1 && item.stage !== 2) throw new Error(`${label} response is invalid`);
+  for (const key of ["backup_available", "installed", "cancelled", "action_ready"]) boolean(item[key], label);
+  const completed = array(item.completed, label, 28).map((entry) => {
+    const pair = array(entry, label, 2); if (pair.length !== 2 || pair[1] !== 1 && pair[1] !== 2) throw new Error(`${label} response is invalid`);
+    offsetInstances([pair[0]], label); return `${pair[0]}:${pair[1]}`;
+  });
+  if (new Set(completed).size !== completed.length || attempted.some((id) => !targets.includes(id))
+    || (item.operation_id === null) !== (item.stage === null) || (item.operation_id === null) !== (targets.length === 0)
+    || item.action_ready && (!item.installed || item.cancelled || !item.backup_available || item.operation_id === null)) throw new Error(`${label} response is invalid`);
+  return value as OffsetPreparationStatus;
+}
+
+function offsetFinalization(value: unknown, label: string): OffsetFinalizationStatus {
+  const item = record(value, label);
+  exactKeys(item, ["purpose", "operation_id", "transaction_id", "stage", "board_index", "targets", "backup_available", "installed", "cancelled", "configuration_selected", "action_ready", "register_verified", "gain_verification_id", "results"], label);
+  enumeration(item.purpose, new Set(["offset_preparation", "offset_finalization"]), label);
+  for (const key of ["operation_id", "transaction_id", "gain_verification_id"]) offsetId(item[key], label);
+  const targets = offsetInstances(item.targets, label);
+  for (const key of ["backup_available", "installed", "cancelled", "configuration_selected", "action_ready"]) boolean(item[key], label);
+  if (item.register_verified !== false || item.stage !== null && item.stage !== 1 && item.stage !== 2
+    || item.board_index !== null && (integer(item.board_index, label) < 0 || (item.board_index as number) > 6)
+    || (item.board_index === null) !== (item.stage === null)
+    || (item.operation_id === null) !== (item.transaction_id === null)
+    || (item.operation_id === null) !== (targets.length === 0)
+    || (item.purpose === "offset_preparation") !== (item.operation_id === null)
+    || item.action_ready && (!item.installed || item.cancelled || !item.backup_available || item.operation_id === null)) throw new Error(`${label} response is invalid`);
+  const results = array(item.results, label, 28).map((entry) => {
+    const result = array(entry, label, 4);
+    if (result.length !== 4 || result[1] !== 1 && result[1] !== 2) throw new Error(`${label} response is invalid`);
+    offsetInstances([result[0]], label); signedTable(result[2], label); boolean(result[3], label);
+    return `${result[0]}:${result[1]}`;
+  });
+  if (new Set(results).size !== results.length) throw new Error(`${label} response is invalid`);
+  return value as OffsetFinalizationStatus;
+}
+
+function offsetPreview(value: unknown, label: string, stage?: 1 | 2, board?: number): OffsetPreparationPreview | OffsetFinalizationPreview {
+  const item = record(value, label); const preparing = stage !== undefined;
+  exactKeys(item, preparing ? ["operation_id", "stage", "targets", "backup_available", "transaction"] : ["purpose", "operation_id", "targets", "transaction"], label);
+  offsetId(item.operation_id, label); if (item.operation_id === null) throw new Error(`${label} response is invalid`);
+  const targets = offsetInstances(item.targets, label, preparing ? 2 : 14);
+  const status = transaction(item.transaction, label);
+  const expected = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
+  if (!targets.length || preparing && (item.stage !== stage || item.backup_available !== true || status.purpose !== "offset_preparation" || targets.some((id) => !expected.includes(id)))
+    || !preparing && (item.purpose !== "offset_finalization" || status.purpose !== "offset_finalization")) throw new Error(`${label} response is invalid`);
+  return value as OffsetPreparationPreview | OffsetFinalizationPreview;
+}
+
 function stability(value: unknown, label: string, expectedTarget: "voltage" | "current", expectedTargetId: string): StabilityResult {
   const item = record(value, label); const target = enumeration(item.target, new Set(["voltage", "current"]), label); string(item.target_id, label); const stable = boolean(item.stable, label);
   if (target !== expectedTarget || item.target_id !== expectedTargetId) throw new Error(`${label} response is invalid`);
@@ -823,7 +892,7 @@ export class HelperApi {
       0,
       "",
       false,
-      operation === "get_active_work",
+      ["get_active_work", "preview_offset_preparation", "preview_offset_finalization"].includes(operation),
     );
     return validator(result);
   }
@@ -938,6 +1007,28 @@ export class HelperApi {
     });
   public skipOffsetCalibration = (sessionId: string) =>
     this.call("skip_offset_calibration", (value) => session(value, "skip_offset_calibration"), { session_id: sessionId });
+
+  public getOffsetPreparation = (sessionId: string) =>
+    this.call("get_offset_preparation", (value) => offsetPreparation(value, "get_offset_preparation"), { session_id: sessionId });
+  public getOffsetFinalization = (sessionId: string) =>
+    this.call("get_offset_finalization", (value) => offsetFinalization(value, "get_offset_finalization"), { session_id: sessionId });
+  public previewOffsetPreparation = (sessionId: string, boardIndex: number, stage: 1 | 2, backupAcknowledged: boolean) =>
+    this.call("preview_offset_preparation", (value) => offsetPreview(value, "preview_offset_preparation", stage, boardIndex) as OffsetPreparationPreview,
+      { session_id: sessionId, board_index: boardIndex, stage, backup_acknowledged: backupAcknowledged });
+  public resumeOffsetCalibration = (sessionId: string, operationId: string, boardIndex: number, stage: 1 | 2, preparationAcknowledged: boolean) =>
+    this.call("resume_offset_calibration", (value) => offsetCalibration(value, "resume_offset_calibration", boardIndex, stage),
+      { session_id: sessionId, operation_id: operationId, board_index: boardIndex, stage, preparation_acknowledged: preparationAcknowledged });
+  public previewOffsetFinalization = (sessionId: string, verificationId?: string, changes: CtChange[] = [], packageOptions?: BoardPackageOptions) =>
+    this.call("preview_offset_finalization", (value) => offsetPreview(value, "preview_offset_finalization") as OffsetFinalizationPreview,
+      { session_id: sessionId, ...(verificationId ? { verification_id: verificationId, changes, ...(packageOptions ? { package_options: packageOptions } : {}) } : {}) });
+  public reconcileOffsetFinalization = (sessionId: string, operationId: string) =>
+    this.call("reconcile_offset_finalization", (value) => offsetFinalization(value, "reconcile_offset_finalization"),
+      { session_id: sessionId, operation_id: operationId });
+  public beginOffsetCycle = (sessionId: string, backupAcknowledged: boolean) =>
+    this.call("begin_offset_cycle", (value) => offsetPreparation(value, "begin_offset_cycle"),
+      { session_id: sessionId, backup_acknowledged: backupAcknowledged });
+  public restartAndVerifyGains = (sessionId: string, expectedTopology: MeterTopology) =>
+    this.call("restart_and_verify_gains", (value) => restart(value, "restart_and_verify_gains", expectedTopology), { session_id: sessionId });
   public calibrateVoltage = (
     sessionId: string,
     referenceId: string,

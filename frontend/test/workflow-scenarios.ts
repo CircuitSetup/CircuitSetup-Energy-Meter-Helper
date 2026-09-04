@@ -177,7 +177,7 @@ const transaction = (state: TransactionStatus["state"] = "previewed"): Transacti
   progress: [],
   validation_detail: null,
   upload_progress: [],
-  aggregate_entity_mismatch: false,
+  purpose: "install_configuration" as const, aggregate_entity_mismatch: false,
   full_meter_configuration_verified: false,
 });
 

@@ -400,6 +400,7 @@ export interface SubstitutionChange {
 }
 
 export interface TransactionStatus {
+  purpose: Exclude<import("./workflow-model").TransactionPurpose, null>;
   transaction_id: string;
   state: TransactionState;
   source_sha256: string;
@@ -489,13 +490,57 @@ export interface OffsetReadinessResult {
 export type OffsetTable = [[number, number], [number, number], [number, number]];
 
 export interface OffsetCalibrationResult {
-  state: "applied_pending_restart_verification" | "partial" | "indeterminate";
+  state: "applied_pending_restart_verification" | "captured_pending_configuration" | "partial" | "indeterminate";
   board_index: number;
   stage: 1 | 2;
   expected_tables: Array<[string, OffsetTable]>;
   unfinished_group_keys: string[];
   retry_allowed: boolean;
   error: string | null;
+}
+
+export interface OffsetPreparationStatus {
+  backup_available: boolean;
+  operation_id: string | null;
+  stage: 1 | 2 | null;
+  targets: string[];
+  installed: boolean;
+  cancelled: boolean;
+  action_ready: boolean;
+  attempted: string[];
+  completed: Array<[string, 1 | 2]>;
+}
+
+export interface OffsetFinalizationStatus {
+  purpose: "offset_preparation" | "offset_finalization";
+  operation_id: string | null;
+  transaction_id: string | null;
+  stage: 1 | 2 | null;
+  board_index: number | null;
+  targets: string[];
+  backup_available: boolean;
+  installed: boolean;
+  cancelled: boolean;
+  configuration_selected: boolean;
+  action_ready: boolean;
+  register_verified: false;
+  gain_verification_id: string | null;
+  results: Array<[string, 1 | 2, OffsetTable, boolean]>;
+}
+
+export interface OffsetPreparationPreview {
+  operation_id: string;
+  stage: 1 | 2;
+  targets: string[];
+  backup_available: true;
+  transaction: TransactionStatus;
+}
+
+export interface OffsetFinalizationPreview {
+  purpose: "offset_finalization";
+  operation_id: string;
+  targets: string[];
+  transaction: TransactionStatus;
 }
 
 export interface ActiveWork {

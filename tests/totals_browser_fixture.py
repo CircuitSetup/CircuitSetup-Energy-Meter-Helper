@@ -67,7 +67,7 @@ from tests.test_store import _CopyingStorage, _record
 MAC = "aabbccddeeff"
 SCENARIOS = (
     "main-only", "one-addon", "automatic-on", "automatic-off", "native-parent",
-    "child-parent", "legacy-parent", "non-helper", "runtime-only", "stale-semantics", "summary", "source-only",
+    "child-parent", "legacy-parent", "non-helper", "runtime-only", "stale-semantics", "summary", "source-only", "stock-offset",
 )
 
 
@@ -178,10 +178,22 @@ class Fixture:
         self.workflow.transactions = self.manager
         self.topology = initial.topology
         self.frames: list[dict[str, Any]] = []
+        if name == "stock-offset":
+            from tests.stock_offset_browser_fixture import attach_stock
+            await attach_stock(self)
 
     async def call(self, frame: dict[str, Any]) -> Any:
         operation = frame["type"].split("/")[-1]
         self.frames.append(frame)
+        if self.name == "stock-offset" and operation in {
+            "get_active_work", "start_session", "get_session", "subscribe_session", "acknowledge_safety",
+            "get_offset_preparation", "get_offset_finalization", "preview_offset_preparation",
+            "resume_offset_calibration", "preview_offset_finalization", "reconcile_offset_finalization",
+            "begin_offset_cycle", "check_offset_readiness", "skip_offset_calibration", "cancel_session",
+            "calibrate_offset", "restart_and_verify", "restart_and_verify_gains", "complete_calibration_without_changes",
+        }:
+            from tests.stock_offset_browser_fixture import stock_call
+            return await stock_call(self, frame)
         if operation in ("setup_status", "subscribe_setup"):
             return {"state": "device_discovered", "devices": [self.device],
                 "bound_device_id": "meter-1", "configuration_authoritative": self.name != "runtime-only"}
@@ -274,7 +286,7 @@ def create_app(port: int, frontend_port: int) -> web.Application:
             value.builder.upload = Job(frame.get("install", True))
             return web.json_response({"ok": True})
         try:
-            return web.json_response(sanitize_payload(await value.call(frame)))
+            return web.json_response(sanitize_payload(await value.call(frame), allow_transaction_change_keys=True, allow_nested_transaction=True))
         except (ValueError, KeyError, vol.Invalid) as error:
             return web.json_response({"error": str(error)}, status=400)
 
@@ -289,7 +301,7 @@ def create_app(port: int, frontend_port: int) -> web.Application:
                 await socket.send_json({"type": "auth_ok"})
                 continue
             try:
-                result = sanitize_payload(await value.call(frame))
+                result = sanitize_payload(await value.call(frame), allow_transaction_change_keys=True, allow_nested_transaction=True)
                 await socket.send_json({"id": frame["id"], "type": "result", "success": True, "result": result})
             except (ValueError, KeyError, RuntimeError, vol.Invalid) as error:
                 await socket.send_json({"id": frame["id"], "type": "result", "success": False,
