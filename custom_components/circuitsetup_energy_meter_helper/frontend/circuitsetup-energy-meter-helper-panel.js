@@ -1954,6 +1954,7 @@ function packageOptions(options, change) {
   return b`<section class="package-options" aria-labelledby="package-options-heading">
     <h2 id="package-options-heading">Optional meter fields</h2>
     <p>Choose which meter boards expose additional power quality and status entities.</p>
+    <p>Power quality sensors are used with the CircuitSetup Energy Analyzer. Enable them for the boards you want to analyze.</p>
     <table class="package-options-table">
       <thead><tr><th scope="col">Board</th>${FEATURES.map(([_feature, label]) => b`<th scope="col">${label}</th>`)}</tr></thead>
       <tbody>
@@ -2034,7 +2035,7 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
   return b`
     <section class="step-content meter-settings-step" aria-labelledby="step-heading">
       <h2>Meter settings</h2>
-      <p>These values are written to the meter configuration. Setup Device choices remain onboarding suggestions.</p>
+      <p>Edit the draft here, then continue to Circuits &amp; CTs to review your changes. Apply saves the configuration; Compile and Install send it to the meter.</p>
       <div class="meter-settings-grid">
         <label>Friendly name <input aria-label="Friendly name" maxlength="64" .value=${draft.friendly_name}
           @input=${(event) => patch({ friendly_name: event.target.value })} /></label>
@@ -2047,14 +2048,17 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
       </div>
       ${intervalImpact(draft.update_interval_s) ? b`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : A}
       ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
+      <details class="advanced-voltage-options" open>
+      <summary>Advanced voltage options</summary>
+      <div class="voltage-options-content">
       <h3>Voltage references</h3>
       <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
       <div class="voltage-reference-cards">${draft.voltage_references.map((reference) => b`
         <section class="voltage-reference-card" aria-label=${`${reference.label} voltage reference`}>
           <label>Label <input aria-label=${`${reference.reference_id} label`} maxlength="64" .value=${reference.label}
             @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, label: event.target.value } : item) })} /></label>
-          <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} maxlength="64" .value=${reference.phase_label}
-            @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: event.target.value } : item) })} /></label>
+          <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} aria-describedby=${`${reference.reference_id}-phase-help`} maxlength="64" .value=${reference.phase_label}
+            @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: event.target.value } : item) })} /><small id=${`${reference.reference_id}-phase-help`}>Names the supply phase in the configuration review, for example L1, L2, or A. This label does not change wiring or assign CT groups.</small></label>
           <label>Transformer <select aria-label=${`${reference.reference_id} transformer`} .value=${reference.transformer_model_id}
             @change=${(event) => {
     const model = event.target.value;
@@ -2071,12 +2075,15 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
           ${draft.voltage_references.length > 1 ? b`<button class="secondary" aria-label=${`Remove ${reference.reference_id} voltage reference`} @click=${() => removeReference(reference.reference_id)}>Remove reference</button>` : ""}
         </section>`)}
       </div>
-      ${addableGroups.length ? b`<div class="reference-block"><label>Group transferred to new reference <select data-new-reference-group aria-label="Group transferred to new reference">${addableGroups.map((group) => b`<option value=${group}>${group}</option>`)}</select></label><button class="secondary" data-action="add-voltage-reference" @click=${addReference}>Add voltage reference</button></div>` : ""}
+      ${addableGroups.length ? b`<div class="reference-block"><label>Group transferred to new reference <select data-new-reference-group aria-label="Group transferred to new reference" aria-describedby="new-reference-help">${addableGroups.map((group) => b`<option value=${group}>${group}</option>`)}</select></label><p id="new-reference-help">Choose the physical CT group to move, then click Add voltage reference. The new reference copies the current reference's settings and takes over this group in the draft. Match its settings to the separate voltage wiring.</p><button class="secondary" data-action="add-voltage-reference" @click=${addReference}>Add voltage reference</button></div>` : ""}
       <h3>Voltage group assignment</h3>
-      <div class="meter-settings-grid">${draft.voltage_references.flatMap((reference) => reference.group_keys).sort().map((group) => b`<label>${group}<select aria-label=${`${group} voltage reference`} .value=${draft.voltage_references.find((reference) => reference.group_keys.includes(group))?.reference_id ?? ""}
+      <p id="voltage-assignment-help">Each group contains three CT channels that share a voltage reference. Selecting a reference updates the draft immediately. If a move would leave a reference empty, you must confirm a group swap. Continue to Circuits &amp; CTs, review the changes, then click Apply to save the configuration. Compile and Install activate the assignments on the meter.</p>
+      <div class="meter-settings-grid">${draft.voltage_references.flatMap((reference) => reference.group_keys).sort().map((group) => b`<label>${group}<select aria-label=${`${group} voltage reference`} aria-describedby="voltage-assignment-help" .value=${draft.voltage_references.find((reference) => reference.group_keys.includes(group))?.reference_id ?? ""}
         @change=${(event) => moveGroup(group, event.target.value, event.target)}>${draft.voltage_references.map((reference) => b`<option value=${reference.reference_id}>${reference.label || reference.reference_id}</option>`)}</select></label>`)}</div>
       ${multiReference ? b`<label class="check-row"><input type="checkbox" aria-label="Multi-reference preparation acknowledgement" .checked=${acknowledged}
         @change=${(event) => setAcknowledged(event.target.checked)} />I prepared the separate voltage references.</label>` : ""}
+      </div>
+      </details>
       <footer class="action-footer"><button class="secondary" @click=${back}>Back</button><button class="primary" data-action="continue-meter-settings" ?disabled=${!valid} @click=${continueToCircuits}>Continue to Circuits & CTs</button></footer>
     </section>
   `;
@@ -2869,6 +2876,10 @@ const panelStyles = i$5`
   .meter-settings-grid label, .voltage-reference-card label { display: grid; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
   .meter-settings-grid input, .meter-settings-grid select, .voltage-reference-card input, .voltage-reference-card select { width: 100%; padding: 10px; border: 1px solid var(--border); }
   .package-options-table { max-width: 760px; }
+  .meter-settings-step > .package-options, .meter-settings-step > .advanced-voltage-options { margin-top: 24px; }
+  .voltage-options-content { display: grid; gap: 20px; padding: 16px; }
+  .voltage-options-content h3, .voltage-options-content p { margin: 0; }
+  .voltage-reference-card small { color: var(--muted); font-weight: var(--ha-font-weight-normal, 400); }
   .package-options-table th:not(:first-child), .package-options-table td { text-align: center; }
   .package-options-table input { width: 18px; height: 18px; }
   .voltage-reference-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }

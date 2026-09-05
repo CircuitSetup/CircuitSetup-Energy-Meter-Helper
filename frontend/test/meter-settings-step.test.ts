@@ -15,6 +15,23 @@ const draft: MeterSettingsDraft = { friendly_name: "Meter", electrical_system: "
 describe("meterSettingsStep", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it("groups voltage controls separately and explains labels, transfers, and saving", () => {
+    const root = document.createElement("div");
+    const standard = { ...draft, voltage_references: [{ ...draft.voltage_references[0]!, group_keys: ["main_1", "main_2"] }] };
+    render(meterSettingsStep(standard, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined,
+      { power_quality: [false], status_fields: [true] }), root);
+    const options = root.querySelector("details.advanced-voltage-options")!;
+    expect(options.querySelector("summary")?.textContent).toBe("Advanced voltage options");
+    expect(options.querySelector('[aria-label="main phase label"]')?.getAttribute("aria-describedby")).toBe("main-phase-help");
+    expect(options.querySelector("#main-phase-help")?.textContent).toContain("does not change wiring or assign CT groups");
+    expect(options.querySelector("#new-reference-help")?.textContent).toContain("then click Add voltage reference");
+    expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("Selecting a reference updates the draft immediately");
+    expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("click Apply to save");
+    expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("Compile and Install");
+    expect(options.querySelector('[aria-label="Reporting interval"]')).toBeNull();
+    expect(root.querySelector(".package-options")?.textContent).toContain("used with the CircuitSetup Energy Analyzer");
+  });
+
   it("moves a voltage group atomically and requires multi-reference acknowledgement", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     const root = document.createElement("div");

@@ -30,6 +30,7 @@ export function packageOptions(
   return html`<section class="package-options" aria-labelledby="package-options-heading">
     <h2 id="package-options-heading">Optional meter fields</h2>
     <p>Choose which meter boards expose additional power quality and status entities.</p>
+    <p>Power quality sensors are used with the CircuitSetup Energy Analyzer. Enable them for the boards you want to analyze.</p>
     <table class="package-options-table">
       <thead><tr><th scope="col">Board</th>${FEATURES.map(([_feature, label]) => html`<th scope="col">${label}</th>`)}</tr></thead>
       <tbody>
