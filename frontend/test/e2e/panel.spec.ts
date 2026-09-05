@@ -1351,8 +1351,9 @@ test("automatic role pairs remain distinct without preset aggregate controls", a
   await page.getByLabel("CT6 role").selectOption("grid");
   for (const [name, formula] of [["Mains", "CT5 + CT6"], ["Subpanel", "CT3 + CT4"], ["Two-pole circuit", "CT1 + CT2"]]) {
     await expect(page.getByRole("group", { name: name!, exact: true })).toContainText(formula!);
-    await expect(page.getByRole("switch", { name: `Create ${name} total`, exact: true })).toBeChecked();
+    await expect(page.getByRole("switch", { name: `Create ${name} total`, exact: true })).toBeChecked({ checked: name !== "Two-pole circuit" });
   }
+  await page.getByRole("switch", { name: "Create Two-pole circuit total", exact: true }).check();
   await page.getByRole("button", { name: "Continue" }).click();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
   expect(preview.configuration).toEqual(expect.objectContaining({
@@ -1374,7 +1375,7 @@ test("automatic role pairs remain distinct without preset aggregate controls", a
   expect(graph.automatic_candidates.map((candidate) => [candidate.aggregate_id, candidate.sources])).toEqual([
     ["auto-mains", [{ kind: "channel", channel: 5 }, { kind: "channel", channel: 6 }]],
     ["auto-subpanel", [{ kind: "channel", channel: 3 }, { kind: "channel", channel: 4 }]],
-    ["auto-two-pole", [{ kind: "channel", channel: 1 }, { kind: "channel", channel: 2 }]],
+    ["auto-two-pole-ct1-ct2", [{ kind: "channel", channel: 1 }, { kind: "channel", channel: 2 }]],
   ]);
 });
 
