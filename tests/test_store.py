@@ -705,6 +705,74 @@ def test_verified_meter_configuration_creates_initial_record_after_reconnect() -
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("with_fingerprint", (False, True))
+@pytest.mark.parametrize("cleared", (False, True))
+def test_first_verified_configuration_preserves_recovery_only_record(
+    with_fingerprint: bool, cleared: bool,
+) -> None:
+    async def run() -> None:
+        store = object.__new__(HelperStore)
+        store._store = _CopyingStorage()
+        store._update_lock = asyncio.Lock()
+        marker = None if cleared else StoredInterruptedSession(
+            "indeterminate", "2026-08-23T00:00:00Z", (1,), None,
+        )
+        await store.async_save_interrupted_session(MAC, marker)
+        fingerprint = await store.async_get_meter_record_fingerprint(MAC)
+        proposed = replace(_configuration(), config_sha256=PROPOSED_HASH)
+
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, proposed, _record(),
+            expected_record_fingerprint=fingerprint if with_fingerprint else None,
+        )
+
+        assert await store.async_get_meter_configuration(MAC) == proposed
+        assert await store.async_get_interrupted_session(MAC) == marker
+        assert store._store.data["meters"][MAC]["config_filename"] == _record().config_filename
+
+    asyncio.run(run())
+
+
+def test_recovery_only_record_changed_after_preview_cannot_be_initialized() -> None:
+    async def run() -> None:
+        store = object.__new__(HelperStore)
+        store._store = _CopyingStorage()
+        store._update_lock = asyncio.Lock()
+        await store.async_save_interrupted_session(MAC, None)
+        fingerprint = await store.async_get_meter_record_fingerprint(MAC)
+        marker = StoredInterruptedSession("indeterminate", "2026-08-23T00:00:00Z", (1,), None)
+        await store.async_save_interrupted_session(MAC, marker)
+        before = deepcopy(store._store.data)
+
+        with pytest.raises(ValueError, match="changed since preview"):
+            await store.async_save_verified_meter_configuration(
+                MAC, CONFIG_HASH, replace(_configuration(), config_sha256=PROPOSED_HASH),
+                _record(), expected_record_fingerprint=fingerprint,
+            )
+        assert store._store.data == before
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("field", ("config_filename", "config_sha256", "topology"))
+def test_initial_configuration_does_not_replace_malformed_source_record(field: str) -> None:
+    async def run() -> None:
+        store = object.__new__(HelperStore)
+        store._store = _CopyingStorage()
+        store._update_lock = asyncio.Lock()
+        store._store.data = {"meters": {MAC: {"interrupted_session": None, field: None}}}
+        fingerprint = await store.async_get_meter_record_fingerprint(MAC)
+        before = deepcopy(store._store.data)
+        with pytest.raises(ValueError, match="does not match the source"):
+            await store.async_save_verified_meter_configuration(
+                MAC, CONFIG_HASH, replace(_configuration(), config_sha256=PROPOSED_HASH),
+                _record(), expected_record_fingerprint=fingerprint,
+            )
+        assert store._store.data == before
+
+    asyncio.run(run())
+
+
 def test_verified_meter_configuration_allows_changed_roles_at_same_source_hash() -> None:
     """Role edits are durable when the underlying YAML source is unchanged."""
 

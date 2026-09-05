@@ -1503,6 +1503,14 @@ class HelperStore:
             data = await self.async_load()
             meters = data.setdefault("meters", {})
             raw_meter = meters.get(mac)
+            if (
+                record is not None
+                and isinstance(raw_meter, dict)
+                and raw_meter.keys() <= {"interrupted_session"}
+            ):
+                # Recovery can exist before any configuration was adopted. Seed
+                # identity from the verified source while retaining its marker.
+                raw_meter = {**serialize_meter_record(record), **raw_meter}
             if expected_record_fingerprint is not None:
                 if (
                     record is None
