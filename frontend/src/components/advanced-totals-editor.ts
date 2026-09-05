@@ -132,6 +132,10 @@ export function advancedTotalsEditor(
           patch(aggregate, { outputs: { ...aggregate.outputs, [key]: input.checked } });
         }} />${text}</label>`;
       const existing = [...enabledAutomatic.map((item) => item.candidate), ...configuration.aggregates.filter((item) => item !== aggregate)];
+      const visibleSource = (source: TotalSource) => aggregate.sources.some((item) => sameSource(item, source))
+        || writable && !sourceReason(aggregate, source);
+      const nativeChoices = catalog.native_sources.filter((item) => visibleSource({ kind: "native_total", source_id: item.source_id }));
+      const existingChoices = existing.filter((item) => visibleSource({ kind: "aggregate", aggregate_id: item.aggregate_id }));
       const known = [...catalog.native_sources.map((item): TotalSource => ({ kind: "native_total", source_id: item.source_id })),
         ...existing.map((item): TotalSource => ({ kind: "aggregate", aggregate_id: item.aggregate_id })),
         ...configuration.channels.filter((item) => item.enabled).map((item): TotalSource => ({ kind: "channel", channel: item.channel }))];
@@ -172,11 +176,12 @@ export function advancedTotalsEditor(
         ${problem ? html`<p class="warning-band" role="status">${problem} Complete the total before continuing.</p>` : nothing}
         ${overlaps ? html`<p class="warning-band" role="note">This total overlaps another report. They are valid independently but must not be added together.</p>` : nothing}
         <p>Select CTs or totals, not both. Remove current sources before changing source class.</p>
-        <fieldset class="aggregate-sources"><legend>Native totals</legend><div class="aggregate-source-options">${catalog.native_sources.map((item) => option({ kind: "native_total", source_id: item.source_id }, item.label))}</div></fieldset>
-        <fieldset class="aggregate-sources"><legend>Existing totals</legend><div class="aggregate-source-options">${existing.map((item) => option({ kind: "aggregate", aggregate_id: item.aggregate_id }, item.name))}</div></fieldset>
+        ${nativeChoices.length ? html`<fieldset class="aggregate-sources"><legend>Native totals</legend><div class="aggregate-source-options">${nativeChoices.map((item) => option({ kind: "native_total", source_id: item.source_id }, item.label))}</div></fieldset>` : nothing}
+        ${existingChoices.length ? html`<fieldset class="aggregate-sources"><legend>Existing totals</legend><div class="aggregate-source-options">${existingChoices.map((item) => option({ kind: "aggregate", aggregate_id: item.aggregate_id }, item.name))}</div></fieldset>` : nothing}
         <fieldset class="aggregate-sources aggregate-channels"><legend>CTs</legend><div class="aggregate-channel-groups">${Array.from({ length: Math.ceil(configuration.channels.length / 6) }, (_, board) => {
           const channels = configuration.channels.filter((item) => item.enabled && Math.floor((item.channel - 1) / 6) === board);
-          return channels.length ? html`<section class="aggregate-channel-group" aria-label=${board ? `Add-on ${board} channels` : "Main Board channels"}><h4>${board ? `Add-on ${board}` : "Main Board"}</h4><div>${channels.map((item) => option({ kind: "channel", channel: item.channel }, `CT${item.channel} · ${drafts.get(item.channel)?.name ?? item.name}`, `CT${item.channel}`))}</div></section>` : nothing;
+          const used = channels.some((item) => aggregate.sources.some((source) => source.kind === "channel" && source.channel === item.channel));
+          return channels.length ? html`<details class="aggregate-channel-group" ?open=${used} aria-label=${board ? `Add-on ${board} channels` : "Main Board channels"}><summary>${board ? `Add-on ${board}` : "Main Board"}</summary><div>${channels.map((item) => option({ kind: "channel", channel: item.channel }, `CT${item.channel} · ${drafts.get(item.channel)?.name ?? item.name}`, `CT${item.channel}`))}</div></details>` : nothing;
         })}</div></fieldset>
         ${aggregate.sources.filter((source) => !known.some((item) => sameSource(item, source))).map((source) => option(source, label(source)))}
         <div class="aggregate-actions">${output("watts", "Watts")}${output("amps", "Amps")}${output("kwh", "kWh")}

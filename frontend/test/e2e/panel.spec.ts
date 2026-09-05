@@ -681,13 +681,17 @@ test("nested child formulas block cycles and overlap but allow independent repor
   await page.locator("#advanced-totals-heading").press("Enter");
   await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("East + West");
   await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("CT1–CT2");
-  await expect(page.getByLabel("Whole building: Overall meter total", { exact: true })).toBeDisabled();
-  await expect(page.getByLabel("East: Whole building", { exact: true })).toBeDisabled();
+  await expect(page.getByLabel("Whole building: Overall meter total", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("East: Whole building", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Whole building Feeds into").locator('option[value="east"]')).toHaveAttribute("disabled", "");
   await page.getByRole("button", { name: "Create aggregate total" }).click();
   await page.getByLabel("aggregate-1 aggregate name").fill("Independent check");
   await page.getByLabel("aggregate-1 aggregate method").selectOption("direct");
+  const ctGroup = page.getByLabel("Independent check aggregate", { exact: true }).locator(".aggregate-channel-group").first();
+  await expect(ctGroup).not.toHaveAttribute("open");
+  await ctGroup.locator("summary").click();
   await page.getByLabel("Independent check: CT1", { exact: true }).check();
+  await expect(ctGroup).toHaveAttribute("open", "");
   await expect(page.getByLabel("Independent check aggregate", { exact: true })).toContainText("overlap");
   await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "Continue", exact: true }).scrollIntoViewIfNeeded();
@@ -710,7 +714,7 @@ test("legacy parent decisions remain pending on failure and clear per-link only 
   await expect(links).toHaveCount(2);
   await page.locator("#advanced-totals-heading").press("Enter");
   await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("CT3");
-  await expect(page.getByLabel("Whole building: East", { exact: true })).not.toBeChecked();
+  await expect(page.getByLabel("Whole building: East", { exact: true })).toHaveCount(0);
   await links.first().getByRole("button", { name: "Keep totals independent" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await fixture.rpc({ type: "fixture_outcome", compile: false });

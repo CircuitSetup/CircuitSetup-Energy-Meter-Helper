@@ -147,7 +147,8 @@ export const panelStyles = css`
   .aggregate-channels > legend { font-size: var(--ha-font-size-l, 16px); }
   .aggregate-channel-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .aggregate-channel-group { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); }
-  .aggregate-channel-group h4 { margin: 0 0 8px; }
+  .aggregate-channel-group > summary { font-weight: 600; }
+  .aggregate-channel-group[open] > summary { margin-bottom: 8px; }
   .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .aggregate-channel-option { display: flex; align-items: center; min-width: 0; min-height: 44px; gap: 7px; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface); cursor: pointer; overflow-wrap: anywhere; }
   .aggregate-channel-option input { flex: 0 0 auto; min-height: auto; margin: 0; }

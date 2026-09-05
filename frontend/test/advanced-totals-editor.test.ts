@@ -79,15 +79,12 @@ it("disables cycle parents and restores the visible selection after a forged cha
   expect(select("Parent Feeds into")?.value).toBe("");
 });
 
-it("disables overlapping native sources using physical leaves even when a CT is disabled", () => {
+it("hides overlapping native sources using physical leaves even when a CT is disabled", () => {
   const state = mount([total("home", "Home", [native("opaque-main")])]);
   state.response.configuration.channels[0]!.enabled = false; state.draw();
-  expect(input("Home: Overall meter total")?.disabled).toBe(true);
-  expect(input("Home: Overall meter total")?.closest("label")?.textContent).toMatch(/overlap/i);
-  const control = input("Home: Overall meter total")!;
-  control.checked = true; control.dispatchEvent(new Event("change"));
+  expect(input("Home: Overall meter total")).toBeNull();
+  expect(input("Home: Main Board total")?.checked).toBe(true);
   expect(state.update).not.toHaveBeenCalled();
-  expect(control.checked).toBe(false);
 });
 
 it("allows independent reports to reuse a CT and warns against adding them", () => {
@@ -133,7 +130,7 @@ it("names children becoming independent when deleting a parent and preserves the
 
 it("keeps the stable raw ID only in Advanced details while names remain editable", () => {
   const state = mount([total("opaque-id", "Friendly name", [ct(1)])]);
-  expect(card("Friendly name")?.querySelector("details")?.textContent ?? "").toContain("opaque-id");
+  expect(card("Friendly name")?.querySelector("details code")?.textContent ?? "").toContain("opaque-id");
   expect(card("Friendly name")?.querySelector("legend")?.textContent).toBe("Friendly name");
   const name = input("opaque-id aggregate name")!;
   name.value = "Renamed"; name.dispatchEvent(new Event("input"));
@@ -142,15 +139,15 @@ it("keeps the stable raw ID only in Advanced details while names remain editable
 
 it("does not steal an already-parented child through the ordinary source picker", () => {
   const state = mount([total("child", "Child", [ct(1)]), total("old", "Old", [child("child")]), total("next", "Next")]);
-  expect(input("Next: Child")?.disabled).toBe(true);
-  expect(input("Next: Child")?.closest("label")?.textContent).toMatch(/Feeds into/);
-  const control = input("Next: Child")!; control.checked = true; control.dispatchEvent(new Event("change"));
-  expect(state.update).not.toHaveBeenCalled(); expect(control.checked).toBe(false);
+  expect(input("Next: Child")).toBeNull();
+  expect(input("Old: Child")?.checked).toBe(true);
+  expect(state.update).not.toHaveBeenCalled();
 });
 
 it("does not mix source classes or silently change a special measurement method", () => {
   const state = mount([{ ...total("raw", "Raw", [ct(1)]), measurement_method: "one_ct_double_power" }, total("child", "Child", [ct(2)])]);
-  expect(input("Raw: Main Board total")?.disabled).toBe(true);
+  expect(input("Raw: Main Board total")).toBeNull();
+  expect([...card("Raw")!.querySelectorAll(".aggregate-sources > legend")].map((node) => node.textContent)).toEqual(["CTs"]);
   expect(select("Child Feeds into")?.querySelector<HTMLOptionElement>('[value="raw"]')?.disabled).toBe(true);
   choose("Child Feeds into", "raw");
   expect(state.update).not.toHaveBeenCalled(); expect(select("Child Feeds into")?.value).toBe("");
@@ -228,16 +225,35 @@ it("cancels Feeds into detachment without losing the visible parent", () => {
 
 it("does not attach an incomplete special-method child by picker or Feeds into", () => {
   mount([{ ...total("child", "Child", [ct(1)]), measurement_method: "two_ct_sum" }, total("parent", "Parent")]);
-  expect(input("Parent: Child")?.disabled).toBe(true);
+  expect(input("Parent: Child")).toBeNull();
   expect(select("Child Feeds into")?.querySelector<HTMLOptionElement>('[value="parent"]')?.disabled).toBe(true);
 });
 
 it("rejects edits that would introduce overlap through an existing ancestor", () => {
   const state = mount([total("child", "Child", [native("opaque-main")]), total("parent", "Parent", [child("child"), native("opaque-addon")])]);
-  expect(input("Child: Add-on 1 total")?.disabled).toBe(true);
-  const control = input("Child: Add-on 1 total")!;
-  control.checked = true; control.dispatchEvent(new Event("change"));
-  expect(state.update).not.toHaveBeenCalled(); expect(control.checked).toBe(false);
+  expect(input("Child: Add-on 1 total")).toBeNull();
+  expect(state.update).not.toHaveBeenCalled();
+});
+
+it("shows eligible total sections after switching an empty CT total to Direct", () => {
+  mount([{ ...total("home", "Home"), measurement_method: "two_ct_sum" }]);
+  expect([...card("Home")!.querySelectorAll(".aggregate-sources > legend")].map((node) => node.textContent)).toEqual(["CTs"]);
+  choose("home aggregate method", "direct");
+  expect(input("Home: Main Board total")).not.toBeNull();
+  expect(input("Home: Solar report")).not.toBeNull();
+});
+
+it("collapses unused CT boards and opens only boards with selected CT sources", () => {
+  const state = mount([total("home", "Home", [ct(1)])]);
+  const base = state.response.configuration.channels[0]!;
+  state.response.configuration.channels.push({ ...base, channel: 7, name: "Add-on CT" });
+  state.draw();
+  const groups = () => [...card("Home")!.querySelectorAll<HTMLDetailsElement>("details.aggregate-channel-group")];
+  expect(groups().map((group) => group.open)).toEqual([true, false]);
+  input("Home: CT7")!.click();
+  expect(groups().map((group) => group.open)).toEqual([true, true]);
+  input("Home: CT1")!.click();
+  expect(groups().map((group) => group.open)).toEqual([false, true]);
 });
 
 it("can repair an empty Two CT Sum child without silently detaching it", () => {

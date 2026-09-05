@@ -1312,7 +1312,7 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
 
     const aggregate = panel.shadowRoot?.querySelector('[aria-label="House load aggregate"]');
-    expect([...aggregate?.querySelectorAll(".aggregate-channel-group") ?? []].map((group) => group.querySelector("h4")?.textContent)).toEqual(["Main Board", "Add-on 1"]);
+    expect([...aggregate?.querySelectorAll(".aggregate-channel-group") ?? []].map((group) => group.querySelector("summary")?.textContent)).toEqual(["Main Board", "Add-on 1"]);
     expect(aggregate?.textContent).toContain("CT1 · Kitchen");
     expect(aggregate?.textContent).toContain("CT7 · Garage");
     expect(aggregate?.querySelector('[aria-label="house-load aggregate channels"]')).toBeNull();
