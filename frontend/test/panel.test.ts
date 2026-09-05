@@ -240,6 +240,27 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="Overall meter total Watts"]')?.disabled).toBe(false);
   });
 
+  it("places the remaining circuit review before Continue and permits adoption preview after confirmation", async () => {
+    const { meter, panel, state, calls } = await prepare();
+    meter.capabilities.semantic_source = legacyEditableScenario.meterConfiguration!.capabilities.semantic_source;
+    meter.channels = meter.channels.map((channel) => ({ ...channel, selection_verified_against_config: false }));
+    Object.assign(state, { journeyOrigin: "existing_meter", existingConfigurationChoice: "manage_with_helper" });
+    state.setMeterConfiguration(meter);
+    panel.requestUpdate(); await panel.updateComplete;
+    [...panel.shadowRoot!.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Adopt managed totals")!.click();
+    await tick(); await panel.updateComplete;
+    const proceed = panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="continue"]')!;
+    const confirmation = panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="I reviewed used/unused channels and circuit roles"]')!;
+    expect(proceed.disabled).toBe(true);
+    expect(confirmation.compareDocumentPosition(proceed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(text(panel)).toContain("Review and confirm the used/unused channels and circuit roles below to enable Continue.");
+    confirmation.click(); await tick(); await panel.updateComplete;
+    expect(proceed.disabled).toBe(false);
+    expect(text(panel)).not.toContain("Review and confirm the used/unused channels and circuit roles below to enable Continue.");
+    proceed.click(); await tick(); await panel.updateComplete;
+    expect(calls.some((message) => String(message.type).endsWith("/preview_meter_configuration"))).toBe(true);
+  });
+
   it("shows authoritative legacy source totals after the calibration-only journey without claiming installation", async () => {
     const legacy = structuredClone(legacyEditableScenario.meterConfiguration!);
     legacy.capabilities.reason_codes.push("totals_adoption_required", "legacy_custom_totals_unmanaged");

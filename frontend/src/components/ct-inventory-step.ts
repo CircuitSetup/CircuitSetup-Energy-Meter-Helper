@@ -58,6 +58,7 @@ export function ctInventoryStep(
   automaticSourcesFresh = freshTotals,
   existingConfiguration: MeterConfigurationRequest | null = null,
   skip: () => void = () => undefined,
+  reviewRequirements: TemplateResult | typeof nothing = nothing,
 ): TemplateResult {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
@@ -179,6 +180,7 @@ export function ctInventoryStep(
       ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState) : nothing}
       ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration) : nothing}
       ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh) : nothing}
+      ${reviewRequirements}
       <footer class="action-footer offset-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="secondary" data-action="skip-ct" ?disabled=${busy} @click=${skip}>Skip to Calibration</button>

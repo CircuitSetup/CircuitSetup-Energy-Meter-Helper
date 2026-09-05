@@ -2362,7 +2362,7 @@ function recommendedReportingMultiplier(ratedCurrentA) {
   return ratedCurrentA <= 65.535 ? 1 : ratedCurrentA <= 131.07 ? 2 : ratedCurrentA <= 262.14 ? 4 : ratedCurrentA <= 524.28 ? 8 : null;
 }
 const resultingGain = (preset, multiplier, customGain) => (preset?.default_gain_ct ?? customGain) == null || !Number.isFinite(multiplier) || multiplier <= 0 ? null : Math.round((preset?.default_gain_ct ?? customGain) / multiplier);
-function ctInventoryStep(inventory, board, drafts, setBoard, update, back, review, labelOnly = false, busy = false, configuration = null, updateConfiguration = () => void 0, disableChannel = () => void 0, managedTotals = true, managedTotalsReason = "", allowPreserveExistingGain = false, continueAllowed = true, totals = null, nativeTotalsReadable = false, nativeTotalsWritable = false, nativePreview = null, freshTotals = true, nativeGraphState = "ready", automaticTotalsWritable = false, meterInventory = null, automaticSourcesFresh = freshTotals, existingConfiguration = null, skip = () => void 0) {
+function ctInventoryStep(inventory, board, drafts, setBoard, update, back, review, labelOnly = false, busy = false, configuration = null, updateConfiguration = () => void 0, disableChannel = () => void 0, managedTotals = true, managedTotalsReason = "", allowPreserveExistingGain = false, continueAllowed = true, totals = null, nativeTotalsReadable = false, nativeTotalsWritable = false, nativePreview = null, freshTotals = true, nativeGraphState = "ready", automaticTotalsWritable = false, meterInventory = null, automaticSourcesFresh = freshTotals, existingConfiguration = null, skip = () => void 0, reviewRequirements = A) {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
   const referenceByGroup = new Map(configuration?.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference])) ?? []);
@@ -2480,6 +2480,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState) : A}
       ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration) : A}
       ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh) : A}
+      ${reviewRequirements}
       <footer class="action-footer offset-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="secondary" data-action="skip-ct" ?disabled=${busy} @click=${skip}>Skip to Calibration</button>
@@ -6380,12 +6381,16 @@ class CircuitSetupPanel extends i$2 {
         () => {
           this.skipCircuitChanges = true;
           this.navigate("calibration-plan");
-        }
-      )}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? b`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event) => {
-        this.legacyCircuitSemanticsConfirmed = event.target.checked;
-        if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration);
-        else this.requestUpdate();
-      }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : A}` : A}`;
+        },
+        this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? b`
+        ${!this.legacyCircuitSemanticsConfirmed ? b`<p class="info-band" role="status">Review and confirm the used/unused channels and circuit roles below to enable Continue.</p>` : A}
+        <label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event) => {
+          this.legacyCircuitSemanticsConfirmed = event.target.checked;
+          if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration);
+          else this.requestUpdate();
+        }} />I reviewed used/unused channels and circuit roles.</label>
+        ${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : A}` : A
+      )}`;
     }
     if (this.step === "save-calibration" && !this.transaction && this.offsetRecoveryPending()) return b`<section class="step-content" aria-labelledby="offset-final-heading">
       <h2 id="offset-final-heading">Review captured offset configuration</h2>
