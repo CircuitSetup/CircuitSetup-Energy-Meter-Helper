@@ -491,7 +491,7 @@ async function openInventory(page: Page, url = "/test/harness.html"): Promise<vo
   await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
   const preparation = page.getByLabel("Multi-reference preparation acknowledgement");
   if (await preparation.count()) {
-    await page.locator('[data-section="advanced-meter-settings"] summary').click();
+    await page.locator('[data-section="advanced-voltage-options"] summary').click();
     await preparation.check();
   }
   await page.locator('[data-action="continue-meter-settings"]').click();
