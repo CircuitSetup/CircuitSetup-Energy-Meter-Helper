@@ -1052,6 +1052,13 @@ def _detected_aggregates(
         if aggregate.aggregate_id not in {item.aggregate_id for item in legacy}
     ))
     added = tuple(aggregate for aggregate in inferred if aggregate.aggregate_id not in existing_ids | replaced_ids)
+    # Hash-bound helper roles need no replacement sensor or YAML definition.
+    stored_by_id = {aggregate.aggregate_id: aggregate for aggregate in stored}
+    added = tuple(
+        saved if (saved := stored_by_id.get(aggregate.aggregate_id)) is not None
+        and replace(saved, role=aggregate.role) == aggregate else aggregate
+        for aggregate in added
+    )
     if added:
         warnings = tuple(dict.fromkeys((*warnings, "builtin_total_semantics_inferred")))
     # Legacy parent links are diagnostic-only and must never change formulas here.

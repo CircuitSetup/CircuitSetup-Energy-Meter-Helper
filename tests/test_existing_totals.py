@@ -174,7 +174,7 @@ def test_unchanged_custom_totals_preview_preserves_all_original_sensors() -> Non
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("edit", ("outputs", "members", "remove", "disable_member", "parent"))
+@pytest.mark.parametrize("edit", ("outputs", "members", "remove", "disable_member", "parent", "roles", "roles_and_name"))
 def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str) -> None:
     """Exercise the real transaction and Store; only Builder/device IO are fake."""
     from tests.test_config_transaction import _evidence
@@ -195,6 +195,11 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
             aggregates = (house, ac1, ac2)
             if edit == "disable_member":
                 channels = tuple(replace(item, enabled=False, role=CircuitRole.UNUSED) if item.channel == 5 else item for item in channels)
+        elif edit in {"roles", "roles_and_name"}:
+            aggregates = tuple(replace(item,
+                role=CircuitRole.GRID if item == house else CircuitRole.TWO_POLE,
+                name="Renamed charger" if edit == "roles_and_name" and item == charger else item.name,
+            ) for item in aggregates)
         else:
             aggregates = (*aggregates, replace(charger, aggregate_id="parent", name="Parent",
                 measurement_method=MeasurementMethod.DIRECT,
@@ -205,6 +210,18 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
         preview = await workflow._async_preview_meter_configuration(plan, requested)
         manager = workflow.transactions
         transaction = manager._transaction(preview.transaction_id)
+        if edit in {"roles", "roles_and_name"}:
+            proposed = transaction.plan.proposed_content
+            assert "csemh_meter_total_power" not in proposed
+            assert "csemh_total_ac1_power" not in proposed
+            assert "csemh_total_ac2_power" not in proposed
+            if edit == "roles":
+                assert proposed.endswith(source.split("sensor:\n", 1)[1])
+                assert "csemh-replaced-totals" not in proposed
+                assert "csemh_total_charger_power" not in proposed
+                assert ("house_total_kwh", "House Total kWh") in transaction.expected_sensor_entities
+            else:
+                assert "csemh_total_charger_power" in proposed
         verifier.evidence = replace(_evidence(), topology=topology, current_sensor_count=topology.ct_count,
             ct_names={item.channel: item.name for item in requested.channels},
             sensor_entities=transaction.expected_sensor_entities)
@@ -219,6 +236,12 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
         assert {item.aggregate_id: item for item in loaded.inventory.configuration.aggregates} == {
             item.aggregate_id: item for item in requested.aggregates}
         refreshed = loaded.inventory.configuration
+        if edit in {"roles", "roles_and_name"}:
+            unchanged = await workflow._async_preview_meter_configuration(loaded, refreshed)
+            assert workflow.transactions._transaction(unchanged.transaction_id).plan.proposed_content == builder.remote_content
+            _, stale, _, _, _ = await _persisted_totals_workflow(builder.remote_content + "\n", store, topology)
+            assert next(item for item in stale.inventory.configuration.aggregates if item.aggregate_id == "meter-total").role is CircuitRole.CUSTOM
+            workflow, loaded, _, _, _ = await _persisted_totals_workflow(builder.remote_content, store, topology)
         second = replace(refreshed, aggregates=tuple(replace(item, name="Second edit") if item.aggregate_id == "total-ac2" else item for item in refreshed.aggregates))
         assert (await workflow._async_preview_meter_configuration(loaded, second)).state.value == "previewed"
 

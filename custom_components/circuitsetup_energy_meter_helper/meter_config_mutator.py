@@ -992,11 +992,13 @@ def _select_render_totals(
     changed: set[str] = set()
     old = {} if previous is None else {item.aggregate_id: item for item in previous.aggregates}
     if previous is not None:
+        # Roles classify totals in the helper; they do not change ESPHome sensors.
+        edited = {item.aggregate_id for item in requested.aggregates
+            if (prior := old.get(item.aggregate_id)) is None or replace(item, role=prior.role) != prior}
         changed.update(identifier for identifier in old.keys() - {item.aggregate_id for item in requested.aggregates}
             if identifier in sources)
-        changed.update(item.aggregate_id for item in requested.aggregates
-            if item.aggregate_id in sources and item != old.get(item.aggregate_id))
-        changed.update(source.aggregate_id for item in requested.aggregates if item != old.get(item.aggregate_id)
+        changed.update(edited & sources.keys())
+        changed.update(source.aggregate_id for item in requested.aggregates if item.aggregate_id in edited
             for source in item.sources if isinstance(source, AggregateTotalSource) and source.aggregate_id in sources and source.aggregate_id not in selected)
     custom_native = _custom_native_total_ids(document, topology)
     invalid_native = {item.source_id for item in native_total_sources(topology) if item.power_id in custom_native or item.current_id in custom_native}
