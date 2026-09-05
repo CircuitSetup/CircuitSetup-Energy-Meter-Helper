@@ -167,6 +167,10 @@ export const panelStyles = css`
   .meter-settings-grid label, .voltage-reference-card label { display: grid; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
   .meter-settings-grid input, .meter-settings-grid select, .voltage-reference-card input, .voltage-reference-card select { width: 100%; padding: 10px; border: 1px solid var(--border); }
   .package-options-table { max-width: 760px; }
+  .meter-settings-step > details { margin: 24px 0; }
+  .voltage-options-content { display: grid; gap: 20px; padding: 16px; }
+  .voltage-options-content h3, .voltage-options-content p { margin: 0; }
+  .voltage-reference-card small { color: var(--muted); font-weight: var(--ha-font-weight-normal, 400); }
   .package-options-table th:not(:first-child), .package-options-table td { text-align: center; }
   .package-options-table input { width: 18px; height: 18px; }
   .voltage-reference-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }

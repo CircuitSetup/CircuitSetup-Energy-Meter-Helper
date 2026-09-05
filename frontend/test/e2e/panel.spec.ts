@@ -1274,7 +1274,11 @@ test("three voltage references cover each three-phase board exactly once and cal
   await page.getByLabel("Line frequency").selectOption("50");
   await page.locator('[data-section="advanced-voltage-options"] summary').click();
   await expect(page.locator(".voltage-reference-card")).toHaveCount(3);
-  await page.locator('[data-section="advanced-meter-settings"] summary').click();
+  await expect(page.locator('[data-section="advanced-voltage-options"]')).toContainText("Selecting a reference updates the draft immediately");
+  await expect(page.locator('[data-section="advanced-meter-settings"]')).not.toContainText("Voltage group assignment");
+  const cards = await page.locator(".voltage-reference-cards").boundingBox();
+  const assignment = await page.getByRole("heading", { name: "Voltage group assignment" }).boundingBox();
+  expect(assignment!.y - (cards!.y + cards!.height)).toBeGreaterThanOrEqual(20);
   await page.getByLabel("Multi-reference preparation acknowledgement").check();
   await page.getByLabel("Confirm electrical profile").check();
   await page.locator('[data-action="continue-meter-settings"]').click();
