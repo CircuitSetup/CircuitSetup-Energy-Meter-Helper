@@ -1539,8 +1539,6 @@ def test_power_quality_scaling_uses_managed_phase_overrides() -> None:
       apparent_power:
         filters:
           - multiply: 4
-      harmonic_power: !remove
-      peak_current: !remove
 """
         in plan.proposed_content
     )
@@ -1594,8 +1592,6 @@ sensor:
       apparent_power:
         filters:
           - multiply: 4
-      harmonic_power: !remove
-      peak_current: !remove
 """
         in plan.proposed_content
     )
@@ -1639,8 +1635,6 @@ def test_unused_channel_removes_all_power_quality_outputs(multiplier: int) -> No
     assert (
         """      reactive_power: !remove
       apparent_power: !remove
-      harmonic_power: !remove
-      peak_current: !remove
       power_factor: !remove
       phase_angle: !remove
 """
@@ -3394,8 +3388,8 @@ def test_legacy_multiplier_migration_rejects_malformed_entries(entry: str) -> No
         )
 
 
-def test_multiplier_one_omits_scaling_filters_but_removes_active_pq_outputs() -> None:
-    """The base range leaves measurements unscaled while still pruning PQ extras."""
+def test_multiplier_one_needs_no_active_phase_override() -> None:
+    """The base range leaves the current power-quality package untouched."""
     plan = build_ct_mutation(
         _package_snapshot(),
         _two_board_topology(),
@@ -3406,12 +3400,9 @@ def test_multiplier_one_omits_scaling_filters_but_removes_active_pq_outputs() ->
         },
     )
 
-    phase = plan.proposed_content.split("phase_a: # CT1", 1)[1].split(
-        "phase_b: # CT2", 1
-    )[0]
-    assert "filters:" not in phase
-    assert "harmonic_power: !remove" in phase
-    assert "peak_current: !remove" in phase
+    assert "phase_a: # CT1" not in plan.proposed_content
+    assert "harmonic_power: !remove" not in plan.proposed_content
+    assert "peak_current: !remove" not in plan.proposed_content
 
 
 def test_reporting_multiplier_uses_configured_id_substitution_and_is_reviewable() -> None:

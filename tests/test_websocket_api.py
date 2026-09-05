@@ -3043,7 +3043,7 @@ def test_parent_decision_cross_route_persists_only_after_verified_install(succes
             assert final["state"] == "verified"
             assert [(link.child_id, link.proposed_parent_id) for link in after.totals_migration.legacy_parent_links] == [("west", "building")]
             assert after.totals_migration.parent_review_required
-            assert after.config_sha256 != before.config_sha256
+            assert after.config_sha256 == sha256(fixture.builder.remote_content.encode()).hexdigest()
         else:
             assert final["state"] == "failed"
             assert after == before

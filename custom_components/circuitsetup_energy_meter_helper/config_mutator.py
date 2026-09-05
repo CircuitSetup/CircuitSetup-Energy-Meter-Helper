@@ -1197,12 +1197,10 @@ def _phase_override_lines(
             if multiplier == 1:
                 lines.append(f"      {output}:")
             lines.append("        internal: true")
-    if power_quality:
-        removals = ("harmonic_power", "peak_current") if enabled else (
+    if power_quality and not enabled:
+        removals = (
             "reactive_power",
             "apparent_power",
-            "harmonic_power",
-            "peak_current",
             "power_factor",
             "phase_angle",
         )
