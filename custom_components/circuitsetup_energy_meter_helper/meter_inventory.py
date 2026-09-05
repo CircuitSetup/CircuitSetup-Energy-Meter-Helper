@@ -61,6 +61,13 @@ from .total_graph import (
     resolve_automatic_totals,
     stale_automatic_total_settings,
 )
+from .voltage_gains import (
+    _managed_body_is_empty,
+    _managed_code,
+    _managed_mappings,
+    _managed_voltage_items,
+    effective_voltage_gains,
+)
 from .voltage_transformer_catalog import VoltageTransformerCatalog
 
 _GENERIC_TOTAL_ID = re.compile(
@@ -642,7 +649,21 @@ def _stored_voltage_references(
     block = document.managed_blocks.get("voltage_references")
     if block is not None:
         _validate_managed_voltage_reference_gains(stored, document, topology)
-        return stored.meter.voltage_references
+        resolved_gains = effective_voltage_gains(document, topology)
+        managed_references = []
+        for reference in stored.meter.voltage_references:
+            phase_gains = {
+                gain
+                for group in reference.group_keys
+                for gain in resolved_gains[
+                    f"meter_main{group[-1]}" if group.startswith("main_") else group
+                ]
+            }
+            managed_references.append(replace(
+                reference,
+                gain_voltage=next(iter(phase_gains)) if len(phase_gains) == 1 else reference.gain_voltage,
+            ))
+        return tuple(managed_references)
     references: list[VoltageReferenceConfig] = []
     for reference in stored.meter.voltage_references:
         groups = tuple(
@@ -691,47 +712,24 @@ def _validate_managed_voltage_reference_gains(
         raise ValueError("managed voltage references are not verified")
     lines = block.content.replace("\r\n", "\n").splitlines()
     items = _managed_voltage_items(lines, document.sensor_item_indent)
+    legacy = any("gain_voltage:" in _managed_code(line) for line in lines)
+    if not legacy:
+        effective_voltage_gains(document, topology)
     for reference in stored.meter.voltage_references:
         representative = min(reference.group_keys, key=_managed_group_order)
         for group in reference.group_keys:
             meter_id = _managed_meter_id(group, document)
             item = items.pop(meter_id, None)
+            if not legacy and group != representative and item is None:
+                continue
             if item is None:
                 raise ValueError("managed voltage reference gains are ambiguous")
             _validate_managed_voltage_item(
-                item, reference, group == representative, report_gain_mismatch
+                item, reference, group == representative, report_gain_mismatch,
+                require_gain=legacy, stock_public=group == "main_1",
             )
     if items:
         raise ValueError("managed voltage reference gains are ambiguous")
-
-
-def _managed_voltage_items(
-    lines: list[str], item_indent: int | None
-) -> dict[str, list[str]]:
-    """Return exact direct meter items from the helper-owned sensor block."""
-    if item_indent == 0:
-        lines = [f"  {line}" if line else line for line in lines]
-    headers: list[tuple[str, int]] = []
-    for index, line in enumerate(lines):
-        code = _managed_code(line)
-        if not code.strip():
-            continue
-        if _ambiguous_managed_yaml(code):
-            raise ValueError("managed voltage references are ambiguous")
-        if code.startswith("  - "):
-            match = re.fullmatch(r"  - id: !extend (?P<id>[^\s]+)", code)
-            if match is None:
-                raise ValueError("managed voltage reference item is invalid")
-            headers.append((match["id"], index))
-        elif not headers or len(code) - len(code.lstrip(" ")) <= 2:
-            raise ValueError("managed voltage reference item is invalid")
-    items: dict[str, list[str]] = {}
-    for item_index, (meter_id, start) in enumerate(headers):
-        end = headers[item_index + 1][1] if item_index + 1 < len(headers) else len(lines)
-        if meter_id in items:
-            raise ValueError("managed voltage reference gains are ambiguous")
-        items[meter_id] = lines[start + 1 : end]
-    return items
 
 
 def _validate_managed_voltage_item(
@@ -739,20 +737,28 @@ def _validate_managed_voltage_item(
     reference: VoltageReferenceConfig,
     representative: bool,
     report_gain_mismatch: bool,
+    *,
+    require_gain: bool = True,
+    stock_public: bool = False,
 ) -> None:
     expected_keys = {"phase_a", "phase_b", "phase_c"}
     if representative:
         expected_keys.add("frequency")
     entries = _managed_mappings(lines, 4)
-    if set(entries) != expected_keys or any(value for value, _ in entries.values()):
+    required = expected_keys if require_gain else ({"phase_a", "frequency"} if representative else set())
+    if not entries or not required <= set(entries) <= expected_keys or any(value for value, _ in entries.values()):
         raise ValueError("managed voltage reference item is invalid")
     for phase in "abc":
+        if f"phase_{phase}" not in entries:
+            continue
         _validate_managed_voltage_phase(
             entries[f"phase_{phase}"][1],
             reference,
             not representative or phase == "a",
             representative and phase == "a",
             report_gain_mismatch,
+            require_gain=require_gain,
+            stock_public=stock_public and phase == "a",
         )
     if representative:
         _validate_managed_fields(
@@ -764,6 +770,7 @@ def _validate_managed_voltage_item(
                 ),
                 "disabled_by_default": "false",
             },
+            optional=frozenset({"disabled_by_default"}) if not require_gain else frozenset(),
         )
 
 
@@ -773,22 +780,25 @@ def _validate_managed_voltage_phase(
     voltage_expected: bool,
     visible_voltage: bool,
     report_gain_mismatch: bool,
+    *,
+    require_gain: bool = True,
+    stock_public: bool = False,
 ) -> None:
-    expected_keys = {"gain_voltage"}
+    expected_keys = {"gain_voltage"} if require_gain else set()
     if voltage_expected:
         expected_keys.add("voltage")
     entries = _managed_mappings(lines, 6)
-    if (
-        set(entries) != expected_keys
-        or not _managed_body_is_empty(entries["gain_voltage"][1])
-    ):
+    if set(entries) != expected_keys:
         raise ValueError("managed voltage reference gain is invalid")
-    if entries["gain_voltage"][0] != str(reference.gain_voltage):
-        if report_gain_mismatch:
-            raise VoltageReferenceMismatchError(
-                "managed voltage references disagree with stored configuration"
-            )
-        raise ValueError("managed voltage reference gain is invalid")
+    if require_gain:
+        if not _managed_body_is_empty(entries["gain_voltage"][1]):
+            raise ValueError("managed voltage reference gain is invalid")
+        if entries["gain_voltage"][0] != str(reference.gain_voltage):
+            if report_gain_mismatch:
+                raise VoltageReferenceMismatchError(
+                    "managed voltage references disagree with stored configuration"
+                )
+            raise ValueError("managed voltage reference gain is invalid")
     if voltage_expected:
         expected_fields = (
             {
@@ -803,90 +813,27 @@ def _validate_managed_voltage_phase(
                 "disabled_by_default": "true",
             }
         )
-        _validate_managed_fields(entries["voltage"][1], 8, expected_fields)
+        if entries["voltage"][0]:
+            raise ValueError("managed voltage sensor is not a block mapping")
+        _validate_managed_fields(
+            entries["voltage"][1], 8, expected_fields,
+            optional=frozenset({"disabled_by_default"}) if stock_public and not require_gain else frozenset(),
+        )
 
 
 def _validate_managed_fields(
-    lines: list[str], indent: int, expected: dict[str, str]
+    lines: list[str], indent: int, expected: dict[str, str],
+    *, optional: frozenset[str] = frozenset(),
 ) -> None:
     entries = _managed_mappings(lines, indent)
     if (
-        set(entries) != set(expected)
+        not set(expected) - optional <= set(entries) <= set(expected)
         or any(
             entries[key][0] != value or not _managed_body_is_empty(entries[key][1])
-            for key, value in expected.items()
+            for key, value in expected.items() if key in entries
         )
     ):
         raise ValueError("managed voltage reference fields are invalid")
-
-
-def _managed_mappings(lines: list[str], indent: int) -> dict[str, tuple[str, list[str]]]:
-    entries: dict[str, tuple[str, list[str]]] = {}
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        code = _managed_code(line)
-        if not code.strip():
-            index += 1
-            continue
-        if _ambiguous_managed_yaml(code):
-            raise ValueError("managed voltage references are ambiguous")
-        if len(code) - len(code.lstrip(" ")) != indent:
-            raise ValueError("managed voltage reference structure is invalid")
-        match = re.fullmatch(
-            rf" {' ' * (indent - 1)}(?P<key>[a-z][a-z0-9_]*):(?P<value>.*)", code
-        )
-        if match is None or match["key"] in entries:
-            raise ValueError("managed voltage reference structure is invalid")
-        end = index + 1
-        while end < len(lines):
-            candidate = lines[end]
-            candidate_code = _managed_code(candidate)
-            if candidate_code.strip() and (
-                len(candidate_code) - len(candidate_code.lstrip(" "))
-            ) <= indent:
-                break
-            end += 1
-        entries[match["key"]] = (match["value"].strip(), lines[index + 1 : end])
-        index = end
-    return entries
-
-
-def _managed_body_is_empty(lines: list[str]) -> bool:
-    return not any(_managed_code(line).strip() for line in lines)
-
-
-def _managed_code(line: str) -> str:
-    quote: str | None = None
-    index = 0
-    while index < len(line):
-        character = line[index]
-        if quote is not None:
-            if quote == '"' and character == "\\":
-                index += 2
-                continue
-            if character == quote:
-                if quote == "'" and line[index + 1 : index + 2] == "'":
-                    index += 2
-                    continue
-                quote = None
-        elif character in {"'", '"'}:
-            quote = character
-        elif character == "#" and (index == 0 or line[index - 1].isspace()):
-            return line[:index].rstrip()
-        index += 1
-    return line.rstrip()
-
-
-def _ambiguous_managed_yaml(line: str) -> bool:
-    stripped = line.lstrip()
-    lexical = re.sub(r'"(?:[^"\\]|\\.)*"|\'(?:[^\']|\'\')*\'', '""', stripped)
-    if lexical.startswith("- id: !extend "):
-        return False
-    return (
-        re.search(r"(?:^|[\s\-\[\{,])(?:\?|<<:|[&*!][^\s]+)", lexical)
-        is not None
-    )
 
 
 def _managed_group_order(group: str) -> tuple[int, int]:

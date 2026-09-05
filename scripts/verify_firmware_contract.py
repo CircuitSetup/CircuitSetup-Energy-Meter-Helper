@@ -242,6 +242,94 @@ def _package_names(source: str, directory: str, suffix: str = "") -> list[str]:
     )
 
 
+def _verify_voltage_gain_substitutions(source: str, filename: str) -> None:
+    substitutions = re.search(
+        r"(?ms)^substitutions:\s*\n(.*?)(?=^[A-Za-z_][^\n]*:|\Z)", source
+    )
+    if substitutions is None:
+        raise SystemExit(f"{filename}: voltage gain substitutions are incomplete")
+    values = re.findall(
+        r"^  (voltage_cal[12]):\s*['\"]?([^'\"#\s]+)['\"]?\s*(?:#.*)?$",
+        substitutions.group(1),
+        re.MULTILINE,
+    )
+    if len(values) != 2 or {name for name, _ in values} != {
+        "voltage_cal1",
+        "voltage_cal2",
+    }:
+        raise SystemExit(f"{filename}: voltage gain substitutions are incomplete")
+    if any(not value.isdecimal() or not 1 <= int(value) <= 65535 for _, value in values):
+        raise SystemExit(f"{filename}: voltage gain substitutions must be integers 1..65535")
+
+
+def _verify_sensor_package(path: Path, *, main: bool) -> None:
+    source = path.read_text(encoding="utf-8")
+    instances = re.findall(
+        r"(?ms)^  - platform: atm90e32\s*\n(.*?)(?=^  - platform:|\Z)", source
+    )
+    if len(instances) != 2:
+        raise SystemExit(f"{path.name}: ATM90E32 instances are incomplete")
+    for instance_number, instance in enumerate(instances, start=1):
+        phases = re.findall(
+            r"(?ms)^    phase_([abc]):\s*\n(.*?)(?=^    phase_[abc]:|^    [^ \n]+:|\Z)",
+            instance,
+        )
+        if [phase for phase, _ in phases] != list("abc"):
+            raise SystemExit(f"{path.name}: ATM90E32 phases are incomplete")
+        for phase, body in phases:
+            if not re.search(
+                rf"^      gain_voltage: \$\{{voltage_cal{instance_number}\}}$",
+                body,
+                re.MULTILINE,
+            ):
+                raise SystemExit(f"{path.name}: voltage gain inheritance is incorrect")
+            voltage = re.search(
+                r"(?ms)^      voltage:\s*\n(.*?)(?=^      [^ \n]+:|\Z)", body
+            )
+            if voltage is None:
+                raise SystemExit(f"{path.name}: phase voltage sensor is missing")
+            public = main and instance_number == 1 and phase == "a"
+            id_prefix = "meter_main" if main else path.stem.removeprefix("6chan_") + "_"
+            expected_id = (
+                "ic1Volts"
+                if public
+                else f"{id_prefix}{instance_number}_voltage_{phase}_calibration"
+            )
+            required = (
+                ("name: Voltage 1", "accuracy_decimals: 1")
+                if public
+                else ("entity_category: diagnostic", "disabled_by_default: true")
+            )
+            if not all(
+                re.search(
+                    rf"^        {re.escape(value)}$", voltage.group(1), re.MULTILINE
+                )
+                for value in required
+            ) or not re.search(
+                rf"^        id: {re.escape(expected_id)}$",
+                voltage.group(1),
+                re.MULTILINE,
+            ) or not re.search(
+                r'''^        name:[ \t]*(?:"[^"\s][^"]*"|'[^'\s][^']*'|[^"'#\s].*)$''',
+                voltage.group(1),
+                re.MULTILINE,
+            ) or (
+                public
+                and any(
+                    re.search(
+                        rf"^        {re.escape(value)}", voltage.group(1), re.MULTILINE
+                    )
+                    for value in ("entity_category:", "disabled_by_default:")
+                )
+            ) or (
+                not public
+                and re.search(
+                    r"^        internal:\s*true$", voltage.group(1), re.MULTILINE
+                )
+            ):
+                raise SystemExit(f"{path.name}: voltage sensor defaults are incorrect")
+
+
 def _verify_calibration_package(path: Path, prefix: str) -> None:
     if not path.is_file():
         raise SystemExit(f"missing calibration package: {path.name}")
@@ -422,6 +510,7 @@ def verify(helper_root: Path, firmware_root: Path) -> None:
             or _indices(source, "current_cal_ct") != channels
         ):
             raise SystemExit(f"{filename}: CT substitutions are not contiguous")
+        _verify_voltage_gain_substitutions(source, filename)
         if not _has_component(source, "dashboard_import"):
             raise SystemExit(f"{filename}: firmware must define dashboard_import")
         if (
@@ -450,6 +539,20 @@ def verify(helper_root: Path, firmware_root: Path) -> None:
     }
     if calibration_files != expected_calibration_files:
         raise SystemExit("firmware calibration package set is incomplete")
+    sensor_files = {
+        path.name for path in (firmware_dir / "meter_sensors").glob("6chan_*.yaml")
+    }
+    expected_sensor_files = {"6chan_main_sensor.yaml"} | {
+        f"6chan_addon{index}.yaml" for index in range(1, 7)
+    }
+    if sensor_files != expected_sensor_files:
+        raise SystemExit("firmware sensor package set is incomplete")
+    for board in range(7):
+        name = "main_sensor" if board == 0 else f"addon{board}"
+        _verify_sensor_package(
+            firmware_dir / "meter_sensors" / f"6chan_{name}.yaml",
+            main=board == 0,
+        )
     for board in range(7):
         prefix = "main" if board == 0 else f"addon{board}"
         _verify_calibration_package(

@@ -4,6 +4,7 @@ import json
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import replace
 from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -51,7 +52,10 @@ from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
     MeterConfigurationInventory,
     VoltageReferenceMismatchError,
 )
-from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
+from custom_components.circuitsetup_energy_meter_helper.models import (
+    ConfigMutationPlan,
+    MeterTopology,
+)
 from custom_components.circuitsetup_energy_meter_helper.store import (
     StoredMeterConfiguration,
 )
@@ -86,6 +90,7 @@ def _snapshot(*, missing: str | None = None, quote: str = '"') -> ESPHomeConfigS
             substitutions.append(f"  current_cal_ct{channel}: {quote}11143{quote}")
     content = (
         "api:\n  encryption:\n    key: top-secret\nsubstitutions:\n"
+        f"  voltage_cal1: {quote}7304{quote}\n  voltage_cal2: {quote}7304{quote}\n"
         + "\n".join(substitutions)
         + "\nsensor:\n  - platform: uptime\n    name: Uptime\nlogger:\n  level: DEBUG\n"
     )
@@ -711,13 +716,15 @@ def test_generalized_mutation_renders_electrical_settings_and_references(
     block = plan.proposed_content.split(
         "# CircuitSetup Energy Meter Helper: voltage references v1\n", 1
     )[1].split("# End CircuitSetup Energy Meter Helper", 1)[0]
-    assert block.count("gain_voltage: 7305") == 6
+    assert "gain_voltage:" not in block
+    document = ESPHomeConfigDocument.parse(plan.proposed_content)
+    assert document.substitutions["voltage_cal1"].value == "7305"
+    assert document.substitutions["voltage_cal2"].value == "7305"
     assert block.count("\n    frequency:") == 1
-    assert block.count("disabled_by_default: false") == 2
+    assert "disabled_by_default:" not in block
     assert 'name: "${friendly_name} Main Voltage"' in block
     assert 'name: "${friendly_name} Main Frequency"' in block
-    assert block.count("entity_category: diagnostic") == 3
-    assert block.count("disabled_by_default: true") == 3
+    assert "entity_category:" not in block
     assert "board_revision" not in plan.proposed_content
 
     stored = StoredMeterConfiguration(sha256(plan.proposed_content.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
@@ -770,23 +777,23 @@ def test_generalized_mutation_uses_one_representative_per_reference() -> None:
     block = plan.proposed_content.split(
         "# CircuitSetup Energy Meter Helper: voltage references v1\n", 1
     )[1].split("# End CircuitSetup Energy Meter Helper", 1)[0]
-    for meter_id, gain in (
-        ("meter_main1", 7305),
-        ("meter_main2", 8002),
-        ("addon1_1", 8002),
-        ("addon1_2", 7305),
-    ):
-        group = block.split(f"id: !extend {meter_id}\n", 1)[1].split(
-            "\n  - id:", 1
-        )[0]
-        assert group.count(f"gain_voltage: {gain}") == 3
+    from custom_components.circuitsetup_energy_meter_helper.voltage_gains import (
+        effective_voltage_gains,
+    )
+
+    assert effective_voltage_gains(ESPHomeConfigDocument.parse(plan.proposed_content), topology) == {
+        "meter_main1": (7305, 7305, 7305),
+        "meter_main2": (8002, 8002, 8002),
+        "addon1_1": (8002, 8002, 8002),
+        "addon1_2": (7305, 7305, 7305),
+    }
     for meter_id in ("meter_main1", "meter_main2"):
         group = block.split(f"id: !extend {meter_id}\n", 1)[1].split(
             "\n  - id:", 1
         )[0]
         assert "voltage:\n        name:" in group
         assert "frequency:\n      name:" in group
-        assert group.count("disabled_by_default: false") == 2
+        assert group.count("disabled_by_default: false") == (meter_id == "meter_main2")
     assert 'name: "${friendly_name} Main Voltage"' in block
     assert 'name: "${friendly_name} Secondary Frequency"' in block
     expected = voltage_reference_topology_from_configuration(topology, requested)
@@ -890,6 +897,13 @@ def test_voltage_reference_preview_never_echoes_owned_block_content() -> None:
     assert "super-secret-token" not in plan.redacted_diff
 
 
+def _legacy_reference_plan(snapshot: ESPHomeConfigSnapshot) -> ConfigMutationPlan:
+    """An actual pre-inheritance block keeps legacy validation tests independent of the new writer."""
+    block = (Path(__file__).parent / "fixtures/device_builder/legacy_voltage_references.yaml").read_text()
+    content = snapshot.content.replace("sensor:\n", "sensor:\n" + block, 1)
+    return ConfigMutationPlan(snapshot.configuration, snapshot.sha256, (), "", content)
+
+
 def test_managed_voltage_reference_gains_fail_closed_but_ignore_outside_spoofs() -> None:
     """Only the exact owned sensor block can retain hash-bound voltage gains."""
     snapshot = _snapshot()
@@ -904,7 +918,7 @@ def test_managed_voltage_reference_gains_fail_closed_but_ignore_outside_spoofs()
             ),
         ),
     )
-    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    plan = _legacy_reference_plan(snapshot)
 
     malformed = plan.proposed_content.replace(
         "gain_voltage: 7305", "gain_voltage: 111", 1
@@ -976,7 +990,7 @@ def test_authoritative_inventory_emits_voltage_reference_mismatch_for_owned_yaml
             ),
         ),
     )
-    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    plan = _legacy_reference_plan(snapshot)
     mismatched = plan.proposed_content.replace(
         "main=[main_1,main_2]", "other=[main_1,main_2]", 1
     )
@@ -1010,7 +1024,7 @@ def test_authoritative_inventory_emits_voltage_reference_mismatch_for_external_g
             ),
         ),
     )
-    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    plan = _legacy_reference_plan(snapshot)
     changed = plan.proposed_content.replace("gain_voltage: 7305", "gain_voltage: 7306", 1)
     stored = StoredMeterConfiguration(sha256(plan.proposed_content.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
     requested.status_fields,)
@@ -1042,7 +1056,7 @@ def test_unrelated_external_drift_only_marks_stored_semantics_stale() -> None:
             ),
         ),
     )
-    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    plan = _legacy_reference_plan(snapshot)
     changed = plan.proposed_content.replace("logger:\n  level: DEBUG", "logger:\n  level: INFO")
     stored = StoredMeterConfiguration(sha256(plan.proposed_content.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
     requested.status_fields,)
@@ -1142,7 +1156,7 @@ def test_managed_voltage_reference_gains_reject_duplicate_or_nested_yaml(
             ),
         ),
     )
-    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    plan = _legacy_reference_plan(snapshot)
     assert callable(mutation)
     tampered = mutation(plan.proposed_content)
     stored = StoredMeterConfiguration(sha256(tampered.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
@@ -1169,7 +1183,7 @@ def test_inventory_requires_caller_digest_to_match_document_before_stored_state(
             ),
         ),
     )
-    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    plan = _legacy_reference_plan(snapshot)
     stored = StoredMeterConfiguration(sha256(plan.proposed_content.encode()).hexdigest(), requested.meter, requested.channels, requested.default_totals, requested.automatic_totals, requested.aggregates, requested.power_quality,
     requested.status_fields,)
     tampered = plan.proposed_content.replace("key: top-secret", "key: tampered")
@@ -1198,7 +1212,7 @@ def test_managed_voltage_reference_gains_allow_harmless_comments() -> None:
             ),
         ),
     )
-    plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
+    plan = _legacy_reference_plan(snapshot)
     compatible = plan.proposed_content.replace(
         "    phase_a:\n",
         "    phase_a: # CT1\n",
@@ -1335,7 +1349,10 @@ def test_repair_fallback_validates_complete_proposed_meter_configuration(
 ) -> None:
     """A CT repair cannot preserve invalid complete meter settings."""
     snapshot = _snapshot()
-    content = snapshot.content.replace(
+    source = snapshot.content
+    if setting.startswith("voltage_cal1:"):
+        source = source.replace('  voltage_cal1: "7304"\n', "")
+    content = source.replace(
         "substitutions:\n", f"substitutions:\n  {setting}\n"
     )
     snapshot = replace(
@@ -4036,3 +4053,147 @@ def test_gain_only_review_lines_are_redacted_and_keep_one_group_heading() -> Non
         "Voltage reference\n~ calibration gain updated"
     )
     assert "7306" not in voltage_plan.redacted_diff
+
+
+def _stock_voltage_snapshot() -> ESPHomeConfigSnapshot:
+    snapshot = _contract_snapshot()
+    content = snapshot.content.replace('"7304"', "'7305'")
+    return replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+
+
+def test_reference_label_edit_inherits_stock_gains_and_diagnostics() -> None:
+    """Renaming a reference must not materialize or override stock calibration."""
+    snapshot = _stock_voltage_snapshot()
+    current = _inventory(snapshot, _topology())
+    requested = replace(
+        current.configuration,
+        meter=replace(current.configuration.meter, voltage_references=(
+            replace(current.configuration.meter.voltage_references[0], label="Service"),
+        )),
+    )
+    plan = build_meter_configuration_mutation(snapshot, _topology(), current, requested)
+    assert "gain_voltage:" not in plan.proposed_content
+    assert "entity_category: diagnostic" not in plan.proposed_content
+    assert "disabled_by_default: true" not in plan.proposed_content
+    assert "voltage_cal1: '7305'" in plan.proposed_content
+    assert "voltage_cal2: '7305'" in plan.proposed_content
+    assert 'name: "${friendly_name} Service Voltage"' in plan.proposed_content
+    stored = StoredMeterConfiguration(
+        sha256(plan.proposed_content.encode()).hexdigest(), requested.meter,
+        requested.channels, requested.default_totals, requested.automatic_totals,
+        requested.aggregates, requested.power_quality,
+        requested.status_fields,
+    )
+    installed = replace(snapshot, content=plan.proposed_content, sha256=stored.config_sha256)
+    reloaded = _inventory(installed, _topology(), stored=stored)
+    assert reloaded.configuration.meter.voltage_references == requested.meter.voltage_references
+    assert "stored_semantics_stale" not in reloaded.warnings
+    repeated = build_meter_configuration_mutation(installed, _topology(), reloaded, requested)
+    assert repeated.proposed_content == plan.proposed_content
+
+
+def test_reference_gain_edit_updates_shared_substitutions_without_phase_literals() -> None:
+    """A common requested gain belongs in the existing substitutions once each."""
+    snapshot = _stock_voltage_snapshot()
+    current = _inventory(snapshot, _topology())
+    requested = replace(
+        current.configuration,
+        meter=replace(current.configuration.meter, voltage_references=(
+            replace(current.configuration.meter.voltage_references[0], gain_voltage=7312),
+        )),
+    )
+    plan = build_meter_configuration_mutation(snapshot, _topology(), current, requested)
+    assert "voltage_cal1: '7312'" in plan.proposed_content
+    assert "voltage_cal2: '7312'" in plan.proposed_content
+    assert "gain_voltage:" not in plan.proposed_content
+
+
+def test_reference_label_edit_preserves_sparse_calibration() -> None:
+    """A label-only write preserves the calibrated phase and its inherited siblings."""
+    snapshot = _stock_voltage_snapshot()
+    content = snapshot.content.replace(
+        "logger:\n",
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7312\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "logger:\n",
+    )
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    current = _inventory(snapshot, _topology())
+    requested = replace(
+        current.configuration,
+        meter=replace(current.configuration.meter, voltage_references=(
+            replace(current.configuration.meter.voltage_references[0], label="Service"),
+        )),
+    )
+    plan = build_meter_configuration_mutation(snapshot, _topology(), current, requested)
+    assert plan.proposed_content.count("gain_voltage:") == 1
+    assert "    phase_b:\n      gain_voltage: 7312\n" in plan.proposed_content
+    assert "voltage_cal1: '7305'" in plan.proposed_content
+
+
+def test_transformer_preset_selection_replaces_previous_phase_calibration() -> None:
+    """Selecting a different transformer resets its mapped starting gains."""
+    from custom_components.circuitsetup_energy_meter_helper.voltage_gains import (
+        apply_voltage_gain_changes,
+    )
+
+    snapshot = _stock_voltage_snapshot()
+    content = apply_voltage_gain_changes(snapshot.content, _topology(), {
+        "meter_main1": (7305, 7444, 7305),
+    })
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    current = _inventory(snapshot, _topology())
+    reference = current.configuration.meter.voltage_references[0]
+    assert reference.gain_voltage == 7305
+    assert reference.transformer_model_id == "custom"
+    requested = replace(current.configuration, meter=replace(
+        current.configuration.meter,
+        voltage_references=(replace(
+            reference, transformer_model_id="jameco_reliapro_9vac_120v",
+        ),),
+    ))
+    plan = build_meter_configuration_mutation(snapshot, _topology(), current, requested)
+    assert "gain_voltage:" not in plan.proposed_content
+    assert "voltage_cal1: '7305'" in plan.proposed_content
+    assert "voltage_cal2: '7305'" in plan.proposed_content
+
+
+def test_legacy_reference_calibration_reload_and_label_edit_preserve_phase_gains() -> None:
+    """Saving calibration must not invalidate the reference mapping or mask later gains."""
+    from custom_components.circuitsetup_energy_meter_helper.voltage_gains import (
+        apply_voltage_gain_changes,
+        effective_voltage_gains,
+    )
+
+    snapshot = _stock_voltage_snapshot()
+    current = _inventory(snapshot, _topology())
+    legacy = _legacy_reference_plan(snapshot)
+    content = apply_voltage_gain_changes(legacy.proposed_content, _topology(), {
+        "meter_main1": (7310, 7312, 7310),
+    })
+    stored = StoredMeterConfiguration(
+        sha256(content.encode()).hexdigest(), current.configuration.meter,
+        current.configuration.channels, current.configuration.default_totals,
+        current.configuration.automatic_totals, current.configuration.aggregates,
+        current.configuration.power_quality, current.configuration.status_fields,
+    )
+    installed = replace(snapshot, content=content, sha256=stored.config_sha256)
+    reloaded = _inventory(installed, _topology(), stored=stored)
+    assert "stored_semantics_stale" not in reloaded.warnings
+    requested = replace(reloaded.configuration, meter=replace(
+        reloaded.configuration.meter,
+        voltage_references=(replace(reloaded.configuration.meter.voltage_references[0], label="Service"),),
+    ))
+    renamed = build_meter_configuration_mutation(installed, _topology(), reloaded, requested)
+    assert effective_voltage_gains(ESPHomeConfigDocument.parse(renamed.proposed_content), _topology()) == {
+        "meter_main1": (7310, 7312, 7310), "meter_main2": (7305, 7305, 7305),
+    }
+    recalibrated = apply_voltage_gain_changes(renamed.proposed_content, _topology(), {
+        "meter_main1": (7320, 7320, 7320),
+    })
+    assert effective_voltage_gains(ESPHomeConfigDocument.parse(recalibrated), _topology()) == {
+        "meter_main1": (7320, 7320, 7320), "meter_main2": (7305, 7305, 7305),
+    }
