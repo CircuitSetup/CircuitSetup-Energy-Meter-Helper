@@ -142,7 +142,6 @@ export const panelStyles = css`
   .aggregate-channels { margin: 18px 0 14px; }
   .aggregate-sources { margin: 18px 0; min-width: 0; }
   .aggregate-source-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .source-explanation { display: block; color: var(--muted); }
   .advanced-totals > .aggregate-list, .advanced-totals > p { margin: 14px; }
   .aggregate-channels > legend { font-size: var(--ha-font-size-l, 16px); }
   .aggregate-channel-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }

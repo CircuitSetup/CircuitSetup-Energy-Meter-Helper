@@ -117,13 +117,13 @@ export function advancedTotalsEditor(
       const option = (source: TotalSource, text: string, accessibleLabel = text) => {
         const checked = aggregate.sources.some((item) => sameSource(item, source));
         const blocked = checked ? "" : sourceReason(aggregate, source);
-        return html`<label class=${`aggregate-channel-option${checked ? " selected" : ""}`}><input type="checkbox" aria-label=${`${aggregate.name}: ${accessibleLabel}`} .checked=${checked} ?disabled=${!writable || Boolean(blocked)}
+        return html`<label class=${`aggregate-channel-option${checked ? " selected" : ""}`} title=${blocked || nothing}><input type="checkbox" aria-label=${`${aggregate.name}: ${accessibleLabel}`} aria-description=${blocked || nothing} .checked=${checked} ?disabled=${!writable || Boolean(blocked)}
           @change=${(event: Event) => {
             const input = event.target as HTMLInputElement;
             if (!writable || input.checked && sourceReason(aggregate, source)) { input.checked = checked; return; }
             if (!input.checked && source.kind !== "channel" && !window.confirm(`Remove ${label(source)} from ${aggregate.name}?${source.kind === "aggregate" ? " It becomes an independent report." : ""}`)) { input.checked = checked; return; }
             patch(aggregate, { sources: input.checked ? [...aggregate.sources, source] : aggregate.sources.filter((item) => !sameSource(item, source)) });
-          }} /><span>${text}${blocked ? html`<small class="source-explanation">${blocked}</small>` : nothing}</span></label>`;
+          }} /><span>${text}</span></label>`;
       };
       const output = (key: keyof TotalOutputSettings, text: string) => html`<label class="check-row"><input type="checkbox" aria-label=${`${aggregate.name} ${text}`} .checked=${aggregate.outputs[key]} ?disabled=${!writable || key === "kwh" && aggregate.energy_mode === "none"}
         @change=${(event: Event) => {

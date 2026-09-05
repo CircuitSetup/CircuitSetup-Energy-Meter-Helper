@@ -243,6 +243,19 @@ it("shows eligible total sections after switching an empty CT total to Direct", 
   expect(input("Home: Solar report")).not.toBeNull();
 });
 
+it("shows rule explanations only as hints on blocked choices", () => {
+  mount([{ ...total("home", "Home", [ct(1), ct(2)]), measurement_method: "two_ct_sum" }]);
+  expect(card("Home")?.textContent).not.toContain("This measurement method accepts");
+  expect(input("Home: CT3")?.disabled).toBe(true);
+  expect(input("Home: CT3")?.closest("label")?.title).toBe("This measurement method accepts 2 CTs.");
+  expect(input("Home: CT3")?.getAttribute("aria-description")).toBe("This measurement method accepts 2 CTs.");
+  expect(input("Home: CT1")?.closest("label")?.hasAttribute("title")).toBe(false);
+  input("Home: CT2")!.click();
+  expect(input("Home: CT3")?.disabled).toBe(false);
+  expect(input("Home: CT3")?.closest("label")?.hasAttribute("title")).toBe(false);
+  expect(input("Home: CT3")?.hasAttribute("aria-description")).toBe(false);
+});
+
 it("collapses unused CT boards and opens only boards with selected CT sources", () => {
   const state = mount([total("home", "Home", [ct(1)])]);
   const base = state.response.configuration.channels[0]!;
