@@ -26,6 +26,7 @@ from custom_components.circuitsetup_energy_meter_helper.meter_configuration impo
     ChannelTotalSource,
     CircuitRole,
     ElectricalSystem,
+    EnergyMode,
     MeasurementMethod,
     NativeTotalSource,
     TotalOutputSettings,
@@ -174,13 +175,14 @@ def test_unchanged_custom_totals_preview_preserves_all_original_sensors() -> Non
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("edit", ("outputs", "members", "remove", "disable_member", "parent", "roles", "roles_and_name"))
-def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str) -> None:
+@pytest.mark.parametrize("energy_ids", (False, True))
+@pytest.mark.parametrize("edit", ("outputs", "members", "remove", "disable_member", "parent", "roles", "roles_and_name", "bidirectional", "method", "channel_roles", "channel_roles_remove"))
+def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str, energy_ids: bool) -> None:
     """Exercise the real transaction and Store; only Builder/device IO are fake."""
     from tests.test_config_transaction import _evidence
 
     async def run() -> None:
-        source = _existing_custom_totals()
+        source = _existing_custom_totals(energy_ids=energy_ids)
         topology = _inventory(source).topology
         workflow, plan, store, builder, verifier = await _persisted_totals_workflow(source, topology=topology)
         original = plan.inventory.configuration
@@ -200,6 +202,15 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
                 role=CircuitRole.GRID if item == house else CircuitRole.TWO_POLE,
                 name="Renamed charger" if edit == "roles_and_name" and item == charger else item.name,
             ) for item in aggregates)
+        elif edit == "bidirectional":
+            aggregates = (replace(house, energy_mode=EnergyMode.BIDIRECTIONAL), charger, ac1, ac2)
+        elif edit == "method":
+            aggregates = (replace(house, sources=(ChannelTotalSource("channel", 1),),
+                measurement_method=MeasurementMethod.ONE_CT_DOUBLE_POWER), charger, ac1, ac2)
+        elif edit in {"channel_roles", "channel_roles_remove"}:
+            channels = tuple(replace(item, role=CircuitRole.GRID) if item.channel in (1, 2) else item for item in channels)
+            if edit == "channel_roles_remove":
+                aggregates = (charger, ac1, ac2)
         else:
             aggregates = (*aggregates, replace(charger, aggregate_id="parent", name="Parent",
                 measurement_method=MeasurementMethod.DIRECT,
@@ -207,9 +218,26 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
         requested = replace(original, channels=channels, aggregates=aggregates,
             meter=replace(original.meter, electrical_system=ElectricalSystem.SPLIT_PHASE_120_240),
             totals_change_intent=TotalsChangeIntent(adopt_managed_totals=True))
+        if edit == "channel_roles_remove":
+            graph = await workflow.async_preview_total_graph(plan.device_id, plan.plan_id, plan.inventory.source_sha256, requested)
+            assert graph["automatic_candidates"] == ()
+            assert not any(node.aggregate.aggregate_id == "auto-mains" for node in graph["graph"]["ordered_nodes"])
         preview = await workflow._async_preview_meter_configuration(plan, requested)
         manager = workflow.transactions
         transaction = manager._transaction(preview.transaction_id)
+        proposed = transaction.plan.proposed_content
+        from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
+            _root_sensor_items,
+        )
+        definitions = [item for item in _root_sensor_items(ESPHomeConfigDocument.parse(proposed)) if "platform" in item]
+        assert [item["id"] for item in definitions if item["platform"] == "template"] == [
+            "totalWatts", "totalAmps", "totalChargerWatts", "totalAC1Watts", "totalAC2Watts",
+            *(["csemh_parent_power"] if edit == "parent" else []),
+            *(["csemh_meter_total_export_power", "csemh_meter_total_import_power"] if edit == "bidirectional" else []),
+        ]
+        assert len([item for item in definitions if item["platform"] == "total_daily_energy"]) == (
+            5 if edit in {"parent", "bidirectional"} else 4
+        )
         if edit in {"roles", "roles_and_name"}:
             proposed = transaction.plan.proposed_content
             assert "csemh_meter_total_power" not in proposed
@@ -221,7 +249,7 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
                 assert "csemh_total_charger_power" not in proposed
                 assert ("house_total_kwh", "House Total kWh") in transaction.expected_sensor_entities
             else:
-                assert "csemh_total_charger_power" in proposed
+                assert "csemh_total_charger_power" not in proposed
         verifier.evidence = replace(_evidence(), topology=topology, current_sensor_count=topology.ct_count,
             ct_names={item.channel: item.name for item in requested.channels},
             sensor_entities=transaction.expected_sensor_entities)
@@ -255,6 +283,40 @@ def test_custom_native_subset_cannot_be_used_as_whole_meter_source() -> None:
         aggregate_id="whole", name="Whole", sources=(NativeTotalSource("native_total", "overall"),))))
     with pytest.raises(ValueError, match="custom formula"):
         _select_render_totals(requested, inventory.topology, ESPHomeConfigDocument.parse(_existing_custom_totals()), previous)
+
+
+def test_existing_energy_id_cannot_be_reused_by_a_new_total() -> None:
+    source = _existing_custom_totals(energy_ids=True).replace("existing_house_energy", "csemh_parent_power")
+    inventory = _inventory(source)
+    previous = inventory.configuration
+    parent = replace(previous.aggregates[0], aggregate_id="parent", name="Parent",
+        sources=(AggregateTotalSource("aggregate", "meter-total"),), measurement_method=MeasurementMethod.DIRECT)
+    requested = replace(previous, aggregates=(*previous.aggregates, parent),
+        meter=replace(previous.meter, electrical_system=ElectricalSystem.SPLIT_PHASE_120_240))
+    with pytest.raises(ValueError, match="sensor ID"):
+        expected_meter_entity_evidence(requested, inventory.topology,
+            document=ESPHomeConfigDocument.parse(source), previous=previous)
+
+
+def test_existing_total_edits_preserve_friendly_name_substitutions() -> None:
+    source = _existing_custom_totals().replace("name: House Total", "name: ${friendly_name} House Total")
+
+    async def run() -> None:
+        workflow, plan, *_ = await _persisted_totals_workflow(source, topology=_inventory(source).topology)
+        original = plan.inventory.configuration
+        requested = replace(original, meter=replace(original.meter, electrical_system=ElectricalSystem.SPLIT_PHASE_120_240),
+            aggregates=(replace(original.aggregates[0], name="Updated House"), *original.aggregates[1:]),
+            totals_change_intent=TotalsChangeIntent(adopt_managed_totals=True))
+        result = await workflow._async_preview_meter_configuration(plan, requested)
+        proposed = workflow.transactions._transaction(result.transaction_id).plan.proposed_content
+        assert 'name: "${friendly_name} Updated House Watts"' in proposed
+        workflow, plan, *_ = await _persisted_totals_workflow(proposed, topology=plan.topology)
+        changed = replace(plan.inventory.configuration, meter=replace(requested.meter, friendly_name="New meter"))
+        result = await workflow._async_preview_meter_configuration(plan, changed)
+        saved = workflow.transactions._transaction(result.transaction_id).plan.proposed_content
+        assert "aggregate_semantics_unreadable" not in _inventory(saved).warnings
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("target", (None, "meter-total", "total-charger", "total-ac1", "total-ac2"))

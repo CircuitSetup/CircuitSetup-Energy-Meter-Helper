@@ -425,20 +425,20 @@ class MeterConfigurationInventory:
         )
 
 
-def _total_sensor_name(value: str, friendly_name: str) -> str:
+def _total_sensor_name(value: str, friendly_name: str, *, preserve_substitution: bool = False) -> str:
     """Resolve only supported literal names and the pinned friendly-name substitution."""
     if value.startswith('"'):
         value = json.loads(value)
     elif value.startswith("'") and value.endswith("'"):
         value = value[1:-1].replace("''", "'")
-    value = value.replace("${friendly_name}", friendly_name)
+    resolved = value.replace("${friendly_name}", friendly_name)
     if (
-        not value
-        or value.lower() in {"none", "null", "true", "false"}
-        or any(token in value for token in ("${", "!", "\n", "\r"))
+        not resolved
+        or resolved.lower() in {"none", "null", "true", "false"}
+        or any(token in resolved for token in ("${", "!", "\n", "\r"))
     ):
         raise ValueError("total sensor name cannot be resolved safely")
-    return value
+    return value if preserve_substitution else resolved
 
 
 def _source_native_visibility(
@@ -1070,6 +1070,27 @@ def _detected_aggregates(
     )
 
 
+def _source_aware_automatic_candidates(
+    configuration: MeterConfigurationRequest, document: ESPHomeConfigDocument,
+) -> tuple[AutomaticTotalCandidate, ...]:
+    """Retained source totals still occupy a calculation after removal from the UI."""
+    legacy, _ = _legacy_aggregates(document, configuration.channels,
+        _default_total_groups(document, configuration.channels), frozenset())
+    ids = {item.aggregate_id for item in configuration.aggregates}
+    return automatic_total_candidates(replace(configuration,
+        aggregates=(*configuration.aggregates, *(item for item in legacy if item.aggregate_id not in ids))))
+
+
+def suppress_duplicate_automatic_totals(
+    configuration: MeterConfigurationRequest, document: ESPHomeConfigDocument,
+) -> MeterConfigurationRequest:
+    """Carry implicit duplicate suppression through planning and metadata round trips."""
+    candidates = {candidate.candidate_id for candidate in _source_aware_automatic_candidates(configuration, document)}
+    suppressed = tuple(AutomaticTotalSettings(candidate.candidate_id, False, candidate.recommended_outputs)
+        for candidate in automatic_total_candidates(configuration) if candidate.candidate_id not in candidates)
+    return replace(configuration, automatic_totals=(*configuration.automatic_totals, *suppressed))
+
+
 def _automatic_totals_metadata(
     document: ESPHomeConfigDocument, configuration: MeterConfigurationRequest, *, authoritative: bool,
 ) -> tuple[MeterConfigurationRequest, frozenset[str]]:
@@ -1102,10 +1123,13 @@ def _automatic_totals_metadata(
     if data["roles"] != {str(source.channel): candidate.role.value for candidate in candidates for source in candidate.sources}:
         raise ValueError("automatic metadata contains unrelated roles")
     if authoritative:
-        resolved = resolve_automatic_totals(candidates, configuration.automatic_totals)
+        current_ids = {candidate.candidate_id for candidate in _source_aware_automatic_candidates(configuration, document)}
+        suppressed = tuple(AutomaticTotalSettings(candidate.candidate_id, False, candidate.recommended_outputs)
+            for candidate in candidates if candidate.candidate_id not in current_ids)
+        resolved = resolve_automatic_totals(candidates, (*configuration.automatic_totals, *suppressed))
         if {setting.candidate_id: (setting.enabled, setting.outputs) for setting in settings} != {total.candidate.candidate_id: (total.enabled, total.outputs) for total in resolved}:
             raise ValueError("automatic metadata disagrees with stored settings")
-        requested = configuration
+        requested = replace(configuration, automatic_totals=(*configuration.automatic_totals, *suppressed))
     return requested, frozenset(candidate.aggregate_id for candidate in candidates)
 
 
@@ -1155,6 +1179,7 @@ def _validate_graph_block(
     from .meter_config_mutator import (
         _render_aggregates,
         _render_native_totals,
+        _render_total_updates,
         _select_render_totals,
     )
 
@@ -1170,7 +1195,11 @@ def _validate_graph_block(
     if {item.aggregate_id: item for item in metadata} != {node.aggregate.aggregate_id: node.aggregate for node in plan.ordered_nodes}:
         raise ValueError("automatic metadata does not match generated definitions")
     native = _render_native_totals(requested, topology, document) if _native_totals_metadata(document) is not None else ""
-    expected = native + replacements + _render_aggregates(plan, requested.aggregates, requested if has_automatic else None)
+    expected = native + (
+        _render_total_updates(requested, topology, document, replacements)
+        if "# csemh-existing-totals: v1" in document.managed_blocks["aggregates"].content
+        else replacements + _render_aggregates(plan, requested.aggregates, requested if has_automatic else None)
+    )
     block = document.managed_blocks["aggregates"]
     actual = block.content
     if document.sensor_item_indent == 0:

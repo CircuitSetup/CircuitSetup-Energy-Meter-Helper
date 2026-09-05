@@ -119,13 +119,26 @@ def automatic_total_candidates(
         if len(channels) != 2 or aggregate_id in occupied_ids:
             continue
         first, second = sorted(channels)
+        sources = (ChannelTotalSource("channel", first), ChannelTotalSource("channel", second))
+        candidate_id = f"{role.value.replace('_', '-')}-ct{first}-ct{second}"
+        if (
+            not any(setting.candidate_id == candidate_id for setting in configuration.automatic_totals)
+            and any(
+                aggregate.measurement_method in (
+                    MeasurementMethod.TWO_CT_SUM, MeasurementMethod.DIRECT
+                )
+                and frozenset(aggregate.sources) == frozenset(sources)
+                for aggregate in configuration.aggregates
+            )
+        ):
+            continue
         candidates.append(
             AutomaticTotalCandidate(
-                f"{role.value.replace('_', '-')}-ct{first}-ct{second}",
+                candidate_id,
                 aggregate_id,
                 name,
                 role,
-                (ChannelTotalSource("channel", first), ChannelTotalSource("channel", second)),
+                sources,
                 MeasurementMethod.TWO_CT_SUM,
                 energy_mode,
                 _AUTOMATIC_OUTPUTS,

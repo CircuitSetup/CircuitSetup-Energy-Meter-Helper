@@ -13,6 +13,7 @@ from custom_components.circuitsetup_energy_meter_helper.meter_configuration impo
     EnergyMode,
     MeasurementMethod,
     NativeTotalSource,
+    TotalOrigin,
     TotalOutputSettings,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
@@ -355,6 +356,46 @@ def test_disabled_channels_and_existing_advanced_auto_id_exclude_candidate() -> 
     assert automatic_total_candidates(
         replace(baseline, channels=enabled, aggregates=(advanced,))
     ) == ()
+
+
+@pytest.mark.parametrize(
+    ("origin", "method", "automatic_totals", "expected_ids"),
+    (
+        (TotalOrigin.MIGRATED, MeasurementMethod.TWO_CT_SUM, (), ()),
+        (TotalOrigin.ADVANCED, MeasurementMethod.TWO_CT_SUM, (), ()),
+        (TotalOrigin.ADVANCED, MeasurementMethod.DIRECT, (), ()),
+        (
+            TotalOrigin.MIGRATED, MeasurementMethod.TWO_CT_SUM,
+            (AutomaticTotalSettings("grid-ct1-ct2", True, TotalOutputSettings(True, False, True)),),
+            ("grid-ct1-ct2",),
+        ),
+    ),
+)
+def test_automatic_candidate_skips_only_unconfigured_equivalent(
+    origin: TotalOrigin,
+    method: MeasurementMethod,
+    automatic_totals: tuple[AutomaticTotalSettings, ...],
+    expected_ids: tuple[str, ...],
+) -> None:
+    baseline = request()
+    channels = tuple(
+        replace(channel, role=CircuitRole.GRID)
+        if channel.channel in (1, 2)
+        else channel
+        for channel in baseline.channels
+    )
+    existing = CircuitAggregate(
+        "existing-mains", "Existing mains", CircuitRole.CUSTOM,
+        (ChannelTotalSource("channel", 1), ChannelTotalSource("channel", 2)),
+        method, EnergyMode.BIDIRECTIONAL,
+        TotalOutputSettings(True, False, True), origin,
+    )
+
+    candidates = automatic_total_candidates(replace(
+        baseline, channels=channels, aggregates=(existing,), automatic_totals=automatic_totals,
+    ))
+
+    assert tuple(candidate.candidate_id for candidate in candidates) == expected_ids
 
 
 def test_resolver_keeps_explicit_off_and_ignores_stale_settings() -> None:

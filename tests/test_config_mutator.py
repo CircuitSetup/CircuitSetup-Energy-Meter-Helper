@@ -2470,13 +2470,14 @@ def test_unchanged_custom_total_is_not_copied_during_other_total_edit() -> None:
     replacement = build_meter_configuration_mutation(snapshot, topology, current, selected)
     evidence = expected_meter_entity_evidence(selected, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
     assert "Charger Power" not in {name for _, name in evidence.sensor_entities}
-    assert "Energy meter Updated Charger Power" in {name for _, name in evidence.sensor_entities}
+    assert "Updated Charger Power" in {name for _, name in evidence.sensor_entities}
     impact = estimate_configuration_impact(selected, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration, native_visibility_resolved=current.native_visibility_resolved)
     assert (impact.public_total_entity_count, impact.numeric_entity_count) == (5, 19)
-    assert "!extend totalChargerWatts\n    internal: true" in replacement.proposed_content
+    assert '!extend totalChargerWatts\n    name: "Updated Charger Power"\n    internal: false' in replacement.proposed_content
+    assert "id: csemh_total_charger_power" not in replacement.proposed_content
 
 
-def test_parent_selection_replaces_custom_child_and_survives_source_reload() -> None:
+def test_parent_selection_reuses_custom_child_and_survives_source_reload() -> None:
     from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
         AggregateTotalSource,
     )
@@ -2491,8 +2492,9 @@ def test_parent_selection_replaces_custom_child_and_survives_source_reload() -> 
     requested = replace(current.configuration, aggregates=(*current.configuration.aggregates, parent))
     source = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
     assert custom in source
-    assert "!extend totalChargerWatts\n    internal: true" in source
-    assert "lambda: return id(csemh_total_charger_power).state;" in source
+    assert '!extend totalChargerWatts\n    name: "Charger Power"\n    internal: false' in source
+    assert "lambda: return id(totalChargerWatts).state;" in source
+    assert "id: csemh_total_charger_power" not in source
     installed = replace(snapshot, content=source, sha256=sha256(source.encode()).hexdigest())
     recovered = _inventory(installed, topology)
     assert recovered.configuration.aggregates == requested.aggregates
