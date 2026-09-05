@@ -66,6 +66,7 @@ from .total_graph import (
     planned_sensor_ids,
     resolve_automatic_totals,
 )
+from .voltage_gains import apply_voltage_gain_changes
 
 
 class SourceOwnedTotalEditError(ValueError):
@@ -439,11 +440,39 @@ def build_meter_configuration_mutation(
         ]
         content = _apply_changes(document, changes, substitutions)
         if voltage_references_changed:
+            previous_references = {
+                group: reference
+                for reference in previous.meter.voltage_references
+                for group in reference.group_keys
+            }
+            gains = {}
+            for reference in requested.meter.voltage_references:
+                for group in reference.group_keys:
+                    old_reference = previous_references[group]
+                    if (
+                        old_reference.reference_id != reference.reference_id
+                        or old_reference.gain_voltage != reference.gain_voltage
+                        or old_reference.transformer_model_id != reference.transformer_model_id
+                    ):
+                        board, number = group.rsplit("_", 1)
+                        instance = f"meter_main{number}" if board == "main" else f"{board}_{number}"
+                        gains[instance] = (reference.gain_voltage,) * 3
+            try:
+                content = apply_voltage_gain_changes(content, topology, gains)
+            except ValueError as error:
+                raise ConfigMutationError(str(error)) from error
+            after_gains = ESPHomeConfigDocument.parse(content)
+            changes.extend(
+                SubstitutionChange(key, old.value if old else None, scalar.value)
+                for key in ("voltage_cal1", "voltage_cal2")
+                if (scalar := after_gains.substitutions.get(key)) is not None
+                and ((old := document.substitutions.get(key)) is None or old.value != scalar.value)
+            )
             content = replace_managed_block(
                 content,
                 "voltage_references",
                 _render_voltage_references(
-                    requested.meter.voltage_references, topology, document
+                    requested.meter.voltage_references, topology, after_gains
                 ),
             )
     if totals_changed:
@@ -619,7 +648,7 @@ def _grouped_review_diff(
         rendered[group].extend(lines_)
     for line in rendered_diff.splitlines():
         value = line[2:] if line.startswith(("+ ", "- ", "~ ")) else line
-        if "current_cal" in value or "gain_voltage" in value:
+        if "current_cal" in value or "gain_voltage" in value or "voltage_cal" in value:
             continue
         if value.startswith(("friendly_name:", "update_time:", "electric_freq:")):
             group = "Meter"
@@ -923,6 +952,8 @@ def _render_voltage_references(
             reference.group_keys, key=ordered_groups.__getitem__
         )
         for group in reference.group_keys:
+            if group != representative:
+                continue
             board, group_number = group.rsplit("_", 1)
             meter_key = (
                 f"main_meter_id{group_number}"
@@ -935,33 +966,18 @@ def _render_voltage_references(
                 else _canonical_meter_id(meter_key)
             )
             body = [f"  - id: !extend {meter_id}"]
-            for phase in "abc":
-                body.extend(
-                    (f"    phase_{phase}:", f"      gain_voltage: {reference.gain_voltage}")
-                )
-                if group != representative or phase == "a":
-                    body.extend(
-                        ("      voltage:",)
-                        + (
-                            (
-                                f"        name: {json.dumps(f'${{friendly_name}} {reference.label} Voltage')}",
-                                "        disabled_by_default: false",
-                            )
-                            if group == representative
-                            else (
-                                "        entity_category: diagnostic",
-                                "        disabled_by_default: true",
-                            )
-                        )
-                    )
-            if group == representative:
-                body.extend(
-                    (
-                        "    frequency:",
-                        f"      name: {json.dumps(f'${{friendly_name}} {reference.label} Frequency')}",
-                        "      disabled_by_default: false",
-                    )
-                )
+            body.extend((
+                "    phase_a:",
+                "      voltage:",
+                f"        name: {json.dumps(f'${{friendly_name}} {reference.label} Voltage')}",
+            ))
+            # Stock main phase A is already enabled; other representatives are diagnostics.
+            if group != "main_1":
+                body.append("        disabled_by_default: false")
+            body.extend((
+                "    frequency:",
+                f"      name: {json.dumps(f'${{friendly_name}} {reference.label} Frequency')}",
+            ))
             entries[f"{ordered_groups[group] + 1:02d}"] = "\n".join(body) + "\n"
     return render_voltage_references(entries)
 

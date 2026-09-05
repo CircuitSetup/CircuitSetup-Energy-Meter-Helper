@@ -1690,6 +1690,27 @@ def test_partial_voltage_gain_handoff_preserves_existing_uncalibrated_overrides(
     assert merged.rstrip() in plan.redacted_diff
 
 
+def test_current_gain_handoff_preserves_observed_sparse_voltage_calibration() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_b:\n"
+        "      gain_voltage: 7402\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"
+    )
+    snapshot = _snapshot(_snapshot().content + "sensor:\n" + block)
+    record = _record(snapshot, ((7305, 28001), (7402, 28002), (7305, 28003)))
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert block in plan.proposed_content
+    assert plan.proposed_content.count("gain_voltage:") == 1
+    assert "voltage_cal1: '7305'" in plan.proposed_content
+    assert "current_cal_ct1: '28001'" in plan.proposed_content
+    assert "current_cal_ct2: '28002'" in plan.proposed_content
+    assert "current_cal_ct3: '28003'" in plan.proposed_content
+
+
 def test_partial_uniform_voltage_gain_removes_only_its_stale_override() -> None:
     block = (
         "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1\n"

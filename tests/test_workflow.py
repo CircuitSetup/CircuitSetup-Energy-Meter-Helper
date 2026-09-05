@@ -609,7 +609,7 @@ def test_calibration_replay_preserves_pending_links_stale_off_and_hidden_native(
         content = (
             _contract_snapshot()
             .content.replace(
-                "substitutions:\n", "substitutions:\n  voltage_cal1: 7305\n"
+                'voltage_cal1: "7304"', "voltage_cal1: 7305"
             )
             .replace(
                 "logger:\n",
@@ -626,7 +626,7 @@ def test_calibration_replay_preserves_pending_links_stale_off_and_hidden_native(
         )
         workflow, plan, store, builder, _verifier = await _persisted_totals_workflow(
             content if visibility_confirmed else _contract_snapshot().content.replace(
-                "substitutions:\n", "substitutions:\n  voltage_cal1: 7305\n"
+                'voltage_cal1: "7304"', "voltage_cal1: 7305"
             )
         )
         source = plan.inventory.configuration

@@ -457,42 +457,6 @@ def build_calibrated_gain_mutation(
                 document.substitutions,
             )
 
-    voltage_values = {
-        index: {
-            gain for _, _, group, gains in addressed if group == index for gain in gains
-        }
-        for index in (1, 2)
-    }
-    required_instances = {
-        index: {
-            f"meter_main{index}" if board == 0 else f"addon{board}_{index}"
-            for board in range(topology.board_count)
-        }
-        for index in (1, 2)
-    }
-    covered_instances = {
-        index: {instance for instance, _, group, _ in addressed if group == index}
-        for index in (1, 2)
-    }
-    overridden = {
-        index
-        for index, values_for_group in voltage_values.items()
-        if values_for_group
-        and (
-            len(values_for_group) > 1
-            or covered_instances[index] != required_instances[index]
-        )
-    }
-    for index, values_for_group in voltage_values.items():
-        if values_for_group and index not in overridden:
-            _append_change(
-                changes,
-                values,
-                f"voltage_cal{index}",
-                str(next(iter(values_for_group))),
-                document.substitutions,
-            )
-
     proposed_content = _apply_changes(document, changes, values)
     if package_options is not None:
         proposed_content, package_changes = _apply_package_options(
@@ -505,15 +469,23 @@ def build_calibrated_gain_mutation(
         requests,
         document.substitutions,
     )
-    proposed_content = _apply_calibrated_voltage_gains(
-        proposed_content,
-        {
-            instance_id: gains
-            for instance_id, _, group, gains in addressed
-            if group in overridden
-        },
-        frozenset(instance_id for instance_id, _, _, _ in addressed),
-    )
+    try:
+        from .voltage_gains import apply_voltage_gain_changes
+
+        proposed_content = apply_voltage_gain_changes(
+            proposed_content,
+            topology,
+            {instance_id: gains for instance_id, _, _, gains in addressed},
+        )
+    except ValueError as error:
+        raise ConfigMutationError("voltage gains are not safely writable") from error
+    proposed_document = ESPHomeConfigDocument.parse(proposed_content)
+    for index in (1, 2):
+        key = f"voltage_cal{index}"
+        old = document.substitutions.get(key)
+        new = proposed_document.substitutions.get(key)
+        if new is not None and (old is None or old.value != new.value):
+            changes.append(SubstitutionChange(key, old.value if old else None, new.value))
     proposed_content = _apply_calibrated_offsets(
         proposed_content,
         topology,
@@ -848,71 +820,6 @@ def _apply_reporting_multipliers(
         channels,
         package_options["status_fields"],
         substitutions,
-    )
-
-
-def _apply_calibrated_voltage_gains(
-    content: str,
-    gains_by_instance: Mapping[str, tuple[int, int, int]],
-    calibrated_instance_ids: frozenset[str],
-) -> str:
-    from .config_blocks import render_phase_overrides, replace_managed_block
-
-    if not calibrated_instance_ids:
-        return content
-    if not set(gains_by_instance).issubset(calibrated_instance_ids):
-        raise ConfigMutationError("verified voltage gains are invalid")
-    document = ESPHomeConfigDocument.parse(content)
-    entries: dict[str, str] = {}
-    block = document.managed_blocks.get("calibrated_voltage_gains")
-    if block is None and not gains_by_instance:
-        return content
-    if block is not None:
-        lines = block.content.splitlines()[1:-1]
-        indent = document.sensor_item_indent
-        if indent is None or len(lines) % 7:
-            raise ConfigMutationError("managed voltage gains are invalid")
-        header = re.compile(rf"^ {{{indent}}}- id: !extend (?P<id>[\w${{}}-]+)$")
-        for index in range(0, len(lines), 7):
-            item = lines[index : index + 7]
-            match = header.fullmatch(item[0])
-            if match is None or item[1::2] != [
-                f"{' ' * (indent + 2)}phase_a:",
-                f"{' ' * (indent + 2)}phase_b:",
-                f"{' ' * (indent + 2)}phase_c:",
-            ]:
-                raise ConfigMutationError("managed voltage gains are invalid")
-            gain_lines = item[2::2]
-            if any(
-                re.fullmatch(rf" {{{indent + 4}}}gain_voltage: [1-9]\d*", gain)
-                is None
-                or not 1 <= int(gain.rsplit(" ", 1)[1]) <= 65535
-                for gain in gain_lines
-            ) or match["id"] in entries:
-                raise ConfigMutationError("managed voltage gains are invalid")
-            entries[match["id"]] = "\n".join(
-                f"  {line}" if indent == 0 else line for line in item
-            ) + "\n"
-    for instance_id in calibrated_instance_ids:
-        entries.pop(instance_id, None)
-    for instance_id, gains in sorted(gains_by_instance.items()):
-        if len(gains) != 3:
-            raise ConfigMutationError("verified voltage gains are invalid")
-        body = [f"  - id: !extend {instance_id}"]
-        for phase, gain in zip("abc", gains, strict=True):
-            body.extend((f"    phase_{phase}:", f"      gain_voltage: {gain}"))
-        entries[instance_id] = "\n".join(body) + "\n"
-    if (
-        entries
-        and document.writable_sensor_span is None
-        and not any(_ROOT_SENSOR_RE.match(line) for line in content.splitlines())
-    ):
-        newline = "\r\n" if "\r\n" in content else "\n"
-        content += (
-            ("" if content.endswith(("\n", "\r")) else newline) + "sensor:" + newline
-        )
-    return replace_managed_block(
-        content, "calibrated_voltage_gains", render_phase_overrides(entries)
     )
 
 

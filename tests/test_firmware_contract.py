@@ -78,7 +78,7 @@ def _calibration_package(prefix: str, first_channel: int) -> str:
     return "button:\n" + "".join(groups[::2]) + "number:\n" + "".join(groups[1::2])
 
 
-def _sensor_package(board: int) -> str:
+def _sensor_totals(board: int) -> str:
     first = board * 6 + 1
     suffix = "Main" if board == 0 else f"AddOn{board}"
     amps = " + ".join(f"id(ct{channel}Amps).state" for channel in range(first, first + 6))
@@ -119,6 +119,31 @@ def _root_totals(addon_count: int) -> str:
     )
 
 
+def _sensor_package(prefix: str, *, main: bool = False) -> str:
+    instances = []
+    for instance in (1, 2):
+        phases = []
+        for phase in "abc":
+            public = main and instance == 1 and phase == "a"
+            voltage = (
+                "        name: Voltage 1\n"
+                "        id: ic1Volts\n"
+                "        accuracy_decimals: 1\n"
+            ) if public else (
+                f'        name: "{prefix}{instance} Voltage {phase.upper()} Calibration"\n'
+                "        entity_category: diagnostic\n"
+                "        disabled_by_default: true\n"
+            )
+            phases.append(
+                f"    phase_{phase}:\n"
+                "      voltage:\n"
+                f"{voltage}"
+                f"      gain_voltage: ${{voltage_cal{instance}}}\n"
+            )
+        instances.append("  - platform: atm90e32\n" + "".join(phases))
+    return "sensor:\n" + "".join(instances)
+
+
 def _contract_fixture(tmp_path: Path, *, api_ready: bool = True) -> tuple[Path, Path]:
     helper_root = tmp_path / "helper"
     firmware_root = tmp_path / "firmware"
@@ -152,7 +177,7 @@ def _contract_fixture(tmp_path: Path, *, api_ready: bool = True) -> tuple[Path, 
             )
             sensor = "main_sensor" if board == 0 else prefix
             (sensors / f"6chan_{sensor}.yaml").write_text(
-                _sensor_package(board), encoding="utf-8"
+                _sensor_package(prefix, main=board == 0) + _sensor_totals(board).removeprefix("sensor:\n"), encoding="utf-8"
             )
 
     variants = ["main_board", "main_ethernet", "main_ethernet_waveshare"]
@@ -190,7 +215,7 @@ def _contract_fixture(tmp_path: Path, *, api_ready: bool = True) -> tuple[Path, 
             match = re.search(r"(\d+)-addons?", variant)
             addon_count = int(match.group(1)) if match else 0
             channel_count = 6 * (addon_count + 1)
-            source += "substitutions:\n" + "".join(
+            source += "substitutions:\n  voltage_cal1: '7305'\n  voltage_cal2: '7305'\n" + "".join(
                 f"  ct{channel}_name: CT{channel}\n  current_cal_ct{channel}: '27518'\n"
                 for channel in range(1, channel_count + 1)
             )
@@ -258,6 +283,99 @@ def test_accepts_the_complete_api_ready_firmware_contract(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "Verified 22 API-ready firmware configurations."
+
+
+def test_rejects_wrong_second_instance_phase_gain(tmp_path: Path) -> None:
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    package = firmware_root / "Software/ESPHome/meter_sensors/6chan_addon1.yaml"
+    package.write_text(
+        package.read_text(encoding="utf-8").replace(
+            "    phase_b:\n"
+            "      voltage:\n"
+            '        name: "addon12 Voltage B Calibration"\n'
+            "        entity_category: diagnostic\n"
+            "        disabled_by_default: true\n"
+            "      gain_voltage: ${voltage_cal2}",
+            "    phase_b:\n"
+            "      voltage:\n"
+            '        name: "addon12 Voltage B Calibration"\n'
+            "        entity_category: diagnostic\n"
+            "        disabled_by_default: true\n"
+            "      gain_voltage: ${voltage_cal1}",
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode != 0
+    assert "voltage gain inheritance" in result.stderr
+
+
+def test_rejects_missing_phase_voltage_sensor_default(tmp_path: Path) -> None:
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    package = firmware_root / "Software/ESPHome/meter_sensors/6chan_addon1.yaml"
+    package.write_text(
+        package.read_text(encoding="utf-8").replace(
+            "        disabled_by_default: true\n", "", 1
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode != 0
+    assert "voltage sensor defaults" in result.stderr
+
+
+def test_rejects_commented_phase_voltage_sensor_default(tmp_path: Path) -> None:
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    package = firmware_root / "Software/ESPHome/meter_sensors/6chan_addon1.yaml"
+    package.write_text(
+        package.read_text(encoding="utf-8").replace(
+            "        disabled_by_default: true\n",
+            "#        disabled_by_default: true\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode != 0
+    assert "voltage sensor defaults" in result.stderr
+
+
+def test_rejects_internal_phase_voltage_sensor(tmp_path: Path) -> None:
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    package = firmware_root / "Software/ESPHome/meter_sensors/6chan_addon1.yaml"
+    package.write_text(
+        package.read_text(encoding="utf-8").replace(
+            "        disabled_by_default: true\n",
+            "        disabled_by_default: true\n        internal: true\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode != 0
+    assert "voltage sensor defaults" in result.stderr
+
+
+def test_rejects_invalid_voltage_gain_substitution(tmp_path: Path) -> None:
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    config = firmware_root / "Software/ESPHome/6chan_energy_meter_main_board.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace("voltage_cal2: '7305'", "voltage_cal2: '0'"),
+        encoding="utf-8",
+    )
+
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode != 0
+    assert "voltage gain substitutions" in result.stderr
 
 
 def test_rejects_project_metadata_without_runtime_calibration_contract(
