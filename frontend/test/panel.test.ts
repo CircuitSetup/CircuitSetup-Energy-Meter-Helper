@@ -544,7 +544,7 @@ afterEach(() => {
 });
 
 describe("server-authoritative total graph", () => {
-  it.each(["role", "enabled", "collision", "device", "plan", "hash", "connection"] as const)(
+  it.each(["role", "name", "enabled", "collision", "device", "plan", "hash", "connection"] as const)(
     "withholds previously issued repair candidates after %s changes", async (change) => {
       const response = meterResponse();
       const candidate: import("../src/types").AutomaticTotalCandidate = { candidate_id: "issued-pair", aggregate_id: "issued-child",
@@ -570,6 +570,8 @@ describe("server-authoritative total graph", () => {
       const configuration = state.meterConfiguration.configuration;
       if (change === "role" || change === "enabled") state.updateCircuitConfiguration({ ...configuration,
         channels: configuration.channels.map((item, index) => index === 0 ? { ...item, ...(change === "role" ? { role: "branch" as const } : { enabled: false }) } : item) });
+      if (change === "name") state.updateCircuitConfiguration({ ...configuration,
+        channels: configuration.channels.map((item, index) => index === 0 ? { ...item, name: "Different circuit L1" } : item) });
       if (change === "collision") state.updateCircuitConfiguration({ ...configuration, aggregates: [parent, { ...parent, aggregate_id: candidate.aggregate_id }] });
       if (change === "device") state.selectedDeviceId = "meter-2";
       if (change === "plan") state.meterConfiguration = { ...state.meterConfiguration, plan_id: "different-plan" };

@@ -230,6 +230,13 @@ V14_EDITED_AUTO_FIXTURE = {
         },
     ],
 }
+V14_CONSUMPTION_AUTO_FIXTURE = {
+    **V14_AUTO_FIXTURE,
+    "aggregates": [{
+        **V14_AUTO_FIXTURE["aggregates"][0],
+        "energy_mode": "consumption",
+    }],
+}
 V14_ADDON_FIXTURE = {
     **V14_NORMAL_FIXTURE,
     "meter": {
@@ -326,7 +333,7 @@ V14_STALE_FIXTURE = {**V14_PARENT_FIXTURE, "config_sha256": "f" * 64}
     (
         (V14_EMPTY_FIXTURE, (), False),
         (V14_NORMAL_FIXTURE, ("oven",), False),
-        (V14_AUTO_FIXTURE, (), True),
+        (V14_AUTO_FIXTURE, ("auto-mains",), False),
         (V14_EDITED_AUTO_FIXTURE, ("auto-mains",), False),
         (V14_PARENT_FIXTURE, ("child", "parent"), False),
         (V14_ADDON_FIXTURE, ("oven",), False),
@@ -379,14 +386,14 @@ def test_v14_literal_migration_matrix_roundtrips(fixture, ids, enabled) -> None:
         {"channels": [1]},
         {"role": "branch"},
         {"measurement_method": "direct"},
-        {"energy_mode": "consumption"},
+        {"energy_mode": "bidirectional"},
         {"expose_current": True},
         {"expose_power": False},
         {"parent_id": "other"},
     ),
 )
 def test_v14_automatic_matching_requires_exact_definition(edit) -> None:
-    fixture = deepcopy(V14_AUTO_FIXTURE)
+    fixture = deepcopy(V14_CONSUMPTION_AUTO_FIXTURE)
     fixture["aggregates"][0].update(edit)
     if edit == {"channels": [1]}:
         fixture["aggregates"][0]["measurement_method"] = "direct"
@@ -560,9 +567,9 @@ def test_v14_parent_metadata_does_not_change_runtime_formula() -> None:
 
 def test_v14_parent_proposal_can_target_a_recognized_automatic_total() -> None:
     fixture = {
-        **V14_AUTO_FIXTURE,
+        **V14_CONSUMPTION_AUTO_FIXTURE,
         "aggregates": [
-            *V14_AUTO_FIXTURE["aggregates"],
+            *V14_CONSUMPTION_AUTO_FIXTURE["aggregates"],
             {"aggregate_id": "child", "name": "Child", "role": "branch", "channels": [3], "measurement_method": "direct", "parent_id": "auto-mains", "energy_mode": "none", "expose_power": True, "expose_current": False},
         ],
     }

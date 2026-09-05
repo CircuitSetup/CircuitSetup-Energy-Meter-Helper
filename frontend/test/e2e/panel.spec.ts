@@ -555,6 +555,27 @@ for (const name of ["main-only", "one-addon"] as const) test(`totals defaults an
   expect((await fixture.state()).proposed_content).toContain("internal: true");
 });
 
+test("CT names suggest a two-pole total only after both legs are identified", async ({ page }) => {
+  const fixture = await totalsFixture(page, "main-only");
+  await openInventory(page, fixture.url);
+  await page.getByLabel("CT3 name", { exact: true }).fill("Dryer L1");
+  await expect(page.getByRole("switch", { name: "Create Dryer total", exact: true })).toHaveCount(0);
+  await page.getByLabel("CT4 name", { exact: true }).fill("Dryer L2");
+  const suggestion = page.getByRole("switch", { name: "Create Dryer total", exact: true });
+  await expect(suggestion).toBeVisible();
+  await expect(suggestion).not.toBeChecked();
+  await suggestion.check();
+  await page.getByLabel("CT3 role", { exact: true }).selectOption("two_pole");
+  await page.getByLabel("CT4 role", { exact: true }).selectOption("two_pole");
+  await expect(suggestion).toBeChecked();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
+  const content = (await fixture.state()).proposed_content;
+  expect(content).toContain("id: csemh_auto_two_pole_ct3_ct4_power");
+  expect(content).not.toContain("_import_power");
+  expect(content).not.toContain("_export_power");
+});
+
 test("verified Summary shows public outputs, hidden dependencies, formulas, coverage and pending migration", async ({ page }) => {
   const fixture = await totalsFixture(page, "summary");
   const errors: string[] = [];
@@ -577,10 +598,10 @@ test("verified Summary shows public outputs, hidden dependencies, formulas, cove
   await expect(child).toContainText("Internal outputs: Watts, Amps");
   await expect(child).toContainText("Feeds into: Parent report");
   await expect(child).toContainText("Helper-managed");
-  await expect(page.getByRole("article", { name: "Mains", exact: true })).toContainText("Net Watts, Import Watts, Return-to-grid Watts, Import kWh, Return-to-grid kWh");
+  await expect(page.getByRole("article", { name: "Mains", exact: true })).toContainText("Public outputs: Watts, kWh");
   await expect(page.getByRole("article", { name: "Watts only report", exact: true })).toContainText("Public outputs: Watts");
   await expect(page.getByRole("article", { name: "Watts only report", exact: true })).not.toContainText("kWh");
-  await expect(page.locator(".step-content")).toContainText("4 public energy entities");
+  await expect(page.locator(".step-content")).toContainText("3 public energy entities");
   await expect(page.locator(".step-content")).toContainText("Watts only report → Parent report: pending review");
   expect((await fixture.state()).stored.configuration.totals_migration.legacy_parent_links).toEqual([{ child_id: "watts-only", proposed_parent_id: "parent" }]);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -1330,8 +1351,9 @@ test("automatic role pairs remain distinct without preset aggregate controls", a
   await page.getByLabel("CT6 role").selectOption("grid");
   for (const [name, formula] of [["Mains", "CT5 + CT6"], ["Subpanel", "CT3 + CT4"], ["Two-pole circuit", "CT1 + CT2"]]) {
     await expect(page.getByRole("group", { name: name!, exact: true })).toContainText(formula!);
-    await expect(page.getByRole("switch", { name: `Create ${name} total`, exact: true })).toBeChecked();
+    await expect(page.getByRole("switch", { name: `Create ${name} total`, exact: true })).toBeChecked({ checked: name !== "Two-pole circuit" });
   }
+  await page.getByRole("switch", { name: "Create Two-pole circuit total", exact: true }).check();
   await page.getByRole("button", { name: "Continue" }).click();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
   expect(preview.configuration).toEqual(expect.objectContaining({
@@ -1353,7 +1375,7 @@ test("automatic role pairs remain distinct without preset aggregate controls", a
   expect(graph.automatic_candidates.map((candidate) => [candidate.aggregate_id, candidate.sources])).toEqual([
     ["auto-mains", [{ kind: "channel", channel: 5 }, { kind: "channel", channel: 6 }]],
     ["auto-subpanel", [{ kind: "channel", channel: 3 }, { kind: "channel", channel: 4 }]],
-    ["auto-two-pole", [{ kind: "channel", channel: 1 }, { kind: "channel", channel: 2 }]],
+    ["auto-two-pole-ct1-ct2", [{ kind: "channel", channel: 1 }, { kind: "channel", channel: 2 }]],
   ]);
 });
 

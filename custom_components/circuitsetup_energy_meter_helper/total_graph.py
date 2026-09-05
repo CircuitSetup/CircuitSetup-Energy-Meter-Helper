@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -94,14 +95,41 @@ _AUTOMATIC_ROLE_DEFINITIONS = (
     (CircuitRole.GRID, "auto-mains", "Mains", EnergyMode.BIDIRECTIONAL),
     (CircuitRole.SOLAR, "auto-solar", "Solar", EnergyMode.GENERATION),
     (CircuitRole.SUBPANEL, "auto-subpanel", "Subpanel", EnergyMode.CONSUMPTION),
-    (
-        CircuitRole.TWO_POLE,
-        "auto-two-pole",
-        "Two-pole circuit",
-        EnergyMode.CONSUMPTION,
-    ),
 )
 _AUTOMATIC_OUTPUTS = TotalOutputSettings(True, False, True)
+_NAMED_TWO_POLE_LEG = re.compile(
+    r"(?<![a-z0-9])(?:l|leg|line)\s*([12])(?![a-z0-9])|"
+    r"(?<![a-z0-9])phase\s*([12ab])(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def _named_two_pole_pair(name: str) -> tuple[str, str, str] | None:
+    matches = tuple(_NAMED_TWO_POLE_LEG.finditer(name))
+    if len(matches) != 1:
+        return None
+    token = next(value for value in matches[0].groups() if value is not None).casefold()
+    leg = {"1": "a", "a": "a", "2": "b", "b": "b"}[token]
+    label = _NAMED_TWO_POLE_LEG.sub(" ", name).strip(" -_/")
+    base = "-".join(re.findall(r"[a-z0-9]+", label.casefold()))
+    return (base, label, leg) if base else None
+
+
+def _duplicates_automatic_total(
+    configuration: MeterConfigurationRequest,
+    candidate_id: str,
+    sources: tuple[ChannelTotalSource, ChannelTotalSource],
+) -> bool:
+    return (
+        not any(setting.candidate_id == candidate_id for setting in configuration.automatic_totals)
+        and any(
+            aggregate.measurement_method in (
+                MeasurementMethod.TWO_CT_SUM, MeasurementMethod.DIRECT
+            )
+            and frozenset(aggregate.sources) == frozenset(sources)
+            for aggregate in configuration.aggregates
+        )
+    )
 
 
 def automatic_total_candidates(
@@ -109,6 +137,7 @@ def automatic_total_candidates(
 ) -> tuple[AutomaticTotalCandidate, ...]:
     """Return only role groups with exactly two enabled CTs, in a stable order."""
     occupied_ids = {aggregate.aggregate_id for aggregate in configuration.aggregates}
+    has_solar = any(channel.enabled and channel.role is CircuitRole.SOLAR for channel in configuration.channels)
     candidates: list[AutomaticTotalCandidate] = []
     for role, aggregate_id, name, energy_mode in _AUTOMATIC_ROLE_DEFINITIONS:
         channels = tuple(
@@ -119,18 +148,79 @@ def automatic_total_candidates(
         if len(channels) != 2 or aggregate_id in occupied_ids:
             continue
         first, second = sorted(channels)
+        sources = (ChannelTotalSource("channel", first), ChannelTotalSource("channel", second))
+        candidate_id = f"{role.value.replace('_', '-')}-ct{first}-ct{second}"
+        if _duplicates_automatic_total(configuration, candidate_id, sources):
+            continue
         candidates.append(
             AutomaticTotalCandidate(
-                f"{role.value.replace('_', '-')}-ct{first}-ct{second}",
+                candidate_id,
                 aggregate_id,
                 name,
                 role,
-                (ChannelTotalSource("channel", first), ChannelTotalSource("channel", second)),
+                sources,
                 MeasurementMethod.TWO_CT_SUM,
-                energy_mode,
+                EnergyMode.CONSUMPTION if energy_mode is EnergyMode.BIDIRECTIONAL and not has_solar else energy_mode,
                 _AUTOMATIC_OUTPUTS,
             )
         )
+    two_pole = tuple(
+        channel for channel in configuration.channels
+        if channel.enabled and channel.role is CircuitRole.TWO_POLE
+    )
+    named_pairs: dict[str, list[tuple[int, str, str]]] = {}
+    for channel in configuration.channels:
+        if not channel.enabled or channel.role not in {
+            CircuitRole.BRANCH, CircuitRole.CUSTOM, CircuitRole.TWO_POLE,
+        }:
+            continue
+        if pair := _named_two_pole_pair(channel.name):
+            base, label, leg = pair
+            named_pairs.setdefault(base, []).append((channel.channel, leg, label))
+    for base, members in sorted(named_pairs.items()):
+        if len(members) != 2 or {member[1] for member in members} != {"a", "b"}:
+            continue
+        first, second = sorted(member[0] for member in members)
+        if len(two_pole) == 2 and {first, second} == {
+            channel.channel for channel in two_pole
+        }:
+            continue
+        sources = (ChannelTotalSource("channel", first), ChannelTotalSource("channel", second))
+        candidate_id = f"two-pole-ct{first}-ct{second}"
+        aggregate_id = f"auto-two-pole-ct{first}-ct{second}"
+        if aggregate_id in occupied_ids or _duplicates_automatic_total(
+            configuration, candidate_id, sources
+        ):
+            continue
+        candidates.append(AutomaticTotalCandidate(
+            candidate_id, aggregate_id, members[0][2], CircuitRole.TWO_POLE, sources,
+            MeasurementMethod.TWO_CT_SUM, EnergyMode.CONSUMPTION, _AUTOMATIC_OUTPUTS,
+        ))
+    if len(two_pole) == 2:
+        named = tuple(_named_two_pole_pair(channel.name) for channel in two_pole)
+        conflicting = (
+            named[0] is not None
+            and named[1] is not None
+            and (named[0][0] != named[1][0] or named[0][2] == named[1][2])
+        )
+        if not conflicting:
+            first, second = sorted(channel.channel for channel in two_pole)
+            sources = (ChannelTotalSource("channel", first), ChannelTotalSource("channel", second))
+            candidate_id = f"two-pole-ct{first}-ct{second}"
+            aggregate_id = f"auto-two-pole-ct{first}-ct{second}"
+            name = (
+                named[0][1]
+                if named[0] is not None
+                and named[1] is not None
+                and named[0][0] == named[1][0]
+                else "Two-pole circuit"
+            )
+            if aggregate_id not in occupied_ids and not any(candidate.candidate_id == candidate_id for candidate in candidates) and not _duplicates_automatic_total(configuration, candidate_id, sources):
+                candidates.append(AutomaticTotalCandidate(
+                    candidate_id, aggregate_id, name, CircuitRole.TWO_POLE,
+                    sources, MeasurementMethod.TWO_CT_SUM, EnergyMode.CONSUMPTION,
+                    _AUTOMATIC_OUTPUTS,
+                ))
     return tuple(candidates)
 
 
@@ -147,7 +237,11 @@ def resolve_automatic_totals(
             settings_by_id[candidate.candidate_id].outputs,
         )
         if candidate.candidate_id in settings_by_id
-        else ResolvedAutomaticTotal(candidate, True, candidate.recommended_outputs)
+        else ResolvedAutomaticTotal(
+            candidate,
+            not candidate.aggregate_id.startswith("auto-two-pole-ct"),
+            candidate.recommended_outputs,
+        )
         for candidate in candidates
     )
 

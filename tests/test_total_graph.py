@@ -13,6 +13,7 @@ from custom_components.circuitsetup_energy_meter_helper.meter_configuration impo
     EnergyMode,
     MeasurementMethod,
     NativeTotalSource,
+    TotalOrigin,
     TotalOutputSettings,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
@@ -285,12 +286,15 @@ def test_catalog_matches_pinned_firmware_inspector_for_every_topology(tmp_path) 
         )
 
 
-def test_exact_grid_pair_produces_stable_candidate() -> None:
+@pytest.mark.parametrize("solar_enabled", (None, False, True))
+def test_exact_grid_pair_produces_stable_candidate(solar_enabled: bool | None) -> None:
     configuration = replace(
         request(),
         channels=tuple(
             replace(channel, role=CircuitRole.GRID)
             if channel.channel in (1, 2)
+            else replace(channel, role=CircuitRole.SOLAR, enabled=solar_enabled)
+            if channel.channel == 3 and solar_enabled is not None
             else channel
             for channel in request().channels
         ),
@@ -307,7 +311,7 @@ def test_exact_grid_pair_produces_stable_candidate() -> None:
                 ChannelTotalSource("channel", 2),
             ),
             measurement_method=MeasurementMethod.TWO_CT_SUM,
-            energy_mode=EnergyMode.BIDIRECTIONAL,
+            energy_mode=EnergyMode.BIDIRECTIONAL if solar_enabled else EnergyMode.CONSUMPTION,
             recommended_outputs=TotalOutputSettings(True, False, True),
         ),
     )
@@ -355,6 +359,46 @@ def test_disabled_channels_and_existing_advanced_auto_id_exclude_candidate() -> 
     assert automatic_total_candidates(
         replace(baseline, channels=enabled, aggregates=(advanced,))
     ) == ()
+
+
+@pytest.mark.parametrize(
+    ("origin", "method", "automatic_totals", "expected_ids"),
+    (
+        (TotalOrigin.MIGRATED, MeasurementMethod.TWO_CT_SUM, (), ()),
+        (TotalOrigin.ADVANCED, MeasurementMethod.TWO_CT_SUM, (), ()),
+        (TotalOrigin.ADVANCED, MeasurementMethod.DIRECT, (), ()),
+        (
+            TotalOrigin.MIGRATED, MeasurementMethod.TWO_CT_SUM,
+            (AutomaticTotalSettings("grid-ct1-ct2", True, TotalOutputSettings(True, False, True)),),
+            ("grid-ct1-ct2",),
+        ),
+    ),
+)
+def test_automatic_candidate_skips_only_unconfigured_equivalent(
+    origin: TotalOrigin,
+    method: MeasurementMethod,
+    automatic_totals: tuple[AutomaticTotalSettings, ...],
+    expected_ids: tuple[str, ...],
+) -> None:
+    baseline = request()
+    channels = tuple(
+        replace(channel, role=CircuitRole.GRID)
+        if channel.channel in (1, 2)
+        else channel
+        for channel in baseline.channels
+    )
+    existing = CircuitAggregate(
+        "existing-mains", "Existing mains", CircuitRole.CUSTOM,
+        (ChannelTotalSource("channel", 1), ChannelTotalSource("channel", 2)),
+        method, EnergyMode.BIDIRECTIONAL,
+        TotalOutputSettings(True, False, True), origin,
+    )
+
+    candidates = automatic_total_candidates(replace(
+        baseline, channels=channels, aggregates=(existing,), automatic_totals=automatic_totals,
+    ))
+
+    assert tuple(candidate.candidate_id for candidate in candidates) == expected_ids
 
 
 def test_resolver_keeps_explicit_off_and_ignores_stale_settings() -> None:
@@ -416,3 +460,153 @@ def test_candidate_id_uses_role_and_channels_not_ct_display_names() -> None:
             ),
         )
     ) == ()
+
+
+def test_named_phase_pairs_produce_disabled_two_pole_candidates() -> None:
+    baseline = request()
+    configuration = replace(
+        baseline,
+        channels=tuple(
+            replace(channel, name=name)
+            if (name := {
+                1: "Dryer L1", 2: "Dryer L2",
+                3: "Water Heater Phase A", 4: "Water Heater Phase B",
+            }.get(channel.channel))
+            else channel
+            for channel in baseline.channels
+        ),
+    )
+
+    candidates = automatic_total_candidates(configuration)
+
+    assert [(item.candidate_id, item.aggregate_id, item.name, item.role, item.sources)
+            for item in candidates] == [
+        ("two-pole-ct1-ct2", "auto-two-pole-ct1-ct2", "Dryer", CircuitRole.TWO_POLE,
+         (ChannelTotalSource("channel", 1), ChannelTotalSource("channel", 2))),
+        ("two-pole-ct3-ct4", "auto-two-pole-ct3-ct4", "Water Heater", CircuitRole.TWO_POLE,
+         (ChannelTotalSource("channel", 3), ChannelTotalSource("channel", 4))),
+    ]
+    assert all(
+        not total.enabled
+        for total in resolve_automatic_totals(candidates, configuration.automatic_totals)
+    )
+
+
+def test_named_two_pole_labels_prevent_unrelated_generic_pairing() -> None:
+    baseline = request()
+    configuration = replace(
+        baseline,
+        channels=tuple(
+            replace(channel, role=CircuitRole.TWO_POLE, name=name)
+            if (name := {1: "Dryer L1", 2: "Water Heater L2"}.get(channel.channel))
+            else channel
+            for channel in baseline.channels
+        ),
+    )
+
+    assert automatic_total_candidates(configuration) == ()
+
+
+def test_named_phase_pair_accepts_label_separators() -> None:
+    baseline = request()
+    configuration = replace(
+        baseline,
+        channels=tuple(
+            replace(channel, name=name)
+            if (name := {1: "Dryer_L1", 2: "Dryer-L2"}.get(channel.channel))
+            else channel
+            for channel in baseline.channels
+        ),
+    )
+
+    assert [item.candidate_id for item in automatic_total_candidates(configuration)] == [
+        "two-pole-ct1-ct2",
+    ]
+
+
+def test_ambiguous_named_pair_is_not_suggested() -> None:
+    baseline = request()
+    configuration = replace(
+        baseline,
+        channels=tuple(
+            replace(channel, name=name)
+            if (name := {1: "Dryer L1", 2: "Dryer L2", 3: "Dryer L1"}.get(channel.channel))
+            else channel
+            for channel in baseline.channels
+        ),
+    )
+
+    assert automatic_total_candidates(configuration) == ()
+
+
+def test_two_pole_pair_with_duplicate_named_leg_is_not_suggested() -> None:
+    baseline = request()
+    configuration = replace(
+        baseline,
+        channels=tuple(
+            replace(channel, role=CircuitRole.TWO_POLE, name="Dryer L1")
+            if channel.channel in (1, 2)
+            else channel
+            for channel in baseline.channels
+        ),
+    )
+
+    assert automatic_total_candidates(configuration) == ()
+
+
+def test_exact_named_two_pole_pair_keeps_source_based_disabled_candidate() -> None:
+    baseline = request()
+    configuration = replace(
+        baseline,
+        channels=tuple(
+            replace(channel, role=CircuitRole.TWO_POLE, name=name)
+            if (name := {1: "Dryer L1", 2: "Dryer L2"}.get(channel.channel))
+            else channel
+            for channel in baseline.channels
+        ),
+    )
+
+    candidates = automatic_total_candidates(configuration)
+
+    assert [(item.candidate_id, item.aggregate_id) for item in candidates] == [
+        ("two-pole-ct1-ct2", "auto-two-pole-ct1-ct2"),
+    ]
+    assert candidates[0].name == "Dryer"
+    assert not resolve_automatic_totals(candidates, configuration.automatic_totals)[0].enabled
+
+
+def test_bare_phase_letters_do_not_create_named_pair() -> None:
+    baseline = request()
+    configuration = replace(
+        baseline,
+        channels=tuple(
+            replace(channel, name=name)
+            if (name := {1: "Dryer A", 2: "Dryer B"}.get(channel.channel))
+            else channel
+            for channel in baseline.channels
+        ),
+    )
+
+    assert automatic_total_candidates(configuration) == ()
+
+
+def test_named_pair_aggregate_id_survives_two_pole_role_selection() -> None:
+    baseline = request()
+    channels = tuple(
+        replace(channel, name=name)
+        if (name := {1: "Dryer L1", 2: "Dryer L2"}.get(channel.channel))
+        else channel
+        for channel in baseline.channels
+    )
+    named = automatic_total_candidates(replace(baseline, channels=channels))
+    selected = automatic_total_candidates(replace(
+        baseline,
+        channels=tuple(
+            replace(channel, role=CircuitRole.TWO_POLE)
+            if channel.channel in (1, 2)
+            else channel
+            for channel in channels
+        ),
+    ))
+
+    assert named[0].aggregate_id == selected[0].aggregate_id == "auto-two-pole-ct1-ct2"

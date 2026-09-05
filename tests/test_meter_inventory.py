@@ -575,15 +575,11 @@ def test_v14_populated_candidates_stale_settings_and_pending_links_survive_load(
     )
     stored = replace(stored, automatic_totals=(*stored.automatic_totals, stale))
     inventory = _inventory(content, stored=stored)
-    assert [candidate.candidate_id for candidate in inventory.automatic_candidates] == [
-        "grid-ct1-ct2"
-    ]
-    assert inventory.automatic_totals[0].enabled is True
-    assert inventory.automatic_totals[0].outputs == TotalOutputSettings(
-        True, False, True
-    )
-    assert inventory.stale_automatic_total_settings == (stale,)
-    assert inventory.configuration.automatic_totals == stored.automatic_totals[:1]
+    assert inventory.automatic_candidates == inventory.automatic_totals == ()
+    assert inventory.configuration.aggregates == stored.aggregates
+    assert inventory.configuration.aggregates[0].energy_mode is EnergyMode.BIDIRECTIONAL
+    assert inventory.stale_automatic_total_settings == stored.automatic_totals
+    assert inventory.configuration.automatic_totals == ()
     assert "stored_semantics_stale" not in inventory.warnings
 
 
@@ -789,7 +785,7 @@ def test_literal_legacy_yaml_metadata_preserves_parent_proposals() -> None:
     assert "aggregate_semantics_unreadable" not in inventory.warnings
 
 
-def test_v14_automatic_owned_yaml_is_not_reimported_as_advanced() -> None:
+def test_v14_bidirectional_owned_yaml_is_retained_without_new_solar_suggestions() -> None:
     block = _helper_mains_total().replace("csemh_mains1", "csemh_auto_mains").replace("std::max(0.0f, id(ct1Watts).state + id(ct2Watts).state)", "id(ct1Watts).state + id(ct2Watts).state")
     directions = "".join(
         f"  - platform: template\n    id: csemh_auto_mains_{direction}_power\n    lambda: return std::max(0.0f, {sign}id(csemh_auto_mains_power).state);\n"
@@ -800,10 +796,10 @@ def test_v14_automatic_owned_yaml_is_not_reimported_as_advanced() -> None:
     content = _document(contract=True) + block
     stored = _migrated_for_source(content, V14_AUTO_FIXTURE)
     inventory = _inventory(content, stored=stored)
-    assert inventory.automatic_totals[0].enabled is True
-    assert "auto-mains" not in {item.aggregate_id for item in inventory.configuration.aggregates}
+    assert inventory.automatic_totals == ()
+    assert [item.aggregate_id for item in inventory.configuration.aggregates] == ["auto-mains"]
+    assert inventory.configuration.aggregates[0].energy_mode is EnergyMode.BIDIRECTIONAL
     assert "aggregate_semantics_unreadable" not in inventory.warnings
-    assert inventory.configuration.aggregates == ()
 
 
 def test_native_total_inference_without_enabled_channels_fails_closed() -> None:

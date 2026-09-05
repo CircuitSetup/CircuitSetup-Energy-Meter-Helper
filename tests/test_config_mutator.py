@@ -64,6 +64,7 @@ from custom_components.circuitsetup_energy_meter_helper.topology import (
     voltage_reference_topology_from_configuration,
 )
 from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+    automatic_total_candidates,
     default_total_settings,
 )
 from custom_components.circuitsetup_energy_meter_helper.voltage_transformer_catalog import (
@@ -474,10 +475,102 @@ def test_explicit_adoption_materializes_enabled_automatic_totals_without_other_c
     requested = replace(current.configuration, totals_change_intent=TotalsChangeIntent(True))
     mutation = build_meter_configuration_mutation(snapshot, topology, current, requested)
     assert "Suggested circuit totals" in mutation.redacted_diff
-    assert "+ Mains: CT 1 + CT 2; Watts exposed; Amps hidden; kWh exposed; bidirectional; two_ct_sum" in mutation.redacted_diff
+    assert "+ Mains: CT 1 + CT 2; Watts exposed; Amps hidden; kWh exposed; consumption; two_ct_sum" in mutation.redacted_diff
     disabled = replace(requested, channels=tuple(replace(channel, role=CircuitRole.BRANCH) for channel in requested.channels))
     assert "Suggested circuit totals" not in build_meter_configuration_mutation(snapshot, topology, current, disabled).redacted_diff
-    assert "id: csemh_auto_mains_import_energy" in mutation.proposed_content
+    assert "id: csemh_auto_mains_energy" in mutation.proposed_content
+    assert "csemh_auto_mains_import" not in mutation.proposed_content
+    assert "csemh_auto_mains_export" not in mutation.proposed_content
+
+
+@pytest.mark.parametrize("legacy_without_solar", (False, True))
+def test_automatic_mains_solar_gate_survives_source_recovery(legacy_without_solar: bool) -> None:
+    snapshot, topology, current = _native_total_setup(0)
+    requested = replace(current.configuration, channels=tuple(
+        replace(channel, role=CircuitRole.GRID) if channel.channel <= 2
+        else replace(channel, role=CircuitRole.SOLAR) if channel.channel == 3 else channel
+        for channel in current.configuration.channels))
+    content = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
+    assert "csemh_auto_mains_import_energy" in content
+    if legacy_without_solar:
+        prefix = "# csemh-automatic-totals: "
+        payload = next(line.strip().removeprefix(prefix) for line in content.splitlines() if line.strip().startswith(prefix))
+        metadata = json.loads(urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        del metadata["roles"]["3"]
+        replacement = urlsafe_b64encode(json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode()).decode().rstrip("=")
+        content = content.replace(payload, replacement)
+    saved = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    recovered = _inventory(saved, topology)
+    assert "aggregate_semantics_unreadable" not in recovered.warnings
+    if legacy_without_solar:
+        assert recovered.configuration.aggregates[0].aggregate_id == "auto-mains"
+        assert recovered.configuration.aggregates[0].energy_mode is EnergyMode.BIDIRECTIONAL
+        assert not recovered.automatic_candidates
+        owned = _owned_inventory(saved, topology)
+        assert "aggregate_semantics_unreadable" not in owned.warnings
+        edited = replace(owned.configuration, aggregates=(replace(owned.configuration.aggregates[0], name="Existing mains"),))
+        updated = build_meter_configuration_mutation(saved, topology, owned, edited).proposed_content
+        reread = _inventory(replace(saved, content=updated, sha256=sha256(updated.encode()).hexdigest()), topology)
+        assert "aggregate_semantics_unreadable" not in reread.warnings
+        assert reread.configuration.aggregates == edited.aggregates
+    else:
+        assert recovered.configuration.channels[2].role is CircuitRole.SOLAR
+        assert recovered.automatic_candidates[0].energy_mode is EnergyMode.BIDIRECTIONAL
+
+
+@pytest.mark.parametrize("enabled", (False, True))
+def test_named_pair_suggestions_preserve_roles_and_only_write_selected_totals(enabled: bool) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AutomaticTotalSettings,
+    )
+
+    snapshot, topology, current = _native_total_setup(0)
+    labels = {1: "Dryer L1", 2: "Dryer L2", 3: "Heat Pump Phase A", 4: "Heat Pump Phase B"}
+    requested = replace(current.configuration, channels=tuple(replace(channel, name=labels[channel.channel])
+        if channel.channel in labels else channel for channel in current.configuration.channels))
+    candidates = automatic_total_candidates(requested)
+    assert [item.name for item in candidates] == ["Dryer", "Heat Pump"]
+    requested = replace(requested, automatic_totals=tuple(AutomaticTotalSettings(item.candidate_id,
+        enabled and item.name == "Dryer", item.recommended_outputs) for item in candidates))
+    content = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
+    assert ("id: csemh_auto_two_pole_ct1_ct2_power" in content) is enabled
+    assert "id: csemh_auto_two_pole_ct3_ct4_power" not in content
+    saved = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    recovered = _inventory(saved, topology)
+    assert "aggregate_semantics_unreadable" not in recovered.warnings
+    assert recovered.configuration.automatic_totals == requested.automatic_totals
+    assert [item.role for item in recovered.configuration.channels] == [item.role for item in requested.channels]
+    assert recovered.automatic_candidates == candidates
+
+
+def test_legacy_two_pole_total_keeps_existing_sensor_ids() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AutomaticTotalSettings,
+    )
+
+    snapshot, topology, current = _native_total_setup(0)
+    requested = replace(current.configuration, channels=tuple(replace(channel, role=CircuitRole.TWO_POLE)
+        if channel.channel <= 2 else channel for channel in current.configuration.channels),
+        automatic_totals=(AutomaticTotalSettings("two-pole-ct1-ct2", True, TotalOutputSettings(True, False, True)),))
+    content = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
+    prefix = "# csemh-aggregate: "
+    payload = next(line.strip().removeprefix(prefix) for line in content.splitlines() if line.strip().startswith(prefix))
+    metadata = json.loads(urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    metadata["aggregate_id"] = "auto-two-pole"
+    replacement = urlsafe_b64encode(json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode()).decode().rstrip("=")
+    content = content.replace(payload, replacement).replace("csemh_auto_two_pole_ct1_ct2", "csemh_auto_two_pole")
+    saved = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    recovered = _owned_inventory(saved, topology)
+    assert "aggregate_semantics_unreadable" not in recovered.warnings
+    assert recovered.automatic_candidates == ()
+    assert [item.aggregate_id for item in recovered.configuration.aggregates] == ["auto-two-pole"]
+    edited = replace(recovered.configuration, aggregates=(replace(recovered.configuration.aggregates[0], name="Existing circuit"),))
+    updated = build_meter_configuration_mutation(saved, topology, recovered, edited).proposed_content
+    assert "id: csemh_auto_two_pole_power" in updated
+    assert "csemh_auto_two_pole_ct1_ct2" not in updated
+    reread = _inventory(replace(saved, content=updated, sha256=sha256(updated.encode()).hexdigest()), topology)
+    assert "aggregate_semantics_unreadable" not in reread.warnings
+    assert reread.configuration.aggregates == edited.aggregates
 
 
 def test_noop_is_byte_identical_and_surgical_edit_only_changes_requested_keys() -> None:
@@ -1942,7 +2035,9 @@ def _aggregate_request(
     current: MeterConfigurationInventory,
     aggregate: CircuitAggregate,
 ) -> object:
-    return replace(current.configuration, aggregates=(aggregate,))
+    return replace(current.configuration, aggregates=(aggregate,),
+        channels=tuple(replace(channel, role=CircuitRole.SOLAR) if channel.channel == 6
+            and aggregate.energy_mode is EnergyMode.BIDIRECTIONAL else channel for channel in current.configuration.channels))
 
 
 def _assert_daily_energy(block: str, power_id: str) -> None:
@@ -2029,7 +2124,7 @@ def test_bidirectional_render_independent_outputs(watts, amps, kwh) -> None:
     aggregate = CircuitAggregate("grid", "Grid", CircuitRole.GRID,
         (ChannelTotalSource("channel", 1),), MeasurementMethod.DIRECT,
         EnergyMode.BIDIRECTIONAL, TotalOutputSettings(watts, amps, kwh))
-    requested = replace(current.configuration, aggregates=(aggregate,))
+    requested = _aggregate_request(current, aggregate)
     source = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
     for suffix in ("power", "import_power", "export_power"):
         assert (f"id: csemh_grid_{suffix}" in source) == (watts or kwh)
@@ -2086,7 +2181,7 @@ def test_automatic_metadata_preserves_enabled_and_off_without_storage(enabled) -
     assert not recovered.capabilities.managed_automatic_totals
     evidence = expected_meter_entity_evidence(requested, topology)
     assert {name for _, name in evidence.aggregate_sensor_entities - evidence.native_sensor_entities} == (
-        {f"{requested.meter.friendly_name} Mains Import Energy", f"{requested.meter.friendly_name} Mains Return to Grid Energy"}
+        {f"{requested.meter.friendly_name} Mains Energy"}
         if enabled else set())
     stored = StoredMeterConfiguration(installed.sha256, requested.meter, requested.channels,
         requested.default_totals, requested.automatic_totals, (), requested.power_quality, requested.status_fields)
@@ -2112,7 +2207,8 @@ def test_generated_directional_ids_reject_advanced_collision() -> None:
         mode, TotalOutputSettings(True, False, False))
         for name, channel, mode in (("grid", 1, EnergyMode.BIDIRECTIONAL), ("grid-import", 2, EnergyMode.NONE)))
     with pytest.raises((ValueError, ConfigMutationError), match="collision"):
-        build_meter_configuration_mutation(snapshot, topology, current, replace(current.configuration, aggregates=aggregates))
+        build_meter_configuration_mutation(snapshot, topology, current, replace(current.configuration, aggregates=aggregates,
+            channels=tuple(replace(channel, role=CircuitRole.SOLAR) if channel.channel == 6 else channel for channel in current.configuration.channels)))
 
 
 @pytest.mark.parametrize("addons,power_id", ((0, "totalWattsMain"), (1, "totalWatts")))
@@ -2470,13 +2566,14 @@ def test_unchanged_custom_total_is_not_copied_during_other_total_edit() -> None:
     replacement = build_meter_configuration_mutation(snapshot, topology, current, selected)
     evidence = expected_meter_entity_evidence(selected, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
     assert "Charger Power" not in {name for _, name in evidence.sensor_entities}
-    assert "Energy meter Updated Charger Power" in {name for _, name in evidence.sensor_entities}
+    assert "Updated Charger Power" in {name for _, name in evidence.sensor_entities}
     impact = estimate_configuration_impact(selected, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration, native_visibility_resolved=current.native_visibility_resolved)
     assert (impact.public_total_entity_count, impact.numeric_entity_count) == (5, 19)
-    assert "!extend totalChargerWatts\n    internal: true" in replacement.proposed_content
+    assert '!extend totalChargerWatts\n    name: "Updated Charger Power"\n    internal: false' in replacement.proposed_content
+    assert "id: csemh_total_charger_power" not in replacement.proposed_content
 
 
-def test_parent_selection_replaces_custom_child_and_survives_source_reload() -> None:
+def test_parent_selection_reuses_custom_child_and_survives_source_reload() -> None:
     from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
         AggregateTotalSource,
     )
@@ -2491,8 +2588,9 @@ def test_parent_selection_replaces_custom_child_and_survives_source_reload() -> 
     requested = replace(current.configuration, aggregates=(*current.configuration.aggregates, parent))
     source = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
     assert custom in source
-    assert "!extend totalChargerWatts\n    internal: true" in source
-    assert "lambda: return id(csemh_total_charger_power).state;" in source
+    assert '!extend totalChargerWatts\n    name: "Charger Power"\n    internal: false' in source
+    assert "lambda: return id(totalChargerWatts).state;" in source
+    assert "id: csemh_total_charger_power" not in source
     installed = replace(snapshot, content=source, sha256=sha256(source.encode()).hexdigest())
     recovered = _inventory(installed, topology)
     assert recovered.configuration.aggregates == requested.aggregates
@@ -2658,6 +2756,7 @@ def test_replaced_totals_do_not_return_after_reload_or_unrelated_edit(
     requested = replace(
         current.configuration,
         aggregates=(CircuitAggregate("total-custom" if source == "template" else "mains", "Mains", CircuitRole.GRID, (ChannelTotalSource("channel", 1), ChannelTotalSource("channel", 2),), MeasurementMethod.TWO_CT_SUM, EnergyMode.BIDIRECTIONAL, TotalOutputSettings(True, False, True)),),
+        channels=tuple(replace(channel, role=CircuitRole.SOLAR) if channel.channel == 6 else channel for channel in current.configuration.channels),
         default_totals=current.configuration.default_totals if source == "template" else replace(current.configuration.default_totals, overall=TotalOutputSettings(False, False, False)),
     )
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
@@ -2743,6 +2842,7 @@ def test_mains_and_solar_templates_split_grid_import_from_export() -> None:
     current = _owned_inventory(snapshot, topology)
     requested = replace(
         current.configuration,
+        channels=tuple(replace(channel, role=CircuitRole.SOLAR) if channel.channel in (3, 4) else channel for channel in current.configuration.channels),
         aggregates=(
             CircuitAggregate("auto-mains", "Mains", CircuitRole.GRID, (ChannelTotalSource("channel", 1), ChannelTotalSource("channel", 2),), MeasurementMethod.TWO_CT_SUM, EnergyMode.BIDIRECTIONAL, TotalOutputSettings(True, False, EnergyMode.BIDIRECTIONAL is not EnergyMode.NONE)),
             CircuitAggregate("auto-solar", "Solar", CircuitRole.SOLAR, (ChannelTotalSource("channel", 3), ChannelTotalSource("channel", 4),), MeasurementMethod.TWO_CT_SUM, EnergyMode.GENERATION, TotalOutputSettings(True, False, EnergyMode.GENERATION is not EnergyMode.NONE)),
@@ -2989,7 +3089,8 @@ def test_rendered_aggregate_metadata_is_lossless_without_storage(
         CircuitAggregate("parent-total", "Parent", CircuitRole.CUSTOM, tuple(ChannelTotalSource("channel", channel) for channel in parent_channels), parent_method, parent_energy, TotalOutputSettings(False, False, parent_energy is not EnergyMode.NONE)),
         CircuitAggregate("child-total", "Child", CircuitRole.SOLAR, (ChannelTotalSource("channel", 2),), MeasurementMethod.DIRECT, EnergyMode.GENERATION, TotalOutputSettings(True, False, EnergyMode.GENERATION is not EnergyMode.NONE)),
     )
-    requested = replace(current.configuration, aggregates=aggregates)
+    requested = replace(current.configuration, aggregates=aggregates,
+        channels=tuple(replace(channel, role=CircuitRole.SOLAR) if channel.channel == 6 else channel for channel in current.configuration.channels))
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
     installed = replace(
         snapshot,
@@ -3025,7 +3126,8 @@ def test_directional_words_in_aggregate_ids_round_trip(
         CircuitAggregate("grid-export", "Export circuit", CircuitRole.BRANCH, (ChannelTotalSource("channel", 3),), MeasurementMethod.DIRECT, energy_mode, TotalOutputSettings(True, False, energy_mode is not EnergyMode.NONE)),
         CircuitAggregate("mains", "Mains", CircuitRole.BRANCH, (ChannelTotalSource("channel", 4),), MeasurementMethod.DIRECT, EnergyMode.BIDIRECTIONAL, TotalOutputSettings(True, False, EnergyMode.BIDIRECTIONAL is not EnergyMode.NONE)),
     )
-    requested = replace(current.configuration, aggregates=aggregates)
+    requested = replace(current.configuration, aggregates=aggregates,
+        channels=tuple(replace(channel, role=CircuitRole.SOLAR) if channel.channel == 6 else channel for channel in current.configuration.channels))
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
     content = "".join(
         line for line in plan.proposed_content.splitlines(keepends=True)

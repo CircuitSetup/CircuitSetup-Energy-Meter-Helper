@@ -7,7 +7,9 @@ from typing import Literal
 
 from .config_document import ESPHomeConfigDocument
 from .meter_config_mutator import (
+    _existing_total_bindings,
     _native_total_accounting,
+    _render_total_updates,
     _select_render_totals,
     _source_owned_total_evidence,
     _source_owned_total_items,
@@ -19,6 +21,7 @@ from .meter_configuration import (
 )
 from .meter_inventory import (
     _legacy_replacement_sources,
+    _managed_sensor_items,
     _plain_sensor_scalar,
     _source_native_visibility,
 )
@@ -153,7 +156,19 @@ def estimate_configuration_impact(
         outputs = native_outputs[source.source_id]
         public += int(outputs.watts) + int(outputs.amps) + int(outputs.kwh)
         energy += int(outputs.kwh)
-    for node in plan_total_graph(configuration, topology).ordered_nodes:
+    nodes = plan_total_graph(configuration, topology).ordered_nodes
+    if document is not None and replacements:
+        originals = {sensor_id: fields for sensor_id, fields in
+            _existing_total_bindings(configuration, topology, document, replacements).values()}
+        for fields in _managed_sensor_items(_render_total_updates(configuration, topology, document, replacements), 2):
+            sensor_id = fields.get("id", "").removeprefix("!extend ")
+            item = {**originals.get(sensor_id, {}), **fields}
+            visible = item.get("internal", "false") == "false" and bool(item.get("name"))
+            public += int(visible)
+            internal += int(not visible)
+            energy += int(visible and _plain_sensor_scalar(item.get("device_class", "")) == "energy")
+        nodes = ()
+    for node in nodes:
         aggregate = node.aggregate
         power_count = 3 if aggregate.energy_mode is EnergyMode.BIDIRECTIONAL else 1
         energy_count = (

@@ -64,7 +64,11 @@ from .meter_config_mutator import (
     expected_meter_entity_evidence,
 )
 from .meter_configuration import MeterConfigurationRequest
-from .meter_inventory import MeterConfigurationInventory
+from .meter_inventory import (
+    MeterConfigurationInventory,
+    _source_aware_automatic_candidates,
+    suppress_duplicate_automatic_totals,
+)
 from .models import MeterTopology, StoredCTSelection, canonical_mac
 from .offset_readiness import (
     OffsetReadinessResult,
@@ -691,7 +695,8 @@ class EntryWorkflow:
     ) -> dict[str, Any]:
         """Validate a draft without source rendering, transactions, or saved choices."""
         plan = self._plan(plan_id, device_id, source_sha256)
-        candidates = automatic_total_candidates(requested)
+        document = ESPHomeConfigDocument.parse(plan.snapshot.content)
+        candidates = _source_aware_automatic_candidates(requested, document)
         stale = stale_automatic_total_settings(candidates, requested.automatic_totals)
         known = plan.issued_total_candidate_ids | {
             candidate.candidate_id for candidate in plan.inventory.automatic_candidates
@@ -708,6 +713,7 @@ class EntryWorkflow:
             if type(setting.enabled) is not bool or any(type(value) is not bool for value in (setting.outputs.watts, setting.outputs.amps, setting.outputs.kwh)):
                 raise ValueError("automatic candidate settings require booleans")
         plan.inventory.validate_totals_change(current, preview_only=True)
+        current = suppress_duplicate_automatic_totals(current, document)
         graph = plan_total_graph(current, plan.topology)
         impact = estimate_configuration_impact(current, plan.topology,
             document=ESPHomeConfigDocument.parse(plan.snapshot.content), previous=plan.inventory.configuration,
