@@ -2981,10 +2981,10 @@ def test_total_graph_preview_route_serializes_server_graph_without_transaction()
         result = sanitize_payload(await controller.async_call(command, payload, "user"))
         assert result["graph"]["leaf_channels"]["auto-mains"] == [1, 2]
         assert result["configuration_impact"] == {
-            "enabled_channel_count": 6, "numeric_entity_count": 43,
-            "text_entity_count": 6, "energy_entity_count": 2,
-            "approximate_publications_per_second": 4.9,
-            "public_total_entity_count": 5, "internal_total_sensor_count": 0,
+            "enabled_channel_count": 6, "numeric_entity_count": 40,
+            "text_entity_count": 6, "energy_entity_count": 1,
+            "approximate_publications_per_second": 4.6,
+            "public_total_entity_count": 2, "internal_total_sensor_count": 0,
         }
         assert result["graph"]["ordered_nodes"][0]["sources"][0]["power_id"] == "ct1Watts"
         assert result["automatic_candidates"][0]["sources"] == [{"kind": "channel", "channel": 1}, {"kind": "channel", "channel": 2}]
@@ -3082,6 +3082,7 @@ def test_largest_total_review_remains_exact_or_visibly_truncated_over_transport(
         for prefix in ("before", "after"):
             inventory = await call("get_meter_configuration")
             config = inventory["configuration"]
+            config["channels"][-1]["role"] = "solar"
             config["aggregates"] = [{"aggregate_id": f"{prefix}-{'branch-' * 6}{index}", "name": f"Report {prefix} {index}",
                 "role": "custom", "sources": [{"kind": "channel", "channel": index + 1}], "measurement_method": "direct",
                 "energy_mode": "bidirectional", "outputs": {"watts": True, "amps": True, "kwh": True}, "origin": "advanced"}

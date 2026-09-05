@@ -17,9 +17,11 @@ export function automaticTotalsSection(
     automatic_totals: configuration.automatic_totals.some((item) => item.candidate_id === candidateId)
       ? configuration.automatic_totals.map((item) => item.candidate_id === candidateId ? { ...item, ...change } : item)
       : [...configuration.automatic_totals, { ...current, ...change }], aggregates });
-  const ambiguousRoles = automaticRoleLabels.filter(([role]) => configuration.channels.filter((channel) => channel.enabled && channel.role === role).length > 2);
+  const pairedChannels = new Set(totals.automatic_candidates.flatMap((item) => item.sources.map((source) => source.channel)));
+  const ambiguousRoles = automaticRoleLabels.filter(([role]) => configuration.channels.filter((channel) => channel.enabled && channel.role === role && !pairedChannels.has(channel.channel)).length > 2);
   return html`<section class="automatic-totals" aria-labelledby="automatic-totals-heading">
     <h2 id="automatic-totals-heading">Suggested circuit totals</h2>
+    <p>Suggestions update as you classify and name CTs. Matching phase names such as Dryer L1 and Dryer L2 can identify a two-pole circuit; select the suggested total to add it.</p>
     ${ambiguousRoles.map(([, label]) => html`<p class="info-band" role="status">Multiple ${label} CTs cannot be paired automatically. Create the totals under Advanced totals.</p>`)}
     ${totals.automatic_totals.length ? totals.automatic_totals.map((resolved) => {
       const saved = configuration.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id);

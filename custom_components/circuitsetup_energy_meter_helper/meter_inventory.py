@@ -161,6 +161,16 @@ class MeterConfigurationInventory:
     def validate_totals_change(self, requested: MeterConfigurationRequest, *, preview_only: bool = False) -> None:
         """Check explicit decisions against this source-bound inventory, never clear them."""
         validate_meter_configuration(requested, self.topology, require_multi_reference_acknowledgement=not preview_only)
+        if not any(channel.enabled and channel.role is CircuitRole.SOLAR for channel in requested.channels):
+            existing = {item.aggregate_id: item for item in self.configuration.aggregates}
+            for item in requested.aggregates:
+                previous = existing.get(item.aggregate_id)
+                if item.energy_mode is EnergyMode.BIDIRECTIONAL and (
+                    previous is None or previous.energy_mode is not EnergyMode.BIDIRECTIONAL
+                    or (item.outputs.watts and not previous.outputs.watts)
+                    or (item.outputs.kwh and not previous.outputs.kwh)
+                ):
+                    raise ValueError("Adding import/export totals requires an enabled CT classified as Solar")
         intent = requested.totals_change_intent
         if intent.adopt_managed_totals and (
             not self.capabilities.configuration_authoritative
@@ -1117,20 +1127,49 @@ def _automatic_totals_metadata(
             raise ValueError("invalid automatic setting metadata")
         settings.append(AutomaticTotalSettings(item["candidate_id"], item["enabled"], _outputs(item["outputs"], "automatic outputs")))
     requested = replace(configuration, channels=channels, automatic_totals=tuple(settings))
+    legacy_ids = {"auto-mains" for setting in settings if setting.candidate_id.startswith("grid-")}
+    legacy_ids.update("auto-two-pole" for setting in settings if setting.candidate_id.startswith("two-pole-"))
+    requested = replace(requested, aggregates=tuple(item for item in requested.aggregates if item.aggregate_id not in legacy_ids))
     candidates = automatic_total_candidates(requested)
     if len(settings) != len(candidates) or {setting.candidate_id for setting in settings} != {candidate.candidate_id for candidate in candidates}:
         raise ValueError("automatic metadata must declare every current candidate exactly once")
-    if data["roles"] != {str(source.channel): candidate.role.value for candidate in candidates for source in candidate.sources}:
+    source_channels = {source.channel for candidate in candidates for source in candidate.sources}
+    expected_roles = {str(channel.channel): channel.role.value for channel in requested.channels if channel.channel in source_channels}
+    expected_roles.update({str(channel.channel): channel.role.value for channel in requested.channels
+        if channel.enabled and channel.role is CircuitRole.SOLAR})
+    if data["roles"] != expected_roles:
         raise ValueError("automatic metadata contains unrelated roles")
     if authoritative:
         current_ids = {candidate.candidate_id for candidate in _source_aware_automatic_candidates(configuration, document)}
+        current_ids.update(candidate.candidate_id for candidate in candidates for item in configuration.aggregates
+            if item.aggregate_id in legacy_ids and item.sources == candidate.sources and item.role is candidate.role)
         suppressed = tuple(AutomaticTotalSettings(candidate.candidate_id, False, candidate.recommended_outputs)
             for candidate in candidates if candidate.candidate_id not in current_ids)
-        resolved = resolve_automatic_totals(candidates, (*configuration.automatic_totals, *suppressed))
+        retained_settings = tuple(AutomaticTotalSettings(candidate.candidate_id, True, item.outputs)
+            for candidate in candidates for item in configuration.aggregates
+            if item.aggregate_id in legacy_ids and item.sources == candidate.sources and item.role is candidate.role
+            and not any(setting.candidate_id == candidate.candidate_id for setting in configuration.automatic_totals))
+        resolved = resolve_automatic_totals(candidates, (*configuration.automatic_totals, *retained_settings, *suppressed))
         if {setting.candidate_id: (setting.enabled, setting.outputs) for setting in settings} != {total.candidate.candidate_id: (total.enabled, total.outputs) for total in resolved}:
             raise ValueError("automatic metadata disagrees with stored settings")
         requested = replace(configuration, automatic_totals=(*configuration.automatic_totals, *suppressed))
-    return requested, frozenset(candidate.aggregate_id for candidate in candidates)
+    # Retain older automatic definitions when the current suggestion changes its
+    # mode or ID, so existing sensors are never replaced by a fresh suggestion.
+    metadata, _ = _aggregate_metadata(block.content) if block is not None else (None, ())
+    retained_pairs = tuple((item, candidate) for item in metadata or () for candidate in candidates
+        if item.sources == candidate.sources and item.role is candidate.role and (
+            item.aggregate_id == "auto-mains" and item.energy_mode is EnergyMode.BIDIRECTIONAL
+            and candidate.energy_mode is EnergyMode.CONSUMPTION
+            or item.aggregate_id == "auto-two-pole" and candidate.aggregate_id.startswith("auto-two-pole-ct")))
+    retained = tuple(item for item, _ in retained_pairs)
+    retained_ids = {item.aggregate_id for item in retained}
+    retained_candidate_ids = {candidate.aggregate_id for _, candidate in retained_pairs}
+    if retained:
+        settings_ids = {candidate.candidate_id for _, candidate in retained_pairs}
+        requested = replace(requested,
+            aggregates=(*tuple(item for item in requested.aggregates if item.aggregate_id not in retained_ids), *retained),
+            automatic_totals=tuple(item for item in requested.automatic_totals if item.candidate_id not in settings_ids))
+    return requested, frozenset(candidate.aggregate_id for candidate in candidates if candidate.aggregate_id not in retained_candidate_ids)
 
 
 def _has_graph_metadata(content: str) -> bool:

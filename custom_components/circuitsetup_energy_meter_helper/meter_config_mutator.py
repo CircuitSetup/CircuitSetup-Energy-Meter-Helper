@@ -27,6 +27,7 @@ from .ct_inventory import _esphome_object_id
 from .meter_configuration import (
     AggregateTotalSource,
     CircuitAggregate,
+    CircuitRole,
     EnergyMode,
     MeasurementMethod,
     MeterConfigurationRequest,
@@ -1168,7 +1169,10 @@ def _render_aggregates(
     if configuration is not None:
         candidates = automatic_total_candidates(configuration)
         if candidates:
-            roles = {str(source.channel): candidate.role.value for candidate in candidates for source in candidate.sources}
+            source_channels = {source.channel for candidate in candidates for source in candidate.sources}
+            roles = {str(channel.channel): channel.role.value for channel in configuration.channels if channel.channel in source_channels}
+            roles.update({str(channel.channel): channel.role.value for channel in configuration.channels
+                if channel.enabled and channel.role is CircuitRole.SOLAR})
             settings = [{"candidate_id": resolved.candidate.candidate_id, "enabled": resolved.enabled, "outputs": _serialize_outputs(resolved.outputs)}
                 for resolved in resolve_automatic_totals(candidates, configuration.automatic_totals)]
             metadata = urlsafe_b64encode(json.dumps({"roles": roles, "settings": settings}, separators=(",", ":"), sort_keys=True).encode()).decode().rstrip("=")

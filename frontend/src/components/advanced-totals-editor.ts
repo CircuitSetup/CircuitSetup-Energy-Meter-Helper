@@ -23,6 +23,7 @@ export function advancedTotalsEditor(
   reason: string, totals: TotalsInventory | null, preview: TotalGraphPreview | null = null, fresh = true,
   automaticSourcesFresh = fresh,
 ): TemplateResult {
+  const hasSolar = configuration.channels.some((channel) => channel.enabled && channel.role === "solar");
   // Catalog entries remain server-owned; settings only determine which issued children are enabled.
   const catalog: TotalsInventory = totals ?? { native_sources: [], automatic_candidates: [], automatic_totals: [],
     stale_automatic_total_settings: [], migration: { parent_review_required: false, legacy_parent_links: [],
@@ -155,9 +156,10 @@ export function advancedTotalsEditor(
           <label>Energy behavior <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
             @change=${(event: Event) => {
               const input = event.target as HTMLSelectElement;
-              if (!writable || !energyModes.includes(input.value as typeof energyModes[number])) { input.value = aggregate.energy_mode; return; }
+              if (!writable || !energyModes.includes(input.value as typeof energyModes[number])
+                || input.value === "bidirectional" && !hasSolar && aggregate.energy_mode !== "bidirectional") { input.value = aggregate.energy_mode; return; }
               patch(aggregate, { energy_mode: input.value as CircuitAggregate["energy_mode"], outputs: { ...aggregate.outputs, kwh: input.value === "none" ? false : aggregate.outputs.kwh } });
-            }}>${energyModes.map((mode) => html`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0]!.toUpperCase()}${mode.slice(1)}</option>`)}</select><small>kWh uses ESPHome platform: total_daily_energy, integrating this total's Watts rather than adding child kWh.</small></label>
+            }}>${energyModes.filter((mode) => mode !== "bidirectional" || hasSolar || aggregate.energy_mode === mode).map((mode) => html`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0]!.toUpperCase()}${mode.slice(1)}</option>`)}</select><small>Import/export totals require an enabled Solar CT. kWh uses ESPHome platform: total_daily_energy, integrating this total's Watts rather than adding child kWh.</small></label>
           <label>Feeds into <select aria-label=${`${aggregate.name} Feeds into`} .value=${parent}
             @change=${(event: Event) => {
               const input = event.target as HTMLSelectElement;

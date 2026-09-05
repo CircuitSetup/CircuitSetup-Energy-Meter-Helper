@@ -736,7 +736,7 @@ def test_total_graph_preview_is_repeatable_read_only_and_recomputes_roles() -> N
         preview = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, draft)
         assert preview["automatic_candidates"][0].candidate_id == "grid-ct1-ct2"
         assert preview["graph"]["leaf_channels"]["auto-mains"] == [1, 2]
-        assert preview["configuration_impact"].public_total_entity_count == 5
+        assert preview["configuration_impact"].public_total_entity_count == 2
         assert preview == await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, draft)
         disabled = replace(draft, automatic_totals=(AutomaticTotalSettings("grid-ct1-ct2", False, TotalOutputSettings(True, False, True)),))
         await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, disabled)
@@ -781,12 +781,12 @@ def test_bound_details_expose_source_aware_summary_without_writes() -> None:
         assert "total_details" not in response
         rows = {row.total_id: row for row in details["total_details"]}
         assert set(rows) == {"overall", "auto-mains", "hidden", "parent", "watts-only"}
-        assert rows["auto-mains"].public_outputs == ("Net Watts", "Import Watts", "Return-to-grid Watts", "Import kWh", "Return-to-grid kWh")
+        assert rows["auto-mains"].public_outputs == ("Watts", "kWh")
         assert rows["hidden"].public_outputs == ()
         assert rows["hidden"].internal_outputs == ("Watts", "Amps")
         assert rows["watts-only"].public_outputs == ("Watts",)
         assert rows["parent"].ownership == "helper_managed"
-        assert response["configuration_impact"].energy_entity_count == 4
+        assert response["configuration_impact"].energy_entity_count == 3
         preview = await fixture.workflow.async_preview_total_graph("meter-1", response["plan_id"],
             response["source_sha256"], response["configuration"])
         assert sanitize_payload(preview)["configuration_impact"] == sanitize_payload(response["configuration_impact"])

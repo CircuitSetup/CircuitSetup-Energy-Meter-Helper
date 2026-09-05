@@ -45,8 +45,12 @@ async def report_response(operation: str, *, addons: int = 6, label_padding: int
     current = inventory["configuration"]
     count = min(fixture.topology.ct_count, source_count or (8 if operation == "preview" else 12))
     requested = replace(current,
-        channels=tuple(replace(channel, name=f"CT{channel.channel}" + label_suffix + " Circuit"[:label_padding]
-            + "x" * max(0, label_padding - 8)) for channel in current.channels),
+        channels=tuple(replace(
+            channel,
+            name=f"CT{channel.channel}" + label_suffix + " Circuit"[:label_padding]
+            + "x" * max(0, label_padding - 8),
+            role=CircuitRole.SOLAR if channel == current.channels[-1] else channel.role,
+        ) for channel in current.channels),
         aggregates=tuple(CircuitAggregate(f"report{index}" + "x" * id_padding, f"Report {index}" + label_suffix + "x" * label_padding,
             CircuitRole.CUSTOM, tuple(ChannelTotalSource("channel", channel) for channel in range(1, count + 1)),
             MeasurementMethod.DIRECT, mode, TotalOutputSettings(True, True, mode is not EnergyMode.NONE))

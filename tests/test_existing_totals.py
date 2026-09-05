@@ -203,6 +203,7 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
                 name="Renamed charger" if edit == "roles_and_name" and item == charger else item.name,
             ) for item in aggregates)
         elif edit == "bidirectional":
+            channels = tuple(replace(item, role=CircuitRole.SOLAR) if item.channel == 19 else item for item in channels)
             aggregates = (replace(house, energy_mode=EnergyMode.BIDIRECTIONAL), charger, ac1, ac2)
         elif edit == "method":
             aggregates = (replace(house, sources=(ChannelTotalSource("channel", 1),),
@@ -283,6 +284,23 @@ def test_custom_native_subset_cannot_be_used_as_whole_meter_source() -> None:
         aggregate_id="whole", name="Whole", sources=(NativeTotalSource("native_total", "overall"),))))
     with pytest.raises(ValueError, match="custom formula"):
         _select_render_totals(requested, inventory.topology, ESPHomeConfigDocument.parse(_existing_custom_totals()), previous)
+
+
+@pytest.mark.parametrize("solar_enabled", (None, False, True))
+@pytest.mark.parametrize("preview_only", (False, True))
+def test_new_bidirectional_total_requires_enabled_solar_ct(solar_enabled: bool | None, preview_only: bool) -> None:
+    inventory = _inventory(_existing_custom_totals())
+    configuration = inventory.configuration
+    requested = replace(configuration,
+        channels=tuple(replace(item, role=CircuitRole.SOLAR if solar_enabled else CircuitRole.UNUSED, enabled=solar_enabled)
+            if item.channel == 19 and solar_enabled is not None else item for item in configuration.channels),
+        aggregates=(replace(configuration.aggregates[0], energy_mode=EnergyMode.BIDIRECTIONAL), *configuration.aggregates[1:]),
+        totals_change_intent=TotalsChangeIntent(adopt_managed_totals=True))
+    if solar_enabled:
+        inventory.validate_totals_change(requested, preview_only=preview_only)
+    else:
+        with pytest.raises(ValueError, match="Solar"):
+            inventory.validate_totals_change(requested, preview_only=preview_only)
 
 
 def test_existing_energy_id_cannot_be_reused_by_a_new_total() -> None:

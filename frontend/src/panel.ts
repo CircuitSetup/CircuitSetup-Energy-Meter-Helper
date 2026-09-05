@@ -1187,7 +1187,7 @@ export class CircuitSetupPanel extends LitElement {
     // This checks inputs to an issued catalog; it never constructs candidates or a graph.
     return JSON.stringify({ connection: this.connectionGeneration, device: this.selectedDeviceId,
       plan: meter.plan_id, hash: meter.source_sha256,
-      channels: meter.configuration.channels.map(({ channel, enabled, role }) => ({ channel, enabled, role })),
+      channels: meter.configuration.channels.map(({ channel, enabled, role, name }) => ({ channel, enabled, role, name })),
       collisions: meter.configuration.aggregates.map((item) => item.aggregate_id).filter((id) => issuedIds.has(id)).sort() });
   }
 

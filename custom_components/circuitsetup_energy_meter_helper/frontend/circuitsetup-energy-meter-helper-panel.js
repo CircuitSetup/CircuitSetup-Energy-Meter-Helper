@@ -2065,9 +2065,11 @@ function automaticTotalsSection(configuration, totals, writable, update) {
     automatic_totals: configuration.automatic_totals.some((item) => item.candidate_id === candidateId) ? configuration.automatic_totals.map((item) => item.candidate_id === candidateId ? { ...item, ...change } : item) : [...configuration.automatic_totals, { ...current, ...change }],
     aggregates
   });
-  const ambiguousRoles = automaticRoleLabels.filter(([role]) => configuration.channels.filter((channel) => channel.enabled && channel.role === role).length > 2);
+  const pairedChannels = new Set(totals.automatic_candidates.flatMap((item) => item.sources.map((source) => source.channel)));
+  const ambiguousRoles = automaticRoleLabels.filter(([role]) => configuration.channels.filter((channel) => channel.enabled && channel.role === role && !pairedChannels.has(channel.channel)).length > 2);
   return b`<section class="automatic-totals" aria-labelledby="automatic-totals-heading">
     <h2 id="automatic-totals-heading">Suggested circuit totals</h2>
+    <p>Suggestions update as you classify and name CTs. Matching phase names such as Dryer L1 and Dryer L2 can identify a two-pole circuit; select the suggested total to add it.</p>
     ${ambiguousRoles.map(([, label]) => b`<p class="info-band" role="status">Multiple ${label} CTs cannot be paired automatically. Create the totals under Advanced totals.</p>`)}
     ${totals.automatic_totals.length ? totals.automatic_totals.map((resolved) => {
     const saved = configuration.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id);
@@ -2109,6 +2111,7 @@ const coverageLabel = (leaves) => {
   return sorted.length > 1 && sorted.at(-1) - sorted[0] === sorted.length - 1 ? `CT${sorted[0]}–CT${sorted.at(-1)}` : sorted.map((channel) => `CT${channel}`).join(", ");
 };
 function advancedTotalsEditor(configuration, drafts, update, writable, reason, totals, preview = null, fresh = true, automaticSourcesFresh = fresh) {
+  const hasSolar = configuration.channels.some((channel) => channel.enabled && channel.role === "solar");
   const catalog = totals ?? {
     native_sources: [],
     automatic_candidates: [],
@@ -2298,12 +2301,12 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
           <label>Energy behavior <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
             @change=${(event) => {
       const input = event.target;
-      if (!writable || !energyModes.includes(input.value)) {
+      if (!writable || !energyModes.includes(input.value) || input.value === "bidirectional" && !hasSolar && aggregate.energy_mode !== "bidirectional") {
         input.value = aggregate.energy_mode;
         return;
       }
       patch(aggregate, { energy_mode: input.value, outputs: { ...aggregate.outputs, kwh: input.value === "none" ? false : aggregate.outputs.kwh } });
-    }}>${energyModes.map((mode) => b`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`)}</select><small>kWh uses ESPHome platform: total_daily_energy, integrating this total's Watts rather than adding child kWh.</small></label>
+    }}>${energyModes.filter((mode) => mode !== "bidirectional" || hasSolar || aggregate.energy_mode === mode).map((mode) => b`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`)}</select><small>Import/export totals require an enabled Solar CT. kWh uses ESPHome platform: total_daily_energy, integrating this total's Watts rather than adding child kWh.</small></label>
           <label>Feeds into <select aria-label=${`${aggregate.name} Feeds into`} .value=${parent}
             @change=${(event) => {
       const input = event.target;
@@ -5047,7 +5050,7 @@ class CircuitSetupPanel extends i$2 {
       device: this.selectedDeviceId,
       plan: meter.plan_id,
       hash: meter.source_sha256,
-      channels: meter.configuration.channels.map(({ channel, enabled, role }) => ({ channel, enabled, role })),
+      channels: meter.configuration.channels.map(({ channel, enabled, role, name }) => ({ channel, enabled, role, name })),
       collisions: meter.configuration.aggregates.map((item) => item.aggregate_id).filter((id2) => issuedIds.has(id2)).sort()
     });
   }

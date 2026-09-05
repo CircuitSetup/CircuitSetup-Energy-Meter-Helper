@@ -102,6 +102,28 @@ it("clears and disables kWh for Energy behavior None", () => {
   expect(input("Home kWh")?.checked).toBe(false);
 });
 
+it("offers bidirectional totals only with an enabled Solar CT", () => {
+  const state = mount([total("home", "Home", [ct(1)])]);
+  const option = () => select("home aggregate energy")?.querySelector('[value="bidirectional"]');
+  expect(option()).toBeNull();
+  choose("home aggregate energy", "bidirectional");
+  expect(state.update).not.toHaveBeenCalled();
+  state.response.configuration.channels[2]!.role = "solar";
+  state.response.configuration.channels[2]!.enabled = false;
+  state.draw();
+  expect(option()).toBeNull();
+  state.response.configuration.channels[2]!.enabled = true;
+  state.draw();
+  expect(option()).not.toBeNull();
+  choose("home aggregate energy", "bidirectional");
+  expect(state.configuration().aggregates[0]!.energy_mode).toBe("bidirectional");
+});
+
+it("keeps an existing bidirectional total visible without Solar CTs", () => {
+  mount([{ ...total("home", "Home", [ct(1)]), energy_mode: "bidirectional" }]);
+  expect(select("home aggregate energy")?.value).toBe("bidirectional");
+});
+
 it("allows Watts off while kWh remains on", () => {
   const state = mount([total("home", "Home", [ct(1)])]);
   input("Home Watts")?.click();
