@@ -131,6 +131,8 @@ def _sensor_package(prefix: str, *, main: bool = False) -> str:
                 "        accuracy_decimals: 1\n"
             ) if public else (
                 f'        name: "{prefix}{instance} Voltage {phase.upper()} Calibration"\n'
+                f"        id: {'meter_main' if main else prefix + '_'}"
+                f"{instance}_voltage_{phase}_calibration\n"
                 "        entity_category: diagnostic\n"
                 "        disabled_by_default: true\n"
             )
@@ -293,12 +295,14 @@ def test_rejects_wrong_second_instance_phase_gain(tmp_path: Path) -> None:
             "    phase_b:\n"
             "      voltage:\n"
             '        name: "addon12 Voltage B Calibration"\n'
+            "        id: addon1_2_voltage_b_calibration\n"
             "        entity_category: diagnostic\n"
             "        disabled_by_default: true\n"
             "      gain_voltage: ${voltage_cal2}",
             "    phase_b:\n"
             "      voltage:\n"
             '        name: "addon12 Voltage B Calibration"\n'
+            "        id: addon1_2_voltage_b_calibration\n"
             "        entity_category: diagnostic\n"
             "        disabled_by_default: true\n"
             "      gain_voltage: ${voltage_cal1}",
@@ -310,6 +314,26 @@ def test_rejects_wrong_second_instance_phase_gain(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "voltage gain inheritance" in result.stderr
+
+
+@pytest.mark.parametrize("change", ("missing_id", "renamed_id", "missing_name", "empty_name"))
+def test_rejects_unbindable_diagnostic_voltage_sensor(tmp_path: Path, change: str) -> None:
+    helper_root, firmware_root = _contract_fixture(tmp_path)
+    package = firmware_root / "Software/ESPHome/meter_sensors/6chan_addon1.yaml"
+    source = package.read_text(encoding="utf-8")
+    old, new = {
+        "missing_id": ("        id: addon1_1_voltage_a_calibration\n", ""),
+        "renamed_id": ("id: addon1_1_voltage_a_calibration", "id: renamed_voltage"),
+        "missing_name": ('        name: "addon11 Voltage A Calibration"\n', ""),
+        "empty_name": ('name: "addon11 Voltage A Calibration"', 'name: ""'),
+    }[change]
+    assert old in source
+    package.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+    result = _run_contract(helper_root, firmware_root)
+
+    assert result.returncode != 0
+    assert "voltage sensor defaults" in result.stderr
 
 
 def test_rejects_missing_phase_voltage_sensor_default(tmp_path: Path) -> None:

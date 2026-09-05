@@ -289,8 +289,14 @@ def _verify_sensor_package(path: Path, *, main: bool) -> None:
             if voltage is None:
                 raise SystemExit(f"{path.name}: phase voltage sensor is missing")
             public = main and instance_number == 1 and phase == "a"
+            id_prefix = "meter_main" if main else path.stem.removeprefix("6chan_") + "_"
+            expected_id = (
+                "ic1Volts"
+                if public
+                else f"{id_prefix}{instance_number}_voltage_{phase}_calibration"
+            )
             required = (
-                ("name: Voltage 1", "id: ic1Volts", "accuracy_decimals: 1")
+                ("name: Voltage 1", "accuracy_decimals: 1")
                 if public
                 else ("entity_category: diagnostic", "disabled_by_default: true")
             )
@@ -299,6 +305,14 @@ def _verify_sensor_package(path: Path, *, main: bool) -> None:
                     rf"^        {re.escape(value)}$", voltage.group(1), re.MULTILINE
                 )
                 for value in required
+            ) or not re.search(
+                rf"^        id: {re.escape(expected_id)}$",
+                voltage.group(1),
+                re.MULTILINE,
+            ) or not re.search(
+                r'''^        name:[ \t]*(?:"[^"\s][^"]*"|'[^'\s][^']*'|[^"'#\s].*)$''',
+                voltage.group(1),
+                re.MULTILINE,
             ) or (
                 public
                 and any(
