@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { HelperApi, type HomeAssistant } from "../src/api";
-import { configurationImpact } from "../src/configuration-impact";
 import type { MeterConfiguration, MeterTopology, OffsetReadinessResult } from "../src/types";
 import sanitizerContract from "../../tests/fixtures/task20_sanitized_change.json";
 
@@ -62,16 +61,25 @@ const meterConfiguration: MeterConfiguration = {
       reporting_multiplier: 1, role: "branch", voltage_reference_id: "main",
       custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false,
     })),
+    default_totals: { overall: { watts: true, amps: true, kwh: true }, boards: [] },
+    automatic_totals: [],
+    totals_change_intent: { adopt_managed_totals: false, legacy_parent_decisions: [] },
     aggregates: [{
-      aggregate_id: "main-load", name: "Main load", role: "grid", channels: [1, 2],
-      measurement_method: "two_ct_sum", parent_id: null, energy_mode: "bidirectional",
-      expose_power: true, expose_current: false,
+      aggregate_id: "main-load", name: "Main load", role: "grid", sources: [{ kind: "channel", channel: 1 }, { kind: "channel", channel: 2 }],
+      measurement_method: "two_ct_sum", energy_mode: "bidirectional",
+      outputs: { watts: true, amps: false, kwh: true }, origin: "advanced",
     }],
     power_quality: [true], status_fields: [false], multi_reference_preparation_acknowledged: false,
   },
   capabilities: {
-    configuration_authoritative: true, managed_totals: true, multi_reference: true,
+    configuration_authoritative: true, native_totals_readable: true, native_totals_writable: true,
+    managed_automatic_totals: true, managed_advanced_totals: true, multi_reference: true,
     semantic_source: "helper_managed", reason_codes: [],
+  },
+  totals: {
+    native_sources: [{ source_id: "overall", label: "Overall meter total", leaf_channels: [1, 2, 3, 4, 5, 6], power_id: "totalWattsMain", current_id: "totalAmpsMain", existing_energy_id: "totalEnergyDaily", upstream_defaults: { watts: true, amps: true, kwh: true } }],
+    automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+    migration: { parent_review_required: false, legacy_parent_links: [], native_visibility_confirmation_required: false, native_visibility_resolved: true },
   },
   voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" },
   voltage_transformer_catalog: {
@@ -79,13 +87,16 @@ const meterConfiguration: MeterConfiguration = {
       secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }],
     source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1,
   },
-  ct_catalog: inventory.catalog, warnings: ["slow_interval_extends_calibration"],
-  configuration_impact: { enabled_channel_count: 6, numeric_entity_count: 43, text_entity_count: 0, energy_entity_count: 2, approximate_publications_per_second: 43 / 30 },
+  ct_catalog: inventory.catalog, warnings: ["slow_interval_extends_calibration"], total_details: [],
+  configuration_impact: { enabled_channel_count: 6, numeric_entity_count: 43, text_entity_count: 0, energy_entity_count: 2, public_total_entity_count: 9, internal_total_sensor_count: 1, approximate_publications_per_second: 43 / 30 },
   channels: inventory.channels as MeterConfiguration["channels"], catalog: inventory.catalog,
 };
+const { total_details: _details, ...meterInventory } = meterConfiguration;
+const detailResponse = { plan_id: meterConfiguration.plan_id, source_sha256: meterConfiguration.source_sha256,
+  total_details: meterConfiguration.total_details };
 const transaction = { transaction_id: "tx-1", state: "previewed", source_sha256: "a".repeat(64),
   changes: [], redacted_diff: "- old\n+ new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [],
-  aggregate_entity_mismatch: false, full_meter_configuration_verified: true };
+  purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: true };
 const session = { session_id: "session-1", device_id: "meter-1", state: "ready", safety_acknowledged: true,
   preflight: { issues: [], zeroed_roles: ["reference"] }, entity_role_counts: {},
   offset_capability: { status: "available", repair_reason: null }, offset_disposition: "not_started",
@@ -149,6 +160,7 @@ const offsetResult = { state: "applied_pending_restart_verification", board_inde
   ], unfinished_group_keys: [], retry_allowed: false, error: null };
 
 function validResponse(operation: string): unknown {
+  if (operation === "get_total_details") return detailResponse;
   if (["setup_status", "set_installer_intent", "rescan"].includes(operation)) return { state: "device_discovered", devices: [device] };
   if (operation === "list_meters") return [device];
   if (operation === "get_topology") return topology;
@@ -173,6 +185,51 @@ function validResponse(operation: string): unknown {
 }
 
 describe("HelperApi", () => {
+  it("accepts server purpose and captured stock results without inventing retry or register proof", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    hass.responses.preview_ct_config = { ...transaction, purpose: "offset_preparation" };
+    await expect(api.previewCtConfig("meter-1", "plan", "a".repeat(64), [])).resolves.toMatchObject({ purpose: "offset_preparation" });
+    hass.responses.calibrate_offset = { ...offsetResult, state: "captured_pending_configuration" };
+    await expect(api.calibrateOffset("session-1", 0, 1, true, false)).resolves.toMatchObject({ state: "captured_pending_configuration", retry_allowed: false });
+    hass.responses.calibrate_offset = { ...offsetResult, state: "partial", expected_tables: offsetResult.expected_tables.slice(0, 1),
+      unfinished_group_keys: ["main_2"], error: "Calibration incomplete", retry_allowed: false };
+    await expect(api.calibrateOffset("session-1", 0, 1, true, false)).resolves.toMatchObject({ state: "partial", retry_allowed: false });
+    for (const state of ["gains_verified_offsets_pending", "offset_configuration_selected"]) {
+      hass.responses.get_session = { ...session, state };
+      await expect(api.getSession("session-1")).resolves.toMatchObject({ state });
+    }
+  });
+
+  it("validates exact stock status and nested normal review boundaries", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const status = { backup_available: true, operation_id: "4".repeat(32), stage: 1,
+      targets: ["meter_main1", "meter_main2"], installed: true, cancelled: false, action_ready: false,
+      attempted: ["meter_main1"], completed: [["meter_main1", 1]] };
+    hass.responses.get_offset_preparation = status;
+    await expect(api.getOffsetPreparation("3".repeat(32))).resolves.toEqual(status);
+    hass.responses.preview_offset_preparation = { operation_id: status.operation_id, stage: 1,
+      targets: status.targets, backup_available: true, transaction: { ...transaction, purpose: "offset_preparation",
+        changes: [{ key: "meter.calibrated_offsets", old_value: "existing", new_value: "zero" }] } };
+    await expect(api.previewOffsetPreparation("3".repeat(32), 0, 1, true)).resolves.toMatchObject({ transaction: { purpose: "offset_preparation" } });
+    expect(hass.messages.at(-1)).toEqual({ type: "circuitsetup_energy_meter_helper/preview_offset_preparation", entry_id: "entry-1",
+      session_id: "3".repeat(32), board_index: 0, stage: 1, backup_acknowledged: true });
+    for (const invalid of [{ ...status, action_ready: true, installed: false }, { ...status, stage: true },
+      { ...status, operation_id: "bad" }, { ...status, targets: ["meter_main1", "meter_main1"] }, { ...status, private_binding: {} }]) {
+      hass.responses.get_offset_preparation = invalid;
+      await expect(api.getOffsetPreparation("3".repeat(32))).rejects.toThrow();
+    }
+    const final = { purpose: "offset_finalization", operation_id: status.operation_id, transaction_id: "5".repeat(32),
+      stage: 1, board_index: 0, targets: status.targets, backup_available: true, installed: true, cancelled: false,
+      configuration_selected: true, action_ready: false, register_verified: false, gain_verification_id: null,
+      results: [["meter_main1", 1, [[0, 0], [-32768, 32767], [1, -1]], false]] };
+    hass.responses.get_offset_finalization = final;
+    await expect(api.getOffsetFinalization("3".repeat(32))).resolves.toEqual(final);
+    for (const invalid of [{ ...final, register_verified: true }, { ...final, results: [...final.results, ...final.results] },
+      { ...final, results: [["meter_main1", 1, [[0, 0], [0, 0], [0, 32768]], false]] }, { ...final, raw_logs: [] }]) {
+      hass.responses.get_offset_finalization = invalid;
+      await expect(api.getOffsetFinalization("3".repeat(32))).rejects.toThrow();
+    }
+  });
   it("accepts voltage stability windows for every group assigned to one reference", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
@@ -192,7 +249,7 @@ describe("HelperApi", () => {
 
   it("keeps the slow-interval warning from the full meter configuration", async () => {
     const hass = new FakeHass();
-    hass.responses.get_meter_configuration = meterConfiguration;
+    hass.responses.get_meter_configuration = meterInventory;
 
     await expect(new HelperApi(hass, "entry-1").getMeterConfiguration("meter-1")).resolves.toMatchObject({
       configuration: { meter: { update_interval_s: 30 } }, warnings: ["slow_interval_extends_calibration"],
@@ -201,12 +258,12 @@ describe("HelperApi", () => {
 
   it("decodes the full hash-bound meter configuration plan", async () => {
     const hass = new FakeHass();
-    hass.responses.get_meter_configuration = meterConfiguration;
+    hass.responses.get_meter_configuration = meterInventory;
 
     await expect(new HelperApi(hass, "entry-1").getMeterConfiguration("meter-1")).resolves.toMatchObject({
       plan_id: "b".repeat(32), source_sha256: "a".repeat(64),
       configuration: { meter: { voltage_layout: "standard", update_interval_s: 30 }, aggregates: [{ aggregate_id: "main-load" }] },
-      capabilities: { managed_totals: true }, voltage_topology: { source: "legacy" },
+      capabilities: { native_totals_writable: true }, voltage_topology: { source: "legacy" },
       voltage_transformer_catalog: { presets: [{ default_gain_voltage: 7305 }] }, ct_catalog: inventory.catalog,
       warnings: ["slow_interval_extends_calibration"], channels: inventory.channels, catalog: inventory.catalog,
     });
@@ -215,22 +272,22 @@ describe("HelperApi", () => {
   it("accepts overlapping aggregate memberships from the meter configuration API", async () => {
     const hass = new FakeHass();
     const configuration = {
-      ...meterConfiguration.configuration,
+      ...meterInventory.configuration,
       aggregates: [
-        ...meterConfiguration.configuration.aggregates,
+        ...meterInventory.configuration.aggregates,
         {
-          ...meterConfiguration.configuration.aggregates[0]!,
+          ...meterInventory.configuration.aggregates[0]!,
           aggregate_id: "meter-total",
           name: "Meter total",
-          channels: [1, 2, 3, 4, 5, 6],
+          sources: [1, 2, 3, 4, 5, 6].map((channel) => ({ kind: "channel" as const, channel })),
           measurement_method: "direct" as const,
         },
       ],
     };
     hass.responses.get_meter_configuration = {
-      ...meterConfiguration,
+      ...meterInventory,
       configuration,
-      configuration_impact: configurationImpact(configuration, topology),
+      configuration_impact: { ...meterInventory.configuration_impact, numeric_entity_count: 48, energy_entity_count: 4, approximate_publications_per_second: 48 / 30 },
     };
 
     await expect(new HelperApi(hass, "entry-1").getMeterConfiguration("meter-1"))
@@ -249,24 +306,158 @@ describe("HelperApi", () => {
     });
   });
 
+  it("validates server impact counts and publication arithmetic against each requested interval", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const preview = { plan_id: meterConfiguration.plan_id, source_sha256: meterConfiguration.source_sha256,
+      automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+      graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] },
+      configuration_impact: { ...meterInventory.configuration_impact, public_total_entity_count: 12, internal_total_sensor_count: 7 } };
+    hass.responses.get_meter_configuration = { ...meterInventory, configuration_impact: preview.configuration_impact };
+    await expect(api.getMeterConfiguration("meter-1")).resolves.toMatchObject({ configuration_impact: preview.configuration_impact });
+    for (const interval of [1, 10, 60] as const) {
+      const configuration = { ...meterConfiguration.configuration, meter: { ...meterConfiguration.configuration.meter, update_interval_s: interval } };
+      const valid = { ...preview.configuration_impact, approximate_publications_per_second: 43 / interval };
+      hass.responses.preview_total_graph = { ...preview, configuration_impact: valid };
+      await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, configuration)).resolves.toMatchObject({ configuration_impact: valid });
+      for (const patch of [{ public_total_entity_count: -1 }, { internal_total_sensor_count: 1.5 }, { public_total_entity_count: true }, { internal_total_sensor_count: undefined }, { approximate_publications_per_second: 43 / 30 }, { extra: 1 }]) {
+        hass.responses.preview_total_graph = { ...preview, configuration_impact: { ...valid, ...patch } };
+        await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, configuration)).rejects.toThrow("preview_total_graph");
+      }
+    }
+  });
+
+  it("accepts bounded source-aware Summary evidence and rejects malformed rows", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const row = { total_id: "overall", kind: "native_total", ownership: "source_owned",
+      public_outputs: ["Watts"], internal_outputs: ["Amps"], unverified_outputs: ["kWh"],
+      native_sources: [] };
+    hass.responses.get_meter_configuration = meterInventory;
+    hass.responses.get_total_details = { ...detailResponse, total_details: [row] };
+    await expect(api.getMeterConfiguration("meter-1")).resolves.toMatchObject({ total_details: [row] });
+    for (const rows of [[{ ...row, ownership: "browser" }], [{ ...row, native_sources: ["absent"] }],
+      [{ ...row, public_outputs: [true] }], [{ ...row, public_outputs: ["invented"] }],
+      [{ ...row, total_id: "absent" }], [{ ...row, native_sources: ["overall"] }],
+      [{ ...row, extra: true }], [row, row], Array(45).fill(row)]) {
+      hass.responses.get_total_details = { ...detailResponse, total_details: rows };
+      await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow();
+    }
+  });
+
+  it.each([
+    { total_id: "overall", native_sources: [] },
+    { total_id: "overall", native_sources: ["board-main"] },
+    { total_id: "board-main", native_sources: ["board-addon-1"] },
+  ])("rejects incomplete or misplaced native formula sources: $total_id $native_sources", async (invalid) => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const meter = structuredClone(meterInventory);
+    meter.topology = { ...meter.topology, addon_count: 1, board_count: 2, ct_count: 12, group_count: 4 };
+    meter.configuration.channels.push(...meter.configuration.channels.map((channel) => ({ ...channel, channel: channel.channel + 6 })));
+    meter.channels.push(...meter.channels.map((channel) => ({ ...channel, channel: channel.channel + 6,
+      address: { ...channel.address, channel: channel.channel + 6, board_index: 1 } })));
+    meter.configuration.meter.voltage_references[0]!.group_keys.push("addon1_1", "addon1_2");
+    meter.voltage_topology.references[0]![1].push("addon1_1", "addon1_2");
+    meter.configuration.power_quality.push(true); meter.configuration.status_fields.push(false);
+    meter.configuration.default_totals.boards = [0, 1].map((board_index) => ({ board_index,
+      outputs: { watts: true, amps: true, kwh: true } }));
+    meter.configuration_impact = { ...meter.configuration_impact, enabled_channel_count: 12,
+      numeric_entity_count: 79, approximate_publications_per_second: 79 / 30 };
+    const main = meter.totals.native_sources[0]!;
+    meter.totals.native_sources = [
+      { ...main, leaf_channels: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+      { ...main, source_id: "board-main", label: "Main Board total" },
+      { ...main, source_id: "board-addon-1", label: "Add-on 1 total", leaf_channels: [7, 8, 9, 10, 11, 12] },
+    ];
+    const row = { total_id: "overall", kind: "native_total", ownership: "helper_managed",
+      public_outputs: ["Watts", "Amps", "kWh"], internal_outputs: [], unverified_outputs: [],
+      native_sources: ["board-main", "board-addon-1"] };
+    const valid = [row, { ...row, total_id: "board-main", native_sources: [] },
+      { ...row, total_id: "board-addon-1", native_sources: [] }];
+    hass.responses.get_meter_configuration = meter;
+    hass.responses.get_total_details = { ...detailResponse, total_details: valid };
+    await expect(api.getMeterConfiguration("meter-1")).resolves.toMatchObject({ total_details: valid });
+    hass.responses.get_total_details = { ...detailResponse, total_details: [{ ...row, ...invalid }] };
+    await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_total_details");
+  });
+
+  it("loads separately bound details atomically and keeps existing request source shapes", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const leaf = meterInventory.configuration.aggregates[0]!;
+    const wire = { ...meterInventory, configuration: { ...meterInventory.configuration, aggregates: [leaf,
+      { ...leaf, aggregate_id: "parent", measurement_method: "direct", sources: [{ kind: "aggregate", aggregate_id: "main-load" }] },
+      { ...leaf, aggregate_id: "native", measurement_method: "direct", sources: [{ kind: "native_total", source_id: "overall" }] },
+    ] } };
+    const before = structuredClone(wire);
+    hass.responses.get_meter_configuration = wire;
+    const decoded = await api.getMeterConfiguration("meter-1");
+    expect(decoded.configuration.aggregates.map((item) => item.sources)).toEqual([
+      [{ kind: "channel", channel: 1 }, { kind: "channel", channel: 2 }],
+      [{ kind: "aggregate", aggregate_id: "main-load" }], [{ kind: "native_total", source_id: "overall" }],
+    ]);
+    expect(wire).toEqual(before);
+    expect(hass.messages).toEqual([
+      { type: "circuitsetup_energy_meter_helper/get_meter_configuration", entry_id: "entry-1", device_id: "meter-1" },
+      { type: "circuitsetup_energy_meter_helper/get_total_details", entry_id: "entry-1", device_id: "meter-1",
+        plan_id: wire.plan_id, source_sha256: wire.source_sha256 },
+    ]);
+    hass.responses.preview_meter_configuration = transaction;
+    await api.previewMeterConfiguration("meter-1", decoded.plan_id, decoded.source_sha256, decoded.configuration);
+    expect(hass.messages.at(-1)).toMatchObject({ configuration: decoded.configuration });
+    for (const invalid of [{ ...detailResponse, plan_id: "c".repeat(32) },
+      { ...detailResponse, source_sha256: "c".repeat(64) }, { ...detailResponse, extra: true },
+      { plan_id: wire.plan_id, source_sha256: wire.source_sha256 }]) {
+      hass.responses.get_total_details = invalid;
+      await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_total_details");
+    }
+    hass.responses.get_total_details = Promise.reject(new Error("detail unavailable"));
+    await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("detail unavailable");
+  });
+
+  it("validates the read-only graph preview and binds it to the requested plan", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const preview = { plan_id: "b".repeat(32), source_sha256: "a".repeat(64), automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], configuration_impact: meterConfiguration.configuration_impact, graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
+    hass.responses.preview_total_graph = preview;
+    await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, meterConfiguration.configuration)).resolves.toEqual(preview);
+    expect(hass.messages[0]).toMatchObject({ type: "circuitsetup_energy_meter_helper/preview_total_graph", configuration: meterConfiguration.configuration });
+    for (const invalid of [
+      { ...preview, plan_id: "other" }, { ...preview, source_sha256: "c".repeat(64) },
+      { ...preview, graph: { ...preview.graph, native_visibility: [{ sensor_id: "totalWatts", internal: 1 }] } },
+      { ...preview, graph: { ...preview.graph, leaf_channels: { invalid: [0] } } },
+    ]) { hass.responses.preview_total_graph = invalid; await expect(api.previewTotalGraph("meter-1", preview.plan_id, preview.source_sha256, meterConfiguration.configuration)).rejects.toThrow("preview_total_graph"); }
+  });
+
+  it("rejects malformed total sources, outputs, capabilities, and intent", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const config = meterInventory.configuration;
+    for (const source of [{ kind: "native_total", source_id: "overall", power_id: "injected" }, { kind: "native_total", source_id: "unknown" }, { kind: "unexpected", channel: 1 }, { kind: "channel", channel: true }]) {
+      hass.responses.get_meter_configuration = { ...meterInventory, configuration: { ...config, aggregates: [{ ...config.aggregates[0], sources: [source] }] } };
+      await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration");
+    }
+    for (const invalid of [
+      { ...meterInventory, capabilities: { ...meterConfiguration.capabilities, native_totals_writable: undefined } },
+      { ...meterInventory, configuration: { ...config, default_totals: { overall: { watts: 1, amps: false, kwh: true }, boards: [] } } },
+      { ...meterInventory, configuration: { ...config, automatic_totals: [{ candidate_id: "unknown", enabled: true, outputs: { watts: true, amps: false, kwh: true } }] } },
+      { ...meterInventory, configuration: { ...config, totals_change_intent: { adopt_managed_totals: 1, legacy_parent_decisions: [] } } },
+    ]) { hass.responses.get_meter_configuration = invalid; await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration"); }
+  });
+
   it("rejects malformed full meter configuration nesting before rendering", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
-    const inconsistentReferences = { ...meterConfiguration.configuration,
-      meter: { ...meterConfiguration.configuration.meter, voltage_layout: "multi_reference" as const, voltage_references: [
-        { ...meterConfiguration.configuration.meter.voltage_references[0]!, group_keys: ["main_1"] },
-        { ...meterConfiguration.configuration.meter.voltage_references[0]!, reference_id: "reference-2", label: "Reference 2", group_keys: ["main_2"] },
+    const inconsistentReferences = { ...meterInventory.configuration,
+      meter: { ...meterInventory.configuration.meter, voltage_layout: "multi_reference" as const, voltage_references: [
+        { ...meterInventory.configuration.meter.voltage_references[0]!, group_keys: ["main_1"] },
+        { ...meterInventory.configuration.meter.voltage_references[0]!, reference_id: "reference-2", label: "Reference 2", group_keys: ["main_2"] },
       ] } };
     for (const invalid of [
-      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, meter: { ...meterConfiguration.configuration.meter, voltage_references: [{ ...meterConfiguration.configuration.meter.voltage_references[0], gain_voltage: Number.NaN }] } } },
-      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, channels: [{ ...meterConfiguration.configuration.channels[0], role: "invented" }] } },
-      { ...meterConfiguration, configuration: inconsistentReferences,
-        configuration_impact: configurationImpact(inconsistentReferences, topology),
+      { ...meterInventory, configuration: { ...meterInventory.configuration, meter: { ...meterInventory.configuration.meter, voltage_references: [{ ...meterInventory.configuration.meter.voltage_references[0], gain_voltage: Number.NaN }] } } },
+      { ...meterInventory, configuration: { ...meterInventory.configuration, channels: [{ ...meterInventory.configuration.channels[0], role: "invented" }] } },
+      { ...meterInventory, configuration: inconsistentReferences,
+        configuration_impact: meterConfiguration.configuration_impact,
         voltage_topology: { references: [["main", ["main_1"]], ["reference-2", ["main_2"]]], source: "helper" } },
-      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, aggregates: [{ ...meterConfiguration.configuration.aggregates[0], channels: ["1"] }] } },
-      { ...meterConfiguration, voltage_transformer_catalog: { ...meterConfiguration.voltage_transformer_catalog, presets: [{ ...meterConfiguration.voltage_transformer_catalog.presets[0], default_gain_voltage: "7305" }] } },
-      { ...meterConfiguration, configuration_impact: { enabled_channel_count: 6, numeric_entity_count: -1, text_entity_count: 0, energy_entity_count: 2, approximate_publications_per_second: 43 / 30 } },
-      { ...meterConfiguration, configuration_impact: { enabled_channel_count: 6, numeric_entity_count: 43, text_entity_count: 1, energy_entity_count: 2, approximate_publications_per_second: 44 / 30 } },
+      { ...meterInventory, configuration: { ...meterInventory.configuration, aggregates: [{ ...meterInventory.configuration.aggregates[0], channels: ["1"] }] } },
+      { ...meterInventory, voltage_transformer_catalog: { ...meterConfiguration.voltage_transformer_catalog, presets: [{ ...meterConfiguration.voltage_transformer_catalog.presets[0], default_gain_voltage: "7305" }] } },
+      { ...meterInventory, configuration_impact: { enabled_channel_count: 6, numeric_entity_count: -1, text_entity_count: 0, energy_entity_count: 2, approximate_publications_per_second: 43 / 30 } },
+      { ...meterInventory, configuration_impact: { enabled_channel_count: 6, numeric_entity_count: 43, text_entity_count: 1, energy_entity_count: 2, approximate_publications_per_second: 44 / 30 } },
     ]) {
       hass.responses.get_meter_configuration = invalid;
       await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration");
@@ -276,17 +467,17 @@ describe("HelperApi", () => {
   it("requires every full-plan boundary and rejects unsupported nested fields", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");
-    const withoutTopology = { ...meterConfiguration } as Partial<typeof meterConfiguration>;
+    const withoutTopology = { ...meterInventory } as Partial<typeof meterInventory>;
     delete withoutTopology.topology;
     for (const invalid of [
       withoutTopology,
-      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, aggregates: [{ ...meterConfiguration.configuration.aggregates[0], channels: [7] }] } },
-      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, aggregates: [{ ...meterConfiguration.configuration.aggregates[0], measurement_method: "two_ct_sum", channels: [1] }] } },
-      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, aggregates: [{ ...meterConfiguration.configuration.aggregates[0], parent_id: "missing" }] } },
-      { ...meterConfiguration, configuration: { ...meterConfiguration.configuration, meter: { ...meterConfiguration.configuration.meter, voltage_references: [{ ...meterConfiguration.configuration.meter.voltage_references[0], group_keys: ["main_1", "main_1"] }] } } },
-      { ...meterConfiguration, voltage_topology: { ...meterConfiguration.voltage_topology, references: [["main", ["main_1"]]] } },
-      { ...meterConfiguration, voltage_transformer_catalog: { ...meterConfiguration.voltage_transformer_catalog, source_ref: "a".repeat(39) } },
-      { ...meterConfiguration, ct_catalog: { ...meterConfiguration.ct_catalog, extra: true } },
+      { ...meterInventory, configuration: { ...meterInventory.configuration, aggregates: [{ ...meterInventory.configuration.aggregates[0], channels: [7] }] } },
+      { ...meterInventory, configuration: { ...meterInventory.configuration, aggregates: [{ ...meterInventory.configuration.aggregates[0], measurement_method: "two_ct_sum", channels: [1] }] } },
+      { ...meterInventory, configuration: { ...meterInventory.configuration, aggregates: [{ ...meterInventory.configuration.aggregates[0], parent_id: "missing" }] } },
+      { ...meterInventory, configuration: { ...meterInventory.configuration, meter: { ...meterInventory.configuration.meter, voltage_references: [{ ...meterInventory.configuration.meter.voltage_references[0], group_keys: ["main_1", "main_1"] }] } } },
+      { ...meterInventory, voltage_topology: { ...meterConfiguration.voltage_topology, references: [["main", ["main_1"]]] } },
+      { ...meterInventory, voltage_transformer_catalog: { ...meterConfiguration.voltage_transformer_catalog, source_ref: "a".repeat(39) } },
+      { ...meterInventory, ct_catalog: { ...meterConfiguration.ct_catalog, extra: true } },
     ]) {
       hass.responses.get_meter_configuration = invalid;
       await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration");
@@ -316,7 +507,7 @@ describe("HelperApi", () => {
     const api = new HelperApi(hass, "entry-1");
     hass.responses.preview_ct_config = transaction;
     await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({
-      aggregate_entity_mismatch: false, full_meter_configuration_verified: true,
+      purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: true,
     });
     for (const field of ["aggregate_entity_mismatch", "full_meter_configuration_verified"] as const) {
       const invalid = { ...transaction } as Partial<typeof transaction>;
@@ -353,7 +544,7 @@ describe("HelperApi", () => {
       { ...configuration, aggregates: [{ ...configuration.aggregates[0], aggregate_id: "Main_Load" }] },
     ];
     for (const invalid of invalidConfigurations) {
-      hass.responses.get_meter_configuration = { ...meterConfiguration, configuration: invalid };
+      hass.responses.get_meter_configuration = { ...meterInventory, configuration: invalid };
       await expect(api.getMeterConfiguration("meter-1")).rejects.toThrow("get_meter_configuration");
     }
     for (const field of ["display_label", "stored_selection_present"] as const) {

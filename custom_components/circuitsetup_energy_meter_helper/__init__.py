@@ -16,6 +16,7 @@ from .ct_catalog import CTPresetCatalog
 from .device_builder import _wait_for_owned_cleanup
 from .diagnostics import async_get_config_entry_diagnostics
 from .esphome_api import ESPHomeApiSession
+from .offset_recovery import OffsetRecovery
 from .panel import async_register_panel, async_unregister_panel
 from .provisioning import ProvisioningCoordinator
 from .session_manager import SessionManager
@@ -58,6 +59,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_start()
         sessions = SessionManager()
         store = HelperStore(hass)
+        offset_recovery = OffsetRecovery(hass, sessions)
         esphome_entry_id = getattr(entry, "data", {}).get(CONF_ESPHOME_ENTRY_ID)
         api_session = (
             ESPHomeApiSession(hass, esphome_entry_id) if esphome_entry_id else None
@@ -70,9 +72,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             esphome_entry_id,
             api_session,
             device_builder,
+            offset_recovery=offset_recovery,
         )
         transactions = (
-            ConfigTransactionManager(device_builder, workflow, store, sessions)
+            ConfigTransactionManager(
+                device_builder,
+                workflow,
+                store,
+                sessions,
+                offset_recovery=offset_recovery,
+            )
             if device_builder is not None and api_session is not None
             else None
         )

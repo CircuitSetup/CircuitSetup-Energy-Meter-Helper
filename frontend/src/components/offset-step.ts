@@ -1,6 +1,6 @@
 import { html, nothing, type TemplateResult } from "lit";
 
-import type { MeterTopology, OffsetCalibrationResult, OffsetReadinessResult, SessionStatus } from "../types";
+import type { MeterTopology, OffsetCalibrationResult, OffsetReadinessResult, OffsetPreparationStatus, SessionStatus } from "../types";
 import { moveTab } from "./tab-keyboard";
 
 const boardLabel = (index: number) => index === 0 ? "Main Board" : `Add-on ${index}`;
@@ -26,6 +26,7 @@ export function offsetStep(
   skip: () => void,
   back: () => void,
   continueToVoltage: () => void,
+  stock: { preparation: OffsetPreparationStatus | null; backupAcknowledged: boolean; setBackup: (value: boolean) => void; prepare: () => void } | null = null,
 ): TemplateResult {
   const capability = session?.offset_capability;
   const boards = session?.offset_boards ?? [];
@@ -33,7 +34,12 @@ export function offsetStep(
     || session?.offset_disposition === "partial" && session.state === "applied_pending_restart_verification";
   const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
-  const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate";
+  const preparation = stock?.preparation;
+  const selectedInstances = groupKeys(board).map((id) => id.replace("main_", "meter_main"));
+  const matching = preparation?.stage === stage && preparation.targets.length > 0 && preparation.targets.every((id) => selectedInstances.includes(id));
+  const attempted = Boolean(matching && preparation?.attempted.length);
+  const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate" || attempted && stageState !== "completed";
+  const actionReady = !stock || Boolean(matching && preparation?.action_ready && !attempted);
   const unavailable = capability?.status !== "available";
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
@@ -68,7 +74,17 @@ export function offsetStep(
         </div>
         <div id="offset-board-panel" role="tabpanel" aria-labelledby=${`offset-board-tab-${board}`}>
           <h2>Optional offset calibration · Stage ${stage} · ${boardLabel(board)}</h2>
-          <p>Offset calibration is optional and requires changing the power and wiring state as described below. Offset values remain stored in meter flash.</p>
+          <p>Offset calibration is optional and requires changing the power and wiring state as described below. ${stock ? "Captured values remain pending until reviewed configuration installation and selection are confirmed." : "Offset values remain stored in meter flash."}</p>
+          ${stock ? html`<section class="measurement-evidence" aria-label="Offset preparation backup">
+            <h3>Backup and preparation</h3>
+            <p>${preparation?.backup_available ? "Private backup retained; captured results are preserved." : "A private backup is required before installing the selected zero baseline."}</p>
+            <p>Preparation requires exact saved/effective per-chip tables for Stage ${stage}. Missing evidence is unavailable, not zero. Saved-source labels alone do not authorize calibration.</p>
+            ${matching && preparation?.installed ? html`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review and install a fresh preparation for unfinished chips; retained values are not lost."}</p>` : nothing}
+            <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event: Event) => stock.setBackup((event.target as HTMLInputElement).checked)}> I acknowledge the private backup and reviewed zero-baseline installation.</label>
+            <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
+              @click=${stock.prepare}>${recovery ? "Review unfinished-chip preparation" : "Review offset preparation"}</button>
+            ${attempted ? html`<p>This receipt was already attempted. Retry requires a new reviewed installation for only unfinished chips; completed values, including zeros, are retained.</p>` : nothing}
+          </section>` : nothing}
           <div class="warning-band"><strong>Warning:</strong> An open-circuit current-output CT on a live conductor can be hazardous. De-energize conductors before unplugging any CT.</div>
           ${stage === 1 ? html`
             <p>First, de-energize all conductors. Then unplug the voltage transformer/AC voltage input and CT inputs, power the meter from USB only, then check that every voltage/current phase reads near zero.</p>
@@ -84,7 +100,7 @@ export function offsetStep(
               ${busy ? "Checking measured readiness…" : "Check measured readiness"}
             </button>
             <button class="primary" data-action="calibrate-offset"
-              ?disabled=${busy || !acknowledged || !readiness?.ready || stageState === "completed" || recovery && !retryConfirmed}
+              ?disabled=${busy || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
               @click=${calibrate}>${result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
           </div>
           ${readiness ? html`
@@ -118,7 +134,7 @@ export function offsetStep(
                     : savedSources.get(key) === "flash" ? "Saved offsets detected; this run will recalibrate this chip."
                       : savedSources.get(key) === "configuration" ? "Configuration offsets reported; this run will calibrate this chip."
                         : "Saved-offset status unknown; this run still requires fresh calibration."}</td>
-                <td>${tableByGroup.has(key) || stageState === "completed" ? "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
+                <td>${tableByGroup.has(key) || stageState === "completed" ? stock ? "Captured; pending configuration installation." : "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
                 <td>${tableByGroup.has(key) ? tableByGroup.get(key)!.map(([first, second]) => `${first}/${second}`).join(", ") : "—"}</td></tr>`)}
             </tbody></table>
           </section>
@@ -131,7 +147,7 @@ export function offsetStep(
         </div>
       `}
       <footer class="action-footer offset-footer">
-        <button class="secondary" @click=${back}>Back</button>
+        <button class="secondary" ?disabled=${busy} @click=${back}>Back</button>
         <button class="secondary" data-action="skip-offset" ?disabled=${busy || finalized} @click=${skip}>Skip offset calibration</button>
         <button class="primary" ?disabled=${busy || !finalized} @click=${continueToVoltage}>Continue</button>
       </footer>

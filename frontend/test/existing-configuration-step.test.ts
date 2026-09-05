@@ -6,7 +6,9 @@ import { meterResponse } from "./workflow-scenarios";
 
 const configuration = meterResponse();
 configuration.capabilities.semantic_source = "legacy_inferred";
-configuration.capabilities.managed_totals = false;
+configuration.capabilities.native_totals_writable = false;
+configuration.capabilities.managed_automatic_totals = false;
+configuration.capabilities.managed_advanced_totals = false;
 configuration.capabilities.reason_codes = ["electrical_profile_requires_confirmation", "legacy_generic_totals_unmanaged", "config_contract_upgrade_required"];
 configuration.warnings = ["stored_semantics_stale"];
 

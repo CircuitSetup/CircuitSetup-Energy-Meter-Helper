@@ -19,6 +19,8 @@ export type CalibrationPlan =
 export type TransactionPurpose =
   | "install_configuration"
   | "save_calibration"
+  | "offset_preparation"
+  | "offset_finalization"
   | null;
 
 export type WorkflowRoute =
@@ -84,6 +86,8 @@ export interface WorkflowContext {
   handoffAvailable: boolean;
   handoffInstalled: boolean;
   completedWithoutCalibration: boolean;
+  offsetRecoveryPending?: boolean;
+  offsetConfigurationSelected?: boolean;
 }
 
 export function configurationModeFor(input: {
@@ -119,6 +123,7 @@ export function workflowRoutes(context: WorkflowContext): WorkflowRoute[] {
   if (context.calibrationPlan === "standard" || context.calibrationPlan === "full") {
     routes.push("safety");
     if (context.calibrationPlan === "full") routes.push("offset");
+    if (context.transactionPurpose === "offset_preparation" && !routes.includes("install-configuration")) routes.push("install-configuration");
     routes.push("voltage", "current");
     if (restartRequired(context)) routes.push("restart");
     if (context.configurationMode !== "runtime_only" && saveCalibrationRequired(context)) {
@@ -170,6 +175,15 @@ export function previousWorkflowRoute(
 }
 
 export function resumeWorkflowRoute(context: WorkflowContext): WorkflowRoute {
+  if (context.transactionPurpose === "offset_preparation") return "install-configuration";
+  if (context.transactionPurpose === "offset_finalization") return "save-calibration";
+  if (context.normalTransactionActive) return "install-configuration";
+  if (context.offsetConfigurationSelected && !context.offsetRecoveryPending) return "summary";
+  if (context.sessionState === "safety_required" || context.sessionState === "preflight_failed") return "safety";
+  if (context.offsetRecoveryPending) {
+    return context.sessionState === "gains_verified_offsets_pending" || ["completed", "skipped"].includes(context.offsetDisposition ?? "")
+      ? "save-calibration" : "offset";
+  }
   if (context.transactionPurpose === "save_calibration"
     && (context.handoffAvailable || context.handoffInstalled)) {
     return "save-calibration";
@@ -201,7 +215,7 @@ function restartRequired(context: WorkflowContext): boolean {
 }
 
 function saveCalibrationRequired(context: WorkflowContext): boolean {
-  return context.handoffAvailable
+  return context.offsetRecoveryPending || context.offsetConfigurationSelected || context.transactionPurpose === "offset_finalization" || context.handoffAvailable
     || context.handoffInstalled
     || context.transactionPurpose === "save_calibration";
 }

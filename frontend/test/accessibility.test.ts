@@ -2,6 +2,10 @@ import { render } from "lit";
 import "../src/index";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
+import { defaultTotalsSection } from "../src/components/default-totals-section";
+import { automaticTotalsSection } from "../src/components/automatic-totals-section";
+import { advancedTotalsEditor } from "../src/components/advanced-totals-editor";
+import { totalsMigrationReview } from "../src/components/totals-migration-review";
 import { currentStep } from "../src/components/current-step";
 import { espWebInstaller } from "../src/components/esp-web-installer";
 import { meterSettingsStep } from "../src/components/meter-settings-step";
@@ -25,6 +29,18 @@ const topology: MeterTopology = {
 };
 
 const noop = () => undefined;
+
+it("groups legacy choices by relationship with a described disabled acceptance button", () => {
+  const meter = meterResponse();
+  meter.configuration.aggregates = ["child", "parent"].map((id, index) => ({ aggregate_id: id, name: id, role: "custom",
+    sources: [{ kind: "channel", channel: index + 1 }], measurement_method: "direct", energy_mode: "none", outputs: { watts: true, amps: false, kwh: false }, origin: "migrated" }));
+  meter.totals.migration.legacy_parent_links = [{ child_id: "child", proposed_parent_id: "parent" }];
+  const root = mount(totalsMigrationReview(meter, noop));
+  expect(root.querySelector("fieldset legend")?.textContent).toBe("child → parent");
+  const button = [...root.querySelectorAll("button")].find((item) => item.textContent === "Use this parent relationship")!;
+  expect(button.disabled).toBe(true);
+  expect(root.querySelector(`#${button.getAttribute("aria-describedby")}`)?.textContent).toContain("cannot mix CTs");
+});
 let container: HTMLDivElement;
 
 afterEach(() => container?.remove());
@@ -71,6 +87,52 @@ it("gives the firmware activation control the panel target size and focus treatm
   expect(panelStyles.cssText).toContain(".esp-web-installer [slot=\"activate\"]");
   expect(panelStyles.cssText).toContain("min-height: 44px");
   expect(panelStyles.cssText).toContain(".esp-web-installer [slot=\"activate\"]:focus-visible");
+});
+
+it("keeps default total switches explicitly named and visible in the narrow layout", () => {
+  const response = meterResponse();
+  container = document.createElement("div");
+  document.body.append(container);
+  render(defaultTotalsSection(response.configuration, response.totals, true, true, noop), container);
+
+  expect([...container.querySelectorAll<HTMLInputElement>('[role="switch"]')].map((input) => input.getAttribute("aria-label"))).toEqual([
+    "Overall meter total Watts", "Overall meter total Amps", "Overall meter total kWh",
+  ]);
+  expect(panelStyles.cssText).toContain(".default-total-controls { align-items: stretch; flex-direction: column;");
+});
+
+it("names suggested total controls and keeps them visible in the narrow layout", () => {
+  const response = meterResponse();
+  const candidate = { candidate_id: "grid-ct1-ct2", aggregate_id: "auto-grid", name: "Service mains", role: "grid" as const,
+    sources: [{ kind: "channel" as const, channel: 1 }, { kind: "channel" as const, channel: 2 }], measurement_method: "two_ct_sum" as const,
+    energy_mode: "bidirectional" as const, recommended_outputs: { watts: true, amps: false, kwh: true } };
+  response.totals.automatic_candidates = [candidate]; response.totals.automatic_totals = [{ candidate, enabled: true, outputs: candidate.recommended_outputs }];
+  response.configuration.automatic_totals = [{ candidate_id: candidate.candidate_id, enabled: true, outputs: candidate.recommended_outputs }];
+  container = document.createElement("div"); document.body.append(container);
+  render(automaticTotalsSection(response.configuration, response.totals, true, noop), container);
+
+  expect([...container.querySelectorAll<HTMLInputElement>('[role="switch"]')].map((input) => input.getAttribute("aria-label"))).toEqual([
+    "Create Service mains total", "Service mains Watts", "Service mains Amps", "Service mains kWh",
+  ]);
+  expect(panelStyles.cssText).toContain(".automatic-total-controls { align-items: stretch; flex-direction: column;");
+});
+
+it("supports keyboard-focused hierarchical source controls and named source groups", () => {
+  const response = meterResponse();
+  response.configuration.aggregates = [{ aggregate_id: "home", name: "Home", role: "custom", sources: [],
+    measurement_method: "direct", energy_mode: "consumption", outputs: { watts: true, amps: false, kwh: true }, origin: "advanced" }];
+  const update = vi.fn();
+  const root = mount(advancedTotalsEditor(response.configuration, new Map(), update, true, "", response.totals));
+  const summary = root.querySelector<HTMLElement>(".advanced-totals > summary")!;
+  summary.focus(); summary.click();
+  expect(document.activeElement).toBe(summary);
+  expect(root.querySelector<HTMLDetailsElement>(".advanced-totals")?.open).toBe(true);
+  const source = root.querySelector<HTMLInputElement>('[aria-label="Home: Overall meter total"]')!;
+  source.focus(); source.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true })); source.click();
+  expect(document.activeElement).toBe(source);
+  expect(update).toHaveBeenCalledWith(expect.objectContaining({ aggregates: [expect.objectContaining({ sources: [{ kind: "native_total", source_id: "overall" }] })] }));
+  expect(source.closest("fieldset")?.querySelector("legend")?.textContent).toBe("Native totals");
+  expect(panelStyles.cssText).toContain(".aggregate-source-options { grid-template-columns: 1fr;");
 });
 
 it("keeps Setup Device free of legacy installer and IO0 controls", () => {

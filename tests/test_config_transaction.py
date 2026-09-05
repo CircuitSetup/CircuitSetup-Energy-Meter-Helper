@@ -26,6 +26,7 @@ from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator imp
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     ChannelSettings,
+    ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
     ElectricalSystem,
@@ -33,6 +34,7 @@ from custom_components.circuitsetup_energy_meter_helper.meter_configuration impo
     MeasurementMethod,
     MeterConfigurationRequest,
     MeterSettings,
+    TotalOutputSettings,
     VoltageLayout,
     VoltageReferenceConfig,
 )
@@ -40,6 +42,7 @@ from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
     MeterTopology,
     StoredCTSelection,
+    StoredMeterRecord,
     SubstitutionChange,
 )
 from custom_components.circuitsetup_energy_meter_helper.session_manager import (
@@ -47,6 +50,9 @@ from custom_components.circuitsetup_energy_meter_helper.session_manager import (
 )
 from custom_components.circuitsetup_energy_meter_helper.store import (
     StoredMeterConfiguration,
+)
+from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+    default_total_settings,
 )
 
 
@@ -192,6 +198,15 @@ class UncertainUpdateBuilder(Builder):
 
 
 class Persistence:
+    async def async_advance_offset_configuration_source(
+        self,
+        mac: str,
+        expected_source_sha256: str,
+        proposed_sha256: str,
+        record: StoredMeterRecord,
+    ) -> bool:
+        return False  # This fake has no authoritative meter metadata; real Store tests cover advancement.
+
     def __init__(
         self,
         error: BaseException | None = None,
@@ -358,15 +373,17 @@ def _meter_configuration(plan: ConfigMutationPlan) -> StoredMeterConfiguration:
         "grid",
         "Grid",
         CircuitRole.GRID,
-        (1, 2),
+        (ChannelTotalSource("channel", 1), ChannelTotalSource("channel", 2)),
         MeasurementMethod.TWO_CT_SUM,
-        None,
         EnergyMode.CONSUMPTION,
+        TotalOutputSettings(True, False, True),
     )
     return StoredMeterConfiguration(
         config_sha256,
         meter,
         channels,
+        default_total_settings(_topology()),
+        (),
         (aggregate,),
         (False,),
         (False,),
@@ -375,6 +392,131 @@ def _meter_configuration(plan: ConfigMutationPlan) -> StoredMeterConfiguration:
             for channel in range(1, 7)
         ),
     )
+
+
+def _supported_source_totals(count: int) -> str:
+    return "sensor:\n" + "".join(
+        "  - platform: template\n"
+        f"    id: totalExternal{index}{kind}\n"
+        f"    name: External {index} {kind}\n"
+        f"    lambda: return id(ct1{kind}).state;\n"
+        f"    unit_of_measurement: {unit}\n"
+        f"    device_class: {device_class}\n"
+        for index in range(count)
+        for kind, unit, device_class in (
+            ("Watts", "W", "power"),
+            ("Amps", "A", "current"),
+        )
+    )
+
+
+def test_reconnect_evidence_accepts_simultaneous_supported_maximum() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.config_document import (
+        ESPHomeConfigDocument,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        _validate_expected_sensor_entities,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AutomaticTotalSettings,
+        ChannelTotalSource,
+        TotalOutputSettings,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+        automatic_total_candidates,
+    )
+    from tests.test_meter_configuration import request, topology
+
+    configuration = request(addons=6)
+    refs = tuple(
+        replace(
+            configuration.meter.voltage_references[0],
+            reference_id=f"ref{index}",
+            label=f"Reference {index}",
+            group_keys=(group,),
+        )
+        for index, group in enumerate(
+            configuration.meter.voltage_references[0].group_keys
+        )
+    )
+    roles = (
+        CircuitRole.GRID,
+        CircuitRole.SOLAR,
+        CircuitRole.SUBPANEL,
+        CircuitRole.TWO_POLE,
+    )
+    configuration = replace(
+        configuration,
+        meter=replace(configuration.meter, voltage_references=refs),
+        multi_reference_preparation_acknowledged=True,
+        channels=tuple(
+            replace(
+                channel,
+                role=roles[(channel.channel - 1) // 2]
+                if channel.channel <= 8
+                else CircuitRole.BRANCH,
+                voltage_reference_id=f"ref{(channel.channel - 1) // 3}",
+            )
+            for channel in configuration.channels
+        ),
+        aggregates=tuple(
+            CircuitAggregate(
+                f"load{index}",
+                f"Load {index}",
+                CircuitRole.CUSTOM,
+                (ChannelTotalSource("channel", 1),),
+                MeasurementMethod.DIRECT,
+                EnergyMode.BIDIRECTIONAL,
+                TotalOutputSettings(True, True, True),
+            )
+            for index in range(32)
+        ),
+    )
+    configuration = replace(
+        configuration,
+        automatic_totals=tuple(
+            AutomaticTotalSettings(
+                candidate.candidate_id, True, TotalOutputSettings(True, True, True)
+            )
+            for candidate in automatic_total_candidates(configuration)
+        ),
+    )
+    evidence = expected_meter_entity_evidence(configuration, topology(6))
+    assert len(evidence.sensor_entities) == 259
+    _validate_expected_sensor_entities(evidence.sensor_entities)
+    document = ESPHomeConfigDocument.parse(_supported_source_totals(40))
+    evidence = expected_meter_entity_evidence(
+        configuration, topology(6), document=document, native_visibility_resolved=True
+    )
+    assert len(evidence.source_owned_sensor_entities) == 80
+    assert len(evidence.sensor_entities) == 339
+    _validate_expected_sensor_entities(evidence.sensor_entities)
+    _validate_expected_sensor_entities(
+        frozenset((f"s{index}", f"Sensor {index}") for index in range(1024))
+    )
+    with pytest.raises(ValueError):
+        _validate_expected_sensor_entities(
+            frozenset((f"s{index}", f"Sensor {index}") for index in range(1025))
+        )
+
+
+def test_recomputed_source_evidence_overflow_refuses_preview_without_writes() -> None:
+    async def run() -> None:
+        content = _supported_source_totals(513)
+        plan = replace(_plan(content), proposed_content=content)
+        builder = Builder(remote_content=content)
+        manager = _manager(builder, Persistence())
+        with pytest.raises(ValueError, match="expected sensor entities"):
+            await manager.async_preview(
+                "aabbccddeeff",
+                _topology(),
+                plan,
+                _source(content),
+                meter_configuration=_meter_configuration(plan),
+            )
+        assert builder.calls == []
+
+    asyncio.run(run())
 
 
 def _evidence(mac: str = "aabbccddeeff") -> ReconnectEvidence:
@@ -441,6 +583,76 @@ def test_preview_binds_source_and_exposes_only_bounded_safe_dto() -> None:
         bad = ESPHomeConfigSnapshot("meter.yaml", "different", _source().sha256)
         with pytest.raises(ValueError, match="source snapshot"):
             await manager.async_preview("aabbccddeeff", _topology(), _plan(), bad)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ("source_hash", "validation", "compile", "resume"))
+def test_hierarchical_totals_transaction_preserves_graph_and_public_only_evidence(outcome: str) -> None:
+    """A stale source, failed build or reconnect cannot commit a different graph."""
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        sanitize_payload,
+    )
+    from tests.totals_browser_fixture import MAC, Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("child-parent")
+        inventory = sanitize_payload(await fixture.call({"type": "get_meter_configuration"}))
+        draft = inventory["configuration"]
+        draft["default_totals"]["overall"] = {"watts": False, "amps": False, "kwh": False}
+        for aggregate in draft["aggregates"]:
+            aggregate["outputs"] = {"watts": False, "amps": False, "kwh": aggregate["aggregate_id"] == "building"}
+        before = await fixture.store.async_get_meter_configuration(MAC)
+        source = fixture.builder.remote_content
+        message = {"type": "preview_meter_configuration", "plan_id": inventory["plan_id"],
+            "source_sha256": "f" * 64 if outcome == "source_hash" else inventory["source_sha256"], "configuration": draft}
+        if outcome == "source_hash":
+            from custom_components.circuitsetup_energy_meter_helper.workflow import (
+                WorkflowHandleError,
+            )
+            with pytest.raises(WorkflowHandleError):
+                await fixture.call(message)
+            assert "write" not in fixture.builder.calls
+            assert await fixture.store.async_get_meter_configuration(MAC) == before
+            return
+        preview = await fixture.call(message)
+        retained = fixture.manager._transaction(preview.transaction_id)
+        graph = retained.meter_configuration.aggregates
+        assert graph[-1].sources[0].aggregate_id == "east"
+        assert graph[-1].sources[1].aggregate_id == "west"
+        public_ids = {identifier for identifier, _ in retained.expected_sensor_entities}
+        assert public_ids == {"garage_meter_whole_building_energy"}
+        if outcome == "validation":
+            fixture.builder.validation = [Job(False)]
+        if outcome == "compile":
+            fixture.builder.compile = Job(False)
+        written = await fixture.manager.async_confirm_write(preview.transaction_id, "admin")
+        if outcome == "validation":
+            assert written.state is ConfigTransactionState.ROLLED_BACK
+        else:
+            compiled = await fixture.manager.async_compile(preview.transaction_id)
+            if outcome == "compile":
+                assert compiled.state is ConfigTransactionState.FAILED
+            else:
+                public_evidence = fixture.verifier.evidence
+                fixture.verifier.evidence = replace(public_evidence, sensor_entities=frozenset())
+                interrupted = await fixture.manager.async_confirm_install(preview.transaction_id, "admin")
+                assert interrupted.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+                assert fixture.manager.active_status(MAC).transaction_id == preview.transaction_id
+                assert retained.meter_configuration.aggregates == graph
+                assert await fixture.store.async_get_meter_configuration(MAC) == before
+                fixture.verifier.evidence = public_evidence
+                finished = await fixture.manager.async_confirm_install(preview.transaction_id, "admin")
+                assert finished.state is ConfigTransactionState.VERIFIED
+                assert (await fixture.store.async_get_meter_configuration(MAC)).aggregates == graph
+                return
+        assert await fixture.store.async_get_meter_configuration(MAC) == before
+        rollback = written if outcome == "validation" else await fixture.manager.async_rollback(preview.transaction_id)
+        assert rollback.state is ConfigTransactionState.ROLLED_BACK
+        assert fixture.builder.remote_content == source
+        assert fixture.builder.calls.count("restore") == 1
+        assert "csemh_building_power" not in fixture.builder.remote_content
 
     asyncio.run(run())
 
@@ -515,13 +727,8 @@ def test_full_meter_configuration_persists_only_after_verified_reconnect(
         if not with_aggregate:
             configuration = replace(configuration, aggregates=())
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         evidence = ReconnectEvidence(
@@ -592,13 +799,8 @@ def test_calibration_handoff_saves_full_metadata_and_install_marker_together() -
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         persistence = AtomicPersistence()
@@ -642,13 +844,8 @@ def test_missing_full_reconnect_entity_retains_rollbackable_retry_without_persis
         plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         persistence = Persistence()
@@ -712,6 +909,9 @@ def test_legacy_yaml_does_not_require_unmanaged_entity_names_after_install() -> 
                 _topology(),
                 {channel.channel: channel.name for channel in configuration.channels},
                 6,
+                frozenset({("energy_meter_total_watts_main", "Energy meter Total Watts Main"),
+                    ("energy_meter_total_amps_main", "Energy meter Total Amps Main"),
+                    ("energy_meter_total_kwh", "Energy meter Total kWh")}),
             ),
         )
         preview = await manager.async_preview(
@@ -739,13 +939,8 @@ def test_verified_reconnect_marks_only_missing_aggregate_entities() -> None:
         plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         assert expected.aggregate_sensor_entities
@@ -810,13 +1005,8 @@ def test_full_reconnect_requires_exact_sensor_object_id_name_pairs() -> None:
         plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         pairs = tuple(expected.sensor_entities)
@@ -860,16 +1050,12 @@ def test_full_reconnect_rejects_duplicate_required_sensor_object_id() -> None:
         plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
-        duplicate = next(iter(expected.sensor_entities))[0]
+        # Source-unresolved native totals are not required by this managed-block fixture.
+        duplicate = min(expected.aggregate_sensor_entities)[0]
         manager = _manager(
             Builder(),
             Persistence(),
@@ -890,6 +1076,7 @@ def test_full_reconnect_rejects_duplicate_required_sensor_object_id() -> None:
             meter_configuration=configuration,
             expected_sensor_entities=expected.sensor_entities,
         )
+        assert duplicate in {identifier for identifier, _ in manager._transaction(preview.transaction_id).expected_sensor_entities}
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
 
@@ -926,13 +1113,8 @@ def test_cancellation_during_verified_commit_finishes_durable_metadata() -> None
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         persistence = BlockingPersistence()
@@ -1039,13 +1221,8 @@ def test_unload_keeps_started_store_commit_owned_until_terminal_state() -> None:
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         sessions = SessionManager(unload_timeout=0.001)
@@ -1128,13 +1305,8 @@ def test_unload_drains_started_store_failure_before_returning() -> None:
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         sessions = SessionManager(unload_timeout=0.001)
@@ -1210,13 +1382,8 @@ def test_cancelled_unload_drains_started_store_commit_before_propagating() -> No
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         sessions = SessionManager(unload_timeout=0.001)
@@ -1282,13 +1449,8 @@ def test_expiry_release_failure_or_cancellation_always_scrubs_transaction() -> N
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         preview = await manager.async_preview(

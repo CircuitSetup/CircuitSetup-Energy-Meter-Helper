@@ -92,9 +92,13 @@ export const panelStyles = css`
   .error-panel, .recovery-panel { display: grid; gap: 6px; margin-top: 16px; padding: 16px; border: 1px solid var(--danger); border-radius: var(--radius); color: var(--danger); background: var(--surface); }
   .error-panel span, .error-panel li, .recovery-panel p { color: var(--text); }
   .meter-list { display: grid; gap: 10px; }
-  .meter-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); cursor: pointer; }
+  .meter-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px 24px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   .meter-row.selected { border-color: var(--accent); background: var(--surface-alt); }
+  .meter-details { min-width: 0; overflow-wrap: anywhere; }
+  .meter-details strong { display: block; font-size: var(--ha-font-size-l, 16px); }
   .meter-row small { display: block; color: var(--muted); }
+  .meter-status { margin-top: 6px; }
+  .meter-row > button { justify-self: start; }
   .identity-strip { display: flex; flex-wrap: wrap; gap: 16px 28px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   table { width: 100%; border-collapse: collapse; }
   th, td { padding: 12px; border-bottom: 1px solid var(--border); text-align: left; }
@@ -114,6 +118,21 @@ export const panelStyles = css`
   .mobile-label { display: none; }
   .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 16px 30px; background: var(--surface-alt); border-top: 1px solid var(--border); }
   .aggregate-list { display: grid; gap: 16px; margin: 14px 0; }
+  .default-totals { display: grid; gap: 12px; margin: 24px 0; }
+  .default-totals h2, .default-totals p { margin: 0; }
+  .automatic-totals { display: grid; gap: 12px; margin: 24px 0; }
+  .automatic-totals h2, .automatic-totals p { margin: 0; }
+  .automatic-total-card { margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .automatic-total-card > legend { padding: 0 8px; }
+  .automatic-total-controls { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+  .automatic-total-control { display: flex; align-items: center; gap: 8px; min-height: 44px; font-weight: var(--ha-font-weight-bold, 700); }
+  .default-total-card { margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .default-total-card > legend { padding: 0 8px; }
+  .default-total-controls { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+  .totals-migration fieldset { margin-block: 12px; min-width: 0; }
+  .migration-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+  .default-total-control { display: flex; align-items: center; gap: 8px; min-height: 44px; font-weight: var(--ha-font-weight-bold, 700); }
+  .native-total-status { color: var(--muted); }
   .aggregate-card { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   .aggregate-card > legend { padding: 0 8px; }
   .aggregate-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 22px; }
@@ -121,10 +140,14 @@ export const panelStyles = css`
   .aggregate-fields input, .aggregate-fields select { width: 100%; padding: 10px; border: 1px solid var(--border); }
   .aggregate-fields small { color: var(--muted); font-weight: var(--ha-font-weight-normal, 400); }
   .aggregate-channels { margin: 18px 0 14px; }
+  .aggregate-sources { margin: 18px 0; min-width: 0; }
+  .aggregate-source-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .advanced-totals > .aggregate-list, .advanced-totals > p { margin: 14px; }
   .aggregate-channels > legend { font-size: var(--ha-font-size-l, 16px); }
   .aggregate-channel-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .aggregate-channel-group { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); }
-  .aggregate-channel-group h4 { margin: 0 0 8px; }
+  .aggregate-channel-group > summary { font-weight: 600; }
+  .aggregate-channel-group[open] > summary { margin-bottom: 8px; }
   .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .aggregate-channel-option { display: flex; align-items: center; min-width: 0; min-height: 44px; gap: 7px; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface); cursor: pointer; overflow-wrap: anywhere; }
   .aggregate-channel-option input { flex: 0 0 auto; min-height: auto; margin: 0; }
@@ -195,6 +218,7 @@ export const panelStyles = css`
     .product-title { font-size: 23px; text-align: center; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
     .mobile-progress { display: flex; justify-content: space-between; align-items: center; margin: 0 -18px 24px; padding: 12px 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
     h1 { font-size: 22px; }
+    .meter-row { grid-template-columns: minmax(0, 1fr); }
     .addon-options { grid-template-columns: repeat(7, minmax(42px, 1fr)); gap: 6px; }
     .addon-options label { min-height: 52px; }
     .ct-header { display: none; }
@@ -202,7 +226,10 @@ export const panelStyles = css`
     .ct-row > * { min-width: 0; }
     .mobile-label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; }
     .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card, .aggregate-fields, .aggregate-channel-groups { grid-template-columns: 1fr; }
+    .default-total-controls { align-items: stretch; flex-direction: column; }
+    .automatic-total-controls { align-items: stretch; flex-direction: column; }
     .aggregate-channel-group > div { grid-template-columns: 1fr; }
+    .aggregate-source-options { grid-template-columns: 1fr; }
     .existing-configuration .status-list > div { grid-template-columns: 1fr; gap: 2px; }
     .aggregate-actions button { width: 100%; margin-left: 0; }
     .progress-steps { grid-template-columns: 1fr; gap: 8px; }

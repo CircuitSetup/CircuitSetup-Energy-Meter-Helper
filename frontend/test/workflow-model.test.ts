@@ -36,6 +36,15 @@ const context = (changes: Partial<WorkflowContext> = {}): WorkflowContext => ({
 });
 
 describe("workflowRoutes", () => {
+  it("routes stock reviews and pending recovery before generic verified/no-change completion", () => {
+    const stock = context({ calibrationPlan: "full", normalTransactionRequired: false, offsetDisposition: "not_started", offsetRecoveryPending: true });
+    expect(workflowRoutes({ ...stock, transactionPurpose: "offset_preparation" })).toContain("install-configuration");
+    expect(resumeWorkflowRoute({ ...stock, transactionPurpose: "offset_preparation" })).toBe("install-configuration");
+    expect(resumeWorkflowRoute({ ...stock, transactionPurpose: "offset_finalization" })).toBe("save-calibration");
+    expect(resumeWorkflowRoute({ ...stock, sessionState: "gains_verified_offsets_pending", restartVerification: true })).toBe("save-calibration");
+    expect(resumeWorkflowRoute({ ...stock, sessionState: "verified", restartVerification: true })).toBe("offset");
+    expect(resumeWorkflowRoute({ ...stock, sessionState: "offset_configuration_selected", offsetRecoveryPending: false, offsetConfigurationSelected: true })).toBe("summary");
+  });
   const matrix: Array<{
     name: string;
     changes: Partial<WorkflowContext>;

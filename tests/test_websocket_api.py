@@ -545,6 +545,8 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         "adopt_device",
     }:
         base["device_id"] = "meter"
+    elif suffix == "get_total_details":
+        base |= {"device_id": "meter", "plan_id": "plan", "source_sha256": "a" * 64}
     elif suffix == "preview_ct_config":
         base |= {
             "device_id": "meter",
@@ -558,7 +560,7 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
                 }
             ],
         }
-    elif suffix == "preview_meter_configuration":
+    elif suffix in ("preview_meter_configuration", "preview_total_graph"):
         base |= {
             "device_id": "meter",
             "plan_id": "plan",
@@ -582,6 +584,8 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
                     "custom_gain_ct": 27518, "custom_label": "Mains CT",
                 }],
                 "aggregates": [], "power_quality": [True], "status_fields": [False],
+                "default_totals": {"overall": {"watts": True, "amps": True, "kwh": True}, "boards": []},
+                "automatic_totals": [],
             },
         }
     elif suffix == "set_ha_labels":
@@ -610,6 +614,18 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         base |= {"device_id": "meter", "calibration_plan": "standard"}
     elif suffix == "preview_calibrated_gains":
         base |= {"session_id": "3" * 32, "verification_id": "1" * 32}
+    elif suffix in {"get_offset_preparation", "get_offset_finalization", "restart_and_verify_gains", "preview_offset_finalization"}:
+        base["session_id"] = "3" * 32
+    elif suffix == "begin_offset_cycle":
+        base |= {"session_id": "3" * 32, "backup_acknowledged": True}
+    elif suffix == "reconcile_offset_finalization":
+        base |= {"session_id": "3" * 32, "operation_id": "4" * 32}
+    elif suffix in {"preview_offset_preparation", "resume_offset_calibration"}:
+        base |= {"session_id": "3" * 32, "board_index": 0, "stage": 1}
+        if suffix == "preview_offset_preparation":
+            base["backup_acknowledged"] = True
+        else:
+            base |= {"operation_id": "4" * 32, "preparation_acknowledged": True}
     elif suffix == "clear_calibration_flash":
         base |= {
             "session_id": "3" * 32,
@@ -2910,6 +2926,280 @@ def test_ct_preview_schemas_restrict_reporting_multipliers() -> None:
     asyncio.run(run())
 
 
+def test_total_details_read_route_uses_exact_bound_snapshot_and_public_transport() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        READ_COMMANDS,
+    )
+    from tests.totals_browser_fixture import MAC, Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("summary")
+        inventory = await fixture.workflow.async_get_meter_configuration("meter-1")
+        controller = EntryWebsocketController(ProvisioningCoordinator(FakeHass()), SessionManager(), HelperStore(FakeHass()))
+        controller.workflow = fixture.workflow
+        command = f"{DOMAIN}/get_total_details"
+        assert command in READ_COMMANDS
+        schema = vol.Schema(_schema(command))
+        message = {"type": command, "entry_id": "helper", "device_id": "meter-1",
+            "plan_id": inventory["plan_id"], "source_sha256": inventory["source_sha256"]}
+        for invalid in ({**message, "configuration": {}}, {**message, "source_sha256": "invalid"},
+            {key: value for key, value in message.items() if key != "plan_id"}):
+            with pytest.raises(vol.Invalid):
+                schema(invalid)
+        before = list(fixture.builder.calls)
+        stored = await fixture.store.async_get_meter_configuration(MAC)
+        result = sanitize_payload(await controller.async_call(command, schema(message), "non-admin"))
+        assert set(result) == {"plan_id", "source_sha256", "total_details"}
+        assert result["plan_id"] == inventory["plan_id"]
+        assert len(result["total_details"]) == 5
+        assert result["total_details"][0]["public_outputs"] == ["Watts", "Amps", "kWh"]
+        assert fixture.builder.calls == before
+        assert await fixture.store.async_get_meter_configuration(MAC) == stored
+
+    asyncio.run(run())
+
+
+def test_total_graph_preview_route_serializes_server_graph_without_transaction() -> None:
+    from dataclasses import asdict, replace
+
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        CircuitRole,
+    )
+    from tests.test_workflow import _total_preview_workflow
+
+    async def run() -> None:
+        workflow, plan = _total_preview_workflow()
+        controller = EntryWebsocketController(ProvisioningCoordinator(FakeHass()), SessionManager(), HelperStore(FakeHass()))
+        controller.workflow = workflow
+        draft = replace(plan.inventory.configuration, channels=tuple(
+            replace(channel, role=CircuitRole.GRID) if channel.channel in (1, 2) else channel
+            for channel in plan.inventory.configuration.channels
+        ))
+        command = f"{DOMAIN}/preview_total_graph"
+        payload = _schema(command)({"type": command, "entry_id": "helper", "device_id": "meter", "plan_id": "plan", "source_sha256": plan.snapshot.sha256, "configuration": json.loads(json.dumps(asdict(draft)))})
+        result = sanitize_payload(await controller.async_call(command, payload, "user"))
+        assert result["graph"]["leaf_channels"]["auto-mains"] == [1, 2]
+        assert result["configuration_impact"] == {
+            "enabled_channel_count": 6, "numeric_entity_count": 43,
+            "text_entity_count": 6, "energy_entity_count": 2,
+            "approximate_publications_per_second": 4.9,
+            "public_total_entity_count": 5, "internal_total_sensor_count": 0,
+        }
+        assert result["graph"]["ordered_nodes"][0]["sources"][0]["power_id"] == "ct1Watts"
+        assert result["automatic_candidates"][0]["sources"] == [{"kind": "channel", "channel": 1}, {"kind": "channel", "channel": 2}]
+        assert json.loads(json.dumps(result)) == result
+        assert "transaction_id" not in result
+        assert workflow._plans["plan"] is plan
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("success", (False, True))
+@pytest.mark.parametrize("accepted", (False, True))
+def test_parent_decision_cross_route_persists_only_after_verified_install(success: bool, accepted: bool) -> None:
+    """A typed per-link decision survives preview/routes, not a failed upload."""
+    from dataclasses import replace
+
+    from tests.test_config_transaction import Job
+    from tests.totals_browser_fixture import MAC, Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("legacy-parent")
+        controller = EntryWebsocketController(ProvisioningCoordinator(FakeHass()), SessionManager(), fixture.store)
+        controller.workflow = fixture.workflow
+        controller.transactions = fixture.manager
+
+        async def call(operation: str, **args: Any) -> Any:
+            command = f"{DOMAIN}/{operation}"
+            payload = vol.Schema(_schema(command))({"type": command, "entry_id": "helper", "device_id": "meter-1", **args})
+            return sanitize_payload(await controller.async_call(command, payload, "admin"))
+
+        inventory = await call("get_meter_configuration")
+        before = await fixture.store.async_get_meter_configuration(MAC)
+        config = inventory["configuration"]
+        config["totals_change_intent"]["legacy_parent_decisions"] = [
+            {"child_id": "east", "proposed_parent_id": "building", "accepted": accepted}]
+        if accepted:
+            config["aggregates"][-1]["sources"] = [{"kind": "aggregate", "aggregate_id": "east"}]
+        binding = {"plan_id": inventory["plan_id"], "source_sha256": inventory["source_sha256"], "configuration": config}
+        graph = await call("preview_total_graph", **binding)
+        assert graph["graph"]["leaf_channels"]["building"] == ([1] if accepted else [3])
+        assert await fixture.store.async_get_meter_configuration(MAC) == before
+        status = await call("preview_meter_configuration", **binding)
+        retained = fixture.manager._transaction(status["transaction_id"])
+        fixture.verifier.evidence = replace(fixture.verifier.evidence, topology=retained.topology,
+            ct_names={channel.channel: channel.name for channel in retained.meter_configuration.channels},
+            sensor_entities=retained.expected_sensor_entities)
+        transaction = {"transaction_id": status["transaction_id"], "source_sha256": status["source_sha256"]}
+        fixture.builder.upload = Job(success)
+        await call("apply_ct_config", **transaction)
+        await call("compile_ct_config", **transaction)
+        assert await fixture.store.async_get_meter_configuration(MAC) == before
+        final = await call("install_ct_config", **transaction)
+        after = await fixture.store.async_get_meter_configuration(MAC)
+        if success:
+            assert final["state"] == "verified"
+            assert [(link.child_id, link.proposed_parent_id) for link in after.totals_migration.legacy_parent_links] == [("west", "building")]
+            assert after.totals_migration.parent_review_required
+            assert after.config_sha256 == sha256(fixture.builder.remote_content.encode()).hexdigest()
+        else:
+            assert final["state"] == "failed"
+            assert after == before
+        await fixture.manager.sessions.async_unload()
+
+    asyncio.run(run())
+
+
+def test_redacted_diff_preserves_lines_without_weakening_terminal_or_secret_sanitization() -> None:
+    value = "Exact changes\r\n\x1b]hidden\nOSC payload\x07+ id: safe\r~ Metadata added\x00\x85"
+    assert sanitize_payload({"redacted_diff": value}) == {"redacted_diff": "Exact changes\n+ id: safe\n~ Metadata added"}
+    assert sanitize_payload({"detail": value}) == {"detail": "<redacted>"}
+    for unsafe in ("pass\nword=canary", "token:\ncanary", "secret\r\n=canary"):
+        assert sanitize_payload({"redacted_diff": unsafe}) == {"redacted_diff": "<redacted>"}
+    assert len(sanitize_payload({"redacted_diff": "x\n" * 20_000})["redacted_diff"].encode()) <= 32_768
+
+
+def test_largest_total_review_remains_exact_or_visibly_truncated_over_transport() -> None:
+    """The 32-total transport maximum cannot silently lose the technical review."""
+    from dataclasses import replace
+
+    from tests.totals_browser_fixture import MAC, Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("main-only", addons=6)
+        controller = EntryWebsocketController(ProvisioningCoordinator(FakeHass()), SessionManager(), fixture.store)
+        controller.workflow = fixture.workflow
+        controller.transactions = fixture.manager
+
+        async def call(operation: str, **args: Any) -> Any:
+            command = f"{DOMAIN}/{operation}"
+            payload = vol.Schema(_schema(command))({"type": command, "entry_id": "helper", "device_id": "meter-1", **args})
+            return sanitize_payload(await controller.async_call(command, payload, "admin"))
+
+        for prefix in ("before", "after"):
+            inventory = await call("get_meter_configuration")
+            config = inventory["configuration"]
+            config["aggregates"] = [{"aggregate_id": f"{prefix}-{'branch-' * 6}{index}", "name": f"Report {prefix} {index}",
+                "role": "custom", "sources": [{"kind": "channel", "channel": index + 1}], "measurement_method": "direct",
+                "energy_mode": "bidirectional", "outputs": {"watts": True, "amps": True, "kwh": True}, "origin": "advanced"}
+                for index in range(32)]
+            status = await call("preview_meter_configuration", plan_id=inventory["plan_id"], source_sha256=inventory["source_sha256"], configuration=config)
+            transaction = fixture.manager._transaction(status["transaction_id"])
+            raw = transaction.plan.redacted_diff
+            visible = status["redacted_diff"]
+            assert "Exact generated total changes" in visible
+            assert "csemh-aggregate:" not in visible and "lambda:" not in visible
+            assert len(visible.encode()) <= 32_768
+            if len(raw.encode()) > 32_768 or len(raw.splitlines()) > 512:
+                assert visible.endswith("[truncated]")
+            else:
+                assert "Managed totals metadata:" in visible
+                assert f"csemh_{prefix}_branch_branch_branch_branch_branch_branch_31_import_energy" in visible
+            if prefix == "before":
+                fixture.verifier.evidence = replace(fixture.verifier.evidence, topology=transaction.topology,
+                    ct_names={channel.channel: channel.name for channel in transaction.meter_configuration.channels},
+                    current_sensor_count=42,
+                    sensor_entities=transaction.expected_sensor_entities)
+                binding = {"transaction_id": status["transaction_id"], "source_sha256": status["source_sha256"]}
+                await call("apply_ct_config", **binding)
+                await call("compile_ct_config", **binding)
+                assert (await call("install_ct_config", **binding))["state"] == "verified"
+            else:
+                assert len(raw.encode()) > 32_768
+                assert visible.endswith("[truncated]")
+                assert await fixture.store.async_get_meter_configuration(MAC) is not None
+        await fixture.manager.sessions.async_unload()
+
+    asyncio.run(run())
+
+
+def test_browser_fixture_transport_is_local_isolated_and_read_only_on_open() -> None:
+    """Manual fixtures reject foreign origins and isolate explicit reload sessions."""
+    from aiohttp import ClientSession
+    from aiohttp.test_utils import TestServer, unused_port
+
+    from tests.totals_browser_fixture import create_app
+
+    async def run() -> None:
+        port = unused_port()
+        async with TestServer(create_app(port, 4173), host="127.0.0.1", port=port) as server, ClientSession() as client:
+            async with client.get(server.make_url("/health")) as response:
+                assert (await response.json())["service"] == "hierarchical-totals-test-fixture"
+            for headers in ({"Origin": "https://foreign.example"}, {"Host": "foreign.example"}):
+                async with client.get(server.make_url("/health"), headers=headers) as response:
+                    assert response.status == 403
+            async with client.post(server.make_url("/rpc?fixture=main-only"), json={"type": "get_meter_configuration"}) as response:
+                assert response.status == 400
+            url = server.make_url("/api/websocket?fixture=automatic-off&session=one")
+            async with client.ws_connect(url, origin="http://127.0.0.1:4173") as socket:
+                assert (await socket.receive_json())["type"] == "auth_required"
+                await socket.send_json({"type": "auth", "access_token": "playwright-token"})
+                assert (await socket.receive_json())["type"] == "auth_ok"
+                await socket.send_json({"type": "get_meter_configuration", "id": 1})
+                result = (await socket.receive_json())["result"]
+                assert not result["totals"]["automatic_totals"][0]["enabled"]
+            for session, name in (("one", "automatic-off"), ("two", "automatic-on")):
+                async with client.post(server.make_url(f"/rpc?fixture={name}&session={session}"), json={"type": "get_meter_configuration"}) as response:
+                    inventory = await response.json()
+                    assert inventory["totals"]["automatic_totals"][0]["enabled"] is (session == "two")
+                async with client.post(server.make_url(f"/rpc?fixture={name}&session={session}"), json={"type": "fixture_state"}) as response:
+                    assert "write" not in (await response.json())["builder_calls"]
+
+    asyncio.run(run())
+
+
+def test_total_source_request_schema_and_intent_are_strict() -> None:
+    from dataclasses import asdict
+
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        _meter_configuration_request,
+    )
+    from tests.test_meter_configuration import request
+
+    payload = json.loads(json.dumps(asdict(request())))
+    payload["totals_change_intent"] = {"adopt_managed_totals": True, "legacy_parent_decisions": []}
+    payload["aggregates"] = [{
+        "aggregate_id": "house", "name": "House", "role": "custom",
+        "sources": [{"kind": "native_total", "source_id": "overall"}],
+        "measurement_method": "direct", "energy_mode": "consumption",
+        "outputs": {"watts": True, "amps": False, "kwh": True}, "origin": "advanced",
+    }]
+    parsed = _meter_configuration_request(payload)
+    assert parsed.aggregates[0].sources[0].source_id == "overall"
+    assert parsed.totals_change_intent.adopt_managed_totals
+    history = deepcopy(payload)
+    history["automatic_totals"] = [
+        {"candidate_id": f"grid-ct1-ct{channel}", "enabled": False, "outputs": {"watts": True, "amps": False, "kwh": True}}
+        for channel in range(2, 7)
+    ]
+    assert len(_meter_configuration_request(history).automatic_totals) == 5
+    for source in (
+        {"kind": "native_total", "source_id": "overall", "power_id": "injected"},
+        {"kind": "channel", "channel": True}, {"kind": "invented", "channel": 1},
+        {"kind": "aggregate", "aggregate_id": "child", "channel": 1},
+    ):
+        invalid = deepcopy(payload)
+        invalid["aggregates"][0]["sources"] = [source]
+        with pytest.raises((vol.Invalid, ValueError)):
+            _meter_configuration_request(invalid)
+    for key, value in (("parent_id", None), ("channels", [1]), ("expose_power", True)):
+        invalid = deepcopy(payload)
+        invalid["aggregates"][0][key] = value
+        with pytest.raises((vol.Invalid, ValueError)):
+            _meter_configuration_request(invalid)
+    for invalid_intent in (
+        {"adopt_managed_totals": 1, "legacy_parent_decisions": []},
+        {"adopt_managed_totals": False, "legacy_parent_decisions": [], "extra": True},
+    ):
+        invalid = deepcopy(payload)
+        invalid["totals_change_intent"] = invalid_intent
+        with pytest.raises((vol.Invalid, ValueError)):
+            _meter_configuration_request(invalid)
+
+
 def test_meter_configuration_commands_use_a_strict_full_request_schema() -> None:
     """The public full-configuration request is bounded before it reaches a plan."""
 
@@ -2955,6 +3245,8 @@ def test_meter_configuration_commands_use_a_strict_full_request_schema() -> None
                 }
             ],
             "aggregates": [],
+            "default_totals": {"overall": {"watts": True, "amps": True, "kwh": True}, "boards": []},
+            "automatic_totals": [],
             "power_quality": [True],
             "status_fields": [False],
         },
@@ -3007,8 +3299,8 @@ def test_meter_configuration_commands_use_a_strict_full_request_schema() -> None
             schema(invalid)
     aggregate = {
         "aggregate_id": "mains", "name": "Mains", "role": "branch",
-        "channels": [1], "measurement_method": "direct", "parent_id": None,
-        "energy_mode": "none",
+        "sources": [{"kind": "channel", "channel": 1}], "measurement_method": "direct",
+        "energy_mode": "none", "origin": "advanced", "outputs": {"watts": True, "amps": False, "kwh": False},
     }
     for field, values in (
         ("channels", [message["configuration"]["channels"][0]] * 43),
@@ -3060,8 +3352,13 @@ def test_preview_meter_configuration_checks_size_then_admin_before_nested_schema
     asyncio.run(run())
 
 
-def test_controller_routes_full_meter_configuration_without_browser_changes() -> None:
+@pytest.mark.parametrize("source_owned_failure", (False, True))
+@pytest.mark.parametrize("operation", ("preview_meter_configuration", "preview_total_graph"))
+def test_controller_routes_full_meter_configuration_without_browser_changes(source_owned_failure: bool, operation: str) -> None:
     """The browser supplies a schema-validated request, never a change record."""
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        ApiFailure,
+    )
 
     async def run() -> None:
         controller = EntryWebsocketController(
@@ -3077,7 +3374,14 @@ def test_controller_routes_full_meter_configuration_without_browser_changes() ->
                 self, device_id: str, plan_id: str, source_sha256: str, request: object
             ) -> str:
                 received.append((device_id, plan_id, source_sha256, request))
+                if source_owned_failure:
+                    from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+                        SourceOwnedTotalEditError,
+                    )
+                    raise SourceOwnedTotalEditError("private-source-canary")
                 return "previewed"
+
+            async_preview_total_graph = async_preview_meter_configuration
 
         controller.workflow = Workflow()  # type: ignore[assignment]
         request = {
@@ -3101,16 +3405,94 @@ def test_controller_routes_full_meter_configuration_without_browser_changes() ->
                  "custom_gain_ct": 27518, "custom_label": "Mains CT", "burden_output_acknowledged": False}
             ],
             "aggregates": [], "power_quality": [True], "status_fields": [False],
+            "default_totals": {"overall": {"watts": True, "amps": True, "kwh": True}, "boards": []},
+            "automatic_totals": [],
         }
         assert await controller.async_call(
             f"{DOMAIN}/get_meter_configuration", {"device_id": "meter"}, "user"
         ) == {"device_id": "meter"}
-        assert await controller.async_call(
-            f"{DOMAIN}/preview_meter_configuration",
+        preview = controller.async_call(
+            f"{DOMAIN}/{operation}",
             {"device_id": "meter", "plan_id": "plan", "source_sha256": "a" * 64,
              "configuration": request},
             "admin",
-        ) == "previewed"
+        )
+        if source_owned_failure:
+            with pytest.raises(ApiFailure) as failure:
+                await preview
+            assert failure.value.code == "source_owned_totals"
+            assert "Device Builder" in failure.value.safe_message
+            assert "private-source-canary" not in failure.value.safe_message
+        else:
+            assert await preview == "previewed"
+        assert received and received[0][:3] == ("meter", "plan", "a" * 64)
+        assert type(received[0][3]).__name__ == "MeterConfigurationRequest"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("operation", ("preview_meter_configuration", "preview_total_graph"))
+def test_controller_maps_preview_assertions_to_meter_configuration_invalid(operation: str) -> None:
+    """Preview handlers should convert assertion failures into configuration invalid errors."""
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        ApiFailure,
+    )
+
+    async def run() -> None:
+        controller = EntryWebsocketController(
+            ProvisioningCoordinator(FakeHass()), SessionManager(), HelperStore(FakeHass())
+        )
+        received: list[object] = []
+
+        class Workflow:
+            async def async_get_meter_configuration(self, device_id: str) -> dict[str, str]:
+                return {"device_id": device_id}
+
+            async def async_preview_meter_configuration(
+                self, device_id: str, plan_id: str, source_sha256: str, request: object
+            ) -> str:
+                received.append((device_id, plan_id, source_sha256, request))
+                raise AssertionError("private-canary")
+
+            async_preview_total_graph = async_preview_meter_configuration
+
+        controller.workflow = Workflow()  # type: ignore[assignment]
+        request = {
+            "meter": {
+                "friendly_name": "Garage Meter",
+                "electrical_system": "split_phase_120_240",
+                "line_frequency_hz": 60,
+                "update_interval_s": 5,
+                "voltage_layout": "standard",
+                "voltage_references": [
+                    {
+                        "reference_id": "main", "label": "Main", "phase_label": "A",
+                        "nominal_voltage_v": 120.0, "transformer_model_id": "default",
+                        "gain_voltage": 7305, "group_keys": ["main_1", "main_2"],
+                    }
+                ],
+            },
+            "channels": [
+                {"channel": 1, "enabled": True, "name": "Mains", "model_id": "custom",
+                 "reporting_multiplier": 1.0, "role": "branch", "voltage_reference_id": "main",
+                 "custom_gain_ct": 27518, "custom_label": "Mains CT", "burden_output_acknowledged": False}
+            ],
+            "aggregates": [], "power_quality": [True], "status_fields": [False],
+            "default_totals": {"overall": {"watts": True, "amps": True, "kwh": True}, "boards": []},
+            "automatic_totals": [],
+        }
+        assert await controller.async_call(
+            f"{DOMAIN}/get_meter_configuration", {"device_id": "meter"}, "admin"
+        ) == {"device_id": "meter"}
+        with pytest.raises(ApiFailure) as failure:
+            await controller.async_call(
+                f"{DOMAIN}/{operation}",
+                {"device_id": "meter", "plan_id": "plan", "source_sha256": "a" * 64,
+                 "configuration": request},
+                "admin",
+            )
+        assert failure.value.code == "meter_configuration_invalid"
+        assert failure.value.safe_message == "The meter configuration is invalid"
         assert received and received[0][:3] == ("meter", "plan", "a" * 64)
         assert type(received[0][3]).__name__ == "MeterConfigurationRequest"
 
@@ -3141,7 +3523,7 @@ def test_get_meter_configuration_serializes_only_public_semantic_provenance() ->
     payload = sanitize_payload(
         {
             "capabilities": MeterConfigurationCapabilities(
-                True, True, True, "helper_managed", ()
+                True, True, True, True, True, True, "helper_managed", ()
             )
         }
     )
@@ -3149,7 +3531,10 @@ def test_get_meter_configuration_serializes_only_public_semantic_provenance() ->
     assert payload == {
         "capabilities": {
             "configuration_authoritative": True,
-            "managed_totals": True,
+            "native_totals_readable": True,
+            "native_totals_writable": True,
+            "managed_automatic_totals": True,
+            "managed_advanced_totals": True,
             "multi_reference": True,
             "semantic_source": "helper_managed",
             "reason_codes": [],
@@ -3174,18 +3559,22 @@ def test_new_session_waits_for_same_meter_cancellation_cleanup(
         cleanup_release = asyncio.Event()
         original_finalize = workflow._async_finalize_revoked
 
-        async def delayed_finalize(handle: Any, active_task: Any) -> None:
+        async def delayed_finalize(
+            handle: Any, active_task: Any, *, cancel_preparation: bool = False
+        ) -> None:
             cleanup_started.set()
             await cleanup_release.wait()
-            await original_finalize(handle, active_task)
+            await original_finalize(
+                handle, active_task, cancel_preparation=cancel_preparation
+            )
 
         workflow._async_finalize_revoked = delayed_finalize  # type: ignore[method-assign]
         cancelling = asyncio.create_task(
             workflow.async_cancel_session(first.session_id)
         )
-        await cleanup_started.wait()
-        starting = asyncio.create_task(workflow.async_start_session("meter"))
         try:
+            await asyncio.wait_for(cleanup_started.wait(), timeout=1.0)
+            starting = asyncio.create_task(workflow.async_start_session("meter"))
             await asyncio.sleep(0)
             await asyncio.sleep(0)
             assert not starting.done()
@@ -3391,6 +3780,8 @@ def test_cancel_session_reports_attached_reference_cleanup_failure_after_scrub()
                 self.active_task: asyncio.Task[None] | None = task
                 self.expires_at = float("inf")
                 self.substitutions = {"secret": "value"}
+                self.offset_preparation_id = None
+                self.offset_finalization_id = None
 
             def status(self) -> Any:
                 return SimpleNamespace(state=self.state)
@@ -3864,6 +4255,73 @@ def test_verified_session_cannot_be_reopened_through_public_routes(
         await workflow.async_close()
         await sessions.async_unload()
 
+    asyncio.run(run())
+
+
+def test_stock_offset_routes_preserve_confirmations_and_private_boundary() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        calls = []
+
+        class Workflow:
+            def __getattr__(self, name: str) -> Any:
+                async def call(*args: Any, **kwargs: Any) -> Any:
+                    calls.append((name, args, kwargs))
+                    return {"operation": name, "action_ready": False, "raw_logs": "private"}
+                return call
+
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+        controller.workflow = Workflow()
+        connection = FakeConnection()
+        for operation in (
+            "get_offset_preparation", "get_offset_finalization", "preview_offset_preparation",
+            "resume_offset_calibration", "preview_offset_finalization", "restart_and_verify_gains",
+            "reconcile_offset_finalization", "begin_offset_cycle",
+        ):
+            command = f"{DOMAIN}/{operation}"
+            assert command in ALL_COMMANDS
+            handler, schema = hass.data["websocket_api"][command]
+            valid = _message(command)
+            for key in ("allow_unverified", "offset_preparation", "offset_finalization", "reconcile_stale_metadata", "purpose", "verified_calibration"):
+                with pytest.raises(vol.Invalid):
+                    schema(valid | {key: True})
+            with pytest.raises(vol.Invalid):
+                schema(valid | {"session_id": "not-server-issued"})
+            for key in ("backup_acknowledged", "preparation_acknowledged"):
+                if key in valid:
+                    for value in (False, 1, "yes"):
+                        with pytest.raises(vol.Invalid):
+                            schema(valid | {key: value})
+            if command in MUTATION_COMMANDS:
+                with pytest.raises(Unauthorized):
+                    handler(hass, FakeConnection(admin=False), schema(valid))
+            await _invoke(hass, connection, valid)
+            assert connection.results[-1][1] == {"operation": f"async_{operation}", "action_ready": False}
+            assert calls[-1][0] == f"async_{operation}"
+            assert calls[-1][1][0] == "3" * 32
+        assert calls[2][2] == {"backup_acknowledged": True}
+        assert calls[3][1] == ("3" * 32, "4" * 32, 0, 1)
+        assert calls[3][2] == {"preparation_acknowledged": True}
+        assert calls[4][2] == {"verification_id": None, "changes": (), "package_options": None}
+        assert calls[-1][2] == {"backup_acknowledged": True}
+    asyncio.run(run())
+
+
+def test_stock_preparation_transaction_purpose_survives_terminal_cleanup(tmp_path: Path) -> None:
+    from tests.test_stock_offset_preparation import preparation
+
+    async def run() -> None:
+        sessions, _recovery, _builder, manager, preview, _prepared = await preparation(tmp_path)
+        try:
+            assert preview.purpose == "offset_preparation"
+            owned = manager._transaction(preview.transaction_id)
+            abandoned = await manager.async_abandon(preview.transaction_id)
+            assert abandoned.purpose == "offset_preparation"
+            assert owned.purpose == "offset_preparation"
+            assert owned.prior_content is None
+        finally:
+            await sessions.async_unload()
     asyncio.run(run())
 
 

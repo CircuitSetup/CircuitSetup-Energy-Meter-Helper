@@ -60,6 +60,7 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
     VerifiedCalibrationRecord,
     VerifiedGainGroup,
     VerifiedOffsetGroup,
+    VerifiedPowerOffsetGroup,
 )
 from custom_components.circuitsetup_energy_meter_helper.topology import (
     voltage_reference_fingerprint_for_meter,
@@ -1278,6 +1279,207 @@ def _record(
     )
 
 
+def test_verified_offsets_render_one_exact_extend_block_with_redacted_values() -> None:
+    snapshot = _snapshot()
+    record = replace(
+        _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003))),
+        offset_groups=(
+            VerifiedOffsetGroup(
+                "meter_main1", ((-32768, 0), (-13, 32), (14, 32767))
+            ),
+        ),
+        power_offset_groups=(
+            VerifiedPowerOffsetGroup(
+                "meter_main1", ((-101, 201), (-102, 202), (103, -203))
+            ),
+        ),
+    )
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert "# CircuitSetup Energy Meter Helper: calibrated offsets v1" in plan.proposed_content
+    assert "  - id: !extend meter_main1\n" in plan.proposed_content
+    assert "      offset_voltage: -32768\n      offset_current: 0\n" in plan.proposed_content
+    assert "      offset_active_power: -101\n      offset_reactive_power: 201\n" in plan.proposed_content
+    assert "offset_voltage: -32768" in plan.redacted_diff
+    assert "logger:" not in plan.redacted_diff
+
+
+def test_offset_rendering_keeps_unselected_stages_and_is_idempotent() -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated offsets v1\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a:\n"
+        "      offset_voltage: -1\n"
+        "      offset_current: 2\n"
+        "      offset_active_power: -101\n"
+        "      offset_reactive_power: 201\n"
+        "    phase_b:\n"
+        "      offset_voltage: -3\n"
+        "      offset_current: 4\n"
+        "      offset_active_power: -102\n"
+        "      offset_reactive_power: 202\n"
+        "    phase_c:\n"
+        "      offset_voltage: -5\n"
+        "      offset_current: 6\n"
+        "      offset_active_power: -103\n"
+        "      offset_reactive_power: 203\n"
+        "  - id: !extend meter_main2\n"
+        "    phase_a:\n"
+        "      offset_voltage: 7\n"
+        "      offset_current: 8\n"
+        "    phase_b:\n"
+        "      offset_voltage: 9\n"
+        "      offset_current: 10\n"
+        "    phase_c:\n"
+        "      offset_voltage: 11\n"
+        "      offset_current: 12\n"
+        "# End CircuitSetup Energy Meter Helper: calibrated offsets v1\n"
+    )
+    snapshot = _snapshot(_snapshot().content + "sensor:\n" + block)
+    record = replace(
+        _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003))),
+        offset_groups=(
+            VerifiedOffsetGroup("meter_main1", ((-12, 31), (-13, 32), (-14, 33))),
+        ),
+    )
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert "offset_voltage: -12" in plan.proposed_content
+    assert "offset_active_power: -101" in plan.proposed_content
+    assert "  - id: !extend meter_main2\n" in plan.proposed_content
+    repeated = ESPHomeConfigSnapshot(
+        snapshot.configuration,
+        plan.proposed_content,
+        sha256(plan.proposed_content.encode()).hexdigest(),
+    )
+    assert build_calibrated_gain_mutation(
+        repeated, topology(0), replace(record, config_sha256=repeated.sha256)
+    ).proposed_content == plan.proposed_content
+
+
+def test_offset_rendering_resolves_addon_ids_and_preserves_crlf() -> None:
+    source = _snapshot().content.replace("\n", "\r\n")
+    snapshot = ESPHomeConfigSnapshot(
+        "meter.yaml", source, sha256(source.encode()).hexdigest()
+    )
+    target = topology(1)
+    record = replace(
+        _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003))),
+        topology_addon_count=1,
+        topology_project_name=target.project_name,
+        topology_connection_type=target.connection_type,
+        topology_voltage_layout=target.voltage_layout,
+        topology_voltage_fingerprint=voltage_reference_fingerprint_for_meter(target),
+        power_offset_groups=(
+            VerifiedPowerOffsetGroup(
+                "addon1_2", ((-101, 201), (-102, 202), (-103, 203))
+            ),
+        ),
+    )
+
+    plan = build_calibrated_gain_mutation(snapshot, target, record)
+
+    assert "  - id: !extend addon1_2\r\n" in plan.proposed_content
+    assert "      offset_active_power: -101\r\n" in plan.proposed_content
+    assert "\n" not in plan.proposed_content.replace("\r\n", "")
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        (
+            "    phase_a:\n      offset_voltage: 1\n      offset_current: 2\n"
+            "    phase_b:\n      offset_voltage: 1\n      offset_current: 2\n"
+            "    phase_c:\n      offset_voltage: 1\n      offset_current: 2\n"
+            "    phase_c:\n      offset_voltage: 1\n      offset_current: 2\n"
+        ),
+        (
+            "    phase_a:\n      offset_voltage: 32768\n      offset_current: 2\n"
+            "    phase_b:\n      offset_voltage: 1\n      offset_current: 2\n"
+            "    phase_c:\n      offset_voltage: 1\n      offset_current: 2\n"
+        ),
+    ),
+)
+def test_offset_rendering_rejects_malformed_owned_blocks(body: str) -> None:
+    block = (
+        "# CircuitSetup Energy Meter Helper: calibrated offsets v1\n"
+        "  - id: !extend meter_main1\n"
+        + body
+        + "# End CircuitSetup Energy Meter Helper: calibrated offsets v1\n"
+    )
+    snapshot = _snapshot(_snapshot().content + "sensor:\n" + block)
+    record = replace(
+        _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003))),
+        offset_groups=(
+            VerifiedOffsetGroup("meter_main1", ((-12, 31), (-13, 32), (-14, 33))),
+        ),
+    )
+
+    with pytest.raises(ConfigMutationError, match="managed offsets"):
+        build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+
+def test_offset_rendering_rejects_source_owned_target_override() -> None:
+    source = _snapshot().content + (
+        "sensor:\n"
+        "  - {id: !extend meter_main1, phase_a: {offset_voltage: -1, offset_current: 2}}\n"
+    )
+    snapshot = _snapshot(source)
+    record = replace(
+        _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003))),
+        offset_groups=(
+            VerifiedOffsetGroup("meter_main1", ((-12, 31), (-13, 32), (-14, 33))),
+        ),
+    )
+
+    with pytest.raises(ConfigMutationError, match="existing offset overrides"):
+        build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+
+def test_offset_rendering_preserves_unrelated_source_offset_overrides() -> None:
+    source = _snapshot().content + (
+        "sensor:\n"
+        "  - id: !extend unrelated_meter # unrelated source override\n"
+        "    phase_a:\n"
+        "      offset_voltage: -1\n"
+        "      offset_current: 2\n"
+    )
+    snapshot = _snapshot(source)
+    record = replace(
+        _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003))),
+        offset_groups=(
+            VerifiedOffsetGroup("meter_main1", ((-12, 31), (-13, 32), (-14, 33))),
+        ),
+    )
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert "id: !extend unrelated_meter # unrelated source override" in plan.proposed_content
+    assert "offset_voltage: -12" in plan.proposed_content
+
+
+def test_offset_rendering_preserves_unrelated_source_flow_offset_overrides() -> None:
+    source = _snapshot().content + (
+        "unrelated_overrides:\n"
+        "  - {\"id\": !extend unrelated_meter, note: \"id: !extend meter_main1\", phase_a: {id: meter_main1, offset_voltage: -1, offset_current: 2}}\n"
+        "sensor:\n"
+    )
+    snapshot = _snapshot(source)
+    record = replace(
+        _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003))),
+        offset_groups=(
+            VerifiedOffsetGroup("meter_main1", ((-12, 31), (-13, 32), (-14, 33))),
+        ),
+    )
+
+    plan = build_calibrated_gain_mutation(snapshot, topology(0), record)
+
+    assert '"id": !extend unrelated_meter' in plan.proposed_content
+    assert "offset_voltage: -12" in plan.proposed_content
+
+
 def test_uniform_gains_build_surgical_hash_bound_source_mutation() -> None:
     snapshot = _snapshot()
     record = _record(snapshot, ((7301, 28001), (7301, 28002), (7301, 28003)))
@@ -1817,11 +2019,15 @@ def test_calibration_preview_handoffs_current_full_metadata_atomically() -> None
             MeterConfigurationRequest(
                 configuration.meter,
                 configuration.channels,
+                configuration.default_totals,
+                configuration.automatic_totals,
                 configuration.aggregates,
                 configuration.power_quality,
                 configuration.status_fields,
             ),
             target,
+            document=ESPHomeConfigDocument.parse(transaction.plan.proposed_content),
+            native_visibility_resolved=True,  # Current hash-bound resolved helper record.
         )
         manager._verifier = Verifier(
             ReconnectEvidence(

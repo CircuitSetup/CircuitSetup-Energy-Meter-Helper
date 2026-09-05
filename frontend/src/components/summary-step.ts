@@ -1,7 +1,9 @@
 import { html, type TemplateResult } from "lit";
-import type { CalibrationResult, ConfigurationImpact, MeterConfiguration, MeterTopology, RestartVerificationResult, SessionStatus, StabilityResult, TransactionStatus } from "../types";
+import type { CalibrationResult, ConfigurationImpact, MeterConfiguration, MeterTopology, OffsetFinalizationStatus, RestartVerificationResult, SessionStatus, StabilityResult, TotalSource, TransactionStatus } from "../types";
+import { sourceFormula, sourceLeaves } from "../total-graph";
 import type { ConfigurationMode, ExistingConfigurationChoice } from "../workflow-model";
 import { technicalDetails } from "./technical-details";
+import { legacyTotalsNotice } from "./totals-migration-review";
 
 export interface SummaryOutcomeInput {
   configurationMode: ConfigurationMode;
@@ -11,6 +13,7 @@ export interface SummaryOutcomeInput {
   restart: { source_authority: RestartVerificationResult["source_authority"]; offset_groups?: readonly unknown[]; power_offset_groups?: readonly unknown[] } | null;
   verifiedConfiguration: boolean;
   unmanagedLegacyItems?: readonly string[];
+  offsetFinalization?: OffsetFinalizationStatus | null;
 }
 
 export interface SummaryOutcome {
@@ -28,6 +31,9 @@ export function summaryOutcome(input: SummaryOutcomeInput): SummaryOutcome {
   const migrated = input.legacyChoice === "manage_with_helper" && input.verifiedConfiguration;
   const warnings = input.unmanagedLegacyItems?.length ? [`Unmanaged legacy items: ${input.unmanagedLegacyItems.join(", ")}.`] : [];
   const heading = input.legacyChoice !== null ? "Review complete" : "Setup complete";
+  if (input.offsetFinalization?.backup_available) return { heading, configurationStatus: input.offsetFinalization.installed ? "Offset configuration installed in ESPHome." : "Offset installation pending.", migrationStatus: migrated ? "Migration installed." : null,
+    calibrationStatus: input.offsetFinalization.configuration_selected && input.offsetFinalization.action_ready ? "Offsets are installed and configuration-selected; register readback is not verified." : "Captured offsets are retained; final configuration selection needs confirmation.",
+    authorityMessage: `Offsets: ${input.offsetFinalization.configuration_selected ? "configuration selected" : "pending configuration"}. Gains: ${input.restart?.source_authority.replaceAll("_", " ") ?? "unchanged"}. Offset selection does not clear gain flash.`, warnings };
   if (offset) return { heading, configurationStatus: calibrationOnly ? "ESPHome configuration was left untouched." : "Configuration authority is unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Offset calibration remains stored in meter flash by design.", authorityMessage: "Offset calibration remains stored in meter flash by design.", warnings: [...warnings, "Offset calibration remains stored in meter flash by design."] };
   if (input.completedWithoutChanges) return { heading, configurationStatus: input.configurationInstalled ? "Configuration installed in ESPHome." : input.configurationMode === "runtime_only" ? "ESPHome source was not changed because no authoritative configuration was available." : calibrationOnly ? "ESPHome configuration was left untouched." : input.verifiedConfiguration ? "Helper-managed configuration was left unchanged." : "Configuration was left unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Existing calibration was kept unchanged.", authorityMessage: "No restart-verified calibration record was required.", warnings };
   if (input.configurationMode === "runtime_only") return { heading: "Setup complete", configurationStatus: "ESPHome source was not changed because no authoritative configuration was available.", migrationStatus: null, calibrationStatus: "Calibration is stored in meter flash. Installing firmware may replace it.", authorityMessage: "No authoritative ESPHome source is available.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
@@ -37,16 +43,66 @@ export function summaryOutcome(input: SummaryOutcomeInput): SummaryOutcome {
   return { heading, configurationStatus: input.verifiedConfiguration ? "Configuration authority is available." : "Configuration authority is unavailable.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Calibration is stored in meter flash. Installing firmware may replace it.", authorityMessage: "Calibration is stored in meter flash.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
 }
 
-export function summaryStep(topology: MeterTopology | null, session: SessionStatus | null, transaction: TransactionStatus | null, stability: Map<string, StabilityResult>, calibration: Map<string, CalibrationResult>, restart: RestartVerificationResult | null, completedWithoutChanges: boolean, projectVersion: string | null, saveCalibration: () => void, back: () => void, meterConfiguration: MeterConfiguration | null = null, impact: ConfigurationImpact | null = null, finish: () => void = () => undefined, keepCalibrationInFlash: () => void = () => undefined, configurationMode: ConfigurationMode = "helper_managed", legacyChoice: ExistingConfigurationChoice = null, configurationInstalled = false, handoffDeclined = false): TemplateResult {
+export function summaryStep(topology: MeterTopology | null, session: SessionStatus | null, transaction: TransactionStatus | null, stability: Map<string, StabilityResult>, calibration: Map<string, CalibrationResult>, restart: RestartVerificationResult | null, completedWithoutChanges: boolean, projectVersion: string | null, saveCalibration: () => void, back: () => void, meterConfiguration: MeterConfiguration | null = null, impact: ConfigurationImpact | null = null, finish: () => void = () => undefined, keepCalibrationInFlash: () => void = () => undefined, configurationMode: ConfigurationMode = "helper_managed", legacyChoice: ExistingConfigurationChoice = null, configurationInstalled = false, handoffDeclined = false, sourceConfiguration: MeterConfiguration | null = null, offsetFinalization: OffsetFinalizationStatus | null = null, newCycleAcknowledged = false, setNewCycleAcknowledged: (value: boolean) => void = () => undefined, newCycle: () => void = () => undefined, busy = false): TemplateResult {
   const hasOffsets = Boolean(restart?.offset_groups?.length || restart?.power_offset_groups?.length);
-  const handoffAction = !handoffDeclined && restart?.source_authority === "saved_flash" && restart.config_filename && !hasOffsets && (restart.source_handoff_available || restart.source_handoff_firmware_installed);
-  const unmanagedLegacyItems = meterConfiguration?.warnings.filter((warning) => warning.includes("unmanaged"));
-  const outcome = summaryOutcome({ configurationMode, legacyChoice, completedWithoutChanges, configurationInstalled, restart,
+  const handoffAction = !offsetFinalization?.backup_available && !handoffDeclined && restart?.source_authority === "saved_flash" && restart.config_filename && !hasOffsets && (restart.source_handoff_available || restart.source_handoff_firmware_installed);
+  const offsetComplete = offsetFinalization?.configuration_selected && offsetFinalization.action_ready && session?.has_pending_calibration === false;
+  const totalsEvidence = meterConfiguration ?? (configurationMode !== "runtime_only" && sourceConfiguration?.capabilities.configuration_authoritative ? sourceConfiguration : null);
+  const totalsImpact = meterConfiguration ? impact : totalsEvidence?.configuration_impact ?? null;
+  const aggregate = (id: string) => totalsEvidence?.configuration.aggregates.find((item) => item.aggregate_id === id)
+    ?? totalsEvidence?.totals.automatic_candidates.find((item) => item.aggregate_id === id);
+  const totalName = (id: string) => aggregate(id)?.name ?? id;
+  const displayedTotals = totalsEvidence?.total_details.map((total) => {
+    const source: TotalSource = total.kind === "native_total" ? { kind: "native_total", source_id: total.total_id }
+      : { kind: "aggregate", aggregate_id: total.total_id };
+    const { totals, configuration } = totalsEvidence;
+    const leaves = sourceLeaves([source], totals, configuration.aggregates).sort((a, b) => a - b);
+    const definition = aggregate(total.total_id);
+    const sources: TotalSource[] = total.kind === "native_total"
+      ? total.native_sources.length ? total.native_sources.map((source_id) => ({ kind: "native_total", source_id }))
+        : leaves.map((channel) => ({ kind: "channel", channel }))
+      : definition!.sources;
+    let formula = sourceFormula(sources, totals, configuration.aggregates);
+    if (total.kind === "aggregate" && definition?.measurement_method === "one_ct_double_power") formula = `2 × (${formula}) Watts; measured Amps`;
+    if (total.kind === "aggregate" && definition?.measurement_method === "both_conductors_one_ct") formula += " (both conductors)";
+    const parents = configuration.aggregates.filter((parent) => parent.sources.some((item) =>
+      source.kind === "native_total" ? item.kind === "native_total" && item.source_id === source.source_id
+        : item.kind === "aggregate" && item.aggregate_id === source.aggregate_id)).map((parent) => parent.name);
+    return { ...total, name: sourceFormula([source], totals, configuration.aggregates), formula, leaf_channels: leaves, parents };
+  }) ?? [];
+  const unmanagedLegacyItems = totalsEvidence?.warnings.filter((warning) => warning.includes("unmanaged"));
+  const outcome = summaryOutcome({ configurationMode, legacyChoice, completedWithoutChanges, configurationInstalled, restart, offsetFinalization,
     verifiedConfiguration: meterConfiguration !== null, ...(unmanagedLegacyItems ? { unmanagedLegacyItems } : {}) });
   const boards = (values: boolean[]) => values.flatMap((enabled, board) => enabled ? [board === 0 ? "Main board" : `Add-on ${board}`] : []);
   return html`<section class="step-content" aria-labelledby="step-heading">
-    <div class=${restart || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${restart || completedWithoutChanges ? outcome.calibrationStatus : html`<strong>Restart verification is not complete</strong><p>Summary remains unverified until the server returns authoritative restart evidence.</p>`}</div>
-    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology?.ct_count ?? "—"} CTs in ${topology?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? html`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration ? html`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Aggregate energy</dt><dd>${meterConfiguration.configuration.aggregates.length} aggregates; ${meterConfiguration.configuration.aggregates.filter((aggregate) => aggregate.energy_mode !== "none").length} energy totals</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration.configuration.power_quality).join(", ") || "none"}; status: ${boards(meterConfiguration.configuration.status_fields).join(", ") || "none"}</dd></div><div><dt>Reporting and entities</dt><dd>${meterConfiguration.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} public entities, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
+    <div class=${offsetComplete || restart || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${offsetFinalization?.backup_available || restart || completedWithoutChanges ? outcome.calibrationStatus : html`<strong>Restart verification is not complete</strong><p>Summary remains unverified until the server returns authoritative restart evidence.</p>`}</div>
+    ${offsetFinalization?.backup_available ? html`<section aria-label="Retained offset calibration"><h2>Offset configuration and retained backup</h2>
+      <table><thead><tr><th>Chip</th><th>Stage</th><th>ABC values</th><th>Actual prior register verification</th></tr></thead><tbody>${offsetFinalization.results.map(([id, stage, table, verified]) => html`<tr><td>${id}</td><td>${stage}</td><td>${table.map(([a, b]) => `${a}/${b}`).join(", ")}</td><td>${verified ? "Verified at capture" : "Not verified"}</td></tr>`)}</tbody></table>
+      <p>Backup retention keeps the active operation and one prior finalized operation. Older finalized archives rotate only when you explicitly start a new cycle; opening or reloading never rotates them.</p>
+      <label class="check-row"><input type="checkbox" .checked=${newCycleAcknowledged} @change=${(event: Event) => setNewCycleAcknowledged((event.target as HTMLInputElement).checked)}> I acknowledge a new offset cycle and backup retention.</label>
+      <button class="secondary" ?disabled=${busy || !newCycleAcknowledged || !offsetComplete} @click=${newCycle}>Start new offset cycle</button>
+    </section>` : ""}
+    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology?.ct_count ?? "—"} CTs in ${topology?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? html`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration ? html`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration.configuration.power_quality).join(", ") || "none"}; status: ${boards(meterConfiguration.configuration.status_fields).join(", ") || "none"}</dd></div><div><dt>Reporting and entities</dt><dd>${meterConfiguration.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} public entities, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
+    ${totalsEvidence ? html`<section aria-labelledby="summary-totals-heading"><h2 id="summary-totals-heading">${!meterConfiguration || totalsEvidence.capabilities.reason_codes.includes("totals_adoption_required") ? "Legacy read-only totals" : "Helper-managed totals"}</h2>
+      ${!meterConfiguration ? html`<p>Authoritative source snapshot: these totals have not been adopted or verified as installed by this workflow.</p>` : ""}
+      ${totalsImpact ? html`<p>${totalsImpact.public_total_entity_count} public total entities; ${totalsImpact.internal_total_sensor_count} internal total sensors; ${totalsImpact.energy_entity_count} public energy entities.</p>` : html`<p>Current total counts are unavailable.</p>`}
+      ${!totalsEvidence.totals.migration.native_visibility_resolved ? html`<p>Counts are confirmed but incomplete: native visibility is unresolved.</p>` : ""}
+      <p>Public outputs are exposed to Home Assistant. Internal dependencies remain in firmware for other totals or energy integration.</p>
+      ${displayedTotals.map((total) => html`<article class="total-summary" aria-label=${total.name}>
+        <h3>${total.name}</h3>
+        <p>${total.ownership === "helper_managed" ? "Helper-managed" : "Read-only source YAML"}</p>
+        <p>Public outputs: ${total.public_outputs.join(", ") || "none"}</p>
+        ${total.internal_outputs.length ? html`<p>Internal outputs: ${total.internal_outputs.join(", ")}</p>` : ""}
+        ${total.unverified_outputs.length ? html`<p>Unverified outputs: ${total.unverified_outputs.join(", ")}</p>` : ""}
+        <p>Formula: ${total.formula}</p><p>Coverage: ${total.leaf_channels.map((channel) => `CT${channel}`).join(", ")}</p>
+        ${total.parents.length ? html`<p>Feeds into: ${total.parents.join(", ")}</p>` : ""}
+      </article>`)}
+      <h3>Totals migration</h3>
+      ${totalsEvidence.totals.migration.legacy_parent_links.length
+        ? html`<ul>${totalsEvidence.totals.migration.legacy_parent_links.map((link) => html`<li>${totalName(link.child_id)} → ${totalName(link.proposed_parent_id)}: pending review</li>`)}</ul>`
+        : html`<p>No pending legacy relationships.</p>`}
+      ${totalsEvidence.totals.migration.native_visibility_confirmation_required ? html`<p>Native visibility confirmation is pending a verified save.</p>` : ""}
+      ${legacyTotalsNotice(totalsEvidence.capabilities)}</section>` : ""}
     ${outcome.warnings.map((warning) => html`<p class="warning-band" role="status">${warning}</p>`)}
     ${technicalDetails(topology, session, transaction, stability, calibration, restart, completedWithoutChanges)}
     <footer class="action-footer"><button class="secondary" @click=${back}>Back</button>${handoffAction ? html`${!restart?.source_handoff_firmware_installed ? html`<button class="secondary" data-action="keep-calibration-flash" @click=${keepCalibrationInFlash}>Keep calibration in meter flash</button>` : ""}<button class="primary" data-action="save-calibration" @click=${saveCalibration}>${restart?.source_handoff_firmware_installed ? "Retry clearing saved flash values" : "Save calibration to YAML"}</button>` : html`<button class="primary" data-action="finish" @click=${finish}>Finish</button>`}</footer>

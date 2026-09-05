@@ -9,6 +9,13 @@ from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import Protocol
 
+import yaml  # type: ignore[import-untyped]
+from yaml.nodes import (  # type: ignore[import-untyped]
+    MappingNode,
+    ScalarNode,
+    SequenceNode,
+)
+
 from .config_document import (
     MANAGED_BLOCK_MARKERS,
     ConfigScalar,
@@ -22,9 +29,16 @@ from .ct_catalog import (
     raw_gain_for_preset,
 )
 from .ct_inventory import CTInventory
-from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
-from .store import VerifiedCalibrationRecord
+from .models import (
+    ConfigMutationPlan,
+    MeterTopology,
+    PhaseOffsetTable,
+    PhasePowerOffsetTable,
+    SubstitutionChange,
+)
+from .store import VerifiedCalibrationRecord, _validate_group_table
 from .topology import (
+    topology_from_config,
     voltage_reference_fingerprint_for_meter,
     voltage_reference_topology_from_config,
 )
@@ -190,6 +204,7 @@ def _build_ct_mutation(
     *,
     package_options: Mapping[str, Iterable[bool]] | None = None,
     phase_channels: Mapping[int, tuple[bool, float]] | None = None,
+    preserved_gain_channels: frozenset[int] = frozenset(),
 ) -> ConfigMutationPlan:
     """Build a safe config edit plan without serializing the YAML document."""
     if getattr(snapshot, "configuration_authoritative", True) is not True:
@@ -205,9 +220,10 @@ def _build_ct_mutation(
     for request in requests:
         name_key = f"ct{request.channel}_name"
         gain_key = f"current_cal_ct{request.channel}"
-        gain = _requested_gain(request, catalog)
         _append_change(changes, values, name_key, request.name, document.substitutions)
-        _append_change(changes, values, gain_key, str(gain), document.substitutions)
+        if request.channel not in preserved_gain_channels:
+            gain = _requested_gain(request, catalog)
+            _append_change(changes, values, gain_key, str(gain), document.substitutions)
     proposed_content = _apply_changes(document, changes, values)
     if package_options is not None:
         proposed_content, package_changes = _apply_package_options(
@@ -498,6 +514,14 @@ def build_calibrated_gain_mutation(
         },
         frozenset(instance_id for instance_id, _, _, _ in addressed),
     )
+    proposed_content = _apply_calibrated_offsets(
+        proposed_content,
+        topology,
+        _verified_offset_tables(topology, verified.offset_groups, "phase_offsets"),
+        _verified_offset_tables(
+            topology, verified.power_offset_groups, "phase_power_offsets"
+        ),
+    )
     if (
         "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1"
         in snapshot.content
@@ -527,6 +551,31 @@ def _gain_group_address(instance_id: str, topology: MeterTopology) -> tuple[int,
     if board_index >= topology.board_count:
         raise ConfigMutationError("verified gain group is outside topology")
     return board_index, group_index
+
+
+def _verified_offset_tables(
+    topology: MeterTopology, groups: Iterable[object], field: str
+) -> dict[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]]:
+    tables: dict[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]] = {}
+    for group in groups:
+        instance_id = getattr(group, "instance_id", None)
+        table = getattr(group, field, None)
+        if (
+            not isinstance(instance_id, str)
+            or not isinstance(table, tuple)
+            or len(table) != 3
+            or any(
+                not isinstance(phase, tuple)
+                or len(phase) != 2
+                or any(type(value) is not int or not -32768 <= value <= 32767 for value in phase)
+                for phase in table
+            )
+            or instance_id in tables
+        ):
+            raise ConfigMutationError("verified offset groups are invalid")
+        _gain_group_address(instance_id, topology)
+        tables[instance_id] = table
+    return tables
 
 
 def _calibrated_gain_snippet(
@@ -561,6 +610,58 @@ def _calibrated_gain_snippet(
         for phase, gain in zip("abc", voltage_gains, strict=True):
             lines.extend((f"    phase_{phase}:", f"      gain_voltage: {gain}"))
     return "\n".join(lines) + "\n"
+
+
+def build_offset_table_mutation(
+    snapshot: ConfigSnapshot,
+    topology: MeterTopology,
+    offsets: Mapping[str, PhaseOffsetTable],
+    power_offsets: Mapping[str, PhasePowerOffsetTable],
+    *,
+    enable_calibration: frozenset[str] | Mapping[str, bool] = frozenset(),
+) -> ConfigMutationPlan:
+    """Render captured raw candidates without inventing calibration verification."""
+    if (
+        getattr(snapshot, "configuration_authoritative", True) is not True
+        or sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256
+    ):
+        raise ConfigMutationError("configuration snapshot is not authoritative")
+    source = topology_from_config(
+        ESPHomeConfigDocument.parse(snapshot.content),
+        native_project_name=topology.project_name,
+    )
+    if replace(source, evidence=()) != replace(topology, evidence=()):
+        raise ConfigMutationError("offset topology does not match target")
+    for tables in (offsets, power_offsets):
+        for instance, table in tables.items():
+            _gain_group_address(instance, topology)
+            _validate_group_table(instance, table, signed=True, label="offsets")
+    if not set(enable_calibration) <= set(offsets) | set(power_offsets):
+        raise ConfigMutationError("enabled offset targets must have exact tables")
+    if isinstance(enable_calibration, Mapping):
+        for instance, enabled in enable_calibration.items():
+            if type(enabled) is not bool:
+                raise ConfigMutationError("offset calibration flag must be boolean")
+            if not enabled and (
+                instance not in offsets or instance not in power_offsets
+            ):
+                raise ConfigMutationError(
+                    "disabled offsets require both exact stage tables"
+                )
+    proposed = _apply_calibrated_offsets(
+        snapshot.content,
+        topology,
+        offsets,
+        power_offsets,
+        enable_calibration=enable_calibration,
+    )
+    return ConfigMutationPlan(
+        snapshot.configuration,
+        snapshot.sha256,
+        (),
+        _review_diff((), snapshot.content, proposed),
+        proposed,
+    )
 
 
 def _validate_requests(
@@ -815,6 +916,269 @@ def _apply_calibrated_voltage_gains(
     )
 
 
+def _apply_calibrated_offsets(
+    content: str,
+    topology: MeterTopology,
+    offsets_by_instance: Mapping[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]],
+    power_offsets_by_instance: Mapping[
+        str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
+    ],
+    *,
+    enable_calibration: frozenset[str] | Mapping[str, bool] = frozenset(),
+) -> str:
+    """Render verified signed offset tables in one exact helper-owned block."""
+    from .config_blocks import render_phase_overrides, replace_managed_block
+
+    selected = set(offsets_by_instance) | set(power_offsets_by_instance)
+    if not selected:
+        return content
+    document = ESPHomeConfigDocument.parse(content)
+    entries = _read_calibrated_offset_entries(document, topology)
+    block = document.managed_blocks.get("calibrated_offsets")
+    enabled: dict[str, bool] = {}
+    if block is not None:
+        enabled.update(
+            (instance, value == "true")
+            for instance, value in re.findall(
+                r"- id: !extend ([\w-]+)\r?\n +enable_offset_calibration: (true|false)",
+                block.content,
+            )
+        )
+    enabled.update(
+        enable_calibration
+        if isinstance(enable_calibration, Mapping)
+        else dict.fromkeys(enable_calibration, True)
+    )
+    _reject_local_offset_overrides(
+        replace_managed_block(content, "calibrated_offsets", ""),
+        topology,
+        selected,
+        document.substitutions,
+    )
+    for instance_id, values in offsets_by_instance.items():
+        entries.setdefault(instance_id, {})["rms"] = values
+    for instance_id, values in power_offsets_by_instance.items():
+        entries.setdefault(instance_id, {})["power"] = values
+    rendered = render_phase_overrides(
+        {
+            instance_id: _render_calibrated_offset_entry(instance_id, stages, enabled=enabled.get(instance_id))
+            for instance_id, stages in entries.items()
+        }
+    )
+    if (
+        rendered
+        and document.writable_sensor_span is None
+        and not any(_ROOT_SENSOR_RE.match(line) for line in content.splitlines())
+    ):
+        newline = "\r\n" if "\r\n" in content else "\n"
+        content += ("" if content.endswith(("\n", "\r")) else newline) + "sensor:" + newline
+    return replace_managed_block(content, "calibrated_offsets", rendered)
+
+
+def _read_calibrated_offset_entries(
+    document: ESPHomeConfigDocument, topology: MeterTopology
+) -> dict[
+    str,
+    dict[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]],
+]:
+    block = document.managed_blocks.get("calibrated_offsets")
+    if block is None:
+        return {}
+    indent = document.sensor_item_indent
+    if indent is None:
+        raise ConfigMutationError("managed offsets are invalid")
+    lines = block.content.splitlines()[1:-1]
+    if indent == 0:
+        lines = [f"  {line}" if line else line for line in lines]
+    entries: dict[
+        str, dict[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]]
+    ] = {}
+    index = 0
+    header = re.compile(r"^  - id: !extend (?P<id>[\w-]+)$")
+    phase_header = re.compile(r"^    phase_(?P<phase>[abc]):$")
+    value_line = re.compile(
+        r"^      (?P<field>offset_voltage|offset_current|offset_active_power|offset_reactive_power): (?P<value>-?(?:0|[1-9]\d*))$"
+    )
+    while index < len(lines):
+        owner = header.fullmatch(lines[index])
+        if owner is None or owner["id"] in entries:
+            raise ConfigMutationError("managed offsets are invalid")
+        _gain_group_address(owner["id"], topology)
+        index += 1
+        if index < len(lines) and lines[index] in (
+            "    enable_offset_calibration: true",
+            "    enable_offset_calibration: false",
+        ):
+            index += 1
+        phases: dict[str, dict[str, int]] = {}
+        for expected_phase in "abc":
+            if index >= len(lines) or (phase := phase_header.fullmatch(lines[index])) is None or phase["phase"] != expected_phase:
+                raise ConfigMutationError("managed offsets are invalid")
+            index += 1
+            values: dict[str, int] = {}
+            while index < len(lines) and not lines[index].startswith(("  - id:", "    phase_")):
+                match = value_line.fullmatch(lines[index])
+                if match is None or match["field"] in values:
+                    raise ConfigMutationError("managed offsets are invalid")
+                value = int(match["value"])
+                if not -32768 <= value <= 32767:
+                    raise ConfigMutationError("managed offsets are invalid")
+                values[match["field"]] = value
+                index += 1
+            phases[expected_phase] = values
+        field_sets = {frozenset(values) for values in phases.values()}
+        if len(field_sets) != 1 or next(iter(field_sets)) not in {
+            frozenset({"offset_voltage", "offset_current"}),
+            frozenset({"offset_active_power", "offset_reactive_power"}),
+            frozenset(
+                {
+                    "offset_voltage",
+                    "offset_current",
+                    "offset_active_power",
+                    "offset_reactive_power",
+                }
+            ),
+        }:
+            raise ConfigMutationError("managed offsets are invalid")
+        stages: dict[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]] = {}
+        fields = next(iter(field_sets))
+        if "offset_voltage" in fields:
+            stages["rms"] = (
+                (phases["a"]["offset_voltage"], phases["a"]["offset_current"]),
+                (phases["b"]["offset_voltage"], phases["b"]["offset_current"]),
+                (phases["c"]["offset_voltage"], phases["c"]["offset_current"]),
+            )
+        if "offset_active_power" in fields:
+            stages["power"] = (
+                (
+                    phases["a"]["offset_active_power"],
+                    phases["a"]["offset_reactive_power"],
+                ),
+                (
+                    phases["b"]["offset_active_power"],
+                    phases["b"]["offset_reactive_power"],
+                ),
+                (
+                    phases["c"]["offset_active_power"],
+                    phases["c"]["offset_reactive_power"],
+                ),
+            )
+        entries[owner["id"]] = stages
+    return entries
+
+
+def _render_calibrated_offset_entry(
+    instance_id: str,
+    stages: Mapping[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]],
+    *,
+    enabled: bool | None = None,
+) -> str:
+    if set(stages) - {"rms", "power"} or not stages:
+        raise ConfigMutationError("managed offsets are invalid")
+    body = [f"  - id: !extend {instance_id}"]
+    if enabled is not None:
+        body.append(f"    enable_offset_calibration: {str(enabled).lower()}")
+    for phase_index, phase in enumerate("abc"):
+        body.append(f"    phase_{phase}:")
+        if "rms" in stages:
+            voltage, current = stages["rms"][phase_index]
+            body.extend((f"      offset_voltage: {voltage}", f"      offset_current: {current}"))
+        if "power" in stages:
+            active, reactive = stages["power"][phase_index]
+            body.extend(
+                (
+                    f"      offset_active_power: {active}",
+                    f"      offset_reactive_power: {reactive}",
+                )
+            )
+    return "\n".join(body) + "\n"
+
+
+def _reject_local_offset_overrides(
+    content: str,
+    topology: MeterTopology,
+    instance_ids: set[str],
+    substitutions: Mapping[str, ConfigScalar],
+) -> None:
+    aliases = set(instance_ids)
+    for instance_id in instance_ids:
+        board, group = _gain_group_address(instance_id, topology)
+        meter_key = (
+            f"main_meter_id{group}"
+            if board == 0
+            else f"addon{board}_id{group}"
+        )
+        aliases.add(meter_key)
+        if meter_key in substitutions:
+            aliases.add(substitutions[meter_key].value)
+    lines = ESPHomeConfigDocument.parse(content).code_lines
+    offset_fields = {
+        "enable_offset_calibration",
+        "offset_voltage",
+        "offset_current",
+        "offset_active_power",
+        "offset_reactive_power",
+        }
+    for index, line in enumerate(lines):
+        if _yaml_flow_keys(line).intersection(offset_fields):
+            owner_id = _flow_owner_identifier(line)
+            if owner_id is None or owner_id in aliases:
+                raise ConfigMutationError(
+                    "existing offset overrides are not safely writable"
+                )
+        item = re.match(r"(?P<indent> *)-\s+", line)
+        if item is None:
+            continue
+        item_indent = len(item["indent"])
+        end = next(
+            (
+                candidate
+                for candidate in range(index + 1, len(lines))
+                if lines[candidate].strip()
+                and len(lines[candidate]) - len(lines[candidate].lstrip(" ")) <= item_indent
+            ),
+            len(lines),
+        )
+        mappings = [
+            mapping
+            for candidate in range(index, end)
+            if (mapping := _yaml_mapping(lines[candidate])) is not None
+        ]
+        if not {mapping[2] for mapping in mappings}.intersection(offset_fields):
+            continue
+        ids = [mapping for mapping in mappings if mapping[2] == "id"]
+        if len(ids) != 1:
+            raise ConfigMutationError("existing offset overrides are not safely writable")
+        if _yaml_identifier(ids[0][3]) in aliases:
+            raise ConfigMutationError("existing offset overrides are not safely writable")
+
+
+def _flow_owner_identifier(line: str) -> str | None:
+    """Return one direct flow-list owner ID without interpreting nested mappings."""
+    try:
+        sequence = yaml.compose(line)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(sequence, SequenceNode) or len(sequence.value) != 1:
+        return None
+    item = sequence.value[0]
+    if not isinstance(item, MappingNode):
+        return None
+    owners = [
+        value
+        for key, value in item.value
+        if isinstance(key, ScalarNode) and key.value == "id"
+    ]
+    if len(owners) != 1 or not isinstance(owners[0], ScalarNode):
+        return None
+    owner = owners[0]
+    if owner.tag == "!extend":
+        return _yaml_identifier(f"!extend {owner.value}")
+    if owner.tag == "tag:yaml.org,2002:str":
+        return _yaml_identifier(owner.value)
+    return None
+
+
 def _phase_override_lines(
     enabled: bool, multiplier: float, power_quality: bool
 ) -> tuple[str, ...]:
@@ -833,12 +1197,10 @@ def _phase_override_lines(
             if multiplier == 1:
                 lines.append(f"      {output}:")
             lines.append("        internal: true")
-    if power_quality:
-        removals = ("harmonic_power", "peak_current") if enabled else (
+    if power_quality and not enabled:
+        removals = (
             "reactive_power",
             "apparent_power",
-            "harmonic_power",
-            "peak_current",
             "power_factor",
             "phase_angle",
         )
@@ -1307,7 +1669,7 @@ def _yaml_key(token: str) -> str:
 
 
 def _yaml_identifier(rest: str) -> str | None:
-    value = rest.strip()
+    value = re.sub(r"\s+#.*$", "", rest).strip()
     while (decorator := re.match(r"^(?P<token>![^\s]+|&[^\s]+)\s+", value)) is not None:
         if decorator.group("token").startswith("!") and decorator.group("token") != "!extend":
             return None
@@ -1457,8 +1819,11 @@ def _review_diff(
     substitution_diff = _redacted_diff(changes)
     multiplier_diff = _reporting_multiplier_diff(prior_content, proposed_content)
     voltage_diff = _calibrated_voltage_gain_diff(prior_content, proposed_content)
+    offset_diff = _calibrated_offset_diff(prior_content, proposed_content)
     return "\n".join(
-        part for part in (substitution_diff, multiplier_diff, voltage_diff) if part
+        part
+        for part in (substitution_diff, multiplier_diff, voltage_diff, offset_diff)
+        if part
     )
 
 
@@ -1477,6 +1842,23 @@ def _calibrated_voltage_gain_diff(prior_content: str, proposed_content: str) -> 
     if prior == proposed:
         return ""
     return proposed or "managed calibrated voltage gains removed"
+
+
+def _calibrated_offset_diff(prior_content: str, proposed_content: str) -> str:
+    start = "# CircuitSetup Energy Meter Helper: calibrated offsets v1"
+    end = "# End CircuitSetup Energy Meter Helper: calibrated offsets v1"
+
+    def block(content: str) -> str:
+        offset = content.find(start)
+        if offset < 0:
+            return ""
+        finish = content.find(end, offset)
+        return content[offset : finish + len(end)] if finish >= 0 else content[offset:]
+
+    prior, proposed = block(prior_content), block(proposed_content)
+    if prior == proposed:
+        return ""
+    return proposed or "managed calibrated offsets removed"
 
 
 def _reporting_multiplier_diff(prior_content: str, proposed_content: str) -> str:

@@ -498,30 +498,6 @@ i$2._$litElement$ = true, i$2["finalized"] = true, s$2.litElementHydrateSupport?
 const o$1 = s$2.litElementPolyfillSupport;
 o$1?.({ LitElement: i$2 });
 (s$2.litElementVersions ??= []).push("4.2.2");
-function configurationImpact(configuration, topology2, packageOptions2 = configuration) {
-  let numeric = configuration.meter.voltage_references.length * 2;
-  let text = 0;
-  let energy = 0;
-  let enabled = 0;
-  for (const channel of configuration.channels) if (channel.enabled) {
-    const board = Math.floor((channel.channel - 1) / 6);
-    if (board >= topology2.board_count) throw new Error("configuration topology is invalid");
-    enabled += 1;
-    numeric += 2 + (packageOptions2.power_quality[board] ? 4 : 0);
-    text += Number(packageOptions2.status_fields[board]);
-  }
-  for (const aggregate of configuration.aggregates) {
-    numeric += Number(aggregate.expose_power) + Number(aggregate.expose_current);
-    if (aggregate.energy_mode === "bidirectional") {
-      numeric += 4;
-      energy += 2;
-    } else if (aggregate.energy_mode !== "none") {
-      numeric += 1;
-      energy += 1;
-    }
-  }
-  return { enabled_channel_count: enabled, numeric_entity_count: numeric, text_entity_count: text, energy_entity_count: energy, approximate_publications_per_second: (numeric + text) / configuration.meter.update_interval_s };
-}
 const PREFIX = "circuitsetup_energy_meter_helper/";
 const PRIVATE_FIELD = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
 const SECRET_VALUE = /(?:api[_ -]?key|password|secret|ssid|token)\s*[:=]/i;
@@ -529,7 +505,7 @@ const CONTROL$1 = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const PROPERTY_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const SETUP_STATES = /* @__PURE__ */ new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]);
 const TRANSACTION_STATES = /* @__PURE__ */ new Set(["previewed", "write_confirmed", "written", "validated", "compiled", "install_confirmation_required", "installing", "reconnecting", "verified", "rolled_back", "failed"]);
-const SESSION_STATES = /* @__PURE__ */ new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "partial", "indeterminate", "verified", "cancelled"]);
+const SESSION_STATES = /* @__PURE__ */ new Set(["safety_required", "preflight_failed", "ready", "stable", "unstable", "applied_pending_restart_verification", "result_outside_tolerance", "partial", "indeterminate", "verified", "cancelled", "gains_verified_offsets_pending", "offset_configuration_selected", "captured_pending_configuration"]);
 const CONNECTIONS$1 = /* @__PURE__ */ new Set(["wifi", "ethernet_lilygo", "ethernet_waveshare", "unknown"]);
 const ELECTRICAL_SYSTEMS = /* @__PURE__ */ new Set(["split_phase_120_240", "single_phase_230", "three_phase", "custom"]);
 const VOLTAGE_LAYOUTS = /* @__PURE__ */ new Set(["standard", "multi_reference", "custom"]);
@@ -555,7 +531,7 @@ const TRANSACTION_OPERATIONS = /* @__PURE__ */ new Set(["preview_ct_config", "pr
 const OFFSET_CAPABILITIES = /* @__PURE__ */ new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = /* @__PURE__ */ new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = /* @__PURE__ */ new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
-const OFFSET_RESULT_STATES = /* @__PURE__ */ new Set(["applied_pending_restart_verification", "partial", "indeterminate"]);
+const OFFSET_RESULT_STATES = /* @__PURE__ */ new Set(["applied_pending_restart_verification", "captured_pending_configuration", "partial", "indeterminate"]);
 function record(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} response is invalid`);
   return value;
@@ -677,14 +653,211 @@ function topologyResponse(value, label) {
   }
   return topology(value, label);
 }
+function totalOutputs(value, label) {
+  const item = record(value, label);
+  exactKeys(item, ["watts", "amps", "kwh"], label);
+  for (const key of ["watts", "amps", "kwh"]) boolean(item[key], label);
+}
+function configurationImpact(value, label, updateInterval) {
+  const impact = record(value, label);
+  const counts = ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count", "public_total_entity_count", "internal_total_sensor_count"];
+  exactKeys(impact, [...counts, "approximate_publications_per_second"], label);
+  for (const key of counts) if (integer(impact[key], label) < 0) throw new Error(`${label} response is invalid`);
+  const publications = number(impact.approximate_publications_per_second, label);
+  const expected = (Number(impact.numeric_entity_count) + Number(impact.text_entity_count)) / updateInterval;
+  if (publications < 0 || Math.abs(publications - expected) > Number.EPSILON * Math.max(1, publications, expected) * 8 || Number(impact.energy_entity_count) > Number(impact.numeric_entity_count) || Number(impact.public_total_entity_count) > Number(impact.numeric_entity_count)) throw new Error(`${label} response is invalid`);
+  return value;
+}
+function leafChannels(value, label, count = 42) {
+  const channels = array(value, label, 42).map((entry) => integer(entry, label));
+  if (new Set(channels).size !== channels.length || channels.some((entry) => entry < 1 || entry > count)) throw new Error(`${label} response is invalid`);
+  return channels;
+}
+function totalSources(value, label, count = 42) {
+  const sources = array(value, label, 82).map((entry) => {
+    const item = record(entry, label);
+    if (item.kind === "channel") {
+      exactKeys(item, ["kind", "channel"], label);
+      leafChannels([item.channel], label, count);
+    } else if (item.kind === "native_total") {
+      exactKeys(item, ["kind", "source_id"], label);
+      id(item.source_id, label);
+    } else if (item.kind === "aggregate") {
+      exactKeys(item, ["kind", "aggregate_id"], label);
+      id(item.aggregate_id, label);
+    } else throw new Error(`${label} response is invalid`);
+    return item;
+  });
+  if (!sources.length || new Set(sources.map((item) => `${String(item.kind)}:${String(item.channel ?? item.source_id ?? item.aggregate_id)}`)).size !== sources.length) throw new Error(`${label} response is invalid`);
+  return sources;
+}
+function advancedTotal(value, label, count = 42) {
+  const item = record(value, label);
+  exactKeys(item, ["aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "outputs", "origin"], label);
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id(item.aggregate_id, label))) throw new Error(`${label} response is invalid`);
+  string(item.name, label);
+  enumeration(item.role, CIRCUIT_ROLES, label);
+  const sources = totalSources(item.sources, label, count);
+  const method = enumeration(item.measurement_method, MEASUREMENT_METHODS, label);
+  const cardinality = method === "two_ct_sum" ? 2 : method === "direct" ? void 0 : 1;
+  if (cardinality !== void 0 && (sources.length !== cardinality || sources.some((source) => source.kind !== "channel"))) throw new Error(`${label} response is invalid`);
+  const energy = enumeration(item.energy_mode, ENERGY_MODES, label);
+  totalOutputs(item.outputs, label);
+  if (energy === "none" && record(item.outputs, label).kwh) throw new Error(`${label} response is invalid`);
+  enumeration(item.origin, /* @__PURE__ */ new Set(["advanced", "migrated"]), label);
+  return item;
+}
+function automaticSettings(value, label) {
+  const settings = array(value, label, 100).map((entry) => {
+    const item = record(entry, label);
+    exactKeys(item, ["candidate_id", "enabled", "outputs"], label);
+    id(item.candidate_id, label);
+    boolean(item.enabled, label);
+    totalOutputs(item.outputs, label);
+    return item;
+  });
+  if (new Set(settings.map((item) => item.candidate_id)).size !== settings.length) throw new Error(`${label} response is invalid`);
+  return settings;
+}
+function automaticCandidate(value, label, count = 42) {
+  const item = record(value, label);
+  exactKeys(item, ["candidate_id", "aggregate_id", "name", "role", "sources", "measurement_method", "energy_mode", "recommended_outputs"], label);
+  id(item.candidate_id, label);
+  id(item.aggregate_id, label);
+  string(item.name, label);
+  enumeration(item.role, CIRCUIT_ROLES, label);
+  const sources = totalSources(item.sources, label, count);
+  if (sources.length !== 2 || sources.some((source) => source.kind !== "channel") || item.measurement_method !== "two_ct_sum") throw new Error(`${label} response is invalid`);
+  enumeration(item.energy_mode, ENERGY_MODES, label);
+  totalOutputs(item.recommended_outputs, label);
+  return item;
+}
+function automaticPreview(item, label, count = 42) {
+  const candidates = array(item.automatic_candidates, label, 4).map((entry) => automaticCandidate(entry, label, count));
+  if (new Set(candidates.map((entry) => entry.candidate_id)).size !== candidates.length) throw new Error(`${label} response is invalid`);
+  const resolved = array(item.automatic_totals, label, 4);
+  if (resolved.length !== candidates.length) throw new Error(`${label} response is invalid`);
+  resolved.forEach((entry, index) => {
+    const total = record(entry, label);
+    exactKeys(total, ["candidate", "enabled", "outputs"], label);
+    const candidate = automaticCandidate(total.candidate, label, count);
+    if (candidate.candidate_id !== candidates[index].candidate_id) throw new Error(`${label} response is invalid`);
+    boolean(total.enabled, label);
+    totalOutputs(total.outputs, label);
+  });
+  automaticSettings(item.stale_automatic_total_settings, label);
+}
+function totalsInventory(value, label, count) {
+  const item = record(value, label);
+  exactKeys(item, ["native_sources", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "migration"], label);
+  const native = array(item.native_sources, label, 8).map((entry) => {
+    const source = record(entry, label);
+    exactKeys(source, ["source_id", "label", "leaf_channels", "power_id", "current_id", "existing_energy_id", "upstream_defaults"], label);
+    id(source.source_id, label);
+    string(source.label, label);
+    id(source.power_id, label);
+    id(source.current_id, label);
+    if (source.existing_energy_id !== null) id(source.existing_energy_id, label);
+    if (!leafChannels(source.leaf_channels, label, count).length) throw new Error(`${label} response is invalid`);
+    totalOutputs(source.upstream_defaults, label);
+    return source;
+  });
+  if (new Set(native.map((entry) => entry.source_id)).size !== native.length || !native.some((entry) => entry.source_id === "overall")) throw new Error(`${label} response is invalid`);
+  automaticPreview(item, label, count);
+  const migration = record(item.migration, label);
+  exactKeys(migration, ["parent_review_required", "legacy_parent_links", "native_visibility_confirmation_required", "native_visibility_resolved"], label);
+  boolean(migration.parent_review_required, label);
+  boolean(migration.native_visibility_confirmation_required, label);
+  boolean(migration.native_visibility_resolved, label);
+  array(migration.legacy_parent_links, label, 32).forEach((entry) => {
+    const link = record(entry, label);
+    exactKeys(link, ["child_id", "proposed_parent_id"], label);
+    id(link.child_id, label);
+    id(link.proposed_parent_id, label);
+  });
+  return item;
+}
+function totalsSummary(value, label, nativeIds, aggregateIds) {
+  const keys = /* @__PURE__ */ new Set();
+  for (const entry of array(value, label, 44)) {
+    const row = record(entry, label);
+    exactKeys(row, ["total_id", "kind", "ownership", "public_outputs", "internal_outputs", "unverified_outputs", ...row.kind === "native_total" ? ["native_sources"] : []], label);
+    const key = `${enumeration(row.kind, /* @__PURE__ */ new Set(["native_total", "aggregate"]), label)}:${id(row.total_id, label)}`;
+    if (keys.has(key)) throw new Error(`${label} response is invalid`);
+    keys.add(key);
+    if (!(row.kind === "native_total" ? nativeIds : aggregateIds).has(row.total_id)) throw new Error(`${label} response is invalid`);
+    enumeration(row.ownership, /* @__PURE__ */ new Set(["helper_managed", "source_owned"]), label);
+    for (const field of ["public_outputs", "internal_outputs", "unverified_outputs"]) {
+      const outputs = array(row[field], label, 6);
+      outputs.forEach((output) => enumeration(output, /* @__PURE__ */ new Set(["Watts", "Amps", "kWh", "Net Watts", "Import Watts", "Return-to-grid Watts", "Import kWh", "Return-to-grid kWh", "external custom kWh"]), label));
+      if (new Set(outputs).size !== outputs.length) throw new Error(`${label} response is invalid`);
+    }
+    if (row.kind === "native_total") {
+      const sources = array(row.native_sources, label, 7).map((source) => id(source, label));
+      if (sources.length !== (row.total_id === "overall" ? nativeIds.size - 1 : 0) || new Set(sources).size !== sources.length || sources.some((source) => source === row.total_id || !nativeIds.has(source))) throw new Error(`${label} response is invalid`);
+    }
+  }
+}
+function totalDetails(value, label, inventory) {
+  const response = record(value, label);
+  exactKeys(response, ["plan_id", "source_sha256", "total_details"], label);
+  if (response.plan_id !== inventory.plan_id || response.source_sha256 !== inventory.source_sha256) throw new Error(`${label} response is invalid`);
+  totalsSummary(
+    response.total_details,
+    label,
+    new Set(inventory.totals.native_sources.map((source) => source.source_id)),
+    new Set([...inventory.configuration.aggregates, ...inventory.totals.automatic_candidates].map((total) => total.aggregate_id))
+  );
+  return response.total_details;
+}
+function totalGraphPreview(value, label, planId, sourceSha256, configuration) {
+  const item = record(value, label);
+  exactKeys(item, ["plan_id", "source_sha256", "automatic_candidates", "automatic_totals", "stale_automatic_total_settings", "graph", "configuration_impact"], label);
+  configurationImpact(item.configuration_impact, label, configuration.meter.update_interval_s);
+  if (item.plan_id !== planId || item.source_sha256 !== sourceSha256) throw new Error(`${label} response is invalid`);
+  automaticPreview(item, label);
+  const graph = record(item.graph, label);
+  exactKeys(graph, ["native_visibility", "ordered_nodes", "leaf_channels", "independent_overlap_warnings"], label);
+  array(graph.native_visibility, label, 24).forEach((entry) => {
+    const override = record(entry, label);
+    exactKeys(override, ["sensor_id", "internal"], label);
+    id(override.sensor_id, label);
+    boolean(override.internal, label);
+  });
+  array(graph.ordered_nodes, label, 36).forEach((entry) => {
+    const node = record(entry, label);
+    exactKeys(node, ["aggregate", "power_id", "current_id", "sources", "power_required", "current_required", "energy_required"], label);
+    advancedTotal(node.aggregate, label);
+    id(node.power_id, label);
+    id(node.current_id, label);
+    for (const key of ["power_required", "current_required", "energy_required"]) boolean(node[key], label);
+    array(node.sources, label, 82).forEach((entry2) => {
+      const source = record(entry2, label);
+      exactKeys(source, ["label", "power_id", "current_id", "leaf_channels"], label);
+      string(source.label, label);
+      id(source.power_id, label);
+      id(source.current_id, label);
+      leafChannels(source.leaf_channels, label);
+    });
+  });
+  Object.values(record(graph.leaf_channels, label)).forEach((entry) => leafChannels(entry, label));
+  array(graph.independent_overlap_warnings, label, 630).forEach((entry) => {
+    const warning = record(entry, label);
+    exactKeys(warning, ["first_id", "second_id", "leaf_channels"], label);
+    id(warning.first_id, label);
+    id(warning.second_id, label);
+    leafChannels(warning.leaf_channels, label);
+  });
+  return value;
+}
 function meterConfiguration(value, label) {
   const response = record(value, label);
-  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "channels", "catalog"], label);
+  exactKeys(response, ["plan_id", "source_sha256", "topology", "configuration", "capabilities", "totals", "voltage_topology", "voltage_transformer_catalog", "ct_catalog", "warnings", "configuration_impact", "channels", "catalog"], label);
   const planId = string(response.plan_id, label);
   if (!SERVER_ID.test(planId) || !SHA256.test(string(response.source_sha256, label))) throw new Error(`${label} response is invalid`);
   const planTopology = topology(response.topology, label);
   const configuration = record(response.configuration, label);
-  exactKeys(configuration, ["meter", "channels", "aggregates", "power_quality", "status_fields", "multi_reference_preparation_acknowledged"], label);
+  exactKeys(configuration, ["meter", "channels", "default_totals", "automatic_totals", "aggregates", "power_quality", "status_fields", "multi_reference_preparation_acknowledged", "totals_change_intent"], label);
   const meter = record(configuration.meter, label);
   exactKeys(meter, ["friendly_name", "electrical_system", "line_frequency_hz", "update_interval_s", "voltage_layout", "voltage_references"], label);
   string(meter.friendly_name, label);
@@ -734,33 +907,42 @@ function meterConfiguration(value, label) {
     if (channel.custom_label !== null) string(channel.custom_label, label);
     boolean(channel.burden_output_acknowledged, label);
   });
-  const aggregateIds = /* @__PURE__ */ new Set();
-  const aggregateParents = /* @__PURE__ */ new Map();
-  array(configuration.aggregates, label, 32).forEach((entry) => {
-    const aggregate = record(entry, label);
-    exactKeys(aggregate, ["aggregate_id", "name", "role", "channels", "measurement_method", "parent_id", "energy_mode", "expose_power", "expose_current"], label);
-    const aggregateId = id(aggregate.aggregate_id, label);
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(aggregateId) || aggregateIds.has(aggregateId)) throw new Error(`${label} response is invalid`);
-    aggregateIds.add(aggregateId);
-    string(aggregate.name, label);
-    enumeration(aggregate.role, CIRCUIT_ROLES, label);
-    const members = array(aggregate.channels, label, 42).map((channel) => integer(channel, label));
-    const method = enumeration(aggregate.measurement_method, MEASUREMENT_METHODS, label);
-    const count = method === "two_ct_sum" ? 2 : method === "one_ct_double_power" || method === "both_conductors_one_ct" ? 1 : void 0;
-    if (!members.length || new Set(members).size !== members.length || members.some((channel) => channel < 1 || channel > planTopology.ct_count || !boolean(record(channels[channel - 1], label).enabled, label)) || count !== void 0 && members.length !== count) throw new Error(`${label} response is invalid`);
-    const parent = aggregate.parent_id === null ? null : id(aggregate.parent_id, label);
-    aggregateParents.set(aggregateId, parent);
-    enumeration(aggregate.energy_mode, ENERGY_MODES, label);
-    boolean(aggregate.expose_power, label);
-    boolean(aggregate.expose_current, label);
+  const totals = totalsInventory(response.totals, label, planTopology.ct_count);
+  const defaults = record(configuration.default_totals, label);
+  exactKeys(defaults, ["overall", "boards"], label);
+  totalOutputs(defaults.overall, label);
+  const boards = array(defaults.boards, label, 7);
+  if (boards.length !== (planTopology.board_count === 1 ? 0 : planTopology.board_count)) throw new Error(`${label} response is invalid`);
+  boards.forEach((entry, index) => {
+    const board = record(entry, label);
+    exactKeys(board, ["board_index", "outputs"], label);
+    if (integer(board.board_index, label) !== index) throw new Error(`${label} response is invalid`);
+    totalOutputs(board.outputs, label);
   });
-  for (const [aggregateId, parent] of aggregateParents) {
-    const seen = /* @__PURE__ */ new Set();
-    for (let current = parent; current !== null; current = aggregateParents.get(current) ?? null) {
-      if (!aggregateIds.has(current) || current === aggregateId || seen.has(current)) throw new Error(`${label} response is invalid`);
-      seen.add(current);
-    }
+  const automatic = automaticSettings(configuration.automatic_totals, label);
+  const candidates = array(totals.automatic_candidates, label, 4).map((entry) => record(entry, label));
+  if (automatic.some((entry) => !candidates.some((candidate) => candidate.candidate_id === entry.candidate_id))) throw new Error(`${label} response is invalid`);
+  const aggregates = array(configuration.aggregates, label, 32).map((entry) => advancedTotal(entry, label, planTopology.ct_count));
+  const aggregateIds = new Set(aggregates.map((entry) => entry.aggregate_id));
+  if (aggregateIds.size !== aggregates.length) throw new Error(`${label} response is invalid`);
+  const knownAggregates = /* @__PURE__ */ new Set([...aggregateIds, ...candidates.map((entry) => entry.aggregate_id)]);
+  const nativeIds = new Set(array(totals.native_sources, label, 8).map((entry) => record(entry, label).source_id));
+  for (const aggregate of aggregates) for (const source of array(aggregate.sources, label, 82).map((entry) => record(entry, label))) {
+    if (source.kind === "channel" && !boolean(record(channels[Number(source.channel) - 1], label).enabled, label) || source.kind === "native_total" && !nativeIds.has(source.source_id) || source.kind === "aggregate" && !knownAggregates.has(source.aggregate_id)) throw new Error(`${label} response is invalid`);
   }
+  const intent = record(configuration.totals_change_intent, label);
+  exactKeys(intent, ["adopt_managed_totals", "legacy_parent_decisions"], label);
+  boolean(intent.adopt_managed_totals, label);
+  const reviewed = /* @__PURE__ */ new Set();
+  array(intent.legacy_parent_decisions, label, 32).forEach((entry) => {
+    const decision = record(entry, label);
+    exactKeys(decision, ["child_id", "proposed_parent_id", "accepted"], label);
+    const child = id(decision.child_id, label);
+    id(decision.proposed_parent_id, label);
+    boolean(decision.accepted, label);
+    if (reviewed.has(child)) throw new Error(`${label} response is invalid`);
+    reviewed.add(child);
+  });
   for (const key of ["power_quality", "status_fields"]) {
     const values = array(configuration[key], label, 7);
     if (values.length !== planTopology.board_count) throw new Error(`${label} response is invalid`);
@@ -768,10 +950,8 @@ function meterConfiguration(value, label) {
   }
   boolean(configuration.multi_reference_preparation_acknowledged, label);
   const capabilities = record(response.capabilities, label);
-  exactKeys(capabilities, ["configuration_authoritative", "managed_totals", "multi_reference", "semantic_source", "reason_codes"], label);
-  boolean(capabilities.configuration_authoritative, label);
-  boolean(capabilities.managed_totals, label);
-  boolean(capabilities.multi_reference, label);
+  exactKeys(capabilities, ["configuration_authoritative", "native_totals_readable", "native_totals_writable", "managed_automatic_totals", "managed_advanced_totals", "multi_reference", "semantic_source", "reason_codes"], label);
+  for (const key of ["configuration_authoritative", "native_totals_readable", "native_totals_writable", "managed_automatic_totals", "managed_advanced_totals", "multi_reference"]) boolean(capabilities[key], label);
   enumeration(capabilities.semantic_source, /* @__PURE__ */ new Set(["helper_managed", "legacy_inferred"]), label);
   array(capabilities.reason_codes, label, 8).forEach((reason) => string(reason, label));
   const voltageTopology = record(response.voltage_topology, label);
@@ -810,13 +990,11 @@ function meterConfiguration(value, label) {
   exactKeys(ctCatalog, ["presets", "source_repository", "source_ref", "schema_version"], label);
   ctInventory({ plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.ct_catalog }, label);
   array(response.warnings, label, 32).map((warning) => string(warning, label));
-  const impact = record(response.configuration_impact, label);
-  exactKeys(impact, ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count", "approximate_publications_per_second"], label);
-  for (const key of ["enabled_channel_count", "numeric_entity_count", "text_entity_count", "energy_entity_count"]) if (integer(impact[key], label) < 0) throw new Error(`${label} response is invalid`);
-  const publications = number(impact.approximate_publications_per_second, label);
-  if (publications < 0) throw new Error(`${label} response is invalid`);
-  const expectedImpact = configurationImpact(response.configuration, planTopology);
-  if (impact.enabled_channel_count !== expectedImpact.enabled_channel_count || impact.numeric_entity_count !== expectedImpact.numeric_entity_count || impact.text_entity_count !== expectedImpact.text_entity_count || impact.energy_entity_count !== expectedImpact.energy_entity_count || Math.abs(publications - expectedImpact.approximate_publications_per_second) > Number.EPSILON * Math.max(1, publications, expectedImpact.approximate_publications_per_second) * 8) throw new Error(`${label} response is invalid`);
+  const impact = configurationImpact(response.configuration_impact, label, updateInterval);
+  const enabledChannels = channels.map((entry) => record(entry, label)).filter((entry) => entry.enabled);
+  const statusFields = array(configuration.status_fields, label, 7);
+  const textCount = enabledChannels.filter((entry) => statusFields[Math.floor((Number(entry.channel) - 1) / 6)]).length;
+  if (impact.enabled_channel_count !== enabledChannels.length || impact.text_entity_count !== textCount || Number(impact.energy_entity_count) > Number(impact.numeric_entity_count)) throw new Error(`${label} response is invalid`);
   return value;
 }
 function packageOptions$1(value, label, boardCount) {
@@ -877,12 +1055,13 @@ function ctInventory(value, label) {
 }
 function transaction(value, label) {
   const item = record(value, label);
-  exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ..."communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []], label);
+  exactKeys(item, ["purpose", "transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ..."communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []], label);
   string(item.transaction_id, label);
   enumeration(item.state, TRANSACTION_STATES, label);
   if (!SHA256.test(string(item.source_sha256, label))) throw new Error(`${label} response is invalid`);
   boolean(item.rollback_available, label);
   if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
+  enumeration(item.purpose, /* @__PURE__ */ new Set(["install_configuration", "save_calibration", "offset_preparation", "offset_finalization"]), label);
   array(item.changes, label).forEach((entry) => {
     const change = record(entry, label);
     exactKeys(change, ["key", "old_value", "new_value"], label);
@@ -1012,7 +1191,7 @@ function offsetReadiness(value, label, expectedBoard, expectedStage) {
   }
   const disconnectedReason = "entity binding is not on the active connection generation";
   const unavailablePrefix = "fresh window unavailable: ";
-  const roles = /* @__PURE__ */ new Set();
+  const roles2 = /* @__PURE__ */ new Set();
   const topLevelReasons = [];
   let disconnectedEntities = 0;
   entities.forEach((entry) => {
@@ -1020,8 +1199,8 @@ function offsetReadiness(value, label, expectedBoard, expectedStage) {
     exactKeys(entity, ["role", "quantity", "ready", "reasons", "window"], label);
     const role = string(entity.role, label);
     const quantity = enumeration(entity.quantity, /* @__PURE__ */ new Set(["voltage", "current"]), label);
-    if (roles.has(role) || expectedRoles.get(role) !== quantity) throw new Error(`${label} response is invalid`);
-    roles.add(role);
+    if (roles2.has(role) || expectedRoles.get(role) !== quantity) throw new Error(`${label} response is invalid`);
+    roles2.add(role);
     const entityReady = boolean(entity.ready, label);
     const reasons2 = array(entity.reasons, label, 12).map((reason) => string(reason, label));
     let expectedReasons;
@@ -1065,7 +1244,7 @@ function offsetReadiness(value, label, expectedBoard, expectedStage) {
   const connectionChangedReasons = [...topLevelReasons, "connection generation changed while collecting readiness"];
   const disconnected = disconnectedEntities === entities.length && exactStrings(reasons, [disconnectedReason]);
   const reasonsMatch = disconnected || disconnectedEntities === 0 && (exactStrings(reasons, topLevelReasons) || exactStrings(reasons, connectionChangedReasons));
-  if (roles.size !== expectedRoles.size || !reasonsMatch || ready !== (reasons.length === 0)) throw new Error(`${label} response is invalid`);
+  if (roles2.size !== expectedRoles.size || !reasonsMatch || ready !== (reasons.length === 0)) throw new Error(`${label} response is invalid`);
   return value;
 }
 function signedTable(value, label) {
@@ -1098,12 +1277,68 @@ function offsetCalibration(value, label, expectedBoard, expectedStage) {
   const all = [...completed, ...unfinished];
   const retryAllowed = boolean(item.retry_allowed, label);
   if (all.length !== 2 || new Set(all).size !== 2 || all.some((key) => !groupKeys2.includes(key))) throw new Error(`${label} response is invalid`);
-  if (state === "applied_pending_restart_verification") {
+  if (state === "applied_pending_restart_verification" || state === "captured_pending_configuration") {
     if (completed.length !== 2 || unfinished.length !== 0 || retryAllowed || item.error !== null) throw new Error(`${label} response is invalid`);
   } else {
     string(item.error, label);
-    if (!retryAllowed || completed.length !== (state === "partial" ? 1 : 0)) throw new Error(`${label} response is invalid`);
+    if (completed.length !== (state === "partial" ? 1 : 0)) throw new Error(`${label} response is invalid`);
   }
+  return value;
+}
+function offsetInstances(value, label, maximum = 14) {
+  const values = array(value, label, maximum).map((item) => string(item, label));
+  if (new Set(values).size !== values.length || values.some((item) => !/^(meter_main[12]|addon[1-6]_[12])$/.test(item))) throw new Error(`${label} response is invalid`);
+  return values;
+}
+function offsetId(value, label) {
+  if (value !== null && !SERVER_ID.test(string(value, label))) throw new Error(`${label} response is invalid`);
+}
+function offsetPreparation(value, label) {
+  const item = record(value, label);
+  exactKeys(item, ["backup_available", "operation_id", "stage", "targets", "installed", "cancelled", "action_ready", "attempted", "completed"], label);
+  offsetId(item.operation_id, label);
+  const targets = offsetInstances(item.targets, label, 2);
+  const attempted = offsetInstances(item.attempted, label, 2);
+  if (item.stage !== null && item.stage !== 1 && item.stage !== 2) throw new Error(`${label} response is invalid`);
+  for (const key of ["backup_available", "installed", "cancelled", "action_ready"]) boolean(item[key], label);
+  const completed = array(item.completed, label, 28).map((entry) => {
+    const pair = array(entry, label, 2);
+    if (pair.length !== 2 || pair[1] !== 1 && pair[1] !== 2) throw new Error(`${label} response is invalid`);
+    offsetInstances([pair[0]], label);
+    return `${pair[0]}:${pair[1]}`;
+  });
+  if (new Set(completed).size !== completed.length || attempted.some((id2) => !targets.includes(id2)) || item.operation_id === null !== (item.stage === null) || item.operation_id === null !== (targets.length === 0) || item.action_ready && (!item.installed || item.cancelled || !item.backup_available || item.operation_id === null)) throw new Error(`${label} response is invalid`);
+  return value;
+}
+function offsetFinalization(value, label) {
+  const item = record(value, label);
+  exactKeys(item, ["purpose", "operation_id", "transaction_id", "stage", "board_index", "targets", "backup_available", "installed", "cancelled", "configuration_selected", "action_ready", "register_verified", "gain_verification_id", "results"], label);
+  enumeration(item.purpose, /* @__PURE__ */ new Set(["offset_preparation", "offset_finalization"]), label);
+  for (const key of ["operation_id", "transaction_id", "gain_verification_id"]) offsetId(item[key], label);
+  const targets = offsetInstances(item.targets, label);
+  for (const key of ["backup_available", "installed", "cancelled", "configuration_selected", "action_ready"]) boolean(item[key], label);
+  if (item.register_verified !== false || item.stage !== null && item.stage !== 1 && item.stage !== 2 || item.board_index !== null && (integer(item.board_index, label) < 0 || item.board_index > 6) || item.board_index === null !== (item.stage === null) || item.operation_id === null !== (item.transaction_id === null) || item.operation_id === null !== (targets.length === 0) || item.purpose === "offset_preparation" !== (item.operation_id === null) || item.action_ready && (!item.installed || item.cancelled || !item.backup_available || item.operation_id === null)) throw new Error(`${label} response is invalid`);
+  const results = array(item.results, label, 28).map((entry) => {
+    const result = array(entry, label, 4);
+    if (result.length !== 4 || result[1] !== 1 && result[1] !== 2) throw new Error(`${label} response is invalid`);
+    offsetInstances([result[0]], label);
+    signedTable(result[2], label);
+    boolean(result[3], label);
+    return `${result[0]}:${result[1]}`;
+  });
+  if (new Set(results).size !== results.length) throw new Error(`${label} response is invalid`);
+  return value;
+}
+function offsetPreview(value, label, stage, board) {
+  const item = record(value, label);
+  const preparing = stage !== void 0;
+  exactKeys(item, preparing ? ["operation_id", "stage", "targets", "backup_available", "transaction"] : ["purpose", "operation_id", "targets", "transaction"], label);
+  offsetId(item.operation_id, label);
+  if (item.operation_id === null) throw new Error(`${label} response is invalid`);
+  const targets = offsetInstances(item.targets, label, preparing ? 2 : 14);
+  const status = transaction(item.transaction, label);
+  const expected = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
+  if (!targets.length || preparing && (item.stage !== stage || item.backup_available !== true || status.purpose !== "offset_preparation" || targets.some((id2) => !expected.includes(id2))) || !preparing && (item.purpose !== "offset_finalization" || status.purpose !== "offset_finalization")) throw new Error(`${label} response is invalid`);
   return value;
 }
 function stability(value, label, expectedTarget, expectedTargetId) {
@@ -1127,7 +1362,7 @@ function stability(value, label, expectedTarget, expectedTargetId) {
     if (!close(mean, expectedMean) || !close(standardDeviation, expectedDeviation) || !close(rangePercent, expectedRange)) throw new Error(`${label} response is invalid`);
     return rangePercent;
   });
-  if (stable !== ranges.every((range) => range <= 1)) throw new Error(`${label} response is invalid`);
+  if (stable !== ranges.every((range2) => range2 <= 1)) throw new Error(`${label} response is invalid`);
   return value;
 }
 function calibration(value, label, expected) {
@@ -1274,7 +1509,15 @@ class HelperApi {
     });
     this.getTopology = (deviceId) => this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
     this.getCtInventory = (deviceId) => this.call("get_ct_inventory", (value) => ctInventory(value, "get_ct_inventory"), { device_id: deviceId });
-    this.getMeterConfiguration = (deviceId) => this.call("get_meter_configuration", (value) => meterConfiguration(value, "get_meter_configuration"), { device_id: deviceId });
+    this.getMeterConfiguration = async (deviceId) => {
+      const inventory = await this.call("get_meter_configuration", (value) => meterConfiguration(value, "get_meter_configuration"), { device_id: deviceId });
+      const details = await this.call("get_total_details", (value) => totalDetails(value, "get_total_details", inventory), {
+        device_id: deviceId,
+        plan_id: inventory.plan_id,
+        source_sha256: inventory.source_sha256
+      });
+      return { ...inventory, total_details: details };
+    };
     this.getActiveWork = (deviceId, expectedTopology) => this.call("get_active_work", (value) => activeWork(value, "get_active_work", expectedTopology), { device_id: deviceId });
     this.getSession = (sessionId) => this.call("get_session", (value) => session(value, "get_session"), { session_id: sessionId });
     this.getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (value) => record(value, "get_diagnostics_summary"));
@@ -1300,6 +1543,12 @@ class HelperApi {
       ...packageOptions2 ? { package_options: packageOptions2 } : {}
     });
     this.previewMeterConfiguration = (deviceId, planId, sourceSha256, configuration) => this.call("preview_meter_configuration", (value) => transaction(value, "preview_meter_configuration"), {
+      device_id: deviceId,
+      plan_id: planId,
+      source_sha256: sourceSha256,
+      configuration
+    });
+    this.previewTotalGraph = (deviceId, planId, sourceSha256, configuration) => this.call("preview_total_graph", (value) => totalGraphPreview(value, "preview_total_graph", planId, sourceSha256, configuration), {
       device_id: deviceId,
       plan_id: planId,
       source_sha256: sourceSha256,
@@ -1337,6 +1586,34 @@ class HelperApi {
       confirm_retry: confirmRetry
     });
     this.skipOffsetCalibration = (sessionId) => this.call("skip_offset_calibration", (value) => session(value, "skip_offset_calibration"), { session_id: sessionId });
+    this.getOffsetPreparation = (sessionId) => this.call("get_offset_preparation", (value) => offsetPreparation(value, "get_offset_preparation"), { session_id: sessionId });
+    this.getOffsetFinalization = (sessionId) => this.call("get_offset_finalization", (value) => offsetFinalization(value, "get_offset_finalization"), { session_id: sessionId });
+    this.previewOffsetPreparation = (sessionId, boardIndex, stage, backupAcknowledged) => this.call(
+      "preview_offset_preparation",
+      (value) => offsetPreview(value, "preview_offset_preparation", stage, boardIndex),
+      { session_id: sessionId, board_index: boardIndex, stage, backup_acknowledged: backupAcknowledged }
+    );
+    this.resumeOffsetCalibration = (sessionId, operationId, boardIndex, stage, preparationAcknowledged) => this.call(
+      "resume_offset_calibration",
+      (value) => offsetCalibration(value, "resume_offset_calibration", boardIndex, stage),
+      { session_id: sessionId, operation_id: operationId, board_index: boardIndex, stage, preparation_acknowledged: preparationAcknowledged }
+    );
+    this.previewOffsetFinalization = (sessionId, verificationId, changes = [], packageOptions2) => this.call(
+      "preview_offset_finalization",
+      (value) => offsetPreview(value, "preview_offset_finalization"),
+      { session_id: sessionId, ...verificationId ? { verification_id: verificationId, changes, ...packageOptions2 ? { package_options: packageOptions2 } : {} } : {} }
+    );
+    this.reconcileOffsetFinalization = (sessionId, operationId) => this.call(
+      "reconcile_offset_finalization",
+      (value) => offsetFinalization(value, "reconcile_offset_finalization"),
+      { session_id: sessionId, operation_id: operationId }
+    );
+    this.beginOffsetCycle = (sessionId, backupAcknowledged) => this.call(
+      "begin_offset_cycle",
+      (value) => offsetPreparation(value, "begin_offset_cycle"),
+      { session_id: sessionId, backup_acknowledged: backupAcknowledged }
+    );
+    this.restartAndVerifyGains = (sessionId, expectedTopology) => this.call("restart_and_verify_gains", (value) => restart(value, "restart_and_verify_gains", expectedTopology), { session_id: sessionId });
     this.calibrateVoltage = (sessionId, referenceId, referenceVoltage, confirmIteration) => {
       if (!referenceId || !Number.isFinite(referenceVoltage) || referenceVoltage < 1 || referenceVoltage > 600) return Promise.reject(new Error("calibrate_voltage reference is invalid"));
       return this.call("calibrate_voltage", (value) => {
@@ -1436,7 +1713,7 @@ class HelperApi {
       0,
       "",
       false,
-      operation === "get_active_work"
+      ["get_active_work", "preview_offset_preparation", "preview_offset_finalization"].includes(operation)
     );
     return validator(result);
   }
@@ -1447,17 +1724,81 @@ class HelperApi {
     }, { type: `${PREFIX}${operation}`, entry_id: this.entryId, ...data });
   }
 }
-const aggregateFormula = (aggregate) => {
-  const channels = aggregate.channels.map((channel) => `CT${channel}`);
-  if (aggregate.measurement_method === "one_ct_double_power") return `2 × ${channels[0] ?? "CT"}`;
-  if (aggregate.measurement_method === "both_conductors_one_ct") return `${channels[0] ?? "CT"} (both conductors)`;
-  return channels.join(" + ");
+function derivedParentId(aggregateId, aggregates) {
+  const parents = aggregates.filter((item) => item.sources.some((source) => source.kind === "aggregate" && source.aggregate_id === aggregateId));
+  if (parents.length > 1) throw new Error("A total cannot have multiple parents.");
+  return parents[0]?.aggregate_id ?? null;
+}
+function reparentAggregate(aggregateId, parentId, aggregates) {
+  if (!aggregates.some((item) => item.aggregate_id === aggregateId)) throw new Error("Unknown child total.");
+  derivedParentId(aggregateId, aggregates);
+  if (parentId !== null) {
+    const parent = aggregates.find((item) => item.aggregate_id === parentId);
+    if (!parent || parentId === aggregateId) throw new Error("Invalid parent total.");
+    if (parent.measurement_method !== "direct" || parent.sources.some((source) => source.kind === "channel")) throw new Error("A parent cannot mix CTs with nested totals.");
+    const seen = /* @__PURE__ */ new Set([aggregateId]);
+    for (let current = parentId; current !== null; current = derivedParentId(current, aggregates)) {
+      if (seen.has(current)) throw new Error("Totals cannot form a cycle.");
+      seen.add(current);
+    }
+  }
+  return aggregates.map((item) => {
+    const sources = item.sources.filter((source) => source.kind !== "aggregate" || source.aggregate_id !== aggregateId);
+    if (item.aggregate_id === parentId) sources.push({ kind: "aggregate", aggregate_id: aggregateId });
+    return { ...item, sources };
+  });
+}
+function sourceFormula(sources, inventory, aggregates) {
+  return sources.map((source) => {
+    if (source.kind === "channel") return `CT${source.channel}`;
+    const label = source.kind === "native_total" ? inventory.native_sources.find((item) => item.source_id === source.source_id)?.label : aggregates.find((item) => item.aggregate_id === source.aggregate_id)?.name ?? inventory.automatic_candidates.find((item) => item.aggregate_id === source.aggregate_id)?.name;
+    if (!label) throw new Error("Unknown total source.");
+    return label;
+  }).join(" + ");
+}
+function sourceLeaves(sources, inventory, aggregates, path = [], editingId = null) {
+  const leaves = sources.flatMap((source) => {
+    if (source.kind === "channel") return [source.channel];
+    if (source.kind === "native_total") {
+      const native = inventory.native_sources.find((item) => item.source_id === source.source_id);
+      if (!native) throw new Error("Unknown native source; remove or replace it.");
+      return native.leaf_channels;
+    }
+    if (path.includes(source.aggregate_id)) throw new Error("Totals cannot form a cycle.");
+    const child = aggregates.find((item) => item.aggregate_id === source.aggregate_id) ?? inventory.automatic_candidates.find((item) => item.aggregate_id === source.aggregate_id);
+    if (!child) throw new Error("Unknown total source; remove or replace it.");
+    const channels = child.sources.filter((item) => item.kind === "channel");
+    const needed = child.measurement_method === "direct" ? null : child.measurement_method === "two_ct_sum" ? 2 : 1;
+    if (child.aggregate_id !== editingId && (!child.sources.length || channels.length && channels.length !== child.sources.length || needed !== null && (channels.length !== needed || channels.length !== child.sources.length))) {
+      throw new Error(`Complete ${child.name}'s measurement method and sources first.`);
+    }
+    return sourceLeaves(child.sources, inventory, aggregates, [...path, source.aggregate_id], editingId);
+  });
+  if (new Set(leaves).size !== leaves.length) throw new Error("Overlapping sources count the same CT more than once.");
+  return leaves;
+}
+const emptyTotals = {
+  native_sources: [],
+  automatic_candidates: [],
+  automatic_totals: [],
+  stale_automatic_total_settings: [],
+  migration: { parent_review_required: false, legacy_parent_links: [], native_visibility_confirmation_required: false, native_visibility_resolved: false }
 };
-function configReview(status, configuration = null, impact = null) {
+function configReview(status, configuration = null, impact = null, totals = null) {
   const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split("\n");
   const channels = configuration?.channels ?? [];
   const pqBoards = configuration?.power_quality.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
   const statusBoards = configuration?.status_fields.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
+  const formula = (aggregate) => {
+    let value;
+    try {
+      value = sourceFormula(aggregate.sources, totals ?? emptyTotals, configuration?.aggregates ?? []);
+    } catch {
+      return "Source labels unavailable; refresh the configuration review.";
+    }
+    return aggregate.measurement_method === "one_ct_double_power" ? `2 × ${value}` : aggregate.measurement_method === "both_conductors_one_ct" ? `${value} (both conductors)` : value;
+  };
+  const outputs = (value) => `${value.watts ? "Public" : "Hidden"} Watts; ${value.amps ? "public" : "hidden"} Amps; ${value.kwh ? "public" : "hidden"} kWh`;
   return b`
     <section class="review-region" aria-labelledby="review-heading">
       <h2 id="review-heading">Review changes</h2>
@@ -1470,8 +1811,15 @@ function configReview(status, configuration = null, impact = null) {
         ${configuration.meter.voltage_references.length > 1 ? b`<p class=${configuration.multi_reference_preparation_acknowledged ? "info-band" : "warning-band"}>Multi-reference hardware preparation: ${configuration.multi_reference_preparation_acknowledged ? "acknowledged" : "not acknowledged"}.</p>` : ""}
         <h3>Channels</h3>
         <ul class="status-list">${channels.map((channel) => b`<li>CT${channel.channel} ${channel.name}: ${channel.enabled ? `${channel.role.replaceAll("_", " ")} on ${channel.voltage_reference_id}; ${channel.model_id || "no model"} × ${channel.reporting_multiplier}; burden ${channel.burden_output_acknowledged ? "acknowledged" : "not acknowledged"}` : "unused"}</li>`)}</ul>
-        <h3>Aggregates</h3>
-        ${configuration.aggregates.length ? b`<ul class="status-list">${configuration.aggregates.map((aggregate) => b`<li>${aggregate.name} = ${aggregateFormula(aggregate)} · ${aggregate.measurement_method.replaceAll("_", " ")} · ${aggregate.energy_mode} energy${aggregate.parent_id ? ` · parent ${aggregate.parent_id}` : ""}</li>`)}</ul>` : b`<p class="info-band">No aggregate totals are configured.</p>`}
+        <h3>Default meter totals</h3>
+        <ul><li>Overall meter total: ${outputs(configuration.default_totals.overall)}</li>${configuration.default_totals.boards.map((board) => b`<li>${board.board_index === 0 ? "Main Board" : `Add-on ${board.board_index}`} total: ${outputs(board.outputs)}</li>`)}</ul>
+        <h3>Suggested circuit totals</h3>
+        <ul>${totals?.automatic_totals.map((item) => b`<li>${item.candidate.name}: ${item.enabled ? outputs(item.outputs) : "Disabled"}</li>`)}</ul>
+        <h3>Advanced total hierarchy</h3>
+        ${configuration.aggregates.length ? b`<ul class="status-list">${configuration.aggregates.map((aggregate) => b`<li>${aggregate.name} = ${formula(aggregate)} · ${aggregate.measurement_method.replaceAll("_", " ")} · ${aggregate.energy_mode} energy · ${outputs(aggregate.outputs)}</li>`)}</ul>` : b`<p class="info-band">No aggregate totals are configured.</p>`}
+        <h3>Legacy relationship migration</h3>
+        <ul>${configuration.totals_change_intent?.legacy_parent_decisions.map((decision) => b`<li>${configuration.aggregates.find((item) => item.aggregate_id === decision.child_id)?.name ?? decision.child_id} → ${configuration.aggregates.find((item) => item.aggregate_id === decision.proposed_parent_id)?.name ?? decision.proposed_parent_id}: ${decision.accepted ? "Use this parent relationship" : "Keep totals independent"}; awaiting successful commit.</li>`)}</ul>
+        ${impact ? b`<p>${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors. Hidden outputs can remain internal dependencies.</p>` : b`<p>Current total counts are unavailable.</p>`}
         <h3>Package and entity impact</h3>
         <dl class="status-list"><div><dt>Power quality</dt><dd>${pqBoards.length ? `Boards ${pqBoards.join(", ")}` : "Not selected"}</dd></div><div><dt>Phase status</dt><dd>${statusBoards.length ? `Boards ${statusBoards.join(", ")}` : "Not selected"}</dd></div>${impact ? b`<div><dt>Entity impact</dt><dd>${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text, ${impact.energy_entity_count} energy; ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec</dd></div>` : ""}</dl>
       ` : ""}
@@ -1493,14 +1841,82 @@ function configReview(status, configuration = null, impact = null) {
     </section>
   `;
 }
-function buildInstallStep(purpose, status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "", legacyMigration = false) {
+function canAdoptTotals(meter) {
+  return meter.capabilities.configuration_authoritative && (meter.capabilities.reason_codes.includes("source_totals_adoptable") || meter.totals.migration.native_visibility_resolved && !meter.capabilities.reason_codes.includes("config_contract_upgrade_required"));
+}
+function totalsEditable(meter, capability) {
+  return meter.capabilities.configuration_authoritative && (capability !== "native_totals_writable" || meter.totals.migration.native_visibility_resolved) && (meter.capabilities[capability] || meter.configuration.totals_change_intent?.adopt_managed_totals === true && canAdoptTotals(meter));
+}
+function legacyTotalsNotice(capabilities) {
+  return b`${capabilities.reason_codes.includes("legacy_custom_totals_unmanaged") || capabilities.reason_codes.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band">Arbitrary unmanaged custom totals remain outside helper control. Recognized existing Watts/Amps/kWh remain unchanged until edited. After adoption, editing a supported total creates replacement helper entities and new kWh counters; its original sensors are retained internally. Unresolved native default totals remain read-only. Preserved unsupported external custom energy remains unchanged and outside the computed entity count. Review these changes before saving.</p>` : A}`;
+}
+function totalsMigrationReview(meter, update, preview = null, fresh = true, readOnly = false, transaction2 = null) {
+  const { configuration, totals, capabilities } = meter;
+  const intent = configuration.totals_change_intent ?? { adopt_managed_totals: false, legacy_parent_decisions: [] };
+  const adoptionRequired = capabilities.reason_codes.includes("totals_adoption_required");
+  const writable = !readOnly && totalsEditable(meter, "managed_advanced_totals");
+  const name = (id2) => configuration.aggregates.find((item) => item.aggregate_id === id2)?.name ?? totals.automatic_candidates.find((item) => item.aggregate_id === id2)?.name ?? id2;
+  const available = { ...totals, automatic_candidates: totals.automatic_totals.filter((item) => item.enabled).map((item) => item.candidate) };
+  return b`
+    ${adoptionRequired ? b`<section class="totals-migration" aria-labelledby="totals-adoption-heading">
+      <h2 id="totals-adoption-heading">Legacy read-only totals</h2>
+      <p>Detected totals are read-only until explicit adoption. Opening this page does not change their formulas, visibility or ownership. Supported source totals can be adopted independently of unresolved native defaults.</p>
+      ${canAdoptTotals(meter) && !readOnly ? b`<button class="secondary" ?disabled=${intent.adopt_managed_totals}
+        @click=${() => {
+    if (canAdoptTotals(meter) && !intent.adopt_managed_totals) update({ ...configuration, totals_change_intent: { ...intent, adopt_managed_totals: true } });
+  }}>Adopt managed totals</button>` : !canAdoptTotals(meter) ? b`<p role="status">Adoption requires authoritative editable YAML, confirmed native visibility and supported contract.</p>` : A}
+      ${intent.adopt_managed_totals ? b`<p role="status">Adoption selected; awaiting successful commit. Review the exact native visibility overrides and helper blocks before Save and validate.</p>
+        ${fresh && preview ? b`<h3>Requested visibility changes versus firmware defaults</h3><p>These are requested outputs, not the source-aware overrides to be added. The server transaction diff below is authoritative for actual YAML changes.</p><ul>${preview.graph.native_visibility.map((item) => {
+    const native = totals.native_sources.find((source) => source.power_id === item.sensor_id || source.current_id === item.sensor_id || source.existing_energy_id === item.sensor_id);
+    const output = native?.power_id === item.sensor_id ? "Watts" : native?.current_id === item.sensor_id ? "Amps" : "kWh";
+    return b`<li>${native?.label ?? "Native total"} ${output}: ${item.internal ? "internal dependency" : "public output"}</li>`;
+  })}</ul><h3>Requested helper totals</h3><ul>${preview.graph.ordered_nodes.map((node) => b`<li>${node.aggregate.name}: ${[node.power_required ? "Watts" : "", node.current_required ? "Amps" : "", node.energy_required ? "kWh" : ""].filter(Boolean).join(", ")}</li>`)}
+          ${totals.native_sources.filter((source) => source.source_id !== "overall").map((source, index) => source.existing_energy_id === null && configuration.default_totals.boards.find((board) => board.board_index === index)?.outputs.kwh ? b`<li>${source.label}: kWh</li>` : A)}</ul>` : b`<p role="status">Current validated total preview is required to list requested visibility and helper blocks.</p>`}
+        ${transaction2 ? b`<details><summary>Exact source-aware additions and helper blocks (server transaction diff)</summary><pre class="config-diff" aria-label="Exact adoption transaction diff">${transaction2.redacted_diff}</pre></details>` : b`<p>Continue to configuration review for the exact source-aware additions and helper blocks in the server transaction diff.</p>`}` : A}
+    </section>` : A}
+    ${legacyTotalsNotice(capabilities)}
+    ${totals.migration.legacy_parent_links.length ? b`<section class="totals-migration" aria-labelledby="legacy-parent-heading">
+      <h2 id="legacy-parent-heading">Legacy relationship migration</h2>
+      <p>Existing totals continue using their direct CT formulas. Old parent links were metadata only; review each proposed relationship separately.</p>
+      ${totals.migration.legacy_parent_links.map((link, index) => {
+    const decision = intent.legacy_parent_decisions.find((item) => item.child_id === link.child_id && item.proposed_parent_id === link.proposed_parent_id);
+    let aggregates = configuration.aggregates;
+    let error = "";
+    try {
+      if (!configuration.aggregates.some((item) => item.aggregate_id === link.proposed_parent_id)) throw new Error("Automatic totals retain fixed CT sources. Edit a custom total hierarchy explicitly before accepting this relationship.");
+      aggregates = reparentAggregate(link.child_id, link.proposed_parent_id, configuration.aggregates);
+      for (const aggregate of aggregates) {
+        derivedParentId(aggregate.aggregate_id, aggregates);
+        sourceLeaves([{ kind: "aggregate", aggregate_id: aggregate.aggregate_id }], available, aggregates);
+      }
+    } catch (failure) {
+      error = failure.message;
+    }
+    const choose = (accepted) => {
+      if (!writable || accepted && (!fresh || error)) return;
+      update({
+        ...configuration,
+        aggregates: accepted ? aggregates : configuration.aggregates.map((aggregate) => aggregate.aggregate_id === link.proposed_parent_id ? { ...aggregate, sources: aggregate.sources.filter((source) => source.kind !== "aggregate" || source.aggregate_id !== link.child_id) } : aggregate),
+        totals_change_intent: { ...intent, legacy_parent_decisions: [...intent.legacy_parent_decisions.filter((item) => item.child_id !== link.child_id || item.proposed_parent_id !== link.proposed_parent_id), { ...link, accepted }] }
+      });
+    };
+    return b`<fieldset><legend>${name(link.child_id)} → ${name(link.proposed_parent_id)}</legend>
+          <p role="status">${decision ? `${decision.accepted ? "Relationship selected" : "Keep independent selected"}; awaiting successful commit.` : "Pending review"}</p>
+          ${error ? b`<p id=${`legacy-link-error-${index}`}>${error}</p>` : A}
+          <div class="migration-actions"><button class="secondary" ?disabled=${!writable} @click=${() => choose(false)}>Keep totals independent</button>
+          <button class="secondary" ?disabled=${!writable || !fresh || Boolean(error)} aria-describedby=${error ? `legacy-link-error-${index}` : A} @click=${() => choose(true)}>Use this parent relationship</button></div>
+        </fieldset>`;
+  })}
+    </section>` : A}`;
+}
+function buildInstallStep(purpose, status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "", legacyMigration = false, meterInventory = null, totalPreview = null) {
   if (!status) return b`
     <section class="step-content" aria-labelledby="step-heading">
       <div class="recovery-panel" role="status"><strong>No active review</strong><p>Return to the previous step and review the current configuration before continuing.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${back}>Back</button></footer>
     </section>
   `;
-  const labels = purpose === "save_calibration" ? { heading: "Save verified calibration", apply: "Write verified gains to ESPHome", compile: "Build firmware", install: "Install calibrated firmware" } : { heading: legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
+  const labels = purpose === "save_calibration" ? { heading: "Save verified calibration", apply: "Write verified gains to ESPHome", compile: "Build firmware", install: "Install calibrated firmware" } : { heading: purpose === "offset_preparation" ? "Install offset preparation" : purpose === "offset_finalization" ? "Install captured offsets" : legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
   const state = status.state;
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
@@ -1516,7 +1932,10 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
   return b`
     <section class="step-content" aria-labelledby="step-heading">
       <h2>${labels.heading}</h2>
-      ${configReview(status, configuration, impact)}
+      ${purpose === "offset_preparation" ? b`<p>This installs a reviewed zero baseline for only the unfinished chips. Installation does not run calibration. Return to the same board and stage, acknowledge physical preparation again, and check measured readiness before explicit Run.</p>` : ""}
+      ${purpose === "offset_finalization" ? b`<p>Captured signed offsets, including zeros, are installed with native offset restore disabled. Confirm configuration selection after installation; this is not register readback and does not clear saved gain calibration.</p>` : ""}
+      ${configReview(status, configuration, impact, meterInventory?.totals)}
+      ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true, status) : ""}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
           <strong>${communicationFailure ? "Meter chip communication failed" : "Build or install needs attention"}</strong>
@@ -1587,12 +2006,363 @@ const moveTab = (event, index) => {
   tabs[next]?.click();
   tabs[next]?.focus();
 };
+const range = (channels) => channels.length ? `CT${channels[0]}–CT${channels.at(-1)}` : "No CTs";
+function defaultTotalsSection(configuration, totals, readable, writable, update, graphState = "ready") {
+  if (!readable) return b`<section class="default-totals" aria-labelledby="default-totals-heading"><h2 id="default-totals-heading">Default meter totals</h2><p class="info-band" role="status">Native default totals are unavailable for this configuration.</p></section>`;
+  const overall = totals.native_sources.find((source) => source.source_id === "overall");
+  const boards = totals.native_sources.filter((source) => source.source_id !== "overall");
+  const patch = (outputs, boardIndex) => update({
+    ...configuration,
+    default_totals: boardIndex === void 0 ? { ...configuration.default_totals, overall: outputs } : { ...configuration.default_totals, boards: configuration.default_totals.boards.map((board) => board.board_index === boardIndex ? { ...board, outputs } : board) }
+  });
+  const control = (label, checked, onChange) => b`<label class="default-total-control"><input type="checkbox" role="switch" aria-label=${label} .checked=${checked} ?disabled=${!writable}
+    @change=${(event) => onChange(event.target.checked)} />${label.replace(/.* (Watts|Amps|kWh)$/, "$1")}</label>`;
+  const boardFormula = boards.map((source) => source.label).join(" + ");
+  const boardRanges = boards.map((source) => range(source.leaf_channels)).join(" + ");
+  const visibilityUnresolved = !totals.migration.native_visibility_resolved;
+  return b`<section class="default-totals" aria-labelledby="default-totals-heading">
+    <h2 id="default-totals-heading">Default meter totals</h2>
+    ${visibilityUnresolved ? b`<p class="info-band" role="status">Native source visibility is unconfirmed; these controls show requested outputs, not confirmed installed publications.</p>` : A}
+    ${graphState === "pending" ? b`<p class="info-band" role="status">Updating total graph; current native cards remain available.</p>` : graphState === "invalid" ? b`<p class="warning-band" role="status">Total graph unavailable; native cards show saved draft status and not current dependency results.</p>` : A}
+    <p>These switches control Home Assistant visibility.</p>
+    <ul class="native-total-status" role="status">
+      <li>Watts is hidden from Home Assistant when off and retained internally when needed by Overall meter total, enabled kWh, or other totals.</li>
+      <li>Amps is hidden from Home Assistant when off and retained internally when needed by Overall meter total or other totals.</li>
+      <li>kWh is hidden from Home Assistant when off.</li>
+    </ul>
+    ${overall ? b`<fieldset class="default-total-card"><legend>Overall meter total (all monitored channels)</legend>
+      <p>${boardFormula || "All monitored channels"}. Downstream circuit CTs can double-count the service mains, so this native total is not relabeled Mains.</p>
+      <p>Covers: ${boardRanges || range(overall.leaf_channels)}.</p>
+      <div class="default-total-controls">
+        ${control("Overall meter total Watts", configuration.default_totals.overall.watts, (watts) => patch({ ...configuration.default_totals.overall, watts }))}
+        ${control("Overall meter total Amps", configuration.default_totals.overall.amps, (amps) => patch({ ...configuration.default_totals.overall, amps }))}
+        ${control("Overall meter total kWh", configuration.default_totals.overall.kwh, (kwh) => patch({ ...configuration.default_totals.overall, kwh }))}
+      </div>
+    </fieldset>` : A}
+    ${boards.map((source, boardIndex) => {
+    const settings = configuration.default_totals.boards.find((board) => board.board_index === boardIndex)?.outputs;
+    if (!settings) return A;
+    return b`<fieldset class="default-total-card"><legend>${source.label}</legend><p>${range(source.leaf_channels)}</p>
+        <div class="default-total-controls">
+          ${control(`${source.label} Watts`, settings.watts, (watts) => patch({ ...settings, watts }, boardIndex))}
+          ${control(`${source.label} Amps`, settings.amps, (amps) => patch({ ...settings, amps }, boardIndex))}
+          ${control(`${source.label} kWh`, settings.kwh, (kwh) => patch({ ...settings, kwh }, boardIndex))}
+        </div>
+      </fieldset>`;
+  })}
+  </section>`;
+}
+const automaticRoleLabels = [
+  ["grid", "Mains"],
+  ["solar", "Solar"],
+  ["subpanel", "Subpanel"],
+  ["two_pole", "Two-pole circuit"]
+];
+function automaticTotalsSection(configuration, totals, writable, update) {
+  if (!totals) return b`<section class="automatic-totals" aria-labelledby="automatic-totals-heading"><h2 id="automatic-totals-heading">Suggested circuit totals</h2><p class="info-band" role="status">Suggested totals are unavailable until the total graph is ready.</p></section>`;
+  const patch = (candidateId, current, change, aggregates = configuration.aggregates) => update({
+    ...configuration,
+    automatic_totals: configuration.automatic_totals.some((item) => item.candidate_id === candidateId) ? configuration.automatic_totals.map((item) => item.candidate_id === candidateId ? { ...item, ...change } : item) : [...configuration.automatic_totals, { ...current, ...change }],
+    aggregates
+  });
+  const ambiguousRoles = automaticRoleLabels.filter(([role]) => configuration.channels.filter((channel) => channel.enabled && channel.role === role).length > 2);
+  return b`<section class="automatic-totals" aria-labelledby="automatic-totals-heading">
+    <h2 id="automatic-totals-heading">Suggested circuit totals</h2>
+    ${ambiguousRoles.map(([, label]) => b`<p class="info-band" role="status">Multiple ${label} CTs cannot be paired automatically. Create the totals under Advanced totals.</p>`)}
+    ${totals.automatic_totals.length ? totals.automatic_totals.map((resolved) => {
+    const saved = configuration.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id);
+    const current = saved ?? { candidate_id: resolved.candidate.candidate_id, enabled: resolved.enabled, outputs: resolved.outputs };
+    const parents = configuration.aggregates.filter((aggregate) => aggregate.sources.some((source) => source.kind === "aggregate" && source.aggregate_id === resolved.candidate.aggregate_id));
+    const sources = resolved.candidate.sources.map((source) => `CT${source.channel} · ${configuration.channels.find((channel) => channel.channel === source.channel)?.name ?? "Unnamed"}`).join(", ");
+    const changeOutput = (key, checked) => patch(resolved.candidate.candidate_id, current, { outputs: { ...current.outputs, [key]: checked } });
+    const changeEnabled = (event) => {
+      const input = event.target;
+      if (input.checked || !parents.length) return patch(resolved.candidate.candidate_id, current, { enabled: input.checked });
+      const names = parents.map((parent) => parent.name).join(" and ");
+      if (!window.confirm(`${names} uses ${resolved.candidate.name}. Remove it from ${names}?`)) {
+        input.checked = true;
+        return;
+      }
+      patch(resolved.candidate.candidate_id, current, { enabled: false }, configuration.aggregates.map((aggregate) => ({
+        ...aggregate,
+        sources: aggregate.sources.filter((source) => source.kind !== "aggregate" || source.aggregate_id !== resolved.candidate.aggregate_id)
+      })));
+    };
+    const control = (key, label, disabled = false) => b`<label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`${resolved.candidate.name} ${label}`} .checked=${current.outputs[key]} ?disabled=${!writable || disabled}
+        @change=${(event) => changeOutput(key, event.target.checked)} />${label}</label>`;
+    return b`<fieldset class="automatic-total-card"><legend>${resolved.candidate.name}</legend>
+        <p>Sources: ${sources}</p><p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
+        ${parents.length ? b`<p>Feeds into: ${parents.map((parent) => parent.name).join(" and ")}</p>` : ""}
+        <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${resolved.candidate.name} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>
+        <div class="automatic-total-controls">${control("watts", "Watts")}${control("amps", "Amps")}${control("kwh", "kWh", resolved.candidate.energy_mode === "none")}</div>
+      </fieldset>`;
+  }) : b`<p class="info-band" role="status">No server-suggested totals are available for this circuit configuration.</p>`}
+  </section>`;
+}
+const methods = ["direct", "two_ct_sum", "one_ct_double_power", "both_conductors_one_ct"];
+const energyModes = ["none", "consumption", "bidirectional", "generation"];
+const roles = ["grid", "solar", "generator", "subpanel", "branch", "two_pole", "custom"];
+const sameSource = (a2, b2) => a2.kind === "channel" && b2.kind === "channel" ? a2.channel === b2.channel : a2.kind === "native_total" && b2.kind === "native_total" ? a2.source_id === b2.source_id : a2.kind === "aggregate" && b2.kind === "aggregate" && a2.aggregate_id === b2.aggregate_id;
+const errorText = (error) => error instanceof Error ? error.message : "Invalid total sources.";
+const coverageLabel = (leaves) => {
+  const sorted = [...new Set(leaves)].sort((a2, b2) => a2 - b2);
+  return sorted.length > 1 && sorted.at(-1) - sorted[0] === sorted.length - 1 ? `CT${sorted[0]}–CT${sorted.at(-1)}` : sorted.map((channel) => `CT${channel}`).join(", ");
+};
+function advancedTotalsEditor(configuration, drafts, update, writable, reason, totals, preview = null, fresh = true, automaticSourcesFresh = fresh) {
+  const catalog = totals ?? {
+    native_sources: [],
+    automatic_candidates: [],
+    automatic_totals: [],
+    stale_automatic_total_settings: [],
+    migration: {
+      parent_review_required: false,
+      legacy_parent_links: [],
+      native_visibility_confirmation_required: true,
+      native_visibility_resolved: false
+    }
+  };
+  const enabledAutomatic = (automaticSourcesFresh ? catalog.automatic_totals : []).filter((item) => configuration.automatic_totals.find((setting) => setting.candidate_id === item.candidate.candidate_id)?.enabled ?? item.enabled);
+  const available = { ...catalog, automatic_candidates: enabledAutomatic.map((item) => item.candidate) };
+  const patch = (aggregate, change) => {
+    if (writable) update({ ...configuration, aggregates: configuration.aggregates.map((item) => item === aggregate ? { ...item, ...change } : item) });
+  };
+  const parentOf = (id2) => derivedParentId(id2, configuration.aggregates);
+  const label = (source) => {
+    try {
+      return sourceFormula([source], catalog, configuration.aggregates);
+    } catch {
+      return "Unknown source";
+    }
+  };
+  const rootOf = (id2, aggregates) => {
+    const seen = /* @__PURE__ */ new Set();
+    for (let next = derivedParentId(id2, aggregates); next !== null; next = derivedParentId(id2, aggregates)) {
+      if (seen.has(id2)) throw new Error("Totals cannot form a cycle.");
+      seen.add(id2);
+      id2 = next;
+    }
+    return aggregates.find((item) => item.aggregate_id === id2);
+  };
+  const validateAddition = (aggregate, aggregates) => {
+    for (const item of aggregates) {
+      derivedParentId(item.aggregate_id, aggregates);
+      for (const source of item.sources) if (source.kind === "aggregate") derivedParentId(source.aggregate_id, aggregates);
+    }
+    const root = rootOf(aggregate.aggregate_id, aggregates);
+    sourceLeaves(root.sources, available, aggregates, [root.aggregate_id], aggregate.aggregate_id);
+  };
+  const sourceReason = (aggregate, source) => {
+    if (aggregate.sources.some((item) => item.kind === "channel" !== (source.kind === "channel"))) return "Remove current sources before changing between CTs and totals.";
+    if (source.kind !== "channel" && aggregate.measurement_method !== "direct") return "Nested totals require the Direct measurement method.";
+    const max = aggregate.measurement_method === "direct" ? Infinity : aggregate.measurement_method === "two_ct_sum" ? 2 : 1;
+    if (aggregate.sources.length >= max) return `This measurement method accepts ${max} CT${max === 1 ? "" : "s"}.`;
+    try {
+      if (source.kind === "aggregate") {
+        const parent = parentOf(source.aggregate_id);
+        if (parent && parent !== aggregate.aggregate_id) return "Already used by another total. Move it with Feeds into.";
+        const candidate = configuration.aggregates.find((item) => item.aggregate_id === source.aggregate_id) ?? enabledAutomatic.find((item) => item.candidate.aggregate_id === source.aggregate_id)?.candidate;
+        if (!candidate?.sources.length) return "Complete this child total's sources first.";
+      }
+      const changed = { ...aggregate, sources: [...aggregate.sources, source] };
+      validateAddition(changed, configuration.aggregates.map((item) => item === aggregate ? changed : item));
+      return "";
+    } catch (error) {
+      return errorText(error);
+    }
+  };
+  const parentReason = (aggregate, parentId) => {
+    if (parentId === null) return "";
+    try {
+      const moved = reparentAggregate(aggregate.aggregate_id, parentId, configuration.aggregates);
+      validateAddition(moved.find((item) => item.aggregate_id === parentId), moved);
+      return "";
+    } catch (error) {
+      return errorText(error);
+    }
+  };
+  const add = () => {
+    if (!writable) return;
+    const ids = /* @__PURE__ */ new Set([...configuration.aggregates.map((item) => item.aggregate_id), ...catalog.automatic_candidates.map((item) => item.aggregate_id)]);
+    let number2 = 1;
+    while (ids.has(`aggregate-${number2}`)) number2++;
+    update({ ...configuration, aggregates: [...configuration.aggregates, {
+      aggregate_id: `aggregate-${number2}`,
+      name: `Aggregate total ${number2}`,
+      role: "branch",
+      sources: [],
+      measurement_method: "two_ct_sum",
+      energy_mode: "consumption",
+      outputs: { watts: true, amps: false, kwh: true },
+      origin: "advanced"
+    }] });
+  };
+  return b`<section aria-labelledby="advanced-totals-heading"><details class="advanced-totals"><summary id="advanced-totals-heading">Advanced totals</summary>
+    ${!writable ? b`<p class="info-band" role="status">Aggregate editing unavailable: ${reason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : A}
+    ${!fresh ? b`<p class="info-band" role="status">Total graph unavailable or updating. You can still edit or remove draft sources; complete the graph before continuing.</p>` : A}
+    ${fresh && catalog.stale_automatic_total_settings.length ? b`<p class="info-band" role="status">${catalog.stale_automatic_total_settings.length} inactive automatic settings are retained for this plan, not included in the active configuration.</p>` : A}
+    <div class="aggregate-list">${configuration.aggregates.map((aggregate) => {
+    let parent = "", problem = "", leaves = [], overlaps = false;
+    try {
+      parent = parentOf(aggregate.aggregate_id) ?? "";
+      if (!aggregate.sources.length) throw new Error("Incomplete total: select at least one source.");
+      const channels = aggregate.sources.filter((source) => source.kind === "channel");
+      const needed = aggregate.measurement_method === "direct" ? null : aggregate.measurement_method === "two_ct_sum" ? 2 : 1;
+      if (channels.length && channels.length !== aggregate.sources.length || needed !== null && (channels.length !== needed || channels.length !== aggregate.sources.length)) throw new Error("Incomplete total: check the measurement method and source class.");
+      if (fresh) {
+        leaves = sourceLeaves(aggregate.sources, available, configuration.aggregates, [aggregate.aggregate_id]);
+        validateAddition(aggregate, configuration.aggregates);
+        leaves = preview?.graph.leaf_channels[aggregate.aggregate_id] ?? leaves;
+        overlaps = preview?.graph.independent_overlap_warnings.some((item) => item.first_id === aggregate.aggregate_id || item.second_id === aggregate.aggregate_id) ?? false;
+        if (!preview && !parent) {
+          const roots = [
+            ...configuration.aggregates.filter((item) => item !== aggregate && !parentOf(item.aggregate_id)),
+            ...enabledAutomatic.filter((item) => !parentOf(item.candidate.aggregate_id)).map((item) => item.candidate)
+          ];
+          overlaps = roots.some((item) => {
+            try {
+              return sourceLeaves(item.sources, available, configuration.aggregates, [item.aggregate_id]).some((channel) => leaves.includes(channel));
+            } catch {
+              return false;
+            }
+          });
+        }
+      }
+    } catch (error) {
+      problem = errorText(error);
+    }
+    const option = (source, text, accessibleLabel = text) => {
+      const checked = aggregate.sources.some((item) => sameSource(item, source));
+      const blocked = checked ? "" : sourceReason(aggregate, source);
+      return b`<label class=${`aggregate-channel-option${checked ? " selected" : ""}`} title=${blocked || A}><input type="checkbox" aria-label=${`${aggregate.name}: ${accessibleLabel}`} aria-description=${blocked || A} .checked=${checked} ?disabled=${!writable || Boolean(blocked)}
+          @change=${(event) => {
+        const input = event.target;
+        if (!writable || input.checked && sourceReason(aggregate, source)) {
+          input.checked = checked;
+          return;
+        }
+        if (!input.checked && source.kind !== "channel" && !window.confirm(`Remove ${label(source)} from ${aggregate.name}?${source.kind === "aggregate" ? " It becomes an independent report." : ""}`)) {
+          input.checked = checked;
+          return;
+        }
+        patch(aggregate, { sources: input.checked ? [...aggregate.sources, source] : aggregate.sources.filter((item) => !sameSource(item, source)) });
+      }} /><span>${text}</span></label>`;
+    };
+    const output = (key, text) => b`<label class="check-row"><input type="checkbox" aria-label=${`${aggregate.name} ${text}`} .checked=${aggregate.outputs[key]} ?disabled=${!writable || key === "kwh" && aggregate.energy_mode === "none"}
+        @change=${(event) => {
+      const input = event.target;
+      if (!writable || key === "kwh" && aggregate.energy_mode === "none") {
+        input.checked = aggregate.outputs[key];
+        return;
+      }
+      patch(aggregate, { outputs: { ...aggregate.outputs, [key]: input.checked } });
+    }} />${text}</label>`;
+    const existing = [...enabledAutomatic.map((item) => item.candidate), ...configuration.aggregates.filter((item) => item !== aggregate)];
+    const visibleSource = (source) => aggregate.sources.some((item) => sameSource(item, source)) || writable && !sourceReason(aggregate, source);
+    const nativeChoices = catalog.native_sources.filter((item) => visibleSource({ kind: "native_total", source_id: item.source_id }));
+    const existingChoices = existing.filter((item) => visibleSource({ kind: "aggregate", aggregate_id: item.aggregate_id }));
+    const known = [
+      ...catalog.native_sources.map((item) => ({ kind: "native_total", source_id: item.source_id })),
+      ...existing.map((item) => ({ kind: "aggregate", aggregate_id: item.aggregate_id })),
+      ...configuration.channels.filter((item) => item.enabled).map((item) => ({ kind: "channel", channel: item.channel }))
+    ];
+    return b`<fieldset class="aggregate-card" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!writable}><legend>${aggregate.name}</legend>
+        <div class="aggregate-fields">
+          <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
+            @input=${(event) => {
+      const input = event.target;
+      if (!writable) {
+        input.value = aggregate.name;
+        return;
+      }
+      patch(aggregate, { name: input.value });
+    }} /></label>
+          <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
+            @change=${(event) => {
+      const input = event.target;
+      if (!writable || !roles.includes(input.value)) {
+        input.value = aggregate.role;
+        return;
+      }
+      patch(aggregate, { role: input.value });
+    }}>
+            ${roles.map((role) => b`<option value=${role} ?selected=${role === aggregate.role}>${role === "grid" ? "Mains" : role === "branch" ? "Branch circuit" : role.replaceAll("_", " ")}</option>`)}</select></label>
+          <label>Measurement method <select aria-label=${`${aggregate.aggregate_id} aggregate method`} .value=${aggregate.measurement_method}
+            @change=${(event) => {
+      const input = event.target;
+      if (!writable || !methods.includes(input.value) || input.value !== "direct" && aggregate.sources.some((source) => source.kind !== "channel")) {
+        input.value = aggregate.measurement_method;
+        return;
+      }
+      patch(aggregate, { measurement_method: input.value });
+    }}>${methods.map((method) => b`<option value=${method} ?selected=${method === aggregate.measurement_method} ?disabled=${method !== "direct" && aggregate.sources.some((source) => source.kind !== "channel")}>${method === "two_ct_sum" ? "Two CT Sum" : method.replaceAll("_", " ")}</option>`)}</select><small>Two CT Sum adds exactly two CTs. Nested totals use Direct.</small></label>
+          <label>Energy behavior <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
+            @change=${(event) => {
+      const input = event.target;
+      if (!writable || !energyModes.includes(input.value)) {
+        input.value = aggregate.energy_mode;
+        return;
+      }
+      patch(aggregate, { energy_mode: input.value, outputs: { ...aggregate.outputs, kwh: input.value === "none" ? false : aggregate.outputs.kwh } });
+    }}>${energyModes.map((mode) => b`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`)}</select><small>kWh uses ESPHome platform: total_daily_energy, integrating this total's Watts rather than adding child kWh.</small></label>
+          <label>Feeds into <select aria-label=${`${aggregate.name} Feeds into`} .value=${parent}
+            @change=${(event) => {
+      const input = event.target;
+      try {
+        if (!writable || parentReason(aggregate, input.value || null)) {
+          input.value = parent;
+          return;
+        }
+        if (parent && input.value === "" && !window.confirm(`Remove ${aggregate.name} from ${configuration.aggregates.find((item) => item.aggregate_id === parent)?.name}? It becomes an independent report.`)) {
+          input.value = parent;
+          return;
+        }
+        update({ ...configuration, aggregates: reparentAggregate(aggregate.aggregate_id, input.value || null, configuration.aggregates) });
+      } catch {
+        input.value = parent;
+      }
+    }}><option value="" ?selected=${!parent}>Independent report</option>${configuration.aggregates.filter((item) => item !== aggregate).map((item) => {
+      const blocked = item.aggregate_id === parent ? "" : parentReason(aggregate, item.aggregate_id);
+      return b`<option value=${item.aggregate_id} ?selected=${item.aggregate_id === parent} ?disabled=${Boolean(blocked)}>${item.name}${blocked ? ` — ${blocked}` : ""}</option>`;
+    })}</select></label>
+        </div>
+        <p class="aggregate-formula">Formula: ${aggregate.sources.length ? aggregate.sources.map(label).join(" + ") : "Select sources"}</p>
+        ${fresh && !problem ? b`<p>Coverage: ${coverageLabel(leaves)}</p>` : A}
+        ${problem ? b`<p class="warning-band" role="status">${problem} Complete the total before continuing.</p>` : A}
+        ${overlaps ? b`<p class="warning-band" role="note">This total overlaps another report. They are valid independently but must not be added together.</p>` : A}
+        <p>Select CTs or totals, not both. Remove current sources before changing source class.</p>
+        ${nativeChoices.length ? b`<fieldset class="aggregate-sources"><legend>Native totals</legend><div class="aggregate-source-options">${nativeChoices.map((item) => option({ kind: "native_total", source_id: item.source_id }, item.label))}</div></fieldset>` : A}
+        ${existingChoices.length ? b`<fieldset class="aggregate-sources"><legend>Existing totals</legend><div class="aggregate-source-options">${existingChoices.map((item) => option({ kind: "aggregate", aggregate_id: item.aggregate_id }, item.name))}</div></fieldset>` : A}
+        <fieldset class="aggregate-sources aggregate-channels"><legend>CTs</legend><div class="aggregate-channel-groups">${Array.from({ length: Math.ceil(configuration.channels.length / 6) }, (_2, board) => {
+      const channels = configuration.channels.filter((item) => item.enabled && Math.floor((item.channel - 1) / 6) === board);
+      const used = channels.some((item) => aggregate.sources.some((source) => source.kind === "channel" && source.channel === item.channel));
+      return channels.length ? b`<details class="aggregate-channel-group" ?open=${used} aria-label=${board ? `Add-on ${board} channels` : "Main Board channels"}><summary>${board ? `Add-on ${board}` : "Main Board"}</summary><div>${channels.map((item) => option({ kind: "channel", channel: item.channel }, `CT${item.channel} · ${drafts.get(item.channel)?.name ?? item.name}`, `CT${item.channel}`))}</div></details>` : A;
+    })}</div></fieldset>
+        ${aggregate.sources.filter((source) => !known.some((item) => sameSource(item, source))).map((source) => option(source, label(source)))}
+        <div class="aggregate-actions">${output("watts", "Watts")}${output("amps", "Amps")}${output("kwh", "kWh")}
+          <button class="secondary" data-action="delete-aggregate" @click=${() => {
+      if (!writable) return;
+      const parents = configuration.aggregates.filter((item) => item.sources.some((source) => source.kind === "aggregate" && source.aggregate_id === aggregate.aggregate_id));
+      const children = aggregate.sources.filter((source) => source.kind === "aggregate").map(label);
+      const message = `Delete ${aggregate.name}?${parents.length ? ` Remove it from ${parents.map((item) => item.name).join(" and ")}.` : ""}${children.length ? ` ${children.join(" and ")} will become independent reports.` : ""}`;
+      if (!window.confirm(message)) return;
+      update({ ...configuration, aggregates: configuration.aggregates.filter((item) => item !== aggregate).map((item) => ({
+        ...item,
+        sources: item.sources.filter((source) => source.kind !== "aggregate" || source.aggregate_id !== aggregate.aggregate_id)
+      })) });
+    }}>Delete total</button>
+        </div>
+        <details><summary>Advanced details</summary><p>Stable aggregate ID: <code>${aggregate.aggregate_id}</code></p></details>
+      </fieldset>`;
+  })}</div>
+    ${writable ? b`<button class="secondary" data-action="add-aggregate" @click=${add}>Create aggregate total</button>` : A}
+  </details></section>`;
+}
 function recommendedReportingMultiplier(ratedCurrentA) {
   if (!Number.isFinite(ratedCurrentA) || ratedCurrentA < 0) return null;
   return ratedCurrentA <= 65.535 ? 1 : ratedCurrentA <= 131.07 ? 2 : ratedCurrentA <= 262.14 ? 4 : ratedCurrentA <= 524.28 ? 8 : null;
 }
 const resultingGain = (preset, multiplier, customGain) => (preset?.default_gain_ct ?? customGain) == null || !Number.isFinite(multiplier) || multiplier <= 0 ? null : Math.round((preset?.default_gain_ct ?? customGain) / multiplier);
-function ctInventoryStep(inventory, board, drafts, setBoard, update, back, review, labelOnly = false, busy = false, configuration = null, updateConfiguration = () => void 0, disableChannel = () => void 0, managedTotals = true, managedTotalsReason = "", allowPreserveExistingGain = false, continueAllowed = true, skip = () => void 0) {
+function ctInventoryStep(inventory, board, drafts, setBoard, update, back, review, labelOnly = false, busy = false, configuration = null, updateConfiguration = () => void 0, disableChannel = () => void 0, managedTotals = true, managedTotalsReason = "", allowPreserveExistingGain = false, continueAllowed = true, totals = null, nativeTotalsReadable = false, nativeTotalsWritable = false, nativePreview = null, freshTotals = true, nativeGraphState = "ready", automaticTotalsWritable = false, meterInventory = null, automaticSourcesFresh = freshTotals, existingConfiguration = null, skip = () => void 0, reviewRequirements = A) {
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
   const referenceByGroup = new Map(configuration?.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference])) ?? []);
@@ -1630,6 +2400,9 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
     const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
     const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : void 0);
     const dirty = isDirty(channel, draft);
+    const existing = existingConfiguration?.channels.find((item) => item.channel === channel.channel);
+    const retained = keepsExistingCtSettings(draft, existing);
+    const valid = labelOnly ? Boolean(draft.name.trim()) : validDraft(inventory, draft, existing);
     const recommendation = preset ? recommendedReportingMultiplier(preset.rated_current_a) : null;
     const effectiveRange = draft.multiplier * 65.535;
     const circuit = configuration?.channels.find((item) => item.channel === channel.channel);
@@ -1653,14 +2426,14 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
         preserveExistingGain: false,
         multiplier: draft.multiplierMode === "manual" ? draft.multiplier : selectedPreset ? recommendedReportingMultiplier(selectedPreset.rated_current_a) ?? draft.multiplier : draft.multiplier,
         multiplierMode: draft.multiplierMode ?? "automatic",
-        burdenAcknowledged: channel.selection_verified_against_config && modelId === channel.selected_model_id && (modelId === "custom" || selectedPreset?.requires_burden_jumper_cut === true),
+        burdenAcknowledged: (existing ? existing.burden_output_acknowledged : channel.selection_verified_against_config) && modelId === channel.selected_model_id && (modelId === "custom" || selectedPreset?.requires_burden_jumper_cut === true),
         expanded: true
       });
     }}>
                   <option value="" ?selected=${draft.modelId === ""}>Choose model</option>
                   ${inventory.catalog.presets.map((item) => b`<option value=${item.model_id} ?selected=${draft.modelId === item.model_id}>${item.label}</option>`)}
-                  <option value="custom" ?selected=${draft.modelId === "custom"}>Custom</option>
-                </select>${preset ? b`<small>${preset.rated_current_a} A</small>` : A}<button class="row-toggle" aria-label=${`CT${channel.channel} technical details`} aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>${draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}</button><span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
+                  <option value="custom" ?selected=${draft.modelId === "custom"}>${retained && existing?.model_id === "custom" && !existing.burden_output_acknowledged ? "Keep existing gain" : "Custom"}</option>
+                </select>${preset ? b`<small>${preset.rated_current_a} A</small>` : A}<button class="row-toggle" aria-label=${`CT${channel.channel} technical details`} aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>${!valid ? "Needs attention" : draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}</button><span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
                 <span role="cell"><span class="mobile-label">Range status</span>${draft.preserveExistingGain ? "Existing gain kept" : recommendation === null && preset ? "Rating exceeds ×8 range" : effectiveRange < (preset?.rated_current_a ?? 0) ? `Too small: ${effectiveRange} A` : `Up to ${effectiveRange} A`}</span>
               </div>
               ${allowPreserveExistingGain && !channel.selection_verified_against_config && channel.raw_gain_ct > 0 ? b`<label class="check-row preserve-gain"><input type="checkbox" aria-label=${`CT${channel.channel} keep existing gain`} ?disabled=${labelOnly} .checked=${draft.preserveExistingGain === true}
@@ -1673,7 +2446,8 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                 <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} ?disabled=${labelOnly} .value=${draft.customLabel ?? ""}
                   @input=${(event) => update(channel.channel, { customLabel: event.target.value })} /></label>
               </div>` : A}
-              ${draft.expanded && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
+              ${draft.expanded && retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : A}
+              ${draft.expanded && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
                 <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
                   ?disabled=${labelOnly}
                   .checked=${draft.burdenAcknowledged}
@@ -1702,174 +2476,41 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       </div>
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
-      ${configuration ? circuitsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason) : A}
+      ${configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : A}
+      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState) : A}
+      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration) : A}
+      ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh) : A}
+      ${reviewRequirements}
       <footer class="action-footer offset-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="secondary" data-action="skip-ct" ?disabled=${busy} @click=${skip}>Skip to Calibration</button>
-        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
+        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
       </footer>
     </section>
   `;
 }
 const ROLES = ["grid", "solar", "generator", "subpanel", "branch", "two_pole", "custom", "unused"];
-const METHODS = ["direct", "two_ct_sum", "one_ct_double_power", "both_conductors_one_ct"];
-const ENERGY = ["none", "consumption", "bidirectional", "generation"];
-const automaticAggregates = {
-  grid: { aggregate_id: "auto-mains", name: "Mains", energy_mode: "bidirectional", expose_current: false },
-  solar: { aggregate_id: "auto-solar", name: "Solar", energy_mode: "generation", expose_current: false },
-  subpanel: { aggregate_id: "auto-subpanel", name: "Subpanel", energy_mode: "consumption", expose_current: false },
-  two_pole: { aggregate_id: "auto-two-pole", name: "Two-pole circuit", energy_mode: "consumption", expose_current: false }
-};
 function roleLabel(role) {
   return role === "grid" ? "Mains" : role === "branch" ? "Branch circuit" : role.replaceAll("_", " ");
 }
-function sameAggregate(first, second) {
-  return first.aggregate_id === second.aggregate_id && first.name === second.name && first.role === second.role && first.measurement_method === second.measurement_method && first.parent_id === second.parent_id && first.energy_mode === second.energy_mode && first.expose_power === second.expose_power && first.expose_current === second.expose_current && first.channels.length === second.channels.length && first.channels.every((channel, index) => channel === second.channels[index]);
-}
-function reconcileSplitPhaseAggregates(configuration, previousManaged = null) {
-  const definitionFor = (aggregate) => Object.entries(automaticAggregates).find(([, definition]) => definition.aggregate_id === aggregate.aggregate_id);
-  const isManaged = (aggregate) => {
-    if (previousManaged !== null) return previousManaged.some((item) => sameAggregate(item, aggregate));
-    const definition = definitionFor(aggregate);
-    const channels = definition === void 0 ? [] : configuration.channels.filter((channel) => channel.enabled && channel.role === definition[0]).map((channel) => channel.channel);
-    return definition !== void 0 && aggregate.role === definition[0] && aggregate.name === definition[1].name && aggregate.measurement_method === "two_ct_sum" && aggregate.parent_id === null && aggregate.energy_mode === definition[1].energy_mode && aggregate.expose_power && aggregate.expose_current === definition[1].expose_current && aggregate.channels.length === 2 && aggregate.channels.every((channel, index) => channel === channels[index]);
-  };
-  const managed = configuration.aggregates.filter(isManaged);
-  const preserved = configuration.aggregates.filter((aggregate) => !isManaged(aggregate));
-  const preservedIds = new Set(preserved.map((aggregate) => aggregate.aggregate_id));
-  const isDefaultTotal = (aggregate) => {
-    const match = /^(main|addon([1-6])|meter)-total$/.exec(aggregate.aggregate_id);
-    if (!match || aggregate.role !== "custom" || aggregate.measurement_method !== "direct" || !["none", "consumption"].includes(aggregate.energy_mode)) return false;
-    const board = Number(match[2] ?? 0);
-    const name = match[1] === "meter" ? "Meter total" : board === 0 ? "Main total" : `Add-on ${board} total`;
-    const channels = configuration.channels.filter((channel) => channel.enabled && (match[1] === "meter" || Math.floor((channel.channel - 1) / 6) === board)).map((channel) => channel.channel);
-    return aggregate.name === name && aggregate.channels.length === channels.length && aggregate.channels.every((channel, index) => channel === channels[index]);
-  };
-  const claimed = new Set(preserved.filter((aggregate) => !isDefaultTotal(aggregate)).flatMap((aggregate) => aggregate.channels));
-  const rebuilt = ["split_phase_120_240", "custom"].includes(configuration.meter.electrical_system) ? Object.keys(automaticAggregates).flatMap((role) => {
-    const channels = configuration.channels.filter((channel) => channel.enabled && channel.role === role && !claimed.has(channel.channel)).map((channel) => channel.channel);
-    const definition = automaticAggregates[role];
-    return channels.length === 2 && !preservedIds.has(definition.aggregate_id) ? [{
-      ...definition,
-      role,
-      channels,
-      measurement_method: "two_ct_sum",
-      parent_id: null,
-      expose_power: true
-    }] : [];
-  }) : [];
-  const rebuiltIds = new Set(rebuilt.map((aggregate) => aggregate.aggregate_id));
-  const removedIds = new Set(managed.map((aggregate) => aggregate.aggregate_id));
-  const aggregates = [...preserved.map((aggregate) => aggregate.parent_id !== null && removedIds.has(aggregate.parent_id) && !rebuiltIds.has(aggregate.parent_id) ? { ...aggregate, parent_id: null } : aggregate), ...rebuilt];
-  const changed = aggregates.length !== configuration.aggregates.length || aggregates.some((aggregate, index) => !sameAggregate(aggregate, configuration.aggregates[index]));
-  return { configuration: changed ? { ...configuration, aggregates } : configuration, managed: rebuilt, changed };
-}
-function circuitsEditor(configuration, drafts, update, managedTotals, managedTotalsReason) {
-  const patchAggregate = (index, patch) => update({
-    ...configuration,
-    aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item)
-  });
-  const renameAggregate = (index, aggregateId) => {
-    const old = configuration.aggregates[index].aggregate_id;
-    update({ ...configuration, aggregates: configuration.aggregates.map((item, itemIndex) => itemIndex === index ? { ...item, aggregate_id: aggregateId } : item.parent_id === old ? { ...item, parent_id: aggregateId } : item) });
-  };
-  const addAggregate = () => {
-    const ids = new Set(configuration.aggregates.map((aggregate) => aggregate.aggregate_id));
-    let number2 = 1;
-    while (ids.has(`aggregate-${number2}`)) number2 += 1;
-    update({ ...configuration, aggregates: [...configuration.aggregates, {
-      aggregate_id: `aggregate-${number2}`,
-      name: `Aggregate total ${number2}`,
-      role: "branch",
-      channels: [],
-      measurement_method: "two_ct_sum",
-      parent_id: null,
-      energy_mode: "consumption",
-      expose_power: true,
-      expose_current: false
-    }] });
-  };
-  const channelGroups = Array.from({ length: Math.ceil(configuration.channels.length / 6) }, (_2, board) => ({
-    board,
-    channels: configuration.channels.filter((channel) => channel.enabled && Math.floor((channel.channel - 1) / 6) === board)
-  })).filter((group) => group.channels.length);
-  const warnings = configuration.aggregates.flatMap((aggregate) => [
-    aggregate.role === "grid" && aggregate.channels.some((channel) => configuration.channels[channel - 1]?.role === "branch") ? `${aggregate.name}: keep branch loads out of the root-grid total.` : "",
-    aggregate.measurement_method === "one_ct_double_power" && aggregate.channels.length !== 1 ? `${aggregate.name}: doubled-one-leg measurement requires exactly one CT.` : "",
-    aggregate.role === "two_pole" && !["one_ct_double_power", "both_conductors_one_ct", "two_ct_sum"].includes(aggregate.measurement_method) ? `${aggregate.name}: select a two-pole measurement method.` : "",
-    aggregate.role === "two_pole" && aggregate.channels.some((channel) => configuration.aggregates.filter((item) => item.role === "two_pole" && item.channels.includes(channel)).length > 1) ? `${aggregate.name}: a CT cannot belong to two two-pole aggregates.` : ""
-  ].filter(Boolean));
-  return b`<section class="step-content" aria-labelledby="aggregates-heading">
-    <h2 id="aggregates-heading">Automatic totals</h2>
-    <table aria-label="Automatic totals"><thead><tr><th>Name</th><th>CTs / meter</th><th>Outputs</th></tr></thead><tbody>
-      ${configuration.aggregates.length ? configuration.aggregates.map((aggregate) => {
-    const children = configuration.aggregates.filter((item) => item.parent_id === aggregate.aggregate_id);
-    const source = children.length ? children.map((child) => child.name).join(" + ") : aggregate.channels.map((channel) => `CT${channel}`).join(" + ");
-    const outputs = [aggregate.expose_power ? "Power" : "Power (internal)", aggregate.expose_current ? "Current" : "Current (internal)", aggregate.energy_mode === "none" ? "" : "Energy"].filter(Boolean).join(" · ");
-    return b`<tr><td>${aggregate.name}</td><td>${source}</td><td>${outputs}</td></tr>`;
-  }) : b`<tr><td colspan="3">No automatic totals are configured.</td></tr>`}
-    </tbody></table>
-    <details><summary>Advanced totals</summary>
-    ${!managedTotals ? b`<p class="info-band" role="status">Aggregate editing unavailable: ${managedTotalsReason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : A}
-    ${warnings.map((warning) => b`<p class="warning-band" role="status">${warning}</p>`)}
-    <div class="aggregate-list">
-    ${configuration.aggregates.map((aggregate, index) => b`<fieldset class="aggregate-card" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!managedTotals}><legend>${aggregate.name}</legend>
-      <div class="aggregate-fields">
-      <label>ID <input aria-label=${`${aggregate.aggregate_id} aggregate id`} maxlength="64" .value=${aggregate.aggregate_id}
-        @change=${(event) => renameAggregate(index, event.target.value.trim())} /></label>
-      <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
-        @input=${(event) => patchAggregate(index, { name: event.target.value })} /></label>
-      <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
-        @change=${(event) => patchAggregate(index, { role: event.target.value })}>${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role} ?selected=${role === aggregate.role}>${roleLabel(role)}</option>`)}</select>
-        <small>Describes how this total is used, such as mains, solar, or a branch circuit.</small></label>
-      <label>Method <select aria-label=${`${aggregate.aggregate_id} aggregate method`} .value=${aggregate.measurement_method}
-        @change=${(event) => patchAggregate(index, { measurement_method: event.target.value })}>${METHODS.map((method) => b`<option value=${method} ?selected=${method === aggregate.measurement_method}>${method === "two_ct_sum" ? "Two CT Sum" : method.replaceAll("_", " ")}</option>`)}</select>
-        <small>Controls how CT readings are combined. Two CT Sum adds exactly two CTs.</small></label>
-      <label>Energy <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
-        @change=${(event) => patchAggregate(index, { energy_mode: event.target.value })}>${ENERGY.map((mode) => b`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`)}</select>
-        <small>Any option except None adds ESPHome platform: total_daily_energy sensors in kWh.</small></label>
-      <label>Parent <select aria-label=${`${aggregate.aggregate_id} aggregate parent`} .value=${aggregate.parent_id ?? ""}
-        @change=${(event) => patchAggregate(index, { parent_id: event.target.value || null })}><option value="" ?selected=${aggregate.parent_id === null}>None</option>${configuration.aggregates.filter((item) => item.aggregate_id !== aggregate.aggregate_id).map((item) => b`<option value=${item.aggregate_id} ?selected=${item.aggregate_id === aggregate.parent_id}>${item.name}</option>`)}</select></label>
-      </div>
-      <fieldset class="aggregate-channels"><legend>Selected channels</legend>
-        <div class="aggregate-channel-groups">${channelGroups.map((group) => b`<section class="aggregate-channel-group" aria-label=${group.board === 0 ? "Main Board channels" : `Add-on ${group.board} channels`}>
-          <h4>${group.board === 0 ? "Main Board" : `Add-on ${group.board}`}</h4>
-          <div>${group.channels.map((channel) => b`<label class=${`aggregate-channel-option${aggregate.channels.includes(channel.channel) ? " selected" : ""}`}><input type="checkbox" aria-label=${`${aggregate.aggregate_id} CT${channel.channel}`} .checked=${aggregate.channels.includes(channel.channel)}
-            @change=${(event) => patchAggregate(index, { channels: event.target.checked ? [...aggregate.channels, channel.channel].sort((first, second) => first - second) : aggregate.channels.filter((item) => item !== channel.channel) })} />CT${channel.channel} · ${drafts.get(channel.channel)?.name ?? channel.name}</label>`)}</div>
-        </section>`)}</div>
-      </fieldset>
-      <div class="aggregate-actions">
-      <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose power`} .checked=${aggregate.expose_power}
-        @change=${(event) => patchAggregate(index, { expose_power: event.target.checked })} />Power</label>
-      <label class="check-row"><input type="checkbox" aria-label=${`${aggregate.aggregate_id} expose current`} .checked=${aggregate.expose_current}
-        @change=${(event) => patchAggregate(index, { expose_current: event.target.checked })} />Current</label>
-      <button class="secondary" @click=${() => update({ ...configuration, aggregates: configuration.aggregates.filter((_item, itemIndex) => itemIndex !== index).map((item) => item.parent_id === aggregate.aggregate_id ? { ...item, parent_id: null } : item) })}>Delete aggregate</button>
-      </div>
-    </fieldset>`)}
-    </div>
-    ${managedTotals ? b`<button class="secondary" data-action="add-aggregate" @click=${addAggregate}>Create aggregate total</button>` : A}
-    </details>
-  </section>`;
-}
+const channelSources = (aggregate) => aggregate.sources.flatMap((source) => source.kind === "channel" ? [source.channel] : []);
 function circuitConfigurationIsValid(configuration, ctCount) {
   const references = new Set(configuration.meter.voltage_references.map((reference) => reference.reference_id));
   const referenceByGroup = new Map(configuration.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference.reference_id])));
   if (configuration.channels.length !== ctCount || new Set(configuration.channels.map((channel) => channel.channel)).size !== ctCount || configuration.channels.some((channel) => channel.channel < 1 || channel.channel > ctCount || !channel.name.trim() || !references.has(channel.voltage_reference_id) || channel.enabled === (channel.role === "unused") || referenceByGroup.get(`${channel.channel <= 6 ? "main" : `addon${Math.floor((channel.channel - 1) / 6)}`}_${Math.floor((channel.channel - 1) % 6 / 3) + 1}`) !== channel.voltage_reference_id)) return false;
   const ids = /* @__PURE__ */ new Set();
-  const parents = /* @__PURE__ */ new Map();
-  for (const aggregate of configuration.aggregates) {
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(aggregate.aggregate_id) || ids.has(aggregate.aggregate_id) || !aggregate.name.trim() || !aggregate.channels.length || new Set(aggregate.channels).size !== aggregate.channels.length) return false;
-    ids.add(aggregate.aggregate_id);
-    parents.set(aggregate.aggregate_id, aggregate.parent_id);
-    const needed = aggregate.measurement_method === "two_ct_sum" ? 2 : aggregate.measurement_method === "one_ct_double_power" || aggregate.measurement_method === "both_conductors_one_ct" ? 1 : void 0;
-    if (needed !== void 0 && aggregate.channels.length !== needed || aggregate.channels.some((channel) => channel < 1 || channel > ctCount || !configuration.channels[channel - 1]?.enabled)) return false;
-  }
-  for (const [id2, parent] of parents) {
-    const seen = /* @__PURE__ */ new Set();
-    for (let current = parent; current !== null; current = parents.get(current) ?? null) {
-      if (!ids.has(current) || current === id2 || seen.has(current)) return false;
-      seen.add(current);
+  try {
+    for (const aggregate of configuration.aggregates) {
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(aggregate.aggregate_id) || ids.has(aggregate.aggregate_id) || !aggregate.name.trim() || !aggregate.sources.length || new Set(aggregate.sources.map((source) => JSON.stringify(source))).size !== aggregate.sources.length) return false;
+      ids.add(aggregate.aggregate_id);
+      const needed = aggregate.measurement_method === "two_ct_sum" ? 2 : aggregate.measurement_method === "direct" ? void 0 : 1;
+      const channels = channelSources(aggregate);
+      if (channels.length && channels.length !== aggregate.sources.length || needed !== void 0 && (channels.length !== needed || channels.length !== aggregate.sources.length) || aggregate.energy_mode === "none" && aggregate.outputs.kwh || channels.some((channel) => channel < 1 || channel > ctCount || !configuration.channels[channel - 1]?.enabled)) return false;
+      const parent = derivedParentId(aggregate.aggregate_id, configuration.aggregates);
+      reparentAggregate(aggregate.aggregate_id, parent, configuration.aggregates);
     }
+  } catch {
+    return false;
   }
   return true;
 }
@@ -1899,17 +2540,20 @@ function isDirty(channel, draft) {
   if (draft.preserveExistingGain) return draft.name !== channel.name;
   return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier || draft.modelId === "custom" && (resultingGain(void 0, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));
 }
-function validDraft(inventory, draft) {
+function keepsExistingCtSettings(draft, existing) {
+  return Boolean(existing && draft.modelId === existing.model_id && draft.multiplier === existing.reporting_multiplier && (draft.customGainCt ?? null) === existing.custom_gain_ct && (draft.customLabel?.trim() || null) === existing.custom_label);
+}
+function validDraft(inventory, draft, existing) {
   if (draft.preserveExistingGain) return true;
   if (!draft.name.trim() || !draft.modelId || ![1, 2, 4, 8].includes(draft.multiplier)) return false;
-  if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt >= 1 && draft.customGainCt <= 65535 && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel) && draft.burdenAcknowledged;
+  if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt >= 1 && draft.customGainCt <= 65535 && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel) && (draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
   const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
-  return Boolean(preset) && effectiveRangeIsSafe(preset, draft.multiplier) && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged);
+  return Boolean(preset) && effectiveRangeIsSafe(preset, draft.multiplier) && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
 }
 function effectiveRangeIsSafe(preset, multiplier) {
   return multiplier * 65.535 >= preset.rated_current_a;
 }
-function draftsAreValid(inventory, drafts, labelOnly = false) {
+function draftsAreValid(inventory, drafts, labelOnly = false, existingConfiguration = null) {
   if (labelOnly) return [...drafts].every(([channel, draft]) => {
     const current = inventory.channels.find((item) => item.channel === channel);
     return Boolean(current) && Boolean(draft.name.trim());
@@ -1917,7 +2561,7 @@ function draftsAreValid(inventory, drafts, labelOnly = false) {
   for (const channel of inventory.channels) {
     const draft = drafts.get(channel.channel);
     if (!draft) return false;
-    if (!validDraft(inventory, draft)) return false;
+    if (!validDraft(inventory, draft, existingConfiguration?.channels.find((item) => item.channel === channel.channel))) return false;
   }
   return true;
 }
@@ -2496,13 +3140,18 @@ function existingConfigurationStep(configuration, metadata, onManage, onCalibrat
 }
 const boardLabel = (index) => index === 0 ? "Main Board" : `Add-on ${index}`;
 const groupKeys = (board) => board === 0 ? ["main_1", "main_2"] : [`addon${board}_1`, `addon${board}_2`];
-function offsetStep(topology2, session2, board, stage, acknowledged, retryConfirmed, readiness, result, busy, selectBoard, selectStage, setAcknowledged, setRetryConfirmed, check, calibrate, reconnect, skip, back, continueToVoltage) {
+function offsetStep(topology2, session2, board, stage, acknowledged, retryConfirmed, readiness, result, busy, selectBoard, selectStage, setAcknowledged, setRetryConfirmed, check, calibrate, reconnect, skip, back, continueToVoltage, stock = null) {
   const capability = session2?.offset_capability;
   const boards = session2?.offset_boards ?? [];
   const finalized = session2?.offset_disposition === "completed" || session2?.offset_disposition === "skipped" || session2?.offset_disposition === "partial" && session2.state === "applied_pending_restart_verification";
   const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
-  const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate";
+  const preparation = stock?.preparation;
+  const selectedInstances = groupKeys(board).map((id2) => id2.replace("main_", "meter_main"));
+  const matching = preparation?.stage === stage && preparation.targets.length > 0 && preparation.targets.every((id2) => selectedInstances.includes(id2));
+  const attempted = Boolean(matching && preparation?.attempted.length);
+  const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate" || attempted && stageState !== "completed";
+  const actionReady = !stock || Boolean(matching && preparation?.action_ready && !attempted);
   const unavailable = capability?.status !== "available";
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
@@ -2536,7 +3185,17 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
         </div>
         <div id="offset-board-panel" role="tabpanel" aria-labelledby=${`offset-board-tab-${board}`}>
           <h2>Optional offset calibration · Stage ${stage} · ${boardLabel(board)}</h2>
-          <p>Offset calibration is optional and requires changing the power and wiring state as described below. Offset values remain stored in meter flash.</p>
+          <p>Offset calibration is optional and requires changing the power and wiring state as described below. ${stock ? "Captured values remain pending until reviewed configuration installation and selection are confirmed." : "Offset values remain stored in meter flash."}</p>
+          ${stock ? b`<section class="measurement-evidence" aria-label="Offset preparation backup">
+            <h3>Backup and preparation</h3>
+            <p>${preparation?.backup_available ? "Private backup retained; captured results are preserved." : "A private backup is required before installing the selected zero baseline."}</p>
+            <p>Preparation requires exact saved/effective per-chip tables for Stage ${stage}. Missing evidence is unavailable, not zero. Saved-source labels alone do not authorize calibration.</p>
+            ${matching && preparation?.installed ? b`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review and install a fresh preparation for unfinished chips; retained values are not lost."}</p>` : A}
+            <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event) => stock.setBackup(event.target.checked)}> I acknowledge the private backup and reviewed zero-baseline installation.</label>
+            <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
+              @click=${stock.prepare}>${recovery ? "Review unfinished-chip preparation" : "Review offset preparation"}</button>
+            ${attempted ? b`<p>This receipt was already attempted. Retry requires a new reviewed installation for only unfinished chips; completed values, including zeros, are retained.</p>` : A}
+          </section>` : A}
           <div class="warning-band"><strong>Warning:</strong> An open-circuit current-output CT on a live conductor can be hazardous. De-energize conductors before unplugging any CT.</div>
           ${stage === 1 ? b`
             <p>First, de-energize all conductors. Then unplug the voltage transformer/AC voltage input and CT inputs, power the meter from USB only, then check that every voltage/current phase reads near zero.</p>
@@ -2552,7 +3211,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
               ${busy ? "Checking measured readiness…" : "Check measured readiness"}
             </button>
             <button class="primary" data-action="calibrate-offset"
-              ?disabled=${busy || !acknowledged || !readiness?.ready || stageState === "completed" || recovery && !retryConfirmed}
+              ?disabled=${busy || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
               @click=${calibrate}>${result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
           </div>
           ${readiness ? b`
@@ -2582,7 +3241,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
             <table><thead><tr><th>Chip</th><th>Previously saved offsets</th><th>This run</th><th>Backend evidence</th></tr></thead><tbody>
               ${keys.map((key) => b`<tr><td>${key}</td>
                 <td>${!readiness ? "Check measured readiness to inspect saved offsets." : tableByGroup.has(key) || stageState === "completed" ? "Fresh calibration saved during this session." : savedSources.get(key) === "flash" ? "Saved offsets detected; this run will recalibrate this chip." : savedSources.get(key) === "configuration" ? "Configuration offsets reported; this run will calibrate this chip." : "Saved-offset status unknown; this run still requires fresh calibration."}</td>
-                <td>${tableByGroup.has(key) || stageState === "completed" ? "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
+                <td>${tableByGroup.has(key) || stageState === "completed" ? stock ? "Captured; pending configuration installation." : "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
                 <td>${tableByGroup.has(key) ? tableByGroup.get(key).map(([first, second]) => `${first}/${second}`).join(", ") : "—"}</td></tr>`)}
             </tbody></table>
           </section>
@@ -2595,7 +3254,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
         </div>
       `}
       <footer class="action-footer offset-footer">
-        <button class="secondary" @click=${back}>Back</button>
+        <button class="secondary" ?disabled=${busy} @click=${back}>Back</button>
         <button class="secondary" data-action="skip-offset" ?disabled=${busy || finalized} @click=${skip}>Skip offset calibration</button>
         <button class="primary" ?disabled=${busy || !finalized} @click=${continueToVoltage}>Continue</button>
       </footer>
@@ -2663,9 +3322,12 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
         <div class="meter-list">
           ${snapshot.devices.map((device2) => b`
             <div class="meter-row">
-              <span><strong>${device2.title}</strong><small>${device2.project_name} · ${device2.project_version ?? "version unavailable"}</small></span>
-              <span>${device2.configuration ? "Managed in ESPHome Device Builder" : device2.importable ? "Import available" : "Calibration only — no editable source."}</span>
-              ${!device2.configuration && !device2.importable ? b`<small>The meter is connected, but ESPHome source editing is unavailable. Calibration remains in meter flash and may be replaced by a future firmware install.</small>` : ""}
+              <div class="meter-details">
+                <strong>${device2.title}</strong>
+                <small>${device2.project_name} · ${device2.project_version ?? "version unavailable"}</small>
+                <small class="meter-status">${device2.configuration ? "Managed in ESPHome Device Builder" : device2.importable ? "Import available" : "Calibration only — no editable source."}</small>
+                ${!device2.configuration && !device2.importable ? b`<small>The meter is connected, but ESPHome source editing is unavailable. Calibration remains in meter flash and may be replaced by a future firmware install.</small>` : ""}
+              </div>
               ${device2.importable && !device2.configuration ? b`<button class="primary" data-action="import-device" ?disabled=${Boolean(busyAction)}
                     @click=${() => adopt(device2.entry_id)}>${busyAction === `adopt:${device2.entry_id}` ? "Importing configuration…" : importFailedDeviceId === device2.entry_id ? "Retry import" : "Import configuration"}</button>` : b`<button class="primary" data-action="configure-device" ?disabled=${Boolean(busyAction)}
                     @click=${() => configure(device2.entry_id)}>${busyAction === `topology:${device2.entry_id}` ? "Loading meter…" : device2.configuration ? "Open setup" : "Open calibration"}</button>`}
@@ -2749,6 +3411,14 @@ function summaryOutcome(input) {
   const migrated = input.legacyChoice === "manage_with_helper" && input.verifiedConfiguration;
   const warnings = input.unmanagedLegacyItems?.length ? [`Unmanaged legacy items: ${input.unmanagedLegacyItems.join(", ")}.`] : [];
   const heading = input.legacyChoice !== null ? "Review complete" : "Setup complete";
+  if (input.offsetFinalization?.backup_available) return {
+    heading,
+    configurationStatus: input.offsetFinalization.installed ? "Offset configuration installed in ESPHome." : "Offset installation pending.",
+    migrationStatus: migrated ? "Migration installed." : null,
+    calibrationStatus: input.offsetFinalization.configuration_selected && input.offsetFinalization.action_ready ? "Offsets are installed and configuration-selected; register readback is not verified." : "Captured offsets are retained; final configuration selection needs confirmation.",
+    authorityMessage: `Offsets: ${input.offsetFinalization.configuration_selected ? "configuration selected" : "pending configuration"}. Gains: ${input.restart?.source_authority.replaceAll("_", " ") ?? "unchanged"}. Offset selection does not clear gain flash.`,
+    warnings
+  };
   if (offset) return { heading, configurationStatus: calibrationOnly ? "ESPHome configuration was left untouched." : "Configuration authority is unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Offset calibration remains stored in meter flash by design.", authorityMessage: "Offset calibration remains stored in meter flash by design.", warnings: [...warnings, "Offset calibration remains stored in meter flash by design."] };
   if (input.completedWithoutChanges) return { heading, configurationStatus: input.configurationInstalled ? "Configuration installed in ESPHome." : input.configurationMode === "runtime_only" ? "ESPHome source was not changed because no authoritative configuration was available." : calibrationOnly ? "ESPHome configuration was left untouched." : input.verifiedConfiguration ? "Helper-managed configuration was left unchanged." : "Configuration was left unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Existing calibration was kept unchanged.", authorityMessage: "No restart-verified calibration record was required.", warnings };
   if (input.configurationMode === "runtime_only") return { heading: "Setup complete", configurationStatus: "ESPHome source was not changed because no authoritative configuration was available.", migrationStatus: null, calibrationStatus: "Calibration is stored in meter flash. Installing firmware may replace it.", authorityMessage: "No authoritative ESPHome source is available.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
@@ -2757,23 +3427,65 @@ function summaryOutcome(input) {
   if (input.restart?.source_authority === "configuration") return { heading, configurationStatus: "Configuration installed in ESPHome.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Configuration and calibration are installed in ESPHome.", authorityMessage: "Calibration is stored in ESPHome.", warnings };
   return { heading, configurationStatus: input.verifiedConfiguration ? "Configuration authority is available." : "Configuration authority is unavailable.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Calibration is stored in meter flash. Installing firmware may replace it.", authorityMessage: "Calibration is stored in meter flash.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
 }
-function summaryStep(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges, projectVersion, saveCalibration, back, meterConfiguration2 = null, impact = null, finish = () => void 0, keepCalibrationInFlash = () => void 0, configurationMode = "helper_managed", legacyChoice = null, configurationInstalled = false, handoffDeclined = false) {
+function summaryStep(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges, projectVersion, saveCalibration, back, meterConfiguration2 = null, impact = null, finish = () => void 0, keepCalibrationInFlash = () => void 0, configurationMode = "helper_managed", legacyChoice = null, configurationInstalled = false, handoffDeclined = false, sourceConfiguration = null, offsetFinalization2 = null, newCycleAcknowledged = false, setNewCycleAcknowledged = () => void 0, newCycle = () => void 0, busy = false) {
   const hasOffsets = Boolean(restart2?.offset_groups?.length || restart2?.power_offset_groups?.length);
-  const handoffAction = !handoffDeclined && restart2?.source_authority === "saved_flash" && restart2.config_filename && !hasOffsets && (restart2.source_handoff_available || restart2.source_handoff_firmware_installed);
-  const unmanagedLegacyItems = meterConfiguration2?.warnings.filter((warning) => warning.includes("unmanaged"));
+  const handoffAction = !offsetFinalization2?.backup_available && !handoffDeclined && restart2?.source_authority === "saved_flash" && restart2.config_filename && !hasOffsets && (restart2.source_handoff_available || restart2.source_handoff_firmware_installed);
+  const offsetComplete = offsetFinalization2?.configuration_selected && offsetFinalization2.action_ready && session2?.has_pending_calibration === false;
+  const totalsEvidence = meterConfiguration2 ?? (configurationMode !== "runtime_only" && sourceConfiguration?.capabilities.configuration_authoritative ? sourceConfiguration : null);
+  const totalsImpact = meterConfiguration2 ? impact : totalsEvidence?.configuration_impact ?? null;
+  const aggregate = (id2) => totalsEvidence?.configuration.aggregates.find((item) => item.aggregate_id === id2) ?? totalsEvidence?.totals.automatic_candidates.find((item) => item.aggregate_id === id2);
+  const totalName = (id2) => aggregate(id2)?.name ?? id2;
+  const displayedTotals = totalsEvidence?.total_details.map((total) => {
+    const source = total.kind === "native_total" ? { kind: "native_total", source_id: total.total_id } : { kind: "aggregate", aggregate_id: total.total_id };
+    const { totals, configuration } = totalsEvidence;
+    const leaves = sourceLeaves([source], totals, configuration.aggregates).sort((a2, b2) => a2 - b2);
+    const definition = aggregate(total.total_id);
+    const sources = total.kind === "native_total" ? total.native_sources.length ? total.native_sources.map((source_id) => ({ kind: "native_total", source_id })) : leaves.map((channel) => ({ kind: "channel", channel })) : definition.sources;
+    let formula = sourceFormula(sources, totals, configuration.aggregates);
+    if (total.kind === "aggregate" && definition?.measurement_method === "one_ct_double_power") formula = `2 × (${formula}) Watts; measured Amps`;
+    if (total.kind === "aggregate" && definition?.measurement_method === "both_conductors_one_ct") formula += " (both conductors)";
+    const parents = configuration.aggregates.filter((parent) => parent.sources.some((item) => source.kind === "native_total" ? item.kind === "native_total" && item.source_id === source.source_id : item.kind === "aggregate" && item.aggregate_id === source.aggregate_id)).map((parent) => parent.name);
+    return { ...total, name: sourceFormula([source], totals, configuration.aggregates), formula, leaf_channels: leaves, parents };
+  }) ?? [];
+  const unmanagedLegacyItems = totalsEvidence?.warnings.filter((warning) => warning.includes("unmanaged"));
   const outcome = summaryOutcome({
     configurationMode,
     legacyChoice,
     completedWithoutChanges,
     configurationInstalled,
     restart: restart2,
+    offsetFinalization: offsetFinalization2,
     verifiedConfiguration: meterConfiguration2 !== null,
     ...unmanagedLegacyItems ? { unmanagedLegacyItems } : {}
   });
   const boards = (values) => values.flatMap((enabled, board) => enabled ? [board === 0 ? "Main board" : `Add-on ${board}`] : []);
   return b`<section class="step-content" aria-labelledby="step-heading">
-    <div class=${restart2 || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${restart2 || completedWithoutChanges ? outcome.calibrationStatus : b`<strong>Restart verification is not complete</strong><p>Summary remains unverified until the server returns authoritative restart evidence.</p>`}</div>
-    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Aggregate energy</dt><dd>${meterConfiguration2.configuration.aggregates.length} aggregates; ${meterConfiguration2.configuration.aggregates.filter((aggregate) => aggregate.energy_mode !== "none").length} energy totals</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"}; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"}</dd></div><div><dt>Reporting and entities</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} public entities, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
+    <div class=${offsetComplete || restart2 || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${offsetFinalization2?.backup_available || restart2 || completedWithoutChanges ? outcome.calibrationStatus : b`<strong>Restart verification is not complete</strong><p>Summary remains unverified until the server returns authoritative restart evidence.</p>`}</div>
+    ${offsetFinalization2?.backup_available ? b`<section aria-label="Retained offset calibration"><h2>Offset configuration and retained backup</h2>
+      <table><thead><tr><th>Chip</th><th>Stage</th><th>ABC values</th><th>Actual prior register verification</th></tr></thead><tbody>${offsetFinalization2.results.map(([id2, stage, table, verified]) => b`<tr><td>${id2}</td><td>${stage}</td><td>${table.map(([a2, b2]) => `${a2}/${b2}`).join(", ")}</td><td>${verified ? "Verified at capture" : "Not verified"}</td></tr>`)}</tbody></table>
+      <p>Backup retention keeps the active operation and one prior finalized operation. Older finalized archives rotate only when you explicitly start a new cycle; opening or reloading never rotates them.</p>
+      <label class="check-row"><input type="checkbox" .checked=${newCycleAcknowledged} @change=${(event) => setNewCycleAcknowledged(event.target.checked)}> I acknowledge a new offset cycle and backup retention.</label>
+      <button class="secondary" ?disabled=${busy || !newCycleAcknowledged || !offsetComplete} @click=${newCycle}>Start new offset cycle</button>
+    </section>` : ""}
+    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"}; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"}</dd></div><div><dt>Reporting and entities</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} public entities, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
+    ${totalsEvidence ? b`<section aria-labelledby="summary-totals-heading"><h2 id="summary-totals-heading">${!meterConfiguration2 || totalsEvidence.capabilities.reason_codes.includes("totals_adoption_required") ? "Legacy read-only totals" : "Helper-managed totals"}</h2>
+      ${!meterConfiguration2 ? b`<p>Authoritative source snapshot: these totals have not been adopted or verified as installed by this workflow.</p>` : ""}
+      ${totalsImpact ? b`<p>${totalsImpact.public_total_entity_count} public total entities; ${totalsImpact.internal_total_sensor_count} internal total sensors; ${totalsImpact.energy_entity_count} public energy entities.</p>` : b`<p>Current total counts are unavailable.</p>`}
+      ${!totalsEvidence.totals.migration.native_visibility_resolved ? b`<p>Counts are confirmed but incomplete: native visibility is unresolved.</p>` : ""}
+      <p>Public outputs are exposed to Home Assistant. Internal dependencies remain in firmware for other totals or energy integration.</p>
+      ${displayedTotals.map((total) => b`<article class="total-summary" aria-label=${total.name}>
+        <h3>${total.name}</h3>
+        <p>${total.ownership === "helper_managed" ? "Helper-managed" : "Read-only source YAML"}</p>
+        <p>Public outputs: ${total.public_outputs.join(", ") || "none"}</p>
+        ${total.internal_outputs.length ? b`<p>Internal outputs: ${total.internal_outputs.join(", ")}</p>` : ""}
+        ${total.unverified_outputs.length ? b`<p>Unverified outputs: ${total.unverified_outputs.join(", ")}</p>` : ""}
+        <p>Formula: ${total.formula}</p><p>Coverage: ${total.leaf_channels.map((channel) => `CT${channel}`).join(", ")}</p>
+        ${total.parents.length ? b`<p>Feeds into: ${total.parents.join(", ")}</p>` : ""}
+      </article>`)}
+      <h3>Totals migration</h3>
+      ${totalsEvidence.totals.migration.legacy_parent_links.length ? b`<ul>${totalsEvidence.totals.migration.legacy_parent_links.map((link) => b`<li>${totalName(link.child_id)} → ${totalName(link.proposed_parent_id)}: pending review</li>`)}</ul>` : b`<p>No pending legacy relationships.</p>`}
+      ${totalsEvidence.totals.migration.native_visibility_confirmation_required ? b`<p>Native visibility confirmation is pending a verified save.</p>` : ""}
+      ${legacyTotalsNotice(totalsEvidence.capabilities)}</section>` : ""}
     ${outcome.warnings.map((warning) => b`<p class="warning-band" role="status">${warning}</p>`)}
     ${technicalDetails(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges)}
     <footer class="action-footer"><button class="secondary" @click=${back}>Back</button>${handoffAction ? b`${!restart2?.source_handoff_firmware_installed ? b`<button class="secondary" data-action="keep-calibration-flash" @click=${keepCalibrationInFlash}>Keep calibration in meter flash</button>` : ""}<button class="primary" data-action="save-calibration" @click=${saveCalibration}>${restart2?.source_handoff_firmware_installed ? "Retry clearing saved flash values" : "Save calibration to YAML"}</button>` : b`<button class="primary" data-action="finish" @click=${finish}>Finish</button>`}</footer>
@@ -2979,9 +3691,13 @@ const panelStyles = i$5`
   .error-panel, .recovery-panel { display: grid; gap: 6px; margin-top: 16px; padding: 16px; border: 1px solid var(--danger); border-radius: var(--radius); color: var(--danger); background: var(--surface); }
   .error-panel span, .error-panel li, .recovery-panel p { color: var(--text); }
   .meter-list { display: grid; gap: 10px; }
-  .meter-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); cursor: pointer; }
+  .meter-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px 24px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   .meter-row.selected { border-color: var(--accent); background: var(--surface-alt); }
+  .meter-details { min-width: 0; overflow-wrap: anywhere; }
+  .meter-details strong { display: block; font-size: var(--ha-font-size-l, 16px); }
   .meter-row small { display: block; color: var(--muted); }
+  .meter-status { margin-top: 6px; }
+  .meter-row > button { justify-self: start; }
   .identity-strip { display: flex; flex-wrap: wrap; gap: 16px 28px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   table { width: 100%; border-collapse: collapse; }
   th, td { padding: 12px; border-bottom: 1px solid var(--border); text-align: left; }
@@ -3001,6 +3717,21 @@ const panelStyles = i$5`
   .mobile-label { display: none; }
   .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 16px 30px; background: var(--surface-alt); border-top: 1px solid var(--border); }
   .aggregate-list { display: grid; gap: 16px; margin: 14px 0; }
+  .default-totals { display: grid; gap: 12px; margin: 24px 0; }
+  .default-totals h2, .default-totals p { margin: 0; }
+  .automatic-totals { display: grid; gap: 12px; margin: 24px 0; }
+  .automatic-totals h2, .automatic-totals p { margin: 0; }
+  .automatic-total-card { margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .automatic-total-card > legend { padding: 0 8px; }
+  .automatic-total-controls { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+  .automatic-total-control { display: flex; align-items: center; gap: 8px; min-height: 44px; font-weight: var(--ha-font-weight-bold, 700); }
+  .default-total-card { margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .default-total-card > legend { padding: 0 8px; }
+  .default-total-controls { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+  .totals-migration fieldset { margin-block: 12px; min-width: 0; }
+  .migration-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+  .default-total-control { display: flex; align-items: center; gap: 8px; min-height: 44px; font-weight: var(--ha-font-weight-bold, 700); }
+  .native-total-status { color: var(--muted); }
   .aggregate-card { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   .aggregate-card > legend { padding: 0 8px; }
   .aggregate-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 22px; }
@@ -3008,10 +3739,14 @@ const panelStyles = i$5`
   .aggregate-fields input, .aggregate-fields select { width: 100%; padding: 10px; border: 1px solid var(--border); }
   .aggregate-fields small { color: var(--muted); font-weight: var(--ha-font-weight-normal, 400); }
   .aggregate-channels { margin: 18px 0 14px; }
+  .aggregate-sources { margin: 18px 0; min-width: 0; }
+  .aggregate-source-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .advanced-totals > .aggregate-list, .advanced-totals > p { margin: 14px; }
   .aggregate-channels > legend { font-size: var(--ha-font-size-l, 16px); }
   .aggregate-channel-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .aggregate-channel-group { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); }
-  .aggregate-channel-group h4 { margin: 0 0 8px; }
+  .aggregate-channel-group > summary { font-weight: 600; }
+  .aggregate-channel-group[open] > summary { margin-bottom: 8px; }
   .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .aggregate-channel-option { display: flex; align-items: center; min-width: 0; min-height: 44px; gap: 7px; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface); cursor: pointer; overflow-wrap: anywhere; }
   .aggregate-channel-option input { flex: 0 0 auto; min-height: auto; margin: 0; }
@@ -3082,6 +3817,7 @@ const panelStyles = i$5`
     .product-title { font-size: 23px; text-align: center; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
     .mobile-progress { display: flex; justify-content: space-between; align-items: center; margin: 0 -18px 24px; padding: 12px 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
     h1 { font-size: 22px; }
+    .meter-row { grid-template-columns: minmax(0, 1fr); }
     .addon-options { grid-template-columns: repeat(7, minmax(42px, 1fr)); gap: 6px; }
     .addon-options label { min-height: 52px; }
     .ct-header { display: none; }
@@ -3089,7 +3825,10 @@ const panelStyles = i$5`
     .ct-row > * { min-width: 0; }
     .mobile-label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; }
     .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card, .aggregate-fields, .aggregate-channel-groups { grid-template-columns: 1fr; }
+    .default-total-controls { align-items: stretch; flex-direction: column; }
+    .automatic-total-controls { align-items: stretch; flex-direction: column; }
     .aggregate-channel-group > div { grid-template-columns: 1fr; }
+    .aggregate-source-options { grid-template-columns: 1fr; }
     .existing-configuration .status-list > div { grid-template-columns: 1fr; gap: 2px; }
     .aggregate-actions button { width: 100%; margin-left: 0; }
     .progress-steps { grid-template-columns: 1fr; gap: 8px; }
@@ -3122,6 +3861,7 @@ function workflowRoutes(context) {
   if (context.calibrationPlan === "standard" || context.calibrationPlan === "full") {
     routes.push("safety");
     if (context.calibrationPlan === "full") routes.push("offset");
+    if (context.transactionPurpose === "offset_preparation" && !routes.includes("install-configuration")) routes.push("install-configuration");
     routes.push("voltage", "current");
     if (restartRequired(context)) routes.push("restart");
     if (context.configurationMode !== "runtime_only" && saveCalibrationRequired(context)) {
@@ -3159,6 +3899,14 @@ function previousWorkflowRoute(context, activeRoute) {
   return index > 0 ? routes[index - 1] : null;
 }
 function resumeWorkflowRoute(context) {
+  if (context.transactionPurpose === "offset_preparation") return "install-configuration";
+  if (context.transactionPurpose === "offset_finalization") return "save-calibration";
+  if (context.normalTransactionActive) return "install-configuration";
+  if (context.offsetConfigurationSelected && !context.offsetRecoveryPending) return "summary";
+  if (context.sessionState === "safety_required" || context.sessionState === "preflight_failed") return "safety";
+  if (context.offsetRecoveryPending) {
+    return context.sessionState === "gains_verified_offsets_pending" || ["completed", "skipped"].includes(context.offsetDisposition ?? "") ? "save-calibration" : "offset";
+  }
   if (context.transactionPurpose === "save_calibration" && (context.handoffAvailable || context.handoffInstalled)) {
     return "save-calibration";
   }
@@ -3183,7 +3931,7 @@ function restartRequired(context) {
   return !context.completedWithoutCalibration && (context.pendingCalibration || context.restartVerification || context.sessionState === "applied_pending_restart_verification" || context.sessionState === "verified");
 }
 function saveCalibrationRequired(context) {
-  return context.handoffAvailable || context.handoffInstalled || context.transactionPurpose === "save_calibration";
+  return context.offsetRecoveryPending || context.offsetConfigurationSelected || context.transactionPurpose === "offset_finalization" || context.handoffAvailable || context.handoffInstalled || context.transactionPurpose === "save_calibration";
 }
 function statusFor(index, current) {
   if (current < 0 || index > current) return "upcoming";
@@ -3286,13 +4034,17 @@ class CircuitSetupPanel extends i$2 {
     this.calibrationMeterSettings = null;
     this.meterConfiguration = null;
     this.verifiedMeterConfiguration = null;
+    this.sourceMeterConfiguration = null;
     this.multiReferencePreparationAcknowledged = false;
     this.meterProfileConfirmed = false;
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
     this.canonicalConfigurationChanged = false;
     this.legacyCircuitSemanticsConfirmed = false;
-    this.managedAutomaticAggregates = [];
+    this.totalGraphPreview = null;
+    this.totalGraphState = "ready";
+    this.issuedAutomaticSettings = [];
+    this.acceptedAutomaticInputs = null;
     this.board = 0;
     this.group = 0;
     this.channel = 1;
@@ -3303,6 +4055,9 @@ class CircuitSetupPanel extends i$2 {
     this.offsetStage = 1;
     this.offsetAcknowledged = [false, false];
     this.offsetRetryConfirmed = false;
+    this.offsetBackupAcknowledged = false;
+    this.offsetPreparation = null;
+    this.offsetFinalization = null;
     this.drafts = /* @__PURE__ */ new Map();
     this.reviewCorrection = null;
     this.labelOnly = false;
@@ -3556,6 +4311,9 @@ class CircuitSetupPanel extends i$2 {
     this.offsetStage = 1;
     this.offsetAcknowledged = [false, false];
     this.offsetRetryConfirmed = false;
+    this.offsetBackupAcknowledged = false;
+    this.offsetPreparation = null;
+    this.offsetFinalization = null;
     this.finishBusy = false;
     this.restartBusy = false;
     this.voltageSkipped = false;
@@ -3583,6 +4341,7 @@ class CircuitSetupPanel extends i$2 {
     this.meterSettingsDraft = null;
     this.meterConfiguration = null;
     this.verifiedMeterConfiguration = null;
+    this.sourceMeterConfiguration = null;
     this.packageOptionsTouched = false;
     this.multiReferencePreparationAcknowledged = false;
     this.meterProfileConfirmed = this.configurationMode === "helper_managed";
@@ -3590,7 +4349,10 @@ class CircuitSetupPanel extends i$2 {
     this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
     this.canonicalConfigurationChanged = false;
     this.configurationInstalled = false;
-    this.managedAutomaticAggregates = [];
+    this.totalGraphPreview = null;
+    this.totalGraphState = "ready";
+    this.issuedAutomaticSettings = [];
+    this.acceptedAutomaticInputs = null;
     this.board = 0;
     this.resetCalibrationRun();
   }
@@ -3693,15 +4455,15 @@ class CircuitSetupPanel extends i$2 {
       semanticSource: this.meterConfiguration?.capabilities.semantic_source ?? null,
       runtimeOnly
     });
-    const purpose = this.transactionPurpose ?? (this.transaction ? this.calibrationHandoff ? "save_calibration" : "install_configuration" : null);
+    const purpose = this.transaction?.purpose ?? this.transactionPurpose;
     const normalTransaction = purpose === "install_configuration" ? this.transaction : null;
     return {
       journeyOrigin: this.journeyOrigin,
       configurationMode: mode,
       legacyChoice: this.existingConfigurationChoice ?? (this.configurationMode === null && mode === "legacy_editable" ? "manage_with_helper" : null),
       calibrationPlan: this.session?.calibration_plan ?? this.calibrationPlan ?? "full",
-      canonicalConfigurationChanged: this.canonicalConfigurationChanged,
-      normalTransactionRequired: this.canonicalConfigurationChanged || normalTransaction !== null,
+      canonicalConfigurationChanged: this.hasCanonicalChanges(),
+      normalTransactionRequired: this.hasCanonicalChanges() || normalTransaction !== null,
       normalTransactionActive: normalTransaction !== null && !["verified", "rolled_back"].includes(normalTransaction.state),
       normalTransactionVerified: normalTransaction?.state === "verified",
       transactionPurpose: purpose,
@@ -3711,7 +4473,9 @@ class CircuitSetupPanel extends i$2 {
       restartVerification: this.restartResult !== null,
       handoffAvailable: this.restartResult?.source_handoff_available ?? false,
       handoffInstalled: this.restartResult?.source_handoff_firmware_installed ?? false,
-      completedWithoutCalibration: this.completedWithoutChanges
+      completedWithoutCalibration: this.completedWithoutChanges,
+      offsetRecoveryPending: this.offsetRecoveryPending(),
+      offsetConfigurationSelected: this.offsetFinalization?.configuration_selected === true
     };
   }
   progressContext() {
@@ -3858,6 +4622,7 @@ class CircuitSetupPanel extends i$2 {
     this.importFailedDeviceId = null;
     this.error = "";
     this.requestUpdate();
+    let fallback = "Adoption is unavailable for this meter.";
     try {
       await api.adoptDevice(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -3866,21 +4631,25 @@ class CircuitSetupPanel extends i$2 {
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.setup = setup2;
       this.setupDeviceIds = new Set(setup2.devices.map((device2) => device2.entry_id));
+      fallback = "Meter setup could not be loaded.";
       await this.subscribeSetup(connectionGeneration, api);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      fallback = "Meter settings could not be loaded.";
       const importedConfiguration = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.setMeterConfiguration(importedConfiguration);
+      fallback = "Topology evidence could not be loaded.";
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = null;
       this.announcement = "Meter imported into ESPHome Builder.";
       this.showTopologyResult(result);
+      fallback = "Saved work could not be loaded.";
       await this.restoreActiveWork(api, deviceId, generation);
     } catch (error) {
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.importFailedDeviceId = deviceId;
-      const message = error.code === "device_busy" ? "Finish or cancel current work before importing another meter." : error instanceof Error && error.message === "helper rebind timed out" ? "Import completed, but Home Assistant is still reconnecting. Retry import or reload the helper." : this.safeErrorMessage(error, "Adoption is unavailable for this meter.");
+      const message = error.code === "device_busy" ? "Finish or cancel current work before importing another meter." : error instanceof Error && error.message === "helper rebind timed out" ? "Import completed, but Home Assistant is still reconnecting. Retry import or reload the helper." : this.safeErrorMessage(error, fallback);
       this.fail(error, message);
     } finally {
       if (this.ownsOperation(generation, api, deviceId)) {
@@ -3915,6 +4684,7 @@ class CircuitSetupPanel extends i$2 {
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const generation = ++this.operationGeneration;
+    let fallback = "Topology evidence could not be loaded.";
     await this.run(async () => {
       const result = await api.getTopology(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -3922,12 +4692,14 @@ class CircuitSetupPanel extends i$2 {
       if (!this.selectedConfigurationAvailable()) {
         this.configurationMode = "runtime_only";
       } else {
+        fallback = "Meter settings could not be loaded.";
         const configuration = await api.getMeterConfiguration(deviceId);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.setMeterConfiguration(configuration);
       }
+      fallback = "Saved work could not be loaded.";
       await this.restoreActiveWork(api, deviceId, generation);
-    }, "Topology evidence could not be loaded.", () => this.ownsOperation(generation, api, deviceId));
+    }, () => fallback, () => this.ownsOperation(generation, api, deviceId));
   }
   async restoreActiveWork(api, deviceId, generation) {
     if (!this.topology) return;
@@ -3936,12 +4708,20 @@ class CircuitSetupPanel extends i$2 {
     this.session = active.session?.state === "cancelled" ? null : active.session;
     this.transaction = active.transaction;
     this.safetyAcknowledged = this.session?.safety_acknowledged ?? false;
-    this.calibrationHandoff = Boolean(this.transaction && active.verified_calibration && active.verified_calibration.source_handoff_transaction_id === this.transaction.transaction_id);
-    this.transactionPurpose = this.transaction ? this.calibrationHandoff ? "save_calibration" : "install_configuration" : null;
+    this.calibrationHandoff = this.transaction?.purpose === "save_calibration";
+    this.transactionPurpose = this.transaction?.purpose ?? null;
     if (this.transactionPurpose === "install_configuration" && this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === null) this.existingConfigurationChoice = "manage_with_helper";
-    this.restartResult = this.calibrationHandoff || this.session?.state === "verified" ? active.verified_calibration : null;
+    this.restartResult = active.verified_calibration;
     if (this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === null && (this.session || this.calibrationHandoff || this.restartResult)) this.existingConfigurationChoice = "calibrate_only";
     if (!this.transaction && !this.session && !this.restartResult) return;
+    if (!this.transaction || ["previewed", "verified", "rolled_back", "failed"].includes(this.transaction.state)) {
+      await this.refreshOffsetRecovery(api, generation, true);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (this.transaction?.state === "verified" && this.transaction.purpose.startsWith("offset_")) {
+        this.transaction = null;
+        this.transactionPurpose = null;
+      }
+    }
     this.navigate(resumeWorkflowRoute(this.workflowContext()));
     if (this.transaction) await this.subscribeTransaction(this.connectionGeneration);
     if (this.session) await this.subscribeSession(this.connectionGeneration);
@@ -3974,6 +4754,29 @@ class CircuitSetupPanel extends i$2 {
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
+    if (current?.purpose.startsWith("offset_")) {
+      if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
+        this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first.");
+        return;
+      }
+      const generation2 = ++this.operationGeneration;
+      this.pendingAction = "review-back";
+      this.requestUpdate();
+      await this.run(async () => {
+        if (current.state === "previewed") await api.abandonCtConfig(deviceId, current.transaction_id, current.source_sha256);
+        if (!this.ownsOperation(generation2, api, deviceId)) return;
+        this.clearSubscription("transaction");
+        this.transaction = null;
+        this.transactionPurpose = null;
+        await this.refreshOffsetRecovery(api, generation2);
+        if (!this.ownsOperation(generation2, api, deviceId)) return;
+        this.offsetBackupAcknowledged = false;
+        this.navigate(current.purpose === "offset_preparation" ? "offset" : "save-calibration");
+      }, "The review could not be cancelled. Recovery and captured values are retained.", () => this.ownsOperation(generation2, api, deviceId));
+      this.pendingAction = "";
+      this.requestUpdate();
+      return;
+    }
     if (current && current.state !== "previewed") {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
@@ -4041,7 +4844,7 @@ class CircuitSetupPanel extends i$2 {
       this.packageOptionsTouched = correction.packageOptionsTouched;
       this.meterFrequencyTouched = correction.meterFrequencyTouched;
       this.meterNominalVoltageTouched = new Set(correction.meterNominalVoltageTouched);
-      this.meterConfiguration = { ...fresh, configuration: restoredConfiguration };
+      this.updateCircuitConfiguration(restoredConfiguration);
       this.meterSettingsDraft = {
         ...restoredConfiguration.meter,
         authoritative: fresh.capabilities.configuration_authoritative,
@@ -4065,6 +4868,7 @@ class CircuitSetupPanel extends i$2 {
     }
   }
   setMeterConfiguration(configuration) {
+    this.sourceMeterConfiguration = this.selectedDeviceId && configuration.capabilities.configuration_authoritative ? { deviceId: this.selectedDeviceId, meter: structuredClone(configuration) } : null;
     this.configurationMode = configurationModeFor({
       journeyOrigin: this.journeyOrigin,
       semanticSource: configuration.capabilities.semantic_source,
@@ -4092,14 +4896,15 @@ class CircuitSetupPanel extends i$2 {
       ...editable,
       configuration: { ...editable.configuration, ...this.packageOptions }
     } : editable;
-    const reconciliation = !existingReadOnly && this.configurationMode === "helper_managed" && this.meterConfiguration.capabilities.managed_totals ? reconcileSplitPhaseAggregates(this.meterConfiguration.configuration) : null;
-    this.managedAutomaticAggregates = reconciliation?.managed ?? [];
-    if (reconciliation) this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation.configuration };
+    this.totalGraphPreview = null;
+    this.totalGraphState = "ready";
+    this.issuedAutomaticSettings = [...this.meterConfiguration.configuration.automatic_totals];
+    this.acceptedAutomaticInputs = this.automaticCandidateInputs();
     if (!this.packageOptionsTouched) this.packageOptions = {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields]
     };
-    this.canonicalConfigurationChanged = !existingReadOnly && (this.packageOptionsTouched || this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter || reconciliation?.changed === true);
+    this.canonicalConfigurationChanged = !existingReadOnly && (this.packageOptionsTouched || this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter);
     this.meterSettingsDraft = {
       ...this.meterConfiguration.configuration.meter,
       authoritative: configuration.capabilities.configuration_authoritative,
@@ -4109,6 +4914,10 @@ class CircuitSetupPanel extends i$2 {
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
     this.initializeInventory(this.meterConfiguration);
+    if (JSON.stringify(this.meterConfiguration.configuration) !== JSON.stringify(configuration.configuration)) {
+      this.totalGraphState = "pending";
+      void this.refreshTotalGraph(this.meterConfiguration.configuration);
+    }
   }
   chooseExistingConfiguration(choice) {
     this.existingConfigurationChoice = choice;
@@ -4158,7 +4967,7 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
     const api = this.api;
     const deviceId = this.selectedDeviceId;
-    const generation = ++this.operationGeneration;
+    const generation = this.operationGeneration;
     try {
       await this.run(async () => {
         this.updateCircuitConfiguration({
@@ -4187,6 +4996,7 @@ class CircuitSetupPanel extends i$2 {
     const current = this.drafts.get(channel);
     if (!current) return;
     this.drafts = new Map(this.drafts).set(channel, { ...current, ...patch });
+    if (Object.keys(patch).every((key) => key === "expanded")) return this.requestUpdate();
     if (this.meterConfiguration && !this.labelOnly) {
       const draft = { ...current, ...patch };
       if (draft.preserveExistingGain && this.meterConfiguration.configuration.channels.find((item) => item.channel === channel)?.name === draft.name) return this.requestUpdate();
@@ -4207,10 +5017,133 @@ class CircuitSetupPanel extends i$2 {
   }
   updateCircuitConfiguration(configuration, changed = true) {
     if (!this.meterConfiguration) return;
-    const reconciliation = changed && (this.configurationMode === "helper_managed" || this.legacyCircuitSemanticsConfirmed) && this.configurationMode !== "runtime_only" && this.meterConfiguration.capabilities.configuration_authoritative ? reconcileSplitPhaseAggregates(configuration, this.managedAutomaticAggregates.length ? this.managedAutomaticAggregates : null) : null;
-    this.managedAutomaticAggregates = reconciliation?.managed ?? [];
-    this.meterConfiguration = { ...this.meterConfiguration, configuration: reconciliation?.configuration ?? configuration };
-    this.canonicalConfigurationChanged ||= changed || reconciliation?.changed === true;
+    const unchanged = JSON.stringify(configuration) === JSON.stringify(this.meterConfiguration.configuration);
+    this.canonicalConfigurationChanged ||= changed;
+    if (unchanged) {
+      this.requestUpdate();
+      return;
+    }
+    this.meterConfiguration = { ...this.meterConfiguration, configuration };
+    this.totalGraphPreview = null;
+    this.totalGraphState = "pending";
+    void this.refreshTotalGraph(configuration);
+    this.requestUpdate();
+  }
+  automaticCandidateInputs() {
+    const meter = this.meterConfiguration;
+    if (!this.api || !this.selectedDeviceId || !meter?.capabilities.configuration_authoritative) return null;
+    const issuedIds = new Set(meter.totals.automatic_candidates.map((item) => item.aggregate_id));
+    return JSON.stringify({
+      connection: this.connectionGeneration,
+      device: this.selectedDeviceId,
+      plan: meter.plan_id,
+      hash: meter.source_sha256,
+      channels: meter.configuration.channels.map(({ channel, enabled, role }) => ({ channel, enabled, role })),
+      collisions: meter.configuration.aggregates.map((item) => item.aggregate_id).filter((id2) => issuedIds.has(id2)).sort()
+    });
+  }
+  automaticSourcesFresh() {
+    return this.acceptedAutomaticInputs !== null && this.acceptedAutomaticInputs === this.automaticCandidateInputs();
+  }
+  hasCanonicalChanges() {
+    const intent = this.meterConfiguration?.configuration.totals_change_intent;
+    return Boolean(intent?.adopt_managed_totals || intent?.legacy_parent_decisions.length || this.existingConfigurationChoice !== "calibrate_only" && !this.labelOnly && this.canonicalConfigurationChanged);
+  }
+  hasUnsupportedCalibrationChanges() {
+    const meter = this.meterConfiguration;
+    if (!meter) return false;
+    const intent = meter.configuration.totals_change_intent;
+    if (intent?.adopt_managed_totals || intent?.legacy_parent_decisions.length) return true;
+    const source = this.sourceMeterConfiguration?.meter;
+    if (!source) return this.canonicalConfigurationChanged;
+    const unsupported = (configuration) => ({
+      meter: configuration.meter,
+      channels: configuration.channels.map(({ channel, enabled, role, voltage_reference_id }) => ({ channel, enabled, role, voltage_reference_id })),
+      default_totals: configuration.default_totals,
+      automatic_totals: configuration.automatic_totals,
+      aggregates: configuration.aggregates
+    });
+    return JSON.stringify(unsupported(meter.configuration)) !== JSON.stringify(unsupported(source.configuration));
+  }
+  totalsIntentNeedsResolution() {
+    return this.hasCanonicalChanges() && (this.labelOnly || this.existingConfigurationChoice === "calibrate_only");
+  }
+  explainTotalsModeConflict() {
+    this.fail(new Error(), "Pending totals choices are outside the selected calibration-only or labels-only mode. No configuration or calibration was changed. Explicitly discard the local choices, or return to configuration editing before reviewing them.");
+  }
+  explainCalibrationConfigurationConflict() {
+    this.fail(new Error(), "Local configuration choices cannot be included in calibration-only saving. Keep your gains and either cancel this action or explicitly discard those local choices to continue calibration. Stored legacy proposals remain pending for a later totals review.");
+  }
+  discardUnsupportedCalibrationChanges() {
+    const baseline = this.sourceMeterConfiguration;
+    if (!baseline || baseline.deviceId !== this.selectedDeviceId || baseline.meter.source_sha256 !== this.meterConfiguration?.source_sha256) {
+      this.fail(new Error(), "The source baseline no longer matches this meter. No choices or calibration were discarded. Reload the selected meter before reviewing local choices.");
+      return;
+    }
+    if (!window.confirm("Discard uncommitted meter, circuit-role and totals choices to continue calibration? Calibration gains, CT names/models/multipliers and package choices are kept. Stored legacy proposals are not resolved.")) return;
+    const source = structuredClone(baseline.meter.configuration);
+    const current = this.meterConfiguration.configuration;
+    this.canonicalConfigurationChanged = false;
+    this.updateCircuitConfiguration({
+      ...source,
+      channels: source.channels.map((channel) => ({
+        ...current.channels.find((item) => item.channel === channel.channel) ?? channel,
+        enabled: channel.enabled,
+        role: channel.role,
+        voltage_reference_id: channel.voltage_reference_id
+      })),
+      power_quality: [...this.packageOptions.power_quality],
+      status_fields: [...this.packageOptions.status_fields]
+    }, false);
+    this.meterSettingsDraft = { ...source.meter, authoritative: true, warnings: baseline.meter.warnings };
+    this.error = "";
+    this.announcement = "Unsupported local configuration choices discarded. Calibration gains, CT changes and package choices were kept; stored legacy proposals remain pending.";
+  }
+  async refreshTotalGraph(configuration) {
+    if (!this.api || !this.selectedDeviceId || !this.meterConfiguration?.capabilities.configuration_authoritative || this.configurationMode === "runtime_only") {
+      this.totalGraphState = "invalid";
+      return;
+    }
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const generation = this.operationGeneration;
+    const meter = this.meterConfiguration;
+    const settings = new Map(this.issuedAutomaticSettings.map((item) => [item.candidate_id, item]));
+    configuration.automatic_totals.forEach((item) => settings.set(item.candidate_id, item));
+    this.issuedAutomaticSettings = [...settings.values()];
+    const current = () => this.ownsOperation(generation, api, deviceId) && this.meterConfiguration?.configuration === configuration && this.meterConfiguration.plan_id === meter.plan_id && this.meterConfiguration.source_sha256 === meter.source_sha256;
+    try {
+      const preview = await api.previewTotalGraph(
+        deviceId,
+        meter.plan_id,
+        meter.source_sha256,
+        { ...configuration, automatic_totals: this.issuedAutomaticSettings }
+      );
+      if (!current()) return;
+      const automatic = preview.automatic_totals.map((item) => ({ candidate_id: item.candidate.candidate_id, enabled: item.enabled, outputs: item.outputs }));
+      automatic.forEach((item) => settings.set(item.candidate_id, item));
+      this.issuedAutomaticSettings = [...settings.values()];
+      this.meterConfiguration = {
+        ...meter,
+        configuration: { ...configuration, automatic_totals: automatic },
+        totals: {
+          ...meter.totals,
+          automatic_candidates: preview.automatic_candidates,
+          automatic_totals: preview.automatic_totals,
+          stale_automatic_total_settings: preview.stale_automatic_total_settings
+        },
+        configuration_impact: preview.configuration_impact
+      };
+      this.totalGraphPreview = preview;
+      this.totalGraphState = "ready";
+      if (this.error === this.safeErrorMessage({ code: "source_owned_totals" }, "")) this.error = "";
+      this.acceptedAutomaticInputs = this.automaticCandidateInputs();
+    } catch (error) {
+      if (!current()) return;
+      this.totalGraphPreview = null;
+      this.totalGraphState = "invalid";
+      if (error.code === "source_owned_totals") this.fail(error, this.safeErrorMessage(error, ""));
+    }
     this.requestUpdate();
   }
   setPackageOptions(options) {
@@ -4245,25 +5178,39 @@ class CircuitSetupPanel extends i$2 {
   }
   disableCircuit(channel) {
     if (!this.meterConfiguration) return;
-    const affected = this.meterConfiguration.configuration.aggregates.filter((aggregate) => aggregate.channels.includes(channel));
-    const invalid = affected.filter((aggregate) => {
-      const remaining = aggregate.channels.filter((item) => item !== channel).length;
-      return !remaining || aggregate.measurement_method === "two_ct_sum" && remaining !== 2 || (aggregate.measurement_method === "one_ct_double_power" || aggregate.measurement_method === "both_conductors_one_ct") && remaining !== 1;
-    });
-    const removed = invalid.map((aggregate) => aggregate.name);
-    if (affected.length && !window.confirm(`Marking CT${channel} unused removes it from ${affected.map((aggregate) => aggregate.name).join(", ")}${removed.length ? ` and deletes invalid aggregate ${removed.join(", ")}` : ""}. Continue?`)) {
+    const configuration = this.meterConfiguration.configuration;
+    const removedIds = /* @__PURE__ */ new Set();
+    const changedIds = new Set(configuration.aggregates.filter((aggregate) => aggregate.sources.some((source) => source.kind === "channel" && source.channel === channel)).map((aggregate) => aggregate.aggregate_id));
+    let aggregates = configuration.aggregates.map((aggregate) => ({
+      ...aggregate,
+      sources: aggregate.sources.filter((source) => source.kind !== "channel" || source.channel !== channel)
+    }));
+    let removed;
+    do {
+      removed = false;
+      aggregates = aggregates.filter((aggregate) => {
+        const needed = aggregate.measurement_method === "two_ct_sum" ? 2 : aggregate.measurement_method === "direct" ? void 0 : 1;
+        if (changedIds.has(aggregate.aggregate_id) && (!aggregate.sources.length || needed !== void 0 && aggregate.sources.length !== needed)) {
+          removedIds.add(aggregate.aggregate_id);
+          removed = true;
+          return false;
+        }
+        return true;
+      }).map((aggregate) => {
+        const sources = aggregate.sources.filter((source) => source.kind !== "aggregate" || !removedIds.has(source.aggregate_id));
+        if (sources.length !== aggregate.sources.length) changedIds.add(aggregate.aggregate_id);
+        return { ...aggregate, sources };
+      });
+    } while (removed);
+    const affected = configuration.aggregates.filter((aggregate) => removedIds.has(aggregate.aggregate_id) || aggregate.sources.some((source) => source.kind === "channel" && source.channel === channel || source.kind === "aggregate" && removedIds.has(source.aggregate_id)));
+    if (affected.length && !window.confirm(`Marking CT${channel} unused changes ${affected.map((aggregate) => aggregate.name).join(", ")}${removedIds.size ? " and deletes totals with invalid sources" : ""}. Continue?`)) {
       this.requestUpdate();
       return;
     }
-    const removedIds = new Set(invalid.map((aggregate) => aggregate.aggregate_id));
     this.updateCircuitConfiguration({
-      ...this.meterConfiguration.configuration,
-      channels: this.meterConfiguration.configuration.channels.map((item) => item.channel === channel ? { ...item, enabled: false, role: "unused" } : item),
-      aggregates: this.meterConfiguration.configuration.aggregates.filter((aggregate) => !invalid.includes(aggregate)).map((aggregate) => ({
-        ...aggregate,
-        parent_id: aggregate.parent_id !== null && removedIds.has(aggregate.parent_id) ? null : aggregate.parent_id,
-        channels: aggregate.channels.filter((item) => item !== channel)
-      }))
+      ...configuration,
+      aggregates,
+      channels: configuration.channels.map((item) => item.channel === channel ? { ...item, enabled: false, role: "unused" } : item)
     });
   }
   hasPackageChanges() {
@@ -4363,10 +5310,11 @@ class CircuitSetupPanel extends i$2 {
   async continueFromCt() {
     this.skipCircuitChanges = false;
     if (!this.api || !this.inventory || !this.selectedDeviceId || this.pendingAction) return;
+    if (this.meterConfiguration && this.totalGraphState !== "ready") return;
     if (!this.labelOnly && this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.legacyCircuitSemanticsConfirmed) {
       return this.fail(new Error(), "Confirm that you reviewed used and unused channels and circuit roles before continuing.");
     }
-    if (this.meterConfiguration && !this.labelOnly && this.canonicalConfigurationChanged) return this.previewCanonicalConfiguration();
+    if (this.meterConfiguration && this.hasCanonicalChanges()) return this.previewCanonicalConfiguration();
     const changes = changesFromDrafts(this.inventory, this.drafts);
     if (this.labelOnly && changes.length) {
       const labels = changes.map(({ channel, name }) => ({ channel, name }));
@@ -4388,11 +5336,15 @@ class CircuitSetupPanel extends i$2 {
       this.pendingAction = "";
       if (this.error) return;
     }
-    if (this.meterConfiguration && this.canonicalConfigurationChanged) return this.previewCanonicalConfiguration();
+    if (this.meterConfiguration && this.hasCanonicalChanges()) return this.previewCanonicalConfiguration();
     this.navigate("calibration-plan");
   }
   async previewCanonicalConfiguration() {
     if (!this.api || !this.inventory || !this.selectedDeviceId || !this.meterConfiguration) return;
+    if (this.totalsIntentNeedsResolution()) {
+      this.explainTotalsModeConflict();
+      return;
+    }
     const configuration = this.meterConfiguration.configuration;
     if (!circuitConfigurationIsValid(configuration, this.inventory.channels.length)) return this.fail(new Error(), "Complete the circuit and aggregate assignments before review.");
     this.pendingAction = "session";
@@ -4412,6 +5364,10 @@ class CircuitSetupPanel extends i$2 {
   }
   async reviewCalibrationHandoff() {
     if (!this.api || !this.session || !this.restartResult?.source_handoff_available || this.pendingAction) return;
+    if (this.hasUnsupportedCalibrationChanges()) {
+      this.explainCalibrationConfigurationConflict();
+      return;
+    }
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const sessionId = this.session.session_id;
@@ -4513,7 +5469,19 @@ class CircuitSetupPanel extends i$2 {
           }
           this.sourcePackageOptions = restored;
         }
-        if (action === "install" && this.calibrationHandoff && transaction2.state === "verified" && this.session && this.topology && this.restartResult) {
+        if (action === "install" && transaction2.state === "verified" && transaction2.purpose.startsWith("offset_")) {
+          this.clearSubscription("transaction");
+          this.offsetAcknowledged = [false, false];
+          this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
+          this.offsetBackupAcknowledged = false;
+          this.offsetRetryConfirmed = false;
+          await this.refreshOffsetRecovery(api, generation, true);
+          if (!this.ownsOperation(generation, api, deviceId)) return;
+          this.transaction = null;
+          this.transactionPurpose = null;
+          this.navigate(transaction2.purpose === "offset_preparation" ? "offset" : "save-calibration");
+          this.announcement = transaction2.purpose === "offset_preparation" ? "Preparation installed. Acknowledge physical preparation again and check measured readiness before Run." : "Captured offsets installed. Confirm the installed configuration selection; register readback is not verified.";
+        } else if (action === "install" && this.calibrationHandoff && transaction2.state === "verified" && this.session && this.topology && this.restartResult) {
           this.restartResult = {
             ...this.restartResult,
             source_handoff_available: false,
@@ -4532,23 +5500,57 @@ class CircuitSetupPanel extends i$2 {
           this.navigate("summary");
         } else if (action === "install" && transaction2.state === "verified") {
           this.configurationInstalled = true;
-          if (this.meterConfiguration) this.verifiedMeterConfiguration = {
-            ...this.meterConfiguration,
-            capabilities: this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" ? { ...this.meterConfiguration.capabilities, semantic_source: "helper_managed" } : this.meterConfiguration.capabilities,
-            configuration: { ...this.meterConfiguration.configuration, multi_reference_preparation_acknowledged: false }
-          };
-          if (this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper") {
-            this.configurationMode = "helper_managed";
-          }
+          this.verifiedMeterConfiguration = null;
+          this.sourceMeterConfiguration = null;
           this.acceptInstalledDrafts();
           this.canonicalConfigurationChanged = false;
+          if (transaction2.full_meter_configuration_verified && this.meterConfiguration) {
+            const meter = this.meterConfiguration;
+            const decisions = meter.configuration.totals_change_intent?.legacy_parent_decisions ?? [];
+            const links = meter.totals.migration.legacy_parent_links.filter((link) => !decisions.some((decision) => decision.child_id === link.child_id && decision.proposed_parent_id === link.proposed_parent_id));
+            this.meterConfiguration = {
+              ...meter,
+              configuration: { ...meter.configuration, totals_change_intent: { adopt_managed_totals: false, legacy_parent_decisions: [] } },
+              totals: { ...meter.totals, migration: { ...meter.totals.migration, legacy_parent_links: links, parent_review_required: links.length > 0 } }
+            };
+          }
           this.announcement = "Configuration changes were installed and verified. Continue to safety and calibration.";
+          if (this.meterConfiguration?.capabilities.configuration_authoritative && transaction2.full_meter_configuration_verified) {
+            await this.refreshInstalledConfiguration();
+          }
         }
       },
       action === "install" && this.calibrationHandoff ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values." : "This confirmation is stale. Reload the CT inventory before making another change.",
       () => this.ownsOperation(generation, api, deviceId)
     );
     if (this.pendingAction === action) this.pendingAction = "";
+    this.requestUpdate();
+  }
+  async refreshInstalledConfiguration() {
+    if (!this.api || !this.selectedDeviceId || !this.configurationInstalled || this.transaction?.state !== "verified" || !this.transaction.full_meter_configuration_verified || this.configurationMode === "runtime_only") return;
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const generation = this.operationGeneration;
+    const transaction2 = this.transaction;
+    const current = () => this.ownsOperation(generation, api, deviceId) && this.transaction?.state === "verified" && this.transaction.transaction_id === transaction2.transaction_id && this.transaction.source_sha256 === transaction2.source_sha256;
+    this.totalGraphState = "pending";
+    this.requestUpdate();
+    try {
+      const fresh = await api.getMeterConfiguration(deviceId);
+      if (!current()) return;
+      if (!fresh.capabilities.configuration_authoritative) throw new Error("Fresh configuration is not authoritative");
+      this.packageOptionsTouched = false;
+      this.setMeterConfiguration(fresh);
+      this.verifiedMeterConfiguration = fresh;
+      this.canonicalConfigurationChanged = false;
+      this.error = "";
+      this.announcement = "Installed configuration and totals inventory are verified.";
+    } catch {
+      if (!current()) return;
+      this.verifiedMeterConfiguration = null;
+      this.totalGraphState = "invalid";
+      this.error = "Installed configuration is verified, but fresh totals inventory could not be loaded. Retry inventory refresh; do not reinstall.";
+    }
     this.requestUpdate();
   }
   async startSession(plan, skipCircuitChanges = false) {
@@ -4570,9 +5572,9 @@ class CircuitSetupPanel extends i$2 {
         this.session = active.session?.state === "cancelled" ? null : active.session;
         this.transaction = active.transaction;
         this.safetyAcknowledged = this.session?.safety_acknowledged ?? false;
-        this.calibrationHandoff = Boolean(this.transaction && active.verified_calibration && active.verified_calibration.source_handoff_transaction_id === this.transaction.transaction_id);
-        this.transactionPurpose = this.transaction ? this.calibrationHandoff ? "save_calibration" : "install_configuration" : null;
-        this.restartResult = this.calibrationHandoff || this.session?.state === "verified" ? active.verified_calibration : null;
+        this.calibrationHandoff = this.transaction?.purpose === "save_calibration";
+        this.transactionPurpose = this.transaction?.purpose ?? null;
+        this.restartResult = active.verified_calibration;
         if (this.transaction) {
           this.navigate(resumeWorkflowRoute(this.workflowContext()));
           await this.subscribeTransaction(this.connectionGeneration);
@@ -4590,6 +5592,8 @@ class CircuitSetupPanel extends i$2 {
           this.topology = saved.topology;
         }
         if (this.session) {
+          await this.refreshOffsetRecovery(api, generation, true);
+          if (!this.ownsOperation(generation, api, deviceId)) return;
           this.navigate(resumeWorkflowRoute(this.workflowContext()));
           await this.subscribeSession(this.connectionGeneration);
           return;
@@ -4598,6 +5602,8 @@ class CircuitSetupPanel extends i$2 {
         if (!this.ownsOperation(generation, api, deviceId) || session2.device_id !== deviceId) return;
         this.session = session2;
         this.calibrationPlan = session2.calibration_plan ?? plan;
+        await this.refreshOffsetRecovery(api, generation, true);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
         this.navigate(resumeWorkflowRoute(this.workflowContext()));
         await this.subscribeSession(this.connectionGeneration);
       }, "Calibration session could not be started.", () => this.ownsOperation(generation, api, deviceId));
@@ -4608,6 +5614,14 @@ class CircuitSetupPanel extends i$2 {
     }
   }
   finishFlow(message) {
+    if (this.offsetRecoveryPending()) {
+      this.navigate("save-calibration");
+      return;
+    }
+    if (this.hasUnsupportedCalibrationChanges()) {
+      this.explainCalibrationConfigurationConflict();
+      return;
+    }
     this.selectDevice(null);
     this.navigate("setup");
     this.announcement = message;
@@ -4655,6 +5669,155 @@ class CircuitSetupPanel extends i$2 {
   offsetKey(board = this.board, stage = this.offsetStage) {
     return `${board}:${stage}`;
   }
+  stockOffsetMode() {
+    return Boolean(this.offsetPreparation?.backup_available || this.offsetFinalization?.backup_available || this.configurationMode !== "runtime_only" && this.selectedConfigurationAvailable() && this.session?.offset_capability?.status === "available");
+  }
+  offsetRecoveryPending() {
+    return Boolean((this.offsetPreparation?.backup_available || this.offsetFinalization?.backup_available) && !(this.offsetFinalization?.configuration_selected && this.offsetFinalization.action_ready && this.session?.has_pending_calibration === false));
+  }
+  async refreshOffsetRecovery(api, generation, restoreSelection = false) {
+    if (!this.session || !this.stockOffsetMode()) return;
+    const deviceId = this.selectedDeviceId;
+    const sessionId = this.session.session_id;
+    const preparation = await api.getOffsetPreparation(sessionId);
+    const finalization = await api.getOffsetFinalization(sessionId);
+    const session2 = await api.getSession(sessionId);
+    if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId || session2.session_id !== sessionId || session2.device_id !== deviceId) return;
+    this.offsetPreparation = preparation;
+    this.offsetFinalization = finalization;
+    this.session = session2;
+    if (restoreSelection && finalization.board_index !== null && finalization.stage !== null) {
+      this.board = finalization.board_index;
+      this.offsetStage = finalization.stage;
+    }
+    const results = /* @__PURE__ */ new Map();
+    for (let board = 0; board < (this.topology?.board_count ?? 0); ++board) for (const stage of [1, 2]) {
+      const groups = board === 0 ? ["main_1", "main_2"] : [`addon${board}_1`, `addon${board}_2`];
+      const tables = finalization.results.filter(([id2, family]) => family === stage && groups.includes(id2.replace("meter_main", "main_"))).map(([id2, , table]) => [id2.replace("meter_main", "main_"), table]);
+      const unfinished = groups.filter((key) => !tables.some(([id2]) => id2 === key));
+      if (tables.length) results.set(this.offsetKey(board, stage), {
+        board_index: board,
+        stage,
+        state: unfinished.length ? "partial" : "captured_pending_configuration",
+        expected_tables: tables,
+        unfinished_group_keys: unfinished,
+        retry_allowed: false,
+        error: unfinished.length ? "Captured values retained; unfinished chips require a new reviewed preparation." : null
+      });
+    }
+    this.offsetResultByTarget = results;
+  }
+  async reviewOffsetPreparation() {
+    if (!this.api || !this.session || this.offsetBusy || this.pendingAction || !this.offsetBackupAcknowledged) return;
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const sessionId = this.session.session_id;
+    const board = this.board;
+    const stage = this.offsetStage;
+    const generation = ++this.operationGeneration;
+    this.offsetBusy = true;
+    this.requestUpdate();
+    await this.run(
+      async () => {
+        const review = await api.previewOffsetPreparation(sessionId, board, stage, true);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        this.transaction = review.transaction;
+        this.transactionPurpose = review.transaction.purpose;
+        this.calibrationHandoff = false;
+        this.offsetAcknowledged = [false, false];
+        this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
+        this.navigate("install-configuration");
+        await this.subscribeTransaction(this.connectionGeneration);
+      },
+      `Board ${board + 1} Stage ${stage} preparation could not be reviewed. Check ESPHome Device Builder and the meter connection, then retry. Existing recovery data, if any, is retained.`,
+      () => this.ownsOperation(generation, api, deviceId)
+    );
+    this.offsetBusy = false;
+    this.requestUpdate();
+  }
+  async reviewOffsetFinalization() {
+    if (!this.api || !this.session || this.pendingAction) return;
+    if (this.hasUnsupportedCalibrationChanges()) {
+      this.explainCalibrationConfigurationConflict();
+      return;
+    }
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
+    this.pendingAction = "offset-finalization";
+    this.requestUpdate();
+    await this.run(
+      async () => {
+        const review = await api.previewOffsetFinalization(
+          sessionId,
+          this.restartResult?.source_handoff_available ? this.restartResult.verification_id : void 0,
+          this.calibrationDraftChanges(),
+          this.hasPackageChanges() ? this.packageOptions : void 0
+        );
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        this.transaction = review.transaction;
+        this.transactionPurpose = review.transaction.purpose;
+        this.calibrationHandoff = false;
+        this.navigate("save-calibration");
+        await this.subscribeTransaction(this.connectionGeneration);
+      },
+      "Final review is unavailable. Both RMS and power tables must be known for each selected chip; verify pending gains first if needed. Unknown evidence is not zero. Captured values are retained.",
+      () => this.ownsOperation(generation, api, deviceId)
+    );
+    this.pendingAction = "";
+    this.requestUpdate();
+  }
+  async reconcileOffsetFinalization() {
+    if (!this.api || !this.session || !this.offsetFinalization?.operation_id || this.pendingAction) return;
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const sessionId = this.session.session_id;
+    const operationId = this.offsetFinalization.operation_id;
+    const generation = ++this.operationGeneration;
+    this.pendingAction = "offset-selection";
+    this.requestUpdate();
+    await this.run(
+      async () => {
+        await api.reconcileOffsetFinalization(sessionId, operationId);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        await this.refreshOffsetRecovery(api, generation);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        if (this.offsetRecoveryPending()) throw new Error("Pending groups remain");
+        this.navigate("summary");
+      },
+      "Offset selection could not be confirmed or calibration groups remain pending. Retained values are not lost. A new backend owner requires a fresh reviewed final installation.",
+      () => this.ownsOperation(generation, api, deviceId)
+    );
+    this.pendingAction = "";
+    this.requestUpdate();
+  }
+  async beginOffsetCycle() {
+    if (!this.api || !this.session || !this.offsetBackupAcknowledged || this.pendingAction) return;
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
+    this.pendingAction = "offset-cycle";
+    this.requestUpdate();
+    await this.run(
+      async () => {
+        await api.beginOffsetCycle(sessionId, true);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        this.offsetAcknowledged = [false, false];
+        this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
+        this.offsetBackupAcknowledged = false;
+        this.offsetRetryConfirmed = false;
+        await this.refreshOffsetRecovery(api, generation, true);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.navigate("offset");
+      },
+      "A new cycle could not be started. Confirm the current final installation and resolve pending work first; backups and results are retained.",
+      () => this.ownsOperation(generation, api, deviceId)
+    );
+    this.pendingAction = "";
+    this.requestUpdate();
+  }
   async checkOffsetReadiness() {
     if (!this.api || !this.session || this.offsetBusy || !this.offsetAcknowledged[this.offsetStage - 1]) return;
     const api = this.api;
@@ -4692,21 +5855,23 @@ class CircuitSetupPanel extends i$2 {
     const prior = this.offsetResultByTarget.get(key);
     const stageState = this.session.offset_boards?.[board]?.stages[stage - 1]?.state;
     const retryRequired = Boolean(prior?.retry_allowed) || stageState === "partial" || stageState === "indeterminate";
-    if (this.offsetAcknowledged[stage - 1] !== true || retryRequired && !this.offsetRetryConfirmed) return;
+    if (this.offsetAcknowledged[stage - 1] !== true || !this.offsetReadinessByTarget.get(key)?.ready || !this.stockOffsetMode() && retryRequired && !this.offsetRetryConfirmed) return;
     const generation = ++this.operationGeneration;
     this.offsetBusy = true;
     this.requestUpdate();
     try {
       await this.run(
         async () => {
-          const result = await api.calibrateOffset(sessionId, board, stage, true, retryRequired);
+          const prepared = this.offsetPreparation;
+          if (this.stockOffsetMode() && (!prepared?.action_ready || !prepared.operation_id || prepared.stage !== stage || prepared.attempted.length || !prepared.targets.every((id2) => (board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`]).includes(id2)))) return;
+          const result = this.stockOffsetMode() ? await api.resumeOffsetCalibration(sessionId, prepared.operation_id, board, stage, true) : await api.calibrateOffset(sessionId, board, stage, true, retryRequired);
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
           this.offsetResultByTarget = new Map(this.offsetResultByTarget).set(key, result);
           const boards = (this.session.offset_boards ?? []).map((item) => item.board_index !== board ? item : {
             ...item,
             stages: item.stages.map((entry) => entry.stage !== stage ? entry : {
               ...entry,
-              state: result.state === "applied_pending_restart_verification" ? "completed" : result.state
+              state: result.state === "applied_pending_restart_verification" || result.state === "captured_pending_configuration" ? "completed" : result.state
             })
           });
           const states = boards.flatMap((item) => item.stages.map((entry) => entry.state));
@@ -4721,6 +5886,7 @@ class CircuitSetupPanel extends i$2 {
           this.offsetReadinessByTarget = new Map(this.offsetReadinessByTarget);
           this.offsetReadinessByTarget.delete(key);
           this.offsetRetryConfirmed = false;
+          if (this.stockOffsetMode()) await this.refreshOffsetRecovery(api, generation);
           this.announcement = result.state === "applied_pending_restart_verification" ? `Board ${board + 1} Stage ${stage} saved; restart verification required.` : `Board ${board + 1} Stage ${stage} requires recovery before retry.`;
         },
         "Offset calibration did not complete. Reconnect and inspect before another attempt.",
@@ -4753,11 +5919,20 @@ class CircuitSetupPanel extends i$2 {
   }
   async finishCurrent() {
     if (!this.session || this.finishBusy) return;
-    if (this.session.has_pending_calibration) {
-      this.navigate("restart");
+    if (this.totalsIntentNeedsResolution()) {
+      this.explainTotalsModeConflict();
       return;
     }
-    if (this.calibrationDraftChanges().length) {
+    if (this.offsetRecoveryPending()) {
+      this.navigate("save-calibration");
+      return;
+    }
+    if (this.session.has_pending_calibration) {
+      this.navigate("restart");
+      if (this.hasUnsupportedCalibrationChanges()) this.explainCalibrationConfigurationConflict();
+      return;
+    }
+    if (this.calibrationDraftChanges().length || this.hasCanonicalChanges() || this.hasPackageChanges()) {
       await this.finishWithoutCalibration();
       return;
     }
@@ -4892,6 +6067,10 @@ class CircuitSetupPanel extends i$2 {
     }
   }
   keepCalibrationInFlash() {
+    if (this.hasUnsupportedCalibrationChanges()) {
+      this.explainCalibrationConfigurationConflict();
+      return;
+    }
     ++this.operationGeneration;
     if (this.pendingAction === "calibration-handoff") this.pendingAction = "";
     this.clearSubscription("transaction");
@@ -4946,7 +6125,7 @@ class CircuitSetupPanel extends i$2 {
         async () => {
           let result;
           try {
-            result = await api.restartAndVerify(sessionId, topology2);
+            result = this.offsetRecoveryPending() ? await api.restartAndVerifyGains(sessionId, topology2) : await api.restartAndVerify(sessionId, topology2);
           } catch (error) {
             if (this.ownsOperation(generation, api, deviceId) && this.session?.session_id === sessionId && this.topology === topology2) {
               this.restartResult = null;
@@ -4957,7 +6136,7 @@ class CircuitSetupPanel extends i$2 {
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId || this.topology !== topology2) return;
           this.restartResult = result;
           this.completedWithoutChanges = false;
-          this.session = { ...this.session, state: "verified" };
+          this.session = { ...this.session, state: this.offsetRecoveryPending() ? "gains_verified_offsets_pending" : "verified" };
         },
         "Restart verification failed; review recovery evidence before rollback.",
         () => this.ownsOperation(generation, api, deviceId)
@@ -4967,7 +6146,9 @@ class CircuitSetupPanel extends i$2 {
       this.requestUpdate();
     }
     const restartResult = this.restartResult;
-    if (restartResult?.source_handoff_available) {
+    if (this.offsetRecoveryPending() && restartResult) {
+      this.navigate("save-calibration");
+    } else if (restartResult?.source_handoff_available) {
       this.navigate("save-calibration");
     } else if (restartResult) {
       this.navigate("summary");
@@ -4991,13 +6172,18 @@ class CircuitSetupPanel extends i$2 {
   }
   async finishWithoutCalibration() {
     if (this.pendingAction) return;
+    if (this.totalsIntentNeedsResolution()) {
+      this.explainTotalsModeConflict();
+      return;
+    }
     this.pendingAction = "finish";
     this.requestUpdate();
     const changes = this.calibrationDraftChanges();
     try {
       await this.cancelSession(null);
       if (this.error) return;
-      if (changes.length || this.hasPackageChanges()) await this.reviewChanges();
+      if (this.meterConfiguration && this.hasCanonicalChanges()) await this.previewCanonicalConfiguration();
+      else if (changes.length || this.hasPackageChanges()) await this.reviewChanges();
       else this.finishFlow("No changes were made. Select another device to configure.");
     } finally {
       this.pendingAction = "";
@@ -5015,6 +6201,10 @@ class CircuitSetupPanel extends i$2 {
         const session2 = await api.getSession(sessionId);
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
         this.session = session2;
+        this.offsetAcknowledged = [false, false];
+        this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
+        await this.refreshOffsetRecovery(api, generation, true);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
         this.announcement = `Session reconnected with state ${this.session.state}.`;
       },
       "Session reconnection failed. Retry only after checking the meter connection.",
@@ -5065,14 +6255,14 @@ class CircuitSetupPanel extends i$2 {
       await operation();
     } catch (error) {
       if (!isCurrent()) return;
-      const code = error.code;
-      const message = code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
-      this.fail(error, message);
+      this.fail(error, this.safeErrorMessage(error, typeof fallback === "function" ? fallback() : fallback));
     }
     if (isCurrent()) this.requestUpdate();
   }
   safeErrorMessage(error, fallback) {
     const code = error.code;
+    if (code === "offset_tables_unavailable") return "Meter diagnostics did not provide complete offset tables for this stage. Stock ESPHome can omit these before the first offset calibration. Preparation requires firmware with read-only offset-table reporting. You can choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data, if any, is unchanged.";
+    if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
     return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
   }
   fail(_error, safeMessage) {
@@ -5107,7 +6297,7 @@ class CircuitSetupPanel extends i$2 {
       },
       () => void (this.selectedConfigurationAvailable() ? this.loadInventory() : this.navigate("calibration-plan")),
       this.error === "Topology mismatch",
-      this.pendingAction === "inventory" || this.pendingAction === "session"
+      this.pendingAction.startsWith("topology:") || this.pendingAction === "inventory" || this.pendingAction === "session"
     ) : A}`;
     if (this.step === "legacy-review" && this.meterConfiguration) return existingConfigurationStep(
       this.meterConfiguration,
@@ -5150,9 +6340,9 @@ class CircuitSetupPanel extends i$2 {
       this.configurationMode ?? "helper_managed"
     );
     if (this.step === "ct" && this.inventory) {
-      const impact = this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null;
+      const impact = this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null;
       const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0;
-      return b`${impact ? b`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? b`<strong>Warning: high entity count. </strong>` : A}${impact.enabled_channel_count} enabled channels; ${total} public entities (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : A}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => {
+      return b`${impact ? b`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? b`<strong>Warning: high entity count. </strong>` : A}${impact.enabled_channel_count} enabled channels; ${total} ${this.meterConfiguration?.totals.migration.native_visibility_resolved ? "public entities" : "confirmed public entities (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : this.meterConfiguration ? b`<p role="status">${this.totalGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</p>` : A}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => {
         this.labelOnly = false;
         this.requestUpdate();
       }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => {
@@ -5174,27 +6364,54 @@ class CircuitSetupPanel extends i$2 {
         this.labelOnly ? null : this.meterConfiguration?.configuration ?? null,
         (configuration) => this.updateCircuitConfiguration(configuration),
         (channel) => this.disableCircuit(channel),
-        this.configurationMode !== "runtime_only" && (this.meterConfiguration?.capabilities.configuration_authoritative ?? true),
+        this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true && totalsEditable(this.meterConfiguration, "managed_advanced_totals"),
         this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "",
         this.configurationMode === "legacy_editable",
-        this.configurationMode !== "legacy_editable" || this.existingConfigurationChoice !== "manage_with_helper" || this.labelOnly || this.legacyCircuitSemanticsConfirmed,
+        (!this.meterConfiguration || this.totalGraphState === "ready") && (this.configurationMode !== "legacy_editable" || this.existingConfigurationChoice !== "manage_with_helper" || this.labelOnly || this.legacyCircuitSemanticsConfirmed),
+        this.meterConfiguration?.totals ?? null,
+        this.meterConfiguration?.capabilities.native_totals_readable === true,
+        Boolean(this.meterConfiguration && totalsEditable(this.meterConfiguration, "native_totals_writable")),
+        this.totalGraphState === "ready" ? this.totalGraphPreview : null,
+        this.totalGraphState === "ready",
+        this.totalGraphState,
+        this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true && totalsEditable(this.meterConfiguration, "managed_automatic_totals"),
+        this.meterConfiguration,
+        this.automaticSourcesFresh(),
+        this.journeyOrigin === "existing_meter" && this.sourceMeterConfiguration?.deviceId === this.selectedDeviceId && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256 ? this.sourceMeterConfiguration?.meter.configuration ?? null : null,
         () => {
           this.skipCircuitChanges = true;
           this.navigate("calibration-plan");
-        }
-      )}${this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? b`<label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event) => {
-        this.legacyCircuitSemanticsConfirmed = event.target.checked;
-        if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration);
-        else this.requestUpdate();
-      }} />I reviewed used/unused channels and circuit roles.</label>${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : A}` : A}`;
+        },
+        this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? b`
+        ${!this.legacyCircuitSemanticsConfirmed ? b`<p class="info-band" role="status">Review and confirm the used/unused channels and circuit roles below to enable Continue.</p>` : A}
+        <label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event) => {
+          this.legacyCircuitSemanticsConfirmed = event.target.checked;
+          if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration);
+          else this.requestUpdate();
+        }} />I reviewed used/unused channels and circuit roles.</label>
+        ${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : A}` : A
+      )}`;
     }
+    if (this.step === "save-calibration" && !this.transaction && this.offsetRecoveryPending()) return b`<section class="step-content" aria-labelledby="offset-final-heading">
+      <h2 id="offset-final-heading">Review captured offset configuration</h2>
+      <p>Captured results are retained with the private backup. Both RMS and power tables must be known for every affected chip before disabling native offset restore. Unknown evidence is not zero.</p>
+      ${this.offsetFinalization?.installed ? b`<p>${this.offsetFinalization.action_ready ? "Final configuration is installed. Confirm fresh configuration selection below; installation is not register readback." : "Final configuration was installed, but its receipt is unconfirmed in this backend owner. Retained values are not lost. Review and install the final configuration again, even if unchanged, before confirming selection."}</p>` : A}
+      ${this.offsetFinalization?.results.length ? b`<table aria-label="Retained offset results"><thead><tr><th>Chip</th><th>Stage</th><th>ABC values</th><th>Actual prior register verification</th></tr></thead><tbody>
+        ${this.offsetFinalization.results.map(([id2, stage, table, verified]) => b`<tr><td>${id2}</td><td>${stage}</td><td>${table.map(([a2, b2]) => `${a2}/${b2}`).join(", ")}</td><td>${verified ? "Verified at capture" : "Not verified"}</td></tr>`)}
+      </tbody></table>` : A}
+      <p>${this.restartResult ? `Gain authority: ${this.restartResult.source_authority.replaceAll("_", " ")}. Offset configuration selection never clears gain flash.` : "If gains were also calibrated, restart and verify gains only before the combined review. This does not verify stock offsets."}</p>
+      <footer class="action-footer"><button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => this.navigate("offset", true)}>Back to offset stages</button>
+      ${!this.restartResult ? b`<button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => void this.restart()}>${this.restartBusy ? "Restarting and verifying gains…" : "Restart and verify gains only"}</button>` : A}
+      <button class="primary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy || !this.offsetFinalization?.results.length} @click=${() => void this.reviewOffsetFinalization()}>Review captured offsets for installation</button>
+      ${this.offsetFinalization?.action_ready ? b`<button class="primary" ?disabled=${Boolean(this.pendingAction)} @click=${() => void this.reconcileOffsetFinalization()}>Confirm installed offset selection</button>` : A}</footer>
+    </section>`;
     if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return b`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
       <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
       <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>
       <footer class="action-footer"><button class="secondary" data-action="keep-calibration-flash" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => this.keepCalibrationInFlash()}>Keep calibration in meter flash</button><button class="primary" data-action="review-calibration-handoff" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => void this.reviewCalibrationHandoff()}>${this.pendingAction === "calibration-handoff" ? "Preparing YAML review…" : "Review and save calibration to YAML"}</button></footer>
     </section>`;
     if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep(
-      this.step === "save-calibration" ? "save_calibration" : "install_configuration",
+      this.transaction?.purpose ?? (this.step === "save-calibration" ? "save_calibration" : "install_configuration"),
       this.transaction,
       () => void this.transactionAction("apply"),
       () => void this.transactionAction("compile"),
@@ -5203,11 +6420,13 @@ class CircuitSetupPanel extends i$2 {
       () => this.back(),
       () => this.navigate(this.step === "save-calibration" ? "summary" : "calibration-plan"),
       this.meterConfiguration?.configuration ?? null,
-      this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null,
+      this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null,
       this.pendingAction === "review-back",
       this.reviewCorrection !== null,
       this.pendingAction,
-      this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper"
+      this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper",
+      this.meterConfiguration,
+      this.totalGraphState === "ready" ? this.totalGraphPreview : null
     );
     if (this.step === "safety") return safetyStep(
       this.session,
@@ -5224,6 +6443,10 @@ class CircuitSetupPanel extends i$2 {
     if (this.step === "calibration-plan") return calibrationPlanStep(this.calibrationPlan, (plan) => {
       this.calibrationPlan = plan;
       if (plan === "keep_existing") {
+        if (this.hasCanonicalChanges()) {
+          void this.previewCanonicalConfiguration();
+          return;
+        }
         this.completedWithoutChanges = true;
         this.navigate("summary");
       } else void this.startSession(plan, this.skipCircuitChanges);
@@ -5265,7 +6488,16 @@ class CircuitSetupPanel extends i$2 {
       () => void this.reconnectSession(),
       () => void this.skipOffset(),
       () => this.back(),
-      () => this.navigate("voltage")
+      () => this.navigate("voltage"),
+      this.stockOffsetMode() ? {
+        preparation: this.offsetPreparation,
+        backupAcknowledged: this.offsetBackupAcknowledged,
+        setBackup: (value) => {
+          this.offsetBackupAcknowledged = value;
+          this.requestUpdate();
+        },
+        prepare: () => void this.reviewOffsetPreparation()
+      } : null
     );
     if (this.step === "voltage") return b`${(this.calibrationMeterSettings ?? this.meterSettingsDraft)?.warnings.includes("slow_interval_extends_calibration") ? b`<div class="warning-band" role="status">This meter uses a ${(this.calibrationMeterSettings ?? this.meterSettingsDraft).update_interval_s}-second update interval. Calibration takes longer; keep the reference stable until each check finishes.</div>` : A}${voltageStep(
       this.topology,
@@ -5356,13 +6588,22 @@ class CircuitSetupPanel extends i$2 {
       () => void (this.restartResult?.source_handoff_firmware_installed ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()),
       () => this.back(),
       this.verifiedMeterConfiguration,
-      this.verifiedMeterConfiguration ? configurationImpact(this.verifiedMeterConfiguration.configuration, this.verifiedMeterConfiguration.topology) : null,
+      this.verifiedMeterConfiguration?.configuration_impact ?? null,
       () => this.finishFlow("Meter configuration and calibration are complete."),
       () => this.keepCalibrationInFlash(),
       this.workflowContext().configurationMode,
       this.existingConfigurationChoice,
       this.configurationInstalled,
-      this.handoffDeclined
+      this.handoffDeclined,
+      this.configurationMode === "legacy_editable" && this.sourceMeterConfiguration?.deviceId === this.selectedDeviceId && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256 ? this.sourceMeterConfiguration?.meter ?? null : null,
+      this.offsetFinalization,
+      this.offsetBackupAcknowledged,
+      (value) => {
+        this.offsetBackupAcknowledged = value;
+        this.requestUpdate();
+      },
+      () => void this.beginOffsetCycle(),
+      Boolean(this.pendingAction)
     );
     return b`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct" ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;
@@ -5420,6 +6661,10 @@ class CircuitSetupPanel extends i$2 {
             </li>`)}
           </ol></nav>` : A}
           ${this.error ? b`<div class="error-panel" role="alert" tabindex="-1"><strong>${this.error}</strong></div>` : A}
+          ${this.totalsIntentNeedsResolution() || this.hasUnsupportedCalibrationChanges() && (this.session?.has_pending_calibration || this.restartResult) && ["restart", "save-calibration", "summary"].includes(this.step) ? b`<button class="secondary"
+              ?disabled=${Boolean(this.pendingAction)} @click=${() => this.discardUnsupportedCalibrationChanges()}>Discard local configuration choices and continue calibration</button>` : A}
+          ${this.configurationInstalled && this.transaction?.state === "verified" && this.transaction.full_meter_configuration_verified && !this.verifiedMeterConfiguration && this.configurationMode !== "runtime_only" ? b`<button class="secondary"
+              ?disabled=${this.totalGraphState === "pending"} @click=${() => void this.refreshInstalledConfiguration()}>Retry totals inventory refresh</button>` : A}
           ${this.stepBody()}
           ${!["setup", "legacy-review", "meter", "voltage", "current", "summary"].includes(this.step) ? technicalDetails(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.completedWithoutChanges) : A}
           <div class="sr-status" role="status" aria-live="polite">${this.announcement}</div>

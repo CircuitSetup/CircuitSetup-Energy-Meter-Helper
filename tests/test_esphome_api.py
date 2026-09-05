@@ -42,11 +42,24 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeReconnectError,
     ESPHomeSecurityError,
     ESPHomeSessionDisconnectedError,
+    sanitize_control_text,
+)
+from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+    OffsetTableSnapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
     FreshWindowError,
     StateUnavailableError,
 )
+
+
+def test_line_preserving_controls_strip_whole_multiline_terminal_sequences() -> None:
+    value = "First\r\n\x1b]hidden\nOSC payload\x07Second\rThird\x00\x85\x1b[31m"
+    assert sanitize_control_text(value) == "FirstSecondThird"
+    assert (
+        sanitize_control_text(value, preserve_line_breaks=True)
+        == "First\nSecond\nThird"
+    )
 
 
 @dataclass(slots=True)
@@ -168,6 +181,8 @@ class FakeClient:
 
         def unsubscribe() -> None:
             self.log_unsubscribed += 1
+            if self.on_log is callback:
+                self.on_log = None
             if self.unsubscribe_error is not None:
                 raise self.unsubscribe_error
 
@@ -576,7 +591,9 @@ def test_requests_dump_config_and_reports_current_calibration_sources() -> None:
     asyncio.run(run())
 
 
-def test_missing_saved_gain_evidence_remains_unknown_for_workflow_reconciliation() -> None:
+def test_missing_saved_gain_evidence_remains_unknown_for_workflow_reconciliation() -> (
+    None
+):
     """Dump-config does not repeat boot-only ATM90E32 flash-source evidence."""
 
     async def run() -> None:
@@ -635,6 +652,143 @@ def test_fresh_offset_sources_ignore_cached_status_and_survive_large_dump() -> N
                 )
             )
         assert await pending == {"meter_main1": "flash", "meter_main2": "unknown"}
+
+    asyncio.run(run())
+
+
+def test_offset_table_snapshot_reads_full_fresh_dump_outside_public_log_ring() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client], max_log_lines=2, max_log_bytes=120)
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_offset_table_snapshot(
+                {"meter_main1"}, offset_stage=1, timeout=0.2
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    "\n".join(
+                        [
+                            f"[CALIBRATION][noise] offset diagnostic {index}"
+                            for index in range(250)
+                        ]
+                        + [
+                            "[CALIBRATION][meter_main1] Restored offset calibration from memory",
+                            "[CALIBRATION][meter_main1] | Phase | offset_voltage | offset_current |",
+                            "[CALIBRATION][meter_main1] | A | 0 | 0 |",
+                            "[CALIBRATION][meter_main1] | B | 0 | 0 |",
+                            "[CALIBRATION][meter_main1] | C | 0 | 0 |",
+                        ]
+                    )
+                )
+            )
+        )
+
+        assert await pending == {
+            "meter_main1": OffsetTableSnapshot(
+                1,
+                "meter_main1",
+                1,
+                ((0, 0), (0, 0), (0, 0)),
+                "restored",
+                False,
+                False,
+            )
+        }
+        assert len(session.log_lines) <= 2
+        assert client.log_unsubscribed == 2
+
+    asyncio.run(run())
+
+
+def test_offset_table_snapshot_cancellation_and_generation_change_stop_capture() -> (
+    None
+):
+    async def run() -> None:
+        first = FakeClient()
+        session = make_session([first])
+        await session.async_connect()
+        cancelled = asyncio.create_task(
+            session.async_offset_table_snapshot({"meter_main1"}, offset_stage=1)
+        )
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        assert first.log_unsubscribed == 2
+
+        pending = asyncio.create_task(
+            session.async_offset_table_snapshot({"meter_main1"}, offset_stage=1)
+        )
+        await asyncio.sleep(0)
+        assert first.on_stop is not None
+        await first.on_stop(False)
+        with pytest.raises(ESPHomeSessionDisconnectedError, match="generation"):
+            await pending
+        assert first.log_unsubscribed == 4
+
+    asyncio.run(run())
+
+
+def test_offset_snapshot_restores_normal_log_subscription_after_success_and_cancel() -> (
+    None
+):
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+
+        completed = asyncio.create_task(
+            session.async_offset_table_snapshot(
+                {"meter_main1"}, offset_stage=1, timeout=0.01
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(SimpleNamespace(message="snapshot diagnostic"))
+        await completed
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message="[CALIBRATION][meter_main1] Gain calibration loaded and verified successfully."
+            )
+        )
+        assert "Gain calibration loaded" in session.log_lines[-1]
+
+        cancelled = asyncio.create_task(
+            session.async_offset_table_snapshot({"meter_main1"}, offset_stage=1)
+        )
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message="[CALIBRATION][meter_main1] Offset calibration saved to memory."
+            )
+        )
+        assert "Offset calibration saved" in session.log_lines[-1]
+
+    asyncio.run(run())
+
+
+def test_log_callback_preserves_untagged_spi_read_mismatch() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message="[W][atm90e32] SPI read mismatch: expected 0x55AA, got 0x0000"
+            )
+        )
+        assert "SPI read mismatch" in session.log_lines[-1]
 
     asyncio.run(run())
 
