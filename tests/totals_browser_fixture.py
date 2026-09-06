@@ -166,7 +166,7 @@ class Fixture:
             project_version="2026.8.0", configuration=None if name == "runtime-only" else "meter.yaml")
 
         class Hass:
-            config_entries = SimpleNamespace(async_get_entry=lambda _entry: SimpleNamespace(unique_id=MAC))
+            config_entries = SimpleNamespace(async_get_entry=lambda _entry: SimpleNamespace(unique_id=MAC), async_entries=lambda _domain: [])
 
             async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
                 return target(*args)

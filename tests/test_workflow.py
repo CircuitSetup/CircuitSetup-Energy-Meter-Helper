@@ -309,6 +309,119 @@ def test_ct_review_preserves_unmanaged_totals_after_suggestions_refresh(edit: st
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("role", (CircuitRole.BRANCH, CircuitRole.GRID, CircuitRole.SOLAR, CircuitRole.SUBPANEL))
+def test_analyzer_circuit_suppresses_duplicate_suggestion(role: CircuitRole) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.workflow import (
+        _existing_circuit_suggestions,
+    )
+    from tests.test_config_mutator import _contract_snapshot
+
+    async def run() -> None:
+        workflow, plan, _, builder, _ = await _persisted_totals_workflow(_contract_snapshot().content)
+        config = replace(plan.inventory.configuration, channels=tuple(
+            replace(channel, name=f"Dryer L{channel.channel}", role=role)
+            if channel.channel <= 2 else channel
+            for channel in plan.inventory.configuration.channels
+        ))
+        plan.existing_circuit_channels = frozenset({frozenset({1, 2})})
+        normalized, candidates = _existing_circuit_suggestions(config, plan.existing_circuit_channels)
+        assert not candidates
+        assert normalized.automatic_totals and not normalized.automatic_totals[0].enabled
+        plan.inventory = replace(plan.inventory, configuration=normalized, automatic_candidates=candidates, automatic_totals=())
+        preview = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, config)
+        assert not preview["automatic_candidates"]
+        assert not preview["graph"]["ordered_nodes"]
+        with pytest.raises(ValueError, match="unique"):
+            await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256,
+                replace(normalized, automatic_totals=normalized.automatic_totals * 2))
+        # A name/model edit must not bring the duplicate back or add firmware totals.
+        status = await workflow._async_preview_meter_configuration(plan, config)
+        await workflow.transactions.async_confirm_write(status.transaction_id, "admin")
+        assert "# CircuitSetup Energy Meter Helper: aggregates" not in builder.remote_content
+        enabled = replace(config, automatic_totals=(replace(normalized.automatic_totals[0], enabled=True),))
+        preserved, candidates = _existing_circuit_suggestions(enabled, plan.existing_circuit_channels)
+        assert candidates and preserved.automatic_totals[0].enabled
+        unrelated, candidates = _existing_circuit_suggestions(config, frozenset({frozenset({3, 4})}))
+        assert candidates and not unrelated.automatic_totals
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("source_group", ("circuits", "mains_source_entities"))
+@pytest.mark.parametrize("matched", (True, False))
+def test_analyzer_sources_match_initial_inventory_and_refresh(
+    monkeypatch: pytest.MonkeyPatch, source_group: str, matched: bool,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper import workflow as module
+    from tests.totals_browser_fixture import Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("source-only", addons=3)
+        fixture.builder.remote_content = fixture.builder.remote_content.replace(
+            "ct17_name: CT17", "ct17_name: Dryer L1"
+        ).replace("ct18_name: CT18", "ct18_name: Dryer L2")
+        entities = [SimpleNamespace(
+            entity_id=f"sensor.renamed_{channel}_{suffix.replace(' ', '_')}",
+            original_name=f"Dryer L{channel - 16} {suffix}", platform="esphome",
+            config_entry_id="meter-1" if matched or channel == 17 else "other-meter",
+        ) for channel in (17, 18) for suffix in ("Watts", "Amps", "Power Factor", "VA", "VAR")]
+        registry = SimpleNamespace(entities=SimpleNamespace(
+            get_entries_for_config_entry_id=lambda entry: [item for item in entities if item.config_entry_id == entry]
+        ), async_get=lambda entity_id: SimpleNamespace(original_device_class=entity_id.removeprefix("sensor.shared_")))
+        monkeypatch.setattr(module.er, "async_get", lambda _hass: registry)
+        sources = [item.entity_id for item in entities]
+        value = [{"name": "Renamed appliance", "sensors": [
+            *({"entity_id": source, "role": "real_power"} for source in sources),
+            {"entity_id": "sensor.shared_voltage", "role": "voltage"},
+            {"entity_id": "sensor.shared_frequency", "role": "frequency"},
+        ]}] if source_group == "circuits" else [*sources, "sensor.shared_voltage", "sensor.shared_frequency"]
+        # Explicit options override old entry data; repeated references remain one CT.
+        entries = [SimpleNamespace(data={source_group: []}, options={source_group: value})]
+        fixture.workflow._hass.config_entries.async_entries = lambda domain: entries if domain == "circuitsetup_energy_analyzer" else []
+        initial = await fixture.workflow.async_get_meter_configuration("meter-1")
+        assert bool(initial["totals"]["automatic_candidates"]) is not matched
+        assert not initial["configuration"].automatic_totals
+        preview = await fixture.workflow.async_preview_total_graph("meter-1", initial["plan_id"], initial["source_sha256"], initial["configuration"])
+        assert preview["automatic_candidates"] == initial["totals"]["automatic_candidates"]
+        assert preview["automatic_totals"] == initial["totals"]["automatic_totals"]
+
+    asyncio.run(run())
+
+
+def test_hidden_analyzer_duplicate_preserves_managed_output_choices(monkeypatch: pytest.MonkeyPatch) -> None:
+    from custom_components.circuitsetup_energy_meter_helper import workflow as module
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        TotalOutputSettings,
+    )
+    from tests.test_config_mutator import _inventory
+    from tests.totals_browser_fixture import Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("automatic-off")
+        stored = await fixture.store.async_get_meter_configuration(MAC)
+        settings = (replace(stored.automatic_totals[0], outputs=TotalOutputSettings(False, True, False)),)
+        await fixture.store.async_save_verified_meter_configuration(MAC, stored.config_sha256,
+            replace(stored, automatic_totals=settings))
+        monkeypatch.setattr(module, "_analyzer_circuit_channels", lambda *_args: frozenset({frozenset({1, 2})}))
+        initial = await fixture.workflow.async_get_meter_configuration("meter-1")
+        assert not initial["configuration"].automatic_totals
+        assert not initial["totals"]["automatic_candidates"]
+        requested = replace(initial["configuration"], meter=replace(initial["configuration"].meter, update_interval_s=10))
+        await fixture.workflow.async_preview_total_graph("meter-1", initial["plan_id"], initial["source_sha256"], requested)
+        plan = fixture.workflow._plans[initial["plan_id"]]
+        status = await fixture.workflow._async_preview_meter_configuration(plan, requested)
+        await fixture.manager.async_confirm_write(status.transaction_id, "admin")
+        content = fixture.builder.remote_content
+        retained = fixture.manager._transaction(status.transaction_id).meter_configuration
+        assert retained.automatic_totals == settings
+        saved = _inventory(ESPHomeConfigSnapshot("meter.yaml", content, sha256(content.encode()).hexdigest()), plan.topology, stored=retained)
+        assert saved.configuration.automatic_totals == settings
+
+    asyncio.run(run())
+
+
 def test_partial_unowned_native_visibility_survives_initial_preview_and_unrelated_write() -> (
     None
 ):
@@ -322,7 +435,8 @@ def test_partial_unowned_native_visibility_survives_initial_preview_and_unrelate
 
     class Hass:
         config_entries = SimpleNamespace(
-            async_get_entry=lambda _entry: SimpleNamespace(unique_id=MAC)
+            async_get_entry=lambda _entry: SimpleNamespace(unique_id=MAC),
+            async_entries=lambda _domain: [],
         )
 
         async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
@@ -937,7 +1051,7 @@ def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() 
 
     class Hass:
         def __init__(self) -> None:
-            self.config_entries = SimpleNamespace(async_get_entry=self._entry)
+            self.config_entries = SimpleNamespace(async_get_entry=self._entry, async_entries=lambda _domain: [])
 
         @staticmethod
         def _entry(device_id: str) -> object | None:
