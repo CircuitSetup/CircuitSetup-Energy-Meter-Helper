@@ -246,6 +246,17 @@ def resolve_automatic_totals(
     )
 
 
+def enabled_automatic_totals(
+    configuration: MeterConfigurationRequest,
+) -> tuple[ResolvedAutomaticTotal, ...]:
+    """Return totals that affect firmware, excluding unselected suggestions."""
+    return tuple(
+        item for item in resolve_automatic_totals(
+            automatic_total_candidates(configuration), configuration.automatic_totals
+        ) if item.enabled
+    )
+
+
 def stale_automatic_total_settings(
     candidates: tuple[AutomaticTotalCandidate, ...],
     settings: tuple[AutomaticTotalSettings, ...],

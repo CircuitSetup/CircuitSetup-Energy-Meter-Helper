@@ -64,6 +64,7 @@ from .total_graph import (
     TotalRenderPlan,
     _desired_native_outputs,
     automatic_total_candidates,
+    enabled_automatic_totals,
     native_total_sources,
     plan_total_graph,
     planned_sensor_ids,
@@ -300,8 +301,11 @@ def build_meter_configuration_mutation(
     aggregates_changed = requested.aggregates != previous.aggregates
     totals_changed = (
         aggregates_changed or requested.default_totals != previous.default_totals
-        or requested.automatic_totals != previous.automatic_totals
-        or automatic_total_candidates(requested) != automatic_total_candidates(previous)
+        or enabled_automatic_totals(requested) != enabled_automatic_totals(previous)
+        or (current.capabilities.managed_automatic_totals and (
+            requested.automatic_totals != previous.automatic_totals
+            or automatic_total_candidates(requested) != automatic_total_candidates(previous)
+        ))
         or requested.totals_change_intent.adopt_managed_totals
     )
     managed_totals_upgrade_required = (

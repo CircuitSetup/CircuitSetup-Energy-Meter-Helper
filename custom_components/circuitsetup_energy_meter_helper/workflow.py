@@ -63,7 +63,7 @@ from .meter_config_mutator import (
     build_meter_configuration_mutation,
     expected_meter_entity_evidence,
 )
-from .meter_configuration import MeterConfigurationRequest
+from .meter_configuration import AutomaticTotalSettings, MeterConfigurationRequest
 from .meter_inventory import (
     MeterConfigurationInventory,
     _source_aware_automatic_candidates,
@@ -103,6 +103,7 @@ from .topology import (
     verified_voltage_reference_fingerprint,
 )
 from .total_graph import (
+    AutomaticTotalCandidate,
     automatic_total_candidates,
     native_total_sources,
     plan_total_graph,
@@ -119,6 +120,69 @@ ESPHOME_DEVICE_BUILDER_SLUG = "5c53de3b_esphome"
 _INGRESS_ENTRY_PREFIX = "/api/hassio_ingress/"
 _INGRESS_SESSION_COOKIE = "ingress_session"
 _SUPERVISOR_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,256}\Z", re.ASCII)
+
+
+def _existing_circuit_suggestions(
+    configuration: MeterConfigurationRequest,
+    existing: frozenset[frozenset[int]],
+    previous: tuple[AutomaticTotalSettings, ...] = (),
+) -> tuple[MeterConfigurationRequest, tuple[AutomaticTotalCandidate, ...]]:
+    """Hide duplicate suggestions and disable their implicit graph defaults."""
+    candidates = automatic_total_candidates(configuration)
+    enabled = {item.candidate_id for item in configuration.automatic_totals if item.enabled}
+    hidden = tuple(item for item in candidates
+        if frozenset(source.channel for source in item.sources) in existing
+        and item.candidate_id not in enabled)
+    hidden_ids = {item.candidate_id for item in hidden}
+    configured = {item.candidate_id for item in configuration.automatic_totals}
+    saved_outputs = {item.candidate_id: item.outputs for item in previous}
+    return replace(configuration, automatic_totals=(*configuration.automatic_totals, *(
+        AutomaticTotalSettings(item.candidate_id, False, saved_outputs.get(item.candidate_id, item.recommended_outputs))
+        for item in hidden if item.candidate_id not in configured
+    ))), tuple(item for item in candidates if item.candidate_id not in hidden_ids)
+
+
+def _analyzer_circuit_channels(
+    hass: HomeAssistant, device_id: str, inventory: MeterConfigurationInventory,
+) -> frozenset[frozenset[int]]:
+    """Match Analyzer sources to native ESPHome CT entities, never HA display names."""
+    entries = hass.config_entries.async_entries("circuitsetup_energy_analyzer")
+    if not entries:
+        return frozenset()
+    names = {
+        f"{ct.name} {suffix}": ct.channel
+        for ct in inventory.ct_inventory.channels
+        for suffix in ("Watts", "Amps", "VA", "VAR", "Power Factor", "Phase Angle", "Peak A")
+    }
+    registry = er.async_get(hass)
+    channels = {
+        entity.entity_id: names[entity.original_name]
+        for entity in er.async_entries_for_config_entry(registry, device_id)
+        if entity.platform == "esphome" and entity.original_name in names
+    }
+    existing = set()
+    for entry in entries:
+        circuits = entry.options.get("circuits", entry.data.get("circuits", ()))
+        groups = [entry.options.get("mains_source_entities", entry.data.get("mains_source_entities", ()))]
+        if isinstance(circuits, (list, tuple)):
+            groups.extend(
+                [sensor.get("entity_id") for sensor in circuit.get("sensors", ())
+                 if isinstance(sensor, Mapping) and sensor.get("role") not in ("voltage", "frequency")]
+                for circuit in circuits if isinstance(circuit, Mapping)
+                and isinstance(circuit.get("sensors", ()), (list, tuple))
+            )
+        for sources in groups:
+            if isinstance(sources, (list, tuple)):
+                sources = [source for source in sources if not (
+                    isinstance(source, str) and source not in channels
+                    and (entity := registry.async_get(source)) is not None
+                    and entity.original_device_class in ("voltage", "frequency")
+                )]
+            if isinstance(sources, (list, tuple)) and sources and all(
+                isinstance(source, str) and source in channels for source in sources
+            ):
+                existing.add(frozenset(channels[source] for source in sources))
+    return frozenset(existing)
 
 
 def _public_sample_window(window: SensorSampleWindow) -> dict[str, Any]:
@@ -159,10 +223,12 @@ class _PlanHandle:
     inventory: MeterConfigurationInventory
     expires_at: float
     issued_total_candidate_ids: set[str] = field(default_factory=set)
+    existing_circuit_channels: frozenset[frozenset[int]] = frozenset()
 
     def scrub(self) -> None:
         self.snapshot = ESPHomeConfigSnapshot("expired.yaml", "", "0" * 64)
         self.issued_total_candidate_ids.clear()
+        self.existing_circuit_channels = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -520,6 +586,10 @@ class EntryWorkflow:
             ),
             stored_semantics_stale=stored_read.stale,
         )
+        existing = _analyzer_circuit_channels(self._hass, device_id, inventory)
+        configuration, candidates = _existing_circuit_suggestions(inventory.configuration, existing)
+        inventory = replace(inventory, configuration=configuration, automatic_candidates=candidates,
+            automatic_totals=resolve_automatic_totals(candidates, configuration.automatic_totals))
         self._discard_device_plans(mac)
         while len(self._plans) >= MAX_PLAN_HANDLES:
             oldest = next(iter(self._plans))
@@ -533,13 +603,17 @@ class EntryWorkflow:
             snapshot,
             inventory,
             self._deadline(),
+            existing_circuit_channels=existing,
         )
         self._prune_plans()
         return {
             "plan_id": plan_id,
             "source_sha256": snapshot.sha256,
             "topology": inventory.topology,
-            "configuration": inventory.configuration,
+            "configuration": replace(inventory.configuration, automatic_totals=tuple(
+                item for item in inventory.configuration.automatic_totals
+                if item.candidate_id in {candidate.candidate_id for candidate in candidates}
+            )),
             "capabilities": inventory.capabilities,
             "totals": {
                 "native_sources": native_total_sources(topology),
@@ -696,6 +770,9 @@ class EntryWorkflow:
         """Validate a draft without source rendering, transactions, or saved choices."""
         plan = self._plan(plan_id, device_id, source_sha256)
         document = ESPHomeConfigDocument.parse(plan.snapshot.content)
+        requested, visible = _existing_circuit_suggestions(
+            requested, plan.existing_circuit_channels, plan.inventory.configuration.automatic_totals,
+        )
         candidates = _source_aware_automatic_candidates(requested, document)
         stale = stale_automatic_total_settings(candidates, requested.automatic_totals)
         known = plan.issued_total_candidate_ids | {
@@ -720,6 +797,7 @@ class EntryWorkflow:
             native_visibility_resolved=plan.inventory.native_visibility_resolved)
         # IDs are bounded by four roles times all distinct topology CT pairs.
         plan.issued_total_candidate_ids.update(candidate.candidate_id for candidate in candidates)
+        candidates = tuple(item for item in candidates if item in visible)
         return {
             "plan_id": plan_id, "source_sha256": source_sha256,
             "automatic_candidates": candidates,
@@ -752,6 +830,9 @@ class EntryWorkflow:
     async def _async_preview_meter_configuration(
         self, plan: _PlanHandle, requested: MeterConfigurationRequest
     ) -> Any:
+        requested, _ = _existing_circuit_suggestions(
+            requested, plan.existing_circuit_channels, plan.inventory.configuration.automatic_totals,
+        )
         plan.inventory.validate_totals_change(requested)
         manager = self.transactions
         if manager is None:
