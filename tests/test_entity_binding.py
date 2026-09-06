@@ -817,7 +817,8 @@ def _label_workflow(monkeypatch: pytest.MonkeyPatch) -> tuple[EntryWorkflow, _La
     hass = SimpleNamespace(
         data={},
         config=SimpleNamespace(config_dir="."),
-        config_entries=SimpleNamespace(async_get_entry=lambda entry_id: entry if entry_id == "meter" else None),
+        config_entries=SimpleNamespace(async_get_entry=lambda entry_id: entry if entry_id == "meter" else None,
+            async_entries=lambda _domain: []),
         async_add_executor_job=executor_job,
     )
     monkeypatch.setattr("custom_components.circuitsetup_energy_meter_helper.workflow.er.async_get", lambda _hass: registry)
