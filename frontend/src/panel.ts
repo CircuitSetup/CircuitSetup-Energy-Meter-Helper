@@ -535,7 +535,7 @@ export class CircuitSetupPanel extends LitElement {
     }) };
     this.drafts = new Map(this.inventory.channels.map((channel) => {
       const settings = configured.get(channel.channel);
-      const modelId = channel.selected_model_id ?? "";
+      const modelId = channel.selected_model_id ?? settings?.model_id ?? "";
       const preset = inventory.catalog.presets.find((item) => item.model_id === modelId);
       return [channel.channel, {
         name: channel.name,
@@ -543,7 +543,7 @@ export class CircuitSetupPanel extends LitElement {
         multiplier: channel.reporting_multiplier,
         customGainCt: modelId === "custom"
           ? settings?.custom_gain_ct ?? channel.raw_gain_ct * channel.reporting_multiplier : undefined,
-        customLabel: channel.display_label ?? undefined,
+        customLabel: channel.display_label ?? settings?.custom_label ?? undefined,
         burdenAcknowledged: settings?.burden_output_acknowledged
           ?? (channel.selection_verified_against_config
             && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
@@ -1469,6 +1469,10 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.inventory || !this.selectedDeviceId || !this.meterConfiguration) return;
     if (this.totalsIntentNeedsResolution()) { this.explainTotalsModeConflict(); return; }
     const configuration = this.meterConfiguration.configuration;
+    const missingModel = configuration.channels.find((channel) => !channel.model_id.trim()
+      || this.drafts.has(channel.channel) && !this.drafts.get(channel.channel)!.preserveExistingGain
+        && !this.drafts.get(channel.channel)!.modelId.trim());
+    if (missingModel) return this.fail(new Error(), `Choose a CT model for CT${missingModel.channel} before review, or keep its existing gain.`);
     if (!circuitConfigurationIsValid(configuration, this.inventory.channels.length)) return this.fail(new Error(), "Complete the circuit and aggregate assignments before review.");
     this.pendingAction = "session";
     this.transactionPurpose = "install_configuration";

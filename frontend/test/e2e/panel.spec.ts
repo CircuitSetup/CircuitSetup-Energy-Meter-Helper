@@ -1631,6 +1631,36 @@ test("journey 3: runtime-only full calibration keeps verified offsets in flash",
   expect(operations(frames)).not.toContain("preview_calibrated_gains");
 });
 
+test("24-channel source review preserves untouched CTs while editing two circuits", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { guidedMode: "legacy", addons: 3 });
+  await openGuidedMeter(page);
+  await expect(page.getByText("Ready for setup", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Review and manage with helper" }).click();
+  await page.getByLabel("Confirm electrical profile").check();
+  await page.locator('[data-section="advanced-voltage-options"] summary').click();
+  await page.getByLabel("Multi-reference preparation acknowledgement").check();
+  await page.locator('[data-action="continue-meter-settings"]').click();
+  await page.getByLabel("CT4 keep existing gain", { exact: true }).uncheck();
+  await expect(page.getByLabel("CT4 model", { exact: true })).toHaveValue("custom");
+  await expect(page.getByLabel("CT4 custom gain", { exact: true })).toHaveValue("27518");
+  await page.getByLabel("CT4 model", { exact: true }).selectOption("cs-ct-200a");
+  await page.getByLabel("CT4 role", { exact: true }).selectOption("grid");
+  await page.getByLabel("CT3 model", { exact: true }).selectOption("sct-016");
+  await page.getByLabel("CT3 burden output acknowledgement", { exact: true }).check();
+  await page.getByLabel("CT3 role", { exact: true }).selectOption("grid");
+  await page.getByLabel("I reviewed used/unused channels and circuit roles").check();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Install Configuration", exact: true })).toBeVisible();
+  const submitted = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!.configuration as MeterConfigurationRequest;
+  expect(submitted.channels).toHaveLength(24);
+  expect(submitted.channels[2]).toMatchObject({ model_id: "sct-016", reporting_multiplier: 2, role: "grid" });
+  expect(submitted.channels[3]).toMatchObject({ model_id: "cs-ct-200a", reporting_multiplier: 1, role: "grid" });
+  for (const channel of submitted.channels.filter((item) => ![3, 4].includes(item.channel))) {
+    expect(channel).toMatchObject({ name: `CT${channel.channel}`, model_id: "cs-ct-200a", reporting_multiplier: 1,
+      role: "branch", custom_gain_ct: null, custom_label: null });
+  }
+});
+
 test("journey 4: legacy manage requires review before migration preview", async ({ page }) => {
   const frames = await mockHomeAssistant(page, { guidedMode: "legacy" });
   await openGuidedMeter(page);

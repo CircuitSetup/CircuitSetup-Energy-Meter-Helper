@@ -2500,7 +2500,7 @@ const channelSources = (aggregate) => aggregate.sources.flatMap((source) => sour
 function circuitConfigurationIsValid(configuration, ctCount) {
   const references = new Set(configuration.meter.voltage_references.map((reference) => reference.reference_id));
   const referenceByGroup = new Map(configuration.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference.reference_id])));
-  if (configuration.channels.length !== ctCount || new Set(configuration.channels.map((channel) => channel.channel)).size !== ctCount || configuration.channels.some((channel) => channel.channel < 1 || channel.channel > ctCount || !channel.name.trim() || !references.has(channel.voltage_reference_id) || channel.enabled === (channel.role === "unused") || referenceByGroup.get(`${channel.channel <= 6 ? "main" : `addon${Math.floor((channel.channel - 1) / 6)}`}_${Math.floor((channel.channel - 1) % 6 / 3) + 1}`) !== channel.voltage_reference_id)) return false;
+  if (configuration.channels.length !== ctCount || new Set(configuration.channels.map((channel) => channel.channel)).size !== ctCount || configuration.channels.some((channel) => channel.channel < 1 || channel.channel > ctCount || !channel.name.trim() || !channel.model_id.trim() || !references.has(channel.voltage_reference_id) || channel.enabled === (channel.role === "unused") || referenceByGroup.get(`${channel.channel <= 6 ? "main" : `addon${Math.floor((channel.channel - 1) / 6)}`}_${Math.floor((channel.channel - 1) % 6 / 3) + 1}`) !== channel.voltage_reference_id)) return false;
   const ids = /* @__PURE__ */ new Set();
   try {
     for (const aggregate of configuration.aggregates) {
@@ -3118,15 +3118,16 @@ function espWebInstaller(option) {
   }
 }
 const warningCopy = {
-  electrical_profile_requires_confirmation: "The electrical profile was inferred and must be reviewed before migration.",
-  legacy_generic_totals_unmanaged: "Existing generic totals will be preserved unless the reviewed migration explicitly replaces them.",
+  electrical_profile_requires_confirmation: "The electrical profile was inferred. Confirm it before applying changes.",
+  legacy_generic_totals_unmanaged: "Existing generic totals will be preserved unless you explicitly choose to replace them.",
   stored_semantics_stale: "The ESPHome source changed after the last helper save, so the live source was read again.",
-  config_contract_upgrade_required: "This configuration uses an older helper contract and requires reviewed migration."
+  config_contract_upgrade_required: "This configuration needs a helper contract update for additional editing capabilities. Review any proposed update before applying it."
 };
 function existingConfigurationStep(configuration, metadata, onManage, onCalibrateOnly, onBack) {
   if (!configuration.capabilities.configuration_authoritative || configuration.capabilities.semantic_source !== "legacy_inferred") return b``;
   const warnings = [.../* @__PURE__ */ new Set([...configuration.warnings, ...configuration.capabilities.reason_codes])];
   return b`<section class="existing-configuration" aria-label="Review Existing Setup">
+    <p class="info-band"><strong>${warnings.includes("stored_semantics_stale") ? "Configuration changed externally" : "Ready for setup"}</strong></p>
     <p>This meter already has an ESPHome configuration. Choose whether to manage its configuration with this helper or leave it unchanged.</p>
     <dl class="status-list">
       <div><dt>ESPHome configuration</dt><dd>${metadata.configurationFilename}</dd></div>
@@ -3136,13 +3137,13 @@ function existingConfigurationStep(configuration, metadata, onManage, onCalibrat
     <dl class="status-list">
       <div><dt>Read directly</dt><dd>Names, substitutions, current gains, line frequency, reporting interval, package state, and physical topology.</dd></div>
       <div><dt>Inferred or not recorded</dt><dd>Electrical profile, transformer and CT identity, used channels, circuit roles, and aggregate intent.</dd></div>
-      <div><dt>Preserved if you do not migrate</dt><dd>The existing ESPHome configuration and unowned YAML remain unchanged.</dd></div>
+      <div><dt>Existing settings</dt><dd>Current gains, reporting multipliers, totals, and unowned YAML are preserved unless your reviewed changes explicitly replace them.</dd></div>
     </dl>
     <dl class="status-list">
-      <div><dt>What migration changes</dt><dd>The reviewed meter profile, circuit settings, helper-owned totals, and package options become helper-managed.</dd></div>
-      <div><dt>What migration preserves</dt><dd>Unowned YAML and unmanaged totals remain intact unless the reviewed migration explicitly replaces them.</dd></div>
+      <div><dt>What setup records</dt><dd>The reviewed meter profile, circuit settings, helper-owned totals, and package options become helper-managed.</dd></div>
+      <div><dt>What to confirm</dt><dd>Confirm settings the source cannot establish, such as CT identity and circuit purpose. Existing CT gains can be kept without choosing a replacement model.</dd></div>
     </dl>
-    ${warnings.length ? b`<div class="warning-band" role="note"><strong>Review notes</strong><ul>${warnings.map((warning) => b`<li>${warningCopy[warning] ?? "Some legacy settings could not be identified and must be reviewed."}</li>`)}</ul><details><summary>Technical details</summary><code>${warnings.join(", ")}</code></details></div>` : A}
+    ${warnings.length ? b`<div class="warning-band" role="note"><strong>Review notes</strong><ul>${warnings.map((warning) => b`<li>${warningCopy[warning] ?? "Some settings could not be identified from the source and need review."}</li>`)}</ul><details><summary>Technical details</summary><code>${warnings.join(", ")}</code></details></div>` : A}
     <div class="action-footer"><button class="secondary" @click=${onBack}>Back</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="primary" @click=${onManage}>Review and manage with helper</button></div>
   </section>`;
 }
@@ -4418,14 +4419,14 @@ class CircuitSetupPanel extends i$2 {
     }) };
     this.drafts = new Map(this.inventory.channels.map((channel) => {
       const settings = configured.get(channel.channel);
-      const modelId = channel.selected_model_id ?? "";
+      const modelId = channel.selected_model_id ?? settings?.model_id ?? "";
       const preset = inventory.catalog.presets.find((item) => item.model_id === modelId);
       return [channel.channel, {
         name: channel.name,
         modelId,
         multiplier: channel.reporting_multiplier,
         customGainCt: modelId === "custom" ? settings?.custom_gain_ct ?? channel.raw_gain_ct * channel.reporting_multiplier : void 0,
-        customLabel: channel.display_label ?? void 0,
+        customLabel: channel.display_label ?? settings?.custom_label ?? void 0,
         burdenAcknowledged: settings?.burden_output_acknowledged ?? (channel.selection_verified_against_config && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
         expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518,
         preserveExistingGain: this.configurationMode === "legacy_editable" && !channel.selection_verified_against_config && channel.raw_gain_ct > 0,
@@ -5358,6 +5359,8 @@ class CircuitSetupPanel extends i$2 {
       return;
     }
     const configuration = this.meterConfiguration.configuration;
+    const missingModel = configuration.channels.find((channel) => !channel.model_id.trim() || this.drafts.has(channel.channel) && !this.drafts.get(channel.channel).preserveExistingGain && !this.drafts.get(channel.channel).modelId.trim());
+    if (missingModel) return this.fail(new Error(), `Choose a CT model for CT${missingModel.channel} before review, or keep its existing gain.`);
     if (!circuitConfigurationIsValid(configuration, this.inventory.channels.length)) return this.fail(new Error(), "Complete the circuit and aggregate assignments before review.");
     this.pendingAction = "session";
     this.transactionPurpose = "install_configuration";
