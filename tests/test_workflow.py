@@ -257,6 +257,58 @@ def test_unrelated_save_reload_keeps_totals_unowned_and_native_unresolved() -> N
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("edit", ("model", "role"))
+def test_ct_review_preserves_unmanaged_totals_after_suggestions_refresh(edit: str) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionState,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AutomaticTotalSettings,
+        CircuitRole,
+    )
+    from tests.test_config_mutator import _contract_snapshot_for, _topology_for_addons
+
+    async def run() -> None:
+        topology = _topology_for_addons(3)
+        source_total = (
+            "  - platform: template\n    id: totalWatts\n    name: House Total Watts\n"
+            "    lambda: return id(ct1Watts).state + id(ct2Watts).state;\n"
+        )
+        content = _contract_snapshot_for(topology).content.replace(
+            "ct17_name: CT 17", "ct17_name: Dryer L1"
+        ).replace("ct18_name: CT 18", "ct18_name: Dryer L2").replace(
+            "logger:\n", source_total + "logger:\n"
+        )
+        workflow, plan, _, builder, _ = await _persisted_totals_workflow(content, topology=topology)
+        original = plan.inventory.configuration
+        assert not plan.inventory.capabilities.managed_automatic_totals
+        changed = replace(original.channels[0], **(
+            {"model_id": "sct_024_200a_100ma", "reporting_multiplier": 4,
+             "custom_gain_ct": None, "custom_label": None}
+            if edit == "model" else {"role": CircuitRole.GRID}
+        ))
+        requested = replace(original, channels=(changed, *original.channels[1:]))
+        preview = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, requested)
+        reviewed = replace(requested, automatic_totals=tuple(
+            AutomaticTotalSettings(item.candidate.candidate_id, item.enabled, item.outputs)
+            for item in preview["automatic_totals"]
+        ))
+        assert reviewed.automatic_totals != original.automatic_totals
+        assert not any(item.enabled for item in reviewed.automatic_totals)
+        with pytest.raises(ValueError, match="explicit adoption"):
+            plan.inventory.validate_totals_change(replace(reviewed, automatic_totals=(
+                replace(reviewed.automatic_totals[0], enabled=True),
+            )))
+        status = await workflow._async_preview_meter_configuration(plan, reviewed)
+        assert status.state is ConfigTransactionState.PREVIEWED
+        status = await workflow.transactions.async_confirm_write(status.transaction_id, "admin")
+        assert status.state is ConfigTransactionState.VALIDATED
+        assert source_total in builder.remote_content
+        assert "# CircuitSetup Energy Meter Helper: aggregates" not in builder.remote_content
+
+    asyncio.run(run())
+
+
 def test_partial_unowned_native_visibility_survives_initial_preview_and_unrelated_write() -> (
     None
 ):

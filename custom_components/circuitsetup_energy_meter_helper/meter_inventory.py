@@ -56,6 +56,7 @@ from .total_graph import (
     ResolvedAutomaticTotal,
     automatic_total_candidates,
     default_total_settings,
+    enabled_automatic_totals,
     native_total_sources,
     plan_total_graph,
     resolve_automatic_totals,
@@ -198,8 +199,7 @@ class MeterConfigurationInventory:
         original = self.configuration
         changes = (
             (requested.default_totals != original.default_totals, self.capabilities.native_totals_writable),
-            (requested.automatic_totals != original.automatic_totals
-             or automatic_total_candidates(requested) != automatic_total_candidates(original), self.capabilities.managed_automatic_totals),
+            (enabled_automatic_totals(requested) != enabled_automatic_totals(original), self.capabilities.managed_automatic_totals),
             (requested.aggregates != original.aggregates or bool(intent.legacy_parent_decisions), self.capabilities.managed_advanced_totals),
         )
         if not preview_only and not intent.adopt_managed_totals and any(changed and not allowed for changed, allowed in changes):
