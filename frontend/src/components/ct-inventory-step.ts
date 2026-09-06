@@ -202,7 +202,7 @@ export function circuitConfigurationIsValid(configuration: MeterConfigurationReq
   const references = new Set(configuration.meter.voltage_references.map((reference) => reference.reference_id));
   const referenceByGroup = new Map(configuration.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference.reference_id] as const)));
   if (configuration.channels.length !== ctCount || new Set(configuration.channels.map((channel) => channel.channel)).size !== ctCount
-    || configuration.channels.some((channel) => channel.channel < 1 || channel.channel > ctCount || !channel.name.trim()
+    || configuration.channels.some((channel) => channel.channel < 1 || channel.channel > ctCount || !channel.name.trim() || !channel.model_id.trim()
       || !references.has(channel.voltage_reference_id) || channel.enabled === (channel.role === "unused")
       || referenceByGroup.get(`${channel.channel <= 6 ? "main" : `addon${Math.floor((channel.channel - 1) / 6)}`}_${Math.floor(((channel.channel - 1) % 6) / 3) + 1}`) !== channel.voltage_reference_id)) return false;
   const ids = new Set<string>();

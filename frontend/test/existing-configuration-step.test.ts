@@ -31,12 +31,13 @@ describe("existing configuration step", () => {
     expect(root.textContent).toContain("6 CT inputs");
     expect(root.textContent).toContain("Read directly");
     expect(root.textContent).toContain("Inferred or not recorded");
-    expect(root.textContent).toContain("Preserved if you do not migrate");
-    expect(root.textContent).toContain("What migration changes");
+    expect(root.textContent).toContain("Configuration changed externally");
+    expect(root.textContent).toContain("Existing settings");
+    expect(root.textContent).toContain("What setup records");
     expect(root.textContent).toContain("unowned YAML");
     expect(root.textContent).toContain("electrical profile was inferred");
     expect(root.textContent).toContain("Existing generic totals will be preserved");
-    expect(root.textContent).toContain("older helper contract");
+    expect(root.textContent).toContain("helper contract update");
     expect([...root.querySelectorAll(".warning-band li")].map((item) => item.textContent).join(" ")).not.toContain("stored_semantics_stale");
     expect(root.querySelector("details")?.textContent).toContain("stored_semantics_stale");
     expect(root.querySelector(".existing-configuration")?.getAttribute("aria-label")).toBe("Review Existing Setup");
@@ -58,5 +59,14 @@ describe("existing configuration step", () => {
       configurationFilename: "meter.yaml", projectName: "project", projectVersion: "1", boardCount: 1, ctCount: 6,
     }, vi.fn(), vi.fn(), vi.fn()), host);
     expect(host.textContent).toBe("");
+  });
+
+  it("offers first setup without claiming that the configuration changed externally", () => {
+    const host = document.createElement("div");
+    render(existingConfigurationStep({ ...configuration, warnings: [] }, {
+      configurationFilename: "meter.yaml", projectName: "project", projectVersion: "1", boardCount: 1, ctCount: 6,
+    }, vi.fn(), vi.fn(), vi.fn()), host);
+    expect(host.textContent).toContain("Ready for setup");
+    expect(host.textContent).not.toContain("Configuration changed externally");
   });
 });

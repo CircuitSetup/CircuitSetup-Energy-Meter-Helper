@@ -2121,6 +2121,53 @@ describe("CircuitSetup panel", () => {
     expect(operations.some((operation) => operation.startsWith("preview_") || operation === "set_ha_labels" || operation === "start_session")).toBe(false);
   });
 
+  it("preserves inferred CT settings when enabling model editing after a source change", async () => {
+    const meter = structuredClone(legacyEditableScenario.meterConfiguration!);
+    meter.warnings = ["stored_semantics_stale"];
+    for (const index of [0, 1]) {
+      Object.assign(meter.channels[index]!, { selected_model_id: null, selection_verified_against_config: false,
+        raw_gain_ct: 20894, reporting_multiplier: 2, display_label: null });
+      Object.assign(meter.configuration.channels[index]!, { model_id: "custom", custom_gain_ct: 20894,
+        custom_label: `CT${index + 1}`, reporting_multiplier: 2, role: "grid" });
+    }
+    const original = structuredClone(meter.configuration);
+    const panel = await mount(makeHass({ setup_status: legacyEditableScenario.setup }));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(value: typeof meter): void;
+      updateDraft(channel: number, patch: Partial<CtDraft>): void;
+      meterConfiguration: typeof meter;
+      drafts: Map<number, CtDraft>;
+    };
+    state.selectedDeviceId = "meter-1";
+    state.setMeterConfiguration(meter);
+    state.existingConfigurationChoice = "manage_with_helper";
+    panel.showInventory(meter);
+    state.updateDraft(1, { preserveExistingGain: false });
+    expect(state.drafts.get(1)).toMatchObject({ modelId: "custom", customGainCt: 20894, customLabel: "CT1", multiplier: 2 });
+    expect(state.meterConfiguration.configuration).toEqual(original);
+    state.updateDraft(1, { modelId: "model", customGainCt: undefined });
+    state.updateDraft(2, { preserveExistingGain: false });
+    expect(state.meterConfiguration.configuration.channels[0]?.model_id).toBe("model");
+    expect(state.meterConfiguration.configuration.channels.slice(1)).toEqual(original.channels.slice(1));
+    expect(state.meterConfiguration.configuration.default_totals).toEqual(original.default_totals);
+  });
+
+  it("identifies blank CT models before submitting a configuration review", async () => {
+    const meter = meterResponse();
+    meter.configuration.channels[1]!.model_id = "";
+    const panel = await mount(makeHass({}));
+    const state = panel as unknown as Record<string, unknown> & {
+      setMeterConfiguration(value: typeof meter): void;
+      previewCanonicalConfiguration(): Promise<void>;
+    };
+    state.selectedDeviceId = "meter-1";
+    state.setMeterConfiguration(meter);
+    panel.showInventory(meter);
+    await state.previewCanonicalConfiguration();
+    expect(state.error).toBe("Choose a CT model for CT2 before review, or keep its existing gain.");
+    expect(circuitConfigurationIsValid(meter.configuration, 6)).toBe(false);
+  });
+
   it("routes legacy inventory through review before exposing editable settings", async () => {
     const legacy = structuredClone(legacyEditableScenario.meterConfiguration!);
     const panel = await mount(makeHass({
