@@ -546,6 +546,7 @@ for (const name of ["main-only", "one-addon"] as const) test(`totals defaults an
   for (const output of ["Watts", "Amps", "kWh"]) await expect(page.getByRole("switch", { name: `Overall meter total ${output}`, exact: true })).toBeChecked();
   if (name === "one-addon") for (const board of ["Main Board", "Add-on 1"]) for (const output of ["Watts", "Amps", "kWh"])
     await expect(page.getByRole("switch", { name: `${board} total ${output}`, exact: true })).not.toBeChecked();
+  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("switch", { name: "Overall meter total Watts", exact: true }).press("Space");
   await expect(page.getByRole("switch", { name: "Overall meter total Watts", exact: true })).not.toBeChecked();
   await expect(page.getByRole("switch", { name: "Overall meter total kWh", exact: true })).toBeChecked();
@@ -581,6 +582,7 @@ test("verified Summary shows public outputs, hidden dependencies, formulas, cove
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await openInventory(page, fixture.url);
+  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("switch", { name: "Overall meter total Amps", exact: true }).uncheck();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Save and validate configuration" }).click();
@@ -769,7 +771,7 @@ test("adopted board totals remain editable beside a custom overall with hidden k
   }
   await page.locator("#advanced-totals-heading").press("Enter");
   const existingEnergy = page.getByRole("checkbox", { name: "House Total kWh", exact: true });
-  await expect(existingEnergy).not.toBeChecked();
+  await expect(existingEnergy).toBeChecked();
   await expect(existingEnergy).toBeEnabled();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Save and validate configuration" }).click();
@@ -777,7 +779,21 @@ test("adopted board totals remain editable beside a custom overall with hidden k
   await page.getByRole("button", { name: "Install on meter", exact: true }).click();
   await expect.poll(async () => (await fixture.state()).stored.configuration.default_totals.boards[0].outputs).toEqual({ watts: true, amps: true, kwh: true });
   await openInventory(page, fixture.url);
-  for (const output of ["Watts", "Amps", "kWh"]) await expect(page.getByRole("switch", { name: `Main Board total ${output}`, exact: true })).toBeChecked();
+  for (const output of ["Watts", "Amps", "kWh"]) {
+    const control = page.getByRole("switch", { name: `Main Board total ${output}`, exact: true });
+    await expect(control).toBeChecked();
+    const dismissed = page.waitForEvent("dialog");
+    const cancelClick = control.click();
+    const warning = await dismissed;
+    expect(warning.message()).toContain(`Main Board total ${output}`);
+    expect(warning.message()).toContain("Home Assistant");
+    await warning.dismiss(); await cancelClick;
+    await expect(control).toBeChecked();
+    const accepted = page.waitForEvent("dialog");
+    const confirmClick = control.click();
+    await (await accepted).accept(); await confirmClick;
+    await expect(control).not.toBeChecked();
+  }
 });
 
 test("non-helper opening performs no write and explicit adoption is a metadata-only transaction", async ({ page }) => {
@@ -799,6 +815,7 @@ test("adoption exact review identifies source-aware native overrides before any 
   const fixture = await totalsFixture(page, "non-helper");
   await openInventory(page, fixture.url);
   await page.getByRole("button", { name: "Adopt managed totals", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("switch", { name: "Overall meter total Watts", exact: true }).uncheck();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByText("Exact source-aware additions and helper blocks (server transaction diff)", { exact: true }).click();

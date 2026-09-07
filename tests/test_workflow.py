@@ -849,7 +849,7 @@ def test_calibration_replay_preserves_pending_links_stale_off_and_hidden_native(
         )
         retained = manager._transaction(status.transaction_id).meter_configuration
         assert retained.default_totals.overall == TotalOutputSettings(
-            False, False, False
+            False, False, True
         )
         assert retained.automatic_totals == (off,)
         assert retained.totals_migration == pending
@@ -866,7 +866,7 @@ def test_calibration_replay_preserves_pending_links_stale_off_and_hidden_native(
         assert loaded.totals_migration == replace(
             pending, native_visibility_confirmation_required=False
         )
-        assert loaded.default_totals.overall == TotalOutputSettings(False, False, False)
+        assert loaded.default_totals.overall == TotalOutputSettings(False, False, True)
         assert "internal: true" in builder.remote_content
 
     asyncio.run(run())

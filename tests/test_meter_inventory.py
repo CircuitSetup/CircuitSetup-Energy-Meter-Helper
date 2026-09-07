@@ -537,7 +537,7 @@ def test_v14_matching_source_preserves_renderer_native_visibility(
     assert inventory.configuration.default_totals.overall == TotalOutputSettings(
         not addon_count and renderer == "b346",
         not addon_count and renderer == "b346",
-        False,
+        True,
     )
     assert all(
         board.outputs == TotalOutputSettings(False, False, False)
@@ -912,12 +912,12 @@ def test_existing_total_energy_capability_is_independent_of_visibility(sensor_id
     )
     total = next(item for item in _inventory(content).configuration.aggregates if item.aggregate_id == "total-house")
     assert total.energy_mode is EnergyMode.CONSUMPTION
-    assert total.outputs.kwh is (internal == "false")
+    assert total.outputs.kwh
     if sensor_id:
         content += f"  - id: !extend {sensor_id}\n    internal: {'false' if internal == 'true' else 'true'}\n"
         total = next(item for item in _inventory(content).configuration.aggregates if item.aggregate_id == "total-house")
         assert total.energy_mode is EnergyMode.CONSUMPTION
-        assert total.outputs.kwh is (internal == "true")
+        assert total.outputs.kwh
 
 
 def test_custom_template_totals_preserve_channels_names_and_visibility() -> None:

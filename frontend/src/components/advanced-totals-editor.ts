@@ -1,4 +1,5 @@
 import { html, nothing, type TemplateResult } from "lit";
+import { confirmTotalOutputRemoval } from "./total-output-removal";
 import { derivedParentId, reparentAggregate, sourceFormula, sourceLeaves } from "../total-graph";
 import type { CircuitAggregate, MeterConfigurationRequest, TotalGraphPreview, TotalOutputSettings, TotalSource, TotalsInventory } from "../types";
 import type { CtDraft } from "./ct-inventory-step";
@@ -22,6 +23,7 @@ export function advancedTotalsEditor(
   update: (configuration: MeterConfigurationRequest) => void, writable: boolean,
   reason: string, totals: TotalsInventory | null, preview: TotalGraphPreview | null = null, fresh = true,
   automaticSourcesFresh = fresh,
+  existingConfiguration: MeterConfigurationRequest | null = null,
 ): TemplateResult {
   const hasSolar = configuration.channels.some((channel) => channel.enabled && channel.role === "solar");
   // Catalog entries remain server-owned; settings only determine which issued children are enabled.
@@ -90,6 +92,7 @@ export function advancedTotalsEditor(
     }] });
   };
   return html`<section aria-labelledby="advanced-totals-heading"><details class="advanced-totals"><summary id="advanced-totals-heading">Advanced totals</summary>
+    <p>Watts and Amps control Home Assistant visibility. kWh is checked when an energy sensor exists, including a hidden sensor; turning it off removes that sensor.</p>
     ${!writable ? html`<p class="info-band" role="status">Aggregate editing unavailable: ${reason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : nothing}
     ${!fresh ? html`<p class="info-band" role="status">Total graph unavailable or updating. You can still edit or remove draft sources; complete the graph before continuing.</p>` : nothing}
     ${fresh && catalog.stale_automatic_total_settings.length ? html`<p class="info-band" role="status">${catalog.stale_automatic_total_settings.length} inactive automatic settings are retained for this plan, not included in the active configuration.</p>` : nothing}
@@ -126,10 +129,12 @@ export function advancedTotalsEditor(
             patch(aggregate, { sources: input.checked ? [...aggregate.sources, source] : aggregate.sources.filter((item) => !sameSource(item, source)) });
           }} /><span>${text}</span></label>`;
       };
+      const published = existingConfiguration?.aggregates.find((item) => item.aggregate_id === aggregate.aggregate_id)?.outputs;
       const output = (key: keyof TotalOutputSettings, text: string) => html`<label class="check-row"><input type="checkbox" aria-label=${`${aggregate.name} ${text}`} .checked=${aggregate.outputs[key]} ?disabled=${!writable || key === "kwh" && aggregate.energy_mode === "none"}
         @change=${(event: Event) => {
           const input = event.target as HTMLInputElement;
           if (!writable || key === "kwh" && aggregate.energy_mode === "none") { input.checked = aggregate.outputs[key]; return; }
+          if (!confirmTotalOutputRemoval(`${aggregate.name} ${text}`, published?.[key], input.checked)) { input.checked = aggregate.outputs[key]; return; }
           patch(aggregate, { outputs: { ...aggregate.outputs, [key]: input.checked } });
         }} />${text}</label>`;
       const existing = [...enabledAutomatic.map((item) => item.candidate), ...configuration.aggregates.filter((item) => item !== aggregate)];
@@ -158,6 +163,7 @@ export function advancedTotalsEditor(
               const input = event.target as HTMLSelectElement;
               if (!writable || !energyModes.includes(input.value as typeof energyModes[number])
                 || input.value === "bidirectional" && !hasSolar && aggregate.energy_mode !== "bidirectional") { input.value = aggregate.energy_mode; return; }
+              if (aggregate.outputs.kwh && !confirmTotalOutputRemoval(`${aggregate.name} kWh`, published?.kwh, input.value !== "none")) { input.value = aggregate.energy_mode; return; }
               patch(aggregate, { energy_mode: input.value as CircuitAggregate["energy_mode"], outputs: { ...aggregate.outputs, kwh: input.value === "none" ? false : aggregate.outputs.kwh } });
             }}>${energyModes.filter((mode) => mode !== "bidirectional" || hasSolar || aggregate.energy_mode === mode).map((mode) => html`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0]!.toUpperCase()}${mode.slice(1)}</option>`)}</select><small>Import/export totals require an enabled Solar CT. kWh uses ESPHome platform: total_daily_energy, integrating this total's Watts rather than adding child kWh.</small></label>
           <label>Feeds into <select aria-label=${`${aggregate.name} Feeds into`} .value=${parent}
@@ -191,7 +197,7 @@ export function advancedTotalsEditor(
             if (!writable) return;
             const parents = configuration.aggregates.filter((item) => item.sources.some((source) => source.kind === "aggregate" && source.aggregate_id === aggregate.aggregate_id));
             const children = aggregate.sources.filter((source) => source.kind === "aggregate").map(label);
-            const message = `Delete ${aggregate.name}?${parents.length ? ` Remove it from ${parents.map((item) => item.name).join(" and ")}.` : ""}${children.length ? ` ${children.join(" and ")} will become independent reports.` : ""}`;
+            const message = `Delete ${aggregate.name}?${parents.length ? ` Remove it from ${parents.map((item) => item.name).join(" and ")}.` : ""}${children.length ? ` ${children.join(" and ")} will become independent reports.` : ""}${published && Object.values(published).some(Boolean) ? " Its existing outputs will be removed after installation and may affect Home Assistant dashboards, automations, or Energy settings." : ""}`;
             if (!window.confirm(message)) return;
             update({ ...configuration, aggregates: configuration.aggregates.filter((item) => item !== aggregate).map((item) => ({ ...item,
               sources: item.sources.filter((source) => source.kind !== "aggregate" || source.aggregate_id !== aggregate.aggregate_id) })) });

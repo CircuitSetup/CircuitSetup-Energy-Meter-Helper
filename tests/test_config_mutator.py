@@ -2529,7 +2529,7 @@ def test_board_energy_own_block_remains_idempotent() -> None:
     ))
     first = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
     body = _native_total_body(requested, topology, first)
-    assert replace_managed_block(first, "aggregates", body) == first
+    assert replace_managed_block(first, "aggregates", "  # csemh-energy-sensors: v1\n" + body) == first
     assert _native_total_body(current.configuration, topology, first) == ""
 
 
@@ -3205,8 +3205,9 @@ def test_native_total_restoring_defaults_removes_managed_block(addon_count: int)
     ))
     first = build_meter_configuration_mutation(snapshot, topology, current, requested)
     suffix = "Main" if addon_count == 0 else ""
-    for total_id in (f"totalWatts{suffix}", f"totalAmps{suffix}", "totalEnergyDaily"):
+    for total_id in (f"totalWatts{suffix}", f"totalAmps{suffix}"):
         assert f"- id: !extend {total_id}\n    internal: true" in first.proposed_content
+    assert "- id: !remove totalEnergyDaily" in first.proposed_content
     stored = StoredMeterConfiguration(
         sha256(first.proposed_content.encode()).hexdigest(),
         requested.meter,

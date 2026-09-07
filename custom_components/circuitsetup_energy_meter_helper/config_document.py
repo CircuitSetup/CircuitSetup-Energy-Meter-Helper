@@ -25,7 +25,7 @@ _SEQUENCE_RE = re.compile(r"^(?P<indent> *)-\s+(?P<rest>.+)$")
 _SAFE_SENSOR_SEQUENCE_RE = re.compile(
     r"^(?P<indent> {0,2})-[ \t]+(?P<key>[A-Za-z0-9_-]+)[ \t]*:(?P<rest>.*)$"
 )
-_SAFE_EXTEND_RE = re.compile(r"^!extend[ \t]+[\w${}-]+(?:[ \t]+#.*)?$")
+_SAFE_EXTEND_RE = re.compile(r"^!(?:extend|remove)[ \t]+[\w${}-]+(?:[ \t]+#.*)?$")
 _YAML_PATH_RE = re.compile(r"(?i)^(.*?\.ya?ml)(?:@.*)?$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _LINE_BREAK_RE = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")

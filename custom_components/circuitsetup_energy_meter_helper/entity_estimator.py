@@ -82,6 +82,7 @@ def summarize_configuration_totals(
         result.append(NativeTotalSummary(native.source_id, "native_total", owner,
             tuple(label for label, _, visible in metrics if visible),
             tuple(label for label, sensor_id, visible in metrics if not visible and sensor_id is not None
+                and (label != "kWh" or configuration.default_totals.overall.kwh)
                 and (native_visibility_resolved or partial.get(sensor_id) is False)),
             tuple(label for label, sensor_id, _ in metrics if not native_visibility_resolved
                 and sensor_id is not None and partial.get(sensor_id) is None),
@@ -90,6 +91,7 @@ def summarize_configuration_totals(
     external_ids = _legacy_replacement_sources(document, topology, configuration.channels)
     external = _source_owned_total_items(selected, topology, document, replacements)
     generated = {node.aggregate.aggregate_id for node in graph.ordered_nodes}
+    bindings = _existing_total_bindings(selected, topology, document, replacements)
     for node in full_graph.ordered_nodes:
         aggregate = node.aggregate
         public: tuple[str, ...]
@@ -103,15 +105,21 @@ def summarize_configuration_totals(
             public += energy if node.energy_required else ()
             internal = power if node.power_required and not aggregate.outputs.watts else ()
             internal += ("Amps",) if node.current_required and not aggregate.outputs.amps else ()
+            suffixes = ("import_energy", "export_energy") if aggregate.energy_mode is EnergyMode.BIDIRECTIONAL else ("energy",)
+            for label, suffix in zip(energy, suffixes, strict=True):
+                bound = bindings.get(f"{node.power_id.removesuffix('_power')}_{suffix}")
+                if node.energy_required and bound is not None and bound[1].get("internal") == "true":
+                    public = tuple(output for output in public if output != label)
+                    internal += (label,)
             node_owner = owner
         else:
             items = [external[sensor_id] for sensor_id in external_ids.get(aggregate.aggregate_id, ()) if sensor_id in external]
             items.extend(external[f"daily:{sensor_id}"] for sensor_id in external_ids.get(aggregate.aggregate_id, ()) if f"daily:{sensor_id}" in external)
             public = tuple("Watts" if _plain_sensor_scalar(item.get("device_class", "")) == "power" else "kWh" if _plain_sensor_scalar(item.get("device_class", "")) == "energy" else "Amps"
                 for item in items if item.get("internal", "false") == "false" and item.get("name"))
-            internal = tuple("Watts" if _plain_sensor_scalar(item.get("device_class", "")) == "power" else "Amps"
+            internal = tuple("Watts" if _plain_sensor_scalar(item.get("device_class", "")) == "power" else "kWh" if _plain_sensor_scalar(item.get("device_class", "")) == "energy" else "Amps"
                 for item in items if item.get("internal") == "true")
-            unknown = ("external custom kWh",) if aggregate.energy_mode is not EnergyMode.NONE and "kWh" not in public else ()
+            unknown = ("external custom kWh",) if aggregate.energy_mode is not EnergyMode.NONE and "kWh" not in public + internal else ()
             node_owner = "source_owned"
         result.append(TotalSummary(aggregate.aggregate_id, "aggregate", node_owner, public, internal, unknown))
     return tuple(result)

@@ -2006,8 +2006,13 @@ const moveTab = (event, index) => {
   tabs[next]?.click();
   tabs[next]?.focus();
 };
+function confirmTotalOutputRemoval(label, published, enabled) {
+  return enabled || !published || window.confirm(
+    `${label} is enabled in the saved meter configuration. Turning it off removes this output after installation and may affect Home Assistant dashboards, automations, or Energy settings. Continue?`
+  );
+}
 const range = (channels) => channels.length ? `CT${channels[0]}–CT${channels.at(-1)}` : "No CTs";
-function defaultTotalsSection(configuration, totals, readable, writable, update, graphState = "ready", reasonCodes = []) {
+function defaultTotalsSection(configuration, totals, readable, writable, update, graphState = "ready", reasonCodes = [], existingConfiguration = null) {
   if (!readable) return b`<section class="default-totals" aria-labelledby="default-totals-heading"><h2 id="default-totals-heading">Default meter totals</h2><p class="info-band" role="status">Native default totals are unavailable for this configuration.</p></section>`;
   const custom = totals.native_sources.filter((source) => reasonCodes.includes(`native_total_custom_formula:${source.source_id}`));
   const overall = totals.native_sources.find((source) => source.source_id === "overall" && !custom.includes(source));
@@ -2016,8 +2021,15 @@ function defaultTotalsSection(configuration, totals, readable, writable, update,
     ...configuration,
     default_totals: boardIndex === void 0 ? { ...configuration.default_totals, overall: outputs } : { ...configuration.default_totals, boards: configuration.default_totals.boards.map((board) => board.board_index === boardIndex ? { ...board, outputs } : board) }
   });
-  const control = (label, checked, onChange) => b`<label class="default-total-control"><input type="checkbox" role="switch" aria-label=${label} .checked=${checked} ?disabled=${!writable}
-    @change=${(event) => onChange(event.target.checked)} />${label.replace(/.* (Watts|Amps|kWh)$/, "$1")}</label>`;
+  const control = (label, checked, onChange, published) => b`<label class="default-total-control"><input type="checkbox" role="switch" aria-label=${label} .checked=${checked} ?disabled=${!writable}
+    @change=${(event) => {
+    const input = event.target;
+    if (!writable || !confirmTotalOutputRemoval(label, published, input.checked)) {
+      input.checked = checked;
+      return;
+    }
+    onChange(input.checked);
+  }} />${label.replace(/.* (Watts|Amps|kWh)$/, "$1")}</label>`;
   const boardFormula = boards.map((source) => source.label).join(" + ");
   const boardRanges = boards.map((source) => range(source.leaf_channels)).join(" + ");
   const visibilityUnresolved = !totals.migration.native_visibility_resolved;
@@ -2026,30 +2038,31 @@ function defaultTotalsSection(configuration, totals, readable, writable, update,
     ${custom.map((source) => b`<p class="info-band" role="status">${source.label} uses a custom formula. Edit recognized circuits under Advanced totals; other formulas require ESPHome Device Builder.</p>`)}
     ${visibilityUnresolved ? b`<p class="info-band" role="status">Native source visibility is unconfirmed; these controls show requested outputs, not confirmed installed publications.</p>` : A}
     ${graphState === "pending" ? b`<p class="info-band" role="status">Updating total graph; current native cards remain available.</p>` : graphState === "invalid" ? b`<p class="warning-band" role="status">Total graph unavailable; native cards show saved draft status and not current dependency results.</p>` : A}
-    <p>These switches control Home Assistant visibility.</p>
+    <p>Watts and Amps control Home Assistant visibility. kWh adds or removes the energy sensor.</p>
     <ul class="native-total-status" role="status">
       <li>Watts is hidden from Home Assistant when off and retained internally when needed by Overall meter total, enabled kWh, or other totals.</li>
       <li>Amps is hidden from Home Assistant when off and retained internally when needed by Overall meter total or other totals.</li>
-      <li>kWh is hidden from Home Assistant when off.</li>
+      <li>kWh is checked when an energy sensor exists, including a hidden sensor. Turning it off removes that energy sensor.</li>
     </ul>
     ${overall ? b`<fieldset class="default-total-card"><legend>Overall meter total (all monitored channels)</legend>
       <p>${boardFormula || "All monitored channels"}. Downstream circuit CTs can double-count the service mains, so this native total is not relabeled Mains.</p>
       <p>Covers: ${boardRanges || range(overall.leaf_channels)}.</p>
       <div class="default-total-controls">
-        ${control("Overall meter total Watts", configuration.default_totals.overall.watts, (watts) => patch({ ...configuration.default_totals.overall, watts }))}
-        ${control("Overall meter total Amps", configuration.default_totals.overall.amps, (amps) => patch({ ...configuration.default_totals.overall, amps }))}
-        ${control("Overall meter total kWh", configuration.default_totals.overall.kwh, (kwh) => patch({ ...configuration.default_totals.overall, kwh }))}
+        ${control("Overall meter total Watts", configuration.default_totals.overall.watts, (watts) => patch({ ...configuration.default_totals.overall, watts }), existingConfiguration?.default_totals.overall.watts)}
+        ${control("Overall meter total Amps", configuration.default_totals.overall.amps, (amps) => patch({ ...configuration.default_totals.overall, amps }), existingConfiguration?.default_totals.overall.amps)}
+        ${control("Overall meter total kWh", configuration.default_totals.overall.kwh, (kwh) => patch({ ...configuration.default_totals.overall, kwh }), existingConfiguration?.default_totals.overall.kwh)}
       </div>
     </fieldset>` : A}
     ${boards.map((source, boardIndex) => {
     if (custom.includes(source)) return A;
     const settings = configuration.default_totals.boards.find((board) => board.board_index === boardIndex)?.outputs;
     if (!settings) return A;
+    const published = existingConfiguration?.default_totals.boards.find((board) => board.board_index === boardIndex)?.outputs;
     return b`<fieldset class="default-total-card"><legend>${source.label}</legend><p>${range(source.leaf_channels)}</p>
         <div class="default-total-controls">
-          ${control(`${source.label} Watts`, settings.watts, (watts) => patch({ ...settings, watts }, boardIndex))}
-          ${control(`${source.label} Amps`, settings.amps, (amps) => patch({ ...settings, amps }, boardIndex))}
-          ${control(`${source.label} kWh`, settings.kwh, (kwh) => patch({ ...settings, kwh }, boardIndex))}
+          ${control(`${source.label} Watts`, settings.watts, (watts) => patch({ ...settings, watts }, boardIndex), published?.watts)}
+          ${control(`${source.label} Amps`, settings.amps, (amps) => patch({ ...settings, amps }, boardIndex), published?.amps)}
+          ${control(`${source.label} kWh`, settings.kwh, (kwh) => patch({ ...settings, kwh }, boardIndex), published?.kwh)}
         </div>
       </fieldset>`;
   })}
@@ -2061,7 +2074,7 @@ const automaticRoleLabels = [
   ["subpanel", "Subpanel"],
   ["two_pole", "Two-pole circuit"]
 ];
-function automaticTotalsSection(configuration, totals, writable, update) {
+function automaticTotalsSection(configuration, totals, writable, update, existingConfiguration = null) {
   if (!totals) return b`<section class="automatic-totals" aria-labelledby="automatic-totals-heading"><h2 id="automatic-totals-heading">Suggested circuit totals</h2><p class="info-band" role="status">Suggested totals are unavailable until the total graph is ready.</p></section>`;
   const patch = (candidateId, current, change, aggregates = configuration.aggregates) => update({
     ...configuration,
@@ -2077,11 +2090,16 @@ function automaticTotalsSection(configuration, totals, writable, update) {
     ${totals.automatic_totals.length ? totals.automatic_totals.map((resolved) => {
     const saved = configuration.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id);
     const current = saved ?? { candidate_id: resolved.candidate.candidate_id, enabled: resolved.enabled, outputs: resolved.outputs };
+    const published = existingConfiguration?.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id && item.enabled)?.outputs;
     const parents = configuration.aggregates.filter((aggregate) => aggregate.sources.some((source) => source.kind === "aggregate" && source.aggregate_id === resolved.candidate.aggregate_id));
     const sources = resolved.candidate.sources.map((source) => `CT${source.channel} · ${configuration.channels.find((channel) => channel.channel === source.channel)?.name ?? "Unnamed"}`).join(", ");
     const changeOutput = (key, checked) => patch(resolved.candidate.candidate_id, current, { outputs: { ...current.outputs, [key]: checked } });
     const changeEnabled = (event) => {
       const input = event.target;
+      if (!writable || !confirmTotalOutputRemoval(resolved.candidate.name, published && Object.values(published).some(Boolean), input.checked)) {
+        input.checked = current.enabled;
+        return;
+      }
       if (input.checked || !parents.length) return patch(resolved.candidate.candidate_id, current, { enabled: input.checked });
       const names = parents.map((parent) => parent.name).join(" and ");
       if (!window.confirm(`${names} uses ${resolved.candidate.name}. Remove it from ${names}?`)) {
@@ -2094,7 +2112,14 @@ function automaticTotalsSection(configuration, totals, writable, update) {
       })));
     };
     const control = (key, label, disabled = false) => b`<label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`${resolved.candidate.name} ${label}`} .checked=${current.outputs[key]} ?disabled=${!writable || disabled}
-        @change=${(event) => changeOutput(key, event.target.checked)} />${label}</label>`;
+        @change=${(event) => {
+      const input = event.target;
+      if (!writable || disabled || !confirmTotalOutputRemoval(`${resolved.candidate.name} ${label}`, published?.[key], input.checked)) {
+        input.checked = current.outputs[key];
+        return;
+      }
+      changeOutput(key, input.checked);
+    }} />${label}</label>`;
     return b`<fieldset class="automatic-total-card"><legend>${resolved.candidate.name}</legend>
         <p>Sources: ${sources}</p><p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
         ${parents.length ? b`<p>Feeds into: ${parents.map((parent) => parent.name).join(" and ")}</p>` : ""}
@@ -2113,7 +2138,7 @@ const coverageLabel = (leaves) => {
   const sorted = [...new Set(leaves)].sort((a2, b2) => a2 - b2);
   return sorted.length > 1 && sorted.at(-1) - sorted[0] === sorted.length - 1 ? `CT${sorted[0]}–CT${sorted.at(-1)}` : sorted.map((channel) => `CT${channel}`).join(", ");
 };
-function advancedTotalsEditor(configuration, drafts, update, writable, reason, totals, preview = null, fresh = true, automaticSourcesFresh = fresh) {
+function advancedTotalsEditor(configuration, drafts, update, writable, reason, totals, preview = null, fresh = true, automaticSourcesFresh = fresh, existingConfiguration = null) {
   const hasSolar = configuration.channels.some((channel) => channel.enabled && channel.role === "solar");
   const catalog = totals ?? {
     native_sources: [],
@@ -2203,6 +2228,7 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
     }] });
   };
   return b`<section aria-labelledby="advanced-totals-heading"><details class="advanced-totals"><summary id="advanced-totals-heading">Advanced totals</summary>
+    <p>Watts and Amps control Home Assistant visibility. kWh is checked when an energy sensor exists, including a hidden sensor; turning it off removes that sensor.</p>
     ${!writable ? b`<p class="info-band" role="status">Aggregate editing unavailable: ${reason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : A}
     ${!fresh ? b`<p class="info-band" role="status">Total graph unavailable or updating. You can still edit or remove draft sources; complete the graph before continuing.</p>` : A}
     ${fresh && catalog.stale_automatic_total_settings.length ? b`<p class="info-band" role="status">${catalog.stale_automatic_total_settings.length} inactive automatic settings are retained for this plan, not included in the active configuration.</p>` : A}
@@ -2253,10 +2279,15 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
         patch(aggregate, { sources: input.checked ? [...aggregate.sources, source] : aggregate.sources.filter((item) => !sameSource(item, source)) });
       }} /><span>${text}</span></label>`;
     };
+    const published = existingConfiguration?.aggregates.find((item) => item.aggregate_id === aggregate.aggregate_id)?.outputs;
     const output = (key, text) => b`<label class="check-row"><input type="checkbox" aria-label=${`${aggregate.name} ${text}`} .checked=${aggregate.outputs[key]} ?disabled=${!writable || key === "kwh" && aggregate.energy_mode === "none"}
         @change=${(event) => {
       const input = event.target;
       if (!writable || key === "kwh" && aggregate.energy_mode === "none") {
+        input.checked = aggregate.outputs[key];
+        return;
+      }
+      if (!confirmTotalOutputRemoval(`${aggregate.name} ${text}`, published?.[key], input.checked)) {
         input.checked = aggregate.outputs[key];
         return;
       }
@@ -2308,6 +2339,10 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
         input.value = aggregate.energy_mode;
         return;
       }
+      if (aggregate.outputs.kwh && !confirmTotalOutputRemoval(`${aggregate.name} kWh`, published?.kwh, input.value !== "none")) {
+        input.value = aggregate.energy_mode;
+        return;
+      }
       patch(aggregate, { energy_mode: input.value, outputs: { ...aggregate.outputs, kwh: input.value === "none" ? false : aggregate.outputs.kwh } });
     }}>${energyModes.filter((mode) => mode !== "bidirectional" || hasSolar || aggregate.energy_mode === mode).map((mode) => b`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`)}</select><small>Import/export totals require an enabled Solar CT. kWh uses ESPHome platform: total_daily_energy, integrating this total's Watts rather than adding child kWh.</small></label>
           <label>Feeds into <select aria-label=${`${aggregate.name} Feeds into`} .value=${parent}
@@ -2349,7 +2384,7 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
       if (!writable) return;
       const parents = configuration.aggregates.filter((item) => item.sources.some((source) => source.kind === "aggregate" && source.aggregate_id === aggregate.aggregate_id));
       const children = aggregate.sources.filter((source) => source.kind === "aggregate").map(label);
-      const message = `Delete ${aggregate.name}?${parents.length ? ` Remove it from ${parents.map((item) => item.name).join(" and ")}.` : ""}${children.length ? ` ${children.join(" and ")} will become independent reports.` : ""}`;
+      const message = `Delete ${aggregate.name}?${parents.length ? ` Remove it from ${parents.map((item) => item.name).join(" and ")}.` : ""}${children.length ? ` ${children.join(" and ")} will become independent reports.` : ""}${published && Object.values(published).some(Boolean) ? " Its existing outputs will be removed after installation and may affect Home Assistant dashboards, automations, or Energy settings." : ""}`;
       if (!window.confirm(message)) return;
       update({ ...configuration, aggregates: configuration.aggregates.filter((item) => item !== aggregate).map((item) => ({
         ...item,
@@ -2483,9 +2518,9 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
       ${configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : A}
-      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState, meterInventory?.capabilities.reason_codes) : A}
-      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration) : A}
-      ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh) : A}
+      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState, meterInventory?.capabilities.reason_codes, existingConfiguration) : A}
+      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration, existingConfiguration) : A}
+      ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh, existingConfiguration) : A}
       ${reviewRequirements}
       <footer class="action-footer offset-footer">
         <button class="secondary" @click=${back}>Back</button>
@@ -5219,7 +5254,7 @@ class CircuitSetupPanel extends i$2 {
       });
     } while (removed);
     const affected = configuration.aggregates.filter((aggregate) => removedIds.has(aggregate.aggregate_id) || aggregate.sources.some((source) => source.kind === "channel" && source.channel === channel || source.kind === "aggregate" && removedIds.has(source.aggregate_id)));
-    if (affected.length && !window.confirm(`Marking CT${channel} unused changes ${affected.map((aggregate) => aggregate.name).join(", ")}${removedIds.size ? " and deletes totals with invalid sources" : ""}. Continue?`)) {
+    if (affected.length && !window.confirm(`Marking CT${channel} unused changes ${affected.map((aggregate) => aggregate.name).join(", ")}${removedIds.size ? " and deletes totals with invalid sources. Removing their outputs may affect Home Assistant dashboards, automations, or Energy settings after installation" : ""}. Continue?`)) {
       this.requestUpdate();
       return;
     }

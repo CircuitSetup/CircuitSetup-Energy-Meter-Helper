@@ -1336,7 +1336,7 @@ export class CircuitSetupPanel extends LitElement {
     const affected = configuration.aggregates.filter((aggregate) => removedIds.has(aggregate.aggregate_id)
       || aggregate.sources.some((source) => source.kind === "channel" && source.channel === channel
         || source.kind === "aggregate" && removedIds.has(source.aggregate_id)));
-    if (affected.length && !window.confirm(`Marking CT${channel} unused changes ${affected.map((aggregate) => aggregate.name).join(", ")}${removedIds.size ? " and deletes totals with invalid sources" : ""}. Continue?`)) {
+    if (affected.length && !window.confirm(`Marking CT${channel} unused changes ${affected.map((aggregate) => aggregate.name).join(", ")}${removedIds.size ? " and deletes totals with invalid sources. Removing their outputs may affect Home Assistant dashboards, automations, or Energy settings after installation" : ""}. Continue?`)) {
       this.requestUpdate(); return;
     }
     this.updateCircuitConfiguration({ ...configuration, aggregates,

@@ -320,6 +320,11 @@ class MeterConfigurationInventory:
         if "aggregate_semantics_unreadable" in aggregate_warnings:
             configuration = before_metadata
         if "aggregate_semantics_unreadable" not in aggregate_warnings and defaults is not None:
+            block = document.managed_blocks.get("aggregates")
+            if block is not None and "# csemh-energy-sensors: v1" not in block.content:
+                normalized = _source_normalized_default_totals(document, topology)
+                if normalized is not None:
+                    defaults = replace(defaults, overall=replace(defaults.overall, kwh=normalized.overall.kwh))
             configuration = replace(configuration, default_totals=defaults)
         # Recognized legacy automatic sensors already belong to their settings.
         automatic_aggregates = tuple(
@@ -482,6 +487,9 @@ def _source_native_visibility(
                 for item in _managed_sensor_items(block.content, document.sensor_item_indent)
                 if item.get("id", "").startswith("!extend ") and "internal" in item
             }
+            managed_visibility.update({item["id"].removeprefix("!remove "): False
+                for item in _managed_sensor_items(block.content, document.sensor_item_indent)
+                if item.get("id", "").startswith("!remove ")})
             document = ESPHomeConfigDocument.parse(
                 document.content[:block.span.start] + document.content[block.span.end:])
     except (ValueError, TypeError, KeyError):
@@ -574,10 +582,13 @@ def _source_normalized_default_totals(
 
     definitions = native_total_sources(topology)
     overall = next(item for item in definitions if item.source_id == "overall")
+    removed = {item.get("id", "").removeprefix("!remove ") for item in _root_sensor_items(document)
+        if item.get("id", "").startswith("!remove ")}
     overall_outputs = TotalOutputSettings(
         visible(overall.power_id),
         visible(overall.current_id),
-        bool(overall.existing_energy_id and visible(overall.existing_energy_id)),
+        bool(overall.existing_energy_id and overall.existing_energy_id not in custom_native | removed
+            and effective.get(overall.existing_energy_id) is not None),
     )
     boards = tuple(
         BoardTotalSettings(
@@ -1024,10 +1035,7 @@ def _detected_aggregates(
     default_groups = _default_total_groups(document, channels)
     if (total_ids or any(group[3] not in native_ids for group in default_groups)) and not enabled:
         return (), ("builtin_total_semantics_unreadable",), ()
-    energy_power_ids = (
-        frozenset() if "totalEnergyDaily" in hidden_ids
-        else _default_daily_energy_power_ids(document)
-    ) | _source_daily_energy_items(document).keys()
+    energy_power_ids = _default_daily_energy_power_ids(document) | _source_daily_energy_items(document, include_hidden=True).keys()
     legacy, parent_links = _legacy_aggregates(
         document, channels, default_groups, energy_power_ids, hidden_ids,
         native_ids - _custom_native_total_ids(document, topology),
@@ -1088,6 +1096,11 @@ def _detected_aggregates(
     )
     if added:
         warnings = tuple(dict.fromkeys((*warnings, "builtin_total_semantics_inferred")))
+    if block is not None and "# csemh-energy-sensors: v1" not in block.content:
+        present = {item.aggregate_id for item in legacy if item.outputs.kwh}
+        detected = tuple(replace(item, energy_mode=EnergyMode.CONSUMPTION if item.energy_mode is EnergyMode.NONE else item.energy_mode,
+            outputs=replace(item.outputs, kwh=True))
+            if item.aggregate_id in present else item for item in detected)
     # Legacy parent links are diagnostic-only and must never change formulas here.
     inferred_links = tuple(
         LegacyParentLink(child, parent) for child, parent in parent_links.items()
@@ -1245,14 +1258,21 @@ def _validate_graph_block(
         automatic_totals=configuration.automatic_totals if has_automatic else (),
         channels=configuration.channels if has_automatic else tuple(replace(channel, role=CircuitRole.BRANCH) if channel.enabled else channel for channel in configuration.channels),
         default_totals=_native_totals_metadata(document) or configuration.default_totals)
+    energy_presence = "# csemh-energy-sensors: v1" in document.managed_blocks["aggregates"].content
+    if not energy_presence and _native_totals_metadata(document) is None:
+        native_energy = next(source.existing_energy_id for source in native_total_sources(topology) if source.source_id == "overall")
+        visibility = _source_native_visibility(document, topology)
+        if native_energy in visibility:
+            requested = replace(requested, default_totals=replace(requested.default_totals,
+                overall=replace(requested.default_totals.overall, kwh=bool(visibility[native_energy]))))
     validate_meter_configuration(requested, topology, require_multi_reference_acknowledgement=False)
     requested, replacements = _select_render_totals(requested, topology, document, None)
     plan = plan_total_graph(requested, topology)
     if {item.aggregate_id: item for item in metadata} != {node.aggregate.aggregate_id: node.aggregate for node in plan.ordered_nodes}:
         raise ValueError("automatic metadata does not match generated definitions")
-    native = _render_native_totals(requested, topology, document) if _native_totals_metadata(document) is not None else ""
+    native = _render_native_totals(requested, topology, document, energy_presence=energy_presence) if _native_totals_metadata(document) is not None else ""
     expected = native + (
-        _render_total_updates(requested, topology, document, replacements)
+        _render_total_updates(requested, topology, document, replacements, energy_presence=energy_presence)
         if "# csemh-existing-totals: v1" in document.managed_blocks["aggregates"].content
         else replacements + _render_aggregates(plan, requested.aggregates, requested if has_automatic else None)
     )
@@ -1577,7 +1597,6 @@ def _default_daily_energy_power_ids(
     return frozenset({power_id}) if (
         power_id and _plain_sensor_scalar(effective.get("platform", "")) == "total_daily_energy"
         and _plain_sensor_scalar(effective.get("unit_of_measurement", "")) == "kWh"
-        and effective.get("internal", "false") == "false"
     ) else frozenset()
 
 

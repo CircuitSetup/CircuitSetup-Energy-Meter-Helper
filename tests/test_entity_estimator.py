@@ -104,7 +104,7 @@ def test_hash_bound_resolved_native_settings_remain_authoritative() -> None:
     )
     assert (impact.public_total_entity_count, impact.internal_total_sensor_count) == (
         1,
-        2,
+        1,
     )
     assert evidence.native_sensor_entities == frozenset(
         {("energy_meter_total_amps_main", "Energy meter Total Amps Main")}
