@@ -11,7 +11,7 @@ const mount = (response = meterResponse(), writable = true, readable = true, gra
   container = document.createElement("div");
   document.body.append(container);
   const update = vi.fn();
-  render(defaultTotalsSection(response.configuration, response.totals, readable, writable, update, graphState), container);
+  render(defaultTotalsSection(response.configuration, response.totals, readable, writable, update, graphState, response.capabilities.reason_codes), container);
   return { update, response };
 };
 
@@ -118,4 +118,23 @@ it("does not expose controls when native totals cannot be read", () => {
 
   expect(container.querySelector('[role="switch"]')).toBeNull();
   expect(container.textContent).toContain("Native default totals are unavailable");
+});
+
+it("keeps adopted board switches editable and directs custom totals to Advanced totals", () => {
+  const response = meterResponse();
+  response.capabilities.reason_codes.push("native_total_custom_formula:overall");
+  response.totals.native_sources.unshift({ source_id: "board-main", label: "Main Board total", leaf_channels: [1, 2, 3, 4, 5, 6],
+    power_id: "totalWattsMain", current_id: "totalAmpsMain", existing_energy_id: null,
+    upstream_defaults: { watts: false, amps: false, kwh: false } });
+  response.configuration.default_totals.boards = [{ board_index: 0, outputs: { watts: true, amps: false, kwh: true } }];
+  const { update } = mount(response);
+  expect(container.querySelector('[aria-label="Overall meter total Watts"]')).toBeNull();
+  expect(container.textContent).toContain("Advanced totals");
+  for (const [output, checked] of [["Watts", true], ["Amps", false], ["kWh", true]] as const) {
+    const input = container.querySelector<HTMLInputElement>(`[aria-label="Main Board total ${output}"]`)!;
+    expect(input.checked).toBe(checked);
+    expect(input.disabled).toBe(false);
+  }
+  container.querySelector<HTMLInputElement>('[aria-label="Main Board total kWh"]')!.click();
+  expect(update.mock.calls[0]![0].default_totals.boards[0].outputs).toEqual({ watts: true, amps: false, kwh: false });
 });

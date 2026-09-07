@@ -261,7 +261,7 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
         workflow, loaded, _, _, _ = await _persisted_totals_workflow(builder.remote_content, store, topology)
         assert loaded.inventory.totals_managed
         assert loaded.inventory.capabilities.managed_advanced_totals
-        assert not loaded.inventory.capabilities.native_totals_writable
+        assert loaded.inventory.capabilities.native_totals_writable
         assert {item.aggregate_id: item for item in loaded.inventory.configuration.aggregates} == {
             item.aggregate_id: item for item in requested.aggregates}
         refreshed = loaded.inventory.configuration
@@ -451,7 +451,7 @@ def test_custom_native_totals_adoption_does_not_authorize_default_visibility_cha
     assert not inventory.capabilities.native_totals_writable
     requested = replace(inventory.configuration, totals_change_intent=TotalsChangeIntent(adopt_managed_totals=True))
     inventory.validate_totals_change(requested)
-    with pytest.raises(ValueError, match="native total visibility"):
+    with pytest.raises(ValueError, match="custom formula"):
         inventory.validate_totals_change(replace(requested, default_totals=replace(requested.default_totals,
             overall=replace(requested.default_totals.overall, watts=not requested.default_totals.overall.watts))))
 

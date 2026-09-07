@@ -756,6 +756,30 @@ test("legacy parent decisions remain pending on failure and clear per-link only 
     { child_id: "west", proposed_parent_id: "building" }]);
 });
 
+test("adopted board totals remain editable beside a custom overall with hidden kWh", async ({ page }) => {
+  const fixture = await totalsFixture(page, "custom-overall");
+  await openInventory(page, fixture.url);
+  await expect(page.getByRole("switch", { name: "Overall meter total Watts", exact: true })).toHaveCount(0);
+  await expect(page.getByText("Overall meter total uses a custom formula.", { exact: false })).toBeVisible();
+  for (const output of ["Watts", "Amps", "kWh"]) {
+    const control = page.getByRole("switch", { name: `Main Board total ${output}`, exact: true });
+    await expect(control).toBeEnabled();
+    await expect(control).not.toBeChecked();
+    await control.check();
+  }
+  await page.locator("#advanced-totals-heading").press("Enter");
+  const existingEnergy = page.getByRole("checkbox", { name: "House Total kWh", exact: true });
+  await expect(existingEnergy).not.toBeChecked();
+  await expect(existingEnergy).toBeEnabled();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
+  await expect.poll(async () => (await fixture.state()).stored.configuration.default_totals.boards[0].outputs).toEqual({ watts: true, amps: true, kwh: true });
+  await openInventory(page, fixture.url);
+  for (const output of ["Watts", "Amps", "kWh"]) await expect(page.getByRole("switch", { name: `Main Board total ${output}`, exact: true })).toBeChecked();
+});
+
 test("non-helper opening performs no write and explicit adoption is a metadata-only transaction", async ({ page }) => {
   const fixture = await totalsFixture(page, "non-helper");
   await openInventory(page, fixture.url);

@@ -183,15 +183,16 @@ def _native_total_accounting(
     partial source proof or validated native render metadata.
     """
     sources = native_total_sources(topology)
+    custom_native = _custom_native_total_ids(document, topology) if document is not None else frozenset()
     if (
         document is None
-        or (not _custom_native_total_ids(document, topology) and (
-            native_visibility_resolved is True
-            or (native_visibility_resolved is None and _native_totals_metadata(document) is not None)
-        ))
+        or native_visibility_resolved is True
+        or (native_visibility_resolved is None and _native_totals_metadata(document) is not None)
     ):
         outputs = {
-            source.source_id: _desired_native_outputs(requested, source)
+            source.source_id: (TotalOutputSettings(False, False, False)
+                if source.power_id in custom_native or source.current_id in custom_native
+                else _desired_native_outputs(requested, source))
             for source in sources
         }
         internal = sum(
@@ -201,7 +202,7 @@ def _native_total_accounting(
                 source.existing_energy_id is not None
                 and not outputs[source.source_id].kwh
             )
-            for source in sources
+            for source in sources if source.power_id not in custom_native and source.current_id not in custom_native
         )
         return outputs, internal
     visibility = _source_native_visibility(document, topology)
@@ -1190,10 +1191,10 @@ def _render_native_totals(
     document: ESPHomeConfigDocument,
 ) -> str:
     """Reconcile native visibility against preserved source and add board energy."""
-    if _custom_native_total_ids(document, topology):
-        raise SourceOwnedTotalEditError("Custom native totals must be edited in ESPHome Device Builder before adopting default meter totals")
+    custom_native = _custom_native_total_ids(document, topology)
     plan = plan_total_graph(requested, topology)
-    definitions = native_total_sources(topology)
+    definitions = tuple(source for source in native_total_sources(topology)
+        if source.power_id not in custom_native and source.current_id not in custom_native)
     upstream = {
         sensor_id: not public
         for source in definitions
@@ -1204,7 +1205,7 @@ def _render_native_totals(
         )
         if sensor_id is not None
     }
-    desired = {**upstream, **{item.sensor_id: item.internal for item in plan.native_visibility}}
+    desired = {**upstream, **{item.sensor_id: item.internal for item in plan.native_visibility if item.sensor_id in upstream}}
     # The old helper block is replaced, so it cannot supply the preserved base.
     base = ESPHomeConfigDocument.parse(replace_managed_block(document.content, "aggregates", ""))
     span = base.writable_sensor_span
