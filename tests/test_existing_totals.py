@@ -237,7 +237,7 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
             *(["csemh_meter_total_export_power", "csemh_meter_total_import_power"] if edit == "bidirectional" else []),
         ]
         assert len([item for item in definitions if item["platform"] == "total_daily_energy"]) == (
-            5 if edit in {"parent", "bidirectional"} else 4
+            5 if edit in {"parent", "bidirectional"} else 3 if edit in {"outputs", "remove", "disable_member", "channel_roles_remove"} else 4
         )
         if edit in {"roles", "roles_and_name"}:
             proposed = transaction.plan.proposed_content
@@ -469,7 +469,7 @@ def test_existing_energy_detection_does_not_guess_ambiguous_or_hidden_sensors(in
         source = source.replace("id: existing_Charger_energy", "id: ${unknown}") if invalid == "unknown_id" else source.replace("name: Total Charger kWh", "name: ${unknown}")
     inventory = _inventory(source)
     charger = next(item for item in inventory.configuration.aggregates if item.aggregate_id == "total-charger")
-    assert not charger.outputs.kwh
+    assert charger.outputs.kwh is (invalid == "hidden")
 
 
 @pytest.mark.parametrize("name", ("${missing} Total", "${friendly_name} ${missing}", "null", "true", "!secret name"))

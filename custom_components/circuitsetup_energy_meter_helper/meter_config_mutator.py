@@ -195,13 +195,16 @@ def _native_total_accounting(
                 else _desired_native_outputs(requested, source))
             for source in sources
         }
+        energy_visibility = _source_native_visibility(ESPHomeConfigDocument.parse(
+            replace_managed_block(document.content, "aggregates", "")), topology) if document is not None else {}
+        hidden_energy = {source.source_id for source in sources if source.existing_energy_id
+            and outputs[source.source_id].kwh and energy_visibility.get(source.existing_energy_id) is False}
+        outputs = {source_id: replace(output, kwh=False) if source_id in hidden_energy else output
+            for source_id, output in outputs.items()}
         internal = sum(
             int(not outputs[source.source_id].watts)
             + int(not outputs[source.source_id].amps)
-            + int(
-                source.existing_energy_id is not None
-                and not outputs[source.source_id].kwh
-            )
+            + int(source.source_id in hidden_energy)
             for source in sources if source.power_id not in custom_native and source.current_id not in custom_native
         )
         return outputs, internal
@@ -242,7 +245,7 @@ def _source_owned_total_items(
         if sensor_id in sensor_ids:
             effective.setdefault(sensor_id, {}).update(item)
     effective.update({f"daily:{power_id}": item
-        for power_id, item in _source_daily_energy_items(document).items() if power_id in sensor_ids})
+        for power_id, item in _source_daily_energy_items(document, include_hidden=True).items() if power_id in sensor_ids})
     replaced_powers = {item["id"].removeprefix("!extend ")
         for item in _managed_sensor_items(replacements, 2) if item.get("id", "").startswith("!extend ")} if replacements else set()
     return {key: item for key, item in effective.items()
@@ -470,11 +473,11 @@ def build_meter_configuration_mutation(
         document = ESPHomeConfigDocument.parse(content)
         rendered_request, replacements = _select_render_totals(requested, topology, document, previous)
         content = _prepare_existing_energy_ids(document, replacements, requested, topology)
+        body = (_render_native_totals(rendered_request, topology, document) if current.native_visibility_resolved else "") + _render_total_updates(rendered_request, topology, document, replacements)
         content = replace_managed_block(
             content,
             "aggregates",
-            (_render_native_totals(rendered_request, topology, document) if current.native_visibility_resolved else "")
-            + _render_total_updates(rendered_request, topology, document, replacements),
+            "  # csemh-energy-sensors: v1\n" + body if body else "",
         )
     rendered_diff = "\n".join(
         part for part in (plan.redacted_diff, _redacted_diff(changes)) if part
@@ -514,7 +517,7 @@ def build_meter_configuration_mutation(
             if source.existing_energy_id
         }
         external_document = ESPHomeConfigDocument.parse(
-            replace_managed_block(source_document.content, "aggregates", "")
+            replace_managed_block(proposed_document.content, "aggregates", "")
         )
         if any(
             _plain_sensor_scalar(item.get("platform", "")) == "total_daily_energy"
@@ -577,10 +580,10 @@ def _technical_total_diff(
         for item in _managed_sensor_items(content, document.sensor_item_indent):
             raw_id = item.get("id", "")
             extended = raw_id.startswith("!extend ")
-            sensor_id = _plain_sensor_scalar(raw_id.removeprefix("!extend "))
+            sensor_id = _plain_sensor_scalar(raw_id.removeprefix("!extend ").removeprefix("!remove "))
             if sensor_id not in allowed_ids:
                 continue
-            fields = [f"id: {'!extend ' if extended else ''}{sensor_id}"]
+            fields = [f"id: {'!extend ' if extended else '!remove ' if raw_id.startswith('!remove ') else ''}{sensor_id}"]
             platform = _plain_sensor_scalar(item.get("platform", ""))
             if platform in {"template", "total_daily_energy"}:
                 fields.append(f"platform: {platform}")
@@ -1007,6 +1010,7 @@ def _select_render_totals(
 
 
 def _replacement_daily_energy(document: ESPHomeConfigDocument, replacements: str) -> tuple[tuple[int, int, dict[str, str]], ...]:
+    document = ESPHomeConfigDocument.parse(replace_managed_block(document.content, "aggregates", ""))
     powers = {item["id"].removeprefix("!extend ") for item in _managed_sensor_items(replacements, 2)
         if item.get("id", "").startswith("!extend ")} if replacements else set()
     supported = _source_daily_energy_items(document, include_hidden=True)
@@ -1029,12 +1033,21 @@ def _prepare_existing_energy_ids(
     document: ESPHomeConfigDocument, replacements: str,
     requested: MeterConfigurationRequest, topology: MeterTopology,
 ) -> str:
-    """Give an ID-less energy sensor a stable override target without replacing it."""
+    """Remove disabled source energy; give retained ID-less sensors stable targets."""
+    if not replacements:
+        return document.content
+    document = ESPHomeConfigDocument.parse(replace_managed_block(document.content, "aggregates", ""))
     bindings = _existing_total_bindings(requested, topology, document, replacements)
     energy_ids = {fields["power_id"]: sensor_id
         for sensor_id, fields in bindings.values() if "power_id" in fields}
+    planned_ids = {sensor_id for node in plan_total_graph(requested, topology).ordered_nodes for sensor_id in planned_sensor_ids(node)}
+    removed_powers = {fields["power_id"] for planned_id, (_, fields) in bindings.items()
+        if "power_id" in fields and planned_id not in planned_ids}
     lines = list(document.lines)
     for start, stop, fields in reversed(_replacement_daily_energy(document, replacements)):
+        if fields["power_id"] in removed_powers:
+            del lines[start:stop]
+            continue
         if "id" in fields:
             continue
         indent = len(document.code_lines[start]) - len(document.code_lines[start].lstrip()) + 2
@@ -1091,6 +1104,7 @@ def _existing_total_bindings(
 def _render_total_updates(
     requested: MeterConfigurationRequest, topology: MeterTopology,
     document: ESPHomeConfigDocument | None, replacements: str,
+    *, energy_presence: bool = True,
 ) -> str:
     """Render new metrics normally; update bound metrics with !extend, never copies."""
     body = _render_aggregates(plan_total_graph(requested, topology), requested.aggregates, requested)
@@ -1113,8 +1127,9 @@ def _render_total_updates(
         sensor_id, original = bindings[planned_id]
         rendered.add(planned_id)
         # Existing units, filters, accuracy, and state classes remain on the definition.
+        internal = original.get("internal", "false") if energy_presence and "power_id" in original else fields.get("internal", "false")
         update = [f"  - id: !extend {sensor_id}\n", f"    name: {original['name']}\n",
-            f"    internal: {fields.get('internal', 'false')}\n"]
+            f"    internal: {internal}\n"]
         update.extend(f"    {key}: {fields[key]}\n" for key in ("lambda", "power_id") if key in fields)
         lines[start:stop] = update
     body = "".join(lines)
@@ -1123,7 +1138,8 @@ def _render_total_updates(
         body = body.replace(f"id({planned_id})", f"id({sensor_id})")
         body = re.sub(rf"(power_id: ){re.escape(planned_id)}(?=\s|$)", rf"\g<1>{sensor_id}", body)
     hidden = "".join(f"  - id: !extend {sensor_id}\n    internal: true\n"
-        for planned_id, (sensor_id, _) in bindings.items() if planned_id not in rendered)
+        for planned_id, (sensor_id, fields) in bindings.items() if planned_id not in rendered
+        and (not energy_presence or "power_id" not in fields))
     metadata = replacements.splitlines(keepends=True)[0]
     body = "  # csemh-existing-totals: v1\n" + metadata + hidden + body
     _validate_total_sensor_ids(body, document)
@@ -1189,6 +1205,7 @@ def _render_native_totals(
     requested: MeterConfigurationRequest,
     topology: MeterTopology,
     document: ESPHomeConfigDocument,
+    *, energy_presence: bool = True,
 ) -> str:
     """Reconcile native visibility against preserved source and add board energy."""
     custom_native = _custom_native_total_ids(document, topology)
@@ -1257,6 +1274,9 @@ def _render_native_totals(
     conflicts = board_energy.keys() & source_ids
     if conflicts:
         raise ConfigMutationError(f"unmanaged sensor conflicts with board energy ID: {', '.join(sorted(conflicts))}")
+    if energy_presence:
+        energy_ids = {source.existing_energy_id for source in definitions if source.existing_energy_id}
+        plan = replace(plan, native_visibility=tuple(item for item in plan.native_visibility if item.sensor_id not in energy_ids))
     body = _render_native_total_overrides(plan) + "".join(
         _daily_energy(
             energy_id,
@@ -1265,6 +1285,9 @@ def _render_native_totals(
         )
         for energy_id, source in board_energy.items()
     )
+    if energy_presence:
+        body += "".join(f"  - id: !remove {source.existing_energy_id}\n" for source in definitions
+            if source.existing_energy_id and not _desired_native_outputs(requested, source).kwh)
     if not body:
         return ""
     metadata = urlsafe_b64encode(json.dumps(asdict(requested.default_totals), separators=(",", ":"), sort_keys=True).encode()).decode().rstrip("=")

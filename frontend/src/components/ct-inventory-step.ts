@@ -177,9 +177,9 @@ export function ctInventoryStep(
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
       ${configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : nothing}
-      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState, meterInventory?.capabilities.reason_codes) : nothing}
-      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration) : nothing}
-      ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh) : nothing}
+      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState, meterInventory?.capabilities.reason_codes, existingConfiguration) : nothing}
+      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration, existingConfiguration) : nothing}
+      ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh, existingConfiguration) : nothing}
       ${reviewRequirements}
       <footer class="action-footer offset-footer">
         <button class="secondary" @click=${back}>Back</button>
