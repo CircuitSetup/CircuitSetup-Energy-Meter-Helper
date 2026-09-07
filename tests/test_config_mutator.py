@@ -2070,6 +2070,59 @@ def _native_total_setup(
     return snapshot, topology, current
 
 
+@pytest.mark.parametrize("formula", ("id(ct1Watts).state + id(ct2Watts).state", "(id(ct1Watts).state + id(ct2Watts).state)", "id(ct1Watts).state * 2"))
+def test_adopted_board_totals_are_editable_beside_custom_house_total(formula: str) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+        native_total_sources,
+    )
+
+    topology = _topology_for_addons(3)
+    original = _contract_snapshot_for(topology)
+    house = (
+        "  - platform: template\n    id: totalWatts\n    name: House Total Watts\n"
+        f"    lambda: return {formula};\n"
+        "    unit_of_measurement: W\n    device_class: power\n"
+        "  - platform: template\n    id: totalAmps\n    name: House Total Amps\n"
+        f"    lambda: return {formula.replace('Watts', 'Amps')};\n"
+        "    unit_of_measurement: A\n    device_class: current\n"
+    )
+    overrides = "".join(
+        f"  - id: !extend {sensor_id}\n    internal: {'false' if source.source_id == 'board-main' and output == 'watts' else 'true'}\n"
+        for source in native_total_sources(topology) if source.source_id != "overall"
+        for output, sensor_id in (("watts", source.power_id), ("amps", source.current_id))
+    )
+    content = original.content.replace("logger:\n", house + overrides + "logger:\n")
+    snapshot = replace(original, content=content, sha256=sha256(content.encode()).hexdigest())
+    baseline = _inventory(snapshot, topology).configuration
+    stored = StoredMeterConfiguration(snapshot.sha256, baseline.meter, baseline.channels,
+        baseline.default_totals, baseline.automatic_totals, baseline.aggregates, baseline.power_quality, baseline.status_fields)
+    current = _inventory(snapshot, topology, stored=stored)
+    assert current.native_visibility_resolved
+    assert current.capabilities.native_totals_writable
+    assert current.configuration.default_totals.boards[0].outputs == TotalOutputSettings(True, False, False)
+    assert all(board.outputs == TotalOutputSettings(False, False, False) for board in current.configuration.default_totals.boards[1:])
+    assert "native_total_custom_formula:overall" in current.capabilities.reason_codes
+    assert bool(current.configuration.aggregates) is (formula == "id(ct1Watts).state + id(ct2Watts).state")
+    for enabled in (True, False):
+        requested = replace(current.configuration, default_totals=replace(current.configuration.default_totals,
+            boards=tuple(replace(board, outputs=TotalOutputSettings(enabled, enabled, enabled))
+                for board in current.configuration.default_totals.boards)))
+        current.validate_totals_change(requested)
+        mutation = build_meter_configuration_mutation(snapshot, topology, current, requested)
+        assert house in mutation.proposed_content
+        block = ESPHomeConfigDocument.parse(mutation.proposed_content).managed_blocks.get("aggregates")
+        assert block is None or "!extend totalWatts\n" not in block.content
+        updated = replace(snapshot, content=mutation.proposed_content, sha256=sha256(mutation.proposed_content.encode()).hexdigest())
+        saved = replace(stored, config_sha256=updated.sha256, default_totals=requested.default_totals)
+        loaded = _inventory(updated, topology, stored=saved)
+        assert loaded.capabilities.native_totals_writable
+        assert loaded.configuration.default_totals == requested.default_totals
+        snapshot, current, stored = updated, loaded, saved
+    with pytest.raises(ValueError, match="custom formula"):
+        current.validate_totals_change(replace(current.configuration, default_totals=replace(
+            current.configuration.default_totals, overall=TotalOutputSettings(True, True, True))))
+
+
 def _native_total_body(
     requested: MeterConfigurationRequest, topology: MeterTopology, content: str,
 ) -> str:

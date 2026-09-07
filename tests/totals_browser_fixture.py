@@ -67,7 +67,7 @@ from tests.test_store import _CopyingStorage, _record
 MAC = "aabbccddeeff"
 SCENARIOS = (
     "main-only", "one-addon", "automatic-on", "automatic-off", "native-parent",
-    "child-parent", "legacy-parent", "non-helper", "runtime-only", "stale-semantics", "summary", "source-only", "stock-offset",
+    "child-parent", "legacy-parent", "non-helper", "runtime-only", "stale-semantics", "summary", "source-only", "stock-offset", "custom-overall",
 )
 
 
@@ -78,7 +78,7 @@ class Fixture:
         if name not in SCENARIOS or addons is not None and addons not in range(7):
             raise ValueError("Unknown fixture")
         self.name = name
-        addons = addons if addons is not None else int(name in ("one-addon", "native-parent", "child-parent"))
+        addons = addons if addons is not None else int(name in ("one-addon", "native-parent", "child-parent", "custom-overall"))
         content = _document(contract=True, addon_count=addons)
         # Known models and unchanged channel names make every fixture immediately reviewable.
         content = re.sub(r"(current_cal_ct\d+:) \d+", r"\1 11143", content)
@@ -95,6 +95,14 @@ class Fixture:
             content += ('  - platform: template\n    id: totalChargerWatts\n    name: Charger Power\n'
                 '    lambda: return id(ct5Watts).state + id(ct6Watts).state;\n'
                 '    unit_of_measurement: W\n    device_class: "power"\n')
+        if name == "custom-overall":
+            content += (
+                "  - platform: template\n    id: totalWatts\n    name: House Total Watts\n"
+                "    lambda: return id(ct1Watts).state + id(ct2Watts).state;\n"
+                "    unit_of_measurement: W\n    device_class: power\n"
+                "  - platform: total_daily_energy\n    name: House Total kWh\n    power_id: totalWatts\n"
+                "    internal: true\n    unit_of_measurement: kWh\n    device_class: energy\n    state_class: total_increasing\n"
+            )
         initial = _inventory(content)
         config = initial.configuration
         config = replace(config, meter=replace(config.meter, electrical_system=ElectricalSystem.SPLIT_PHASE_120_240),

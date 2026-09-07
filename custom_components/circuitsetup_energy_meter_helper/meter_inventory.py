@@ -197,6 +197,13 @@ class MeterConfigurationInventory:
             if linked != decision.accepted:
                 raise ValueError("legacy parent decision does not match requested sources")
         original = self.configuration
+        for index, source in enumerate(native_total_sources(self.topology)):
+            if f"native_total_custom_formula:{source.source_id}" not in self.capabilities.reason_codes:
+                continue
+            before = original.default_totals.overall if source.source_id == "overall" else original.default_totals.boards[index].outputs
+            after = requested.default_totals.overall if source.source_id == "overall" else requested.default_totals.boards[index].outputs
+            if before != after:
+                raise ValueError("This total has a custom formula; use Advanced totals if recognized, otherwise ESPHome Device Builder")
         changes = (
             (requested.default_totals != original.default_totals, self.capabilities.native_totals_writable),
             (enabled_automatic_totals(requested) != enabled_automatic_totals(original), self.capabilities.managed_automatic_totals),
@@ -352,7 +359,12 @@ class MeterConfigurationInventory:
             visibility_unconfirmed = normalized_defaults is None
             if normalized_defaults is not None:
                 configuration = replace(configuration, default_totals=normalized_defaults)
-        capabilities = replace(capabilities, semantic_source=semantic_source)
+        custom_native = _custom_native_total_ids(document, topology)
+        capabilities = replace(capabilities, semantic_source=semantic_source, reason_codes=(
+            *capabilities.reason_codes,
+            *(f"native_total_custom_formula:{source.source_id}" for source in native_total_sources(topology)
+              if source.power_id in custom_native or source.current_id in custom_native),
+        ))
         if "aggregate_semantics_unreadable" in aggregate_warnings:
             capabilities = replace(capabilities, native_totals_writable=False,
                 managed_automatic_totals=False, managed_advanced_totals=False)
@@ -548,11 +560,16 @@ def _source_normalized_default_totals(
         )
         if sensor_id is not None
     }
+    # Custom formulas belong to their detected advanced totals, not native controls.
+    custom_native = _custom_native_total_ids(document, topology)
+    native_ids -= custom_native
     # Package filenames discard repository/ref provenance; defaults alone are not evidence.
     if any(effective.get(sensor_id) is None for sensor_id in native_ids):
         return None
 
     def visible(sensor_id: str) -> bool:
+        if sensor_id in custom_native:
+            return False
         return cast(bool, effective[sensor_id])
 
     definitions = native_total_sources(topology)
@@ -1549,14 +1566,19 @@ def _default_total_groups(
 def _default_daily_energy_power_ids(
     document: ESPHomeConfigDocument,
 ) -> frozenset[str]:
-    matches = [
-        _plain_sensor_scalar(item.get("power_id", ""))
-        for item in _root_sensor_items(document)
-        if _plain_sensor_scalar(item.get("platform", "")) == "total_daily_energy"
-        and _plain_sensor_scalar(item.get("id", "")) == "totalEnergyDaily"
-        and _plain_sensor_scalar(item.get("unit_of_measurement", "")) == "kWh"
-    ]
-    return frozenset(matches) if len(matches) == 1 and matches[0] else frozenset()
+    items = [item for item in _root_sensor_items(document)
+        if _plain_sensor_scalar(item.get("id", "").removeprefix("!extend ")) == "totalEnergyDaily"]
+    definitions = [item for item in items if not item["id"].startswith("!extend ")]
+    overrides = [item for item in items if item["id"].startswith("!extend ")]
+    if len(definitions) != 1 or len(overrides) > 1:
+        return frozenset()
+    effective = {**definitions[0], **(overrides[0] if overrides else {})}
+    power_id = _plain_sensor_scalar(effective.get("power_id", ""))
+    return frozenset({power_id}) if (
+        power_id and _plain_sensor_scalar(effective.get("platform", "")) == "total_daily_energy"
+        and _plain_sensor_scalar(effective.get("unit_of_measurement", "")) == "kWh"
+        and effective.get("internal", "false") == "false"
+    ) else frozenset()
 
 
 def _root_sensor_items(
@@ -1666,8 +1688,11 @@ def _source_daily_energy_items(document: ESPHomeConfigDocument, *, include_hidde
 
 
 def _custom_native_total_ids(document: ESPHomeConfigDocument, topology: MeterTopology) -> frozenset[str]:
-    """A native-looking ID is not a native total when its direct CT sum differs."""
-    items = _legacy_template_total_items(document)
+    """Only proven stock CT sums may use the default-total controls."""
+    items = {
+        _plain_sensor_scalar(item.get("id", "").removeprefix("!extend ")): item
+        for item in _root_sensor_items(document) if "lambda" in item
+    }
     custom: set[str] = set()
     for source in native_total_sources(topology):
         for sensor_id, kind in ((source.power_id, "Watts"), (source.current_id, "Amps")):
@@ -1676,12 +1701,10 @@ def _custom_native_total_ids(document: ESPHomeConfigDocument, topology: MeterTop
                 continue
             references = _sum_references(item["lambda"]) or ()
             matches = [re.fullmatch(rf"ct([1-9][0-9]*){kind}", reference) for reference in references]
-            if not matches or any(match is None for match in matches):
-                continue
             channels = [int(match[1]) for match in matches if match is not None]
-            if (len(set(channels)) == len(channels)
-                and all(channel <= topology.ct_count for channel in channels)
-                and set(channels) != set(source.leaf_channels)):
+            if (not matches or any(match is None for match in matches)
+                or "filters" in item or len(set(channels)) != len(channels)
+                or set(channels) != set(source.leaf_channels)):
                 custom.update(value for value in (source.power_id, source.current_id, source.existing_energy_id) if value is not None)
     return frozenset(custom)
 
@@ -1779,6 +1802,7 @@ def _legacy_aggregates(
     items = _legacy_template_total_items(document, excluded_ids)
     if not items:
         return (), {}
+    energy_capable_power_ids = energy_power_ids | _source_daily_energy_items(document, include_hidden=True).keys()
     defaults: dict[str, tuple[tuple[int, ...], str]] = {}
     for group_id, _label, group_channels, power_id in default_groups:
         defaults[power_id] = (group_channels, f"{group_id}-total")
@@ -1852,7 +1876,7 @@ def _legacy_aggregates(
                 if len(first) == 2
                 else MeasurementMethod.DIRECT,
                 EnergyMode.CONSUMPTION
-                if power is not None and power[0] in energy_power_ids
+                if power is not None and power[0] in energy_capable_power_ids
                 else EnergyMode.NONE,
                 TotalOutputSettings(
                     power is not None and power[0] not in hidden_ids and _plain_sensor_scalar(power[1].get("internal", "")) != "true",

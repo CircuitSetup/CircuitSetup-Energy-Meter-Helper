@@ -2007,9 +2007,10 @@ const moveTab = (event, index) => {
   tabs[next]?.focus();
 };
 const range = (channels) => channels.length ? `CT${channels[0]}–CT${channels.at(-1)}` : "No CTs";
-function defaultTotalsSection(configuration, totals, readable, writable, update, graphState = "ready") {
+function defaultTotalsSection(configuration, totals, readable, writable, update, graphState = "ready", reasonCodes = []) {
   if (!readable) return b`<section class="default-totals" aria-labelledby="default-totals-heading"><h2 id="default-totals-heading">Default meter totals</h2><p class="info-band" role="status">Native default totals are unavailable for this configuration.</p></section>`;
-  const overall = totals.native_sources.find((source) => source.source_id === "overall");
+  const custom = totals.native_sources.filter((source) => reasonCodes.includes(`native_total_custom_formula:${source.source_id}`));
+  const overall = totals.native_sources.find((source) => source.source_id === "overall" && !custom.includes(source));
   const boards = totals.native_sources.filter((source) => source.source_id !== "overall");
   const patch = (outputs, boardIndex) => update({
     ...configuration,
@@ -2022,6 +2023,7 @@ function defaultTotalsSection(configuration, totals, readable, writable, update,
   const visibilityUnresolved = !totals.migration.native_visibility_resolved;
   return b`<section class="default-totals" aria-labelledby="default-totals-heading">
     <h2 id="default-totals-heading">Default meter totals</h2>
+    ${custom.map((source) => b`<p class="info-band" role="status">${source.label} uses a custom formula. Edit recognized circuits under Advanced totals; other formulas require ESPHome Device Builder.</p>`)}
     ${visibilityUnresolved ? b`<p class="info-band" role="status">Native source visibility is unconfirmed; these controls show requested outputs, not confirmed installed publications.</p>` : A}
     ${graphState === "pending" ? b`<p class="info-band" role="status">Updating total graph; current native cards remain available.</p>` : graphState === "invalid" ? b`<p class="warning-band" role="status">Total graph unavailable; native cards show saved draft status and not current dependency results.</p>` : A}
     <p>These switches control Home Assistant visibility.</p>
@@ -2040,6 +2042,7 @@ function defaultTotalsSection(configuration, totals, readable, writable, update,
       </div>
     </fieldset>` : A}
     ${boards.map((source, boardIndex) => {
+    if (custom.includes(source)) return A;
     const settings = configuration.default_totals.boards.find((board) => board.board_index === boardIndex)?.outputs;
     if (!settings) return A;
     return b`<fieldset class="default-total-card"><legend>${source.label}</legend><p>${range(source.leaf_channels)}</p>
@@ -2480,7 +2483,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
       ${configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : A}
-      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState) : A}
+      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState, meterInventory?.capabilities.reason_codes) : A}
       ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration) : A}
       ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh) : A}
       ${reviewRequirements}

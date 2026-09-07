@@ -898,6 +898,28 @@ def test_helper_and_official_totals_populate_together_with_global_visibility() -
     assert aggregates["mains1"].outputs.watts
 
 
+@pytest.mark.parametrize("sensor_id", ("", "totalEnergyDaily", "houseEnergy"))
+@pytest.mark.parametrize("internal", ("true", "false"))
+def test_existing_total_energy_capability_is_independent_of_visibility(sensor_id: str, internal: str) -> None:
+    content = _document(contract=True, addon_count=1) + (
+        "sensor:\n  - platform: template\n    id: totalHouseWatts\n    name: House Watts\n"
+        "    lambda: return id(ct1Watts).state + id(ct2Watts).state;\n"
+        "    unit_of_measurement: W\n    device_class: power\n"
+        "  - platform: total_daily_energy\n    name: House kWh\n"
+        + (f"    id: {sensor_id}\n" if sensor_id else "")
+        + f"    internal: {internal}\n    power_id: totalHouseWatts\n"
+        "    unit_of_measurement: kWh\n    device_class: energy\n    state_class: total_increasing\n"
+    )
+    total = next(item for item in _inventory(content).configuration.aggregates if item.aggregate_id == "total-house")
+    assert total.energy_mode is EnergyMode.CONSUMPTION
+    assert total.outputs.kwh is (internal == "false")
+    if sensor_id:
+        content += f"  - id: !extend {sensor_id}\n    internal: {'false' if internal == 'true' else 'true'}\n"
+        total = next(item for item in _inventory(content).configuration.aggregates if item.aggregate_id == "total-house")
+        assert total.energy_mode is EnergyMode.CONSUMPTION
+        assert total.outputs.kwh is (internal == "true")
+
+
 def test_custom_template_totals_preserve_channels_names_and_visibility() -> None:
     """Root template sums are editable even when HA hides one output."""
     content = _document(contract=True, addon_count=1) + (

@@ -10,9 +10,11 @@ export function defaultTotalsSection(
   writable: boolean,
   update: (configuration: MeterConfigurationRequest) => void,
   graphState: "ready" | "pending" | "invalid" = "ready",
+  reasonCodes: readonly string[] = [],
 ): TemplateResult {
   if (!readable) return html`<section class="default-totals" aria-labelledby="default-totals-heading"><h2 id="default-totals-heading">Default meter totals</h2><p class="info-band" role="status">Native default totals are unavailable for this configuration.</p></section>`;
-  const overall = totals.native_sources.find((source) => source.source_id === "overall");
+  const custom = totals.native_sources.filter((source) => reasonCodes.includes(`native_total_custom_formula:${source.source_id}`));
+  const overall = totals.native_sources.find((source) => source.source_id === "overall" && !custom.includes(source));
   const boards = totals.native_sources.filter((source) => source.source_id !== "overall");
   const patch = (outputs: DefaultTotalsSettings["overall"], boardIndex?: number) => update({ ...configuration,
     default_totals: boardIndex === undefined
@@ -26,6 +28,7 @@ export function defaultTotalsSection(
   const visibilityUnresolved = !totals.migration.native_visibility_resolved;
   return html`<section class="default-totals" aria-labelledby="default-totals-heading">
     <h2 id="default-totals-heading">Default meter totals</h2>
+    ${custom.map((source) => html`<p class="info-band" role="status">${source.label} uses a custom formula. Edit recognized circuits under Advanced totals; other formulas require ESPHome Device Builder.</p>`)}
     ${visibilityUnresolved ? html`<p class="info-band" role="status">Native source visibility is unconfirmed; these controls show requested outputs, not confirmed installed publications.</p>` : nothing}
     ${graphState === "pending" ? html`<p class="info-band" role="status">Updating total graph; current native cards remain available.</p>` : graphState === "invalid" ? html`<p class="warning-band" role="status">Total graph unavailable; native cards show saved draft status and not current dependency results.</p>` : nothing}
     <p>These switches control Home Assistant visibility.</p>
@@ -44,6 +47,7 @@ export function defaultTotalsSection(
       </div>
     </fieldset>` : nothing}
     ${boards.map((source, boardIndex) => {
+      if (custom.includes(source)) return nothing;
       const settings = configuration.default_totals.boards.find((board) => board.board_index === boardIndex)?.outputs;
       if (!settings) return nothing;
       return html`<fieldset class="default-total-card"><legend>${source.label}</legend><p>${range(source.leaf_channels)}</p>
