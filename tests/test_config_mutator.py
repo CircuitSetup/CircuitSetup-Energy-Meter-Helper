@@ -100,6 +100,47 @@ def _snapshot(*, missing: str | None = None, quote: str = '"') -> ESPHomeConfigS
     )
 
 
+@pytest.mark.parametrize("calibrated", (False, True))
+@pytest.mark.parametrize("gain", (2222, 11143))
+@pytest.mark.parametrize("phase", ("phase_a:\n      gain_ct: 1234", "phase_a: {gain_ct: 1234}"))
+def test_local_current_gain_cannot_shadow_confirmed_gain(calibrated: bool, gain: int, phase: str) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.topology import (
+        voltage_reference_fingerprint_for_meter,
+    )
+    from tests.test_restart_verification import _record
+
+    snapshot = _snapshot()
+    content = snapshot.content.replace("logger:\n", f"  - id: !extend meter_main1\n    {phase}\nlogger:\n")
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    with pytest.raises(ConfigMutationError, match="current gain"):
+        if calibrated:
+            config_mutator.build_calibrated_gain_mutation(
+                snapshot, _topology(), replace(
+                    _record(snapshot, ((7304, gain),) * 3),
+                    topology_voltage_fingerprint=voltage_reference_fingerprint_for_meter(_topology()),
+                )
+            )
+        else:
+            build_ct_mutation(snapshot, _topology(), (
+                CTChangeRequest(1, "CT 1", "custom", custom_gain_ct=gain,
+                    custom_label="Other CT", burden_output_acknowledged=True),
+            ))
+
+
+@pytest.mark.parametrize("owner,gain", (("meter_main2", "1234"), ("meter_main1", "${current_cal_ct1}")))
+def test_current_gain_edit_preserves_unaffected_or_substitution_bound_gain(owner: str, gain: str) -> None:
+    snapshot = _snapshot()
+    override = f"  - id: !extend {owner}\n    phase_a:\n      gain_ct: {gain}\n"
+    content = snapshot.content.replace("logger:\n", override + "logger:\n")
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    plan = build_ct_mutation(snapshot, _topology(), (
+        CTChangeRequest(1, "CT 1", "custom", custom_gain_ct=2222,
+            custom_label="Other CT", burden_output_acknowledged=True),
+    ))
+    assert override in plan.proposed_content
+    assert 'current_cal_ct1: "2222"' in plan.proposed_content
+
+
 def _contract_snapshot(*, generic_totals: bool = False) -> ESPHomeConfigSnapshot:
     """Return the smallest contract-2 source with optional official totals."""
     snapshot = _snapshot()

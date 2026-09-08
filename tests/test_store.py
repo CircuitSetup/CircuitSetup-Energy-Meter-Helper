@@ -1252,6 +1252,58 @@ def test_calibrated_install_persists_full_meter_metadata_atomically() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("legacy", (False, True))
+@pytest.mark.parametrize("handoff_completed", (False, True))
+def test_later_install_revokes_old_calibration_flash_clear_receipt(
+    legacy: bool, handoff_completed: bool
+) -> None:
+    """A previous firmware receipt cannot authorize clearing flash after a new install."""
+
+    async def run() -> None:
+        store = object.__new__(HelperStore)
+        store._store = _CopyingStorage()
+        store._update_lock = asyncio.Lock()
+        calibration = VerifiedCalibrationRecord(
+            MAC, "meter.yaml", CONFIG_HASH, 0,
+            "circuitsetup.6c-energy-meter", "wifi", "standard", 1,
+            (VerifiedGainGroup("meter_main1", ((7305, 27518),) * 3),),
+            "b" * 32,
+        )
+        transaction_id = "c" * 32
+        await store.async_save_meter(_record())
+        await store.async_save_verified_calibration(calibration)
+        await store.async_save_verified_ct_selections(MAC, ())
+        await store.async_save_verified_meter_configuration(MAC, CONFIG_HASH, _configuration())
+        assert await store.async_get_verified_calibration(MAC) == calibration
+        assert await store.async_claim_verified_calibration(
+            MAC, calibration.verification_id, transaction_id
+        )
+        assert await store.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+            MAC, CONFIG_HASH, replace(_configuration(), config_sha256=PROPOSED_HASH),
+            calibration.verification_id, transaction_id,
+        )
+        if handoff_completed:
+            assert await store.async_complete_verified_calibration_handoff(
+                MAC, calibration.verification_id, transaction_id
+            )
+
+        if legacy:
+            await store.async_save_verified_ct_selections(
+                MAC, (StoredCTSelection(1, "ct", None, 1234, 1.0, "d" * 64),)
+            )
+        else:
+            await store.async_save_verified_meter_configuration(
+                MAC, PROPOSED_HASH, replace(_configuration(), config_sha256="d" * 64)
+            )
+
+        assert not await store.async_complete_verified_calibration_handoff(
+            MAC, calibration.verification_id, transaction_id
+        )
+        assert await store.async_get_verified_calibration(MAC) is None
+
+    asyncio.run(run())
+
+
 def test_legacy_calibrated_install_commits_selections_and_marker_in_one_save() -> (
     None
 ):

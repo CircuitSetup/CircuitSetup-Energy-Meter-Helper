@@ -710,7 +710,49 @@ def test_write_and_compile_are_distinct_confirmed_phases() -> None:
 
         compiled = await manager.async_compile(preview.transaction_id)
         assert compiled.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
-        assert builder.calls == ["write", "validate", "compile"]
+        assert builder.calls == ["write", "validate", "read", "compile", "read"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("stage", ("before_compile", "during_compile", "before_upload"))
+def test_changed_confirmed_source_blocks_build_or_install(stage: str) -> None:
+    """A filename never authorizes building or installing someone else's YAML."""
+    async def run() -> None:
+        builder = Builder()
+        persistence = Persistence()
+        manager = _manager(builder, persistence)
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        foreign = builder.remote_content + "  ct1_cal: 1234\n"
+        if stage == "before_upload":
+            await manager.async_compile(preview.transaction_id)
+        if stage == "during_compile":
+            resume = builder.pause("compile")
+            compile_task = asyncio.create_task(manager.async_compile(preview.transaction_id))
+            await builder.started["compile"].wait()
+            builder.remote_content = foreign
+            resume.set()
+            operation = compile_task
+        else:
+            builder.remote_content = foreign
+            operation = (
+                manager.async_confirm_install(preview.transaction_id, "admin")
+                if stage == "before_upload"
+                else manager.async_compile(preview.transaction_id)
+            )
+        with pytest.raises(ValueError, match="source.*stale|source.*changed"):
+            await operation
+        status = manager.status(preview.transaction_id)
+        assert status.state is ConfigTransactionState.FAILED
+        assert TransactionEvidenceCode.SOURCE_CHANGED in status.evidence
+        assert "upload" not in builder.calls
+        if stage == "before_compile":
+            assert "compile" not in builder.calls
+        assert not persistence.saved
+        await manager.async_rollback(preview.transaction_id)
+        assert builder.remote_content == foreign
+        assert builder.restored_content is None
 
     asyncio.run(run())
 
@@ -1831,7 +1873,9 @@ def test_confirmations_and_verified_persistence_are_separate() -> None:
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
         assert status.state is ConfigTransactionState.VERIFIED
         assert not status.full_meter_configuration_verified
-        assert builder.calls == ["write", "validate", "compile", "upload"]
+        assert builder.calls == [
+            "write", "validate", "read", "compile", "read", "read", "upload", "read"
+        ]
         saved = persistence.saved[0][1][0]  # type: ignore[index]
         assert (
             saved.config_sha256 == sha256(_plan().proposed_content.encode()).hexdigest()

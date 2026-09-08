@@ -1415,6 +1415,10 @@ class HelperStore:
             meter["ct_selections"] = [
                 _serialize_ct_selection(item) for item in selections
             ]
+            # Revoke obsolete install receipts, retaining flash-only calibration evidence.
+            calibration = meter.get("verified_calibration")
+            if isinstance(calibration, dict) and calibration.get("source_handoff_firmware_installed"):
+                meter.pop("verified_calibration")
             await self._store.async_save(data)
 
     async def async_get_ct_selections(self, mac: str) -> tuple[StoredCTSelection, ...]:
@@ -1538,6 +1542,10 @@ class HelperStore:
                 record,
                 raw_meter,
             )
+            # Only the atomic calibrated-install path can renew an install receipt.
+            calibration = meters[mac].get("verified_calibration")
+            if isinstance(calibration, dict) and calibration.get("source_handoff_firmware_installed"):
+                meters[mac].pop("verified_calibration")
             await self._store.async_save(data)
 
     async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(

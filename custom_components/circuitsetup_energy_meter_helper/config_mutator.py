@@ -683,12 +683,12 @@ def _append_change(
     substitutions: dict[str, ConfigScalar],
 ) -> None:
     current = substitutions.get(key)
+    values[key] = new_value
     if current is not None and _same_value(key, current.value, new_value):
         return
     changes.append(
         SubstitutionChange(key, current.value if current else None, new_value)
     )
-    values[key] = new_value
 
 
 def _same_value(key: str, old_value: str, new_value: str) -> bool:
@@ -705,6 +705,21 @@ def _apply_changes(
     changes: list[SubstitutionChange],
     values: dict[str, str],
 ) -> str:
+    current_gains = {
+        int(key.removeprefix("current_cal_ct")): frozenset(("gain_ct",))
+        for key in values
+        if key.startswith("current_cal_ct")
+    }
+    if current_gains and any(
+        "gain_ct" in _yaml_flow_keys(line)
+        or ((mapping := _yaml_mapping(line)) is not None and mapping[2] == "gain_ct")
+        or _yaml_explicit_key(line) == "gain_ct"
+        for line in document.code_lines
+    ):
+        try:
+            _reject_local_output_filters(document.content, current_gains, document.substitutions)
+        except ConfigMutationError as error:
+            raise ConfigMutationError("existing current gain overrides are not safely writable") from error
     edits: list[tuple[int, int, str]] = []
     missing: list[SubstitutionChange] = []
     for change in changes:
@@ -1474,7 +1489,9 @@ def _reject_local_output_filters(
             if phase_rest.strip():
                 if phase_rest.lstrip().startswith("{"):
                     flow_keys = _yaml_flow_keys(phase_rest)
-                    if flow_keys.intersection(outputs) and "filters" in flow_keys:
+                    if flow_keys.intersection(outputs) and (
+                        "filters" in flow_keys or "gain_ct" in outputs
+                    ):
                         _filter_conflict(channel)
                 else:
                     _filter_conflict(channel)
@@ -1511,6 +1528,10 @@ def _reject_local_output_filters(
                     continue
                 _, sequence, output_name, output_rest, _ = output
                 if output_name not in outputs:
+                    continue
+                if output_name == "gain_ct":
+                    if _yaml_identifier(output_rest) != f"current_cal_ct{channel}":
+                        _filter_conflict(channel)
                     continue
                 if sequence or output_name in seen_outputs:
                     _filter_conflict(channel)

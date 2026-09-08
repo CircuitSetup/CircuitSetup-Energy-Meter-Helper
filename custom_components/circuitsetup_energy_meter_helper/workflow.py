@@ -101,6 +101,7 @@ from .topology import (
     topology_from_config,
     topology_from_native,
     verified_voltage_reference_fingerprint,
+    voltage_reference_topology_from_legacy,
 )
 from .total_graph import (
     AutomaticTotalCandidate,
@@ -2053,21 +2054,27 @@ class EntryWorkflow:
     ) -> tuple[Any, ...]:
         configuration = handle.meter_configuration
         if configuration is None:
-            raise WorkflowHandleError("meter configuration is unavailable")
-        references = configuration.meter.voltage_references
+            if not handle.binding.native:
+                raise WorkflowHandleError("meter configuration is unavailable")
+            references = voltage_reference_topology_from_legacy(handle.topology).references
+        else:
+            references = tuple(
+                (reference.reference_id, reference.group_keys)
+                for reference in configuration.meter.voltage_references
+            )
         groups_by_key = {group.key: group for group in handle.binding.groups}
-        assigned = [key for reference in references for key in reference.group_keys]
+        assigned = [key for _, group_keys in references for key in group_keys]
         if not assigned or len(assigned) != len(set(assigned)):
             raise WorkflowHandleError("voltage reference group assignments are invalid")
         if set(assigned) != set(groups_by_key):
             raise WorkflowHandleError(
                 "voltage reference group assignments are incomplete"
             )
-        matched = [item for item in references if item.reference_id == reference_id]
-        if len(matched) != 1 or not matched[0].group_keys:
+        matched = [group_keys for item_id, group_keys in references if item_id == reference_id]
+        if len(matched) != 1 or not matched[0]:
             raise WorkflowHandleError("unknown voltage reference")
         try:
-            return tuple(groups_by_key[key] for key in matched[0].group_keys)
+            return tuple(groups_by_key[key] for key in matched[0])
         except KeyError:
             raise WorkflowHandleError(
                 "voltage reference group assignments are invalid"
@@ -2255,9 +2262,11 @@ class EntryWorkflow:
     ) -> Any:
         """Clear only installed, gain-only groups and prove YAML is authoritative."""
         handle, revision = self._claim_ready_session(session_id, allow_verified=True)
+        lease = None
         try:
             if handle.state not in {"verified", "offset_configuration_selected"} or handle.stock_offset_pending:
                 raise WorkflowHandleError("calibration source handoff is unavailable")
+            lease = await self._sessions_owner.async_acquire_calibration(handle.mac)
             record = await self._store.async_get_verified_calibration(handle.mac)
             if record is None or record.verification_id != verification_id:
                 raise WorkflowHandleError("calibrated firmware installation is unverified")
@@ -2306,6 +2315,8 @@ class EntryWorkflow:
                 record, source_authority=CalibrationSourceAuthority.CONFIGURATION
             )
         finally:
+            if lease is not None:
+                lease.release()
             self._release_claim(handle, revision)
 
     async def async_cancel_session(self, session_id: str) -> SessionStatus:
