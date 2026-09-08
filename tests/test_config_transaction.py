@@ -198,6 +198,12 @@ class UncertainUpdateBuilder(Builder):
 
 
 class Persistence:
+    async def async_revoke_installed_calibration(
+        self, mac: str, *, expected_record_fingerprint: str | None = None
+    ) -> str | None:
+        """This fake has no stored installation receipt."""
+        return expected_record_fingerprint
+
     async def async_advance_offset_configuration_source(
         self,
         mac: str,
@@ -560,6 +566,178 @@ async def _preview(
     return await manager.async_preview(
         mac, _topology(), _plan(content), _source(content), (_selection(),)
     )
+
+
+@pytest.mark.parametrize("failure", (
+    "upload_cancel", "upload_response_lost", "reconnect_cancel",
+    "reconnect_timeout", "metadata_save", "receipt_save",
+))
+def test_new_upload_revokes_previous_flash_clear_authority_before_side_effects(failure: str) -> None:
+    """Failed or uncertain OTA cannot leave an older firmware receipt usable."""
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        HelperStore,
+        VerifiedCalibrationRecord,
+        VerifiedGainGroup,
+    )
+    from tests.test_store import _CopyingStorage, _record
+
+    class Storage(_CopyingStorage):
+        fail = False
+
+        async def async_save(self, data: dict[str, object]) -> None:
+            if self.fail:
+                raise OSError("storage unavailable")
+            await super().async_save(data)
+
+    async def run() -> None:
+        store = object.__new__(HelperStore)
+        store._store = backend = Storage()  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record(_source().sha256))
+        record = VerifiedCalibrationRecord(
+            "aabbccddeeff", "meter.yaml", _source().sha256, 0,
+            _topology().project_name, "wifi", "standard", 1,
+            (VerifiedGainGroup("meter_main1", ((7301, 28001),) * 3),),
+            "1" * 32, source_handoff_available=False,
+            source_handoff_transaction_id="2" * 32,
+            source_handoff_firmware_installed=True,
+        )
+        await store.async_save_verified_calibration(record)
+        upload_receipts = []
+
+        class UploadBuilder(Builder):
+            async def async_upload(self, configuration, progress=None):
+                upload_receipts.append(await store.async_get_verified_calibration(record.mac))
+                backend.fail = failure == "metadata_save"
+                return await super().async_upload(configuration, progress)
+
+        builder = UploadBuilder(upload=(
+            asyncio.CancelledError() if failure == "upload_cancel" else
+            ConnectionError() if failure == "upload_response_lost" else None
+        ))
+        manager = _manager(builder, store, evidence=(  # type: ignore[arg-type]
+            asyncio.CancelledError() if failure == "reconnect_cancel" else
+            ConnectionError() if failure == "reconnect_timeout" else None
+        ))
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        backend.fail = failure == "receipt_save"
+        if failure in {"upload_cancel", "reconnect_cancel"}:
+            with pytest.raises(asyncio.CancelledError):
+                await manager.async_confirm_install(preview.transaction_id, "admin")
+        else:
+            result = await manager.async_confirm_install(preview.transaction_id, "admin")
+            if failure == "reconnect_timeout":
+                await manager.async_rollback(preview.transaction_id)
+            else:
+                assert result.state is ConfigTransactionState.FAILED
+        backend.fail = False
+        assert not manager.sessions.is_config_locked(record.mac)
+        if failure == "receipt_save":
+            assert "upload" not in builder.calls
+            assert await store.async_get_verified_calibration(record.mac) == record
+        else:
+            assert "upload" in builder.calls
+            assert upload_receipts == [None]
+            assert not await store.async_complete_verified_calibration_handoff(
+                record.mac, record.verification_id, "2" * 32
+            )
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("external_change", (False, True))
+def test_receipt_revocation_advances_only_its_own_stale_metadata_fingerprint(external_change: bool) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        HelperStore,
+        VerifiedCalibrationRecord,
+        VerifiedGainGroup,
+    )
+    from tests.test_store import _CopyingStorage, _record
+
+    async def run() -> None:
+        store = object.__new__(HelperStore)
+        store._store = _CopyingStorage()  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+        record = VerifiedCalibrationRecord(
+            "aabbccddeeff", "meter.yaml", "a" * 64, 0,
+            _topology().project_name, "wifi", "standard", 1,
+            (VerifiedGainGroup("meter_main1", ((7301, 28001),) * 3),),
+            "1" * 32, source_handoff_available=False,
+            source_handoff_transaction_id="2" * 32,
+            source_handoff_firmware_installed=True,
+        )
+        await store.async_save_verified_calibration(record)
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter, configuration.channels,
+                configuration.default_totals, configuration.automatic_totals,
+                configuration.aggregates, configuration.power_quality,
+                configuration.status_fields,
+            ), _topology(),
+        )
+        builder = Builder()
+        manager = _manager(builder, store, evidence=ReconnectEvidence(  # type: ignore[arg-type]
+            record.mac, _topology(),
+            {channel.channel: channel.name for channel in configuration.channels},
+            6, expected.sensor_entities,
+        ))
+        preview = await manager.async_preview(
+            record.mac, _topology(), plan, _source(),
+            meter_configuration=configuration, reconcile_stale_metadata=True,
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        if external_change:
+            await store.async_save_verified_calibration(replace(record, verification_id="3" * 32))
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+        if external_change:
+            assert status.state is ConfigTransactionState.FAILED
+            assert "upload" not in builder.calls
+            assert await store.async_get_verified_calibration(record.mac) == replace(record, verification_id="3" * 32)
+        else:
+            assert status.state is ConfigTransactionState.VERIFIED
+            assert await store.async_get_meter_configuration(record.mac) == configuration
+            assert await store.async_get_verified_calibration(record.mac) is None
+
+    asyncio.run(run())
+
+
+def test_cancelling_receipt_revocation_drains_storage_before_releasing_meter() -> None:
+    async def run() -> None:
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        class BlockingPersistence(Persistence):
+            async def async_revoke_installed_calibration(
+                self, mac: str, *, expected_record_fingerprint: str | None = None
+            ) -> str | None:
+                started.set()
+                await finish.wait()
+                return expected_record_fingerprint
+
+        builder = Builder()
+        manager = _manager(builder, BlockingPersistence())
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        task = asyncio.create_task(manager.async_confirm_install(preview.transaction_id, "admin"))
+        await started.wait()
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert manager.sessions.is_config_locked("aabbccddeeff")
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert "upload" not in builder.calls
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
+
+    asyncio.run(run())
 
 
 def test_preview_binds_source_and_exposes_only_bounded_safe_dto() -> None:

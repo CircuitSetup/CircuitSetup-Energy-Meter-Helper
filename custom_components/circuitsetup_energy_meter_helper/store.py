@@ -11,8 +11,9 @@ from enum import StrEnum
 from hashlib import sha256
 from typing import Any, cast
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util.json import load_json
 
 from .ct_catalog import REPORTING_MULTIPLIERS
 from .meter_configuration import (
@@ -290,6 +291,20 @@ def migrate_storage(
 
 class _HelperStorage(Store[dict[str, Any]]):
     """Store whose live migration path uses the helper's strict guard."""
+
+    async def async_save_verified(self, data: dict[str, Any]) -> None:
+        """Require disk evidence because Home Assistant logs some save failures."""
+        if self.hass.state is CoreState.stopping:
+            raise OSError("durable storage write is unavailable during shutdown")
+        await self.async_save(data)
+        persisted = await self.hass.async_add_executor_job(load_json, self.path)
+        if persisted != {
+            "version": self.version,
+            "minor_version": self.minor_version,
+            "key": self.key,
+            "data": data,
+        }:
+            raise OSError("durable storage write could not be verified")
 
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
@@ -1285,6 +1300,7 @@ class HelperStore:
             STORAGE_VERSION,
             STORAGE_KEY,
             minor_version=STORAGE_MINOR_VERSION,
+            atomic_writes=True,
         )
         self._update_lock = asyncio.Lock()
 
@@ -1723,6 +1739,33 @@ class HelperStore:
         data = await self.async_load()
         raw = data.get("meters", {}).get(mac, {}).get("verified_calibration")
         return None if raw is None else _deserialize_verified_calibration(mac, raw)
+
+    async def async_revoke_installed_calibration(
+        self, mac: str, *, expected_record_fingerprint: str | None = None
+    ) -> str | None:
+        """Durably revoke old firmware authority before an OTA can change it."""
+        mac = canonical_mac(mac)
+        async with self._update_lock:
+            data = await self.async_load()
+            if (
+                expected_record_fingerprint is not None
+                and _meter_record_fingerprint(mac, data["meters"]) != expected_record_fingerprint
+            ):
+                raise ValueError("meter record changed since preview")
+            meter = data.get("meters", {}).get(mac, {})
+            raw = meter.get("verified_calibration")
+            if (
+                raw is None
+                or not _deserialize_verified_calibration(mac, raw).source_handoff_firmware_installed
+            ):
+                return expected_record_fingerprint
+            # Copy before saving so a failed save cannot make a retry skip revocation.
+            data["meters"][mac] = {**meter, "verified_calibration": None}
+            await self._store.async_save_verified(data)
+            return (
+                _meter_record_fingerprint(mac, data["meters"])
+                if expected_record_fingerprint is not None else None
+            )
 
     async def async_claim_verified_calibration(
         self, mac: str, verification_id: str, transaction_id: str

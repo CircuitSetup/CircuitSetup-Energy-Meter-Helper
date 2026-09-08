@@ -141,6 +141,58 @@ def test_current_gain_edit_preserves_unaffected_or_substitution_bound_gain(owner
     assert 'current_cal_ct1: "2222"' in plan.proposed_content
 
 
+@pytest.mark.parametrize("mode", ("ct", "meter", "calibrated"))
+@pytest.mark.parametrize("gain", (2222, 11143))
+@pytest.mark.parametrize("override", (
+    "  - id: !extend meter_main1\n    phase_a: !include calibrated_phase.yaml\n",
+    "  - !include calibrated_meter.yaml\n",
+))
+def test_current_gain_rejects_unresolved_sensor_includes(mode: str, gain: int, override: str) -> None:
+    # The included phase contains gain_ct: 1234, which shadows current_cal_ct1.
+    from custom_components.circuitsetup_energy_meter_helper.topology import (
+        voltage_reference_fingerprint_for_meter,
+    )
+    from tests.test_restart_verification import _record
+
+    snapshot = _snapshot()
+    content = snapshot.content.replace("logger:\n", override + "logger:\n")
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    with pytest.raises(ConfigMutationError, match="current gain"):
+        if mode == "calibrated":
+            config_mutator.build_calibrated_gain_mutation(
+                snapshot, _topology(), replace(
+                    _record(snapshot, ((7304, gain),) * 3),
+                    topology_voltage_fingerprint=voltage_reference_fingerprint_for_meter(_topology()),
+                ),
+            )
+        elif mode == "meter":
+            current = _inventory(snapshot, _topology())
+            requested = replace(current.configuration, channels=tuple(
+                replace(channel, model_id="custom", custom_gain_ct=gain,
+                    custom_label="Other CT", burden_output_acknowledged=True)
+                if channel.channel == 1 else channel for channel in current.configuration.channels
+            ))
+            build_meter_configuration_mutation(snapshot, _topology(), current, requested)
+        else:
+            build_ct_mutation(snapshot, _topology(), (
+                CTChangeRequest(1, "CT 1", "custom", custom_gain_ct=gain,
+                    custom_label="Other CT", burden_output_acknowledged=True),
+            ))
+
+
+def test_meter_voltage_only_edit_rejects_included_gain() -> None:
+    snapshot = _snapshot()
+    content = snapshot.content.replace("logger:\n",
+        "  - id: !extend meter_main1\n    phase_a: !include calibrated_phase.yaml\nlogger:\n")
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    current = _inventory(snapshot, _topology())
+    requested = replace(current.configuration, meter=replace(current.configuration.meter,
+        voltage_references=tuple(replace(reference, gain_voltage=7312)
+            for reference in current.configuration.meter.voltage_references)))
+    with pytest.raises(ConfigMutationError):
+        build_meter_configuration_mutation(snapshot, _topology(), current, requested)
+
+
 def _contract_snapshot(*, generic_totals: bool = False) -> ESPHomeConfigSnapshot:
     """Return the smallest contract-2 source with optional official totals."""
     snapshot = _snapshot()

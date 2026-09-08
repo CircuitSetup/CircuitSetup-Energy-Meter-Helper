@@ -656,6 +656,9 @@ class _CopyingStorage:
         await asyncio.sleep(0)
         self.data = deepcopy(data)
 
+    async def async_save_verified(self, data: dict[str, object]) -> None:
+        await self.async_save(data)
+
 
 def test_verified_meter_configuration_compare_and_swap_updates_record_and_metadata() -> (
     None
@@ -1299,6 +1302,50 @@ def test_later_install_revokes_old_calibration_flash_clear_receipt(
         assert not await store.async_complete_verified_calibration_handoff(
             MAC, calibration.verification_id, transaction_id
         )
+        assert await store.async_get_verified_calibration(MAC) is None
+
+    asyncio.run(run())
+
+
+def test_pre_upload_revocation_preserves_uninstalled_flash_and_reserved_handoff() -> None:
+    class CachedStorage(_CopyingStorage):
+        fail = False
+
+        async def async_load(self) -> dict[str, object]:
+            return self.data
+
+        async def async_save(self, data: dict[str, object]) -> None:
+            if self.fail:
+                raise OSError("storage unavailable")
+            await super().async_save(data)
+
+    async def run() -> None:
+        store = object.__new__(HelperStore)
+        store._store = backend = CachedStorage()  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        record = VerifiedCalibrationRecord(
+            MAC, "meter.yaml", CONFIG_HASH, 0,
+            "circuitsetup.6c-energy-meter", "wifi", "standard", 1,
+            (VerifiedGainGroup("meter_main1", ((7305, 27518),) * 3),),
+            "b" * 32,
+        )
+        await store.async_save_verified_calibration(record)
+        await store.async_revoke_installed_calibration(MAC)
+        assert await store.async_get_verified_calibration(MAC) == record
+        assert await store.async_claim_verified_calibration(MAC, record.verification_id, "c" * 32)
+        reserved = await store.async_get_verified_calibration(MAC)
+        await store.async_revoke_installed_calibration(MAC)
+        assert await store.async_get_verified_calibration(MAC) == reserved
+        assert await store.async_mark_verified_calibration_installed(MAC, record.verification_id, "c" * 32)
+        assert await store.async_complete_verified_calibration_handoff(MAC, record.verification_id, "c" * 32)
+        installed = await store.async_get_verified_calibration(MAC)
+        backend.fail = True
+        for _ in range(2):
+            with pytest.raises(OSError, match="storage unavailable"):
+                await store.async_revoke_installed_calibration(MAC)
+            assert await store.async_get_verified_calibration(MAC) == installed
+        backend.fail = False
+        await store.async_revoke_installed_calibration(MAC)
         assert await store.async_get_verified_calibration(MAC) is None
 
     asyncio.run(run())

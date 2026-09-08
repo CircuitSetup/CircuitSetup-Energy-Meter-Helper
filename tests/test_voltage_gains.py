@@ -72,6 +72,21 @@ def _effective(content: str, addons: int = 0) -> dict[str, tuple[int, int, int]]
     return effective_voltage_gains(ESPHomeConfigDocument.parse(content), _topology(addons))
 
 
+@pytest.mark.parametrize("override", (
+    "  - id: !extend meter_main1\n    phase_a: !include calibrated_phase.yaml\n",
+    "  - !include calibrated_meter.yaml\n",
+))
+@pytest.mark.parametrize("read_only", (False, True))
+def test_voltage_gain_rejects_unresolved_sensor_includes(override: str, read_only: bool) -> None:
+    # The included phase can contain gain_voltage: 1234, overriding the substitution.
+    content = _stock() + override
+    with pytest.raises(ValueError):
+        if read_only:
+            _effective(content)
+        else:
+            apply_voltage_gain_changes(content, _topology(), {"meter_main1": (7312,) * 3})
+
+
 def test_reads_stock_substitutions_and_sparse_calibration_exceptions() -> None:
     content = _stock() + _calibration_block(
         "  - id: !extend meter_main1\n"

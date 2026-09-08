@@ -710,16 +710,12 @@ def _apply_changes(
         for key in values
         if key.startswith("current_cal_ct")
     }
-    if current_gains and any(
-        "gain_ct" in _yaml_flow_keys(line)
-        or ((mapping := _yaml_mapping(line)) is not None and mapping[2] == "gain_ct")
-        or _yaml_explicit_key(line) == "gain_ct"
-        for line in document.code_lines
-    ):
+    if current_gains:
         try:
+            # Includes and aliases can hide gains even when no local gain_ct key exists.
             _reject_local_output_filters(document.content, current_gains, document.substitutions)
         except ConfigMutationError as error:
-            raise ConfigMutationError("existing current gain overrides are not safely writable") from error
+            raise ConfigMutationError(f"existing current gain overrides are not safely writable: {error}") from error
     edits: list[tuple[int, int, str]] = []
     missing: list[SubstitutionChange] = []
     for change in changes:
@@ -1379,6 +1375,12 @@ def _reject_local_output_filters(
             targets.setdefault(alias, {})[phase] = (channel, outputs)
     document = ESPHomeConfigDocument.parse(content)
     lines = document.code_lines
+    if targets and document.writable_sensor_span is None and any(
+        (mapping := _yaml_mapping(line)) is not None
+        and mapping[0] == 0 and mapping[2] == "sensor"
+        for line in lines
+    ):
+        raise ConfigMutationError("sensor block gains or filters are unresolved")
     for index, line in enumerate(lines):
         item = re.match(r"(?P<indent> *)-\s+", line)
         if item is None:

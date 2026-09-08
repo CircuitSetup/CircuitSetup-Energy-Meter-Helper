@@ -234,6 +234,10 @@ class VerifiedPersistence(Protocol):
         self, mac: str
     ) -> VerifiedCalibrationRecord | None: ...
 
+    async def async_revoke_installed_calibration(
+        self, mac: str, *, expected_record_fingerprint: str | None = None
+    ) -> str | None: ...
+
     async def async_claim_verified_calibration(
         self, mac: str, verification_id: str, transaction_id: str
     ) -> bool: ...
@@ -1178,6 +1182,33 @@ class ConfigTransactionManager:
                         "YAML handoff is unavailable; offset calibration remains "
                         "saved in flash"
                     )
+            try:
+                # OTA can succeed even when its response or later verification fails.
+                fingerprint, cancelled = await self._drain_persistence_commit(
+                    transaction,
+                    self._persistence.async_revoke_installed_calibration(
+                        transaction.mac,
+                        expected_record_fingerprint=transaction.meter_record_fingerprint,
+                    ),
+                )
+                transaction.meter_record_fingerprint = fingerprint
+                if cancelled:
+                    raise asyncio.CancelledError
+            except asyncio.CancelledError:
+                self._finish(
+                    transaction,
+                    ConfigTransactionState.FAILED,
+                    TransactionEvidenceCode.CANCELLED,
+                )
+                raise
+            except Exception:  # noqa: BLE001 - failed revocation must prevent OTA
+                return self._finish(
+                    transaction,
+                    ConfigTransactionState.FAILED,
+                    TransactionEvidenceCode.PERSISTENCE_FAILED,
+                )
+            finally:
+                transaction.persistence_commit_started = False
             await self._check_configuration_source(transaction, proposed=True)
             transaction.upload_progress.clear()
             transaction.evidence[:] = [
@@ -1506,12 +1537,12 @@ class ConfigTransactionManager:
                 ) from None
             raise
 
-    async def _drain_persistence_commit(
-        self, transaction: _ConfigTransaction, commit: Coroutine[Any, Any, bool]
-    ) -> tuple[bool, bool]:
+    async def _drain_persistence_commit[T](
+        self, transaction: _ConfigTransaction, commit: Coroutine[Any, Any, T]
+    ) -> tuple[T, bool]:
         """Drain a started durable commit before reconciling caller cancellation."""
         transaction.persistence_commit_started = True
-        task: asyncio.Task[bool] = asyncio.create_task(commit)
+        task: asyncio.Task[T] = asyncio.create_task(commit)
         cancelled = False
         while not task.done():
             try:

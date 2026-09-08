@@ -1417,7 +1417,7 @@ def test_offset_rendering_rejects_malformed_owned_blocks(body: str) -> None:
         ),
     )
 
-    with pytest.raises(ConfigMutationError, match="managed offsets"):
+    with pytest.raises(ConfigMutationError, match="managed offsets|current gain overrides"):
         build_calibrated_gain_mutation(snapshot, topology(0), record)
 
 
@@ -1434,7 +1434,7 @@ def test_offset_rendering_rejects_source_owned_target_override() -> None:
         ),
     )
 
-    with pytest.raises(ConfigMutationError, match="existing offset overrides"):
+    with pytest.raises(ConfigMutationError, match="existing offset overrides|current gain overrides"):
         build_calibrated_gain_mutation(snapshot, topology(0), record)
 
 
