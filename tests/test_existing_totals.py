@@ -233,8 +233,8 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
         definitions = [item for item in _root_sensor_items(ESPHomeConfigDocument.parse(proposed)) if "platform" in item]
         assert [item["id"] for item in definitions if item["platform"] == "template"] == [
             "totalWatts", "totalAmps", "totalChargerWatts", "totalAC1Watts", "totalAC2Watts",
-            *(["csemh_parent_power"] if edit == "parent" else []),
-            *(["csemh_meter_total_export_power", "csemh_meter_total_import_power"] if edit == "bidirectional" else []),
+            *(["parentWatts"] if edit == "parent" else []),
+            *(["houseTotalExportWatts", "houseTotalImportWatts"] if edit == "bidirectional" else []),
         ]
         assert len([item for item in definitions if item["platform"] == "total_daily_energy"]) == (
             5 if edit in {"parent", "bidirectional"} else 3 if edit in {"outputs", "remove", "disable_member", "channel_roles_remove"} else 4

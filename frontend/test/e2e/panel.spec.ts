@@ -522,7 +522,8 @@ test("native board totals feed an advanced parent without raw CT selection", asy
     measurement_method: "direct", energy_mode: "consumption", outputs: { watts: true, amps: true, kwh: true }, origin: "advanced" }]);
   expect(state.builder_calls).not.toContain("write");
   expect(state.proposed_content).toContain("id(totalWattsMain).state + id(totalWattsAddOn1).state");
-  expect(state.proposed_content).toContain("power_id: csemh_aggregate_1_power");
+  for (const output of ["Watts", "Amps", "Energy"]) expect(state.proposed_content).toContain(`id: wholeBuilding${output}`);
+  expect(state.proposed_content).toContain("power_id: wholeBuildingWatts");
 });
 
 async function totalsFixture(page: Page, name: string) {

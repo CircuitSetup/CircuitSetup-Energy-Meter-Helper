@@ -3103,7 +3103,7 @@ def test_largest_total_review_remains_exact_or_visibly_truncated_over_transport(
             inventory = await call("get_meter_configuration")
             config = inventory["configuration"]
             config["channels"][-1]["role"] = "solar"
-            config["aggregates"] = [{"aggregate_id": f"{prefix}-{'branch-' * 6}{index}", "name": f"Report {prefix} {index}",
+            config["aggregates"] = [{"aggregate_id": f"{prefix}-{'branch-' * 6}{index}", "name": f"Electrical Report {prefix} {index}",
                 "role": "custom", "sources": [{"kind": "channel", "channel": index + 1}], "measurement_method": "direct",
                 "energy_mode": "bidirectional", "outputs": {"watts": True, "amps": True, "kwh": True}, "origin": "advanced"}
                 for index in range(32)]
@@ -3118,7 +3118,7 @@ def test_largest_total_review_remains_exact_or_visibly_truncated_over_transport(
                 assert visible.endswith("[truncated]")
             else:
                 assert "Managed totals metadata:" in visible
-                assert f"csemh_{prefix}_branch_branch_branch_branch_branch_branch_31_import_energy" in visible
+                assert f"electricalReport{prefix.title()}31ImportEnergy" in visible
             if prefix == "before":
                 fixture.verifier.evidence = replace(fixture.verifier.evidence, topology=transaction.topology,
                     ct_names={channel.channel: channel.name for channel in transaction.meter_configuration.channels},

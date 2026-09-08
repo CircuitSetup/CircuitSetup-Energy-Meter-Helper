@@ -473,7 +473,7 @@ def build_meter_configuration_mutation(
         document = ESPHomeConfigDocument.parse(content)
         rendered_request, replacements = _select_render_totals(requested, topology, document, previous)
         content = _prepare_existing_energy_ids(document, replacements, requested, topology)
-        body = (_render_native_totals(rendered_request, topology, document) if current.native_visibility_resolved else "") + _render_total_updates(rendered_request, topology, document, replacements)
+        body = (_render_native_totals(rendered_request, topology, document) if current.native_visibility_resolved else "") + _render_total_updates(rendered_request, topology, document, replacements, named_ids=True)
         content = replace_managed_block(
             content,
             "aggregates",
@@ -569,6 +569,7 @@ def _technical_total_diff(
         for sensor_id in planned_sensor_ids(node)
     }
     for document, configuration in ((before, previous), (after, requested)):
+        allowed_ids.update(_saved_total_sensor_ids(document).values())
         selected, replacements = _select_render_totals(configuration, topology, document, None)
         allowed_ids.update(sensor_id for sensor_id, _ in
             _existing_total_bindings(selected, topology, document, replacements).values())
@@ -1104,13 +1105,15 @@ def _existing_total_bindings(
 def _render_total_updates(
     requested: MeterConfigurationRequest, topology: MeterTopology,
     document: ESPHomeConfigDocument | None, replacements: str,
-    *, energy_presence: bool = True,
+    *, energy_presence: bool = True, named_ids: bool = False,
 ) -> str:
     """Render new metrics normally; update bound metrics with !extend, never copies."""
     body = _render_aggregates(plan_total_graph(requested, topology), requested.aggregates, requested)
     if document is None:
         return body
     if not replacements:
+        if named_ids or _saved_total_sensor_ids(document):
+            body = _name_total_sensors(body, requested, document)
         _validate_total_sensor_ids(body, document)
         return body
     bindings = _existing_total_bindings(requested, topology, document, replacements)
@@ -1142,8 +1145,60 @@ def _render_total_updates(
         and (not energy_presence or "power_id" not in fields))
     metadata = replacements.splitlines(keepends=True)[0]
     body = "  # csemh-existing-totals: v1\n" + metadata + hidden + body
+    if named_ids or _saved_total_sensor_ids(document):
+        body = _name_total_sensors(body, requested, document)
     _validate_total_sensor_ids(body, document)
     return body
+
+
+def _saved_total_sensor_ids(document: ESPHomeConfigDocument) -> dict[str, str]:
+    block = document.managed_blocks.get("aggregates")
+    prefix = "# csemh-sensor-ids: "
+    lines = [line.strip()[len(prefix):] for line in block.content.splitlines()
+        if line.strip().startswith(prefix)] if block else []
+    if not lines:
+        return {}
+    mapping = json.loads(lines[0])
+    if (len(lines) != 1 or not isinstance(mapping, dict)
+        or any(not isinstance(key, str) or not isinstance(value, str)
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) for key, value in mapping.items())
+        or len(set(mapping.values())) != len(mapping)):
+        raise ValueError("invalid total sensor IDs")
+    return mapping
+
+
+def _name_total_sensors(body: str, requested: MeterConfigurationRequest, document: ESPHomeConfigDocument) -> str:
+    """Name newly created advanced metrics; retain IDs across subsequent edits."""
+    saved = _saved_total_sensor_ids(document)
+    block = document.managed_blocks.get("aggregates")
+    existing = {item.get("id") for item in _managed_sensor_items(block.content, document.sensor_item_indent)} if block else set()
+    generated = {item.get("id") for item in _managed_sensor_items(body, 2) if "platform" in item}
+    mapping = {}
+    for aggregate in requested.aggregates:
+        words = re.findall(r"[A-Z]+(?=[A-Z][a-z]|[^a-zA-Z]|$)|[A-Z]?[a-z]+|[0-9]+", aggregate.name)
+        stem = "".join(word.lower() if index == 0 else word.title() for index, word in enumerate(words)) or "total"
+        if stem[0].isdigit():
+            stem = "total" + stem
+        prefix = f"csemh_{aggregate.aggregate_id.replace('-', '_')}_"
+        for suffix, metric in (("power", "Watts"), ("current", "Amps"), ("energy", "Energy"),
+            ("import_power", "ImportWatts"), ("export_power", "ExportWatts"),
+            ("import_energy", "ImportEnergy"), ("export_energy", "ExportEnergy")):
+            logical = prefix + suffix
+            if logical in generated:
+                target = saved.get(logical, logical if logical in existing else stem + metric)
+                if target != logical:
+                    mapping[logical] = target
+    if not mapping:
+        return body
+    # Only sensor declarations and references change; names and encoded graph metadata do not.
+    body = _replace_total_sensor_ids(body, mapping)
+    _validate_total_sensor_ids(body, document)
+    return "  # csemh-sensor-ids: " + json.dumps(mapping, separators=(",", ":"), sort_keys=True) + "\n" + body
+
+
+def _replace_total_sensor_ids(body: str, mapping: dict[str, str]) -> str:
+    return re.sub(r"(?m)(\bid\(|^[ \t]+(?:id|power_id): )([A-Za-z_][A-Za-z0-9_]*)",
+        lambda match: match[1] + mapping.get(match[2], match[2]), body)
 
 
 def _validate_total_sensor_ids(body: str, document: ESPHomeConfigDocument) -> None:
