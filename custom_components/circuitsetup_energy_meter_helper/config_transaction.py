@@ -234,6 +234,10 @@ class VerifiedPersistence(Protocol):
         self, mac: str
     ) -> VerifiedCalibrationRecord | None: ...
 
+    async def async_revoke_installed_calibration(
+        self, mac: str, *, expected_record_fingerprint: str | None = None
+    ) -> str | None: ...
+
     async def async_claim_verified_calibration(
         self, mac: str, verification_id: str, transaction_id: str
     ) -> bool: ...
@@ -910,7 +914,7 @@ class ConfigTransactionManager:
             transaction.lease = await self.sessions.async_acquire_config(
                 transaction.mac
             )
-            await self._check_offset_preparation(transaction, proposed=False)
+            await self._check_configuration_source(transaction, proposed=False)
             try:
                 verification_current = (
                     transaction.verification_id is None
@@ -1122,7 +1126,7 @@ class ConfigTransactionManager:
         if transaction.state is not ConfigTransactionState.VALIDATED:
             raise RuntimeError("compile is not legal in the current state")
         plan, _ = _sensitive(transaction)
-        await self._check_offset_preparation(transaction, proposed=True)
+        await self._check_configuration_source(transaction, proposed=True)
         transaction.upload_progress.clear()
         self.publish_status(_status(transaction))
         try:
@@ -1142,7 +1146,7 @@ class ConfigTransactionManager:
             status = _status(transaction)
             self.publish_status(status)
             return status
-        await self._check_offset_preparation(transaction, proposed=True)
+        await self._check_configuration_source(transaction, proposed=True)
         transaction.upload_progress.clear()
         transaction.state = ConfigTransactionState.COMPILED
         _progress(transaction, TransactionProgress.FIRMWARE_COMPILED)
@@ -1178,7 +1182,34 @@ class ConfigTransactionManager:
                         "YAML handoff is unavailable; offset calibration remains "
                         "saved in flash"
                     )
-            await self._check_offset_preparation(transaction, proposed=True)
+            try:
+                # OTA can succeed even when its response or later verification fails.
+                fingerprint, cancelled = await self._drain_persistence_commit(
+                    transaction,
+                    self._persistence.async_revoke_installed_calibration(
+                        transaction.mac,
+                        expected_record_fingerprint=transaction.meter_record_fingerprint,
+                    ),
+                )
+                transaction.meter_record_fingerprint = fingerprint
+                if cancelled:
+                    raise asyncio.CancelledError
+            except asyncio.CancelledError:
+                self._finish(
+                    transaction,
+                    ConfigTransactionState.FAILED,
+                    TransactionEvidenceCode.CANCELLED,
+                )
+                raise
+            except Exception:  # noqa: BLE001 - failed revocation must prevent OTA
+                return self._finish(
+                    transaction,
+                    ConfigTransactionState.FAILED,
+                    TransactionEvidenceCode.PERSISTENCE_FAILED,
+                )
+            finally:
+                transaction.persistence_commit_started = False
+            await self._check_configuration_source(transaction, proposed=True)
             transaction.upload_progress.clear()
             transaction.evidence[:] = [
                 code
@@ -1331,13 +1362,13 @@ class ConfigTransactionManager:
     ) -> bool:
         installed = await self._persist_configuration_metadata(transaction, plan)
         if installed and transaction.offset_finalization is not None:
-            await self._check_offset_preparation(transaction, proposed=True)
+            await self._check_configuration_source(transaction, proposed=True)
             assert self._offset_recovery is not None and transaction.lease is not None
             await self._offset_recovery.async_mark_final_installed(
                 transaction.lease, transaction.offset_finalization
             )
             try:
-                await self._check_offset_preparation(
+                await self._check_configuration_source(
                     transaction, proposed=True, final_installed=True
                 )
             except Exception, asyncio.CancelledError:
@@ -1351,7 +1382,7 @@ class ConfigTransactionManager:
         self, transaction: _ConfigTransaction, plan: ConfigMutationPlan
     ) -> bool:
         """Commit only post-reconnect metadata, including its exact source CAS."""
-        await self._check_offset_preparation(transaction, proposed=True)
+        await self._check_configuration_source(transaction, proposed=True)
         if transaction.offset_preparation is not None or (
             transaction.offset_finalization is not None
             and transaction.verification_id is None
@@ -1362,7 +1393,7 @@ class ConfigTransactionManager:
                 sha256(plan.proposed_content.encode()).hexdigest(),
                 _meter_record(transaction),
             )
-            await self._check_offset_preparation(transaction, proposed=True)
+            await self._check_configuration_source(transaction, proposed=True)
             if transaction.offset_finalization is not None:
                 return True
         if transaction.offset_preparation is not None:
@@ -1444,31 +1475,34 @@ class ConfigTransactionManager:
             transaction.transaction_id,
         )
 
-    async def _check_offset_preparation(
+    async def _check_configuration_source(
         self, transaction: _ConfigTransaction, *, proposed: bool, final_installed: bool = False
     ) -> None:
         preparation = transaction.offset_preparation or transaction.offset_finalization
-        if preparation is None:
+        # DeviceBuilder checks the original source immediately before its write.
+        # Every later filename-based operation must still own the proposed source.
+        if preparation is None and not proposed:
             return
         try:
-            if self._offset_recovery is None or transaction.lease is None:
-                raise ValueError("stock offset preparation is unavailable")
             if transaction.preparation_guard is not None:
                 transaction.preparation_guard()
-            if isinstance(preparation, StockOffsetFinalization):
-                record = await self._offset_recovery.async_require_finalization(
-                    transaction.lease, preparation, installed=final_installed
-                )
-                if preparation.verification_id != transaction.verification_id:
-                    raise ValueError("finalization gain reservation changed")
-            else:
-                record = await self._offset_recovery.async_require(
-                    transaction.lease, preparation, installed=False
-                )
-            if replace(record.topology, evidence=()) != replace(
-                transaction.topology, evidence=()
-            ):
-                raise ValueError("stock offset topology changed")
+            if preparation is not None:
+                if self._offset_recovery is None or transaction.lease is None:
+                    raise ValueError("stock offset preparation is unavailable")
+                if isinstance(preparation, StockOffsetFinalization):
+                    record = await self._offset_recovery.async_require_finalization(
+                        transaction.lease, preparation, installed=final_installed
+                    )
+                    if preparation.verification_id != transaction.verification_id:
+                        raise ValueError("finalization gain reservation changed")
+                else:
+                    record = await self._offset_recovery.async_require(
+                        transaction.lease, preparation, installed=False
+                    )
+                if replace(record.topology, evidence=()) != replace(
+                    transaction.topology, evidence=()
+                ):
+                    raise ValueError("stock offset topology changed")
             plan, prior = _sensitive(transaction)
             source = await self._device_builder.async_get_config(plan.configuration)
             content = plan.proposed_content if proposed else prior
@@ -1483,6 +1517,7 @@ class ConfigTransactionManager:
                 transaction.preparation_guard()
         except BaseException as error:
             if transaction.write_started:
+                _evidence(transaction, TransactionEvidenceCode.SOURCE_CHANGED)
                 self._retain_write_recovery(transaction)
             else:
                 try:
@@ -1497,15 +1532,17 @@ class ConfigTransactionManager:
             if isinstance(error, Exception):
                 raise ValueError(  # noqa: TRY004 - sanitize an external failure, not an invalid argument type
                     "stock offset preparation is stale or unavailable"
+                    if preparation is not None
+                    else "confirmed configuration source is stale or unavailable"
                 ) from None
             raise
 
-    async def _drain_persistence_commit(
-        self, transaction: _ConfigTransaction, commit: Coroutine[Any, Any, bool]
-    ) -> tuple[bool, bool]:
+    async def _drain_persistence_commit[T](
+        self, transaction: _ConfigTransaction, commit: Coroutine[Any, Any, T]
+    ) -> tuple[T, bool]:
         """Drain a started durable commit before reconciling caller cancellation."""
         transaction.persistence_commit_started = True
-        task: asyncio.Task[bool] = asyncio.create_task(commit)
+        task: asyncio.Task[T] = asyncio.create_task(commit)
         cancelled = False
         while not task.done():
             try:

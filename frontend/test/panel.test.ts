@@ -3538,6 +3538,40 @@ describe("CircuitSetup panel", () => {
       .toBe("cs-ct-200a");
   });
 
+  it.each(["standard", "two_voltages"])("uses meter-wide native voltage references for %s without editable source", async (layout) => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown> & {
+      voltageReferenceIds(): string[];
+      voltageReferenceComplete(id: string): boolean;
+      checkStability(target: "voltage"): Promise<void>;
+      calibrate(target: "voltage"): Promise<void>;
+    };
+    const groups = Array.from({ length: 14 }, (_, index) => index < 2 ? `main_${index + 1}` : `addon${Math.floor(index / 2)}_${index % 2 + 1}`);
+    const ids = layout === "two_voltages" ? ["main", "secondary"] : ["main"];
+    const ownedGroups = (id: string) => groups.filter((_, index) => layout !== "two_voltages" || index % 2 === (id === "secondary" ? 1 : 0));
+    const check = vi.fn(async (_session: string, _target: string, id: string) => ({ target: "voltage", target_id: id, stable: true, windows: [] }));
+    const calibrate = vi.fn(async (_session: string, id: string) => ownedGroups(id).map((group_key) => ({ state: "applied_pending_restart_verification", group_key })));
+    state.api = { checkStability: check, calibrateVoltage: calibrate };
+    state.topology = { addon_count: 6, board_count: 7, ct_count: 42, group_count: 14,
+      connection_type: "wifi", voltage_layout: layout, project_name: device.project_name, evidence: [] };
+    state.configurationMode = "runtime_only";
+    state.meterSettingsDraft = null;
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", calibration_plan: "standard",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+    state.voltageReferences = new Map(ids.map((id) => [id, 120]));
+    state.board = 6;
+    expect(state.voltageReferenceIds()).toEqual(ids);
+    await state.checkStability("voltage");
+    await state.calibrate("voltage");
+    expect(check.mock.calls.map((call) => call[2])).toEqual(ids);
+    expect(calibrate.mock.calls.map((call) => call[1])).toEqual(ids);
+    ids.forEach((id) => expect(state.voltageReferenceComplete(id)).toBe(true));
+    state.board = 0;
+    expect(state.voltageReferenceIds()).toEqual(ids);
+    await state.calibrate("voltage");
+    expect(calibrate).toHaveBeenCalledTimes(ids.length);
+  });
+
   it("calibrates selected voltage references with schema-valid one-reference requests", async () => {
     const targets: string[] = [];
     const calibrated: string[] = [];

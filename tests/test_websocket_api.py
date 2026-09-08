@@ -73,6 +73,7 @@ from custom_components.circuitsetup_energy_meter_helper.provisioning import (
     ProvisioningCoordinator,
 )
 from custom_components.circuitsetup_energy_meter_helper.session_manager import (
+    CalibrationBusyError,
     SessionManager,
 )
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
@@ -173,6 +174,7 @@ async def _native_only_workflow(
     *,
     preflight: Any | None = None,
     addon_count: int = 0,
+    voltage_layout: str = "standard",
 ) -> tuple[EntryWorkflow, Any, SessionManager]:
     from custom_components.circuitsetup_energy_meter_helper.topology import (
         topology_from_native,
@@ -180,7 +182,7 @@ async def _native_only_workflow(
 
     project_name = "circuitsetup.6c-energy-meter" + (
         f"-{addon_count}-addon" if addon_count else ""
-    )
+    ) + ("-2-voltages" if voltage_layout == "two_voltages" else "")
     topology = topology_from_native(project_name)
     entry = SimpleNamespace(
         domain="esphome",
@@ -1444,8 +1446,10 @@ packages:
             "devices/get_config",
             "devices/update_config",
             "devices/validate",
+            "devices/get_config",
             "firmware/compile",
             "firmware/follow_job",
+            "devices/get_config",
         ]
         assert [(method, url) for method, url, _ in transport.requests] == [
             ("GET", "http://supervisor/addons/5c53de3b_esphome/info"),
@@ -2305,51 +2309,49 @@ def test_configuration_inventory_remains_authoritative_for_multiplier(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("addon_count", "voltage_layout", "reference_id", "expected_groups"),
+    (
+        (0, "standard", "main", ("main_1", "main_2")),
+        (1, "standard", "main", ("main_1", "main_2", "addon1_1", "addon1_2")),
+        (1, "two_voltages", "main", ("main_1", "addon1_1")),
+        (1, "two_voltages", "secondary", ("main_2", "addon1_2")),
+    ),
+)
 def test_native_only_board_voltage_calibration_needs_no_builder_snapshot(
     monkeypatch: pytest.MonkeyPatch,
+    addon_count: int,
+    voltage_layout: str,
+    reference_id: str,
+    expected_groups: tuple[str, ...],
 ) -> None:
     async def run() -> None:
-        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+        workflow, _binding, _sessions = await _native_only_workflow(
+            monkeypatch, addon_count=addon_count, voltage_layout=voltage_layout
+        )
         status = await workflow.async_start_session("meter")
         await workflow.async_acknowledge_safety(status.session_id, True)
-        workflow._sessions[status.session_id].meter_configuration = SimpleNamespace(
-            meter=SimpleNamespace(
-                voltage_references=(
-                    VoltageReferenceConfig(
-                        "main",
-                        "Main",
-                        "A",
-                        120.0,
-                        "default",
-                        7305,
-                        ("main_1", "main_2"),
-                    ),
-                )
-            )
-        )
+        assert workflow._sessions[status.session_id].meter_configuration is None
         calls: list[dict[str, Any]] = []
 
         class Calibration:
             async def async_calibrate_voltages(
                 self, *_args: Any, **kwargs: Any
             ) -> Any:
+                assert _args[3] == tuple((key, 120.0, 1) for key in expected_groups)
                 calls.append(kwargs)
-                return (
+                return tuple(
                     SimpleNamespace(
                         state="applied_pending_restart_verification",
                         gain_evidence=None,
-                    ),
-                    SimpleNamespace(
-                        state="applied_pending_restart_verification",
-                        gain_evidence=None,
-                    ),
+                    ) for _ in expected_groups
                 )
 
         workflow._calibration = Calibration()  # type: ignore[assignment]
 
         await workflow.async_calibrate_voltage(
             status.session_id,
-            "main",
+            reference_id,
             120.0,
             False,
         )
@@ -2766,6 +2768,8 @@ def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
             async def async_complete_verified_calibration_handoff(
                 self, mac: str, verification_id: str, target_transaction_id: str
             ) -> bool:
+                assert _sessions.is_calibration_locked(mac)
+                assert _sessions.is_config_locked(mac)
                 completed.append((mac, verification_id, target_transaction_id))
                 return True
 
@@ -2778,12 +2782,26 @@ def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
             return {"meter_main1": "flash" if source_reads == 1 else "configuration"}
 
         async def press(key: int, *, device_id: int = 0) -> None:
+            assert _sessions.is_calibration_locked(handle.mac)
+            assert _sessions.is_config_locked(handle.mac)
             pressed.append((key, device_id))
 
         workflow._store = Store()  # type: ignore[assignment]
         workflow._api.async_calibration_sources = sources  # type: ignore[method-assign,union-attr]
         workflow._api.async_press_button = press  # type: ignore[method-assign,union-attr]
         restore = handle.binding.groups[0].restore_gain.descriptor
+
+        config_lease = await _sessions.async_acquire_config(handle.mac)
+        try:
+            with pytest.raises(CalibrationBusyError):
+                await workflow.async_clear_calibration_flash(
+                    status.session_id, record.verification_id, transaction_id
+                )
+            assert pressed == []
+            assert completed == []
+            assert source_reads == 0
+        finally:
+            config_lease.release()
 
         result = await workflow.async_clear_calibration_flash(
             status.session_id, record.verification_id, transaction_id
@@ -2794,6 +2812,8 @@ def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
         assert result.source_authority is CalibrationSourceAuthority.CONFIGURATION
         assert handle.calibration_sources["meter_main1"] == "configuration"
         assert handle.calibration_sources["meter_main2"] == "configuration"
+        assert not _sessions.is_calibration_locked(handle.mac)
+        assert not _sessions.is_config_locked(handle.mac)
         await workflow.async_close()
 
     asyncio.run(run())

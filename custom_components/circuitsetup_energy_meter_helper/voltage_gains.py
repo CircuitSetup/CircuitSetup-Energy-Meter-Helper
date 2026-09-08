@@ -136,7 +136,7 @@ def _effective_voltage_gain_slots(
         instance: [_substitution_gain(document, _group(instance))] * 3
         for instance in _instances(topology)
     }
-    _reject_unowned_gains(document)
+    _reject_unowned_gains(document, topology)
     block_names = sorted(
         (
             name
@@ -403,19 +403,28 @@ def _owned_overrides(
     return overrides
 
 
-def _reject_unowned_gains(document: ESPHomeConfigDocument) -> None:
+def _reject_unowned_gains(document: ESPHomeConfigDocument, topology: MeterTopology) -> None:
+    from .config_mutator import _reject_local_output_filters
+
     owned = tuple(
         block.span
         for name, block in document.managed_blocks.items()
         if name in {"voltage_references", "calibrated_voltage_gains"}
     )
     offset = 0
+    unowned_lines = []
     for raw_line, code_line in zip(document.lines, document.code_lines, strict=True):
-        if not any(span.start <= offset < span.end for span in owned) and _contains_gain_key(
-            code_line
-        ):
-            raise ValueError("local voltage gain override is not helper-owned")
+        if not any(span.start <= offset < span.end for span in owned):
+            unowned_lines.append(raw_line)
+            if _contains_gain_key(code_line):
+                raise ValueError("local voltage gain override is not helper-owned")
         offset += len(raw_line)
+    # Hidden phase gains must not be mistaken for substitution-backed defaults.
+    _reject_local_output_filters(
+        "".join(unowned_lines),
+        {channel: frozenset(("gain_voltage",)) for channel in range(1, topology.ct_count + 1)},
+        document.substitutions,
+    )
 
 
 def _strip_legacy_gains(content: str, topology: MeterTopology) -> str:

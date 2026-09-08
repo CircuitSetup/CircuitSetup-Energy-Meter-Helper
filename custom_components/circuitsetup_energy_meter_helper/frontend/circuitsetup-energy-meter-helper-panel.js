@@ -6141,13 +6141,13 @@ class CircuitSetupPanel extends i$2 {
     const groups = this.voltageGroupKeys();
     const references = (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.filter((reference) => reference.group_keys.some((key) => groups.includes(key))) ?? [];
     if (references.length) return references.map((reference) => reference.reference_id);
-    return this.topology?.voltage_layout === "two_voltages" ? groups : [this.board === 0 ? "main" : `addon${this.board}`];
+    return this.topology?.voltage_layout === "two_voltages" ? ["main", "secondary"] : ["main"];
   }
   voltageReferenceLabel(referenceId) {
-    return (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.find((reference) => reference.reference_id === referenceId)?.label ?? referenceId;
+    return (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.find((reference) => reference.reference_id === referenceId)?.label ?? `${referenceId === "secondary" ? "Secondary" : "Main"} voltage (all boards)`;
   }
   voltageReferenceComplete(referenceId) {
-    const groups = (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.find((reference) => reference.reference_id === referenceId)?.group_keys ?? [referenceId];
+    const groups = (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.find((reference) => reference.reference_id === referenceId)?.group_keys ?? Array.from({ length: this.topology?.group_count ?? 2 }, (_2, index) => this.groupKey(index)).filter((_2, index) => this.topology?.voltage_layout !== "two_voltages" || index % 2 === (referenceId === "secondary" ? 1 : 0));
     return groups.every((group) => this.calibrationByTarget.get(`voltage:${group}`)?.state === "applied_pending_restart_verification");
   }
   voltageGroupKeys() {
