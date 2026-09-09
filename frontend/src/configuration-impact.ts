@@ -1,12 +1,4 @@
-import type { BoardPackageOptions, MeterConfigurationRequest, MeterTopology } from "./types";
-
-export interface ConfigurationImpact {
-  enabled_channel_count: number;
-  numeric_entity_count: number;
-  text_entity_count: number;
-  energy_entity_count: number;
-  approximate_publications_per_second: number;
-}
+import type { BoardPackageOptions, ConfigurationImpact, MeterConfigurationRequest, MeterTopology } from "./types";
 
 export function configurationImpact(configuration: MeterConfigurationRequest, topology: MeterTopology, packageOptions: BoardPackageOptions = configuration): ConfigurationImpact {
   let numeric = configuration.meter.voltage_references.length * 2;

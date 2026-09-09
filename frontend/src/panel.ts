@@ -1512,8 +1512,6 @@ export class CircuitSetupPanel extends LitElement {
     if (!this.api || !this.session || (target === "voltage" && this.voltageBusy)) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
-    const targetIds = target === "voltage" ? this.voltageReferenceIds()
-      : this.currentReferenceEntries().map((item) => String(item.channel));
     const currentReferences = this.currentReferenceEntries();
     if (target === "current" && !currentReferences.length) {
       this.fail(new Error(), "Confirm the reporting multiplier before calibration.");
