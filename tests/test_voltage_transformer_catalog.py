@@ -17,7 +17,6 @@ from custom_components.circuitsetup_energy_meter_helper.voltage_transformer_cata
     CATALOG_SOURCE_REPOSITORY,
     VoltageTransformerCatalog,
     VoltageTransformerPreset,
-    custom,
 )
 
 
@@ -36,7 +35,6 @@ def test_official_catalog_has_schema_metadata_and_starting_gain() -> None:
         7305,
         "Official CircuitSetup starting value; calibrate for best accuracy.",
     )
-    assert catalog.starting_gain("jameco_reliapro_9vac_120v") == 7305
     assert catalog.by_model_id("unknown") is None
 
 
@@ -227,18 +225,3 @@ def test_catalog_rejects_preset_key_drift(
     _load_data(monkeypatch, data)
     with pytest.raises(ValueError, match="keys"):
         VoltageTransformerCatalog.load()
-
-
-def test_custom_requires_explicit_valid_gain() -> None:
-    assert custom("Custom transformer", 123).default_gain_voltage == 123
-    for gain in (None, 0, 65536, True, 1.5, GainIntEnum.VALID):
-        with pytest.raises(ValueError, match="gain"):
-            custom("Custom transformer", gain)
-    with pytest.raises(ValueError, match="label"):
-        custom("", 123)
-    with pytest.raises(ValueError, match="label"):
-        custom("  ", 123)
-    with pytest.raises(ValueError, match="label"):
-        custom("\u0085", 123)
-    with pytest.raises(ValueError, match="gain"):
-        custom("Custom transformer")

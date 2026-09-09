@@ -64,13 +64,6 @@ def _gain(value: object) -> int:
     return value
 
 
-def custom(label: str, gain: object = None) -> VoltageTransformerPreset:
-    """Construct the explicit, non-catalog custom option."""
-    return VoltageTransformerPreset(
-        "custom", _safe_text(label, "label"), 0.0, 0.0, _gain(gain), ""
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class VoltageTransformerCatalog:
     """The package-bundled schema-v1 catalog, indexed by model."""
@@ -125,7 +118,3 @@ class VoltageTransformerCatalog:
 
     def by_model_id(self, model_id: str) -> VoltageTransformerPreset | None:
         return next((preset for preset in self.presets if preset.model_id == model_id), None)
-
-    def starting_gain(self, model_id: str) -> int | None:
-        preset = self.by_model_id(model_id)
-        return preset.default_gain_voltage if preset else None

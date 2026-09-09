@@ -49,8 +49,6 @@ class EntityCatalog:
             defaultdict(list)
         )
         self._by_name: dict[str, list[EntityDescriptor]] = defaultdict(list)
-        self._by_unit: dict[str, list[EntityDescriptor]] = defaultdict(list)
-        self._by_device: dict[int, list[EntityDescriptor]] = defaultdict(list)
 
         for info in entities:
             kind = type(info).__name__.removesuffix("Info").casefold()
@@ -77,8 +75,6 @@ class EntityCatalog:
                 descriptor
             )
             self._by_name[descriptor.name].append(descriptor)
-            self._by_unit[descriptor.unit].append(descriptor)
-            self._by_device[descriptor.device_id].append(descriptor)
         self.entities = tuple(descriptors)
 
     def by_kind(self, kind: str) -> tuple[EntityDescriptor, ...]:
@@ -94,9 +90,3 @@ class EntityCatalog:
 
     def by_name(self, name: str) -> tuple[EntityDescriptor, ...]:
         return tuple(self._by_name.get(name, ()))
-
-    def by_unit(self, unit: str) -> tuple[EntityDescriptor, ...]:
-        return tuple(self._by_unit.get(unit, ()))
-
-    def by_device_id(self, device_id: int) -> tuple[EntityDescriptor, ...]:
-        return tuple(self._by_device.get(device_id, ()))
