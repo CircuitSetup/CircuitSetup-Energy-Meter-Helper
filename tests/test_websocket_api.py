@@ -249,6 +249,7 @@ class FakeEntry:
 
     entry_id: str = "helper"
     data: dict[str, str] | None = None
+    options: dict[str, str] | None = None
 
 
 class FakeConfigEntries:
@@ -470,6 +471,7 @@ class SupervisorTransport:
         addon_overrides: Mapping[str, Any] | None = None,
         addon_missing: str | None = None,
         session_value: Any = "issued-session",
+        installed_builders: Mapping[str, str] | None = None,
     ) -> None:
         self.websocket = websocket
         self.request_error = request_error
@@ -477,6 +479,9 @@ class SupervisorTransport:
         self.addon_overrides = dict(addon_overrides or {})
         self.addon_missing = addon_missing
         self.session_value = session_value
+        self.installed_builders = dict(installed_builders) if installed_builders is not None else {
+            "5c53de3b_esphome": "ESPHome Device Builder"
+        }
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
         self.websocket_requests: list[tuple[str, dict[str, Any]]] = []
 
@@ -484,8 +489,14 @@ class SupervisorTransport:
         self.requests.append((method, str(url), kwargs))
         if self.request_error is not None:
             raise self.request_error
-        if str(url).endswith("/addons/5c53de3b_esphome/info"):
+        if "/addons/" in str(url) and str(url).endswith("/info"):
+            slug = str(url).split("/addons/", 1)[1].removesuffix("/info")
+            if slug not in self.installed_builders:
+                return SupervisorResponse({}, 404)
             addon = _official_addon_info()
+            addon.update(slug=slug, name=self.installed_builders[slug])
+            if slug != "5c53de3b_esphome":
+                addon["ingress_entry"] = f"/api/hassio_ingress/{slug}"
             addon.update(self.addon_overrides)
             if self.addon_missing is not None:
                 addon.pop(self.addon_missing, None)
@@ -1420,6 +1431,8 @@ packages:
         ]
         assert [(method, url) for method, url, _ in transport.requests] == [
             ("GET", "http://supervisor/addons/5c53de3b_esphome/info"),
+            ("GET", "http://supervisor/addons/5c53de3b_esphome-beta/info"),
+            ("GET", "http://supervisor/addons/5c53de3b_esphome-dev/info"),
             ("POST", "http://supervisor/ingress/session"),
             ("POST", "http://supervisor/ingress/session"),
         ]
@@ -1455,6 +1468,52 @@ packages:
         assert reloaded["workflow"]._esphome_entry_id == "new-meter"
         await async_unload_entry(hass, entry)
 
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("installed", "selected", "overrides", "available"),
+    [
+        ({"5c53de3b_esphome-beta": "ESPHome Device Builder (beta)"}, None, {}, True),
+        ({"5c53de3b_esphome-dev": "ESPHome Device Builder (dev)"}, None, {}, True),
+        ({"5c53de3b_esphome": "ESPHome Device Builder", "5c53de3b_esphome-dev": "ESPHome Device Builder (dev)"}, "5c53de3b_esphome-dev", {}, True),
+        ({"5c53de3b_esphome": "ESPHome Device Builder"}, "5c53de3b_esphome-dev", {}, False),
+        ({"5c53de3b_esphome-dev": "ESPHome Device Builder (dev)"}, None, {"state": "stopped"}, False),
+    ],
+)
+def test_setup_uses_installed_or_selected_builder(installed, selected, overrides, available):
+    """Dev-only works; a saved choice never silently falls back to stable."""
+    async def run():
+        websocket = BuilderTransportWebSocket("")
+        transport = SupervisorTransport(websocket, installed_builders=installed, addon_overrides=overrides)
+        hass = FakeHass()
+        hass.data[DATA_COMPONENT] = HassIO(asyncio.get_running_loop(), transport, "supervisor")
+        entry = FakeEntry(data={}, options={"device_builder_slug": selected} if selected else {})
+        assert await async_setup_entry(hass, entry)
+        builder = hass.data[DOMAIN][entry.entry_id]["device_builder"]
+        assert (builder is not None) is available
+        if builder:
+            result = await builder.async_compile("meter.yaml")
+            assert result.success
+            assert "firmware/compile" in websocket.calls
+            expected_slug = selected or next(iter(installed))
+            assert transport.websocket_requests[0][0] == f"http://supervisor/ingress/{expected_slug}/ws"
+        await async_unload_entry(hass, entry)
+    asyncio.run(run())
+
+
+def test_setup_requires_choice_when_multiple_builders_installed():
+    """An existing entry cannot silently compile with an arbitrary channel."""
+    async def run():
+        transport = SupervisorTransport(BuilderTransportWebSocket(""), installed_builders={
+            "5c53de3b_esphome": "ESPHome Device Builder",
+            "5c53de3b_esphome-dev": "ESPHome Device Builder (dev)",
+        })
+        hass = FakeHass()
+        hass.data[DATA_COMPONENT] = HassIO(asyncio.get_running_loop(), transport, "supervisor")
+        with pytest.raises(ConfigEntryNotReady, match="Choose.*Device Builder"):
+            await async_setup_entry(hass, FakeEntry(data={}))
+        assert not transport.websocket_requests
     asyncio.run(run())
 
 
@@ -1600,7 +1659,9 @@ def test_verified_official_addon_unavailable_state_is_optional_capability(
         assert await async_setup_entry(hass, entry)
         assert hass.data[DOMAIN][entry.entry_id]["device_builder"] is None
         assert [url for _, url, _ in transport.requests] == [
-            "http://supervisor/addons/5c53de3b_esphome/info"
+            "http://supervisor/addons/5c53de3b_esphome/info",
+            "http://supervisor/addons/5c53de3b_esphome-beta/info",
+            "http://supervisor/addons/5c53de3b_esphome-dev/info",
         ]
         await async_unload_entry(hass, entry)
 
@@ -1619,8 +1680,8 @@ def test_setup_discovery_cancellation_unwinds_started_owners_before_publish(
         stopped = 0
         original_stop = ProvisioningCoordinator.async_stop
 
-        async def discover(owner: Any) -> None:
-            del owner
+        async def discover(owner: Any, selected_slug: str | None = None) -> None:
+            del owner, selected_slug
             entered.set()
             caller_cancelled = False
             while not release.is_set():
