@@ -69,8 +69,39 @@ def test_user_flow_allows_setup_later() -> None:
 
     result = asyncio.run(flow.async_step_user({CONF_ESPHOME_ENTRY_ID: SETUP_LATER}))
 
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "no_device_builder"
+    result = asyncio.run(
+        flow.async_step_no_device_builder({"continue_without_builder": True})
+    )
     assert result["type"] == FlowResultType.CREATE_ENTRY
     assert result["data"] == {CONF_ESPHOME_ENTRY_ID: None}
+
+
+def test_missing_builder_setup_retries_discovery_after_install(monkeypatch):
+    """The installation screen rechecks apps without losing the chosen meter."""
+    installed = {}
+
+    async def discover(hass):
+        return installed
+
+    monkeypatch.setattr(config_flow, "async_installed_device_builders", discover)
+
+    async def run():
+        flow = ConfigFlow()
+        flow.hass = FakeHass(FakeEntry("meter-entry", "Meter"))
+        result = await flow.async_step_user({CONF_ESPHOME_ENTRY_ID: "meter-entry"})
+        assert result["step_id"] == "no_device_builder"
+        result = await flow.async_step_no_device_builder({})
+        assert result["step_id"] == "no_device_builder"
+        installed["5c53de3b_esphome-dev"] = SimpleNamespace(
+            name="ESPHome Device Builder (dev)", version="2026.9.0-dev", state="started"
+        )
+        result = await flow.async_step_no_device_builder({})
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert result["data"] == {CONF_ESPHOME_ENTRY_ID: "meter-entry"}
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("multiple", [False, True])

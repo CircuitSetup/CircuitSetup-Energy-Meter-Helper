@@ -22,6 +22,12 @@ Legacy migration is always opt-in. Adopting a legacy configuration marks only th
 See [Meter totals](docs/totals.md) for default, Mains, and hierarchical total behavior.
 ## ESPHome Device Builder selection
 
+If no supported builder is installed, setup shows installation instructions and
+links to the [ESPHome installation guide](https://esphome.io/install/). Install and
+start the app, then submit to retry detection, or explicitly continue without it
+for calibration-only use. The integration options and unavailable-builder repair
+also explain where to install it.
+
 The Helper discovers installed official ESPHome Device Builder apps (stable,
 beta, and dev). With one installed, it uses that app automatically. With multiple
 installed, choose one during setup or under **Settings → Devices & services →
