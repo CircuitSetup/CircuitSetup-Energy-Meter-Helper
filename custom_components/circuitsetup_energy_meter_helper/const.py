@@ -5,6 +5,7 @@ INTEGRATION_NAME = "CircuitSetup Energy Meter Helper"
 PANEL_URL_PATH = "circuitsetup-energy-meter-helper"
 CONF_ESPHOME_ENTRY_ID = "esphome_entry_id"
 CONF_DEVICE_BUILDER_SLUG = "device_builder_slug"
+ESPHOME_INSTALL_URL = "https://esphome.io/install/"
 ESPHOME_DEVICE_BUILDERS = {
     "5c53de3b_esphome": "ESPHome Device Builder",
     "5c53de3b_esphome-beta": "ESPHome Device Builder (beta)",

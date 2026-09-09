@@ -71,6 +71,9 @@ def test_user_flow_allows_setup_later() -> None:
 
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "no_device_builder"
+    assert result["description_placeholders"] == {
+        "installation_url": "https://esphome.io/install/"
+    }
     result = asyncio.run(
         flow.async_step_no_device_builder({"continue_without_builder": True})
     )
@@ -180,6 +183,9 @@ def test_options_builder_choice_and_discovery_failures(monkeypatch, mode):
         if mode == "missing":
             assert result["type"] == FlowResultType.ABORT
             assert result["reason"] == "no_device_builder"
+            assert result["description_placeholders"] == {
+                "installation_url": "https://esphome.io/install/"
+            }
         elif mode == "offline":
             assert result["type"] == FlowResultType.FORM
             assert result["errors"] == {"base": "cannot_connect"}

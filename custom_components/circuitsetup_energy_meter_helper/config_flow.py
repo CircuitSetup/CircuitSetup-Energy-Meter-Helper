@@ -13,6 +13,7 @@ from .const import (
     CONF_DEVICE_BUILDER_SLUG,
     CONF_ESPHOME_ENTRY_ID,
     DOMAIN,
+    ESPHOME_INSTALL_URL,
     INTEGRATION_NAME,
     SETUP_LATER,
 )
@@ -115,6 +116,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_device_builder()
         return self.async_show_form(
             step_id="no_device_builder",
+            description_placeholders={"installation_url": ESPHOME_INSTALL_URL},
             data_schema=vol.Schema(
                 {vol.Optional("continue_without_builder", default=False): bool}
             ),
@@ -136,7 +138,10 @@ class OptionsFlow(config_entries.OptionsFlowWithReload):
                 errors={"base": "cannot_connect"},
             )
         if not installed:
-            return self.async_abort(reason="no_device_builder")
+            return self.async_abort(
+                reason="no_device_builder",
+                description_placeholders={"installation_url": ESPHOME_INSTALL_URL},
+            )
         errors = {}
         if user_input:
             selected = user_input.get(CONF_DEVICE_BUILDER_SLUG)
