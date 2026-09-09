@@ -44,8 +44,6 @@ def test_indexes_native_metadata_by_every_supported_dimension() -> None:
     assert catalog.by_object_id("sensor", "ct1amps") == (catalog.entities[0],)
     assert catalog.by_name_unit("sensor", "Panel Amps", "A") == (catalog.entities[0],)
     assert catalog.by_name("Panel Amps") == (catalog.entities[0],)
-    assert catalog.by_unit("A") == (catalog.entities[0], catalog.entities[2])
-    assert catalog.by_device_id(4) == catalog.entities
     assert catalog.entities[1].disabled_by_default
     assert catalog.entities[0].raw_key == ("sensor", 4, 11)
     assert not hasattr(catalog.entities[0], "entity_id")

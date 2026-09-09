@@ -449,6 +449,7 @@ describe("HelperApi", () => {
         { ...meterInventory.configuration.meter.voltage_references[0]!, reference_id: "reference-2", label: "Reference 2", group_keys: ["main_2"] },
       ] } };
     for (const invalid of [
+      { ...meterInventory, configuration: { ...meterInventory.configuration, meter: { ...meterInventory.configuration.meter, voltage_layout: "unknown" } } },
       { ...meterInventory, configuration: { ...meterInventory.configuration, meter: { ...meterInventory.configuration.meter, voltage_references: [{ ...meterInventory.configuration.meter.voltage_references[0], gain_voltage: Number.NaN }] } } },
       { ...meterInventory, configuration: { ...meterInventory.configuration, channels: [{ ...meterInventory.configuration.channels[0], role: "invented" }] } },
       { ...meterInventory, configuration: inconsistentReferences,

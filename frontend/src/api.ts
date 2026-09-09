@@ -11,7 +11,6 @@ import type {
   MeterTopology,
   MeterConfiguration,
   MeterConfigurationRequest,
-  MeterSettingsDraft,
   ElectricalSystem,
   LineFrequencyHz,
   OffsetCalibrationResult,
@@ -342,11 +341,12 @@ function meterConfiguration(value: unknown, label: string): Omit<MeterConfigurat
   const meter = record(configuration.meter, label);
   exactKeys(meter, ["friendly_name", "electrical_system", "line_frequency_hz", "update_interval_s", "voltage_layout", "voltage_references"], label);
   string(meter.friendly_name, label);
-  const electricalSystem = enumeration(meter.electrical_system, ELECTRICAL_SYSTEMS, label) as ElectricalSystem;
+  enumeration(meter.electrical_system, ELECTRICAL_SYSTEMS, label);
   const lineFrequency = integer(meter.line_frequency_hz, label);
   if (lineFrequency !== 50 && lineFrequency !== 60) throw new Error(`${label} response is invalid`);
   const updateInterval = integer(meter.update_interval_s, label);
-  if (!UPDATE_INTERVALS.has(updateInterval) || !VOLTAGE_LAYOUTS.has(enumeration(meter.voltage_layout, VOLTAGE_LAYOUTS, label))) throw new Error(`${label} response is invalid`);
+  if (!UPDATE_INTERVALS.has(updateInterval)) throw new Error(`${label} response is invalid`);
+  enumeration(meter.voltage_layout, VOLTAGE_LAYOUTS, label);
   const voltageReferences = array(meter.voltage_references, label, 8).map((entry) => {
     const reference = record(entry, label);
     exactKeys(reference, ["reference_id", "label", "phase_label", "nominal_voltage_v", "transformer_model_id", "gain_voltage", "group_keys"], label);
@@ -399,15 +399,15 @@ function meterConfiguration(value: unknown, label: string): Omit<MeterConfigurat
   exactKeys(intent, ["adopt_managed_totals", "legacy_parent_decisions"], label); boolean(intent.adopt_managed_totals, label);
   const reviewed = new Set<string>();
   array(intent.legacy_parent_decisions, label, 32).forEach((entry) => { const decision = record(entry, label); exactKeys(decision, ["child_id", "proposed_parent_id", "accepted"], label); const child = id(decision.child_id, label); id(decision.proposed_parent_id, label); boolean(decision.accepted, label); if (reviewed.has(child)) throw new Error(`${label} response is invalid`); reviewed.add(child); });
-  for (const key of ["power_quality", "status_fields"] as const) { const values = array(configuration[key], label, 7); if (values.length !== planTopology.board_count) throw new Error(`${label} response is invalid`); values.forEach((entry) => boolean(entry, label)); }
+  packageOptions(configuration, label, planTopology.board_count);
   boolean(configuration.multi_reference_preparation_acknowledged, label);
   const capabilities = record(response.capabilities, label); exactKeys(capabilities, ["configuration_authoritative", "native_totals_readable", "native_totals_writable", "managed_automatic_totals", "managed_advanced_totals", "multi_reference", "semantic_source", "reason_codes"], label); for (const key of ["configuration_authoritative", "native_totals_readable", "native_totals_writable", "managed_automatic_totals", "managed_advanced_totals", "multi_reference"]) boolean(capabilities[key], label); enumeration(capabilities.semantic_source, new Set(["helper_managed", "legacy_inferred"]), label); array(capabilities.reason_codes, label, 8).forEach((reason) => string(reason, label));
-  const voltageTopology = record(response.voltage_topology, label); exactKeys(voltageTopology, ["references", "source"], label); enumeration(voltageTopology.source, new Set(["helper", "legacy"]), label); const topologyReferences = array(voltageTopology.references, label, 8).map((entry) => { const reference = array(entry, label, 2); if (reference.length !== 2) throw new Error(`${label} response is invalid`); const referenceId = id(reference[0], label); const groups = array(reference[1], label, 14).map((group) => id(group, label)); if (!groups.length) throw new Error(`${label} response is invalid`); return [referenceId, groups] as const; }); if (topologyReferences.length !== voltageReferences.length || !exactStrings(topologyReferences.map(([reference]) => reference), voltageReferences.map((reference) => reference.reference_id)) || !topologyReferences.every(([reference, groups], index) => exactStrings(groups, voltageReferences[index]!.group_keys))) throw new Error(`${label} response is invalid`);
+  const voltageTopology = record(response.voltage_topology, label); exactKeys(voltageTopology, ["references", "source"], label); enumeration(voltageTopology.source, new Set(["helper", "legacy"]), label); const topologyReferences = array(voltageTopology.references, label, 8).map((entry) => { const reference = array(entry, label, 2); if (reference.length !== 2) throw new Error(`${label} response is invalid`); const referenceId = id(reference[0], label); const groups = array(reference[1], label, 14).map((group) => id(group, label)); if (!groups.length) throw new Error(`${label} response is invalid`); return [referenceId, groups] as const; }); if (topologyReferences.length !== voltageReferences.length || !exactStrings(topologyReferences.map(([reference]) => reference), voltageReferences.map((reference) => reference.reference_id)) || !topologyReferences.every(([, groups], index) => exactStrings(groups, voltageReferences[index]!.group_keys))) throw new Error(`${label} response is invalid`);
   const voltageCatalog = record(response.voltage_transformer_catalog, label); exactKeys(voltageCatalog, ["presets", "source_repository", "source_ref", "schema_version"], label); string(voltageCatalog.source_repository, label); if (!/^[0-9a-f]{40}$/.test(string(voltageCatalog.source_ref, label)! ) || integer(voltageCatalog.schema_version, label) !== 1) throw new Error(`${label} response is invalid`); const voltagePresets = array(voltageCatalog.presets, label, 64); if (!voltagePresets.length) throw new Error(`${label} response is invalid`); const voltageModelIds = new Set<string>(); voltagePresets.forEach((entry) => { const preset = record(entry, label); exactKeys(preset, ["model_id", "label", "primary_nominal_v", "secondary_nominal_v", "default_gain_voltage", "notes"], label); const model = id(preset.model_id, label); if (voltageModelIds.has(model)) throw new Error(`${label} response is invalid`); voltageModelIds.add(model); string(preset.label, label); if (number(preset.primary_nominal_v, label) <= 0 || number(preset.secondary_nominal_v, label) <= 0) throw new Error(`${label} response is invalid`); const gain = integer(preset.default_gain_voltage, label); if (gain < 1 || gain > 65535) throw new Error(`${label} response is invalid`); string(preset.notes, label); });
   ctInventory({ plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.catalog }, label);
   const ctCatalog = record(response.ct_catalog, label); exactKeys(ctCatalog, ["presets", "source_repository", "source_ref", "schema_version"], label);
   ctInventory({ plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.ct_catalog }, label);
-  const warnings = array(response.warnings, label, 32).map((warning) => string(warning, label)!);
+  array(response.warnings, label, 32).forEach((warning) => string(warning, label));
   const impact = configurationImpact(response.configuration_impact, label, updateInterval);
   const enabledChannels = channels.map((entry) => record(entry, label)).filter((entry) => entry.enabled);
   const statusFields = array(configuration.status_fields, label, 7);
