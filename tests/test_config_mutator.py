@@ -505,8 +505,8 @@ def test_technical_total_review_lists_helper_additions_and_removals_without_arbi
         MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION, TotalOutputSettings(False, False, True))
     requested = replace(current.configuration, aggregates=(aggregate,))
     mutation = build_meter_configuration_mutation(snapshot, topology, current, requested)
-    assert "+ id: csemh_branch_power; platform: template; internal: true" in mutation.redacted_diff
-    assert "+ id: csemh_branch_energy; platform: total_daily_energy; power_id: csemh_branch_power" in mutation.redacted_diff
+    assert "+ id: branchWatts; platform: template; internal: true" in mutation.redacted_diff
+    assert "+ id: branchEnergy; platform: total_daily_energy; power_id: branchWatts" in mutation.redacted_diff
     content = mutation.proposed_content.replace("    lambda:", "    # arbitrary-source-canary\n    lambda:")
     installed = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
     # Preserve valid stored intent; source comments/lambdas must never be exposed.
@@ -520,7 +520,7 @@ def test_technical_total_review_lists_helper_additions_and_removals_without_arbi
     assert "No total sensor definition changes" not in technical
     assert "lambda:" not in technical and "arbitrary-source-canary" not in technical
     removed = build_meter_configuration_mutation(installed, topology, current, replace(current.configuration, aggregates=()))
-    assert "- id: csemh_branch_power; platform: template; internal: true" in removed.redacted_diff
+    assert "- id: branchWatts; platform: template; internal: true" in removed.redacted_diff
     assert "arbitrary-source-canary" not in removed.redacted_diff
     assert "lambda:" not in removed.redacted_diff
 
@@ -2244,19 +2244,19 @@ def test_parent_render_preserves_hidden_dependencies_and_child_first_order() -> 
     snapshot, topology, current = _native_total_setup(0)
     requested = _hierarchical_request(current)
     source = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
-    assert "lambda: return std::max(0.0f, id(csemh_east_power).state + id(csemh_west_power).state);" in source
-    assert "lambda: return id(csemh_east_current).state + id(csemh_west_current).state;" in source
-    assert "power_id: csemh_a_whole_power" in source
-    assert "csemh_east_energy" not in source
-    assert source.index("id: csemh_west_current") < source.index("id: csemh_a_whole_power")
-    assert "id: csemh_east_power\n    internal: true" in source
-    assert "id: csemh_east_current\n    internal: true" in source
+    assert "lambda: return std::max(0.0f, id(eastWatts).state + id(westWatts).state);" in source
+    assert "lambda: return id(eastAmps).state + id(westAmps).state;" in source
+    assert "power_id: wholeWatts" in source
+    assert "eastEnergy" not in source
+    assert source.index("id: westAmps") < source.index("id: wholeWatts")
+    assert "id: eastWatts\n    internal: true" in source
+    assert "id: eastAmps\n    internal: true" in source
     installed = replace(snapshot, content=source, sha256=sha256(source.encode()).hexdigest())
     recovered = _inventory(installed, topology)
     assert recovered.configuration.aggregates == requested.aggregates
     assert "aggregate_semantics_unreadable" not in recovered.warnings
     assert not recovered.capabilities.managed_advanced_totals
-    for old, new in (("id(csemh_east_power).state", "id(ct1Watts).state"),
+    for old, new in (("id(eastWatts).state", "id(ct1Watts).state"),
                      ("internal: true", "internal: false"),
                      ("multiply: 0.001", "multiply: 1.0")):
         content = source.replace(old, new, 1)
@@ -2272,13 +2272,13 @@ def test_bidirectional_render_independent_outputs(watts, amps, kwh) -> None:
         EnergyMode.BIDIRECTIONAL, TotalOutputSettings(watts, amps, kwh))
     requested = _aggregate_request(current, aggregate)
     source = build_meter_configuration_mutation(snapshot, topology, current, requested).proposed_content
-    for suffix in ("power", "import_power", "export_power"):
-        assert (f"id: csemh_grid_{suffix}" in source) == (watts or kwh)
+    for suffix in ("Watts", "ImportWatts", "ExportWatts"):
+        assert (f"id: grid{suffix}" in source) == (watts or kwh)
         if kwh and not watts:
-            assert f"id: csemh_grid_{suffix}\n    internal: true" in source
-    assert ("id: csemh_grid_current" in source) == amps
-    for suffix in ("import_energy", "export_energy"):
-        assert (f"id: csemh_grid_{suffix}" in source) == kwh
+            assert f"id: grid{suffix}\n    internal: true" in source
+    assert ("id: gridAmps" in source) == amps
+    for suffix in ("ImportEnergy", "ExportEnergy"):
+        assert (f"id: grid{suffix}" in source) == kwh
     installed = replace(snapshot, content=source, sha256=sha256(source.encode()).hexdigest())
     assert _inventory(installed, topology).configuration.aggregates == (aggregate,)
 
@@ -2817,7 +2817,7 @@ def test_rejected_custom_totals_stay_visible_during_unrelated_aggregate_edit(
     assert custom in plan.proposed_content
     assert f"!extend total{label}Watts" not in plan.proposed_content
     assert f"!extend total{label}Amps" not in plan.proposed_content
-    assert "id: csemh_load_power" in plan.proposed_content
+    assert "id: loadWatts" in plan.proposed_content
 
 
 @pytest.mark.parametrize("label", ("Custom", ""))
@@ -2868,7 +2868,7 @@ def test_filtered_or_weighted_legacy_totals_remain_user_owned(
     assert f"!extend {sensor_id}\n" not in plan.proposed_content
     assert "!extend totalEnergyDaily\n" not in plan.proposed_content
     assert current.configuration.aggregates == ()
-    assert "id: csemh_load_power" in plan.proposed_content
+    assert "id: loadWatts" in plan.proposed_content
 
 
 @pytest.mark.parametrize("with_storage", (False, True))
@@ -2964,18 +2964,18 @@ def test_aggregate_preview_renders_bidirectional_grid_without_hiding_native_tota
         "# CircuitSetup Energy Meter Helper: aggregates v1\n", 1
     )[1].split("# End CircuitSetup", 1)[0]
     for entity_id in (
-        "csemh_grid_power",
-        "csemh_grid_import_power",
-        "csemh_grid_export_power",
-        "csemh_grid_import_energy",
-        "csemh_grid_export_energy",
+        "gridWatts",
+        "gridImportWatts",
+        "gridExportWatts",
+        "gridImportEnergy",
+        "gridExportEnergy",
     ):
         assert f"id: {entity_id}" in block
     assert "lambda: return id(ct1Watts).state + id(ct2Watts).state;" in block
-    assert "lambda: return std::max(0.0f, id(csemh_grid_power).state);" in block
-    assert "lambda: return std::max(0.0f, -id(csemh_grid_power).state);" in block
-    _assert_daily_energy(block, "csemh_grid_import_power")
-    _assert_daily_energy(block, "csemh_grid_export_power")
+    assert "lambda: return std::max(0.0f, id(gridWatts).state);" in block
+    assert "lambda: return std::max(0.0f, -id(gridWatts).state);" in block
+    _assert_daily_energy(block, "gridImportWatts")
+    _assert_daily_energy(block, "gridExportWatts")
     assert "  - platform: integration" not in block
     assert "!extend totalEnergyDaily" not in block
     ESPHomeConfigDocument.parse(plan.proposed_content)
@@ -3002,16 +3002,16 @@ def test_mains_and_solar_templates_split_grid_import_from_export() -> None:
     )[1].split("# End CircuitSetup", 1)[0]
     assert "lambda: return id(ct1Watts).state + id(ct2Watts).state;" in block
     assert (
-        "lambda: return std::max(0.0f, id(csemh_auto_mains_power).state);"
+        "lambda: return std::max(0.0f, id(mainsWatts).state);"
         in block
     )
     assert (
-        "lambda: return std::max(0.0f, -id(csemh_auto_mains_power).state);"
+        "lambda: return std::max(0.0f, -id(mainsWatts).state);"
         in block
     )
-    _assert_daily_energy(block, "csemh_auto_mains_import_power")
-    _assert_daily_energy(block, "csemh_auto_mains_export_power")
-    assert "id: csemh_auto_mains_current" not in block
+    _assert_daily_energy(block, "mainsImportWatts")
+    _assert_daily_energy(block, "mainsExportWatts")
+    assert "id: mainsAmps" not in block
     assert 'name: "${friendly_name} Mains Import Energy"' in block
     assert 'name: "${friendly_name} Mains Return to Grid Power"' in block
     assert 'name: "${friendly_name} Mains Return to Grid Energy"' in block
@@ -3022,7 +3022,7 @@ def test_mains_and_solar_templates_split_grid_import_from_export() -> None:
         "id(ct3Watts).state + id(ct4Watts).state);"
         in block
     )
-    _assert_daily_energy(block, "csemh_auto_solar_power")
+    _assert_daily_energy(block, "solarWatts")
     ESPHomeConfigDocument.parse(plan.proposed_content)
 
 
@@ -3050,7 +3050,7 @@ def test_indentless_contract_sensor_supports_voltage_aggregate_preview_and_readb
 
     plan = build_meter_configuration_mutation(snapshot, topology, current, requested)
 
-    assert "\n- platform: total_daily_energy\n  id: csemh_load_energy" in plan.proposed_content
+    assert "\n- platform: total_daily_energy\n  id: loadEnergy" in plan.proposed_content
     assert "\n  - id: !extend totalEnergyDaily" not in plan.proposed_content
     assert "\n- id: !extend meter_main1" in plan.proposed_content
     stored = StoredMeterConfiguration(
@@ -3184,11 +3184,11 @@ def test_aggregate_energy_signs_and_one_ct_power_multiplier_are_semantic_only() 
 
     assert "lambda: return std::max(0.0f, id(ct1Watts).state * 2.0);" in block
     assert "lambda: return id(ct1Amps).state;" in block
-    assert "power_id: csemh_load_power" in block
+    assert "power_id: loadWatts" in block
     assert "lambda: return std::max(0.0f, id(ct2Watts).state);" in block
-    assert "power_id: csemh_solar_power" in block
-    _assert_daily_energy(block, "csemh_load_power")
-    _assert_daily_energy(block, "csemh_solar_power")
+    assert "power_id: solarWatts" in block
+    _assert_daily_energy(block, "loadWatts")
+    _assert_daily_energy(block, "solarWatts")
     assert "  - platform: integration" not in block
     assert "id(ct1Amps).state * 2.0" not in block
 

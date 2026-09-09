@@ -1246,9 +1246,11 @@ def _validate_graph_block(
 ) -> None:
     # Compare only our emitted grammar, including nested filters; never interpret custom YAML.
     from .meter_config_mutator import (
+        _name_total_sensors,
         _render_aggregates,
         _render_native_totals,
         _render_total_updates,
+        _saved_total_sensor_ids,
         _select_render_totals,
     )
 
@@ -1276,6 +1278,8 @@ def _validate_graph_block(
         if "# csemh-existing-totals: v1" in document.managed_blocks["aggregates"].content
         else replacements + _render_aggregates(plan, requested.aggregates, requested if has_automatic else None)
     )
+    if _saved_total_sensor_ids(document) and "# csemh-existing-totals: v1" not in document.managed_blocks["aggregates"].content:
+        expected = _name_total_sensors(expected, requested, document)
     block = document.managed_blocks["aggregates"]
     actual = block.content
     if document.sensor_item_indent == 0:
@@ -1366,8 +1370,11 @@ def _decode_aggregate_block(
     channels: tuple[ChannelSettings, ...],
     metadata: tuple[CircuitAggregate, ...] = (),
 ) -> tuple[CircuitAggregate, ...]:
+    from .meter_config_mutator import _replace_total_sensor_ids, _saved_total_sensor_ids
+
     block = document.managed_blocks["aggregates"]
-    items = _managed_sensor_items(block.content, document.sensor_item_indent)
+    logical = _replace_total_sensor_ids(block.content, {value: key for key, value in _saved_total_sensor_ids(document).items()})
+    items = _managed_sensor_items(logical, document.sensor_item_indent)
     by_id = {item.get("id", ""): item for item in items}
     directional_ids = {
         f"{sensor_id[:-6]}_{direction}_power"
