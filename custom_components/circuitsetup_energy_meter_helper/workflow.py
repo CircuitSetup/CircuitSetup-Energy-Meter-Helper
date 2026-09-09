@@ -18,6 +18,7 @@ from uuid import uuid4
 from aioesphomeapi.model import build_device_unique_id
 from aiohasupervisor import SupervisorNotFoundError, SupervisorResponseError
 from aiohasupervisor.models import AddonState as SupervisorAddonState
+from aiohasupervisor.models.addons import InstalledAddonComplete
 from aiohttp import hdrs
 from homeassistant.components.hassio import HassIO, get_supervisor_client
 from homeassistant.components.hassio.const import (
@@ -26,6 +27,7 @@ from homeassistant.components.hassio.const import (
     X_INGRESS_PATH,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 
 from .calibration_engine import (
@@ -40,6 +42,7 @@ from .config_mutator import (
     package_options_from_document,
 )
 from .config_transaction import ConfigTransactionManager, ReconnectEvidence
+from .const import ESPHOME_DEVICE_BUILDERS
 from .ct_catalog import REPORTING_MULTIPLIERS, CTPresetCatalog
 from .ct_inventory import CTInventory
 from .device_builder import (
@@ -117,7 +120,6 @@ DEFAULT_HANDLE_TTL = 15 * 60.0
 CalibrationPlan = Literal["standard", "full"]
 MAX_HANDLE_TTL = 60 * 60.0
 MAX_PLAN_HANDLES = 8
-ESPHOME_DEVICE_BUILDER_SLUG = "5c53de3b_esphome"
 _INGRESS_ENTRY_PREFIX = "/api/hassio_ingress/"
 _INGRESS_SESSION_COOKIE = "ingress_session"
 _SUPERVISOR_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,256}\Z", re.ASCII)
@@ -2919,27 +2921,49 @@ class EntryWorkflow:
                 plan.scrub()
 
 
-async def create_device_builder(hass: HomeAssistant) -> LazyDeviceBuilder | None:
-    """Discover the official supervised Device Builder and use trusted ingress."""
+async def async_installed_device_builders(
+    hass: HomeAssistant,
+) -> dict[str, InstalledAddonComplete]:
+    """Discover installed official channels, including stopped add-ons."""
     hassio = hass.data.get(DATA_COMPONENT)
     if not isinstance(hassio, HassIO):
-        return None
+        return {}
     supervisor = get_supervisor_client(hass)
-    try:
-        addon = await supervisor.addons.addon_info(ESPHOME_DEVICE_BUILDER_SLUG)
-    except SupervisorNotFoundError:
-        return None
-    except (LookupError, TypeError, ValueError) as error:
-        raise SupervisorResponseError(
-            "Supervisor returned malformed Device Builder metadata"
-        ) from error
-    if (
-        addon.slug != ESPHOME_DEVICE_BUILDER_SLUG
-        or addon.name != "ESPHome Device Builder"
-    ):
-        raise SupervisorResponseError(
-            "Supervisor returned inconsistent Device Builder identity"
+    installed = {}
+    for slug, name in ESPHOME_DEVICE_BUILDERS.items():
+        try:
+            addon = await supervisor.addons.addon_info(slug)
+        except SupervisorNotFoundError:
+            continue
+        except (LookupError, TypeError, ValueError) as error:
+            raise SupervisorResponseError(
+                "Supervisor returned malformed Device Builder metadata"
+            ) from error
+        if addon.slug != slug or addon.name != name:
+            raise SupervisorResponseError(
+                "Supervisor returned inconsistent Device Builder identity"
+            )
+        installed[slug] = addon
+    return installed
+
+
+async def create_device_builder(
+    hass: HomeAssistant, selected_slug: str | None = None
+) -> LazyDeviceBuilder | None:
+    """Use the chosen official builder, or the sole installed channel."""
+    installed = await async_installed_device_builders(hass)
+    if selected_slug is None and len(installed) > 1:
+        raise ConfigEntryNotReady(
+            "Choose an ESPHome Device Builder in the Helper integration's options "
+            "(Settings > Devices & services > CircuitSetup Energy Meter Helper)"
         )
+    addon = installed.get(selected_slug) if selected_slug is not None else next(
+        iter(installed.values()), None
+    )
+    if addon is None:
+        return None
+    hassio = hass.data[DATA_COMPONENT]
+    supervisor = get_supervisor_client(hass)
     if addon.available is not True:
         raise SupervisorResponseError(
             "Supervisor returned inconsistent Device Builder availability"

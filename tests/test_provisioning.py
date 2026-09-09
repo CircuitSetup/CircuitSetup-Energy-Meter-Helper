@@ -306,7 +306,7 @@ def test_production_setup_reports_configured_device_builder_state(monkeypatch) -
                 "importable": [],
             }
 
-    async def create_builder(_hass):
+    async def create_builder(_hass, _selected_slug=None):
         return FakeBuilder()
 
     async def run() -> None:
