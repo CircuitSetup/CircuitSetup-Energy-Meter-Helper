@@ -77,7 +77,7 @@ function meterConfiguration(addons: number, scenario: Scenario = undefined) {
     custom_label: channel.selected_model_id === null ? "Custom CT" : null,
     burden_output_acknowledged: channel.selected_model_id === null }));
   const singlePhase = scenario === "single-phase-pq";
-  const numericEntityCount = live.channels.length * 2 + 2 * (addons + 1) + (singlePhase ? 24 : 0);
+  const numericEntityCount = live.channels.length * 2 + 2 * (addons + 1) + (singlePhase ? 18 : 0);
   return { plan_id: "b".repeat(32), source_sha256: live.source_sha256, topology: { ...topology(addons), voltage_layout: "standard" },
     configuration: { meter: { friendly_name: "Energy meter", electrical_system: singlePhase ? "single_phase_230" : "split_phase_120_240", line_frequency_hz: singlePhase ? 50 : 60,
       update_interval_s: 5, voltage_layout: addons ? "multi_reference" : "standard", voltage_references: references.map((reference) => singlePhase ? { ...reference, nominal_voltage_v: 230 } : reference) }, channels, aggregates: [],

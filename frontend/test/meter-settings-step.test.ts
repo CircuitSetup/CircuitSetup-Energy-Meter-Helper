@@ -29,7 +29,7 @@ describe("meterSettingsStep", () => {
     expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("click Apply to save");
     expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("Compile and Install");
     expect(options.querySelector('[aria-label="Reporting interval"]')).toBeNull();
-    expect(root.querySelector(".package-options")?.textContent).toContain("used with the CircuitSetup Energy Analyzer");
+    expect(root.querySelector(".package-options")?.textContent).toContain("reactive power, apparent power, and power factor");
   });
 
   it("moves a voltage group atomically and requires multi-reference acknowledgement", () => {

@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sys
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 PREFIX = "6chan_energy_meter_"
@@ -242,6 +243,57 @@ def _verify_compile_matrix(firmware_root: Path) -> None:
         )
 
 
+def _verify_optional_package_contract(helper_root: Path, firmware_dir: Path) -> None:
+    """Check the exact optional package metrics consumed by Helper."""
+    contract_path = (
+        helper_root
+        / "custom_components/circuitsetup_energy_meter_helper/package_contract.py"
+    )
+    if not contract_path.is_file():
+        raise SystemExit(f"Helper package contract is missing: {contract_path}")
+    spec = spec_from_file_location("_helper_package_contract", contract_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit("Helper package contract could not be loaded")
+    module = module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    contracts = module.SUPPORTED_PACKAGE_CONTRACTS
+
+    for board in range(7):
+        for feature, contract in contracts.items():
+            path = firmware_dir.parent.parent / contract.path(board)
+            if not path.is_file():
+                raise SystemExit(f"missing {feature} package: {path.name}")
+            source = path.read_text(encoding="utf-8")
+            for metric in contract.phase_metrics:
+                occurrences = len(
+                    re.findall(rf"^    {re.escape(metric)}:", source, re.MULTILINE)
+                )
+                expected = contract.phase_metric_count
+                if occurrences != expected:
+                    raise SystemExit(
+                        f"{path.name}: {metric} count is {occurrences}, expected {expected}"
+                    )
+            for metric in contract.board_metric_names(board):
+                occurrences = len(
+                    re.findall(rf"^    {re.escape(metric)}:", source, re.MULTILINE)
+                )
+                if occurrences != 1:
+                    raise SystemExit(
+                        f"{path.name}: {metric} count is {occurrences}, expected 1"
+                    )
+            expected_disabled = contract.ha_disabled_entity_count(board)
+            if expected_disabled is not None and source.count(
+                "disabled_by_default: true"
+            ) != expected_disabled:
+                raise SystemExit(f"{path.name}: status visibility contract changed")
+            if any(
+                re.search(rf"^    {re.escape(metric)}:", source, re.MULTILINE)
+                for metric in contract.legacy_phase_metrics
+            ):
+                raise SystemExit(f"{path.name}: unsupported historical metric present")
+
+
 def verify(helper_root: Path, firmware_root: Path) -> None:
     """Verify the release contract shared by helper and firmware."""
     helper_catalog = json.loads(
@@ -258,6 +310,7 @@ def verify(helper_root: Path, firmware_root: Path) -> None:
         raise SystemExit("CT preset catalogs differ")
     if helper_catalog.get("schema_version") != 1:
         raise SystemExit("unsupported CT preset schema")
+    _verify_optional_package_contract(helper_root, firmware_dir)
 
     configs = {path.name: path for path in firmware_dir.glob(f"{PREFIX}*.yaml")}
     if set(configs) != EXPECTED_CONFIGS:

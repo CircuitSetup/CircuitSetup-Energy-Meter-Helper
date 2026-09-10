@@ -33,7 +33,12 @@ from .device_builder import (
 )
 from .log_parser import MeterCommunicationError
 from .meter_config_mutator import expected_meter_entity_evidence
-from .meter_configuration import ChannelSettings, MeterConfigurationRequest
+from .meter_configuration import (
+    MAX_AGGREGATES,
+    MAX_VOLTAGE_REFERENCES,
+    ChannelSettings,
+    MeterConfigurationRequest,
+)
 from .models import (
     ConfigMutationPlan,
     MeterTopology,
@@ -62,6 +67,11 @@ DEFAULT_CONFIRMATION_TTL = 15 * 60.0
 MAX_CONFIRMATION_TTL = 60 * 60.0
 DEFAULT_RECONNECT_TIMEOUT = 120.0
 DEFAULT_RECONNECT_BACKOFF_INITIAL = 0.5
+MAX_EXPECTED_SENSOR_ENTITIES = (
+    6 * 7 * 5
+    + MAX_VOLTAGE_REFERENCES * 2
+    + MAX_AGGREGATES * 6
+)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -1607,7 +1617,10 @@ def _validate_expected_sensor_entities(
     sensor_entities: frozenset[tuple[str, str]],
 ) -> None:
     """Require bounded, one-to-one native sensor object-ID/name evidence."""
-    if type(sensor_entities) is not frozenset or len(sensor_entities) > 128:
+    if (
+        type(sensor_entities) is not frozenset
+        or len(sensor_entities) > MAX_EXPECTED_SENSOR_ENTITIES
+    ):
         raise ValueError("expected sensor entities are invalid")
     object_ids: set[str] = set()
     for pair in sensor_entities:
@@ -1667,12 +1680,19 @@ def _verify_reconnect(
     if evidence.topology != transaction.topology:
         return TransactionEvidenceCode.TOPOLOGY_MISMATCH
     expected_channels = set(range(1, transaction.topology.ct_count + 1))
+    if transaction.meter_configuration is not None:
+        expected_channels = {
+            channel.channel
+            for channel in transaction.meter_configuration.channels
+            if channel.enabled
+        }
     if set(evidence.ct_names) != expected_channels:
         return TransactionEvidenceCode.ENTITY_MISMATCH
     if transaction.meter_configuration is not None:
         if any(
             evidence.ct_names.get(channel.channel) != channel.name
             for channel in transaction.meter_configuration.channels
+            if channel.enabled
         ):
             return TransactionEvidenceCode.ENTITY_MISMATCH
     else:
@@ -1702,7 +1722,7 @@ def _verify_reconnect(
             transaction, evidence
         )
         return TransactionEvidenceCode.ENTITY_MISMATCH
-    if evidence.current_sensor_count != transaction.topology.ct_count:
+    if evidence.current_sensor_count != len(expected_channels):
         return TransactionEvidenceCode.SENSOR_COUNT_MISMATCH
     return None
 

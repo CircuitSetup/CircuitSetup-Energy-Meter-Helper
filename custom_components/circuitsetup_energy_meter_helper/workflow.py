@@ -38,7 +38,9 @@ from .calibration_engine import (
 )
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import (
+    ConfigMutationError,
     CTChangeRequest,
+    _read_phase_channel_states,
     package_options_from_document,
 )
 from .config_transaction import ConfigTransactionManager, ReconnectEvidence
@@ -96,6 +98,74 @@ MAX_PLAN_HANDLES = 8
 _INGRESS_ENTRY_PREFIX = "/api/hassio_ingress/"
 _INGRESS_SESSION_COOKIE = "ingress_session"
 _SUPERVISOR_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,256}\Z", re.ASCII)
+
+
+def _configured_current_sensors(
+    catalog: EntityCatalog,
+    substitutions: Mapping[str, str],
+    channels: set[int],
+) -> dict[int, Any]:
+    """Resolve only configured public CT readings with strict native identity."""
+    current_sensors: dict[int, Any] = {}
+    used_object_ids: set[str] = set()
+    used_raw_keys: set[tuple[str, int, int]] = set()
+    for channel in sorted(channels):
+        configured_name = substitutions.get(f"ct{channel}_name")
+        if not isinstance(configured_name, str) or not configured_name:
+            raise WorkflowCapabilityUnavailable(
+                f"configured CT{channel} name is unavailable"
+            )
+        expected_name = f"{configured_name} Amps"
+        named = tuple(
+            entity
+            for entity in catalog.by_name(expected_name)
+            if entity.kind == "sensor"
+        )
+        if len(named) != 1:
+            reason = "missing" if not named else "ambiguous"
+            raise WorkflowCapabilityUnavailable(
+                f"configured CT{channel} current reading is {reason}"
+            )
+        entity = named[0]
+        if entity.unit != "A":
+            raise WorkflowCapabilityUnavailable(
+                f"configured CT{channel} current reading has the wrong unit"
+            )
+        if len(catalog.by_object_id("sensor", entity.object_id)) != 1:
+            raise WorkflowCapabilityUnavailable(
+                f"configured CT{channel} current reading has a duplicate object ID"
+            )
+        if entity.object_id in used_object_ids or entity.raw_key in used_raw_keys:
+            raise WorkflowCapabilityUnavailable(
+                f"configured CT{channel} current reading is reused"
+            )
+        used_object_ids.add(entity.object_id)
+        used_raw_keys.add(entity.raw_key)
+        current_sensors[channel] = entity
+    return current_sensors
+
+
+def _configured_enabled_channels(
+    document: ESPHomeConfigDocument, topology: MeterTopology
+) -> set[int]:
+    """Read Helper-owned unused-channel state from the authoritative YAML."""
+    try:
+        options = package_options_from_document(document, topology)
+        states = _read_phase_channel_states(
+            document.content,
+            topology,
+            document.substitutions,
+            options["power_quality"],
+        )
+    except (ConfigMutationError, ValueError) as error:
+        raise WorkflowCapabilityUnavailable(
+            "configured CT phase ownership is unavailable"
+        ) from error
+    return {
+        channel
+        for channel in range(1, topology.ct_count + 1)
+        if states.get(channel) is None or states[channel].enabled
+    }
 
 
 def _public_sample_window(window: SensorSampleWindow) -> dict[str, Any]:
@@ -1372,6 +1442,7 @@ class EntryWorkflow:
             ),
             None,
         )
+        document: ESPHomeConfigDocument | None = None
         if handle is None:
             device_id = self._esphome_entry_id
             if device_id is None:
@@ -1383,20 +1454,18 @@ class EntryWorkflow:
                 if isinstance(topology_result, dict)
                 else topology_result
             )
-            snapshot = await self._async_snapshot(device)
-            document = ESPHomeConfigDocument.parse(snapshot.content)
-            substitutions = {
-                key: scalar.value for key, scalar in document.substitutions.items()
-            }
+            substitutions: Mapping[str, str] = {}
+            if self._builder is not None:
+                snapshot = await self._async_snapshot(device)
+                document = ESPHomeConfigDocument.parse(snapshot.content)
+                substitutions = {
+                    key: scalar.value for key, scalar in document.substitutions.items()
+                }
         else:
             topology = handle.topology
+            substitutions = handle.substitutions
         await api.async_check_meter_communication(topology.group_count)
         catalog = EntityCatalog(api.entities, api.connection_generation)
-        if handle is None:
-            binding = bind_meter(catalog, topology, substitutions)
-        else:
-            binding = handle.binding.rebind(catalog, handle.substitutions)
-            handle.binding = binding
         sensors = catalog.by_kind("sensor")
         sensor_object_ids = Counter(entity.object_id for entity in sensors)
         duplicates = frozenset(
@@ -1404,16 +1473,37 @@ class EntryWorkflow:
             for object_id, count in sensor_object_ids.items()
             if count > 1
         )
+        if handle is not None:
+            binding = handle.binding.rebind(catalog, handle.substitutions)
+            handle.binding = binding
+            current_sensors = {
+                channel.channel: channel.current_sensor.descriptor
+                for channel in binding.channels
+            }
+        elif self._builder is None:
+            binding = bind_native_meter(catalog, topology)
+            current_sensors = {
+                channel.channel: channel.current_sensor.descriptor
+                for channel in binding.channels
+            }
+        else:
+            if document is None:
+                raise WorkflowCapabilityUnavailable(
+                    "configuration snapshot is unavailable"
+                )
+            current_sensors = _configured_current_sensors(
+                catalog,
+                substitutions,
+                _configured_enabled_channels(document, topology),
+            )
         return ReconnectEvidence(
             canonical_mac(mac),
             topology,
             {
-                channel.channel: channel.current_sensor.descriptor.name.removesuffix(
-                    " Amps"
-                )
-                for channel in binding.channels
+                channel: entity.name.removesuffix(" Amps")
+                for channel, entity in current_sensors.items()
             },
-            len(binding.channels),
+            len(current_sensors),
             frozenset((entity.object_id, entity.name) for entity in sensors),
             duplicates,
         )

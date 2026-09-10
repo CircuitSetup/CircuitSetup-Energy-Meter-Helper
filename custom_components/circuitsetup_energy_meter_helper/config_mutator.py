@@ -23,6 +23,7 @@ from .ct_catalog import (
 )
 from .ct_inventory import CTInventory
 from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
+from .package_contract import SUPPORTED_PACKAGE_CONTRACTS, package_path
 from .store import VerifiedCalibrationRecord
 from .topology import (
     voltage_reference_fingerprint_for_meter,
@@ -56,10 +57,7 @@ _YAML_FLOW_KEY_RE = re.compile(
     rf"[{{,][ \t]*(?:(?:![^\s]+|&[^\s]+)[ \t]+)*"
     rf"(?P<key>{_YAML_KEY_TOKEN})[ \t]*:"
 )
-_PACKAGE_FEATURES = {
-    "power_quality": ("power_quality", "power_quality"),
-    "status_fields": ("status_fields", "status"),
-}
+_PACKAGE_FEATURES = SUPPORTED_PACKAGE_CONTRACTS
 
 
 class ConfigSnapshot(Protocol):
@@ -291,10 +289,10 @@ def _apply_package_options(
         return fallback
 
     changes: list[SubstitutionChange] = []
-    for feature, (directory, suffix) in _PACKAGE_FEATURES.items():
+    for feature in _PACKAGE_FEATURES:
         for board_index, enabled in enumerate(desired[feature]):
             board = "main" if board_index == 0 else f"addon{board_index}"
-            path = f"Software/ESPHome/{directory}/6chan_{board}_{suffix}.yaml"
+            path = package_path(feature, board_index)
             pattern = re.compile(
                 rf"^(?P<indent> *)(?P<comment>#\s*)?(?P<entry>-\s+{re.escape(path)}"
                 rf"(?P<tail>\s*(?:#.*)?))(?P<newline>\r?\n)?$"
@@ -338,12 +336,10 @@ def package_options_from_document(
     active = set(document.package_files)
     return {
         feature: tuple(
-            f"Software/ESPHome/{directory}/6chan_"
-            f"{'main' if board_index == 0 else f'addon{board_index}'}_{suffix}.yaml"
-            in active
+            package_path(feature, board_index) in active
             for board_index in range(topology.board_count)
         )
-        for feature, (directory, suffix) in _PACKAGE_FEATURES.items()
+        for feature in _PACKAGE_FEATURES
     }
 
 
@@ -818,31 +814,45 @@ def _apply_calibrated_voltage_gains(
 def _phase_override_lines(
     enabled: bool, multiplier: float, power_quality: bool
 ) -> tuple[str, ...]:
+    """Render only the current official package metrics for one CT phase."""
     lines: list[str] = []
-    if multiplier != 1:
-        value = f"{multiplier:g}"
-        outputs = ["current", "power"]
-        if enabled and power_quality:
-            outputs.extend(("reactive_power", "apparent_power"))
-        for output in outputs:
-            lines.extend(
-                (f"      {output}:", "        filters:", f"          - multiply: {value}")
-            )
-    if not enabled:
-        for output in ("current", "power"):
-            if multiplier == 1:
-                lines.append(f"      {output}:")
+    value = f"{multiplier:g}"
+    power_quality_contract = SUPPORTED_PACKAGE_CONTRACTS["power_quality"]
+    outputs: list[str] = []
+    if not enabled or multiplier != 1:
+        outputs.extend(("current", "power"))
+    if enabled and power_quality and multiplier != 1:
+        outputs.extend(power_quality_contract.scalable_phase_metrics)
+    for output in outputs:
+        lines.append(f"      {output}:")
+        if not enabled and output in ("current", "power"):
+            if multiplier != 1:
+                lines.extend(("        filters:", f"          - multiply: {value}"))
             lines.append("        internal: true")
-    if power_quality:
-        removals = ("harmonic_power", "peak_current") if enabled else (
-            "reactive_power",
-            "apparent_power",
-            "harmonic_power",
-            "peak_current",
-            "power_factor",
-            "phase_angle",
+        elif multiplier != 1:
+            lines.extend(("        filters:", f"          - multiply: {value}"))
+    if power_quality and not enabled:
+        lines.extend(
+            f"      {output}: !remove"
+            for output in power_quality_contract.phase_metrics
         )
-        lines.extend(f"      {output}: !remove" for output in removals)
+    return tuple(lines)
+
+
+def _legacy_phase_override_lines(
+    multiplier: float, power_quality: bool
+) -> tuple[str, ...]:
+    """Recognize the historical enabled shape during managed-block migration."""
+    lines = list(_phase_override_lines(True, multiplier, power_quality))
+    if power_quality:
+        legacy_metrics = SUPPORTED_PACKAGE_CONTRACTS[
+            "power_quality"
+        ].legacy_phase_metrics
+        lines.extend(
+            f"      {output}: !remove"
+            for output in legacy_metrics
+            if output != "phase_angle"
+        )
     return tuple(lines)
 
 
@@ -858,15 +868,12 @@ def _legacy_unused_phase_override_lines(
                 (f"      {output}:", "        filters:", f"          - multiply: {value}")
             )
     if power_quality:
+        # Preserve the exact historical order for source-owned block recognition.
         lines.extend(
             f"      {output}: !remove"
             for output in (
-                "reactive_power",
-                "apparent_power",
-                "harmonic_power",
-                "peak_current",
-                "power_factor",
-                "phase_angle",
+                "reactive_power", "apparent_power", "harmonic_power",
+                "peak_current", "power_factor", "phase_angle",
             )
         )
     return tuple(lines)
@@ -1039,14 +1046,19 @@ def _read_phase_channel_states(
             for multiplier in REPORTING_MULTIPLIERS:
                 legacy = _phase_override_lines(True, multiplier, False)
                 enabled = _phase_override_lines(True, multiplier, board_pq)
+                legacy_enabled = _legacy_phase_override_lines(multiplier, board_pq)
                 unused = _phase_override_lines(False, multiplier, board_pq)
                 legacy_unused = _legacy_unused_phase_override_lines(
                     multiplier, board_pq
                 )
-                if body in {unused, legacy_unused} and unused != enabled:
+                legacy_internal = (
+                    _phase_override_lines(False, 1, False) + legacy_unused
+                    if multiplier == 1 else ()
+                )
+                if body in {unused, legacy_unused, legacy_internal} and unused != enabled:
                     state = _PhaseChannelState(False, multiplier)
                     break
-                if body in {legacy, enabled}:
+                if body in {legacy, enabled, legacy_enabled}:
                     state = _PhaseChannelState(True, multiplier)
                     break
             if state is None:

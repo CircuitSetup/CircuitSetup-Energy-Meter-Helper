@@ -436,15 +436,32 @@ def _workflow(
     return workflow, handle, sessions, api
 
 
-@pytest.mark.parametrize("communication_failed", [False, True])
+@pytest.mark.parametrize(
+    ("communication_failed", "renamed"),
+    ((False, False), (True, False), (False, True)),
+)
 def test_reconnect_evidence_reports_configured_ct_names(
     monkeypatch: pytest.MonkeyPatch,
     communication_failed: bool,
+    renamed: bool,
 ) -> None:
     """The API exposes the configured CT label with its sensor suffix."""
     workflow, handle, _sessions, api = _workflow()
+    labels = {
+        channel: f"Kitchen {channel}" if renamed else f"CT {channel}"
+        for channel in range(1, 7)
+    }
+    if renamed:
+        handle.substitutions = {
+            f"ct{channel}_name": label
+            for channel, label in labels.items()
+        }
     sensors = tuple(
-        SimpleNamespace(object_id=f"ct{channel}amps", name=f"CT {channel} Amps")
+        SensorInfo(
+            channel,
+            f"{labels[channel]} Amps",
+            object_id=f"ct{channel}amps",
+        )
         for channel in range(1, 7)
     )
     channels = tuple(
@@ -454,9 +471,13 @@ def test_reconnect_evidence_reports_configured_ct_names(
         )
         for channel, sensor in enumerate(sensors, 1)
     )
-    handle.binding = SimpleNamespace(
-        rebind=lambda *_args: SimpleNamespace(channels=channels)
-    )
+    rebind_calls: list[tuple[Any, ...]] = []
+
+    def rebind(*args: Any) -> Any:
+        rebind_calls.append(args)
+        return SimpleNamespace(channels=channels)
+
+    handle.binding = SimpleNamespace(rebind=rebind)
     api.entities = sensors
 
     async def reconnect() -> None:
@@ -475,11 +496,6 @@ def test_reconnect_evidence_reports_configured_ct_names(
 
     api.async_reconnect = reconnect
     api.async_check_meter_communication = check_communication
-    monkeypatch.setattr(
-        "custom_components.circuitsetup_energy_meter_helper.workflow.EntityCatalog",
-        lambda *_args: SimpleNamespace(by_kind=lambda kind: sensors if kind == "sensor" else ()),
-    )
-
     if communication_failed:
         from custom_components.circuitsetup_energy_meter_helper.log_parser import (
             MeterCommunicationError,
@@ -493,8 +509,150 @@ def test_reconnect_evidence_reports_configured_ct_names(
 
     assert checked == [2]
     assert evidence.ct_names == {
-        channel: f"CT {channel}" for channel in range(1, 7)
+        channel: labels[channel] for channel in range(1, 7)
     }
+    assert len(rebind_calls) == 1
+
+
+class SensorInfo:
+    def __init__(
+        self,
+        key: int,
+        name: str,
+        unit: str = "A",
+        object_id: str | None = None,
+    ) -> None:
+        self.key = key
+        self.device_id = 1
+        self.name = name
+        self.object_id = object_id or name.casefold().replace(" ", "_")
+        self.unit_of_measurement = unit
+
+
+def _ordinary_verification_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+    content: str,
+    entities: tuple[SensorInfo, ...],
+) -> EntryWorkflow:
+    workflow, _handle, _sessions, api = _workflow()
+    workflow._sessions.clear()
+    workflow._builder = object()  # type: ignore[assignment]
+    workflow._esphome_entry_id = "meter"
+    topology = topology_from_native("circuitsetup.6c-energy-meter")
+    device = SimpleNamespace()
+
+    async def reconnect() -> None:
+        return None
+
+    async def check_communication(_expected_chips: int) -> None:
+        return None
+
+    async def get_topology(_device_id: str) -> Any:
+        return topology
+
+    async def snapshot(_device: Any) -> Any:
+        digest = sha256(content.encode()).hexdigest()
+        return ESPHomeConfigSnapshot("meter.yaml", content, digest)
+
+    workflow._device = lambda _device_id: device  # type: ignore[method-assign]
+    workflow.async_get_topology = get_topology  # type: ignore[method-assign]
+    workflow._async_snapshot = snapshot  # type: ignore[method-assign]
+    api.entities = entities
+    api.async_reconnect = reconnect
+    api.async_check_meter_communication = check_communication
+    return workflow
+
+
+def _ordinary_substitutions() -> str:
+    return "substitutions:\n" + "".join(
+        f"  ct{channel}_name: CT {channel}\n" for channel in range(1, 7)
+    ) + "sensor:\n"
+
+
+def test_ordinary_reconnect_catalog_scopes_unused_cts_to_public_readings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start, end = (
+        "# CircuitSetup Energy Meter Helper: phase overrides v1",
+        "# End CircuitSetup Energy Meter Helper: phase overrides v1",
+    )
+    content = (
+        _ordinary_substitutions()
+        + f"{start}\n"
+        "  - id: !extend meter_main1\n"
+        "    phase_a: # CT1\n"
+        "      current:\n"
+        "        internal: true\n"
+        "      power:\n"
+        "        internal: true\n"
+        f"{end}\n"
+    )
+    entities = tuple(
+        SensorInfo(channel, f"CT {channel} Amps") for channel in range(2, 7)
+    )
+    workflow = _ordinary_verification_workflow(monkeypatch, content, entities)
+
+    evidence = asyncio.run(workflow.async_verify(MAC))
+
+    assert evidence.ct_names == {channel: f"CT {channel}" for channel in range(2, 7)}
+    assert evidence.current_sensor_count == 5
+
+
+@pytest.mark.parametrize(
+    ("entities", "message"),
+    (
+        (
+            tuple(SensorInfo(channel, f"CT {channel} Amps") for channel in (1, 2, 4, 5, 6)),
+            "missing",
+        ),
+        (
+            (
+                SensorInfo(1, "CT 1 Amps"),
+                SensorInfo(2, "CT 2 Amps"),
+                SensorInfo(3, "CT 3 Amps"),
+                SensorInfo(4, "CT 3 Amps"),
+                SensorInfo(5, "CT 5 Amps"),
+                SensorInfo(6, "CT 6 Amps"),
+            ),
+            "ambiguous",
+        ),
+        (
+            tuple(
+                SensorInfo(channel, f"CT {channel} Amps", "W")
+                if channel == 3
+                else SensorInfo(channel, f"CT {channel} Amps")
+                for channel in range(1, 7)
+            ),
+            "wrong unit",
+        ),
+    ),
+)
+def test_ordinary_reconnect_catalog_rejects_invalid_current_readings(
+    monkeypatch: pytest.MonkeyPatch,
+    entities: tuple[SensorInfo, ...],
+    message: str,
+) -> None:
+    content = _ordinary_substitutions()
+    workflow = _ordinary_verification_workflow(monkeypatch, content, entities)
+
+    with pytest.raises(WorkflowCapabilityUnavailable, match=message):
+        asyncio.run(workflow.async_verify(MAC))
+
+
+def test_ordinary_reconnect_catalog_rejects_reused_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = (
+        _ordinary_substitutions().replace("ct1_name: CT 1", "ct1_name: Shared")
+        .replace("ct2_name: CT 2", "ct2_name: Shared")
+    )
+    entities = (SensorInfo(1, "Shared Amps"),) + tuple(
+        SensorInfo(channel, f"CT {channel} Amps") for channel in range(3, 7)
+    )
+    workflow = _ordinary_verification_workflow(monkeypatch, content, entities)
+
+    with pytest.raises(WorkflowCapabilityUnavailable, match="reused"):
+        asyncio.run(workflow.async_verify(MAC))
 
 
 def _pending(

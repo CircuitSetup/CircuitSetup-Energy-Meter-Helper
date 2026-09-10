@@ -111,6 +111,11 @@ def test_expected_reconnect_entities_use_rendered_names_and_skip_internal_power(
         {
             ("kitchen_meter_main_voltage", "Kitchen meter Main Voltage"),
             ("kitchen_meter_main_frequency", "Kitchen meter Main Frequency"),
+            *{
+                (f"ct_{channel}_{metric}", f"CT {channel} {metric.title()}")
+                for channel in range(1, 7)
+                for metric in ("amps", "watts")
+            },
             ("kitchen_meter_grid_feed_current", "Kitchen meter Grid feed Current"),
             ("kitchen_meter_grid_feed_energy", "Kitchen meter Grid feed Energy"),
         }
@@ -146,6 +151,25 @@ def test_expected_reconnect_entities_reject_native_object_id_collision() -> None
 
     with pytest.raises(ValueError, match="object-ID collision"):
         expected_meter_entity_evidence(value, topology())
+
+
+def test_expected_reconnect_entities_scope_used_channels_and_power_quality() -> None:
+    value = request()
+    object.__setattr__(
+        value,
+        "channels",
+        (*value.channels[:-1], replace(value.channels[-1], enabled=False, role=CircuitRole.UNUSED)),
+    )
+    object.__setattr__(value, "power_quality", (True,))
+
+    evidence = expected_meter_entity_evidence(value, topology())
+    entities = dict(evidence.sensor_entities)
+
+    assert entities["ct_1_var"] == "CT 1 VAR"
+    assert entities["ct_1_va"] == "CT 1 VA"
+    assert entities["ct_1_power_factor"] == "CT 1 Power Factor"
+    assert "ct_6_amps" not in entities
+    assert "ct_6_var" not in entities
 
 
 def test_direct_accepts_multiple_enabled_channels() -> None:

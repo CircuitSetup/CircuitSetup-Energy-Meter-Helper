@@ -389,6 +389,78 @@ def _evidence(mac: str = "aabbccddeeff") -> ReconnectEvidence:
     )
 
 
+def _max_power_quality_configuration(
+    plan: ConfigMutationPlan,
+) -> StoredMeterConfiguration:
+    topology = _topology(6)
+    meter = MeterSettings(
+        "Energy meter",
+        ElectricalSystem.SPLIT_PHASE_120_240,
+        60,
+        5,
+        VoltageLayout.STANDARD,
+        (
+            VoltageReferenceConfig(
+                "main",
+                "Main",
+                "A",
+                120.0,
+                "vt",
+                1,
+                tuple(
+                    f"{('main' if board == 0 else f'addon{board}')}_{group}"
+                    for board in range(7)
+                    for group in (1, 2)
+                ),
+            ),
+        ),
+    )
+    channels = tuple(
+        ChannelSettings(
+            channel,
+            True,
+            f"CT {channel}",
+            "ct",
+            1.0,
+            CircuitRole.BRANCH,
+            "main",
+        )
+        for channel in range(1, topology.ct_count + 1)
+    )
+    config_sha256 = sha256(plan.proposed_content.encode()).hexdigest()
+    return StoredMeterConfiguration(
+        config_sha256,
+        meter,
+        channels,
+        (),
+        (True,) * topology.board_count,
+        (False,) * topology.board_count,
+        tuple(
+            StoredCTSelection(channel, "ct", None, 27518, 1.0, config_sha256)
+            for channel in range(1, topology.ct_count + 1)
+        ),
+    )
+
+
+def test_max_topology_power_quality_fits_transaction_review_bound() -> None:
+    async def run() -> None:
+        manager = _manager(Builder(), Persistence())
+        plan = _managed_entity_plan()
+        configuration = _max_power_quality_configuration(plan)
+        status = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(6),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+        )
+
+        transaction = manager._transaction(status.transaction_id)
+        assert len(transaction.expected_sensor_entities) == 212
+
+    asyncio.run(run())
+
+
 def _manager(
     builder: Builder,
     persistence: Persistence,
@@ -551,6 +623,68 @@ def test_full_meter_configuration_persists_only_after_verified_reconnect(
         assert status.full_meter_configuration_verified
         assert persistence.meter_configuration == configuration
         assert persistence.selections == configuration.ct_selections
+
+    asyncio.run(run())
+
+
+def test_verified_reconnect_scopes_entity_and_name_checks_to_enabled_channels() -> None:
+    """Disabled CTs may stay internal without blocking the install proof."""
+
+    async def run() -> None:
+        plan = _managed_entity_plan()
+        base_configuration = _meter_configuration(plan)
+        configuration = replace(
+            base_configuration,
+            channels=tuple(
+                replace(
+                    channel,
+                    enabled=channel.channel != 6,
+                    role=(
+                        CircuitRole.UNUSED
+                        if channel.channel == 6
+                        else channel.role
+                    ),
+                )
+                for channel in base_configuration.channels
+            ),
+        )
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        evidence = ReconnectEvidence(
+            "aabbccddeeff",
+            _topology(),
+            {
+                channel.channel: channel.name
+                for channel in configuration.channels
+                if channel.enabled
+            },
+            5,
+            expected.sensor_entities,
+        )
+        persistence = Persistence()
+        manager = _manager(Builder(), persistence, evidence=evidence)
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+        )
+
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert persistence.meter_configuration == configuration
 
     asyncio.run(run())
 

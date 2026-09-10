@@ -13,13 +13,13 @@ const configuration: MeterConfigurationRequest = {
 describe("configurationImpact", () => {
   it("updates the visible count for unused channels and bidirectional aggregates", () => {
     const impact = configurationImpact({ ...configuration, channels: configuration.channels.map((channel, index) => index === 5 ? { ...channel, enabled: false, role: "unused" } : channel), aggregates: [{ aggregate_id: "grid", name: "Grid", role: "grid", channels: [1, 2], measurement_method: "direct", parent_id: null, energy_mode: "bidirectional", expose_power: true, expose_current: true }] }, topology, { power_quality: [true], status_fields: [true] });
-    expect(impact).toEqual({ enabled_channel_count: 5, numeric_entity_count: 38, text_entity_count: 5, energy_entity_count: 2, approximate_publications_per_second: 8.6 });
+    expect(impact).toEqual({ enabled_channel_count: 5, numeric_entity_count: 33, text_entity_count: 5, energy_entity_count: 2, approximate_publications_per_second: 7.6 });
   });
 
   it("uses pending package options instead of the installed baseline", () => {
     expect(configurationImpact(configuration, topology, { power_quality: [false], status_fields: [false] }))
       .toMatchObject({ numeric_entity_count: 14, text_entity_count: 0 });
     expect(configurationImpact(configuration, topology, { power_quality: [true], status_fields: [true] }))
-      .toMatchObject({ numeric_entity_count: 38, text_entity_count: 6 });
+      .toMatchObject({ numeric_entity_count: 32, text_entity_count: 6 });
   });
 });

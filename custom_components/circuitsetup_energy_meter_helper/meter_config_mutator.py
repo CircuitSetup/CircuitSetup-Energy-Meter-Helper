@@ -47,7 +47,7 @@ class ExpectedMeterEntityEvidence:
 def expected_meter_entity_evidence(
     requested: MeterConfigurationRequest, topology: MeterTopology
 ) -> ExpectedMeterEntityEvidence:
-    """Derive reconnect evidence from rendered non-internal ESPHome entity names."""
+    """Derive reconnect evidence from rendered public measurement names."""
     validate_meter_configuration(requested, topology)
     friendly_name = requested.meter.friendly_name
     voltage_names = [
@@ -56,6 +56,39 @@ def expected_meter_entity_evidence(
         for suffix in ("Voltage", "Frequency")
     ]
     aggregate_names: list[str] = []
+    measurement_entities: list[tuple[str, str]] = []
+    for channel in requested.channels:
+        if not channel.enabled:
+            continue
+        measurement_entities.extend(
+            (
+                (
+                    _esphome_object_id(f"{channel.name} Amps"),
+                    f"{channel.name} Amps",
+                ),
+                (
+                    _esphome_object_id(f"{channel.name} Watts"),
+                    f"{channel.name} Watts",
+                ),
+            )
+        )
+        if requested.power_quality[(channel.channel - 1) // 6]:
+            measurement_entities.extend(
+                (
+                    (
+                        _esphome_object_id(f"{channel.name} VAR"),
+                        f"{channel.name} VAR",
+                    ),
+                    (
+                        _esphome_object_id(f"{channel.name} VA"),
+                        f"{channel.name} VA",
+                    ),
+                    (
+                        _esphome_object_id(f"{channel.name} Power Factor"),
+                        f"{channel.name} Power Factor",
+                    ),
+                )
+            )
     for aggregate in requested.aggregates:
         prefix = f"{friendly_name} {aggregate.name}"
         if aggregate.expose_power:
@@ -73,12 +106,15 @@ def expected_meter_entity_evidence(
                     f"{prefix} Import Energy",
                 )
             )
-    names = (*voltage_names, *aggregate_names)
-    object_ids = tuple(_esphome_object_id(name) for name in names)
+    rendered_entities = tuple(
+        (_esphome_object_id(name), name)
+        for name in (*voltage_names, *aggregate_names)
+    ) + tuple(measurement_entities)
+    object_ids = tuple(object_id for object_id, _name in rendered_entities)
     if len(set(object_ids)) != len(object_ids):
         raise ValueError("ESPHome object-ID collision for meter entities")
     return ExpectedMeterEntityEvidence(
-        frozenset(zip(object_ids, names, strict=True)),
+        frozenset(rendered_entities),
         frozenset(
             (_esphome_object_id(name), name) for name in aggregate_names
         ),

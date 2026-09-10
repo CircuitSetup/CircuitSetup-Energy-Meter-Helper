@@ -1,5 +1,7 @@
 import type { BoardPackageOptions, ConfigurationImpact, MeterConfigurationRequest, MeterTopology } from "./types";
 
+const POWER_QUALITY_NUMERIC_METRICS = 3;
+
 export function configurationImpact(configuration: MeterConfigurationRequest, topology: MeterTopology, packageOptions: BoardPackageOptions = configuration): ConfigurationImpact {
   let numeric = configuration.meter.voltage_references.length * 2;
   let text = 0; let energy = 0; let enabled = 0;
@@ -7,7 +9,7 @@ export function configurationImpact(configuration: MeterConfigurationRequest, to
     const board = Math.floor((channel.channel - 1) / 6);
     if (board >= topology.board_count) throw new Error("configuration topology is invalid");
     enabled += 1;
-    numeric += 2 + (packageOptions.power_quality[board] ? 4 : 0);
+    numeric += 2 + (packageOptions.power_quality[board] ? POWER_QUALITY_NUMERIC_METRICS : 0);
     text += Number(packageOptions.status_fields[board]);
   }
   for (const aggregate of configuration.aggregates) {

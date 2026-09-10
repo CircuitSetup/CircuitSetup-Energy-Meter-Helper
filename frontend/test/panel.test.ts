@@ -136,7 +136,7 @@ const makeHass = (responses: Record<string, unknown>): HomeAssistant => ({
 const meterResponse = (electrical_system = "split_phase_120_240", line_frequency_hz = 60, update_interval_s = 5) => ({
   plan_id: "b".repeat(32), source_sha256: "a".repeat(64), topology: { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2, connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] },
   configuration: { meter: { friendly_name: "Energy meter", electrical_system, line_frequency_hz, update_interval_s, voltage_layout: "standard", voltage_references: [{ reference_id: "main", label: "Main", phase_label: "A", nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305, group_keys: ["main_1", "main_2"] }] }, channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, enabled: true, name: `CT${index + 1}`, model_id: "model", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false })), aggregates: [], power_quality: [true], status_fields: [false], multi_reference_preparation_acknowledged: false },
-  capabilities: { configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [] }, voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" }, voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 }, ct_catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 }, warnings: [], configuration_impact: { enabled_channel_count: 6, numeric_entity_count: 38, text_entity_count: 0, energy_entity_count: 0, approximate_publications_per_second: 7.6 }, channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model", selection_verified_against_config: true, address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3), phase: (["A", "B", "C"] as const)[index % 3] }, display_label: null, stored_selection_present: false })), catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
+  capabilities: { configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [] }, voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" }, voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 }, ct_catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 }, warnings: [], configuration_impact: { enabled_channel_count: 6, numeric_entity_count: 32, text_entity_count: 0, energy_entity_count: 0, approximate_publications_per_second: 6.4 }, channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model", selection_verified_against_config: true, address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3), phase: (["A", "B", "C"] as const)[index % 3] }, display_label: null, stored_selection_present: false })), catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
 });
 
 const mount = async (hass: HomeAssistant) => {
@@ -207,7 +207,7 @@ describe("meter configuration review and summary", () => {
     expect(summary).toContain("Aggregate energy");
     expect(summary).toContain("Installed package scope");
     expect(summary).toContain("Main board");
-    expect(summary).toContain("Reporting and entities");
+    expect(summary).toContain("Reporting and measurements");
     root.querySelector<HTMLButtonElement>('[data-action="finish"]')?.click();
     expect(finish).toHaveBeenCalledOnce();
 
@@ -1511,14 +1511,14 @@ describe("CircuitSetup panel", () => {
     (response.configuration as MeterConfigurationRequest).status_fields = [false];
     panel.showState("ct");
     await panel.updateComplete;
-    expect(text(panel)).toContain("14 public entities");
+    expect(text(panel)).toContain("14 Helper-managed measurements");
     (response.configuration as MeterConfigurationRequest).power_quality = [true];
     (response.configuration as MeterConfigurationRequest).status_fields = [true];
     (response.configuration as MeterConfigurationRequest).aggregates = Array.from({ length: 20 }, (_, index) => ({ aggregate_id: `grid-${index}`, name: `Grid ${index}`, role: "grid" as const, channels: [1], measurement_method: "direct" as const, parent_id: null, energy_mode: "bidirectional" as const, expose_power: true, expose_current: true }));
     panel.requestUpdate();
     await panel.updateComplete;
     expect(text(panel)).toContain("Warning: high entity count.");
-    expect(text(panel)).toContain("public entities");
+    expect(text(panel)).toContain("Helper-managed measurements");
   });
 
   it("routes accepted safety acknowledgement to the Offset step", async () => {

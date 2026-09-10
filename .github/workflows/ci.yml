@@ -87,17 +87,42 @@ jobs:
 
   firmware-contract:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: pinned
+            ref: 3820c5e395379cc4de16fdcac41cabc13788eb8b
+          - name: adopted
+            ref: 29e2c5deef983bd9e9ee104f49e321e6f6634ed9
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
+      - run: uv sync --all-groups
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
-          ref: 3820c5e395379cc4de16fdcac41cabc13788eb8b
+          ref: ${{ matrix.ref }}
           path: firmware
-      - name: Verify catalog schema and supported project patterns
+      - name: Verify ${{ matrix.name }} catalog, package, and project contracts
         run: python scripts/verify_firmware_contract.py . firmware
-      - name: Run pinned firmware topology and calibration tests
+      - name: Run Helper package tests against ${{ matrix.name }} checkout
+        env:
+          FIRMWARE_ROOT: firmware
+        run: uv run --no-sync pytest -q tests/test_firmware_package_contract.py
+      - name: Run upstream firmware topology and calibration tests
         run: uvx --python 3.12 --from pytest==9.0.2 pytest -q firmware/Software/ESPHome/tests
+      - name: Generate Helper mutations for the real package stack
+        run: |
+          uv run --no-sync python scripts/generate_esphome_validation_configs.py firmware generated-esphome
+      - name: Validate generated configs with ESPHome 2026.8.0
+        run: |
+          for config in generated-esphome/*.yaml; do
+            uvx --python 3.12 --from esphome==2026.8.0 esphome config "$config"
+          done
+      - name: Compile the pinned main mutation with ESPHome 2026.8.0
+        run: uvx --python 3.12 --from esphome==2026.8.0 esphome compile generated-esphome/used-unity-pq.yaml
+      - name: Compile the two-voltage add-on mutation with ESPHome 2026.8.0
+        run: uvx --python 3.12 --from esphome==2026.8.0 esphome compile generated-esphome/two-voltages-used-m8.yaml
