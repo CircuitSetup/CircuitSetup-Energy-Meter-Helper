@@ -17,7 +17,12 @@ from custom_components.circuitsetup_energy_meter_helper.config_document import (
 )
 from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
     CTChangeRequest,
+    _apply_package_options,
     _build_ct_mutation,
+    build_calibration_preparation_mutation,
+)
+from custom_components.circuitsetup_energy_meter_helper.device_builder import (
+    ESPHomeConfigSnapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.models import MeterTopology
 from custom_components.circuitsetup_energy_meter_helper.topology import (
@@ -145,6 +150,36 @@ def generate(firmware_root: Path, output_dir: Path) -> None:
         (True, False, True, False),
         (False, False, True, False),
         True,
+    )
+
+    source = _pin_firmware_package_refs(source_path.read_text(encoding="utf-8"), revision)
+    source = source.replace(
+        "      #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml\n", ""
+    )
+    prepared, _ = _apply_package_options(
+        source,
+        topology_from_config(ESPHomeConfigDocument.parse(source)),
+        {"power_quality": (True,), "status_fields": (True,)},
+    )
+    (output_dir / "official-pq-comment-deleted.yaml").write_text(
+        prepared, encoding="utf-8"
+    )
+
+    source = _pin_firmware_package_refs(source_path.read_text(encoding="utf-8"), revision)
+    source = source.replace(
+        '  offset_calibration: "true"\n  gain_calibration: "true"',
+        '  offset_calibration: "false"\n  gain_calibration: "false"',
+    ).replace(
+        "      - Software/ESPHome/calibration/6chan_main_calibration.yaml\n", ""
+    )
+    snapshot = ESPHomeConfigSnapshot(
+        source_path.name, source, sha256(source.encode()).hexdigest(), True
+    )
+    prepared = build_calibration_preparation_mutation(
+        snapshot, topology_from_config(ESPHomeConfigDocument.parse(source))
+    )
+    (output_dir / "missing-calibration-controls.yaml").write_text(
+        prepared.proposed_content, encoding="utf-8"
     )
 
 

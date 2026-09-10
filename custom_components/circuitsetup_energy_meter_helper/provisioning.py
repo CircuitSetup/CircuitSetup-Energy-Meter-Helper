@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .models import InstallerIntent, SetupState
+from .topology import is_supported_project
 
 ADDON_JUMPER_PINS = (
     (0, 16),
@@ -37,6 +38,17 @@ class DiscoveredDevice:
 
 
 @dataclass(slots=True, frozen=True)
+class ExistingDeviceCandidate:
+    """A safe identity-only candidate for the explicit inspection action."""
+
+    entry_id: str
+    title: str
+    project_name: str | None
+    project_version: str | None = None
+    compatibility: tuple[str, ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
 class DeviceBuilderStatus:
     """Current cached Device Builder state for one ESPHome entry."""
 
@@ -58,7 +70,12 @@ def _project_name(entry: Any) -> str | None:
     """Read the runtime ESPHome project identity without name-based guessing."""
     runtime_data = getattr(entry, "runtime_data", None)
     device_info = getattr(runtime_data, "device_info", None)
-    return getattr(device_info, "project_name", None)
+    project_name = getattr(device_info, "project_name", None)
+    return (
+        project_name
+        if isinstance(project_name, str) and project_name.strip()
+        else None
+    )
 
 
 def _project_version(entry: Any) -> str | None:
@@ -70,12 +87,16 @@ def _project_version(entry: Any) -> str | None:
 
 
 def device_builder_status(
-    entry: Any, listing: Mapping[str, Any] | None
+    entry: Any, listing: Mapping[str, Any] | None, *, strict: bool = False
 ) -> DeviceBuilderStatus:
     """Match one ESPHome entry to the current Device Builder listing."""
     if listing is None:
         return DeviceBuilderStatus(None, None)
     device_name = getattr(entry, "data", {}).get("device_name")
+    if strict and (
+        not isinstance(device_name, str) or not device_name.strip()
+    ):
+        return DeviceBuilderStatus(None, None)
 
     def matches(items: Any) -> list[Mapping[str, Any]]:
         return [
@@ -89,6 +110,7 @@ def device_builder_status(
         item
         for item in matches(listing.get("configured", ()))
         if isinstance(item.get("configuration"), str)
+        and bool(item["configuration"].strip())
     ]
     if len(configured) == 1:
         return DeviceBuilderStatus(False, str(configured[0]["configuration"]))
@@ -174,7 +196,7 @@ class ProvisioningCoordinator:
             self._device(entry, project_name, listing)
             for entry in self._hass.config_entries.async_entries("esphome")
             if (project_name := _project_name(entry))
-            and project_name.startswith(BASE_PROJECT)
+            and is_supported_project(project_name)
         )
         state = (
             SetupState.DEVICE_DISCOVERED
@@ -188,6 +210,16 @@ class ProvisioningCoordinator:
         self.snapshot = ProvisioningSnapshot(state, devices)
         self._publish()
         return self.snapshot
+
+    async def async_list_existing_meters(self) -> tuple[ExistingDeviceCandidate, ...]:
+        """List ESPHome identities for the user-requested inspection path."""
+        return tuple(
+            existing_device_candidate(entry)
+            for entry in sorted(
+                self._hass.config_entries.async_entries("esphome"),
+                key=lambda item: str(getattr(item, "entry_id", "")),
+            )
+        )
 
     def _device(
         self, entry: Any, project_name: str, listing: Mapping[str, Any] | None
@@ -228,3 +260,21 @@ class ProvisioningCoordinator:
         """Deliver the latest immutable snapshot to registered subscribers."""
         for subscriber in self._subscribers:
             subscriber(self.snapshot)
+
+
+def existing_device_candidate(entry: Any) -> ExistingDeviceCandidate:
+    """Return bounded identity and non-authoritative compatibility hints."""
+    project_name = _project_name(entry)
+    if project_name is None:
+        compatibility = ("project_label_missing",)
+    elif is_supported_project(project_name):
+        compatibility = ("official_project",)
+    else:
+        compatibility = ("custom_or_older_project",)
+    return ExistingDeviceCandidate(
+        str(getattr(entry, "entry_id", "")),
+        str(getattr(entry, "title", "")),
+        project_name,
+        _project_version(entry),
+        compatibility,
+    )

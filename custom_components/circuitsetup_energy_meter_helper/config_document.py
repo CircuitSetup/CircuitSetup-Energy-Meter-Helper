@@ -14,6 +14,7 @@ METER_ID_RE = re.compile(r"^(?:main_meter_id[12]|addon[1-6]_id[12])$")
 METER_SETTING_RE = re.compile(
     r"^(?:friendly_name|update_time|electric_freq|csemh_config_contract)$"
 )
+CALIBRATION_FLAG_RE = re.compile(r"^(?:offset_calibration|gain_calibration)$")
 _KEY_TOKEN_RE = r'''(?:<<|[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
 _MAPPING_RE = re.compile(
     rf"^(?P<indent> *)(?P<key>{_KEY_TOKEN_RE})[ \t]*:(?P<rest>(?:[ \t].*)?)$"
@@ -27,6 +28,9 @@ _SAFE_SENSOR_SEQUENCE_RE = re.compile(
 )
 _SAFE_EXTEND_RE = re.compile(r"^!extend[ \t]+[\w${}-]+(?:[ \t]+#.*)?$")
 _YAML_PATH_RE = re.compile(r"(?i)^(.*?\.ya?ml)(?:@.*)?$")
+_PACKAGE_LIST_ENTRY_RE = re.compile(
+    r"^(?P<indent> *)(?P<comment>#\s*)?-\s+(?P<rest>.*?)(?:\r?\n)?$"
+)
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _LINE_BREAK_RE = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
 _LINE_BREAK_FINAL_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
@@ -126,6 +130,19 @@ class ManagedBlock:
 
 
 @dataclass(frozen=True, slots=True)
+class PackageFileReference:
+    """One package file, including enough provenance for a reviewed edit."""
+
+    path: str
+    active: bool
+    repository: str | None
+    ref: str | None
+    line: int
+    files_span: SourceSpan | None = None
+    item_indent: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ESPHomeConfigDocument:
     """Relevant ESPHome values plus the exact source text that supplied them."""
 
@@ -141,6 +158,8 @@ class ESPHomeConfigDocument:
     writable_sensor_span: SourceSpan | None
     sensor_item_indent: int | None
     code_lines: tuple[str, ...] = field(repr=False)
+    package_references: tuple[PackageFileReference, ...] = ()
+    unresolved_package_sources: bool = False
 
     @classmethod
     def parse(cls, content: str) -> ESPHomeConfigDocument:
@@ -192,6 +211,7 @@ class _DocumentParser:
         project = self._nested_scalar("esphome", "project", "name")
         dashboard = self._section_scalar("dashboard_import", "package_import_url")
         sensor = self._writable_sensor_section()
+        package_references = self._package_references()
         return document_type(
             content=self.content,
             lines=self.lines,
@@ -200,7 +220,11 @@ class _DocumentParser:
             dashboard_import=dashboard.value if dashboard else None,
             dashboard_import_span=dashboard.span if dashboard else None,
             substitutions=self._substitutions(),
-            package_files=self._package_files(),
+            package_files=tuple(
+                reference.path
+                for reference in package_references
+                if reference.active
+            ),
             managed_blocks=self._managed_blocks(),
             writable_sensor_span=sensor[0] if sensor else None,
             sensor_item_indent=sensor[1] if sensor else None,
@@ -208,6 +232,26 @@ class _DocumentParser:
                 "" if index in self._block_scalar_lines else self._without_comment(body)
                 for index, body in enumerate(self._bodies)
             ),
+            package_references=package_references,
+            unresolved_package_sources=self._unresolved_package_sources(package_references),
+        )
+
+    def _unresolved_package_sources(
+        self, references: tuple[PackageFileReference, ...]
+    ) -> bool:
+        bounds = self._section_lines("packages")
+        if bounds is None:
+            return False
+        start, end, indent = bounds
+        child_indent = self._direct_child_indent(start, end, indent)
+        declarations = [
+            index for index in range(start, end)
+            if (mapping := self._mapping(index) or self._sequence_mapping(index))
+            is not None and mapping.indent == child_indent
+        ]
+        return any(
+            not any(first <= reference.line - 1 < last for reference in references)
+            for first, last in zip(declarations, [*declarations[1:], end])
         )
 
     def _writable_sensor_section(self) -> tuple[SourceSpan, int] | None:
@@ -368,6 +412,7 @@ class _DocumentParser:
                 or VOLTAGE_GAIN_RE.fullmatch(mapping.key)
                 or GROUP_NAME_RE.fullmatch(mapping.key)
                 or METER_ID_RE.fullmatch(mapping.key)
+                or CALIBRATION_FLAG_RE.fullmatch(mapping.key)
                 or METER_SETTING_RE.fullmatch(mapping.key)
             ):
                 continue
@@ -521,6 +566,7 @@ class _DocumentParser:
             or VOLTAGE_GAIN_RE.fullmatch(key) is not None
             or GROUP_NAME_RE.fullmatch(key) is not None
             or METER_ID_RE.fullmatch(key) is not None
+            or CALIBRATION_FLAG_RE.fullmatch(key) is not None
             or METER_SETTING_RE.fullmatch(key) is not None
         )
 
@@ -711,52 +757,91 @@ class _DocumentParser:
         value = rest.strip()
         return bool(value and not value.startswith("#"))
 
-    def _package_files(self) -> tuple[str, ...]:
+    def _package_references(self) -> tuple[PackageFileReference, ...]:
         bounds = self._section_lines("packages")
         if bounds is None:
             return ()
         start, end, section_indent = bounds
-        files_indent: int | None = None
-        paths: list[str] = []
-        for index in range(start, end):
+        references: list[PackageFileReference] = []
+        index = start
+        while index < end:
             body = self._bodies[index]
             if not body.strip() or body.lstrip().startswith("#"):
+                index += 1
                 continue
             indent = len(body) - len(body.lstrip(" "))
             if indent <= section_indent:
                 break
-            if files_indent is not None:
-                sequence = _SEQUENCE_RE.match(body)
-                if sequence and indent >= files_indent:
-                    scalar = self._scalar_parts(
-                        index,
-                        sequence.group("rest"),
-                        sequence.start("rest"),
-                    )
-                    paths.append(self._normalize_file_path(scalar.value, index + 1))
-                    continue
-                if indent <= files_indent:
-                    files_indent = None
-
             mapping = self._mapping(index) or self._sequence_mapping(index)
             if mapping and mapping.key == "files":
                 if mapping.rest.strip():
                     raise ESPHomeConfigParseError(
                         "inline package file lists are unsupported", index + 1
                     )
-                files_indent = mapping.indent
+                files_end = self._package_files_end(index, end, mapping.indent)
+                repository, ref = self._package_source(
+                    index, start, end, section_indent
+                )
+                files_span = self._span_for_lines(index, files_end)
+                entries = [
+                    (entry_index, entry)
+                    for entry_index in range(index + 1, files_end)
+                    if (entry := self._package_list_entry(entry_index)) is not None
+                ]
+                for entry_index, (entry_indent, active, rest, rest_column) in entries:
+                    try:
+                        scalar = self._scalar_parts(
+                            entry_index, rest, rest_column
+                        )
+                        path = self._normalize_file_path(
+                            scalar.value, entry_index + 1
+                        )
+                    except ESPHomeConfigParseError:
+                        if not active:
+                            continue
+                        raise
+                    references.append(
+                        PackageFileReference(
+                            path,
+                            active,
+                            repository,
+                            ref,
+                            entry_index + 1,
+                            files_span,
+                            entry_indent,
+                        )
+                    )
+                index = files_end
                 continue
 
+            repository, ref = self._package_source(
+                index, start, end, section_indent
+            )
             if mapping and mapping.key == "file":
                 scalar = self._scalar(index, mapping)
-                paths.append(self._normalize_file_path(scalar.value, index + 1))
+                references.append(
+                    PackageFileReference(
+                        self._normalize_file_path(scalar.value, index + 1),
+                        True,
+                        repository,
+                        ref,
+                        index + 1,
+                    )
+                )
+                index += 1
                 continue
 
             if mapping and "github://" in mapping.rest:
                 scalar = self._scalar(index, mapping)
-                path = self._remote_shorthand_path(scalar.value)
-                if path is not None:
-                    paths.append(path)
+                remote = self._remote_shorthand(scalar.value)
+                if remote is not None:
+                    path, repository, ref = remote
+                    references.append(
+                        PackageFileReference(
+                            path, True, repository, ref, index + 1
+                        )
+                    )
+                index += 1
                 continue
 
             sequence = _SEQUENCE_RE.match(body)
@@ -764,10 +849,134 @@ class _DocumentParser:
                 scalar = self._scalar_parts(
                     index, sequence.group("rest"), sequence.start("rest")
                 )
-                path = self._remote_shorthand_path(scalar.value)
-                if path is not None:
-                    paths.append(path)
-        return tuple(paths)
+                remote = self._remote_shorthand(scalar.value)
+                if remote is not None:
+                    path, repository, ref = remote
+                    references.append(
+                        PackageFileReference(
+                            path, True, repository, ref, index + 1
+                        )
+                    )
+            index += 1
+        return tuple(references)
+
+    def _package_files_end(
+        self, start: int, end: int, files_indent: int
+    ) -> int:
+        sequence_item = self._sequence_mapping(start) is not None
+        for index in range(start + 1, end):
+            body = self._bodies[index]
+            if (
+                not body.strip()
+                or body.lstrip().startswith("#")
+                or index in self._block_scalar_lines
+            ):
+                continue
+            indent = len(body) - len(body.lstrip(" "))
+            if sequence_item and indent > files_indent and self._mapping(index) is not None:
+                return index
+            if indent > files_indent:
+                continue
+            if (
+                indent <= files_indent
+                and body.lstrip().startswith("-")
+                and self._sequence_mapping(index) is None
+            ):
+                continue
+            return index
+        return end
+
+    def _package_list_entry(
+        self, index: int
+    ) -> tuple[int, bool, str, int] | None:
+        if index in self._block_scalar_lines:
+            return None
+        match = _PACKAGE_LIST_ENTRY_RE.fullmatch(self.lines[index])
+        if match is None:
+            return None
+        return (
+            len(match.group("indent")),
+            match.group("comment") is None,
+            match.group("rest"),
+            match.start("rest"),
+        )
+
+    def _package_source(
+        self, target_index: int, start: int, end: int, section_indent: int
+    ) -> tuple[str | None, str | None]:
+        package_indent = self._direct_child_indent(start, end, section_indent)
+        if package_indent is None:
+            return None, None
+        package_index: int | None = None
+        target_mapping = self._mapping(target_index) or self._sequence_mapping(target_index)
+        if (
+            target_mapping is not None
+            and target_mapping.key == "files"
+            and target_mapping.indent == package_indent
+            and self._sequence_mapping(target_index) is not None
+        ):
+            package_index = target_index
+        for index in range(target_index - 1, start - 1, -1):
+            if package_index is not None:
+                break
+            body = self._bodies[index]
+            if (
+                not body.strip()
+                or body.lstrip().startswith("#")
+                or index in self._block_scalar_lines
+            ):
+                continue
+            indent = len(body) - len(body.lstrip(" "))
+            if indent < package_indent:
+                break
+            if indent == package_indent and (
+                self._mapping(index) is not None
+                or self._sequence_mapping(index) is not None
+            ):
+                package_index = index
+                break
+        if package_index is None:
+            return None, None
+        package_end = end
+        for index in range(package_index + 1, end):
+            body = self._bodies[index]
+            if not body.strip() or body.lstrip().startswith("#"):
+                continue
+            indent = len(body) - len(body.lstrip(" "))
+            if (
+                indent == package_indent
+                and body.lstrip(" ").startswith("-")
+                and self._sequence_mapping(index) is None
+            ):
+                continue
+            if indent <= package_indent:
+                package_end = index
+                break
+        child_indent = self._direct_child_indent(
+            package_index + 1, package_end, package_indent
+        )
+        if child_indent is None:
+            return None, None
+        values: dict[str, str] = {}
+        for index in range(package_index + 1, package_end):
+            mapping = self._mapping(index)
+            if mapping is None or mapping.indent != child_indent:
+                continue
+            if mapping.key not in {"url", "ref"}:
+                continue
+            scalar = self._scalar(index, mapping)
+            values[mapping.key] = scalar.value
+        return self._repository_from_url(values.get("url")), values.get("ref")
+
+    def _span_for_lines(self, start: int, end: int) -> SourceSpan:
+        end_offset = self._offsets[end] if end < len(self.lines) else len(self.content)
+        return SourceSpan(
+            self._offsets[start],
+            end_offset,
+            start + 1,
+            0,
+            len(self._bodies[end - 1]) if end > start else len(self._bodies[start]),
+        )
 
     def _mapping(self, index: int) -> _Mapping | None:
         if index in self._block_scalar_lines:
@@ -904,12 +1113,46 @@ class _DocumentParser:
 
     @classmethod
     def _remote_shorthand_path(cls, value: str) -> str | None:
+        remote = cls._remote_shorthand(value)
+        return remote[0] if remote is not None else None
+
+    @classmethod
+    def _remote_shorthand(
+        cls, value: str
+    ) -> tuple[str, str, str | None] | None:
         if not value.startswith("github://"):
             return None
         parts = value.removeprefix("github://").split("/", 2)
-        if len(parts) != 3:
+        if len(parts) != 3 or not parts[0] or not parts[1]:
+            return None
+        path_value = parts[2]
+        match = re.fullmatch(
+            r"(?i)(.*?\.ya?ml)(?:@(?P<ref>[^@]+))?", path_value
+        )
+        if match is None:
             return None
         try:
-            return cls._normalize_file_path(parts[2], 1)
+            path = cls._normalize_file_path(match.group(1), 1)
         except ESPHomeConfigParseError:
             return None
+        return path, f"{parts[0]}/{parts[1]}", match.group("ref")
+
+    @staticmethod
+    def _repository_from_url(value: str | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        match = re.fullmatch(
+            r"https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/"
+            r"(?P<repository>[A-Za-z0-9_.-]+?)(?:\.git)?/?",
+            value,
+        )
+        if match is not None:
+            return f"{match['owner']}/{match['repository']}"
+        match = re.fullmatch(
+            r"github://(?P<owner>[A-Za-z0-9_.-]+)/"
+            r"(?P<repository>[A-Za-z0-9_.-]+?)(?:\.git)?/?",
+            value,
+        )
+        if match is not None:
+            return f"{match['owner']}/{match['repository']}"
+        return None

@@ -2,7 +2,44 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+
+OFFICIAL_PACKAGE_REPOSITORY = (
+    "CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter"
+)
+CALIBRATION_PACKAGE_DIRECTORY = "calibration"
+PACKAGE_CAPABILITY_STATES = frozenset(
+    {"already_present", "available_to_prepare", "cannot_safely_manage"}
+)
+PACKAGE_CAPABILITY_REASON_CODES = frozenset(
+    {
+        "official_package_present",
+        "official_source_ready",
+        "unsupported_package_source",
+        "ambiguous_package_source",
+        "package_source_unavailable",
+        "duplicate_package_reference",
+    }
+)
+CALIBRATION_CAPABILITY_REASON_CODES = frozenset(
+    {
+        "calibration_package_present",
+        "calibration_source_ready",
+        "calibration_flag_unavailable",
+        "calibration_flag_invalid",
+        "unsupported_package_source",
+        "ambiguous_package_source",
+        "package_source_unavailable",
+        "duplicate_package_reference",
+    }
+)
+_STATIC_PACKAGE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
+def is_static_package_ref(value: str | None) -> bool:
+    """Return whether a package ref is a literal, bounded git ref."""
+    return isinstance(value, str) and _STATIC_PACKAGE_REF_RE.fullmatch(value) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +74,40 @@ class PackageContract:
         """Return the package's expected disabled-by-default entity count."""
         counts = dict(self.ha_disabled_entity_counts)
         return counts.get(board_index, counts.get(1) if board_index > 0 else None)
+
+
+@dataclass(frozen=True, slots=True)
+class PackageCapability:
+    """Safe UI state for one optional package on one installed board."""
+
+    feature: str
+    board_index: int
+    state: str
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        if self.feature not in SUPPORTED_PACKAGE_CONTRACTS:
+            raise ValueError("unsupported package feature")
+        if not 0 <= self.board_index <= 6:
+            raise ValueError("board_index must be between 0 and 6")
+        if self.state not in PACKAGE_CAPABILITY_STATES:
+            raise ValueError("invalid package capability state")
+        if self.reason_code not in PACKAGE_CAPABILITY_REASON_CODES:
+            raise ValueError("invalid package capability reason")
+
+
+@dataclass(frozen=True, slots=True)
+class CalibrationPreparationCapability:
+    """Safe source-level status for the reviewed calibration preparation."""
+
+    state: str
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        if self.state not in PACKAGE_CAPABILITY_STATES:
+            raise ValueError("invalid calibration capability state")
+        if self.reason_code not in CALIBRATION_CAPABILITY_REASON_CODES:
+            raise ValueError("invalid calibration capability reason")
 
 
 SUPPORTED_PACKAGE_CONTRACTS = {
@@ -77,6 +148,17 @@ def package_path(feature: str, board_index: int) -> str:
         return SUPPORTED_PACKAGE_CONTRACTS[feature].path(board_index)
     except KeyError as error:
         raise ValueError(f"unsupported package feature: {feature}") from error
+
+
+def calibration_package_path(board_index: int) -> str:
+    """Return the reviewed official calibration-controls package path."""
+    if not 0 <= board_index <= 6:
+        raise ValueError("board_index must be between 0 and 6")
+    board = "main" if board_index == 0 else f"addon{board_index}"
+    return (
+        f"Software/ESPHome/{CALIBRATION_PACKAGE_DIRECTORY}/"
+        f"6chan_{board}_calibration.yaml"
+    )
 
 
 def default_package_options(board_count: int) -> dict[str, tuple[bool, ...]]:

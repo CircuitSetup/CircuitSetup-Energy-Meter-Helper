@@ -61,6 +61,7 @@ class ESPHomeConfigSnapshot:
     configuration: str
     content: str
     sha256: str
+    configuration_authoritative: bool = True
 
 
 @dataclass(frozen=True, slots=True)

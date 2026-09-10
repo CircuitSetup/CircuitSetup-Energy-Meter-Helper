@@ -12,7 +12,7 @@ from http.cookies import SimpleCookie
 from statistics import pstdev
 from threading import RLock
 from time import monotonic
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from aioesphomeapi.model import build_device_unique_id
@@ -41,10 +41,18 @@ from .config_mutator import (
     ConfigMutationError,
     CTChangeRequest,
     _read_phase_channel_states,
+    build_calibration_preparation_mutation,
+    calibration_preparation_capability_from_document,
+    package_capabilities_from_document,
+    package_graph_owner_is_official,
     package_options_from_document,
 )
-from .config_transaction import ConfigTransactionManager, ReconnectEvidence
-from .const import ESPHOME_DEVICE_BUILDERS
+from .config_transaction import (
+    ConfigTransactionManager,
+    ConfigTransactionState,
+    ReconnectEvidence,
+)
+from .const import CONF_INSPECTION_ADMISSION, DOMAIN, ESPHOME_DEVICE_BUILDERS
 from .ct_catalog import REPORTING_MULTIPLIERS, CTPresetCatalog
 from .ct_inventory import CTInventory
 from .device_builder import (
@@ -75,18 +83,23 @@ from .offset_readiness import (
 )
 from .preflight import PreflightResult, async_preflight
 from .provisioning import (
-    BASE_PROJECT,
     DiscoveredDevice,
+    ExistingDeviceCandidate,
     ProvisioningCoordinator,
     _project_name,
     _project_version,
     device_builder_status,
+    existing_device_candidate,
 )
 from .session_manager import CalibrationBusyError, SessionManager
 from .state_tracker import SensorSampleWindow
 from .store import CalibrationSourceAuthority, HelperStore, StoredMeterConfiguration
 from .topology import (
+    TopologyMismatchError,
+    TopologyParseError,
+    is_supported_project,
     topology_from_config,
+    topology_from_inspection,
     topology_from_native,
     verified_voltage_reference_fingerprint,
 )
@@ -95,6 +108,7 @@ from .voltage_transformer_catalog import VoltageTransformerCatalog
 DEFAULT_HANDLE_TTL = 15 * 60.0
 MAX_HANDLE_TTL = 60 * 60.0
 MAX_PLAN_HANDLES = 8
+MAX_INSPECTION_HANDLES = 8
 _INGRESS_ENTRY_PREFIX = "/api/hassio_ingress/"
 _INGRESS_SESSION_COOKIE = "ingress_session"
 _SUPERVISOR_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,256}\Z", re.ASCII)
@@ -184,6 +198,10 @@ def _instance_id_for_channel(channel: int) -> str:
     return f"meter_main{group}" if board == 0 else f"addon{board}_{group}"
 
 
+def _native_project_name(device: DiscoveredDevice) -> str | None:
+    return device.project_name if device.project_name != "unknown" else None
+
+
 class WorkflowCapabilityUnavailable(RuntimeError):
     """A required external runtime owner is genuinely absent."""
 
@@ -204,6 +222,22 @@ class _PlanHandle:
 
     def scrub(self) -> None:
         self.snapshot = ESPHomeConfigSnapshot("expired.yaml", "", "0" * 64)
+
+
+@dataclass(slots=True)
+class _InspectionHandle:
+    """Short-lived proof that an explicit legacy inspection passed."""
+
+    device_id: str
+    mac: str
+    configuration: str
+    source_sha256: str
+    topology: MeterTopology
+    expires_at: float
+
+    def scrub(self) -> None:
+        self.configuration = ""
+        self.source_sha256 = "0" * 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +281,7 @@ class _SessionHandle:
     pending_reporting_multipliers: dict[int, float] = field(default_factory=dict)
     meter_configuration: MeterConfigurationRequest | None = None
     configuration_sha256: str | None = None
+    configuration_authoritative: bool = True
     timing_policy: CalibrationTimingPolicy = field(
         default_factory=lambda: CalibrationTimingPolicy(5, 3)
     )
@@ -469,6 +504,7 @@ class EntryWorkflow:
         self._ttl = handle_ttl
         self._clock = clock
         self._plans: dict[str, _PlanHandle] = {}
+        self._inspections: dict[str, _InspectionHandle] = {}
         self._sessions: dict[str, _SessionHandle] = {}
         self._session_guards: dict[str, RLock] = {}
         self._subscribers: dict[str, set[Callable[[SessionStatus], None]]] = {}
@@ -501,13 +537,92 @@ class EntryWorkflow:
         except WorkflowCapabilityUnavailable:
             return topology_from_native(device.project_name)
         document = ESPHomeConfigDocument.parse(snapshot.content)
-        topology = topology_from_config(
-            document,
-            native_project_name=device.project_name,
+        topology = self._topology_from_document(
+            document, device, snapshot.sha256, snapshot.configuration
         )
         return {
+            "configuration_authoritative": snapshot.configuration_authoritative,
             "topology": topology,
             "package_options": package_options_from_document(document, topology),
+            "package_capabilities": package_capabilities_from_document(
+                document, topology
+            ),
+            "calibration_preparation": calibration_preparation_capability_from_document(
+                document, topology
+            ),
+        }
+
+    async def async_inspect_existing_meter(self, device_id: str) -> dict[str, Any]:
+        """Inspect one selected ESPHome entry without touching the bound session."""
+        candidate = self._inspection_candidate(device_id)
+        entry = self._entry(device_id)
+        builder = self._require_builder()
+        listing = await builder.async_list_devices()
+        status = device_builder_status(entry, listing, strict=True)
+        configuration = status.configuration
+        if configuration is None:
+            raise WorkflowCapabilityUnavailable(
+                "a unique Device Builder configuration is unavailable"
+            )
+        snapshot = await builder.async_get_config(configuration)
+        if sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256:
+            raise WorkflowCapabilityUnavailable("configuration snapshot is untrusted")
+        document = ESPHomeConfigDocument.parse(snapshot.content)
+        try:
+            preliminary = topology_from_inspection(
+                document,
+                native_project_name=candidate.project_name,
+                physical_chip_count=None,
+            )
+        except (TopologyMismatchError, TopologyParseError) as error:
+            raise WorkflowCapabilityUnavailable(
+                "configuration topology cannot be safely corroborated"
+            ) from error
+
+        secondary = ESPHomeApiSession(self._hass, device_id)
+        try:
+            await secondary.async_connect()
+            await secondary.async_check_meter_communication(preliminary.group_count)
+        finally:
+            await secondary.async_shutdown()
+        try:
+            topology = topology_from_inspection(
+                document,
+                native_project_name=candidate.project_name,
+                physical_chip_count=preliminary.group_count,
+            )
+        except (TopologyMismatchError, TopologyParseError) as error:
+            raise WorkflowCapabilityUnavailable(
+                "configuration topology cannot be safely corroborated"
+            ) from error
+        self._prune_inspections()
+        previous = self._inspections.pop(device_id, None)
+        if previous is not None:
+            previous.scrub()
+        while len(self._inspections) >= MAX_INSPECTION_HANDLES:
+            oldest_device_id = next(iter(self._inspections))
+            oldest = self._inspections.pop(oldest_device_id)
+            oldest.scrub()
+        self._inspections[device_id] = _InspectionHandle(
+            device_id,
+            self._mac(device_id),
+            configuration,
+            snapshot.sha256,
+            topology,
+            self._deadline(),
+        )
+        return {
+            "device": candidate,
+            "configuration": configuration,
+            "source_sha256": snapshot.sha256,
+            "topology": topology,
+            "package_options": package_options_from_document(document, topology),
+            "package_capabilities": package_capabilities_from_document(
+                document, topology
+            ),
+            "calibration_preparation": calibration_preparation_capability_from_document(
+                document, topology
+            ),
         }
 
     def transaction_device_identity(self, device_id: str) -> str:
@@ -525,8 +640,8 @@ class EntryWorkflow:
         mac = self._mac(device_id)
         snapshot = await self._async_snapshot(device)
         document = ESPHomeConfigDocument.parse(snapshot.content)
-        topology = topology_from_config(
-            document, native_project_name=device.project_name
+        topology = self._topology_from_document(
+            document, device, snapshot.sha256, snapshot.configuration
         )
         ct_catalog = await self._hass.async_add_executor_job(CTPresetCatalog.load)
         voltage_catalog = await self._hass.async_add_executor_job(
@@ -549,6 +664,7 @@ class EntryWorkflow:
             reporting_multipliers=_stored_reporting_multipliers(
                 selections, snapshot.sha256
             ),
+            configuration_authoritative=snapshot.configuration_authoritative,
             stored_semantics_stale=False,
         )
         self._discard_device_plans(mac)
@@ -619,10 +735,23 @@ class EntryWorkflow:
         self._assert_rebind_idle(device_id)
         builder = self._require_builder()
         entry = self._entry(device_id)
+        project_name = _project_name(entry)
+        inspection = None
+        if not is_supported_project(project_name):
+            inspection = await self._assert_inspection_current(device_id, builder)
+            self._record_inspection_admission(inspection)
+            return {
+                "device_id": device_id,
+                "configuration": inspection.configuration,
+            }
         name = getattr(entry, "data", {}).get("device_name")
         if not isinstance(name, str):
             raise WorkflowCapabilityUnavailable("adoption metadata is unavailable")
-        status = device_builder_status(entry, await builder.async_list_devices())
+        status = device_builder_status(
+            entry,
+            await builder.async_list_devices(),
+            strict=inspection is not None,
+        )
         if status.configuration is not None:
             return {"device_id": device_id, "configuration": status.configuration}
         import_data = status.import_data
@@ -700,6 +829,56 @@ class EntryWorkflow:
             self._plan(plan_id, device_id, source_sha256), requested
         )
 
+    async def async_prepare_calibration(self, device_id: str) -> Any:
+        """Open a reviewed transaction for missing official calibration controls."""
+        device = self._device(device_id)
+        manager = self.transactions
+        if manager is None:
+            raise WorkflowCapabilityUnavailable("configuration writes are unavailable")
+        mac = self._mac(device_id)
+        with self._guard(mac):
+            self._prune_device_sessions_locked(mac)
+            session = next(
+                (item for item in self._sessions.values() if item.mac == mac), None
+            )
+        if session is not None and session.active_task is not None:
+            raise CalibrationBusyError(mac)
+        if session is not None:
+            raise CalibrationBusyError(mac)
+        snapshot = await self._async_snapshot(device)
+        document = ESPHomeConfigDocument.parse(snapshot.content)
+        topology = self._topology_from_document(
+            document, device, snapshot.sha256, snapshot.configuration
+        )
+        plan = build_calibration_preparation_mutation(snapshot, topology)
+        if not plan.changes:
+            raise ConfigMutationError(
+                "native calibration support is unavailable although the reviewed "
+                "official package is already enabled",
+                reason_code="native_support_unavailable",
+            )
+        status = await manager.async_preview(mac, topology, plan, snapshot)
+        unsubscribe: Callable[[], None] | None = None
+
+        def advance_admission(update: Any) -> None:
+            nonlocal unsubscribe
+            if update.state is ConfigTransactionState.VERIFIED:
+                self._advance_inspection_admission(
+                    device_id, snapshot.sha256,
+                    sha256(plan.proposed_content.encode()).hexdigest(),
+                )
+            if update.state in {
+                ConfigTransactionState.VERIFIED,
+                ConfigTransactionState.FAILED,
+                ConfigTransactionState.ROLLED_BACK,
+            } and unsubscribe is not None:
+                unsubscribe()
+                unsubscribe = None
+
+        if self._inspection_admission(device_id) is not None:
+            unsubscribe = manager.subscribe(status.transaction_id, advance_admission)
+        return status
+
     async def _async_preview_meter_configuration(
         self, plan: _PlanHandle, requested: MeterConfigurationRequest
     ) -> Any:
@@ -752,6 +931,27 @@ class EntryWorkflow:
             expected_sensor_entities=expected.sensor_entities,
             expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
         )
+        admission_source = plan.snapshot.sha256
+        unsubscribe: Callable[[], None] | None = None
+
+        def advance_admission(update: Any) -> None:
+            nonlocal unsubscribe
+            if update.state is not ConfigTransactionState.VERIFIED:
+                if update.state not in {
+                    ConfigTransactionState.FAILED,
+                    ConfigTransactionState.ROLLED_BACK,
+                }:
+                    return
+            else:
+                self._advance_inspection_admission(
+                    plan.device_id, admission_source, proposed_sha256
+                )
+            if unsubscribe is not None:
+                unsubscribe()
+                unsubscribe = None
+
+        if self._inspection_admission(plan.device_id) is not None:
+            unsubscribe = manager.subscribe(status.transaction_id, advance_admission)
         self._plans.pop(plan.plan_id, None)
         plan.scrub()
         return status
@@ -825,8 +1025,8 @@ class EntryWorkflow:
             if sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256:
                 raise WorkflowHandleError("configuration snapshot is untrusted")
             document = ESPHomeConfigDocument.parse(snapshot.content)
-            topology = topology_from_config(
-                document, native_project_name=device.project_name
+            topology = self._topology_from_document(
+                document, device, snapshot.sha256, snapshot.configuration
             )
             configuration = snapshot.configuration
             substitutions = {
@@ -859,6 +1059,7 @@ class EntryWorkflow:
                 reporting_multipliers=_stored_reporting_multipliers(
                     selections, snapshot.sha256
                 ),
+                configuration_authoritative=snapshot.configuration_authoritative,
                 stored_semantics_stale=stored_read.stale,
             ).configuration
         cleanup = self._cleaning_macs.get(mac)
@@ -914,6 +1115,9 @@ class EntryWorkflow:
             state="safety_required" if preflight.ok else "preflight_failed",
             meter_configuration=meter_configuration,
             configuration_sha256=(snapshot.sha256 if snapshot is not None else None),
+            configuration_authoritative=(
+                snapshot.configuration_authoritative if snapshot is not None else True
+            ),
             timing_policy=CalibrationTimingPolicy(
                 (
                     meter_configuration.meter.update_interval_s
@@ -1543,6 +1747,8 @@ class EntryWorkflow:
                 and not isinstance(result, asyncio.CancelledError)
             )
         self._plans.clear()
+        inspections = tuple(self._inspections.values())
+        self._inspections.clear()
         self._sessions.clear()
         self._subscribers.clear()
         self._session_cleanup_tasks.clear()
@@ -1551,6 +1757,11 @@ class EntryWorkflow:
         for plan in plans:
             try:
                 plan.scrub()
+            except BaseException as error:  # noqa: BLE001 - scrub every handle
+                errors.append(error)
+        for inspection in inspections:
+            try:
+                inspection.scrub()
             except BaseException as error:  # noqa: BLE001 - scrub every handle
                 errors.append(error)
         if builder is not None:
@@ -1591,7 +1802,10 @@ class EntryWorkflow:
             and snapshot.sha256 != handle.configuration_sha256
         ):
             raise WorkflowHandleError("calibration configuration is stale")
-        return snapshot
+        return replace(
+            snapshot,
+            configuration_authoritative=handle.configuration_authoritative,
+        )
 
     async def _async_trusted_voltage_fingerprint(
         self,
@@ -1659,7 +1873,217 @@ class EntryWorkflow:
                 raise WorkflowCapabilityUnavailable(
                     "the Device Builder configuration is unavailable"
                 )
-        return await builder.async_get_config(configuration)
+        snapshot = await builder.async_get_config(configuration)
+        document = ESPHomeConfigDocument.parse(snapshot.content)
+        source_is_official = (
+            package_graph_owner_is_official(document)
+            if document.package_references or document.unresolved_package_sources
+            else is_supported_project(document.project_name)
+        )
+        return replace(
+            snapshot,
+            configuration_authoritative=source_is_official,
+        )
+
+    def _topology_from_document(
+        self,
+        document: ESPHomeConfigDocument,
+        device: DiscoveredDevice,
+        source_sha256: str,
+        configuration: str,
+    ) -> MeterTopology:
+        """Use strict config topology, with only a prior explicit admission escape hatch."""
+        try:
+            return topology_from_config(
+                document, native_project_name=_native_project_name(device)
+            )
+        except (TopologyMismatchError, TopologyParseError) as original_error:
+            admission = self._inspection_admission(device.entry_id)
+            if (
+                admission is None
+                or admission["configuration"] != configuration
+            ):
+                raise
+            try:
+                if admission["mac"] != self._mac(device.entry_id):
+                    raise TopologyMismatchError("inspection identity changed")
+                if admission["source_sha256"] != source_sha256:
+                    manager = self.transactions
+                    if (
+                        manager is None
+                        or not manager._is_proposed_source_authorized(
+                            admission["mac"],
+                            configuration,
+                            cast(str, admission["source_sha256"]),
+                            document.content,
+                        )
+                    ):
+                        raise TopologyMismatchError(
+                            "configuration is not authorized by an active transaction"
+                        )
+                preliminary = topology_from_inspection(
+                    document,
+                    native_project_name=_native_project_name(device),
+                    physical_chip_count=None,
+                )
+                if admission["physical_chip_count"] != preliminary.group_count:
+                    raise TopologyMismatchError("inspection topology changed")
+                return topology_from_inspection(
+                    document,
+                    native_project_name=_native_project_name(device),
+                    physical_chip_count=admission["physical_chip_count"],
+                )
+            except (TopologyMismatchError, TopologyParseError, WorkflowHandleError):
+                raise original_error
+
+    def _inspection_candidate(self, device_id: str) -> ExistingDeviceCandidate:
+        if self._closed or self._closing:
+            raise WorkflowHandleError("workflow is closed")
+        entry = self._entry(device_id)
+        if getattr(entry, "domain", None) != "esphome":
+            raise WorkflowHandleError("device is not available")
+        candidate = existing_device_candidate(entry)
+        if candidate.entry_id != device_id:
+            raise WorkflowHandleError("device is not available")
+        return candidate
+
+    async def _assert_inspection_current(
+        self, device_id: str, builder: LazyDeviceBuilder
+    ) -> _InspectionHandle:
+        self._prune_inspections()
+        handle = self._inspections.get(device_id)
+        if handle is None:
+            raise WorkflowHandleError("inspection is stale; inspect again")
+        entry = self._entry(device_id)
+        status = device_builder_status(
+            entry, await builder.async_list_devices(), strict=True
+        )
+        if status.configuration != handle.configuration:
+            raise WorkflowHandleError("inspection is stale; inspect again")
+        snapshot = await builder.async_get_config(handle.configuration)
+        if (
+            snapshot.sha256 != handle.source_sha256
+            or sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256
+        ):
+            raise WorkflowHandleError("inspection is stale; inspect again")
+        if self._mac(device_id) != handle.mac:
+            raise WorkflowHandleError("inspection is stale; inspect again")
+        document = ESPHomeConfigDocument.parse(snapshot.content)
+        try:
+            topology = topology_from_inspection(
+                document,
+                native_project_name=_project_name(entry),
+                physical_chip_count=handle.topology.group_count,
+            )
+        except (TopologyMismatchError, TopologyParseError) as error:
+            raise WorkflowHandleError("inspection is stale; inspect again") from error
+        if topology != handle.topology:
+            raise WorkflowHandleError("inspection is stale; inspect again")
+        handle.expires_at = self._deadline()
+        return handle
+
+    def _inspection_admission(
+        self, device_id: str
+    ) -> dict[str, str | int] | None:
+        entries_reader = getattr(self._hass.config_entries, "async_entries", None)
+        if not callable(entries_reader):
+            return None
+        helper = next(
+            (
+                entry
+                for entry in entries_reader(DOMAIN)
+                if getattr(entry, "domain", None) == DOMAIN
+            ),
+            None,
+        )
+        if helper is None:
+            return None
+        helper_data = getattr(helper, "data", {})
+        if not isinstance(helper_data, Mapping):
+            return None
+        admission = helper_data.get(CONF_INSPECTION_ADMISSION)
+        if not isinstance(admission, Mapping):
+            return None
+        if (
+            admission.get("device_id") != device_id
+            or not isinstance(admission.get("mac"), str)
+            or not isinstance(admission.get("configuration"), str)
+            or not isinstance(admission.get("source_sha256"), str)
+            or not isinstance(admission.get("physical_chip_count"), int)
+        ):
+            return None
+        return {
+            "device_id": device_id,
+            "mac": admission["mac"],
+            "configuration": admission["configuration"],
+            "source_sha256": admission["source_sha256"],
+            "physical_chip_count": admission["physical_chip_count"],
+        }
+
+    def _record_inspection_admission(self, handle: _InspectionHandle) -> None:
+        entries_reader = getattr(self._hass.config_entries, "async_entries", None)
+        updater = getattr(self._hass.config_entries, "async_update_entry", None)
+        if not callable(entries_reader) or not callable(updater):
+            return
+        helper = next(
+            (
+                entry
+                for entry in entries_reader(DOMAIN)
+                if getattr(entry, "domain", None) == DOMAIN
+            ),
+            None,
+        )
+        if helper is None:
+            return
+        data = dict(getattr(helper, "data", {}) or {})
+        data[CONF_INSPECTION_ADMISSION] = {
+            "device_id": handle.device_id,
+            "mac": handle.mac,
+            "configuration": handle.configuration,
+            "source_sha256": handle.source_sha256,
+            "physical_chip_count": handle.topology.group_count,
+        }
+        updater(helper, data=data)
+
+    def _advance_inspection_admission(
+        self, device_id: str, source_sha256: str, proposed_sha256: str
+    ) -> None:
+        """Advance custom-source admission only after a verified transaction."""
+        admission = self._inspection_admission(device_id)
+        if admission is None or admission["source_sha256"] != source_sha256:
+            return
+        entries_reader = getattr(self._hass.config_entries, "async_entries", None)
+        updater = getattr(self._hass.config_entries, "async_update_entry", None)
+        if not callable(entries_reader) or not callable(updater):
+            return
+        helper = next(
+            (
+                entry
+                for entry in entries_reader(DOMAIN)
+                if getattr(entry, "domain", None) == DOMAIN
+            ),
+            None,
+        )
+        if helper is None:
+            return
+        data = dict(getattr(helper, "data", {}) or {})
+        current = data.get(CONF_INSPECTION_ADMISSION)
+        if not isinstance(current, Mapping) or current.get("source_sha256") != source_sha256:
+            return
+        data[CONF_INSPECTION_ADMISSION] = {
+            **dict(current),
+            "source_sha256": proposed_sha256,
+        }
+        updater(helper, data=data)
+        handle = self._inspections.get(device_id)
+        if handle is not None and handle.source_sha256 == source_sha256:
+            handle.source_sha256 = proposed_sha256
+
+    def _prune_inspections(self) -> None:
+        for device_id, handle in tuple(self._inspections.items()):
+            if self._clock() >= handle.expires_at:
+                self._inspections.pop(device_id, None)
+                handle.scrub()
 
     def _device(self, device_id: str) -> DiscoveredDevice:
         if self._closed or self._closing:
@@ -1682,7 +2106,9 @@ class EntryWorkflow:
                 None,
             )
             if not isinstance(project_name, str):
-                raise WorkflowHandleError("device is not available")
+                if self._inspection_admission(device_id) is None:
+                    raise WorkflowHandleError("device is not available")
+                project_name = "unknown"
             device = DiscoveredDevice(device_id, entry.title, project_name)
         return device
 
@@ -1700,12 +2126,10 @@ class EntryWorkflow:
         if device is None:
             entry = self._entry(device_id)
             project_name = _project_name(entry)
-            if (
-                getattr(entry, "domain", None) != "esphome"
-                or not isinstance(project_name, str)
-                or not project_name.startswith(BASE_PROJECT)
-            ):
+            if getattr(entry, "domain", None) != "esphome":
                 raise WorkflowHandleError("device is not available")
+            if not isinstance(project_name, str):
+                project_name = "unknown"
             device = DiscoveredDevice(
                 device_id,
                 entry.title,

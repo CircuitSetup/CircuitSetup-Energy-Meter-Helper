@@ -4,7 +4,8 @@ import sanitizerContract from "../../../tests/fixtures/task20_sanitized_change.j
 type Frame = Record<string, unknown> & { id?: number; type: string };
 type Outcome = "success" | "collision" | "validation" | "compile";
 type Calibration = "main-success" | "addon-indeterminate" | undefined;
-type Scenario = "single-phase-pq" | undefined;
+type Scenario = "single-phase-pq" | "existing-inspection" | "calibration-unavailable" | "calibration-missing" | undefined;
+type ExistingOutcome = "success" | "inspect-stale" | "adopt-busy";
 
 const hash = "a".repeat(64);
 const FIRMWARE_INDEX_URL = "https://circuitsetup.github.io/ESPWebInstaller/manifests/firmware_index.json";
@@ -33,13 +34,36 @@ function device(addons: number, importable = false, entryId = "meter-1") {
     project_version: "2026.8.0", importable, configuration: importable ? null : "meter.yaml" };
 }
 
-function topology(addons: number) {
+const CUSTOM_PROJECT = "legacy.custom-meter";
+
+function existingCandidate(entryId = "meter-1") {
+  return { entry_id: entryId, title: "Legacy CircuitSetup meter", project_name: CUSTOM_PROJECT,
+    project_version: null, compatibility: ["custom_or_older_project"] };
+}
+
+function existingDevice(entryId = "meter-1") {
+  return { ...device(0, false, entryId), title: "Legacy CircuitSetup meter", project_name: CUSTOM_PROJECT };
+}
+
+function topology(addons: number, projectName = project(addons)) {
   const boards = addons + 1;
   return { addon_count: addons, board_count: boards, ct_count: 6 * boards, group_count: 2 * boards,
-    connection_type: "wifi", voltage_layout: "two_groups_per_board", project_name: project(addons),
+    connection_type: "wifi", voltage_layout: "two_groups_per_board", project_name: projectName,
     evidence: [{ source: "config_project", addon_count: addons, detail: "Project identity" },
       { source: "config_packages", addon_count: addons, detail: `${boards} board packages` },
       { source: "native_entity_counts", addon_count: addons, detail: `${6 * boards} current sensors` }] };
+}
+
+function existingInspection(addons: number) {
+  const boards = addons + 1;
+  return { device: existingCandidate(), configuration: "meter.yaml", source_sha256: hash,
+    topology: topology(addons, CUSTOM_PROJECT),
+    package_options: { power_quality: Array(boards).fill(false), status_fields: Array(boards).fill(false) },
+    package_capabilities: Array.from({ length: boards }, (_value, board) => [
+      { feature: "power_quality", board_index: board, state: "cannot_safely_manage", reason_code: "unsupported_package_source" },
+      { feature: "status_fields", board_index: board, state: "cannot_safely_manage", reason_code: "unsupported_package_source" },
+    ]).flat(),
+    calibration_preparation: { state: "cannot_safely_manage", reason_code: "calibration_flag_unavailable" } };
 }
 
 function inventory(addons: number, scenario: Scenario = undefined) {
@@ -77,8 +101,9 @@ function meterConfiguration(addons: number, scenario: Scenario = undefined) {
     custom_label: channel.selected_model_id === null ? "Custom CT" : null,
     burden_output_acknowledged: channel.selected_model_id === null }));
   const singlePhase = scenario === "single-phase-pq";
+  const projectName = scenario === "existing-inspection" ? CUSTOM_PROJECT : project(addons);
   const numericEntityCount = live.channels.length * 2 + 2 * (addons + 1) + (singlePhase ? 18 : 0);
-  return { plan_id: "b".repeat(32), source_sha256: live.source_sha256, topology: { ...topology(addons), voltage_layout: "standard" },
+  return { plan_id: "b".repeat(32), source_sha256: live.source_sha256, topology: { ...topology(addons, projectName), voltage_layout: "standard" },
     configuration: { meter: { friendly_name: "Energy meter", electrical_system: singlePhase ? "single_phase_230" : "split_phase_120_240", line_frequency_hz: singlePhase ? 50 : 60,
       update_interval_s: 5, voltage_layout: addons ? "multi_reference" : "standard", voltage_references: references.map((reference) => singlePhase ? { ...reference, nominal_voltage_v: 230 } : reference) }, channels, aggregates: [],
       power_quality: Array.from({ length: addons + 1 }, (_value, board) => singlePhase && board === 1), status_fields: Array(addons + 1).fill(false), multi_reference_preparation_acknowledged: false },
@@ -105,10 +130,11 @@ function offsetBoards(addons: number, stageState: "not_started" | "skipped" = "n
 }
 
 function session(state: string, acknowledged: boolean, addons = 0, pending = false,
-  offsetState: "not_started" | "skipped" = "not_started") {
+  offsetState: "not_started" | "skipped" = "not_started",
+  offsetCapability: "available" | "unavailable" | "invalid" = "available") {
   return { session_id: "session-1", device_id: "meter-1", state, safety_acknowledged: acknowledged,
     preflight: { issues: [], zeroed_roles: ["main_1.reference_voltage", "ct1.reference_current"] },
-    entity_role_counts: {}, offset_capability: { status: "available", repair_reason: null },
+    entity_role_counts: {}, offset_capability: { status: offsetCapability, repair_reason: offsetCapability === "invalid" ? "test" : null },
     offset_disposition: offsetState, offset_boards: offsetBoards(addons, offsetState),
     has_pending_calibration: pending };
 }
@@ -169,7 +195,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
   firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean; scenario?: Scenario;
-  slowClearCalibration?: boolean } = {}) {
+  existingOutcome?: ExistingOutcome; slowClearCalibration?: boolean } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const frames: Frame[] = [];
@@ -178,12 +204,15 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   let nextSetupStatusUnavailable = false;
   let setupSubscriptionGeneration = 0;
   let currentTransaction = transaction("previewed", addons ? 42 : 1);
-  let currentSession = session("safety_required", false, addons);
   let activePlan: string | null = "b".repeat(32);
   let activeSourceSha256 = hash;
   let pendingPreview = false;
   let freshPlanGeneration = 0;
-  const setupDevices = options.setupEvent === "devices"
+  const offsetCapability = options.scenario === "calibration-unavailable" ? "unavailable" : "available";
+  let currentSession = session("safety_required", false, addons, false, "not_started", offsetCapability);
+  const setupDevices = options.scenario === "existing-inspection"
+    ? [existingDevice()]
+    : options.setupEvent === "devices"
     ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
     : options.setupEvent === "device" ? [device(addons, options.importable)] : [];
   const setupSnapshot = () => boundDeviceId
@@ -217,6 +246,11 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         }
         result = setupSnapshot();
       }
+      else if (operation === "list_existing_meters") result = [existingCandidate()];
+      else if (operation === "inspect_existing_meter") {
+        if (options.existingOutcome === "inspect-stale") return fail("stale_handle", "inspection is stale");
+        result = existingInspection(addons);
+      }
       else if (operation === "set_installer_intent") result = { state: "installer_guide", devices: [],
         installer_intent: { addon_count: frame.addon_count, connection_type: frame.connection_type } };
       else if (operation === "rescan") {
@@ -226,16 +260,20 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
             ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
             : [device(addons, options.importable)], configuration_authoritative: false };
       } else if (operation === "adopt_device") {
-        boundDeviceId = "meter-1";
+        if (options.existingOutcome === "adopt-busy") return fail("device_busy", "device busy");
+        boundDeviceId = String(frame.device_id);
         nextSetupStatusUnavailable = true;
-        result = { device_id: "meter-1", configuration: "meter.yaml" };
+        result = { device_id: String(frame.device_id), configuration: "meter.yaml" };
       }
       else if (operation === "get_topology") result = {
-        topology: topology(addons),
+        topology: topology(addons, options.scenario === "existing-inspection" ? CUSTOM_PROJECT : project(addons)),
         package_options: {
           power_quality: Array.from({ length: addons + 1 }, (_value, board) => options.scenario === "single-phase-pq" && board === 1),
           status_fields: Array.from({ length: addons + 1 }, () => false),
         },
+        ...(options.scenario === "calibration-missing" ? {
+          calibration_preparation: { state: "available_to_prepare", reason_code: "calibration_source_ready" },
+        } : {}),
       };
       else if (operation === "get_meter_configuration") {
         const refreshingConsumedPlan = options.consumePlans && activePlan === null;
@@ -268,6 +306,10 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           activePlan = null;
           pendingPreview = true;
         }
+      } else if (operation === "prepare_calibration") {
+        result = currentTransaction = { ...transaction("previewed", 1),
+          changes: [{ key: "package.main.calibration", old_value: "disabled", new_value: "enabled" }],
+          redacted_diff: "+ official calibration controls" };
       } else if (operation === "preview_calibrated_gains") {
         result = currentTransaction = { ...transaction("previewed", 1), transaction_id: "d".repeat(32) };
       } else if (operation === "apply_ct_config") {
@@ -299,8 +341,8 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       }
       else if (operation === "rollback_ct_config") result = currentTransaction = transaction("rolled_back", addons ? 42 : 1,
         { progress: ["config_restored"] });
-      else if (operation === "start_session") result = currentSession = session("safety_required", false, addons);
-      else if (operation === "acknowledge_safety") result = currentSession = session("ready", true, addons);
+      else if (operation === "start_session") result = currentSession = session("safety_required", false, addons, false, "not_started", offsetCapability);
+      else if (operation === "acknowledge_safety") result = currentSession = session("ready", true, addons, false, "not_started", offsetCapability);
       else if (operation === "check_offset_readiness") result = offsetReadiness(frame);
       else if (operation === "calibrate_offset") {
         const board = Number(frame.board_index); const stage = Number(frame.stage) as 1 | 2;
@@ -309,7 +351,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           expected_tables: keys.map((key) => [key, [[1, -1], [2, -2], [3, -3]]]),
           unfinished_group_keys: [], retry_allowed: false, error: null };
       } else if (operation === "skip_offset_calibration") {
-        result = currentSession = session("ready", true, addons, currentSession.has_pending_calibration as boolean, "skipped");
+        result = currentSession = session("ready", true, addons, currentSession.has_pending_calibration as boolean, "skipped", offsetCapability);
       }
       else if (operation === "check_stability") result = stability(frame);
       else if (operation === "calibrate_voltage") result = voltageCalibration(frame);
@@ -450,6 +492,83 @@ test("multiple newly discovered meters wait for an Import click", async ({ page 
   expect(operations(frames)).not.toContain("adopt_device");
   await page.getByRole("button", { name: "Import" }).first().click();
   await expect.poll(() => operations(frames).filter((operation) => operation === "adopt_device").length).toBe(1);
+});
+
+test("Find, inspect, and adopt keeps custom meter work behind the explicit boundary", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { scenario: "existing-inspection" });
+  await page.goto("/test/harness.html");
+
+  await page.getByRole("button", { name: "Find another ESPHome meter" }).click();
+  await expect(page.getByRole("button", { name: "Inspect", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Inspect", exact: true }).click();
+  await expect(page.getByText("passed inspection.")).toBeVisible();
+  await page.getByRole("button", { name: "Adopt inspected meter" }).click();
+  await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Topology evidence", exact: true })).toBeVisible();
+
+  const ordered = operations(frames);
+  expect(ordered.indexOf("list_existing_meters")).toBeLessThan(ordered.indexOf("inspect_existing_meter"));
+  expect(ordered.indexOf("inspect_existing_meter")).toBeLessThan(ordered.indexOf("adopt_device"));
+  expect(ordered).toEqual(expect.arrayContaining(["get_meter_configuration", "get_topology"]));
+});
+
+test("stale existing-meter inspection remains actionable", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { scenario: "existing-inspection", existingOutcome: "inspect-stale" });
+  await page.goto("/test/harness.html");
+
+  await page.getByRole("button", { name: "Find another ESPHome meter" }).click();
+  await page.getByRole("button", { name: "Inspect", exact: true }).click();
+
+  await expect(page.getByRole("alert")).toContainText("selected device changed or is no longer available");
+  expect(operations(frames)).not.toContain("adopt_device");
+});
+
+test("busy existing-meter adoption stays on setup without rebinding", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { scenario: "existing-inspection", existingOutcome: "adopt-busy" });
+  await page.goto("/test/harness.html");
+
+  await page.getByRole("button", { name: "Find another ESPHome meter" }).click();
+  await page.getByRole("button", { name: "Inspect", exact: true }).click();
+  await page.getByRole("button", { name: "Adopt inspected meter" }).click();
+
+  await expect(page.getByRole("alert")).toContainText("Finish or cancel current work before importing another meter");
+  await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
+  expect(operations(frames)).toContain("adopt_device");
+  expect(operations(frames)).not.toContain("get_topology");
+});
+
+test("runtime offset limitation keeps calibration-only skip without a prep promise", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { scenario: "calibration-unavailable" });
+  await openInventory(page);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Offset", exact: true })).toBeVisible();
+  await expect(page.getByText("Offset calibration is not available on this firmware.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Prepare reviewed official calibration controls" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Skip offset calibration" })).toBeVisible();
+  expect(operations(frames)).not.toContain("prepare_calibration");
+});
+
+test("missing calibration controls can be prepared before starting a session", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { scenario: "calibration-missing" });
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
+  await expect(page.getByRole("heading", { name: "Topology evidence", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Prepare reviewed official calibration controls" }).click();
+  await expect(page.getByRole("heading", { name: "Flash & Verify", exact: true })).toBeVisible();
+  expect(operations(frames)).not.toContain("start_session");
+  await page.getByRole("button", { name: "Apply" }).click();
+  await expect(page.getByRole("button", { name: "Compile" })).toBeEnabled();
+  await page.getByRole("button", { name: "Compile" }).click();
+  await expect(page.getByRole("button", { name: "Install" })).toBeEnabled();
+  await page.getByRole("button", { name: "Install" }).click();
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
+  expect(operations(frames)).toEqual(expect.arrayContaining(["prepare_calibration", "apply_ct_config", "compile_ct_config", "install_ct_config", "start_session"]));
 });
 
 test("inline provisioning resolves selected manifests without popup, navigation, credentials, or URL payloads", async ({ page }) => {

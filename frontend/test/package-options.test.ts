@@ -48,3 +48,26 @@ it("uses disabled power quality and main-only status defaults for new boards", (
     status_fields: [true, false, false],
   });
 });
+
+it("keeps package choices read-only when the source is unsafe", () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const changed = vi.fn();
+  render(
+    packageOptions(
+      { power_quality: [false, false], status_fields: [true, false] },
+      changed,
+      [
+        { feature: "power_quality", board_index: 0, state: "cannot_safely_manage", reason_code: "unsupported_package_source" },
+        { feature: "power_quality", board_index: 1, state: "cannot_safely_manage", reason_code: "unsupported_package_source" },
+      ],
+    ),
+    container,
+  );
+
+  expect(container.querySelector<HTMLInputElement>('[data-feature="power_quality"][data-board="0"]')?.disabled).toBe(true);
+  expect(container.querySelector<HTMLInputElement>('[data-all-feature="power_quality"]')?.disabled).toBe(true);
+  expect(container.textContent).toContain("Read-only: unsupported package source");
+  container.querySelector<HTMLInputElement>('[data-feature="power_quality"][data-board="0"]')?.click();
+  expect(changed).not.toHaveBeenCalled();
+});

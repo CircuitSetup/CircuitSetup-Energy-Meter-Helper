@@ -46,6 +46,14 @@ export interface DiscoveredDevice {
   configuration: string | null;
 }
 
+export interface ExistingDeviceCandidate {
+  entry_id: string;
+  title: string;
+  project_name: string | null;
+  project_version: string | null;
+  compatibility: string[];
+}
+
 export interface InstallerIntent {
   addon_count: number;
   connection_type: Exclude<ConnectionType, "unknown">;
@@ -120,6 +128,20 @@ export interface BoardPackageOptions {
   status_fields: boolean[];
 }
 
+export type PackageCapabilityState = "already_present" | "available_to_prepare" | "cannot_safely_manage";
+
+export interface CalibrationPreparationCapability {
+  state: PackageCapabilityState;
+  reason_code: string;
+}
+
+export interface PackageCapability {
+  feature: keyof BoardPackageOptions;
+  board_index: number;
+  state: PackageCapabilityState;
+  reason_code: string;
+}
+
 export interface SetupSnapshot {
   state: SetupState;
   devices: DiscoveredDevice[];
@@ -154,6 +176,18 @@ export interface TopologyResult {
   configuration_authoritative?: boolean;
   topology?: MeterTopology;
   package_options?: BoardPackageOptions;
+  package_capabilities?: PackageCapability[];
+  calibration_preparation?: CalibrationPreparationCapability;
+}
+
+export interface ExistingMeterInspection {
+  device: ExistingDeviceCandidate;
+  configuration: string;
+  source_sha256: string;
+  topology: MeterTopology;
+  package_options: BoardPackageOptions;
+  package_capabilities: PackageCapability[];
+  calibration_preparation: CalibrationPreparationCapability;
 }
 
 export interface ChannelAddress {

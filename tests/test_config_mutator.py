@@ -135,6 +135,8 @@ def _package_snapshot() -> ESPHomeConfigSnapshot:
   current_cal_ct12: 11143
 packages:
   circuitsetup_meter:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
     files:
       #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml # keep this note
       #- Software/ESPHome/power_quality/6chan_addon1_power_quality.yaml
@@ -263,9 +265,11 @@ def test_full_meter_preview_diff_groups_redacted_semantic_changes() -> None:
     snapshot = _contract_snapshot()
     content = snapshot.content.replace(
         "sensor:\n",
-        """packages:
-  circuitsetup_meter:
-    files:
+            """packages:
+      circuitsetup_meter:
+        url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+        ref: master
+        files:
       #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
       - Software/ESPHome/status_fields/6chan_main_status.yaml
 sensor:
@@ -1339,9 +1343,11 @@ def test_generalized_meter_preview_scales_addon_power_quality_and_consumption_en
     source = _contract_snapshot_for(topology)
     content = source.content.replace(
         "sensor:\n",
-        """packages:
-  circuitsetup_meter:
-    files:
+            """packages:
+      circuitsetup_meter:
+        url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+        ref: master
+        files:
       #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
       #- Software/ESPHome/power_quality/6chan_addon1_power_quality.yaml
       #- Software/ESPHome/status_fields/6chan_main_status.yaml

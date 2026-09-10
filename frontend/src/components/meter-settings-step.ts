@@ -1,6 +1,6 @@
 import { html, nothing, type TemplateResult } from "lit";
 
-import type { BoardPackageOptions, ElectricalSystem, LineFrequencyHz, MeterSettingsDraft, VoltageTransformerCatalog } from "../types";
+import type { BoardPackageOptions, ElectricalSystem, LineFrequencyHz, MeterSettingsDraft, PackageCapability, VoltageTransformerCatalog } from "../types";
 import { packageOptions } from "./package-options";
 
 const SYSTEMS: Array<[ElectricalSystem, string]> = [
@@ -27,6 +27,7 @@ export function meterSettingsStep(
   continueToCircuits: () => void,
   boardPackages: BoardPackageOptions | null = null,
   setBoardPackages: (options: BoardPackageOptions) => void = () => undefined,
+  packageCapabilities: PackageCapability[] = [],
 ): TemplateResult {
   const multiReference = draft.voltage_references.length > 1;
   const valid = Boolean(draft.friendly_name.trim()) && draft.voltage_references.every((reference) =>
@@ -93,7 +94,7 @@ export function meterSettingsStep(
           @change=${(event: Event) => patch({ update_interval_s: Number((event.target as HTMLSelectElement).value) as MeterSettingsDraft["update_interval_s"] })}>${INTERVALS.map((value) => html`<option value=${value} ?selected=${draft.update_interval_s === value}>${value} seconds</option>`)}</select></label>
       </div>
       ${intervalImpact(draft.update_interval_s) ? html`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : nothing}
-      ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
+      ${boardPackages ? packageOptions(boardPackages, setBoardPackages, packageCapabilities) : ""}
       <details class="advanced-voltage-options" open>
       <summary>Advanced voltage options</summary>
       <div class="voltage-options-content">

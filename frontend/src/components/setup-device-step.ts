@@ -1,5 +1,6 @@
 import { html, type TemplateResult } from "lit";
-import type { ConnectionType, ElectricalSystem, LineFrequencyHz, SetupSnapshot } from "../types";
+import type { ConnectionType, ElectricalSystem, ExistingDeviceCandidate, ExistingMeterInspection, LineFrequencyHz, SetupSnapshot } from "../types";
+import { existingConfigurationStep } from "./existing-configuration-step";
 
 const CONNECTIONS: Array<[Exclude<ConnectionType, "unknown">, string]> = [
   ["wifi", "Wi-Fi"],
@@ -35,6 +36,11 @@ export function setupDeviceStep(
   setElectricalSystem: (value: ElectricalSystem) => void = () => undefined,
   setLineFrequency: (value: LineFrequencyHz) => void = () => undefined,
   confirmElectricalProfile: () => void = () => undefined,
+  existingCandidates: ExistingDeviceCandidate[] = [],
+  inspection: ExistingMeterInspection | null = null,
+  findExisting: () => void = () => undefined,
+  inspectExisting: (deviceId: string) => void = () => undefined,
+  adoptInspected: (deviceId: string) => void = () => undefined,
 ): TemplateResult {
   return html`
     <section class="step-content setup-step" aria-labelledby="step-heading">
@@ -57,6 +63,7 @@ export function setupDeviceStep(
           <span>Check power and connection, then try again.</span>
         </div>`}
       </section>
+      ${existingConfigurationStep(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected)}
       ${discoverOnly ? "" : html`<hr />
       <h2>Set up a new device</h2>
       <fieldset class="choice-field">

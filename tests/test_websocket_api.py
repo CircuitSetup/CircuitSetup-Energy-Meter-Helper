@@ -545,6 +545,8 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         "get_ct_inventory",
         "get_meter_configuration",
         "adopt_device",
+        "inspect_existing_meter",
+        "prepare_calibration",
     }:
         base["device_id"] = "meter"
     elif suffix == "preview_ct_config":
@@ -1328,6 +1330,8 @@ substitutions:
   current_cal_ct6: '27518'
 packages:
   circuitsetup_meter:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
     files:
       #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
       - Software/ESPHome/status_fields/6chan_main_status.yaml
@@ -4498,9 +4502,11 @@ def test_transaction_serializer_normalizes_only_known_server_change_dtos() -> No
             SubstitutionChange("update_time", "5s", "10s"),
             SubstitutionChange("electric_freq", "60Hz", "50Hz"),
             SubstitutionChange("power_quality_main", "disabled", "enabled"),
-            SubstitutionChange("status_fields_addon1", "disabled", "enabled"),
-            SubstitutionChange("calibrated_voltage_gains", "managed", "removed"),
-            SubstitutionChange("not_a_server_key", "old", "new"),
+        SubstitutionChange("status_fields_addon1", "disabled", "enabled"),
+        SubstitutionChange("calibrated_voltage_gains", "managed", "removed"),
+        SubstitutionChange("offset_calibration", "false", "true"),
+        SubstitutionChange("gain_calibration", "false", "true"),
+        SubstitutionChange("not_a_server_key", "old", "new"),
         ),
         "managed calibrated voltage gains removed",
     )
@@ -4517,6 +4523,8 @@ def test_transaction_serializer_normalizes_only_known_server_change_dtos() -> No
         "package.main.power_quality",
         "package.addon1.status_fields",
         "meter.calibrated_voltage_gains",
+        "calibration.offset_calibration",
+        "calibration.gain_calibration",
     ]
     assert payload["redacted_diff"] == "managed calibrated voltage gains removed"
     assert sanitize_payload(

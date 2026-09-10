@@ -20,6 +20,7 @@ from .config_mutator import (
     ConfigMutationError,
     CTChangeRequest,
     build_calibrated_gain_mutation,
+    package_graph_owner_is_official,
     package_options_from_document,
 )
 from .ct_catalog import CTPresetCatalog
@@ -89,6 +90,18 @@ class ConfigTransactionState(StrEnum):
     VERIFIED = "verified"
     ROLLED_BACK = "rolled_back"
     FAILED = "failed"
+
+
+_PROPOSED_SOURCE_STATES = frozenset(
+    {
+        ConfigTransactionState.WRITTEN,
+        ConfigTransactionState.VALIDATED,
+        ConfigTransactionState.COMPILED,
+        ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
+        ConfigTransactionState.INSTALLING,
+        ConfigTransactionState.RECONNECTING,
+    }
+)
 
 
 class TransactionEvidenceCode(StrEnum):
@@ -433,6 +446,35 @@ class ConfigTransactionManager:
             return _status(transaction)
         return None
 
+    def _is_proposed_source_authorized(
+        self,
+        mac: str,
+        configuration: str,
+        source_sha256: str,
+        content: str,
+    ) -> bool:
+        """Authorize only the exact applied content held by a live transaction."""
+        try:
+            mac = canonical_mac(mac)
+        except ValueError:
+            return False
+        proposed_sha256 = sha256(content.encode()).hexdigest()
+        for candidate in reversed(self.sessions._transactions()):
+            if not isinstance(candidate, _ConfigTransaction):
+                continue
+            if (
+                candidate.mac != mac
+                or candidate.closed
+                or candidate.state not in _PROPOSED_SOURCE_STATES
+                or candidate.source_sha256 != source_sha256
+                or candidate.plan is None
+                or candidate.plan.configuration != configuration
+            ):
+                continue
+            if sha256(candidate.plan.proposed_content.encode()).hexdigest() == proposed_sha256:
+                return True
+        return False
+
     def subscribe(
         self,
         transaction_id: str,
@@ -587,6 +629,13 @@ class ConfigTransactionManager:
                 verified.config_filename
             )
             document = ESPHomeConfigDocument.parse(snapshot.content)
+            snapshot = replace(
+                snapshot,
+                configuration_authoritative=(
+                    not document.unresolved_package_sources
+                    and (not document.package_references or package_graph_owner_is_official(document))
+                ),
+            )
             stored_configuration = await self._persistence.async_get_meter_configuration(
                 mac
             )

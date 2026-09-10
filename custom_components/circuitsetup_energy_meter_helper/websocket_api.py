@@ -51,6 +51,7 @@ _PREFIX = f"{DOMAIN}/"
 READ_COMMANDS = (
     f"{_PREFIX}setup_status",
     f"{_PREFIX}list_meters",
+    f"{_PREFIX}list_existing_meters",
     f"{_PREFIX}get_topology",
     f"{_PREFIX}get_ct_inventory",
     f"{_PREFIX}get_meter_configuration",
@@ -62,8 +63,10 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}set_installer_intent",
     f"{_PREFIX}rescan",
     f"{_PREFIX}adopt_device",
+    f"{_PREFIX}inspect_existing_meter",
     f"{_PREFIX}preview_ct_config",
     f"{_PREFIX}preview_meter_configuration",
+    f"{_PREFIX}prepare_calibration",
     f"{_PREFIX}set_ha_labels",
     f"{_PREFIX}apply_ct_config",
     f"{_PREFIX}compile_ct_config",
@@ -95,6 +98,7 @@ _TRANSACTION_STATUS_COMMANDS = frozenset(
     for operation in (
         "preview_ct_config",
         "preview_meter_configuration",
+        "prepare_calibration",
         "preview_calibrated_gains",
         "apply_ct_config",
         "compile_ct_config",
@@ -126,13 +130,15 @@ _FORBIDDEN_KEY = re.compile(
     re.IGNORECASE,
 )
 _ALLOWED_CHANGE_PATH = re.compile(
-    r"(?:meter|voltage_reference|channel|aggregate|package)\.[a-z0-9_.-]+"
+    r"(?:meter|voltage_reference|channel|aggregate|package|calibration)\.[a-z0-9_.-]+"
 )
 _LEGACY_CHANGE_PATHS = {
     "calibrated_voltage_gains": "meter.calibrated_voltage_gains",
     "friendly_name": "meter.friendly_name",
     "update_time": "meter.update_interval_s",
     "electric_freq": "meter.line_frequency_hz",
+    "offset_calibration": "calibration.offset_calibration",
+    "gain_calibration": "calibration.gain_calibration",
 }
 _LEGACY_CHANGE_PATTERNS = (
     (re.compile(r"ct([1-9]|[1-3][0-9]|4[0-2])_name"), "channel", "name"),
@@ -213,6 +219,8 @@ class WorkflowOwner(Protocol):
 
     async def async_adopt_device(self, device_id: str) -> Any: ...
 
+    async def async_inspect_existing_meter(self, device_id: str) -> Any: ...
+
     async def async_preview_ct_config(
         self,
         device_id: str,
@@ -231,6 +239,8 @@ class WorkflowOwner(Protocol):
         source_sha256: str,
         requested: MeterConfigurationRequest,
     ) -> Any: ...
+
+    async def async_prepare_calibration(self, device_id: str) -> Any: ...
 
     async def async_set_ha_labels(
         self, device_id: str, plan_id: str, source_sha256: str, changes: tuple[Mapping[str, Any], ...]
@@ -365,6 +375,8 @@ class EntryWebsocketController:
             return self._setup_payload(self.provisioning.snapshot)
         if operation == "list_meters":
             return self.provisioning.snapshot.devices
+        if operation == "list_existing_meters":
+            return await self.provisioning.async_list_existing_meters()
         workflow = self.workflow
         if operation == "get_topology" and workflow is not None:
             return await workflow.async_get_topology(msg["device_id"])
@@ -422,6 +434,8 @@ class EntryWebsocketController:
             return await result if inspect.isawaitable(result) else result
         if operation == "adopt_device" and workflow is not None:
             return await workflow.async_adopt_device(msg["device_id"])
+        if operation == "inspect_existing_meter" and workflow is not None:
+            return await workflow.async_inspect_existing_meter(msg["device_id"])
         if operation == "preview_ct_config" and workflow is not None:
             return await workflow.async_preview_ct_config(
                 msg["device_id"],
@@ -441,6 +455,14 @@ class EntryWebsocketController:
             except ConfigMutationError as error:
                 raise ApiFailure(
                     "meter_configuration_invalid", "The meter configuration is invalid"
+                ) from error
+        if operation == "prepare_calibration" and workflow is not None:
+            try:
+                return await workflow.async_prepare_calibration(msg["device_id"])
+            except ConfigMutationError as error:
+                raise ApiFailure(
+                    "calibration_preparation_unavailable",
+                    "Official calibration controls cannot be safely prepared",
                 ) from error
         if operation == "set_ha_labels" and workflow is not None:
             return await workflow.async_set_ha_labels(
@@ -1026,6 +1048,8 @@ def _schema(command: str) -> Any:
         "get_ct_inventory",
         "get_meter_configuration",
         "adopt_device",
+        "inspect_existing_meter",
+        "prepare_calibration",
     }:
         schema[vol.Required("device_id")] = _ID
     elif operation == "preview_ct_config":

@@ -792,6 +792,70 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("[role=alert]")?.textContent).toContain("The review could not be cancelled");
   });
 
+  it("preserves active meter state when existing inspection fails", async () => {
+    const panel = await mount(makeHass({
+      setup_status: { state: "no_device", devices: [] },
+      inspect_existing_meter: Object.assign(new Error("busy"), { code: "device_busy" }),
+    }));
+    const state = panel as unknown as Record<string, unknown> & {
+      inspectExistingMeter(deviceId: string): Promise<void>;
+    };
+    const activeSession = { session_id: "session", device_id: "meter-1", state: "ready",
+      preflight: { zeroed_roles: [] } };
+    state.selectedDeviceId = "meter-1";
+    state.session = activeSession;
+    state.step = "offset";
+
+    await state.inspectExistingMeter("meter-2");
+
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(state.session).toBe(activeSession);
+    expect(state.step).toBe("offset");
+    expect(state.error).toBe("This ESPHome meter could not be safely inspected.");
+  });
+
+  it("preserves active meter state when adopting another meter fails", async () => {
+    const panel = await mount(makeHass({
+      setup_status: { state: "no_device", devices: [] },
+      adopt_device: Object.assign(new Error("busy"), { code: "device_busy" }),
+    }));
+    const state = panel as unknown as Record<string, unknown> & {
+      adopt(deviceId: string): Promise<void>;
+    };
+    const activeSession = { session_id: "session", device_id: "meter-1", state: "ready",
+      preflight: { zeroed_roles: [] } };
+    state.selectedDeviceId = "meter-1";
+    state.session = activeSession;
+    state.step = "offset";
+
+    await state.adopt("meter-2");
+
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(state.session).toBe(activeSession);
+    expect(state.step).toBe("offset");
+    expect(state.error).toBe("Finish or cancel current work before importing another meter.");
+  });
+
+  it("cancels a reviewed calibration-preparation transaction without losing the setup route", async () => {
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
+      changes: [{ key: "package.main.calibration", old_value: "disabled", new_value: "enabled" }],
+      redacted_diff: "+ calibration controls", rollback_available: false, evidence: [], progress: [], validation_detail: null,
+      upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] },
+      abandon_ct_config: { ...preview, state: "failed" } }));
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.transaction = preview;
+    state.step = "build";
+
+    await state.backFromBuild();
+
+    expect(state.step).toBe("setup");
+    expect(state.transaction).toBeNull();
+    expect(state.session).toBeNull();
+    expect(state.announcement).toContain("Calibration preparation review cancelled");
+  });
+
   it("rejects preserved review drafts when the source changes before reload", async () => {
     const previews: Array<{ planId: unknown; sourceSha256: unknown; configuration: unknown }> = [];
     let activePlan: string | null = "b".repeat(32);

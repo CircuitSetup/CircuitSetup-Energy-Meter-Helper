@@ -877,11 +877,16 @@ describe("HelperApi", () => {
       changes: [
         { key: "package.main.power_quality", old_value: "disabled", new_value: "enabled" },
         { key: "package.addon6.status_fields", old_value: "enabled", new_value: "disabled" },
+        { key: "calibration.offset_calibration", old_value: "false", new_value: "true" },
       ],
     };
 
     await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({
-      changes: [{ key: "package.main.power_quality" }, { key: "package.addon6.status_fields" }],
+      changes: [
+        { key: "package.main.power_quality" },
+        { key: "package.addon6.status_fields" },
+        { key: "calibration.offset_calibration" },
+      ],
     });
     hass.responses.preview_ct_config = {
       ...transaction,

@@ -1,12 +1,15 @@
 import type {
   ActiveWork,
   BoardPackageOptions,
+  CalibrationPreparationCapability,
   CalibrationResult,
   ConnectionType,
   CtChange,
   CtInventory,
   LabelUpdateResult,
   DiscoveredDevice,
+  ExistingDeviceCandidate,
+  ExistingMeterInspection,
   MeterTopology,
   MeterConfiguration,
   MeterConfigurationRequest,
@@ -15,6 +18,8 @@ import type {
   OffsetCalibrationResult,
   OffsetReadinessResult,
   OffsetTable,
+  PackageCapability,
+  TopologyResult,
   RestartVerificationResult,
   SessionStatus,
   SetupSnapshot,
@@ -56,18 +61,22 @@ const TRANSACTION_EVIDENCE = new Set(["write_failed", "write_not_applied", "writ
 const TRANSACTION_PROGRESS = new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
 const PREFLIGHT_CODES = new Set(["count_mismatch", "invalid_kind", "invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
 const AUTHORITATIVE_EVIDENCE = new Set(["config_project", "config_packages", "native_project"]);
-const CHANGE_KEY = /^(?:meter|voltage_reference|channel|aggregate|package)\.[a-z0-9_.-]+$/;
+const CHANGE_KEY = /^(?:meter|voltage_reference|channel|aggregate|package|calibration)\.[a-z0-9_.-]+$/;
 const MAC = /^[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
 const FIRMWARE_PRODUCT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const ESPHOME_VERSION = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$/;
-const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_configuration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
+const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_configuration", "prepare_calibration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
 const OFFSET_CAPABILITIES = new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
 const OFFSET_RESULT_STATES = new Set(["applied_pending_restart_verification", "partial", "indeterminate"]);
+const PACKAGE_CAPABILITY_STATES = new Set(["already_present", "available_to_prepare", "cannot_safely_manage"]);
+const PACKAGE_CAPABILITY_REASONS = new Set(["official_package_present", "official_source_ready", "unsupported_package_source", "ambiguous_package_source", "package_source_unavailable", "duplicate_package_reference"]);
+const CALIBRATION_PREPARATION_REASONS = new Set(["calibration_package_present", "calibration_source_ready", "calibration_flag_unavailable", "calibration_flag_invalid", "unsupported_package_source", "ambiguous_package_source", "package_source_unavailable", "duplicate_package_reference"]);
+const PACKAGE_FEATURES = new Set(["power_quality", "status_fields"]);
 
 type PublicRecord = Record<string, unknown>;
 type Validator<T> = (value: unknown) => T;
@@ -131,6 +140,15 @@ function device(value: unknown, label: string): void {
   string(item.entry_id, label); string(item.title, label); string(item.project_name, label);
   string(item.project_version, label, true); boolean(item.importable, label, true); string(item.configuration, label, true);
 }
+function existingDevice(value: unknown, label: string): ExistingDeviceCandidate {
+  const item = record(value, label);
+  exactKeys(item, ["entry_id", "title", "project_name", "project_version", "compatibility"], label);
+  string(item.entry_id, label); string(item.title, label); string(item.project_name, label, true);
+  string(item.project_version, label, true);
+  const compatibility = array(item.compatibility, label, 8).map((entry) => string(entry, label)!);
+  return { entry_id: item.entry_id as string, title: item.title as string, project_name: item.project_name as string | null,
+    project_version: item.project_version as string | null, compatibility };
+}
 function setup(value: unknown, label: string): SetupSnapshot {
   const item = record(value, label); enumeration(item.state, SETUP_STATES, label);
   array(item.devices, label).forEach((entry) => device(entry, label));
@@ -160,7 +178,7 @@ function setup(value: unknown, label: string): SetupSnapshot {
   }
   return value as SetupSnapshot;
 }
-function topology(value: unknown, label: string): MeterTopology {
+function topology(value: unknown, label: string, inspection = false): MeterTopology {
   const item = record(value, label);
   exactKeys(item, ["addon_count", "board_count", "ct_count", "group_count", "connection_type", "voltage_layout", "project_name", "evidence"], label);
   const addonCount = integer(item.addon_count, label);
@@ -178,18 +196,59 @@ function topology(value: unknown, label: string): MeterTopology {
   const evidenceItems = array(item.evidence, label);
   if (evidenceItems.length < 1 || evidenceItems.length > EVIDENCE_SOURCES.size) throw new Error(`${label} response is invalid`);
   const sources = evidenceItems.map((entry) => { const evidence = record(entry, label); exactKeys(evidence, ["source", "addon_count", "detail"], label); const source = enumeration(evidence.source, EVIDENCE_SOURCES, label); const evidenceAddons = integer(evidence.addon_count, label); if (evidenceAddons < 0 || evidenceAddons > 6) throw new Error(`${label} response is invalid`); string(evidence.detail, label); return source; });
-  if (new Set(sources).size !== sources.length || !sources.some((source) => AUTHORITATIVE_EVIDENCE.has(source))) throw new Error(`${label} response is invalid`);
+  if (new Set(sources).size !== sources.length || !sources.some((source) => AUTHORITATIVE_EVIDENCE.has(source) || inspection && source === "native_entity_counts")) throw new Error(`${label} response is invalid`);
   return value as MeterTopology;
 }
-function topologyResponse(value: unknown, label: string): MeterTopology | { topology: MeterTopology } {
+function topologyResponse(value: unknown, label: string): MeterTopology | TopologyResult {
   const item = record(value, label);
   if ("topology" in item) {
     const parsed = topology(item.topology, label);
     if (item.configuration_authoritative !== undefined) boolean(item.configuration_authoritative, label);
     if (item.package_options !== undefined) packageOptions(item.package_options, label, parsed.board_count);
-    return value as { topology: MeterTopology };
+    if (item.package_capabilities !== undefined
+      && packageCapabilities(item.package_capabilities, label, parsed.board_count).length !== parsed.board_count * 2) {
+      throw new Error(`${label} response is invalid`);
+    }
+    if (item.calibration_preparation !== undefined) calibrationPreparation(item.calibration_preparation, label);
+    return value as TopologyResult;
   }
   return topology(value, label);
+}
+function packageCapabilities(value: unknown, label: string, boardCount: number): PackageCapability[] {
+  return array(value, label, 14).map((entry) => {
+    const item = record(entry, label);
+    exactKeys(item, ["feature", "board_index", "state", "reason_code"], label);
+    const feature = string(item.feature, label)!;
+    const board = integer(item.board_index, label);
+    if (!PACKAGE_FEATURES.has(feature) || board < 0 || board >= boardCount) throw new Error(`${label} response is invalid`);
+    const state = enumeration(item.state, PACKAGE_CAPABILITY_STATES, label);
+    const reason = string(item.reason_code, label)!;
+    if (!PACKAGE_CAPABILITY_REASONS.has(reason)) throw new Error(`${label} response is invalid`);
+    return { feature, board_index: board, state, reason_code: reason } as PackageCapability;
+  });
+}
+function calibrationPreparation(value: unknown, label: string): CalibrationPreparationCapability {
+  const item = record(value, label);
+  exactKeys(item, ["state", "reason_code"], label);
+  const state = enumeration(item.state, PACKAGE_CAPABILITY_STATES, label);
+  const reason = string(item.reason_code, label)!;
+  if (!CALIBRATION_PREPARATION_REASONS.has(reason)) throw new Error(`${label} response is invalid`);
+  return { state: state as CalibrationPreparationCapability["state"], reason_code: reason };
+}
+function existingInspection(value: unknown, label: string): ExistingMeterInspection {
+  const item = record(value, label);
+  exactKeys(item, ["device", "configuration", "source_sha256", "topology", "package_options", "package_capabilities", "calibration_preparation"], label);
+  const candidate = existingDevice(item.device, label);
+  const parsedTopology = topology(item.topology, label, true);
+  const configuration = string(item.configuration, label)!;
+  if (!CONFIGURATION.test(configuration) || !SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`);
+  const options = packageOptions(item.package_options, label, parsedTopology.board_count);
+  const capabilities = packageCapabilities(item.package_capabilities, label, parsedTopology.board_count);
+  if (capabilities.length !== parsedTopology.board_count * 2) throw new Error(`${label} response is invalid`);
+  const preparation = calibrationPreparation(item.calibration_preparation, label);
+  return { device: candidate, configuration, source_sha256: item.source_sha256 as string,
+    topology: parsedTopology, package_options: options, package_capabilities: capabilities,
+    calibration_preparation: preparation };
 }
 function meterConfiguration(value: unknown, label: string): MeterConfiguration {
   const response = record(value, label);
@@ -668,6 +727,9 @@ export class HelperApi {
 
   public setupStatus = () => this.call("setup_status", (value) => setup(value, "setup_status"));
   public listMeters = () => this.call("list_meters", (value) => { array(value, "list_meters").forEach((item) => device(item, "list_meters")); return value as DiscoveredDevice[]; });
+  public listExistingMeters = () => this.call("list_existing_meters", (value) => array(value, "list_existing_meters", 32).map((item) => existingDevice(item, "list_existing_meters")));
+  public inspectExistingMeter = (deviceId: string) =>
+    this.call("inspect_existing_meter", (value) => existingInspection(value, "inspect_existing_meter"), { device_id: deviceId });
   public getTopology = (deviceId: string) =>
     this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
   public getCtInventory = (deviceId: string) =>
@@ -717,6 +779,10 @@ export class HelperApi {
   public previewMeterConfiguration = (deviceId: string, planId: string, sourceSha256: string, configuration: MeterConfigurationRequest) =>
     this.call("preview_meter_configuration", (value) => transaction(value, "preview_meter_configuration"), {
       device_id: deviceId, plan_id: planId, source_sha256: sourceSha256, configuration,
+    });
+  public prepareCalibration = (deviceId: string) =>
+    this.call("prepare_calibration", (value) => transaction(value, "prepare_calibration"), {
+      device_id: deviceId,
     });
   public setHaLabels = (deviceId: string, planId: string, sourceSha256: string, changes: Array<{ channel: number; name: string }>) =>
     this.call("set_ha_labels", (value) => value as LabelUpdateResult, {

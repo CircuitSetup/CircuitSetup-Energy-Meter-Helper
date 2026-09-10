@@ -1352,6 +1352,8 @@ def test_final_gain_mutation_keeps_selected_board_packages_in_same_review() -> N
     """A calibrated handoff must not drop package choices made during setup."""
     content = _snapshot().content + """packages:
   circuitsetup_meter:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
     files:
       #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
       - Software/ESPHome/status_fields/6chan_main_status.yaml
