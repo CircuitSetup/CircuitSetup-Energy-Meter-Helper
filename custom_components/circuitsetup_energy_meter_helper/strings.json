@@ -2,13 +2,44 @@
   "config": {
     "step": {
       "user": {
+        "description": "Choose a meter or set it up later. Configuration and firmware builds require an installed ESPHome Device Builder app (stable, beta, or dev).",
         "data": {
           "esphome_entry_id": "ESPHome device"
         }
+      },
+      "no_device_builder": {
+        "title": "Install ESPHome Device Builder",
+        "description": "No supported ESPHome Device Builder app was found. In Home Assistant OS, open **Settings → Apps → Install app**, find **ESPHome Device Builder** (stable, beta, or dev), then select **Install** and **Start**. See the [ESPHome installation guide]({installation_url}) for the app link and repository setup if it is not listed.\n\nReturn here and submit to check again. Or choose **Continue without Device Builder** for calibration-only use; configuration editing, compilation, and OTA installation through the Helper require a supported Home Assistant app.",
+        "data": {"continue_without_builder": "Continue without Device Builder"}
+      },
+      "device_builder": {
+        "title": "Choose ESPHome Device Builder",
+        "description": "Multiple Device Builder apps are installed. Choose which one the Helper should use for configuration, compiling, and OTA installation. Start the chosen app before building. You can change this later in the integration options.",
+        "data": {"device_builder_slug": "ESPHome Device Builder"}
       }
+    },
+    "error": {
+      "cannot_connect": "Unable to discover Device Builder apps. Check Supervisor and try again.",
+      "device_builder_not_installed": "The chosen Device Builder is no longer installed. Choose an installed app."
     },
     "abort": {
       "single_instance_allowed": "Only one CircuitSetup Energy Meter Helper entry is allowed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "ESPHome Device Builder",
+        "description": "Choose the installed app to use for configuration, compiling, and OTA installation. Start the chosen app before building. Saving a different selection reloads the Helper; finish any active calibration or build first. Initial USB installation still uses CircuitSetup's prebuilt firmware.",
+        "data": {"device_builder_slug": "ESPHome Device Builder"}
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to discover Device Builder apps. Check Supervisor and try again.",
+      "device_builder_not_installed": "The chosen Device Builder is no longer installed. Choose an installed app."
+    },
+    "abort": {
+      "no_device_builder": "No supported ESPHome Device Builder app is installed. In Home Assistant OS, open **Settings → Apps → Install app**, find **ESPHome Device Builder** (stable, beta, or dev), then select **Install** and **Start**. The [ESPHome installation guide]({installation_url}) includes the app link and repository setup if it is not listed. Then reload the Helper integration and reopen Configure."
     }
   },
   "issues": {
@@ -16,7 +47,7 @@
     "legacy_totals_unmanaged": {"title": "Legacy meter totals are unmanaged", "fix_flow": {"abort": {"see_panel": "Review the meter configuration and migrate legacy totals before relying on aggregate readings. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
     "voltage_reference_mismatch": {"title": "Voltage reference configuration differs", "fix_flow": {"abort": {"see_panel": "Review the saved voltage references and the meter configuration before applying changes. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
     "aggregate_entity_mismatch": {"title": "Aggregate meter entities are missing", "fix_flow": {"abort": {"see_panel": "Reconnect the meter and verify the configured aggregate entities after installation. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
-    "device_builder_unavailable": {"title": "Device Builder is unavailable", "fix_flow": {"abort": {"see_panel": "Reconnect Device Builder before saving CT changes. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
+    "device_builder_unavailable": {"title": "Device Builder is unavailable", "fix_flow": {"abort": {"see_panel": "Start the selected ESPHome Device Builder app and reload the Helper integration. If no app is installed, open Settings → Apps → Install app and install ESPHome Device Builder; see the [installation guide]({installation_url}). Choose the app under Settings → Devices & services → CircuitSetup Energy Meter Helper → Configure, then return to the Helper to retry."}, "step": {}}},
     "topology_project_package_mismatch": {"title": "Meter topology sources disagree", "fix_flow": {"abort": {"see_panel": "Review the project name and configured package list before writing configuration. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
     "runtime_entity_count_mismatch": {"title": "Runtime meter entity count is unexpected", "fix_flow": {"abort": {"see_panel": "Reconnect the configured meter and confirm its discovered entity count. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},
     "calibration_package_missing": {"title": "Calibration package is missing", "fix_flow": {"abort": {"see_panel": "Install the matching calibration package for every configured add-on. Open CircuitSetup Energy Meter Helper to review this repair."}, "step": {}}},

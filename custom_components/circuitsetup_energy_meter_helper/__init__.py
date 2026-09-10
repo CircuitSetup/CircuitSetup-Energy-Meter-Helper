@@ -11,7 +11,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .config_transaction import ConfigTransactionManager
-from .const import CONF_ESPHOME_ENTRY_ID, DATA_PANEL_REBIND_ENTRY_ID, DOMAIN
+from .const import (
+    CONF_DEVICE_BUILDER_SLUG,
+    CONF_ESPHOME_ENTRY_ID,
+    DATA_PANEL_REBIND_ENTRY_ID,
+    DOMAIN,
+)
 from .ct_catalog import CTPresetCatalog
 from .device_builder import _wait_for_owned_cleanup
 from .diagnostics import async_get_config_entry_diagnostics
@@ -55,7 +60,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator = ProvisioningCoordinator(
             hass, listing_reader=current_device_builder_listing
         )
-        device_builder = await create_device_builder(hass)
+        selected_builder = (getattr(entry, "options", None) or {}).get(
+            CONF_DEVICE_BUILDER_SLUG
+        )
+        device_builder = await create_device_builder(hass, selected_builder)
         await coordinator.async_start()
         sessions = SessionManager()
         store = HelperStore(hass)
