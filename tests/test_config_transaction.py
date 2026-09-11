@@ -488,14 +488,14 @@ def test_reconnect_evidence_accepts_simultaneous_supported_maximum() -> None:
         ),
     )
     evidence = expected_meter_entity_evidence(configuration, topology(6))
-    assert len(evidence.sensor_entities) == 259
+    assert len(evidence.sensor_entities) == 343
     _validate_expected_sensor_entities(evidence.sensor_entities)
     document = ESPHomeConfigDocument.parse(_supported_source_totals(40))
     evidence = expected_meter_entity_evidence(
         configuration, topology(6), document=document, native_visibility_resolved=True
     )
     assert len(evidence.source_owned_sensor_entities) == 80
-    assert len(evidence.sensor_entities) == 339
+    assert len(evidence.sensor_entities) == 423
     _validate_expected_sensor_entities(evidence.sensor_entities)
     _validate_expected_sensor_entities(
         frozenset((f"s{index}", f"Sensor {index}") for index in range(1024))
@@ -580,7 +580,7 @@ def _max_power_quality_configuration(
         config_sha256,
         meter,
         channels,
-        (),
+        default_total_settings(topology), (), (),
         (True,) * topology.board_count,
         (False,) * topology.board_count,
         tuple(
@@ -1079,7 +1079,7 @@ def test_verified_reconnect_scopes_entity_and_name_checks_to_enabled_channels() 
             MeterConfigurationRequest(
                 configuration.meter,
                 configuration.channels,
-                configuration.aggregates,
+                configuration.default_totals, configuration.automatic_totals, configuration.aggregates,
                 configuration.power_quality,
                 configuration.status_fields,
             ),

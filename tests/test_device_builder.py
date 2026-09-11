@@ -425,6 +425,46 @@ def test_prepare_review_sends_exact_metadata_and_rejects_malformed_descriptors()
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("state", ("missing", "queued", "running", "completed", "failed", "wrong_artifact", "duplicate"))
+def test_reconcile_review_upload_uses_only_bound_read_commands(state: str) -> None:
+    async def run() -> None:
+        client, ws = await connected_client()
+        task = asyncio.create_task(client.async_reconcile_review_upload("review-1", "compile-job", "d" * 64))
+        await asyncio.sleep(0)
+        assert ws.sent[0]["command"] == "firmware/get_job"
+        assert ws.sent[0]["args"] == {"job_id": "compile-job"}
+        compiled = {"job_id": "compile-job", "job_type": "compile", "status": "completed",
+            "configuration": "meter.yaml", "review_id": "review-1", "inputs_sha256": "c" * 64, "artifact_sha256": "d" * 64}
+        await ws.send_result("1", compiled)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert ws.sent[1]["command"] == "firmware/get_jobs"
+        assert ws.sent[1]["args"] == {"configuration": "meter.yaml"}
+        upload = {**compiled, "job_id": "upload-job", "job_type": "upload", "status": state}
+        jobs = [] if state == "missing" else [upload]
+        if state == "wrong_artifact":
+            upload.update(status="completed", artifact_sha256="e" * 64)
+        if state == "duplicate":
+            jobs.append({**upload, "job_id": "other-job"})
+        await ws.send_result("2", jobs)
+        try:
+            if state in {"wrong_artifact", "duplicate"}:
+                with pytest.raises(ConnectionError):
+                    await task
+            else:
+                result = await task
+                if state in {"missing", "queued", "running"}:
+                    assert result is None
+                else:
+                    assert result.job_id == "upload-job"
+                    assert result.success is (state == "completed")
+            assert len(ws.sent) == 2
+        finally:
+            await client.async_disconnect()
+
+    asyncio.run(run())
+
+
 def test_review_jobs_bind_metadata_and_bound_malformed_artifacts() -> None:
     """Compile and upload review jobs follow one job and preserve only safe metadata."""
 

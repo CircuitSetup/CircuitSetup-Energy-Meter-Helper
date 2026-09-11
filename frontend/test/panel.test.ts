@@ -52,20 +52,19 @@ it("shows affected SPI pins and hardware troubleshooting without allowing Contin
   expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
 });
 
-<<<<<<< HEAD
 it("shows one guided install action and verification-only recovery", () => {
   const host = document.createElement("div");
   const install = vi.fn();
   const recheck = vi.fn();
   const noop = () => undefined;
   const status = {
-    transaction_id: "tx", state: "previewed", source_sha256: "a".repeat(64),
+    purpose: "install_configuration", transaction_id: "tx", state: "previewed", source_sha256: "a".repeat(64),
     changes: [], redacted_diff: "", rollback_available: false, evidence: [],
     communication_failed_cs_pins: [], progress: [], upload_progress: [],
     validation_detail: null, aggregate_entity_mismatch: false,
     full_meter_configuration_verified: false, guided_install: true, failure: null,
   } as import("../src/types").TransactionStatus;
-  render(buildInstallStep(status, noop, noop, noop, noop, noop, noop, null, null, false, false, "", true, install, recheck), host);
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop, null, null, false, false, "", false, null, null, true, install, recheck), host);
   expect(host.querySelector('[data-action="install-changes"]')?.textContent).toBe("Install changes");
   expect(host.textContent).toContain("writes the reviewed configuration");
   expect(host.textContent).toContain("uploads it, and reboots");
@@ -74,22 +73,23 @@ it("shows one guided install action and verification-only recovery", () => {
   host.querySelector<HTMLButtonElement>('[data-action="install-changes"]')?.click();
   expect(install).toHaveBeenCalledOnce();
 
-  render(buildInstallStep({ ...status, state: "install_confirmation_required", evidence: ["reconnect_unavailable"], rollback_available: true,
+  render(buildInstallStep("install_configuration", { ...status, state: "install_confirmation_required", evidence: ["reconnect_unavailable"], rollback_available: true,
     failure: { stage: "verifying_meter", reason_code: "verification_incomplete", context: [] } }, noop, noop, noop, noop, noop, noop,
-  null, null, false, false, "", true, noop, recheck), host);
+  null, null, false, false, "", false, null, null, true, noop, recheck), host);
   expect(host.textContent).toContain("does not upload firmware again");
   expect(host.querySelector("button")?.textContent).not.toBe("Retry Install");
   [...host.querySelectorAll("button")].find((button) => button.textContent === "Recheck verification")?.click();
   expect(recheck).toHaveBeenCalledOnce();
 
-  render(buildInstallStep({ ...status, state: "validated" }, noop, noop, noop, noop, noop, noop,
-    null, null, false, false, "", true, noop, recheck), host);
+  render(buildInstallStep("install_configuration", { ...status, state: "validated" }, noop, noop, noop, noop, noop, noop,
+    null, null, false, false, "", false, null, null, true, noop, recheck), host);
   expect(host.textContent).toContain("Building");
 
-  render(buildInstallStep({ ...status, guided_running: true }, noop, noop, noop, noop, noop, noop,
-    null, null, false, false, "", true, install, recheck), host);
+  render(buildInstallStep("install_configuration", { ...status, guided_running: true }, noop, noop, noop, noop, noop, noop,
+    null, null, false, false, "", false, null, null, true, install, recheck), host);
   expect(host.querySelector<HTMLButtonElement>('[data-action="install-changes"]')?.disabled).toBe(true);
-=======
+});
+
 it("renders purpose-specific configuration installation controls", () => {
   const host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "- old\n+ new", rollback_available: true, evidence: ["source_checked"], progress: [], validation_detail: { code: null, error_record_count: 0, reported_error_count: 0, warning_record_count: 1, reported_warning_count: 1 }, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
@@ -135,7 +135,6 @@ it("blocks an install route without an active review", () => {
   expect([...host.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Back"]);
   host.querySelector<HTMLButtonElement>("button")?.click();
   expect(back).toHaveBeenCalledOnce();
->>>>>>> origin/main
 });
 
 it("renders the live Install percentage", () => {
@@ -227,15 +226,6 @@ const makeHass = (responses: Record<string, unknown>): HomeAssistant => ({
   },
 });
 
-<<<<<<< HEAD
-const meterResponse = (electrical_system = "split_phase_120_240", line_frequency_hz = 60, update_interval_s = 5) => ({
-  plan_id: "b".repeat(32), source_sha256: "a".repeat(64), topology: { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2, connection_type: "wifi", voltage_layout: "standard", project_name: device.project_name, evidence: [{ source: "native_project", addon_count: 0, detail: "Runtime identity" }] },
-  configuration: { meter: { friendly_name: "Energy meter", electrical_system, line_frequency_hz, update_interval_s, voltage_layout: "standard", voltage_references: [{ reference_id: "main", label: "Main", phase_label: "A", nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305, group_keys: ["main_1", "main_2"] }] }, channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, enabled: true, name: `CT${index + 1}`, model_id: "model", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false })), aggregates: [], power_quality: [true], status_fields: [false], multi_reference_preparation_acknowledged: false },
-  capabilities: { configuration_authoritative: true, managed_totals: true, multi_reference: true, reason_codes: [] }, voltage_topology: { references: [["main", ["main_1", "main_2"]]], source: "legacy" }, voltage_transformer_catalog: { presets: [{ model_id: "default", label: "Default", primary_nominal_v: 120, secondary_nominal_v: 9, default_gain_voltage: 7305, notes: "Approved" }], source_repository: "CircuitSetup/repo", source_ref: "a".repeat(40), schema_version: 1 }, ct_catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 }, warnings: [], configuration_impact: { enabled_channel_count: 6, numeric_entity_count: 32, text_entity_count: 0, energy_entity_count: 0, approximate_publications_per_second: 6.4 }, channels: Array.from({ length: 6 }, (_, index) => ({ channel: index + 1, name: `CT${index + 1}`, raw_gain_ct: 5500, reporting_multiplier: 1, selected_model_id: "model", selection_verified_against_config: true, address: { channel: index + 1, board_index: 0, group_index: Math.floor(index / 3), phase: (["A", "B", "C"] as const)[index % 3] }, display_label: null, stored_selection_present: false })), catalog: { presets: [], source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
-});
-
-=======
->>>>>>> origin/main
 const mount = async (hass: HomeAssistant) => {
   const panel = document.createElement(
     "circuitsetup-energy-meter-helper-panel",
@@ -667,7 +657,7 @@ describe("server-authoritative total graph", () => {
       graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
     await tick(); await panel.updateComplete;
     expect(state.totalGraphState).toBe("ready");
-    expect(text(panel).includes("43 public entities")).toBe(true);
+    expect(text(panel).includes("43 Helper-managed measurements")).toBe(true);
     expect(panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="continue"]')!.disabled).toBe(false);
     await state.continueFromCt();
     expect(writes).toHaveLength(1);
@@ -716,7 +706,7 @@ describe("server-authoritative total graph", () => {
     await state.backFromBuild(); await panel.updateComplete;
     expect(pending).toHaveLength(packageTouched ? 2 : 1);
     expect(state.totalGraphState).toBe("pending");
-    expect(text(panel).includes("41 public entities")).toBe(false);
+    expect(text(panel).includes("41 Helper-managed measurements")).toBe(false);
     expect(pending.at(-1)!.request.channels[0]!.role).toBe("solar");
     const preview = { plan_id: fresh.plan_id, source_sha256: fresh.source_sha256,
       automatic_candidates: [candidate], automatic_totals: [{ candidate, enabled: true, outputs: candidate.recommended_outputs }],
@@ -726,12 +716,12 @@ describe("server-authoritative total graph", () => {
     pending.at(-1)!.resolve(preview); await tick(); await panel.updateComplete;
     expect(state.totalGraphState).toBe("ready");
     expect(state.meterConfiguration.configuration.channels[0]!.role).toBe("solar");
-    expect(text(panel).includes("43 public entities")).toBe(true);
+    expect(text(panel).includes("43 Helper-managed measurements")).toBe(true);
     expect(text(panel).includes("Restored solar")).toBe(true);
     if (packageTouched) {
       pending[0]!.resolve({ ...preview, automatic_candidates: [], automatic_totals: [], configuration_impact: fresh.configuration_impact });
       await tick(); await panel.updateComplete;
-      expect(text(panel).includes("43 public entities")).toBe(true);
+      expect(text(panel).includes("43 Helper-managed measurements")).toBe(true);
       expect(text(panel).includes("Restored solar")).toBe(true);
     }
   });
@@ -781,7 +771,7 @@ describe("server-authoritative total graph", () => {
     state.journeyOrigin = "new_install";
     state.setMeterConfiguration(response);
     panel.showInventory(response); await panel.updateComplete;
-    expect(text(panel)).toContain(`${numeric} public entities`);
+    expect(text(panel)).toContain(`${numeric} Helper-managed measurements`);
     expect(text(panel)).toContain(`${totals} public total entities`);
     expect(text(panel)).toContain(`${internal} internal total sensors`);
     expect(state.meterConfiguration.configuration.aggregates).toEqual([]);
@@ -796,7 +786,7 @@ describe("server-authoritative total graph", () => {
     state.journeyOrigin = "new_install"; state.packageOptionsTouched = true;
     state.packageOptions = { power_quality: [false], status_fields: [false] };
     state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
-    expect(text(panel).includes("41 public entities")).toBe(false);
+    expect(text(panel).includes("41 Helper-managed measurements")).toBe(false);
   });
 
   it("labels unresolved native visibility as confirmed incomplete counts", async () => {
@@ -804,7 +794,7 @@ describe("server-authoritative total graph", () => {
     const response = meterResponse(); response.totals.migration.native_visibility_resolved = false;
     const state = panel as unknown as { setMeterConfiguration(value: typeof response): void };
     state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
-    expect(text(panel)).toContain("confirmed public entities");
+    expect(text(panel)).toContain("confirmed Helper-managed measurements");
     expect(text(panel)).toContain("incomplete");
   });
 
@@ -833,7 +823,7 @@ describe("server-authoritative total graph", () => {
       channels: state.meterConfiguration.configuration.channels.map((channel) => ({ ...channel, name, role: channel.channel <= 2 ? name === "reappear" ? "grid" : "branch" : channel.role })) });
     edit("older"); edit("newer"); await panel.updateComplete;
     expect(text(panel)).toContain("Updating total graph");
-    expect(text(panel)).not.toContain("43 public entities");
+    expect(text(panel)).not.toContain("43 Helper-managed measurements");
     expect(text(panel).includes("Server mains")).toBe(false);
     expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
     expect(pending).toHaveLength(2);
@@ -843,7 +833,7 @@ describe("server-authoritative total graph", () => {
       graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
     state.updateCircuitConfiguration({ ...state.meterConfiguration.configuration });
     pending[1]!.resolve(preview); await tick(); await panel.updateComplete;
-    expect(text(panel)).toContain("43 public entities");
+    expect(text(panel)).toContain("43 Helper-managed measurements");
     expect(state.meterConfiguration.configuration.automatic_totals).toEqual([]);
     pending[0]!.resolve({ ...preview, automatic_candidates: [candidate], automatic_totals: [{ candidate, enabled: true, outputs: off.outputs }],
       configuration_impact: response.configuration_impact }); await tick();
@@ -855,7 +845,7 @@ describe("server-authoritative total graph", () => {
     expect(state.meterConfiguration.configuration.automatic_totals).toEqual([off]);
     edit("invalid"); pending[3]!.reject(new Error("invalid graph")); await tick(); await panel.updateComplete;
     expect(text(panel)).toContain("Total graph unavailable");
-    expect(text(panel)).not.toContain("43 public entities");
+    expect(text(panel)).not.toContain("43 Helper-managed measurements");
     expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
     expect(state.totalGraphPreview).toBeNull();
     edit("old device"); state.selectedDeviceId = "other-meter";
@@ -1682,7 +1672,7 @@ describe("CircuitSetup panel", () => {
   });
 
   it("cancels a reviewed calibration-preparation transaction without losing the setup route", async () => {
-    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
+    const preview = { purpose: "install_configuration", transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
       changes: [{ key: "package.main.calibration", old_value: "disabled", new_value: "enabled" }],
       redacted_diff: "+ calibration controls", rollback_available: false, evidence: [], progress: [], validation_detail: null,
       upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
@@ -1691,7 +1681,7 @@ describe("CircuitSetup panel", () => {
     const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void> };
     state.selectedDeviceId = "meter-1";
     state.transaction = preview;
-    state.step = "build";
+    state.step = "install-configuration";
 
     await state.backFromBuild();
 
@@ -2590,33 +2580,15 @@ describe("CircuitSetup panel", () => {
   it("renders source-aware package impact and a textual high-count warning", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const response = meterResponse();
-<<<<<<< HEAD
-    const state = panel as unknown as { meterConfiguration: typeof response; inventory: { plan_id: string; source_sha256: string; channels: typeof response.channels; catalog: typeof response.catalog }; packageOptions: { power_quality: boolean[]; status_fields: boolean[] } };
-    state.meterConfiguration = response;
-    state.inventory = { plan_id: response.plan_id, source_sha256: response.source_sha256, channels: response.channels, catalog: response.catalog };
-    (response.configuration as MeterConfigurationRequest).power_quality = [false];
-    (response.configuration as MeterConfigurationRequest).status_fields = [false];
-    panel.showState("ct");
-    await panel.updateComplete;
-    expect(text(panel)).toContain("14 Helper-managed measurements");
-    (response.configuration as MeterConfigurationRequest).power_quality = [true];
-    (response.configuration as MeterConfigurationRequest).status_fields = [true];
-    (response.configuration as MeterConfigurationRequest).aggregates = Array.from({ length: 20 }, (_, index) => ({ aggregate_id: `grid-${index}`, name: `Grid ${index}`, role: "grid" as const, channels: [1], measurement_method: "direct" as const, parent_id: null, energy_mode: "bidirectional" as const, expose_power: true, expose_current: true }));
-    panel.requestUpdate();
-    await panel.updateComplete;
-    expect(text(panel)).toContain("Warning: high entity count.");
-    expect(text(panel)).toContain("Helper-managed measurements");
-=======
     const state = panel as unknown as { setMeterConfiguration(value: typeof response): void };
     response.configuration_impact = { ...response.configuration_impact, numeric_entity_count: 14, approximate_publications_per_second: 2.8 };
     state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
-    expect(text(panel)).toContain("14 public entities");
+    expect(text(panel)).toContain("14 Helper-managed measurements");
     response.configuration_impact = { ...response.configuration_impact, numeric_entity_count: 210, text_entity_count: 6,
       public_total_entity_count: 24, internal_total_sensor_count: 2, approximate_publications_per_second: 43.2 };
     state.setMeterConfiguration(response); await panel.updateComplete;
     expect(text(panel)).toContain("Warning: high entity count.");
-    expect(text(panel)).toContain("216 public entities");
->>>>>>> origin/main
+    expect(text(panel)).toContain("216 Helper-managed measurements");
   });
 
   it("routes accepted safety acknowledgement to the Offset step", async () => {

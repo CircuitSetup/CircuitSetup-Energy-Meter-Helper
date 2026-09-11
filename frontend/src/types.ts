@@ -438,6 +438,7 @@ export type TransactionFailureReason =
   | "validation_rejected"
   | "compile_rejected"
   | "upload_failed"
+  | "upload_outcome_unknown"
   | "verification_incomplete"
   | "meter_communication_failed";
 

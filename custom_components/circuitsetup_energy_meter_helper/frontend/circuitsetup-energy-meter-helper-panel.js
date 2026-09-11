@@ -498,34 +498,6 @@ i$2._$litElement$ = true, i$2["finalized"] = true, s$2.litElementHydrateSupport?
 const o$1 = s$2.litElementPolyfillSupport;
 o$1?.({ LitElement: i$2 });
 (s$2.litElementVersions ??= []).push("4.2.2");
-<<<<<<< HEAD
-const POWER_QUALITY_NUMERIC_METRICS = 3;
-function configurationImpact(configuration, topology2, packageOptions2 = configuration) {
-  let numeric = configuration.meter.voltage_references.length * 2;
-  let text = 0;
-  let energy = 0;
-  let enabled = 0;
-  for (const channel of configuration.channels) if (channel.enabled) {
-    const board = Math.floor((channel.channel - 1) / 6);
-    if (board >= topology2.board_count) throw new Error("configuration topology is invalid");
-    enabled += 1;
-    numeric += 2 + (packageOptions2.power_quality[board] ? POWER_QUALITY_NUMERIC_METRICS : 0);
-    text += Number(packageOptions2.status_fields[board]);
-  }
-  for (const aggregate of configuration.aggregates) {
-    numeric += Number(aggregate.expose_power) + Number(aggregate.expose_current);
-    if (aggregate.energy_mode === "bidirectional") {
-      numeric += 4;
-      energy += 2;
-    } else if (aggregate.energy_mode !== "none") {
-      numeric += 1;
-      energy += 1;
-    }
-  }
-  return { enabled_channel_count: enabled, numeric_entity_count: numeric, text_entity_count: text, energy_entity_count: energy, approximate_publications_per_second: (numeric + text) / configuration.meter.update_interval_s };
-}
-=======
->>>>>>> origin/main
 const PREFIX = "circuitsetup_energy_meter_helper/";
 const PRIVATE_FIELD = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
 const SECRET_VALUE = /(?:api[_ -]?key|password|secret|ssid|token)\s*[:=]/i;
@@ -544,10 +516,10 @@ const UPDATE_INTERVALS = /* @__PURE__ */ new Set([1, 2, 5, 10, 30, 60]);
 const EVIDENCE_SOURCES = /* @__PURE__ */ new Set(["config_project", "config_packages", "dashboard_import", "native_project", "native_entity_counts"]);
 const PHASES = /* @__PURE__ */ new Set(["A", "B", "C"]);
 const JOB_STAGES = /* @__PURE__ */ new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
-const TRANSACTION_EVIDENCE = /* @__PURE__ */ new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
+const TRANSACTION_EVIDENCE = /* @__PURE__ */ new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "upload_outcome_unknown", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
 const TRANSACTION_PROGRESS = /* @__PURE__ */ new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
 const TRANSACTION_FAILURE_STAGES = /* @__PURE__ */ new Set(["validating", "building", "installing", "verifying_meter"]);
-const TRANSACTION_FAILURE_REASONS = /* @__PURE__ */ new Set(["unknown", "guided_unavailable", "missing_package", "unsupported_component_option", "required_secret", "conflicting_managed_override", "validation_rejected", "compile_rejected", "upload_failed", "verification_incomplete", "meter_communication_failed"]);
+const TRANSACTION_FAILURE_REASONS = /* @__PURE__ */ new Set(["unknown", "guided_unavailable", "missing_package", "unsupported_component_option", "required_secret", "conflicting_managed_override", "validation_rejected", "compile_rejected", "upload_failed", "upload_outcome_unknown", "verification_incomplete", "meter_communication_failed"]);
 const PREFLIGHT_CODES = /* @__PURE__ */ new Set(["count_mismatch", "invalid_kind", "invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
 const AUTHORITATIVE_EVIDENCE = /* @__PURE__ */ new Set(["config_project", "config_packages", "native_project"]);
 const CHANGE_KEY = /^(?:meter|voltage_reference|channel|aggregate|package|calibration)\.[a-z0-9_.-]+$/;
@@ -561,15 +533,11 @@ const TRANSACTION_OPERATIONS = /* @__PURE__ */ new Set(["preview_ct_config", "pr
 const OFFSET_CAPABILITIES = /* @__PURE__ */ new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = /* @__PURE__ */ new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = /* @__PURE__ */ new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
-<<<<<<< HEAD
-const OFFSET_RESULT_STATES = /* @__PURE__ */ new Set(["applied_pending_restart_verification", "partial", "indeterminate"]);
+const OFFSET_RESULT_STATES = /* @__PURE__ */ new Set(["applied_pending_restart_verification", "captured_pending_configuration", "partial", "indeterminate"]);
 const PACKAGE_CAPABILITY_STATES = /* @__PURE__ */ new Set(["already_present", "available_to_prepare", "cannot_safely_manage"]);
 const PACKAGE_CAPABILITY_REASONS = /* @__PURE__ */ new Set(["official_package_present", "official_source_ready", "unsupported_package_source", "ambiguous_package_source", "package_source_unavailable", "duplicate_package_reference"]);
 const CALIBRATION_PREPARATION_REASONS = /* @__PURE__ */ new Set(["calibration_package_present", "calibration_source_ready", "calibration_flag_unavailable", "calibration_flag_invalid", "unsupported_package_source", "ambiguous_package_source", "package_source_unavailable", "duplicate_package_reference"]);
 const PACKAGE_FEATURES = /* @__PURE__ */ new Set(["power_quality", "status_fields"]);
-=======
-const OFFSET_RESULT_STATES = /* @__PURE__ */ new Set(["applied_pending_restart_verification", "captured_pending_configuration", "partial", "indeterminate"]);
->>>>>>> origin/main
 function record(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} response is invalid`);
   return value;
@@ -711,7 +679,6 @@ function topologyResponse(value, label) {
   }
   return topology(value, label);
 }
-<<<<<<< HEAD
 function packageCapabilities(value, label, boardCount) {
   return array(value, label, 14).map((entry) => {
     const item = record(entry, label);
@@ -753,7 +720,7 @@ function existingInspection(value, label) {
     package_capabilities: capabilities,
     calibration_preparation: preparation
   };
-=======
+}
 function totalOutputs(value, label) {
   const item = record(value, label);
   exactKeys(item, ["watts", "amps", "kwh"], label);
@@ -950,7 +917,6 @@ function totalGraphPreview(value, label, planId, sourceSha256, configuration) {
     leafChannels(warning.leaf_channels, label);
   });
   return value;
->>>>>>> origin/main
 }
 function meterConfiguration(value, label) {
   const response = record(value, label);
@@ -1154,11 +1120,7 @@ function ctInventory(value, label) {
 }
 function transaction(value, label) {
   const item = record(value, label);
-<<<<<<< HEAD
-  exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ..."communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : [], ..."guided_install" in item ? ["guided_install"] : [], ..."guided_running" in item ? ["guided_running"] : [], ..."guided_unavailable" in item ? ["guided_unavailable"] : [], ..."failure" in item ? ["failure"] : []], label);
-=======
-  exactKeys(item, ["purpose", "transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ..."communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []], label);
->>>>>>> origin/main
+  exactKeys(item, ["purpose", "transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ..."communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : [], ..."guided_install" in item ? ["guided_install"] : [], ..."guided_running" in item ? ["guided_running"] : [], ..."guided_unavailable" in item ? ["guided_unavailable"] : [], ..."failure" in item ? ["failure"] : []], label);
   string(item.transaction_id, label);
   enumeration(item.state, TRANSACTION_STATES, label);
   if (!SHA256.test(string(item.source_sha256, label))) throw new Error(`${label} response is invalid`);
@@ -1668,16 +1630,14 @@ class HelperApi {
       source_sha256: sourceSha256,
       configuration
     });
-<<<<<<< HEAD
     this.prepareCalibration = (deviceId) => this.call("prepare_calibration", (value) => transaction(value, "prepare_calibration"), {
       device_id: deviceId
-=======
+    });
     this.previewTotalGraph = (deviceId, planId, sourceSha256, configuration) => this.call("preview_total_graph", (value) => totalGraphPreview(value, "preview_total_graph", planId, sourceSha256, configuration), {
       device_id: deviceId,
       plan_id: planId,
       source_sha256: sourceSha256,
       configuration
->>>>>>> origin/main
     });
     this.setHaLabels = (deviceId, planId, sourceSha256, changes) => this.call("set_ha_labels", (value) => value, {
       device_id: deviceId,
@@ -1834,15 +1794,6 @@ class HelperApi {
       entry_id: this.entryId,
       ...data
     });
-<<<<<<< HEAD
-    if (operation === "get_active_work") {
-      const { transaction: recoveredTransaction, ...envelope } = record(result, operation);
-      HelperApi.assertPublicPayload(envelope);
-      HelperApi.assertPublicPayload(recoveredTransaction, true);
-    } else {
-      HelperApi.assertPublicPayload(result, TRANSACTION_OPERATIONS.has(operation));
-    }
-=======
     HelperApi.assertPublicPayload(
       result,
       TRANSACTION_OPERATIONS.has(operation),
@@ -1851,7 +1802,6 @@ class HelperApi {
       false,
       ["get_active_work", "preview_offset_preparation", "preview_offset_finalization"].includes(operation)
     );
->>>>>>> origin/main
     return validator(result);
   }
   subscribe(operation, data, validator, callback) {
@@ -1978,12 +1928,6 @@ function configReview(status, configuration = null, impact = null, totals = null
     </section>
   `;
 }
-<<<<<<< HEAD
-function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "", guidedInstall = false, guidedAction = null, recheck = null) {
-  const state = status?.state ?? "previewed";
-  const busy = Boolean(pendingAction) || status?.guided_running === true;
-  const guidedRunning = status?.guided_running === true;
-=======
 function canAdoptTotals(meter) {
   return meter.capabilities.configuration_authoritative && (meter.capabilities.reason_codes.includes("source_totals_adoptable") || meter.totals.migration.native_visibility_resolved && !meter.capabilities.reason_codes.includes("config_contract_upgrade_required"));
 }
@@ -2052,7 +1996,7 @@ function totalsMigrationReview(meter, update, preview = null, fresh = true, read
   })}
     </section>` : A}`;
 }
-function buildInstallStep(purpose, status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "", legacyMigration = false, meterInventory = null, totalPreview = null) {
+function buildInstallStep(purpose, status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "", legacyMigration = false, meterInventory = null, totalPreview = null, guidedInstall = false, guidedAction = null, recheck = null) {
   if (!status) return b`
     <section class="step-content" aria-labelledby="step-heading">
       <div class="recovery-panel" role="status"><strong>No active review</strong><p>Return to the previous step and review the current configuration before continuing.</p></div>
@@ -2062,9 +2006,9 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
   const labels = purpose === "save_calibration" ? { heading: "Save verified calibration", apply: "Write verified gains to ESPHome", compile: "Build firmware", install: "Install calibrated firmware" } : { heading: purpose === "offset_preparation" ? "Install offset preparation" : purpose === "offset_finalization" ? "Install captured offsets" : legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
   const state = status.state;
   const retryClear = purpose === "save_calibration" && state === "verified";
-  const busy = Boolean(pendingAction);
->>>>>>> origin/main
-  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
+  const busy = Boolean(pendingAction) || status.guided_running === true;
+  const guidedRunning = status.guided_running === true;
+  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
   const failedPins = status?.communication_failed_cs_pins ?? [];
   const waitingForStartup = state === "reconnecting";
@@ -2075,19 +2019,15 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   const guided = guidedInstall || status?.guided_install === true;
   const stage = status?.failure?.stage === "verifying_meter" || state === "reconnecting" || state === "verified" ? "Verifying meter" : status?.failure?.stage === "installing" || state === "installing" || state === "install_confirmation_required" || state === "compiled" ? "Installing" : status?.failure?.stage === "building" || state === "validated" ? "Building" : "Validating";
-  const failureMessage = status?.failure?.reason_code === "missing_package" ? "A required supported package is missing. Review the package selection and create a fresh review." : status?.failure?.reason_code === "unsupported_component_option" ? "The selected option is not supported by this ESPHome version. Choose a supported firmware version and review again." : status?.failure?.reason_code === "required_secret" ? "A required secret name is unresolved. Add it in ESPHome and create a fresh review." : status?.failure?.reason_code === "conflicting_managed_override" ? "A managed configuration override conflicts with the reviewed source. Restore the source or create a fresh review." : status?.failure?.reason_code === "verification_incomplete" ? "Uploaded; verification incomplete. Reconnect the meter and recheck verification." : null;
+  const failureMessage = status?.failure?.reason_code === "upload_outcome_unknown" ? "Upload outcome unknown. Device Builder may still be uploading. Recheck its status before making further changes; this does not upload firmware again." : status?.failure?.reason_code === "missing_package" ? "A required supported package is missing. Review the package selection and create a fresh review." : status?.failure?.reason_code === "unsupported_component_option" ? "The selected option is not supported by this ESPHome version. Choose a supported firmware version and review again." : status?.failure?.reason_code === "required_secret" ? "A required secret name is unresolved. Add it in ESPHome and create a fresh review." : status?.failure?.reason_code === "conflicting_managed_override" ? "A managed configuration override conflicts with the reviewed source. Restore the source or create a fresh review." : status?.failure?.reason_code === "verification_incomplete" ? "Uploaded; verification incomplete. Reconnect the meter and recheck verification." : null;
   return b`
     <section class="step-content" aria-labelledby="step-heading">
-<<<<<<< HEAD
-      ${configReview(status, configuration, impact)}
-      ${status?.guided_unavailable ? b`<p class="info-band" role="status">One-click installation is unavailable in this Device Builder. Use Advanced controls to review, build, and install.</p>` : ""}
-=======
       <h2>${labels.heading}</h2>
       ${purpose === "offset_preparation" ? b`<p>This installs a reviewed zero baseline for only the unfinished chips. Installation does not run calibration. Return to the same board and stage, acknowledge physical preparation again, and check measured readiness before explicit Run.</p>` : ""}
       ${purpose === "offset_finalization" ? b`<p>Captured signed offsets, including zeros, are installed with native offset restore disabled. Confirm configuration selection after installation; this is not register readback and does not clear saved gain calibration.</p>` : ""}
       ${configReview(status, configuration, impact, meterInventory?.totals)}
       ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true, status) : ""}
->>>>>>> origin/main
+      ${status?.guided_unavailable ? b`<p class="info-band" role="status">One-click installation is unavailable in this Device Builder. Use Advanced controls to review, build, and install.</p>` : ""}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
           <strong>${communicationFailure ? "Meter chip communication failed" : failureMessage ?? "Build or install needs attention"}</strong>
@@ -2118,11 +2058,10 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
         <span>Meter is rebooting. Waiting for startup verification.</span>
         <progress max="100" aria-label="Waiting for meter startup"></progress>
       </div>` : ""}
-<<<<<<< HEAD
-      ${guided ? b`<div class="confirmation-actions"><p>Install changes writes the reviewed configuration to the selected meter, builds firmware, uploads it, and reboots the meter.</p><button class="primary" data-action="install-changes" @click=${guidedAction ?? install} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "guided-install" || guidedRunning ? "Installing changes…" : "Install changes"}</button></div>` : b`<div class="confirmation-actions">
-        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Apply"}</button>
-        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Compile"}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : retryableInstall ? "Retry Install" : "Install"}</button>
+      ${guided ? b`<div class="confirmation-actions"><p>Install changes writes the reviewed configuration to the selected meter, builds firmware, uploads it, and reboots the meter.</p><button class="primary" data-action="install-changes" @click=${guidedAction ?? install} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "guided-install" || guidedRunning ? "Installing changes…" : "Install changes"}</button></div>` : b`      <div class="confirmation-actions">
+        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
+        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required" && !retryClear}>${pendingAction === "install" ? "Installing…" : retryClear ? "Retry clearing saved flash values" : retryableInstall ? "Retry Install" : labels.install}</button>
       </div>`}
       ${guided ? b`<details class="advanced-controls"><summary>Advanced controls</summary><div class="confirmation-actions">
         <button class="secondary" @click=${apply} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Save and validate"}</button>
@@ -2134,13 +2073,6 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
         <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>
         <div><dt>Warnings</dt><dd>${status.validation_detail.warning_record_count} records (${status.validation_detail.reported_warning_count === null ? "unreported" : `${status.validation_detail.reported_warning_count} reported`})</dd></div>
       </dl>` : ""}
-=======
-      <div class="confirmation-actions">
-        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
-        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required" && !retryClear}>${pendingAction === "install" ? "Installing…" : retryClear ? "Retry clearing saved flash values" : retryableInstall ? "Retry Install" : labels.install}</button>
-      </div>
->>>>>>> origin/main
       ${progressAction ? b`<div class="job-progress" role="status" aria-live="polite">
         <span>${progressAction} progress: ${percentage === null ? "in progress" : `${percentage}%`}</span>
         ${percentage === null ? b`<progress max="100" aria-label="${progressAction} progress: in progress"></progress>` : b`<progress max="100" value=${percentage} aria-label="${progressAction} progress: ${percentage}%"></progress>`}
@@ -2955,11 +2887,7 @@ const SYSTEMS = [
 ];
 const INTERVALS = [1, 2, 5, 10, 30, 60];
 const intervalImpact = (interval) => interval <= 5 ? "1–5 seconds: high traffic." : interval === 10 ? null : interval >= 30 ? "30–60 seconds: lower traffic; guided calibration takes longer." : "This interval affects update traffic and guided calibration time.";
-<<<<<<< HEAD
-function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, setFrequency, setNominalVoltage, setAcknowledged, back, continueToCircuits, boardPackages = null, setBoardPackages = () => void 0, packageCapabilities2 = []) {
-=======
-function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, setFrequency, setNominalVoltage, setAcknowledged, back, continueToCircuits, boardPackages = null, setBoardPackages = () => void 0, profileConfirmed = true, setProfileConfirmed = () => void 0, mode = "helper_managed") {
->>>>>>> origin/main
+function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, setFrequency, setNominalVoltage, setAcknowledged, back, continueToCircuits, boardPackages = null, setBoardPackages = () => void 0, profileConfirmed = true, setProfileConfirmed = () => void 0, mode = "helper_managed", packageCapabilities2 = []) {
   const multiReference = draft.voltage_references.length > 1;
   const primaryReference = draft.voltage_references[0];
   const valid = profileConfirmed && Boolean(draft.friendly_name.trim()) && draft.voltage_references.every((reference) => reference.label.trim() && reference.phase_label.trim() && Number.isFinite(reference.nominal_voltage_v) && reference.nominal_voltage_v >= 1 && reference.nominal_voltage_v <= 600 && Number.isInteger(reference.gain_voltage) && reference.gain_voltage >= 1 && reference.gain_voltage <= 65535 && reference.group_keys.length) && (!multiReference || acknowledged);
@@ -3028,13 +2956,6 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
           ${primaryReference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === primaryReference.transformer_model_id) ? b`<option value=${primaryReference.transformer_model_id}>${primaryReference.transformer_model_id}</option>` : ""}</select></label>
       </div>
       ${intervalImpact(draft.update_interval_s) ? b`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : A}
-<<<<<<< HEAD
-      ${boardPackages ? packageOptions(boardPackages, setBoardPackages, packageCapabilities2) : ""}
-      <details class="advanced-voltage-options" open>
-      <summary>Advanced voltage options</summary>
-      <div class="voltage-options-content">
-=======
->>>>>>> origin/main
       <h3>Voltage references</h3>
       <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
       <details class="advanced-voltage-options" data-section="advanced-voltage-options"><summary>Advanced voltage options</summary><div class="voltage-options-content"><div class="voltage-reference-cards">${draft.voltage_references.map((reference) => b`
@@ -3067,7 +2988,7 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
       </details>
       <details data-section="advanced-meter-settings"><summary>Advanced meter settings</summary>
       <div class="voltage-options-content">
-      ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
+      ${boardPackages ? packageOptions(boardPackages, setBoardPackages, packageCapabilities2) : ""}
       </div></details>
       <label class="check-row"><input type="checkbox" aria-label="Confirm electrical profile" .checked=${profileConfirmed}
         @change=${(event) => setProfileConfirmed(event.target.checked)} />I confirm the electrical profile and frequency.</label>
@@ -3388,6 +3309,31 @@ function existingConfigurationStep(configuration, metadata, onManage, onCalibrat
     <div class="action-footer"><button class="secondary" @click=${onBack}>Back</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="primary" @click=${onManage}>Review and manage with helper</button></div>
   </section>`;
 }
+function existingMeterInspection(candidates, inspection, busyAction, find, inspect, adopt) {
+  return b`<section class="existing-inspection" aria-labelledby="find-existing-heading">
+    <h3 id="find-existing-heading">Find another ESPHome meter</h3>
+    <p>This checks one selected ESPHome entry before it can be adopted. It does not install firmware.</p>
+    <button class="secondary" data-action="find-existing" ?disabled=${Boolean(busyAction)} @click=${find}>
+      ${busyAction === "find-existing" ? "Finding meters…" : "Find another ESPHome meter"}
+    </button>
+    ${candidates.length ? b`<div class="meter-list">
+      ${candidates.map((candidate) => b`<div class="meter-row">
+        <span><strong>${candidate.title}</strong><small>${candidate.project_name ?? "Project label unavailable"}${candidate.project_version ? ` · ${candidate.project_version}` : ""}</small></span>
+        <span>${candidate.compatibility.join(", ")}</span>
+        <button class="primary" data-action="inspect-existing" ?disabled=${Boolean(busyAction)} @click=${() => inspect(candidate.entry_id)}>
+          ${busyAction === `inspect:${candidate.entry_id}` ? "Inspecting…" : "Inspect"}
+        </button>
+      </div>`)}
+    </div>` : ""}
+    ${inspection ? b`<div class="info-band" role="status">
+      <strong>${inspection.device.title} passed inspection.</strong>
+      <span>${inspection.topology.board_count} board${inspection.topology.board_count === 1 ? "" : "s"}; live meter-chip communication corroborated.</span>
+      <button class="primary" data-action="adopt-inspected" ?disabled=${Boolean(busyAction)} @click=${() => adopt(inspection.device.entry_id)}>
+        ${busyAction === `adopt:${inspection.device.entry_id}` ? "Adopting…" : "Adopt inspected meter"}
+      </button>
+    </div>` : ""}
+  </section>`;
+}
 const boardLabel = (index) => index === 0 ? "Main Board" : `Add-on ${index}`;
 const groupKeys = (board) => board === 0 ? ["main_1", "main_2"] : [`addon${board}_1`, `addon${board}_2`];
 function offsetStep(topology2, session2, board, stage, acknowledged, retryConfirmed, readiness, result, busy, selectBoard, selectStage, setAcknowledged, setRetryConfirmed, check, calibrate, reconnect, skip, back, continueToVoltage, stock = null) {
@@ -3557,49 +3503,13 @@ function safetyStep(session2, acknowledged, setAcknowledged, confirm, cancel, ba
     </section>
   `;
 }
-function existingConfigurationStep(candidates, inspection, busyAction, find, inspect, adopt) {
-  return b`<section class="existing-inspection" aria-labelledby="find-existing-heading">
-    <h3 id="find-existing-heading">Find another ESPHome meter</h3>
-    <p>This checks one selected ESPHome entry before it can be adopted. It does not install firmware.</p>
-    <button class="secondary" data-action="find-existing" ?disabled=${Boolean(busyAction)} @click=${find}>
-      ${busyAction === "find-existing" ? "Finding meters…" : "Find another ESPHome meter"}
-    </button>
-    ${candidates.length ? b`<div class="meter-list">
-      ${candidates.map((candidate) => b`<div class="meter-row">
-        <span><strong>${candidate.title}</strong><small>${candidate.project_name ?? "Project label unavailable"}${candidate.project_version ? ` · ${candidate.project_version}` : ""}</small></span>
-        <span>${candidate.compatibility.join(", ")}</span>
-        <button class="primary" data-action="inspect-existing" ?disabled=${Boolean(busyAction)} @click=${() => inspect(candidate.entry_id)}>
-          ${busyAction === `inspect:${candidate.entry_id}` ? "Inspecting…" : "Inspect"}
-        </button>
-      </div>`)}
-    </div>` : ""}
-    ${inspection ? b`<div class="info-band" role="status">
-      <strong>${inspection.device.title} passed inspection.</strong>
-      <span>${inspection.topology.board_count} board${inspection.topology.board_count === 1 ? "" : "s"}; live meter-chip communication corroborated.</span>
-      <button class="primary" data-action="adopt-inspected" ?disabled=${Boolean(busyAction)} @click=${() => adopt(inspection.device.entry_id)}>
-        ${busyAction === `adopt:${inspection.device.entry_id}` ? "Adopting…" : "Adopt inspected meter"}
-      </button>
-    </div>` : ""}
-  </section>`;
-}
 const CONNECTIONS = [
   ["wifi", "Wi-Fi"],
   ["ethernet_lilygo", "LilyGO Ethernet"],
   ["ethernet_waveshare", "Waveshare Ethernet"]
 ];
 const ADDON_PINS = ["(0, 16)", "(27, 17)", "(2, 21)", "(13, 22)", "(14, 25)", "(15, 26)"];
-<<<<<<< HEAD
-const ELECTRICAL_SYSTEMS = [
-  ["split_phase_120_240", "Split phase 120/240 V"],
-  ["single_phase_230", "Single phase 230 V"],
-  ["three_phase", "Three phase"],
-  ["custom", "Custom"]
-];
-const suggestedFrequency = (system) => system === "split_phase_120_240" ? 60 : system === "single_phase_230" ? 50 : null;
-function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnection, rescan, configure, adopt, busyAction = "", discoverOnly = false, firmwareCatalog = b``, importFailedDeviceId = null, electricalSystem = "split_phase_120_240", lineFrequencyHz = 60, electricalProfileConfirmed = false, setElectricalSystem = () => void 0, setLineFrequency = () => void 0, confirmElectricalProfile = () => void 0, existingCandidates = [], inspection = null, findExisting = () => void 0, inspectExisting = () => void 0, adoptInspected = () => void 0) {
-=======
-function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnection, rescan, configure, adopt, busyAction = "", discoverOnly = false, firmwareCatalog = b``, importFailedDeviceId = null) {
->>>>>>> origin/main
+function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnection, rescan, configure, adopt, busyAction = "", discoverOnly = false, firmwareCatalog = b``, importFailedDeviceId = null, existingCandidates = [], inspection = null, findExisting = () => void 0, inspectExisting = () => void 0, adoptInspected = () => void 0) {
   return b`
     <section class="step-content setup-step" aria-labelledby="step-heading">
       ${snapshot?.devices.length ? b`<section aria-labelledby="existing-device-heading">
@@ -3619,17 +3529,9 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
                     @click=${() => configure(device2.entry_id)}>${busyAction === `topology:${device2.entry_id}` ? "Loading meter…" : device2.configuration ? "Open setup" : "Open calibration"}</button>`}
             </div>
           `)}
-<<<<<<< HEAD
-        </div>` : b`<div class="error-panel passive" role="status">
-          <strong>No compatible device found</strong>
-          <span>Check power and connection, then try again.</span>
-        </div>`}
-      </section>
-      ${existingConfigurationStep(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected)}
-=======
         </div>
       </section>` : b``}
->>>>>>> origin/main
+      ${existingMeterInspection(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected)}
       ${discoverOnly ? "" : b`<hr />
       <h2>Set up a new meter</h2>
       <fieldset class="choice-field">
@@ -3754,19 +3656,6 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
     ...unmanagedLegacyItems ? { unmanagedLegacyItems } : {}
   });
   const boards = (values) => values.flatMap((enabled, board) => enabled ? [board === 0 ? "Main board" : `Add-on ${board}`] : []);
-<<<<<<< HEAD
-  return b`
-    <section class="step-content" aria-labelledby="step-heading">
-      ${restart2 && hasOffsets ? b`<div class="success-band" role="status">Setup and exact restart verification are complete. Offset calibration remains saved in flash; YAML handoff and flash clearing are unavailable.</div>` : restart2?.source_authority === "configuration" ? b`<div class="success-band" role="status">Calibration saved to YAML; flash values cleared.</div>` : restart2 ? b`<div class="success-band" role="status">Setup and exact restart verification are complete.</div>` : completedWithoutChanges ? b`<div class="success-band" role="status">Completed without calibration changes. No restart or restart-verified calibration record was required.</div>` : b`<div class="recovery-panel" role="status"><strong>Restart verification is not complete</strong><p>Summary remains unverified until the server returns authoritative restart evidence.</p></div>`}
-      <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration authority</dt><dd>${meterConfiguration2?.capabilities.configuration_authoritative ? transaction2?.full_meter_configuration_verified ? "Authoritative configuration verified" : "Authoritative configuration" : "Unavailable"}</dd></div><div><dt>Calibration authority source</dt><dd>${restart2?.source_authority.replaceAll("_", " ") ?? "Not verified"}</dd></div><div><dt>Verification ID</dt><dd>${restart2?.verification_id ?? "Unavailable"}</dd></div>${installedConfiguration ? b`<div><dt>Installed electrical profile</dt><dd>${installedConfiguration.configuration.meter.electrical_system.replaceAll("_", " ")} · ${installedConfiguration.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${installedConfiguration.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${installedConfiguration.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Aggregate energy</dt><dd>${installedConfiguration.configuration.aggregates.length} aggregates; ${installedConfiguration.configuration.aggregates.filter((aggregate) => aggregate.energy_mode !== "none").length} energy totals</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(installedConfiguration.configuration.power_quality).join(", ") || "none"} · reactive power, apparent power, and power factor for used CTs; status: ${boards(installedConfiguration.configuration.status_fields).join(", ") || "none"} · native API diagnostics disabled by default in Home Assistant</dd></div><div><dt>Reporting and measurements</dt><dd>${installedConfiguration.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} Helper-managed measurements, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
-      ${technicalDetails(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges)}
-      <footer class="action-footer"><button class="secondary" @click=${back}>Back</button>
-        ${handoffAction ? b`<button class="primary" data-action="save-calibration" @click=${saveCalibration}>${restart2?.source_handoff_firmware_installed ? "Retry clearing saved flash values" : "Save calibration to YAML"}</button>` : ""}
-        ${!handoffAction ? b`<button class="primary" data-action="finish" @click=${finish}>Finish</button>` : ""}
-      </footer>
-    </section>
-  `;
-=======
   return b`<section class="step-content" aria-labelledby="step-heading">
     <div class=${offsetComplete || restart2 || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${offsetFinalization2?.backup_available || restart2 || completedWithoutChanges ? outcome.calibrationStatus : b`<strong>Restart verification is not complete</strong><p>Summary remains unverified until the server returns authoritative restart evidence.</p>`}</div>
     ${offsetFinalization2?.backup_available ? b`<section aria-label="Retained offset calibration"><h2>Offset configuration and retained backup</h2>
@@ -3775,7 +3664,7 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
       <label class="check-row"><input type="checkbox" .checked=${newCycleAcknowledged} @change=${(event) => setNewCycleAcknowledged(event.target.checked)}> I acknowledge a new offset cycle and backup retention.</label>
       <button class="secondary" ?disabled=${busy || !newCycleAcknowledged || !offsetComplete} @click=${newCycle}>Start new offset cycle</button>
     </section>` : ""}
-    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"}; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"}</dd></div><div><dt>Reporting and entities</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} public entities, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
+    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"} � reactive power, apparent power, and power factor for used CTs; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"} � native API diagnostics disabled by default in Home Assistant</dd></div><div><dt>Reporting and measurements</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} Helper-managed measurements, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
     ${totalsEvidence ? b`<section aria-labelledby="summary-totals-heading"><h2 id="summary-totals-heading">${!meterConfiguration2 || totalsEvidence.capabilities.reason_codes.includes("totals_adoption_required") ? "Legacy read-only totals" : "Helper-managed totals"}</h2>
       ${!meterConfiguration2 ? b`<p>Authoritative source snapshot: these totals have not been adopted or verified as installed by this workflow.</p>` : ""}
       ${totalsImpact ? b`<p>${totalsImpact.public_total_entity_count} public total entities; ${totalsImpact.internal_total_sensor_count} internal total sensors; ${totalsImpact.energy_entity_count} public energy entities.</p>` : b`<p>Current total counts are unavailable.</p>`}
@@ -3798,7 +3687,6 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
     ${technicalDetails(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges)}
     <footer class="action-footer"><button class="secondary" @click=${back}>Back</button>${handoffAction ? b`${!restart2?.source_handoff_firmware_installed ? b`<button class="secondary" data-action="keep-calibration-flash" @click=${keepCalibrationInFlash}>Keep calibration in meter flash</button>` : ""}<button class="primary" data-action="save-calibration" @click=${saveCalibration}>${restart2?.source_handoff_firmware_installed ? "Retry clearing saved flash values" : "Save calibration to YAML"}</button>` : b`<button class="primary" data-action="finish" @click=${finish}>Finish</button>`}</footer>
   </section>`;
->>>>>>> origin/main
 }
 function topologyMismatch(topology2) {
   const expected = topology2.addon_count;
@@ -4442,11 +4330,8 @@ class CircuitSetupPanel extends i$2 {
     this.currentSkipped = false;
     this.mobileStepsOpen = false;
     this.focusHeading = false;
-<<<<<<< HEAD
-    this.inspectionTargetId = null;
-=======
     this.lastFocusedError = "";
->>>>>>> origin/main
+    this.inspectionTargetId = null;
   }
   static {
     this.styles = panelStyles;
@@ -5058,7 +4943,7 @@ class CircuitSetupPanel extends i$2 {
         this.showInventory(inventory);
       }
       this.transaction = active.transaction;
-      this.navigate("build");
+      this.navigate("install-configuration");
       await this.subscribeTransaction(generation);
       return this.owns(generation, api);
     } catch {
@@ -5109,12 +4994,8 @@ class CircuitSetupPanel extends i$2 {
   }
   async adopt(deviceId = this.selectedDeviceId) {
     if (!this.api || !deviceId || this.pendingAction) return;
-<<<<<<< HEAD
     const inspected = this.existingInspection?.device.entry_id === deviceId;
     const newInstallDeviceId = inspected ? null : this.setup?.devices.find((device2) => device2.entry_id === deviceId)?.configuration ? null : deviceId;
-=======
-    if (deviceId !== this.selectedDeviceId) this.selectDevice(deviceId);
->>>>>>> origin/main
     const api = this.api;
     const token = {};
     this.adoptionToken = token;
@@ -5143,12 +5024,8 @@ class CircuitSetupPanel extends i$2 {
       this.setupDeviceIds = new Set(setup2.devices.map((device2) => device2.entry_id));
       fallback = "Meter setup could not be loaded.";
       await this.subscribeSetup(connectionGeneration, api);
-<<<<<<< HEAD
       if (!owns()) return;
-=======
-      if (!this.ownsOperation(generation, api, deviceId)) return;
       fallback = "Meter settings could not be loaded.";
->>>>>>> origin/main
       const importedConfiguration = await api.getMeterConfiguration(deviceId);
       if (!owns()) return;
       this.setMeterConfiguration(importedConfiguration);
@@ -5270,9 +5147,7 @@ class CircuitSetupPanel extends i$2 {
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
-<<<<<<< HEAD
     const calibrationPreparation2 = current !== null && this.isCalibrationPreparationTransaction(current);
-=======
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
         this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first.");
@@ -5296,7 +5171,6 @@ class CircuitSetupPanel extends i$2 {
       this.requestUpdate();
       return;
     }
->>>>>>> origin/main
     if (current && current.state !== "previewed") {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
@@ -5800,12 +5674,8 @@ class CircuitSetupPanel extends i$2 {
         }
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.transaction = transaction2;
-<<<<<<< HEAD
         this.rememberTransaction(transaction2, deviceId);
-        this.navigate("build");
-=======
         this.navigate("install-configuration");
->>>>>>> origin/main
         await this.subscribeTransaction(this.connectionGeneration);
       },
       "The configuration preview is stale. Reload the CT inventory and review again.",
@@ -5892,12 +5762,8 @@ class CircuitSetupPanel extends i$2 {
     await this.run(async () => {
       this.transaction = await api.previewMeterConfiguration(deviceId, meter.plan_id, meter.source_sha256, configuration);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-<<<<<<< HEAD
       this.rememberTransaction(this.transaction, deviceId);
-      this.navigate("build");
-=======
       this.navigate("install-configuration");
->>>>>>> origin/main
       await this.subscribeTransaction(this.connectionGeneration);
     }, "Circuit configuration could not be reviewed.", () => this.ownsOperation(generation, api, deviceId));
     this.pendingAction = "";
@@ -6011,9 +5877,6 @@ class CircuitSetupPanel extends i$2 {
           }
           this.sourcePackageOptions = restored;
         }
-<<<<<<< HEAD
-        if ((action === "install" || action === "guided-install") && this.calibrationHandoff && transaction2.state === "verified" && this.session && this.topology && this.restartResult) {
-=======
         if (action === "install" && transaction2.state === "verified" && transaction2.purpose.startsWith("offset_")) {
           this.clearSubscription("transaction");
           this.offsetAcknowledged = [false, false];
@@ -6027,7 +5890,6 @@ class CircuitSetupPanel extends i$2 {
           this.navigate(transaction2.purpose === "offset_preparation" ? "offset" : "save-calibration");
           this.announcement = transaction2.purpose === "offset_preparation" ? "Preparation installed. Acknowledge physical preparation again and check measured readiness before Run." : "Captured offsets installed. Confirm the installed configuration selection; register readback is not verified.";
         } else if (action === "install" && this.calibrationHandoff && transaction2.state === "verified" && this.session && this.topology && this.restartResult) {
->>>>>>> origin/main
           this.restartResult = {
             ...this.restartResult,
             source_handoff_available: false,
@@ -6042,20 +5904,9 @@ class CircuitSetupPanel extends i$2 {
           );
           if (!this.ownsOperation(generation, api, deviceId)) return;
           this.restartResult = result;
-<<<<<<< HEAD
-          this.finishFlow("Calibration was saved to YAML, installed, verified, and cleared from flash.");
-        } else if ((action === "install" || action === "guided-install") && transaction2.state === "verified") {
-          if (this.meterConfiguration) this.verifiedMeterConfiguration = {
-            ...this.meterConfiguration,
-            configuration: { ...this.meterConfiguration.configuration, multi_reference_preparation_acknowledged: false }
-          };
-          this.acceptInstalledDrafts();
-          this.canonicalConfigurationChanged = false;
-          this.announcement = this.isCalibrationPreparationTransaction(transaction2) ? "Reviewed calibration controls were installed and verified. Continue to start a fresh calibration session." : "Configuration changes were installed and verified. Continue to safety and calibration.";
-=======
           this.announcement = "Calibration was saved to YAML, installed, verified, and cleared from flash.";
           this.navigate("summary");
-        } else if (action === "install" && transaction2.state === "verified") {
+        } else if ((action === "install" || action === "guided-install") && transaction2.state === "verified") {
           this.configurationInstalled = true;
           this.verifiedMeterConfiguration = null;
           this.sourceMeterConfiguration = null;
@@ -6075,7 +5926,6 @@ class CircuitSetupPanel extends i$2 {
           if (this.meterConfiguration?.capabilities.configuration_authoritative && transaction2.full_meter_configuration_verified) {
             await this.refreshInstalledConfiguration();
           }
->>>>>>> origin/main
         }
       },
       action === "install" && this.calibrationHandoff ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values." : "This confirmation is stale. Reload the CT inventory before making another change.",
@@ -6202,7 +6052,7 @@ class CircuitSetupPanel extends i$2 {
         this.clearSubscription("session");
         this.session = null;
         this.transaction = transaction2;
-        this.navigate("build");
+        this.navigate("install-configuration");
         await this.subscribeTransaction(this.connectionGeneration);
       },
       "Reviewed calibration controls could not be prepared. No firmware was changed.",
@@ -6855,25 +6705,15 @@ class CircuitSetupPanel extends i$2 {
       await operation();
     } catch (error) {
       if (!isCurrent()) return;
-<<<<<<< HEAD
-      const code = error.code;
-      const message = code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "guided_install_unavailable" ? "Guided installation is unavailable. Use Advanced controls or update Device Builder." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
-      this.fail(error, message);
-=======
       this.fail(error, this.safeErrorMessage(error, typeof fallback === "function" ? fallback() : fallback));
->>>>>>> origin/main
     }
     if (isCurrent()) this.requestUpdate();
   }
   safeErrorMessage(error, fallback) {
     const code = error.code;
-<<<<<<< HEAD
-    return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "guided_install_unavailable" ? "Guided installation is unavailable. Use Advanced controls or update Device Builder." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
-=======
     if (code === "offset_tables_unavailable") return "Meter diagnostics did not provide complete offset tables for this stage. Stock ESPHome can omit these before the first offset calibration. Preparation requires firmware with read-only offset-table reporting. You can choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data, if any, is unchanged.";
     if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
-    return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
->>>>>>> origin/main
+    return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "guided_install_unavailable" ? "Guided installation is unavailable. Use Advanced controls or update Device Builder." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
   }
   fail(_error, safeMessage) {
     this.error = safeMessage;
@@ -6896,22 +6736,12 @@ class CircuitSetupPanel extends i$2 {
       this.pendingAction,
       Boolean(this.topology),
       this.firmwareCatalog(),
-<<<<<<< HEAD
       this.importFailedDeviceId,
-      this.electricalSystem,
-      this.lineFrequencyHz,
-      this.electricalProfileConfirmed,
-      (value) => this.setElectricalSystem(value),
-      (value) => this.setLineFrequency(value),
-      () => this.confirmElectricalProfile(),
       this.existingCandidates,
       this.existingInspection,
       () => void this.findExistingMeters(),
       (id2) => void this.inspectExistingMeter(id2),
       (id2) => void this.adopt(id2)
-=======
-      this.importFailedDeviceId
->>>>>>> origin/main
     )}
       ${this.topology ? topologyStep(
       this.topology,
@@ -6920,17 +6750,11 @@ class CircuitSetupPanel extends i$2 {
         this.selectDevice(null);
         this.navigate("setup");
       },
-<<<<<<< HEAD
-      () => void (this.meterConfiguration || this.setup?.devices.find((device2) => device2.entry_id === this.selectedDeviceId)?.configuration ? this.loadInventory() : this.startSession()),
-      this.error === "Topology mismatch",
-      this.pendingAction === "inventory" || this.pendingAction === "session" || this.pendingAction === "prepare-calibration",
-      this.calibrationPreparation,
-      () => void this.prepareCalibration()
-=======
       () => void (this.selectedConfigurationAvailable() ? this.loadInventory() : this.navigate("calibration-plan")),
       this.error === "Topology mismatch",
-      this.pendingAction.startsWith("topology:") || this.pendingAction === "inventory" || this.pendingAction === "session"
->>>>>>> origin/main
+      this.pendingAction.startsWith("topology:") || this.pendingAction === "inventory" || this.pendingAction === "session" || this.pendingAction === "prepare-calibration",
+      this.calibrationPreparation,
+      () => void this.prepareCalibration()
     ) : A}`;
     if (this.step === "legacy-review" && this.meterConfiguration) return existingConfigurationStep(
       this.meterConfiguration,
@@ -6965,25 +6789,18 @@ class CircuitSetupPanel extends i$2 {
       () => void this.continueFromMeterSettings(),
       this.packageOptions,
       (options) => this.setPackageOptions(options),
-<<<<<<< HEAD
-      this.packageCapabilities
-=======
       this.meterProfileConfirmed,
       (value) => {
         this.meterProfileConfirmed = value;
         this.requestUpdate();
       },
-      this.configurationMode ?? "helper_managed"
->>>>>>> origin/main
+      this.configurationMode ?? "helper_managed",
+      this.packageCapabilities
     );
     if (this.step === "ct" && this.inventory) {
       const impact = this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null;
       const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0;
-<<<<<<< HEAD
-      return b`${impact ? b`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? b`<strong>Warning: high entity count. </strong>` : A}${impact.enabled_channel_count} enabled channels; ${total} Helper-managed measurements (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : A}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => {
-=======
-      return b`${impact ? b`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? b`<strong>Warning: high entity count. </strong>` : A}${impact.enabled_channel_count} enabled channels; ${total} ${this.meterConfiguration?.totals.migration.native_visibility_resolved ? "public entities" : "confirmed public entities (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : this.meterConfiguration ? b`<p role="status">${this.totalGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</p>` : A}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => {
->>>>>>> origin/main
+      return b`${impact ? b`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? b`<strong>Warning: high entity count. </strong>` : A}${impact.enabled_channel_count} enabled channels; ${total} ${this.meterConfiguration?.totals.migration.native_visibility_resolved ? "Helper-managed measurements" : "confirmed Helper-managed measurements (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : this.meterConfiguration ? b`<p role="status">${this.totalGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</p>` : A}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => {
         this.labelOnly = false;
         this.requestUpdate();
       }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => {
@@ -7065,15 +6882,12 @@ class CircuitSetupPanel extends i$2 {
       this.pendingAction === "review-back",
       this.reviewCorrection !== null,
       this.pendingAction,
-<<<<<<< HEAD
+      this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper",
+      this.meterConfiguration,
+      this.totalGraphState === "ready" ? this.totalGraphPreview : null,
       this.transaction?.guided_install === true,
       () => void this.transactionAction("guided-install"),
       () => void this.transactionAction("recheck")
-=======
-      this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper",
-      this.meterConfiguration,
-      this.totalGraphState === "ready" ? this.totalGraphPreview : null
->>>>>>> origin/main
     );
     if (this.step === "safety") return safetyStep(
       this.session,

@@ -26,11 +26,8 @@ from .meter_inventory import (
     _source_native_visibility,
 )
 from .models import MeterTopology
-<<<<<<< HEAD
 from .package_contract import SUPPORTED_PACKAGE_CONTRACTS
-=======
 from .total_graph import native_total_sources, plan_total_graph
->>>>>>> origin/main
 
 
 @dataclass(frozen=True, slots=True)

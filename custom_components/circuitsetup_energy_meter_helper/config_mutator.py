@@ -30,8 +30,13 @@ from .ct_catalog import (
     raw_gain_for_preset,
 )
 from .ct_inventory import CTInventory
-<<<<<<< HEAD
-from .models import ConfigMutationPlan, MeterTopology, SubstitutionChange
+from .models import (
+    ConfigMutationPlan,
+    MeterTopology,
+    PhaseOffsetTable,
+    PhasePowerOffsetTable,
+    SubstitutionChange,
+)
 from .package_contract import (
     OFFICIAL_PACKAGE_REPOSITORY,
     SUPPORTED_PACKAGE_CONTRACTS,
@@ -41,17 +46,7 @@ from .package_contract import (
     is_static_package_ref,
     package_path,
 )
-from .store import VerifiedCalibrationRecord
-=======
-from .models import (
-    ConfigMutationPlan,
-    MeterTopology,
-    PhaseOffsetTable,
-    PhasePowerOffsetTable,
-    SubstitutionChange,
-)
 from .store import VerifiedCalibrationRecord, _validate_group_table
->>>>>>> origin/main
 from .topology import (
     topology_from_config,
     voltage_reference_fingerprint_for_meter,
@@ -1522,7 +1517,6 @@ def _phase_override_lines(
             if multiplier != 1:
                 lines.extend(("        filters:", f"          - multiply: {value}"))
             lines.append("        internal: true")
-<<<<<<< HEAD
         elif multiplier != 1:
             lines.extend(("        filters:", f"          - multiply: {value}"))
     if power_quality and not enabled:
@@ -1546,14 +1540,6 @@ def _legacy_phase_override_lines(
             f"      {output}: !remove"
             for output in legacy_metrics
             if output != "phase_angle"
-=======
-    if power_quality and not enabled:
-        removals = (
-            "reactive_power",
-            "apparent_power",
-            "power_factor",
-            "phase_angle",
->>>>>>> origin/main
         )
     return tuple(lines)
 

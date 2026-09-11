@@ -62,10 +62,10 @@ const UPDATE_INTERVALS = new Set([1, 2, 5, 10, 30, 60]);
 const EVIDENCE_SOURCES = new Set(["config_project", "config_packages", "dashboard_import", "native_project", "native_entity_counts"]);
 const PHASES = new Set(["A", "B", "C"]);
 const JOB_STAGES = new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
-const TRANSACTION_EVIDENCE = new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
+const TRANSACTION_EVIDENCE = new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "upload_outcome_unknown", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
 const TRANSACTION_PROGRESS = new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
 const TRANSACTION_FAILURE_STAGES = new Set(["validating", "building", "installing", "verifying_meter"]);
-const TRANSACTION_FAILURE_REASONS = new Set(["unknown", "guided_unavailable", "missing_package", "unsupported_component_option", "required_secret", "conflicting_managed_override", "validation_rejected", "compile_rejected", "upload_failed", "verification_incomplete", "meter_communication_failed"]);
+const TRANSACTION_FAILURE_REASONS = new Set(["unknown", "guided_unavailable", "missing_package", "unsupported_component_option", "required_secret", "conflicting_managed_override", "validation_rejected", "compile_rejected", "upload_failed", "upload_outcome_unknown", "verification_incomplete", "meter_communication_failed"]);
 const PREFLIGHT_CODES = new Set(["count_mismatch", "invalid_kind", "invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
 const AUTHORITATIVE_EVIDENCE = new Set(["config_project", "config_packages", "native_project"]);
 const CHANGE_KEY = /^(?:meter|voltage_reference|channel|aggregate|package|calibration)\.[a-z0-9_.-]+$/;
@@ -79,15 +79,11 @@ const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_conf
 const OFFSET_CAPABILITIES = new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
-<<<<<<< HEAD
-const OFFSET_RESULT_STATES = new Set(["applied_pending_restart_verification", "partial", "indeterminate"]);
+const OFFSET_RESULT_STATES = new Set(["applied_pending_restart_verification", "captured_pending_configuration", "partial", "indeterminate"]);
 const PACKAGE_CAPABILITY_STATES = new Set(["already_present", "available_to_prepare", "cannot_safely_manage"]);
 const PACKAGE_CAPABILITY_REASONS = new Set(["official_package_present", "official_source_ready", "unsupported_package_source", "ambiguous_package_source", "package_source_unavailable", "duplicate_package_reference"]);
 const CALIBRATION_PREPARATION_REASONS = new Set(["calibration_package_present", "calibration_source_ready", "calibration_flag_unavailable", "calibration_flag_invalid", "unsupported_package_source", "ambiguous_package_source", "package_source_unavailable", "duplicate_package_reference"]);
 const PACKAGE_FEATURES = new Set(["power_quality", "status_fields"]);
-=======
-const OFFSET_RESULT_STATES = new Set(["applied_pending_restart_verification", "captured_pending_configuration", "partial", "indeterminate"]);
->>>>>>> origin/main
 
 type PublicRecord = Record<string, unknown>;
 type Validator<T> = (value: unknown) => T;
@@ -225,7 +221,6 @@ function topologyResponse(value: unknown, label: string): MeterTopology | Topolo
   }
   return topology(value, label);
 }
-<<<<<<< HEAD
 function packageCapabilities(value: unknown, label: string, boardCount: number): PackageCapability[] {
   return array(value, label, 14).map((entry) => {
     const item = record(entry, label);
@@ -262,8 +257,6 @@ function existingInspection(value: unknown, label: string): ExistingMeterInspect
     topology: parsedTopology, package_options: options, package_capabilities: capabilities,
     calibration_preparation: preparation };
 }
-function meterConfiguration(value: unknown, label: string): MeterConfiguration {
-=======
 function totalOutputs(value: unknown, label: string): void {
   const item = record(value, label); exactKeys(item, ["watts", "amps", "kwh"], label);
   for (const key of ["watts", "amps", "kwh"]) boolean(item[key], label);
@@ -376,7 +369,6 @@ function totalsSummary(value: unknown, label: string, nativeIds: Set<unknown>, a
 }
 
 function totalDetails(value: unknown, label: string, inventory: Omit<MeterConfiguration, "total_details">): MeterConfiguration["total_details"] {
->>>>>>> origin/main
   const response = record(value, label);
   exactKeys(response, ["plan_id", "source_sha256", "total_details"], label);
   if (response.plan_id !== inventory.plan_id || response.source_sha256 !== inventory.source_sha256) throw new Error(`${label} response is invalid`);
@@ -506,12 +498,8 @@ function ctInventory(value: unknown, label: string): CtInventory {
   return value as CtInventory;
 }
 function transaction(value: unknown, label: string): TransactionStatus {
-<<<<<<< HEAD
-  const item = record(value, label); exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ...("communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []), ...("guided_install" in item ? ["guided_install"] : []), ...("guided_running" in item ? ["guided_running"] : []), ...("guided_unavailable" in item ? ["guided_unavailable"] : []), ...("failure" in item ? ["failure"] : [])], label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); if (!SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`); boolean(item.rollback_available, label); if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
-=======
-  const item = record(value, label); exactKeys(item, ["purpose", "transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ...("communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : [])], label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); if (!SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`); boolean(item.rollback_available, label); if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
+  const item = record(value, label); exactKeys(item, ["purpose", "transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ...("communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []), ...("guided_install" in item ? ["guided_install"] : []), ...("guided_running" in item ? ["guided_running"] : []), ...("guided_unavailable" in item ? ["guided_unavailable"] : []), ...("failure" in item ? ["failure"] : [])], label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); if (!SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`); boolean(item.rollback_available, label); if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
   enumeration(item.purpose, new Set(["install_configuration", "save_calibration", "offset_preparation", "offset_finalization"]), label);
->>>>>>> origin/main
   array(item.changes, label).forEach((entry) => { const change = record(entry, label); exactKeys(change, ["key", "old_value", "new_value"], label); const key = string(change.key, label); if (!CHANGE_KEY.test(key!)) throw new Error(`${label} response is invalid`); if (change.old_value !== null) string(change.old_value, label); string(change.new_value, label); });
   array(item.evidence, label).forEach((entry) => enumeration(entry, TRANSACTION_EVIDENCE, label)); array(item.progress, label).forEach((entry) => enumeration(entry, TRANSACTION_PROGRESS, label));
   if (item.validation_detail !== null) { const detail = record(item.validation_detail, label); exactKeys(detail, ["code", "reported_error_count", "reported_warning_count", "error_record_count", "warning_record_count"], label); for (const key of ["reported_error_count", "reported_warning_count"] as const) if (detail[key] !== null) integer(detail[key], label); if (detail.code !== null) integer(detail.code, label); integer(detail.error_record_count, label); integer(detail.warning_record_count, label); }
@@ -984,15 +972,6 @@ export class HelperApi {
       entry_id: this.entryId,
       ...data,
     });
-<<<<<<< HEAD
-    if (operation === "get_active_work") {
-      const { transaction: recoveredTransaction, ...envelope } = record(result, operation);
-      HelperApi.assertPublicPayload(envelope);
-      HelperApi.assertPublicPayload(recoveredTransaction, true);
-    } else {
-      HelperApi.assertPublicPayload(result, TRANSACTION_OPERATIONS.has(operation));
-    }
-=======
     HelperApi.assertPublicPayload(
       result,
       TRANSACTION_OPERATIONS.has(operation),
@@ -1001,7 +980,6 @@ export class HelperApi {
       false,
       ["get_active_work", "preview_offset_preparation", "preview_offset_finalization"].includes(operation),
     );
->>>>>>> origin/main
     return validator(result);
   }
 
@@ -1077,16 +1055,14 @@ export class HelperApi {
     this.call("preview_meter_configuration", (value) => transaction(value, "preview_meter_configuration"), {
       device_id: deviceId, plan_id: planId, source_sha256: sourceSha256, configuration,
     });
-<<<<<<< HEAD
   public prepareCalibration = (deviceId: string) =>
     this.call("prepare_calibration", (value) => transaction(value, "prepare_calibration"), {
       device_id: deviceId,
-=======
+    });
 
   public previewTotalGraph = (deviceId: string, planId: string, sourceSha256: string, configuration: MeterConfigurationRequest) =>
     this.call("preview_total_graph", (value) => totalGraphPreview(value, "preview_total_graph", planId, sourceSha256, configuration), {
       device_id: deviceId, plan_id: planId, source_sha256: sourceSha256, configuration,
->>>>>>> origin/main
     });
   public setHaLabels = (deviceId: string, planId: string, sourceSha256: string, changes: Array<{ channel: number; name: string }>) =>
     this.call("set_ha_labels", (value) => value as LabelUpdateResult, {

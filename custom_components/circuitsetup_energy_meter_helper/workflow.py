@@ -12,11 +12,7 @@ from http.cookies import SimpleCookie
 from statistics import pstdev
 from threading import RLock
 from time import monotonic
-<<<<<<< HEAD
-from typing import Any, cast
-=======
-from typing import Any, Literal
->>>>>>> origin/main
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from aioesphomeapi.model import build_device_unique_id
@@ -63,6 +59,7 @@ from .device_builder import (
     DeviceBuilderClient,
     DeviceBuilderCommandError,
     ESPHomeConfigSnapshot,
+    JobResult,
     _wait_for_owned_cleanup,
 )
 from .entity_binding import (
@@ -146,7 +143,6 @@ _INGRESS_SESSION_COOKIE = "ingress_session"
 _SUPERVISOR_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,256}\Z", re.ASCII)
 
 
-<<<<<<< HEAD
 def _configured_current_sensors(
     catalog: EntityCatalog,
     substitutions: Mapping[str, str],
@@ -213,7 +209,6 @@ def _configured_enabled_channels(
         for channel in range(1, topology.ct_count + 1)
         if states.get(channel) is None or states[channel].enabled
     }
-=======
 def _existing_circuit_suggestions(
     configuration: MeterConfigurationRequest,
     existing: frozenset[frozenset[int]],
@@ -275,7 +270,6 @@ def _analyzer_circuit_channels(
             ):
                 existing.add(frozenset(channels[source] for source in sources))
     return frozenset(existing)
->>>>>>> origin/main
 
 
 def _public_sample_window(window: SensorSampleWindow) -> dict[str, Any]:
@@ -585,6 +579,13 @@ class LazyDeviceBuilder:
             review_id, compile_job_id, artifact_sha256, progress
         )
 
+    async def async_reconcile_review_upload(
+        self, review_id: str, compile_job_id: str, artifact_sha256: str
+    ) -> JobResult | None:
+        return await (await self._ready()).async_reconcile_review_upload(
+            review_id, compile_job_id, artifact_sha256
+        )
+
     async def async_release_review(self, review_id: str) -> None:
         await (await self._ready()).async_release_review(review_id)
 
@@ -811,12 +812,8 @@ class EntryWorkflow:
             reporting_multipliers=_stored_reporting_multipliers(
                 selections, snapshot.sha256
             ),
-<<<<<<< HEAD
             configuration_authoritative=snapshot.configuration_authoritative,
-            stored_semantics_stale=False,
-=======
             stored_semantics_stale=stored_read.stale,
->>>>>>> origin/main
         )
         existing = _analyzer_circuit_channels(self._hass, device_id, inventory)
         configuration, candidates = _existing_circuit_suggestions(inventory.configuration, existing)
@@ -1123,7 +1120,7 @@ class EntryWorkflow:
         return status
 
     async def _async_preview_meter_configuration(
-        self, plan: _PlanHandle, requested: MeterConfigurationRequest, *, guided: bool = True
+        self, plan: _PlanHandle, requested: MeterConfigurationRequest, *, guided: bool = False
     ) -> Any:
         requested, _ = _existing_circuit_suggestions(
             requested, plan.existing_circuit_channels, plan.inventory.configuration.automatic_totals,
@@ -1181,8 +1178,9 @@ class EntryWorkflow:
             ),
             totals_managed=plan.inventory.totals_managed,
         )
-<<<<<<< HEAD
-        expected = expected_meter_entity_evidence(requested, plan.topology)
+        expected = expected_meter_entity_evidence(requested, plan.topology,
+            document=ESPHomeConfigDocument.parse(plan.snapshot.content), previous=plan.inventory.configuration,
+            native_visibility_resolved=plan.inventory.native_visibility_resolved)
         if not guided:
             status = await manager.async_preview(
                 plan.mac,
@@ -1190,6 +1188,9 @@ class EntryWorkflow:
                 mutation,
                 plan.snapshot,
                 meter_configuration=configuration,
+                    reconcile_stale_metadata=True,
+                    totals_change_intent=requested.totals_change_intent,
+                    native_visibility_resolved=plan.inventory.native_visibility_resolved,
                 expected_sensor_entities=expected.sensor_entities,
                 expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
             )
@@ -1201,6 +1202,9 @@ class EntryWorkflow:
                     mutation,
                     plan.snapshot,
                     meter_configuration=configuration,
+                    reconcile_stale_metadata=True,
+                    totals_change_intent=requested.totals_change_intent,
+                    native_visibility_resolved=plan.inventory.native_visibility_resolved,
                     expected_sensor_entities=expected.sensor_entities,
                     expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
                     guided=True,
@@ -1217,6 +1221,9 @@ class EntryWorkflow:
                     mutation,
                     plan.snapshot,
                     meter_configuration=configuration,
+                    reconcile_stale_metadata=True,
+                    totals_change_intent=requested.totals_change_intent,
+                    native_visibility_resolved=plan.inventory.native_visibility_resolved,
                     expected_sensor_entities=expected.sensor_entities,
                     expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
                     guided_unavailable=True,
@@ -1242,23 +1249,6 @@ class EntryWorkflow:
 
         if self._inspection_admission(plan.device_id) is not None:
             unsubscribe = manager.subscribe(status.transaction_id, advance_admission)
-=======
-        expected = expected_meter_entity_evidence(requested, plan.topology,
-            document=ESPHomeConfigDocument.parse(plan.snapshot.content), previous=plan.inventory.configuration,
-            native_visibility_resolved=plan.inventory.native_visibility_resolved)
-        status = await manager.async_preview(
-            plan.mac,
-            plan.topology,
-            mutation,
-            plan.snapshot,
-            meter_configuration=configuration,
-            reconcile_stale_metadata=True,
-            totals_change_intent=requested.totals_change_intent,
-            native_visibility_resolved=plan.inventory.native_visibility_resolved,
-            expected_sensor_entities=expected.sensor_entities,
-            expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
-        )
->>>>>>> origin/main
         self._plans.pop(plan.plan_id, None)
         plan.scrub()
         return status

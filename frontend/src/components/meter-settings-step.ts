@@ -27,13 +27,10 @@ export function meterSettingsStep(
   continueToCircuits: () => void,
   boardPackages: BoardPackageOptions | null = null,
   setBoardPackages: (options: BoardPackageOptions) => void = () => undefined,
-<<<<<<< HEAD
-  packageCapabilities: PackageCapability[] = [],
-=======
   profileConfirmed = true,
   setProfileConfirmed: (value: boolean) => void = () => undefined,
   mode: "helper_managed" | "legacy_editable" | "runtime_only" = "helper_managed",
->>>>>>> origin/main
+  packageCapabilities: PackageCapability[] = [],
 ): TemplateResult {
   const multiReference = draft.voltage_references.length > 1;
   const primaryReference = draft.voltage_references[0]!;
@@ -113,13 +110,6 @@ export function meterSettingsStep(
           ${primaryReference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === primaryReference.transformer_model_id) ? html`<option value=${primaryReference.transformer_model_id}>${primaryReference.transformer_model_id}</option>` : ""}</select></label>
       </div>
       ${intervalImpact(draft.update_interval_s) ? html`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : nothing}
-<<<<<<< HEAD
-      ${boardPackages ? packageOptions(boardPackages, setBoardPackages, packageCapabilities) : ""}
-      <details class="advanced-voltage-options" open>
-      <summary>Advanced voltage options</summary>
-      <div class="voltage-options-content">
-=======
->>>>>>> origin/main
       <h3>Voltage references</h3>
       <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
       <details class="advanced-voltage-options" data-section="advanced-voltage-options"><summary>Advanced voltage options</summary><div class="voltage-options-content"><div class="voltage-reference-cards">${draft.voltage_references.map((reference) => html`
@@ -152,7 +142,7 @@ export function meterSettingsStep(
       </details>
       <details data-section="advanced-meter-settings"><summary>Advanced meter settings</summary>
       <div class="voltage-options-content">
-      ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
+      ${boardPackages ? packageOptions(boardPackages, setBoardPackages, packageCapabilities) : ""}
       </div></details>
       <label class="check-row"><input type="checkbox" aria-label="Confirm electrical profile" .checked=${profileConfirmed}
         @change=${(event: Event) => setProfileConfirmed((event.target as HTMLInputElement).checked)} />I confirm the electrical profile and frequency.</label>

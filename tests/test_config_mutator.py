@@ -731,8 +731,8 @@ def test_full_meter_preview_diff_groups_redacted_semantic_changes() -> None:
         url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
         ref: master
         files:
-      #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
-      - Software/ESPHome/status_fields/6chan_main_status.yaml
+          #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
+          - Software/ESPHome/status_fields/6chan_main_status.yaml
 sensor:
 """,
     )
@@ -3672,11 +3672,8 @@ def test_multiplier_one_needs_no_active_phase_override() -> None:
     )
 
     assert "phase_a: # CT1" not in plan.proposed_content
-<<<<<<< HEAD
-=======
     assert "harmonic_power: !remove" not in plan.proposed_content
     assert "peak_current: !remove" not in plan.proposed_content
->>>>>>> origin/main
 
 
 def test_reporting_multiplier_uses_configured_id_substitution_and_is_reviewable() -> None:

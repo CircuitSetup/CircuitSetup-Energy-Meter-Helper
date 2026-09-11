@@ -8,7 +8,7 @@ const topology: MeterTopology = {
   project_name: "circuitsetup.6c-energy-meter", evidence: [],
 };
 const transaction = {
-  transaction_id: "transaction", state: "validated", source_sha256: "a".repeat(64),
+  purpose: "install_configuration", transaction_id: "transaction", state: "validated", source_sha256: "a".repeat(64),
   changes: [{ key: "channel.1.name", old_value: "CT 1", new_value: "Kitchen" }],
   redacted_diff: "Reviewed rename", rollback_available: true, evidence: [], progress: [],
   validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false,

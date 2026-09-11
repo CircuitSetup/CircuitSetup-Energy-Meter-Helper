@@ -4,11 +4,8 @@ import json
 import re
 import subprocess
 import sys
-<<<<<<< HEAD
-from importlib.util import module_from_spec, spec_from_file_location
-=======
 from dataclasses import dataclass
->>>>>>> origin/main
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 PREFIX = "6chan_energy_meter_"

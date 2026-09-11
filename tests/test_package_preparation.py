@@ -420,6 +420,11 @@ def test_verified_transaction_verifier_uses_authorized_custom_source() -> None:
             return SimpleNamespace(success=True)
 
     class Persistence:
+        async def async_revoke_installed_calibration(
+            self, _mac: str, *, expected_record_fingerprint: str | None = None
+        ) -> str | None:
+            return expected_record_fingerprint
+
         async def async_get_ct_selections(self, _mac: str) -> tuple[object, ...]:
             return ()
 

@@ -1,10 +1,6 @@
 import { html, type TemplateResult } from "lit";
-<<<<<<< HEAD
-import type { ConnectionType, ElectricalSystem, ExistingDeviceCandidate, ExistingMeterInspection, LineFrequencyHz, SetupSnapshot } from "../types";
-import { existingConfigurationStep } from "./existing-configuration-step";
-=======
-import type { ConnectionType, SetupSnapshot } from "../types";
->>>>>>> origin/main
+import type { ConnectionType, ExistingDeviceCandidate, ExistingMeterInspection, SetupSnapshot } from "../types";
+import { existingMeterInspection } from "./existing-configuration-step";
 
 const CONNECTIONS: Array<[Exclude<ConnectionType, "unknown">, string]> = [
   ["wifi", "Wi-Fi"],
@@ -25,20 +21,11 @@ export function setupDeviceStep(
   discoverOnly = false,
   firmwareCatalog: TemplateResult = html``,
   importFailedDeviceId: string | null = null,
-<<<<<<< HEAD
-  electricalSystem: ElectricalSystem = "split_phase_120_240",
-  lineFrequencyHz: LineFrequencyHz | null = 60,
-  electricalProfileConfirmed = false,
-  setElectricalSystem: (value: ElectricalSystem) => void = () => undefined,
-  setLineFrequency: (value: LineFrequencyHz) => void = () => undefined,
-  confirmElectricalProfile: () => void = () => undefined,
   existingCandidates: ExistingDeviceCandidate[] = [],
   inspection: ExistingMeterInspection | null = null,
   findExisting: () => void = () => undefined,
   inspectExisting: (deviceId: string) => void = () => undefined,
   adoptInspected: (deviceId: string) => void = () => undefined,
-=======
->>>>>>> origin/main
 ): TemplateResult {
   return html`
     <section class="step-content setup-step" aria-labelledby="step-heading">
@@ -61,17 +48,9 @@ export function setupDeviceStep(
                     @click=${() => configure(device.entry_id)}>${busyAction === `topology:${device.entry_id}` ? "Loading meter…" : device.configuration ? "Open setup" : "Open calibration"}</button>`}
             </div>
           `)}
-<<<<<<< HEAD
-        </div>` : html`<div class="error-panel passive" role="status">
-          <strong>No compatible device found</strong>
-          <span>Check power and connection, then try again.</span>
-        </div>`}
-      </section>
-      ${existingConfigurationStep(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected)}
-=======
         </div>
       </section>` : html``}
->>>>>>> origin/main
+      ${existingMeterInspection(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected)}
       ${discoverOnly ? "" : html`<hr />
       <h2>Set up a new meter</h2>
       <fieldset class="choice-field">

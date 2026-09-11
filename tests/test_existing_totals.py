@@ -251,8 +251,9 @@ def test_existing_total_edits_survive_verified_save_and_second_preview(edit: str
                 assert ("house_total_kwh", "House Total kWh") in transaction.expected_sensor_entities
             else:
                 assert "csemh_total_charger_power" not in proposed
-        verifier.evidence = replace(_evidence(), topology=topology, current_sensor_count=topology.ct_count,
-            ct_names={item.channel: item.name for item in requested.channels},
+        verifier.evidence = replace(_evidence(), topology=topology,
+            current_sensor_count=sum(item.enabled for item in requested.channels),
+            ct_names={item.channel: item.name for item in requested.channels if item.enabled},
             sensor_entities=transaction.expected_sensor_entities)
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)

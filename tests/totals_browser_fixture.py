@@ -80,6 +80,7 @@ class Fixture:
         self.name = name
         addons = addons if addons is not None else int(name in ("one-addon", "native-parent", "child-parent", "custom-overall"))
         content = _document(contract=True, addon_count=addons)
+        content = content.replace("packages:\n  files:\n", "packages:\n  circuitsetup:\n    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter\n    ref: master\n    files:\n").replace("    - Software/ESPHome/", "      - Software/ESPHome/")
         # Known models and unchanged channel names make every fixture immediately reviewable.
         content = re.sub(r"(current_cal_ct\d+:) \d+", r"\1 11143", content)
         content = re.sub(r"ct(\d+)_name: [^\n]+", r"ct\1_name: CT\1", content)

@@ -3071,9 +3071,9 @@ def test_total_graph_preview_route_serializes_server_graph_without_transaction()
         result = sanitize_payload(await controller.async_call(command, payload, "user"))
         assert result["graph"]["leaf_channels"]["auto-mains"] == [1, 2]
         assert result["configuration_impact"] == {
-            "enabled_channel_count": 6, "numeric_entity_count": 40,
+            "enabled_channel_count": 6, "numeric_entity_count": 34,
             "text_entity_count": 6, "energy_entity_count": 1,
-            "approximate_publications_per_second": 4.6,
+            "approximate_publications_per_second": 4.0,
             "public_total_entity_count": 2, "internal_total_sensor_count": 0,
         }
         assert result["graph"]["ordered_nodes"][0]["sources"][0]["power_id"] == "ct1Watts"

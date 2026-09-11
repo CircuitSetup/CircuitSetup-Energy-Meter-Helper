@@ -397,11 +397,19 @@ def _decode(data: bytes) -> OffsetRecoveryRecord:
         topology = replace(topology_from_native(identity[1]), evidence=())
         if list(_topology_identity(topology)) != identity:
             raise ValueError("invalid recovery topology")
-        original = ESPHomeConfigSnapshot(
-            **_exact_mapping(
-                raw["original"], {"configuration", "content", "sha256"}, "source"
+        source_keys = raw["original"]
+        if not isinstance(source_keys, dict):
+            raise ValueError("invalid recovery source")
+        if set(source_keys) == {"configuration", "content", "sha256"}:
+            source = _exact_mapping(source_keys, set(source_keys), "source")
+            source["configuration_authoritative"] = True
+        else:
+            source = _exact_mapping(
+                source_keys,
+                {"configuration", "configuration_authoritative", "content", "sha256"},
+                "source",
             )
-        )
+        original = ESPHomeConfigSnapshot(**source)
         observations = []
         if (
             not isinstance(raw["observations"], list)

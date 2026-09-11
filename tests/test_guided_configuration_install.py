@@ -57,7 +57,7 @@ async def _guided_preview(builder: transaction_tests.Builder) -> tuple[ConfigTra
                 transaction_tests.MeterConfigurationRequest(
                     configuration.meter,
                     configuration.channels,
-                    configuration.aggregates,
+                    configuration.default_totals, configuration.automatic_totals, configuration.aggregates,
                     configuration.power_quality,
                     configuration.status_fields,
                 ),
@@ -113,7 +113,7 @@ def test_guided_install_uses_one_reviewed_compile_and_upload() -> None:
             transaction_tests.MeterConfigurationRequest(
                 configuration.meter,
                 configuration.channels,
-                configuration.aggregates,
+                configuration.default_totals, configuration.automatic_totals, configuration.aggregates,
                 configuration.power_quality,
                 configuration.status_fields,
             ),
@@ -144,7 +144,7 @@ def test_guided_install_uses_one_reviewed_compile_and_upload() -> None:
         task = manager._transaction(preview.transaction_id).guided_task
         assert task is not None
         assert (await task).state is ConfigTransactionState.VERIFIED
-        assert builder.calls == ["write", "validate", "compile_review", "upload_review"]
+        assert [call for call in builder.calls if call != "read"] == ["write", "validate", "compile_review", "upload_review"]
         assert manager.status(preview.transaction_id).state is ConfigTransactionState.VERIFIED
         manager.assert_confirmation(preview.transaction_id, "aabbccddeeff", preview.source_sha256)
 
@@ -173,7 +173,7 @@ def test_guided_failures_stop_at_the_failed_stage_and_release_review(
         status = await task
         assert status.state is ConfigTransactionState.FAILED
         assert status.failure is not None and status.failure.reason_code.value == reason
-        assert builder.calls[-len(calls):] == calls
+        assert [call for call in builder.calls if call != "read"][-len(calls):] == calls
         if reason == "missing_package":
             assert "upload_review" not in builder.calls
         assert builder.releases == ["review-1"]
@@ -204,7 +204,7 @@ def test_guided_verification_recheck_does_not_upload_again() -> None:
         configuration = transaction_tests._meter_configuration(plan)
         expected = transaction_tests.expected_meter_entity_evidence(
             transaction_tests.MeterConfigurationRequest(
-                configuration.meter, configuration.channels, configuration.aggregates,
+                configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates,
                 configuration.power_quality, configuration.status_fields,
             ), transaction_tests._topology(),
         )

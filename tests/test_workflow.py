@@ -113,6 +113,7 @@ async def _persisted_totals_workflow(
         reconnect_backoff_initial=0.001,
     )
     workflow = object.__new__(EntryWorkflow)
+    workflow._hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _domain: []))
     plan = _PlanHandle(
         "plan", "meter", MAC, inventory.topology, snapshot, inventory, 100
     )
@@ -880,6 +881,7 @@ def _total_preview_workflow() -> tuple[EntryWorkflow, Any]:
     snapshot = ESPHomeConfigSnapshot("meter.yaml", _document(contract=True), inventory.source_sha256)
     plan = _PlanHandle("plan", "meter", MAC, inventory.topology, snapshot, inventory, 100)
     workflow = object.__new__(EntryWorkflow)
+    workflow._hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _domain: []))
     workflow._plans = {"plan": plan}
     workflow._clock = lambda: 0
     workflow.transactions = None

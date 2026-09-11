@@ -520,6 +520,44 @@ class DeviceBuilderClient:
         if not isinstance(result, Mapping) or result.get("released") is not True:
             raise ConnectionError("Device Builder returned an invalid release result")
 
+    async def async_reconcile_review_upload(
+        self, review_id: str, compile_job_id: str, artifact_sha256: str
+    ) -> JobResult | None:
+        """Read the unique bound upload, including when its admission reply was lost."""
+        compiled = await self.async_command("firmware/get_job", {"job_id": compile_job_id})
+        if (
+            not isinstance(compiled, Mapping)
+            or compiled.get("job_id") != compile_job_id
+            or compiled.get("job_type") != "compile"
+            or compiled.get("status") != "completed"
+            or compiled.get("review_id") != review_id
+            or compiled.get("artifact_sha256") != artifact_sha256
+            or not isinstance(compiled.get("configuration"), str)
+        ):
+            raise ConnectionError("Reviewed compile evidence is unavailable")
+        jobs = await self.async_command(
+            "firmware/get_jobs", {"configuration": compiled["configuration"]}
+        )
+        if not isinstance(jobs, list):
+            raise ConnectionError("Reviewed upload evidence is unavailable")
+        matching = [job for job in jobs if isinstance(job, Mapping)
+            and job.get("review_id") == review_id and job.get("job_type") == "upload"]
+        if not matching:
+            return None
+        if len(matching) != 1:
+            raise ConnectionError("Reviewed upload evidence is ambiguous")
+        job = matching[0]
+        if (job.get("configuration") != compiled["configuration"]
+            or job.get("artifact_sha256") != artifact_sha256
+            or job.get("inputs_sha256") != compiled.get("inputs_sha256")
+            or _bounded_protocol_string(job.get("job_id")) is None):
+            raise ConnectionError("Reviewed upload binding changed")
+        if job.get("status") in {"queued", "running"}:
+            return None
+        if job.get("status") not in {"completed", "failed", "cancelled"}:
+            raise ConnectionError("Reviewed upload status is unavailable")
+        return self._job_result(dict(job), job["job_id"])
+
     async def async_restore_content(
         self,
         configuration: str,

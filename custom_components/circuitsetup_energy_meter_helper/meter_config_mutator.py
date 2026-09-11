@@ -109,7 +109,6 @@ def expected_meter_entity_evidence(
         for suffix in ("Voltage", "Frequency")
     ]
     aggregate_names: list[str] = []
-<<<<<<< HEAD
     measurement_entities: list[tuple[str, str]] = []
     for channel in requested.channels:
         if not channel.enabled:
@@ -143,36 +142,6 @@ def expected_meter_entity_evidence(
                     ),
                 )
             )
-    for aggregate in requested.aggregates:
-        prefix = f"{friendly_name} {aggregate.name}"
-        if aggregate.expose_power:
-            aggregate_names.append(f"{prefix} Power")
-        if aggregate.expose_current:
-            aggregate_names.append(f"{prefix} Current")
-        if aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
-            aggregate_names.append(f"{prefix} Energy")
-        elif aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
-            aggregate_names.extend(
-                (
-                    f"{prefix} Return to Grid Power",
-                    f"{prefix} Return to Grid Energy",
-                    f"{prefix} Import Power",
-                    f"{prefix} Import Energy",
-                )
-            )
-    rendered_entities = tuple(
-        (_esphome_object_id(name), name)
-        for name in (*voltage_names, *aggregate_names)
-    ) + tuple(measurement_entities)
-    object_ids = tuple(object_id for object_id, _name in rendered_entities)
-    if len(set(object_ids)) != len(object_ids):
-        raise ValueError("ESPHome object-ID collision for meter entities")
-    return ExpectedMeterEntityEvidence(
-        frozenset(rendered_entities),
-        frozenset(
-            (_esphome_object_id(name), name) for name in aggregate_names
-        ),
-=======
     native_names: dict[str, str] = {}
     native_outputs, _ = _native_total_accounting(requested, topology, document, native_visibility_resolved)
     for source in native_total_sources(topology):
@@ -222,7 +191,7 @@ def expected_meter_entity_evidence(
         for item in _managed_sensor_items(rendered, 2)
         if item.get("internal", "false") == "false" and "name" in item
     )
-    names = (*voltage_names, *aggregate_names)
+    names = (*voltage_names, *aggregate_names, *(name for _, name in measurement_entities))
     object_ids = tuple(_esphome_object_id(name) for name in names)
     if len(set(object_ids)) != len(object_ids):
         raise ValueError("ESPHome object-ID collision for meter entities")
@@ -231,7 +200,6 @@ def expected_meter_entity_evidence(
         frozenset((_esphome_object_id(name), name) for name in aggregate_names),
         frozenset((_esphome_object_id(name), name) for name in native_names.values()),
         frozenset((_esphome_object_id(name), name) for name in external_names),
->>>>>>> origin/main
     )
 
 

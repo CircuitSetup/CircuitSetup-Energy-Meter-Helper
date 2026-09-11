@@ -14,7 +14,7 @@ from .models import VOLTAGE_REFERENCE_ID_RE, MeterTopology
 
 LineFrequencyHz = Literal[50, 60]
 UpdateIntervalSeconds = Literal[1, 2, 5, 10, 30, 60]
-MAX_VOLTAGE_REFERENCES = 8
+MAX_VOLTAGE_REFERENCES = 14
 MAX_AGGREGATES = 32
 
 
@@ -328,10 +328,8 @@ def validate_meter_configuration(
     if set(by_channel) != set(range(1, topology.ct_count + 1)):
         raise ValueError("channels must cover topology exactly")
 
-<<<<<<< HEAD
     if len(request.aggregates) > MAX_AGGREGATES:
         raise ValueError("too many aggregates")
-=======
     if not isinstance(request.default_totals, DefaultTotalsSettings):
         raise ValueError("default totals are invalid")  # noqa: TRY004
     _total_outputs(request.default_totals.overall, "overall total output")
@@ -359,7 +357,6 @@ def validate_meter_configuration(
         candidate_ids.add(automatic.candidate_id)
         _total_outputs(automatic.outputs, "automatic total output")
 
->>>>>>> origin/main
     aggregate_ids = {a.aggregate_id for a in request.aggregates}
     if len(aggregate_ids) != len(request.aggregates):
         raise ValueError("aggregate IDs must be unique")
