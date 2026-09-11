@@ -799,15 +799,17 @@ class _Router:
             await async_reconcile_issues(
                 self.hass, msg["entry_id"], operation, signals_from_result(result)
             )
-            connection.send_result(
-                msg["id"],
-                sanitize_payload(
-                    result,
-                    allow_transaction_change_keys=(
-                        msg["type"] in _TRANSACTION_STATUS_COMMANDS
-                    ),
-                ),
+            payload = sanitize_payload(
+                result,
+                allow_transaction_change_keys=msg["type"] in _TRANSACTION_STATUS_COMMANDS,
             )
+            if operation == "get_active_work" and isinstance(result, Mapping):
+                # The reload envelope contains the same reviewed DTO as a direct response.
+                payload["transaction"] = sanitize_payload(
+                    result.get("transaction"), allow_transaction_change_keys=True
+                )
+                _check_payload_size(payload)
+            connection.send_result(msg["id"], payload)
         except asyncio.CancelledError as error:
             if controller is not None:
                 controller.diagnostics.record_error(error)
