@@ -1248,7 +1248,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT1 role"]')?.value).toBe("grid");
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT1 model"]')?.value).toBe("saved-model");
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT1 multiplier"]')?.value).toBe("2");
-    expect(panel.shadowRoot?.querySelector('[aria-label="CT1"] .row-toggle')?.textContent?.trim()).toBe("OK");
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1"] .row-toggle')).toBeNull();
   });
 
   it("allows aggregate channels to overlap but rejects disabled circuits", () => {
@@ -2253,7 +2253,7 @@ describe("CircuitSetup panel", () => {
     state.existingConfigurationChoice = "manage_with_helper";
     panel.showInventory(meter);
     state.updateDraft(1, { preserveExistingGain: false });
-    expect(state.drafts.get(1)).toMatchObject({ modelId: "custom", customGainCt: 20894, customLabel: "CT1", multiplier: 2 });
+    expect(state.drafts.get(1)).toMatchObject({ modelId: "custom", customGainCt: 20894, multiplier: 2 });
     expect(state.meterConfiguration.configuration).toEqual(original);
     state.updateDraft(1, { modelId: "model", customGainCt: undefined });
     state.updateDraft(2, { preserveExistingGain: false });
@@ -4172,7 +4172,7 @@ describe("CircuitSetup panel", () => {
     expect(contrastRatio("#ffffff", "#00639b")).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("requires exact Custom CT fields and burden acknowledgement before review", async () => {
+  it("keeps Custom Gain inside technical details and requires burden acknowledgement", async () => {
     const inventory: CtInventory = {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: [{ channel: 1, name: "CT1", raw_gain_ct: 5500, reporting_multiplier: 1,
@@ -4184,9 +4184,9 @@ describe("CircuitSetup panel", () => {
         source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
     };
     const custom = new Map<number, CtDraft>([[1, { name: "Workshop", modelId: "custom", multiplier: 2,
-      customGainCt: 32000, customLabel: "Clamp", burdenAcknowledged: true, expanded: true }]]);
+      customGainCt: 32000, burdenAcknowledged: true, expanded: true }]]);
     expect(changesFromDrafts(inventory, custom)).toEqual([{ channel: 1, name: "Workshop", model_id: "custom",
-      reporting_multiplier: 2, custom_gain_ct: 32000, custom_label: "Clamp", burden_output_acknowledged: true }]);
+      reporting_multiplier: 2, custom_gain_ct: 32000, custom_label: "Workshop", burden_output_acknowledged: true }]);
     custom.set(1, { ...custom.get(1)!, modelId: "preset-burden", burdenAcknowledged: false });
     expect(changesFromDrafts(inventory, custom)).toEqual([{ channel: 1, name: "Workshop", model_id: "preset-burden",
       reporting_multiplier: 2, burden_output_acknowledged: false }]);
@@ -4199,15 +4199,15 @@ describe("CircuitSetup panel", () => {
     const model = panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT1 model"]');
     if (model) { model.value = "custom"; model.dispatchEvent(new Event("change")); }
     await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom gain"]')).not.toBeNull();
-    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom label"]')).not.toBeNull();
+    expect([...model?.options ?? []].map((option) => option.textContent)).toContain("Custom Gain");
+    expect(panel.shadowRoot?.querySelector('details.technical-details [aria-label="CT1 custom gain"]')).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom label"]')).toBeNull();
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 technical details"]')).toBeNull();
     expect(panel.shadowRoot?.querySelector('[aria-label="CT1 burden output acknowledgement"]')).not.toBeNull();
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(true);
-    const gain = panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom gain"]');
-    const label = panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom label"]');
+    const gain = panel.shadowRoot?.querySelector<HTMLInputElement>('details.technical-details [aria-label="CT1 custom gain"]');
     const burden = panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 burden output acknowledgement"]');
     if (gain) { gain.value = "32000"; gain.dispatchEvent(new Event("input")); }
-    if (label) { label.value = "Clamp"; label.dispatchEvent(new Event("input")); }
     burden?.click(); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
   });
@@ -4282,10 +4282,11 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom gain"]')).toBeNull();
     expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom label"]')).toBeNull();
-    panel.shadowRoot?.querySelector<HTMLButtonElement>(".row-toggle")?.click();
+    const details = panel.shadowRoot?.querySelector<HTMLDetailsElement>("details.technical-details");
+    if (details) { details.open = true; details.dispatchEvent(new Event("toggle")); }
     await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom gain"]')?.value).toBe("32000");
-    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom label"]')?.value).toBe("Existing clamp");
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('details.technical-details [aria-label="CT1 custom gain"]')?.value).toBe("32000");
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom label"]')).toBeNull();
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 burden output acknowledgement"]')?.checked).toBe(true);
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
 
@@ -4315,8 +4316,8 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
     expect([...state.drafts.values()].every((draft) => !draft.burdenAcknowledged)).toBe(true);
-    expect(panel.shadowRoot?.querySelector<HTMLOptionElement>('[aria-label="CT3 model"] option:checked')?.textContent).toBe("Keep existing gain");
-    for (const patch of [{ customGainCt: 28000 }, { multiplier: 2 }, { customLabel: "Different CT" }]) {
+    expect(panel.shadowRoot?.querySelector<HTMLOptionElement>('[aria-label="CT3 model"] option:checked')?.textContent).toBe("Custom Gain");
+    for (const patch of [{ customGainCt: 28000 }, { multiplier: 2 }]) {
       const drafts = new Map(state.drafts).set(3, { ...state.drafts.get(3)!, ...patch });
       expect(draftsAreValid(meter, drafts, false, meter.configuration)).toBe(false);
     }
@@ -4342,7 +4343,7 @@ describe("CircuitSetup panel", () => {
     state.updateDraft(3, { customGainCt: 28000 });
     state.totalGraphState = "ready"; await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
-    expect(panel.shadowRoot?.querySelector('[aria-label="CT3 technical details"]')?.textContent).toBe("Needs attention");
+    expect(panel.shadowRoot?.querySelectorAll<HTMLDetailsElement>("details.technical-details")[2]?.open).toBe(true);
     panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT3 model"]')?.dispatchEvent(new Event("change"));
     state.totalGraphState = "ready"; await panel.updateComplete;
     expect(state.drafts.get(3)?.burdenAcknowledged).toBe(false);
@@ -4357,7 +4358,7 @@ describe("CircuitSetup panel", () => {
     inventory.channels = [{ ...inventory.channels[0]!, selected_model_id: null,
       selection_verified_against_config: false, reporting_multiplier: 2 }];
     const drafts = new Map<number, CtDraft>([[1, { name: " Kitchen ", modelId: "custom", multiplier: 8,
-      customGainCt: 12345, customLabel: "Discarded selection", preserveExistingGain: true,
+      customGainCt: 12345, preserveExistingGain: true,
       burdenAcknowledged: true, expanded: false }]]);
 
     expect(changesFromDrafts(inventory, drafts)).toEqual([
@@ -4430,11 +4431,12 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     panel.shadowRoot?.querySelectorAll<HTMLInputElement>('[name="name-mode"]')[1]?.click();
     await panel.updateComplete;
-    panel.shadowRoot?.querySelector<HTMLButtonElement>(".row-toggle")?.click();
+    const details = panel.shadowRoot?.querySelector<HTMLDetailsElement>("details.technical-details");
+    if (details) { details.open = true; details.dispatchEvent(new Event("toggle")); }
     await panel.updateComplete;
 
     for (const selector of ['[aria-label="CT1 model"]', '[aria-label="CT1 multiplier"]',
-      '[aria-label="CT1 custom gain"]', '[aria-label="CT1 custom label"]',
+      '[aria-label="CT1 custom gain"]',
       '[aria-label="CT1 burden output acknowledgement"]']) {
       expect(panel.shadowRoot?.querySelector<HTMLInputElement>(selector)?.disabled).toBe(true);
     }

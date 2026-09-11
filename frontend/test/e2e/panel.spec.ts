@@ -115,7 +115,7 @@ function meterConfiguration(backend: MeterConfiguration, addons: number, scenari
     model_id: channel.selected_model_id ?? "custom", reporting_multiplier: channel.reporting_multiplier, role: "branch",
     voltage_reference_id: channel.address.board_index ? `addon${channel.address.board_index}` : "main",
     custom_gain_ct: channel.selected_model_id === null ? channel.raw_gain_ct : null,
-    custom_label: channel.selected_model_id === null ? "Custom CT" : null,
+    custom_label: channel.selected_model_id === null ? channel.name : null,
     burden_output_acknowledged: channel.selected_model_id === null }));
   const singlePhase = scenario === "single-phase-pq";
   const projectName = scenario === "existing-inspection" ? CUSTOM_PROJECT : project(addons);
@@ -1180,6 +1180,10 @@ test("six-channel inventory routes canonical edits through Meter Settings and fu
   expect(alignment.every((difference) => difference < 1)).toBe(true);
   await expect(page.getByLabel("CT4 model")).toHaveValue("custom");
   await expect(page.getByLabel("CT4 custom gain")).toHaveCount(0);
+  await expect(page.getByLabel("CT4 custom label")).toHaveCount(0);
+  await expect(page.locator(".row-toggle")).toHaveCount(0);
+  await page.locator("details.technical-details").nth(3).locator("summary").click();
+  await expect(page.getByLabel("CT4 custom gain")).toHaveValue("27518");
   await page.getByLabel("Home Assistant labels only").check();
   await expect(page.getByLabel("CT1 model")).toBeDisabled();
   await expect(page.getByLabel("CT1 multiplier")).toBeDisabled();
@@ -1428,7 +1432,7 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
       { channel: 1, enabled: true, name: "CT1", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "grid", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
       { channel: 2, enabled: true, name: "CT2", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "grid", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
       { channel: 3, enabled: true, name: "CT3", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
-      { channel: 4, enabled: true, name: "CT4", model_id: "custom", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: 27518, custom_label: "Custom CT", burden_output_acknowledged: true },
+      { channel: 4, enabled: true, name: "CT4", model_id: "custom", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: 27518, custom_label: "CT4", burden_output_acknowledged: true },
       { channel: 5, enabled: true, name: "CT5", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
       { channel: 6, enabled: true, name: "CT6", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
     ],

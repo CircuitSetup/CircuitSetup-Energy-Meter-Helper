@@ -115,7 +115,6 @@ export const panelStyles = css`
   .ct-row > label.check-row { display: flex; }
   .ct-row input, .ct-row select { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); }
   .ct-row input[type="checkbox"] { width: auto; }
-  .row-toggle { color: var(--accent); border: 0; padding: 4px; }
   .preserve-gain { margin: 6px 10px; }
   .technical-details { margin: 0; border: 0; border-radius: 0; }
   .mobile-label { display: none; }

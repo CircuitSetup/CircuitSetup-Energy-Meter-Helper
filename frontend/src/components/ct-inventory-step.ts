@@ -12,7 +12,6 @@ export interface CtDraft {
   modelId: string;
   multiplier: number;
   customGainCt?: number | undefined;
-  customLabel?: string | undefined;
   burdenAcknowledged: boolean;
   expanded: boolean;
   preserveExistingGain?: boolean;
@@ -95,10 +94,8 @@ export function ctInventoryStep(
             };
             const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
             const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : undefined);
-            const dirty = isDirty(channel, draft);
             const existing = existingConfiguration?.channels.find((item) => item.channel === channel.channel);
             const retained = keepsExistingCtSettings(draft, existing);
-            const valid = labelOnly ? Boolean(draft.name.trim()) : validDraft(inventory, draft, existing);
             const recommendation = preset ? recommendedReportingMultiplier(preset.rated_current_a) : null;
             const effectiveRange = draft.multiplier * 65.535;
             const circuit = configuration?.channels.find((item) => item.channel === channel.channel);
@@ -132,30 +129,28 @@ export function ctInventoryStep(
                   }}>
                   <option value="" ?selected=${draft.modelId === ""}>Choose model</option>
                   ${inventory.catalog.presets.map((item) => html`<option value=${item.model_id} ?selected=${draft.modelId === item.model_id}>${item.label}</option>`)}
-                  <option value="custom" ?selected=${draft.modelId === "custom"}>${retained && existing?.model_id === "custom" && !existing.burden_output_acknowledged ? "Keep existing gain" : "Custom"}</option>
-                </select>${preset ? html`<small>${preset.rated_current_a} A</small>` : nothing}<button class="row-toggle" aria-label=${`CT${channel.channel} technical details`} aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>${!valid ? "Needs attention" : draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}</button><span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
+                  <option value="custom" ?selected=${draft.modelId === "custom"}>Custom Gain</option>
+                </select>${preset ? html`<small>${preset.rated_current_a} A</small>` : nothing}<span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
                 <span role="cell"><span class="mobile-label">Range status</span>${draft.preserveExistingGain ? "Existing gain kept" : recommendation === null && preset ? "Rating exceeds ×8 range" : effectiveRange < (preset?.rated_current_a ?? 0) ? `Too small: ${effectiveRange} A` : `Up to ${effectiveRange} A`}</span>
               </div>
               ${allowPreserveExistingGain && !channel.selection_verified_against_config && channel.raw_gain_ct > 0 ? html`<label class="check-row preserve-gain"><input type="checkbox" aria-label=${`CT${channel.channel} keep existing gain`} ?disabled=${labelOnly} .checked=${draft.preserveExistingGain === true}
                 @change=${(event: Event) => update(channel.channel, { preserveExistingGain: (event.target as HTMLInputElement).checked, expanded: true })} />Keep existing gain; CT model not recorded.</label>` : nothing}
-              ${draft.modelId === "custom" && draft.expanded ? html`<div class="ct-detail custom-fields">
-                <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
-                  ?disabled=${labelOnly}
-                  .value=${draft.customGainCt === undefined ? "" : String(draft.customGainCt)}
-                  @input=${(event: Event) => update(channel.channel, { customGainCt: Number((event.target as HTMLInputElement).value) })} /></label>
-                <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} ?disabled=${labelOnly} .value=${draft.customLabel ?? ""}
-                  @input=${(event: Event) => update(channel.channel, { customLabel: (event.target as HTMLInputElement).value })} /></label>
-              </div>` : nothing}
-              ${draft.expanded && retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : nothing}
-              ${draft.expanded && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<div class="warning-band">
-                <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
-                  ?disabled=${labelOnly}
-                  .checked=${draft.burdenAcknowledged}
-                  @change=${(event: Event) => update(channel.channel, { burdenAcknowledged: (event.target as HTMLInputElement).checked })} />
-                  I checked the burden-output requirement for CT${channel.channel}</label>
-              </div>` : nothing}
               ${!draft.preserveExistingGain && preset && (recommendation === null || effectiveRange < preset.rated_current_a) ? html`<div class="warning-band" role="status">CT${channel.channel}: this selection needs a range of at least ${preset.rated_current_a} A. Continue is blocked.</div>` : nothing}
-              <details class="technical-details" ?open=${draft.expanded}><summary>Technical details</summary>
+              <details class="technical-details" ?open=${draft.expanded} @toggle=${(event: Event) => update(channel.channel, { expanded: (event.currentTarget as HTMLDetailsElement).open })}><summary>Technical details</summary>
+                ${draft.modelId === "custom" && draft.expanded ? html`<div class="ct-detail custom-fields">
+                  <label>Custom Gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
+                    ?disabled=${labelOnly}
+                    .value=${draft.customGainCt === undefined ? "" : String(draft.customGainCt)}
+                    @input=${(event: Event) => update(channel.channel, { customGainCt: Number((event.target as HTMLInputElement).value) })} /></label>
+                </div>` : nothing}
+                ${draft.expanded && retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : nothing}
+                ${draft.expanded && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<div class="warning-band">
+                  <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
+                    ?disabled=${labelOnly}
+                    .checked=${draft.burdenAcknowledged}
+                    @change=${(event: Event) => update(channel.channel, { burdenAcknowledged: (event.target as HTMLInputElement).checked })} />
+                    I checked the burden-output requirement for CT${channel.channel}</label>
+                </div>` : nothing}
                 <dl class="ct-detail">
                   <div><dt>Raw gain</dt><dd>${channel.raw_gain_ct}</dd></div>
                   <div><dt>Divided gain</dt><dd>${gain ?? "—"}</dd></div>
@@ -235,7 +230,7 @@ export function changesFromDrafts(inventory: CtInventory, drafts: Map<number, Ct
     const change: CtChange = { channel: channel.channel, name: draft.name.trim(), model_id: draft.modelId, reporting_multiplier: draft.multiplier };
     if (draft.modelId === "custom") {
       if (draft.customGainCt !== undefined) change.custom_gain_ct = draft.customGainCt;
-      if (draft.customLabel !== undefined) change.custom_label = draft.customLabel.trim();
+      change.custom_label = change.name;
       change.burden_output_acknowledged = draft.burdenAcknowledged;
     } else if (preset?.requires_burden_jumper_cut) {
       change.burden_output_acknowledged = draft.burdenAcknowledged;
@@ -247,21 +242,19 @@ export function changesFromDrafts(inventory: CtInventory, drafts: Map<number, Ct
 function isDirty(channel: CtInventory["channels"][number], draft: CtDraft): boolean {
   if (draft.preserveExistingGain) return draft.name !== channel.name;
   return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier
-    || draft.modelId === "custom" && (resultingGain(undefined, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct
-      || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));
+    || draft.modelId === "custom" && resultingGain(undefined, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct;
 }
 
 function keepsExistingCtSettings(draft: CtDraft, existing?: ChannelSettings): boolean {
   return Boolean(existing && draft.modelId === existing.model_id && draft.multiplier === existing.reporting_multiplier
-    && (draft.customGainCt ?? null) === existing.custom_gain_ct
-    && (draft.customLabel?.trim() || null) === existing.custom_label);
+    && (draft.customGainCt ?? null) === existing.custom_gain_ct);
 }
 
 function validDraft(inventory: CtInventory, draft: CtDraft, existing?: ChannelSettings): boolean {
   if (draft.preserveExistingGain) return true;
   if (!draft.name.trim() || !draft.modelId || ![1, 2, 4, 8].includes(draft.multiplier)) return false;
   if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt! >= 1 && draft.customGainCt! <= 65535
-    && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel!) && (draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
+    && (draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
   const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
   return Boolean(preset) && effectiveRangeIsSafe(preset!, draft.multiplier)
     && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));

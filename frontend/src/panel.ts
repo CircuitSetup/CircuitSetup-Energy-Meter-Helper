@@ -600,7 +600,6 @@ export class CircuitSetupPanel extends LitElement {
         multiplier: channel.reporting_multiplier,
         customGainCt: modelId === "custom"
           ? settings?.custom_gain_ct ?? channel.raw_gain_ct * channel.reporting_multiplier : undefined,
-        customLabel: channel.display_label ?? settings?.custom_label ?? undefined,
         burdenAcknowledged: settings?.burden_output_acknowledged
           ?? (channel.selection_verified_against_config
             && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
@@ -631,7 +630,7 @@ export class CircuitSetupPanel extends LitElement {
       return { ...channel, name: draft.name.trim(), selected_model_id: draft.modelId,
         reporting_multiplier: draft.multiplier,
         raw_gain_ct: gain === undefined ? channel.raw_gain_ct : Math.round(gain / draft.multiplier),
-        display_label: draft.modelId === "custom" ? draft.customLabel?.trim() || null : null,
+        display_label: draft.modelId === "custom" ? draft.name.trim() || null : null,
         selection_verified_against_config: true, stored_selection_present: true };
     }) };
   }
@@ -1297,7 +1296,7 @@ export class CircuitSetupPanel extends LitElement {
           ...item, name: draft.name, model_id: draft.modelId,
           reporting_multiplier: draft.multiplier,
           custom_gain_ct: draft.modelId === "custom" ? draft.customGainCt ?? null : null,
-          custom_label: draft.modelId === "custom" ? draft.customLabel?.trim() || null : null,
+          custom_label: draft.modelId === "custom" ? draft.name.trim() || null : null,
           burden_output_acknowledged: draft.burdenAcknowledged,
         } : item) });
     }

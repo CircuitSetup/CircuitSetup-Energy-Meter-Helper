@@ -2549,10 +2549,8 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
     };
     const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
     const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : void 0);
-    const dirty = isDirty(channel, draft);
     const existing = existingConfiguration?.channels.find((item) => item.channel === channel.channel);
     const retained = keepsExistingCtSettings(draft, existing);
-    const valid = labelOnly ? Boolean(draft.name.trim()) : validDraft(inventory, draft, existing);
     const recommendation = preset ? recommendedReportingMultiplier(preset.rated_current_a) : null;
     const effectiveRange = draft.multiplier * 65.535;
     const circuit = configuration?.channels.find((item) => item.channel === channel.channel);
@@ -2582,30 +2580,28 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
     }}>
                   <option value="" ?selected=${draft.modelId === ""}>Choose model</option>
                   ${inventory.catalog.presets.map((item) => b`<option value=${item.model_id} ?selected=${draft.modelId === item.model_id}>${item.label}</option>`)}
-                  <option value="custom" ?selected=${draft.modelId === "custom"}>${retained && existing?.model_id === "custom" && !existing.burden_output_acknowledged ? "Keep existing gain" : "Custom"}</option>
-                </select>${preset ? b`<small>${preset.rated_current_a} A</small>` : A}<button class="row-toggle" aria-label=${`CT${channel.channel} technical details`} aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>${!valid ? "Needs attention" : draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}</button><span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
+                  <option value="custom" ?selected=${draft.modelId === "custom"}>Custom Gain</option>
+                </select>${preset ? b`<small>${preset.rated_current_a} A</small>` : A}<span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
                 <span role="cell"><span class="mobile-label">Range status</span>${draft.preserveExistingGain ? "Existing gain kept" : recommendation === null && preset ? "Rating exceeds ×8 range" : effectiveRange < (preset?.rated_current_a ?? 0) ? `Too small: ${effectiveRange} A` : `Up to ${effectiveRange} A`}</span>
               </div>
               ${allowPreserveExistingGain && !channel.selection_verified_against_config && channel.raw_gain_ct > 0 ? b`<label class="check-row preserve-gain"><input type="checkbox" aria-label=${`CT${channel.channel} keep existing gain`} ?disabled=${labelOnly} .checked=${draft.preserveExistingGain === true}
                 @change=${(event) => update(channel.channel, { preserveExistingGain: event.target.checked, expanded: true })} />Keep existing gain; CT model not recorded.</label>` : A}
-              ${draft.modelId === "custom" && draft.expanded ? b`<div class="ct-detail custom-fields">
-                <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
-                  ?disabled=${labelOnly}
-                  .value=${draft.customGainCt === void 0 ? "" : String(draft.customGainCt)}
-                  @input=${(event) => update(channel.channel, { customGainCt: Number(event.target.value) })} /></label>
-                <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} ?disabled=${labelOnly} .value=${draft.customLabel ?? ""}
-                  @input=${(event) => update(channel.channel, { customLabel: event.target.value })} /></label>
-              </div>` : A}
-              ${draft.expanded && retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : A}
-              ${draft.expanded && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
-                <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
-                  ?disabled=${labelOnly}
-                  .checked=${draft.burdenAcknowledged}
-                  @change=${(event) => update(channel.channel, { burdenAcknowledged: event.target.checked })} />
-                  I checked the burden-output requirement for CT${channel.channel}</label>
-              </div>` : A}
               ${!draft.preserveExistingGain && preset && (recommendation === null || effectiveRange < preset.rated_current_a) ? b`<div class="warning-band" role="status">CT${channel.channel}: this selection needs a range of at least ${preset.rated_current_a} A. Continue is blocked.</div>` : A}
-              <details class="technical-details" ?open=${draft.expanded}><summary>Technical details</summary>
+              <details class="technical-details" ?open=${draft.expanded} @toggle=${(event) => update(channel.channel, { expanded: event.currentTarget.open })}><summary>Technical details</summary>
+                ${draft.modelId === "custom" && draft.expanded ? b`<div class="ct-detail custom-fields">
+                  <label>Custom Gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
+                    ?disabled=${labelOnly}
+                    .value=${draft.customGainCt === void 0 ? "" : String(draft.customGainCt)}
+                    @input=${(event) => update(channel.channel, { customGainCt: Number(event.target.value) })} /></label>
+                </div>` : A}
+                ${draft.expanded && retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : A}
+                ${draft.expanded && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
+                  <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
+                    ?disabled=${labelOnly}
+                    .checked=${draft.burdenAcknowledged}
+                    @change=${(event) => update(channel.channel, { burdenAcknowledged: event.target.checked })} />
+                    I checked the burden-output requirement for CT${channel.channel}</label>
+                </div>` : A}
                 <dl class="ct-detail">
                   <div><dt>Raw gain</dt><dd>${channel.raw_gain_ct}</dd></div>
                   <div><dt>Divided gain</dt><dd>${gain ?? "—"}</dd></div>
@@ -2678,7 +2674,7 @@ function changesFromDrafts(inventory, drafts) {
     const change = { channel: channel.channel, name: draft.name.trim(), model_id: draft.modelId, reporting_multiplier: draft.multiplier };
     if (draft.modelId === "custom") {
       if (draft.customGainCt !== void 0) change.custom_gain_ct = draft.customGainCt;
-      if (draft.customLabel !== void 0) change.custom_label = draft.customLabel.trim();
+      change.custom_label = change.name;
       change.burden_output_acknowledged = draft.burdenAcknowledged;
     } else if (preset?.requires_burden_jumper_cut) {
       change.burden_output_acknowledged = draft.burdenAcknowledged;
@@ -2688,15 +2684,15 @@ function changesFromDrafts(inventory, drafts) {
 }
 function isDirty(channel, draft) {
   if (draft.preserveExistingGain) return draft.name !== channel.name;
-  return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier || draft.modelId === "custom" && (resultingGain(void 0, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));
+  return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier || draft.modelId === "custom" && resultingGain(void 0, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct;
 }
 function keepsExistingCtSettings(draft, existing) {
-  return Boolean(existing && draft.modelId === existing.model_id && draft.multiplier === existing.reporting_multiplier && (draft.customGainCt ?? null) === existing.custom_gain_ct && (draft.customLabel?.trim() || null) === existing.custom_label);
+  return Boolean(existing && draft.modelId === existing.model_id && draft.multiplier === existing.reporting_multiplier && (draft.customGainCt ?? null) === existing.custom_gain_ct);
 }
 function validDraft(inventory, draft, existing) {
   if (draft.preserveExistingGain) return true;
   if (!draft.name.trim() || !draft.modelId || ![1, 2, 4, 8].includes(draft.multiplier)) return false;
-  if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt >= 1 && draft.customGainCt <= 65535 && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel) && (draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
+  if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt >= 1 && draft.customGainCt <= 65535 && (draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
   const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
   return Boolean(preset) && effectiveRangeIsSafe(preset, draft.multiplier) && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
 }
@@ -3928,7 +3924,6 @@ const panelStyles = i$5`
   .ct-row > label.check-row { display: flex; }
   .ct-row input, .ct-row select { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); }
   .ct-row input[type="checkbox"] { width: auto; }
-  .row-toggle { color: var(--accent); border: 0; padding: 4px; }
   .preserve-gain { margin: 6px 10px; }
   .technical-details { margin: 0; border: 0; border-radius: 0; }
   .mobile-label { display: none; }
@@ -4693,7 +4688,6 @@ class CircuitSetupPanel extends i$2 {
         modelId,
         multiplier: channel.reporting_multiplier,
         customGainCt: modelId === "custom" ? settings?.custom_gain_ct ?? channel.raw_gain_ct * channel.reporting_multiplier : void 0,
-        customLabel: channel.display_label ?? settings?.custom_label ?? void 0,
         burdenAcknowledged: settings?.burden_output_acknowledged ?? (channel.selection_verified_against_config && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
         expanded: false,
         preserveExistingGain: this.configurationMode === "legacy_editable" && !channel.selection_verified_against_config && channel.raw_gain_ct > 0,
@@ -4722,7 +4716,7 @@ class CircuitSetupPanel extends i$2 {
         selected_model_id: draft.modelId,
         reporting_multiplier: draft.multiplier,
         raw_gain_ct: gain === void 0 ? channel.raw_gain_ct : Math.round(gain / draft.multiplier),
-        display_label: draft.modelId === "custom" ? draft.customLabel?.trim() || null : null,
+        display_label: draft.modelId === "custom" ? draft.name.trim() || null : null,
         selection_verified_against_config: true,
         stored_selection_present: true
       };
@@ -5361,7 +5355,7 @@ class CircuitSetupPanel extends i$2 {
           model_id: draft.modelId,
           reporting_multiplier: draft.multiplier,
           custom_gain_ct: draft.modelId === "custom" ? draft.customGainCt ?? null : null,
-          custom_label: draft.modelId === "custom" ? draft.customLabel?.trim() || null : null,
+          custom_label: draft.modelId === "custom" ? draft.name.trim() || null : null,
           burden_output_acknowledged: draft.burdenAcknowledged
         } : item)
       });
