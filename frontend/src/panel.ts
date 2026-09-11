@@ -1492,6 +1492,11 @@ export class CircuitSetupPanel extends LitElement {
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.session = active.session?.state === "cancelled" ? null : active.session;
         this.transaction = active.transaction;
+        if (this.transaction?.guided_install && this.transaction.state === "verified"
+          && this.transaction.full_meter_configuration_verified) {
+          this.clearSubscription("transaction");
+          this.transaction = null;
+        }
         this.safetyAcknowledged = this.session?.safety_acknowledged ?? false;
         this.calibrationHandoff = Boolean(this.transaction && active.verified_calibration
           && active.verified_calibration.source_handoff_transaction_id === this.transaction.transaction_id);

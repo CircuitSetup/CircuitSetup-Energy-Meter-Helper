@@ -1,6 +1,7 @@
 """Curator reproductions for reviewed-install recovery gaps."""
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 import test_guided_configuration_install as guided_tests
@@ -12,7 +13,10 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     TransactionFailureStage,
     _job_failure,
 )
-from custom_components.circuitsetup_energy_meter_helper.device_builder import JobResult
+from custom_components.circuitsetup_energy_meter_helper.device_builder import (
+    ConfigChangedError,
+    JobResult,
+)
 from custom_components.circuitsetup_energy_meter_helper.log_parser import (
     MeterCommunicationError,
 )
@@ -21,12 +25,28 @@ from custom_components.circuitsetup_energy_meter_helper.log_parser import (
 @pytest.mark.parametrize(
     ("line", "reason", "context"),
     [
-        ("Secret 'meter_api_key' not defined", "required_secret", (("secret_name", "meter_api_key"),)),
-        ("[phase_angle] is an invalid option for [sensor.atm90e32]. Please check the indentation.", "unsupported_component_option", (("component", "sensor.atm90e32"), ("field", "phase_angle"))),
-        ("Software/ESPHome/power_quality/6chan_main_power_quality.yaml does not exist in repository", "missing_package", (("package", "power_quality"),)),
+        (
+            "Secret 'meter_api_key' not defined",
+            "required_secret",
+            (("secret_name", "meter_api_key"),),
+        ),
+        (
+            "[phase_angle] is an invalid option for [sensor.atm90e32]. Please check the indentation.",
+            "unsupported_component_option",
+            (("component", "sensor.atm90e32"), ("field", "phase_angle")),
+        ),
+        (
+            "Software/ESPHome/power_quality/6chan_main_power_quality.yaml does not exist in repository",
+            "missing_package",
+            (("package", "power_quality"),),
+        ),
         ("duplicate managed block", "conflicting_managed_override", ()),
         ("Secret 'private_value' not defined", "validation_rejected", ()),
-        ("password=private_value; package include secret credential", "validation_rejected", ()),
+        (
+            "password=private_value; package include secret credential",
+            "validation_rejected",
+            (),
+        ),
     ],
 )
 def test_diagnostics_use_known_error_shapes_without_echoing_provider_text(
@@ -193,5 +213,63 @@ def test_curator_completed_guided_start_returns_retained_outcome() -> None:
         replay = await manager.async_guided_install(preview.transaction_id, "admin")
         assert replay.state is ConfigTransactionState.VERIFIED
         assert builder.calls.count("upload_review") == 1
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["validation", "source", "artifact", "review"])
+def test_guided_refuses_upload_after_failed_validation_or_binding(failure: str) -> None:
+    async def run() -> None:
+        builder = _builder()
+        if failure == "validation":
+            builder.validation = [guided_tests.transaction_tests.Job(False)]
+        elif failure == "source":
+
+            async def changed(*args: object) -> None:
+                raise ConfigChangedError("a" * 64, "b" * 64)
+
+            builder.async_update_config = changed
+        elif failure == "artifact":
+            builder.compile_result = replace(
+                builder.compile_result, artifact_sha256="malformed"
+            )
+        else:
+            builder.compile_result = replace(
+                builder.compile_result, review_id="another-review"
+            )
+        manager, preview = await guided_tests._guided_preview(builder)
+        await manager.async_guided_install(preview.transaction_id, "admin")
+        task = manager._transaction(preview.transaction_id).guided_task
+        assert task is not None
+        result = await task
+        assert result.state in {
+            ConfigTransactionState.FAILED,
+            ConfigTransactionState.ROLLED_BACK,
+        }
+        assert "upload_review" not in builder.calls
+        if failure in {"validation", "source"}:
+            assert "compile_review" not in builder.calls
+
+    asyncio.run(run())
+
+
+def test_review_expiring_while_waiting_for_calibration_never_writes() -> None:
+    async def run() -> None:
+        builder = _builder()
+        manager, preview = await guided_tests._guided_preview(builder)
+        lease = await manager.sessions.async_acquire_calibration("aabbccddeeff")
+        await manager.async_guided_install(preview.transaction_id, "admin")
+        transaction = manager._transaction(preview.transaction_id)
+        task = transaction.guided_task
+        assert task is not None
+        await asyncio.sleep(0)
+        duplicate = await manager.async_guided_install(preview.transaction_id, "admin")
+        assert duplicate.transaction_id == preview.transaction_id
+        assert transaction.guided_task is task
+        now = transaction.expires_at + 1
+        manager._clock = lambda: now
+        lease.release()
+        await task
+        assert builder.calls == []
 
     asyncio.run(run())

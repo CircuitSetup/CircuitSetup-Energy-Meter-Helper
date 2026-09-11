@@ -1189,9 +1189,11 @@ for (const [guidedStage, label] of guidedStageLabels) {
     }, { timeout: 8_000 }).toBe(true);
     await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled({ timeout: 8_000 });
     await expect(page.locator(".sr-status")).toContainText("Configuration changes were installed and verified.");
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
 
     expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
-    expect(operations(frames)).not.toEqual(expect.arrayContaining(["apply_ct_config", "compile_ct_config", "install_ct_config"]));
+    expect(operations(frames).filter((operation) => ["apply_ct_config", "compile_ct_config", "install_ct_config", "calibrate_current", "calibrate_voltage", "clear_calibration"].includes(operation ?? ""))).toEqual([]);
   });
 }
 
@@ -1204,7 +1206,7 @@ test("guided validation failure stays rolled back without compile or upload", as
   await expect(page.locator('[data-action="install-changes"]')).toBeDisabled();
 
   expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
-  expect(operations(frames)).not.toEqual(expect.arrayContaining(["apply_ct_config", "compile_ct_config", "install_ct_config"]));
+  expect(operations(frames).filter((operation) => ["apply_ct_config", "compile_ct_config", "install_ct_config", "calibrate_current", "calibrate_voltage", "clear_calibration"].includes(operation ?? ""))).toEqual([]);
 });
 
 test("guided compile failure survives reload and only offers rollback", async ({ page }) => {
@@ -1223,7 +1225,7 @@ test("guided compile failure survives reload and only offers rollback", async ({
 
   expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
   expect(operations(frames).filter((operation) => operation === "rollback_ct_config")).toHaveLength(1);
-  expect(operations(frames)).not.toEqual(expect.arrayContaining(["apply_ct_config", "compile_ct_config", "install_ct_config"]));
+  expect(operations(frames).filter((operation) => ["apply_ct_config", "compile_ct_config", "install_ct_config", "calibrate_current", "calibrate_voltage", "clear_calibration"].includes(operation ?? ""))).toEqual([]);
 });
 
 test("guided verification incomplete survives reload and rechecks without another upload", async ({ page }) => {
@@ -1241,5 +1243,5 @@ test("guided verification incomplete survives reload and rechecks without anothe
 
   expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
   expect(operations(frames).filter((operation) => operation === "recheck_meter_verification")).toHaveLength(1);
-  expect(operations(frames)).not.toEqual(expect.arrayContaining(["apply_ct_config", "compile_ct_config", "install_ct_config"]));
+  expect(operations(frames).filter((operation) => ["apply_ct_config", "compile_ct_config", "install_ct_config", "calibrate_current", "calibrate_voltage", "clear_calibration"].includes(operation ?? ""))).toEqual([]);
 });

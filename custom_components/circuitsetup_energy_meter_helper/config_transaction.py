@@ -989,14 +989,15 @@ class ConfigTransactionManager:
                 raise RuntimeError(
                     "write confirmation is not legal in the current state"
                 )
+            transaction.lease = await self.sessions.async_acquire_config(
+                transaction.mac
+            )
             if (
                 transaction.review_expires_at is not None
                 and self._clock() >= transaction.review_expires_at
             ):
+                self._finish(transaction, ConfigTransactionState.FAILED, TransactionEvidenceCode.CANCELLED)
                 raise KeyError("expired reviewed inputs; create a fresh review")
-            transaction.lease = await self.sessions.async_acquire_config(
-                transaction.mac
-            )
             try:
                 verification_current = (
                     transaction.verification_id is None
