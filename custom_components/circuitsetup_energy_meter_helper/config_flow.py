@@ -13,6 +13,7 @@ from .const import (
     CONF_DEVICE_BUILDER_SLUG,
     CONF_ESPHOME_ENTRY_ID,
     DOMAIN,
+    ESPHOME_INSTALL_URL,
     INTEGRATION_NAME,
     SETUP_LATER,
 )
@@ -85,7 +86,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data_schema=vol.Schema({}),
                 errors={"base": "cannot_connect"},
             )
-        if len(installed) <= 1 and not user_input:
+        if not installed:
+            return await self.async_step_no_device_builder()
+        if len(installed) == 1 and not user_input:
             return self.async_create_entry(title=INTEGRATION_NAME, data=self._data)
         errors = {}
         if user_input:
@@ -101,6 +104,22 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="device_builder",
             data_schema=_builder_schema(installed),
             errors=errors,
+        )
+
+    async def async_step_no_device_builder(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show installation guidance, then retry discovery or explicitly skip."""
+        if user_input is not None:
+            if user_input.get("continue_without_builder") is True:
+                return self.async_create_entry(title=INTEGRATION_NAME, data=self._data)
+            return await self.async_step_device_builder()
+        return self.async_show_form(
+            step_id="no_device_builder",
+            description_placeholders={"installation_url": ESPHOME_INSTALL_URL},
+            data_schema=vol.Schema(
+                {vol.Optional("continue_without_builder", default=False): bool}
+            ),
         )
 
 
@@ -119,7 +138,10 @@ class OptionsFlow(config_entries.OptionsFlowWithReload):
                 errors={"base": "cannot_connect"},
             )
         if not installed:
-            return self.async_abort(reason="no_device_builder")
+            return self.async_abort(
+                reason="no_device_builder",
+                description_placeholders={"installation_url": ESPHOME_INSTALL_URL},
+            )
         errors = {}
         if user_input:
             selected = user_input.get(CONF_DEVICE_BUILDER_SLUG)

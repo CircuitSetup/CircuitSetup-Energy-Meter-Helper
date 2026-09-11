@@ -1,5 +1,6 @@
 {
   "raw": {
+    "purpose": "install_configuration",
     "transaction_id": "tx-1",
     "state": "previewed",
     "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -25,6 +26,7 @@
     "raw_key": 10
   },
   "sanitized": {
+    "purpose": "install_configuration",
     "transaction_id": "tx-1",
     "state": "previewed",
     "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

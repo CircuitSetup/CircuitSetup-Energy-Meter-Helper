@@ -3,9 +3,16 @@ import type { HomeAssistant } from "../src/api";
 import type { CircuitSetupPanel } from "../src/panel";
 
 type Frame = Record<string, unknown> & { id?: number; type: string };
+const fixture = new URLSearchParams(location.search);
+// Test-only direct fixture access also works outside a Playwright route lifetime.
+const socketUrl = fixture.has("fixture")
+  ? `ws://127.0.0.1:${Number(fixture.get("fixturePort") ?? 4174)}/api/websocket?${new URLSearchParams({
+    fixture: fixture.get("fixture")!, session: fixture.get("session") ?? "",
+  })}`
+  : `ws://${location.host}/api/websocket`;
 
 class HomeAssistantWebSocket implements HomeAssistant {
-  private readonly socket = new WebSocket(`ws://${location.host}/api/websocket`);
+  private readonly socket = new WebSocket(socketUrl);
   private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private readonly subscriptions = new Map<number, (value: unknown) => void>();
   private nextId = 0;

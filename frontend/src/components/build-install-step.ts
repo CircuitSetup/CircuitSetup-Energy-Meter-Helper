@@ -1,8 +1,11 @@
 import { html, type TemplateResult } from "lit";
-import type { ConfigurationImpact, MeterConfigurationRequest, TransactionStatus } from "../types";
+import type { ConfigurationImpact, MeterConfiguration, MeterConfigurationRequest, TotalGraphPreview, TransactionStatus } from "../types";
+import type { TransactionPurpose } from "../workflow-model";
 import { configReview } from "./config-review-step";
+import { totalsMigrationReview } from "./totals-migration-review";
 
 export function buildInstallStep(
+  purpose: Exclude<TransactionPurpose, null>,
   status: TransactionStatus | null,
   apply: () => void,
   compile: () => void,
@@ -15,6 +18,7 @@ export function buildInstallStep(
   reviewBackBusy = false,
   correctionPending = false,
   pendingAction = "",
+<<<<<<< HEAD
   guidedInstall = false,
   guidedAction: (() => void) | null = null,
   recheck: (() => void) | null = null,
@@ -22,6 +26,24 @@ export function buildInstallStep(
   const state = status?.state ?? "previewed";
   const busy = Boolean(pendingAction) || status?.guided_running === true;
   const guidedRunning = status?.guided_running === true;
+=======
+  legacyMigration = false,
+  meterInventory: MeterConfiguration | null = null,
+  totalPreview: TotalGraphPreview | null = null,
+): TemplateResult {
+  if (!status) return html`
+    <section class="step-content" aria-labelledby="step-heading">
+      <div class="recovery-panel" role="status"><strong>No active review</strong><p>Return to the previous step and review the current configuration before continuing.</p></div>
+      <footer class="action-footer"><button class="secondary" @click=${back}>Back</button></footer>
+    </section>
+  `;
+  const labels = purpose === "save_calibration"
+    ? { heading: "Save verified calibration", apply: "Write verified gains to ESPHome", compile: "Build firmware", install: "Install calibrated firmware" }
+    : { heading: purpose === "offset_preparation" ? "Install offset preparation" : purpose === "offset_finalization" ? "Install captured offsets" : legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
+  const state = status.state;
+  const retryClear = purpose === "save_calibration" && state === "verified";
+  const busy = Boolean(pendingAction);
+>>>>>>> origin/main
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
     ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
@@ -41,8 +63,16 @@ export function buildInstallStep(
   const failureMessage = status?.failure?.reason_code === "missing_package" ? "A required supported package is missing. Review the package selection and create a fresh review." : status?.failure?.reason_code === "unsupported_component_option" ? "The selected option is not supported by this ESPHome version. Choose a supported firmware version and review again." : status?.failure?.reason_code === "required_secret" ? "A required secret name is unresolved. Add it in ESPHome and create a fresh review." : status?.failure?.reason_code === "conflicting_managed_override" ? "A managed configuration override conflicts with the reviewed source. Restore the source or create a fresh review." : status?.failure?.reason_code === "verification_incomplete" ? "Uploaded; verification incomplete. Reconnect the meter and recheck verification." : null;
   return html`
     <section class="step-content" aria-labelledby="step-heading">
+<<<<<<< HEAD
       ${configReview(status, configuration, impact)}
       ${status?.guided_unavailable ? html`<p class="info-band" role="status">One-click installation is unavailable in this Device Builder. Use Advanced controls to review, build, and install.</p>` : ""}
+=======
+      <h2>${labels.heading}</h2>
+      ${purpose === "offset_preparation" ? html`<p>This installs a reviewed zero baseline for only the unfinished chips. Installation does not run calibration. Return to the same board and stage, acknowledge physical preparation again, and check measured readiness before explicit Run.</p>` : ""}
+      ${purpose === "offset_finalization" ? html`<p>Captured signed offsets, including zeros, are installed with native offset restore disabled. Confirm configuration selection after installation; this is not register readback and does not clear saved gain calibration.</p>` : ""}
+      ${configReview(status, configuration, impact, meterInventory?.totals)}
+      ${meterInventory ? totalsMigrationReview(meterInventory, () => undefined, totalPreview, impact !== null, true, status) : ""}
+>>>>>>> origin/main
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
           <strong>${communicationFailure ? "Meter chip communication failed" : failureMessage ?? "Build or install needs attention"}</strong>
@@ -73,6 +103,7 @@ export function buildInstallStep(
         <span>Meter is rebooting. Waiting for startup verification.</span>
         <progress max="100" aria-label="Waiting for meter startup"></progress>
       </div>` : ""}
+<<<<<<< HEAD
       ${guided ? html`<div class="confirmation-actions"><p>Install changes writes the reviewed configuration to the selected meter, builds firmware, uploads it, and reboots the meter.</p><button class="primary" data-action="install-changes" @click=${guidedAction ?? install} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "guided-install" || guidedRunning ? "Installing changes…" : "Install changes"}</button></div>` : html`<div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Apply"}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Compile"}</button>
@@ -88,6 +119,13 @@ export function buildInstallStep(
         <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>
         <div><dt>Warnings</dt><dd>${status.validation_detail.warning_record_count} records (${status.validation_detail.reported_warning_count === null ? "unreported" : `${status.validation_detail.reported_warning_count} reported`})</dd></div>
       </dl>` : ""}
+=======
+      <div class="confirmation-actions">
+        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
+        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? "Installing…" : retryClear ? "Retry clearing saved flash values" : retryableInstall ? "Retry Install" : labels.install}</button>
+      </div>
+>>>>>>> origin/main
       ${progressAction ? html`<div class="job-progress" role="status" aria-live="polite">
         <span>${progressAction} progress: ${percentage === null ? "in progress" : `${percentage}%`}</span>
         ${percentage === null

@@ -14,9 +14,13 @@ from typing import Any, Literal
 from homeassistant.core import HomeAssistant
 
 from .log_parser import (
+    CalibrationLogLine,
     MeterCommunicationError,
     MeterCommunicationParser,
+    OffsetTableSnapshot,
     parse_calibration_sources,
+    parse_offset_configuration_selection,
+    parse_offset_table_snapshot,
 )
 from .models import canonical_mac
 from .state_tracker import (
@@ -42,7 +46,10 @@ _CALIBRATION_TERMS = (
     "restore",
     "voltage",
     "current",
+    "spi read mismatch",
 )
+_MAX_OFFSET_SNAPSHOT_LINES = 4096
+_MAX_OFFSET_SNAPSHOT_BYTES = 512 * 1024
 _SECURITY_ERRORS = {
     "EncryptionHelloAPIError",
     "EncryptionPlaintextAPIError",
@@ -55,22 +62,17 @@ type ZeroconfFactory = Callable[[HomeAssistant], Awaitable[Any]]
 type EntityKey = tuple[int, int]
 
 
-def sanitize_control_text(value: str) -> str:
+def sanitize_control_text(value: str, *, preserve_line_breaks: bool = False) -> str:
     """Remove terminal escape sequences and C0/C1 controls from untrusted text."""
-    return _CONTROL.sub("", _strip_terminal_sequences(value))
+    value = _strip_terminal_sequences(value)
+    if preserve_line_breaks:
+        value = value.replace("\r\n", "\n").replace("\r", "\n")
+        return "\n".join(_CONTROL.sub("", line) for line in value.split("\n"))
+    return _CONTROL.sub("", value)
 
 
 def _strip_terminal_sequences(value: str) -> str:
     return _ANSI_CSI.sub("", _ANSI_OSC.sub("", value))
-
-
-def _new_log_lines(
-    baseline: tuple[str, ...], current: tuple[str, ...]
-) -> tuple[str, ...]:
-    overlap = min(len(baseline), len(current))
-    while overlap and baseline[-overlap:] != current[:overlap]:
-        overlap -= 1
-    return current[overlap:]
 
 
 class ESPHomeApiRepairRequired(RuntimeError):
@@ -217,20 +219,7 @@ class ESPHomeApiSession:
             )
             ensure_attempt_is_live()
 
-            def callback(message: Any) -> None:
-                self._on_log(client, message)
-
-            if dump_config:
-                self._unsubscribe_logs = client.subscribe_logs(
-                    callback,
-                    self._log_level("LOG_LEVEL_DEBUG"),
-                    dump_config=True,
-                )
-            else:
-                self._unsubscribe_logs = client.subscribe_logs(
-                    callback,
-                    self._log_level("LOG_LEVEL_DEBUG"),
-                )
+            self._subscribe_normal_logs(client, dump_config=dump_config)
             ensure_attempt_is_live()
         except BaseException:
             await self._disconnect_failed_client(client)
@@ -414,30 +403,182 @@ class ESPHomeApiSession:
             raise ESPHomeSessionDisconnectedError(str(error)) from error
 
     async def async_calibration_sources(
-        self, expected_instance_ids: set[str], *, timeout: float = 5.0
+        self,
+        expected_instance_ids: set[str],
+        *,
+        timeout: float = 5.0,
+        offset_stage: Literal[1, 2] | None = None,
     ) -> dict[str, Literal["flash", "configuration", "unknown"]]:
         """Request current ATM90E32 dump-config source evidence."""
         async with self._lifecycle_lock:
             client = self._ready_client()
-            baseline = self.log_lines
+            sources = parse_calibration_sources(
+                (), expected_instance_ids, offset_stage=offset_stage
+            )
+
+            def on_log(message: Any) -> None:
+                self._on_log(client, message)
+                if client is not self._client or not self.connected:
+                    return
+                raw = message.message
+                text = (
+                    raw.decode("utf-8", "replace")
+                    if isinstance(raw, bytes)
+                    else str(raw)
+                )
+                # Consume fresh messages directly: a full dump can exceed the log ring.
+                observed = parse_calibration_sources(
+                    tuple(_strip_terminal_sequences(text).splitlines()),
+                    expected_instance_ids,
+                    offset_stage=offset_stage,
+                )
+                sources.update(
+                    (key, value)
+                    for key, value in observed.items()
+                    if value != "unknown"
+                )
+
             self._clear_log_subscription()
             self._unsubscribe_logs = client.subscribe_logs(
-                lambda message: self._on_log(client, message),
+                on_log,
                 self._log_level("LOG_LEVEL_DEBUG"),
                 dump_config=True,
             )
             deadline = monotonic() + timeout
             while monotonic() < deadline:
-                sources = parse_calibration_sources(
-                    _new_log_lines(baseline, self.log_lines), expected_instance_ids
-                )
+                if self._ready_client() is not client:
+                    raise ESPHomeSessionDisconnectedError(
+                        "connection changed during status dump"
+                    )
                 if all(source != "unknown" for source in sources.values()):
-                    return sources
+                    return dict(sources)
                 await asyncio.sleep(min(0.05, max(0.0, deadline - monotonic())))
-            sources = parse_calibration_sources(
-                _new_log_lines(baseline, self.log_lines), expected_instance_ids
+            if self._ready_client() is not client:
+                raise ESPHomeSessionDisconnectedError(
+                    "connection changed during status dump"
+                )
+            return dict(sources)
+
+    async def async_offset_table_snapshot(
+        self,
+        expected_instance_ids: set[str],
+        *,
+        offset_stage: Literal[1, 2],
+        timeout: float = 5.0,
+    ) -> dict[str, OffsetTableSnapshot | None]:
+        """Capture one bounded fresh dump without depending on the public log ring."""
+        if offset_stage not in (1, 2):
+            raise ValueError("offset stage must be 1 or 2")
+        generation, captured = await self._async_offset_dump(timeout)
+        return parse_offset_table_snapshot(
+            captured,
+            connection_generation=generation,
+            operation_sequence=0,
+            expected_instance_ids=expected_instance_ids,
+            started_after=0.0,
+            offset_stage=offset_stage,
+        )
+
+    async def async_offset_configuration_selection(
+        self, expected_instance_ids: set[str], *, timeout: float = 5.0
+    ) -> dict[str, int]:
+        """Fresh native per-chip selection proof; not register verification."""
+        generation, captured = await self._async_offset_dump(timeout)
+        return parse_offset_configuration_selection(
+            captured,
+            connection_generation=generation,
+            expected_instance_ids=expected_instance_ids,
+        )
+
+    async def _async_offset_dump(
+        self, timeout: float
+    ) -> tuple[int, list[CalibrationLogLine]]:
+        """Shared bounded raw dump for saved tables and final YAML selection."""
+        async with self._lifecycle_lock:
+            client = self._ready_client()
+            generation = self.connection_generation
+            captured: list[CalibrationLogLine] = []
+            captured_bytes = 0
+            overflowed = False
+            capturing = True
+
+            def on_log(message: Any) -> None:
+                nonlocal captured_bytes, capturing, overflowed
+                self._on_log(client, message)
+                if not capturing or client is not self._client or not self.connected:
+                    return
+                raw = message.message
+                text = (
+                    raw.decode("utf-8", "replace")
+                    if isinstance(raw, bytes)
+                    else str(raw)
+                )
+                for raw_line in _strip_terminal_sequences(text).splitlines():
+                    line = sanitize_control_text(raw_line).strip()
+                    if not line:
+                        continue
+                    size = len(line.encode("utf-8"))
+                    if (
+                        len(captured) >= _MAX_OFFSET_SNAPSHOT_LINES
+                        or captured_bytes + size > _MAX_OFFSET_SNAPSHOT_BYTES
+                    ):
+                        overflowed = True
+                        capturing = False
+                        return
+                    captured.append(
+                        CalibrationLogLine(generation, 0, monotonic(), line)
+                    )
+                    captured_bytes += size
+
+            self._clear_log_subscription()
+            unsubscribe = client.subscribe_logs(
+                on_log,
+                self._log_level("LOG_LEVEL_DEBUG"),
+                dump_config=True,
             )
-            return sources
+            self._unsubscribe_logs = unsubscribe
+            deadline = monotonic() + timeout
+            try:
+                while monotonic() < deadline:
+                    if (
+                        client is not self._client
+                        or not self.connected
+                        or self.connection_generation != generation
+                    ):
+                        raise ESPHomeSessionDisconnectedError(
+                            "connection generation changed during offset table snapshot"
+                        )
+                    if overflowed:
+                        raise ESPHomeApiRepairRequired(
+                            "bounded offset table snapshot exceeded its capture limit"
+                        )
+                    await asyncio.sleep(min(0.05, max(0.0, deadline - monotonic())))
+                if (
+                    client is not self._client
+                    or not self.connected
+                    or self.connection_generation != generation
+                ):
+                    raise ESPHomeSessionDisconnectedError(
+                        "connection generation changed during offset table snapshot"
+                    )
+                if overflowed:
+                    raise ESPHomeApiRepairRequired(
+                        "bounded offset table snapshot exceeded its capture limit"
+                    )
+                return generation, captured
+            finally:
+                capturing = False
+                if self._unsubscribe_logs is unsubscribe:
+                    self._clear_log_subscription()
+                else:
+                    with suppress(Exception):
+                        unsubscribe()
+                if (
+                    client is self._client
+                    and self.connected
+                    and self.connection_generation == generation
+                ):
+                    self._subscribe_normal_logs(client)
 
     async def async_check_meter_communication(
         self, expected_chips: int, *, timeout: float = 30.0
@@ -557,6 +698,25 @@ class ESPHomeApiSession:
                 or self._log_bytes > self._max_log_bytes
             ):
                 self._log_bytes -= len(self._log_lines.popleft().encode("utf-8"))
+
+    def _subscribe_normal_logs(self, client: Any, *, dump_config: bool = False) -> None:
+        """Restore the session's ordinary bounded-log subscriber."""
+        self._clear_log_subscription()
+
+        def callback(message: Any) -> None:
+            self._on_log(client, message)
+
+        if dump_config:
+            self._unsubscribe_logs = client.subscribe_logs(
+                callback,
+                self._log_level("LOG_LEVEL_DEBUG"),
+                dump_config=True,
+            )
+        else:
+            self._unsubscribe_logs = client.subscribe_logs(
+                callback,
+                self._log_level("LOG_LEVEL_DEBUG"),
+            )
 
     async def _async_on_stop(self, client: Any, expected_disconnect: bool) -> None:
         async with self._connection_state_lock:

@@ -26,7 +26,7 @@ _SEQUENCE_RE = re.compile(r"^(?P<indent> *)-\s+(?P<rest>.+)$")
 _SAFE_SENSOR_SEQUENCE_RE = re.compile(
     r"^(?P<indent> {0,2})-[ \t]+(?P<key>[A-Za-z0-9_-]+)[ \t]*:(?P<rest>.*)$"
 )
-_SAFE_EXTEND_RE = re.compile(r"^!extend[ \t]+[\w${}-]+(?:[ \t]+#.*)?$")
+_SAFE_EXTEND_RE = re.compile(r"^!(?:extend|remove)[ \t]+[\w${}-]+(?:[ \t]+#.*)?$")
 _YAML_PATH_RE = re.compile(r"(?i)^(.*?\.ya?ml)(?:@.*)?$")
 _PACKAGE_LIST_ENTRY_RE = re.compile(
     r"^(?P<indent> *)(?P<comment>#\s*)?-\s+(?P<rest>.*?)(?:\r?\n)?$"
@@ -68,6 +68,10 @@ MANAGED_BLOCK_MARKERS = {
     "calibrated_voltage_gains": (
         "# CircuitSetup Energy Meter Helper: calibrated voltage gains v1",
         "# End CircuitSetup Energy Meter Helper: calibrated voltage gains v1",
+    ),
+    "calibrated_offsets": (
+        "# CircuitSetup Energy Meter Helper: calibrated offsets v1",
+        "# End CircuitSetup Energy Meter Helper: calibrated offsets v1",
     ),
     "aggregates": (
         "# CircuitSetup Energy Meter Helper: aggregates v1",

@@ -19,19 +19,21 @@ export function topologyStep(topology: MeterTopology, projectVersion: string | n
   const mismatch = forceMismatch || topologyMismatch(topology);
   return html`
     <section class="step-content" aria-labelledby="step-heading">
-      <div class="identity-strip">
-        <strong>${topology.project_name}</strong>
-        <span>Version ${projectVersion ?? "unavailable"}</span>
-        <span>${topology.board_count} boards</span><span>${topology.ct_count} CTs</span>
-        <span>${topology.group_count} groups</span><span>${topology.connection_type}</span>
-      </div>
-      <h2>Topology evidence</h2>
-      <table class="evidence-table">
-        <thead><tr><th>Source</th><th>Add-ons</th><th>Evidence</th></tr></thead>
-        <tbody>${topology.evidence.map((item) => html`
-          <tr><td>${item.source.replaceAll("_", " ")}</td><td>${item.addon_count}</td><td>${item.detail}</td></tr>
-        `)}</tbody>
-      </table>
+      <p class="info-band">Detected ${topology.board_count} boards with ${topology.ct_count} CTs on a ${topology.connection_type} connection. ${mismatch ? "The detected hardware does not agree." : "The detected hardware agrees."}</p>
+      <details>
+        <summary>Technical details</summary>
+        <dl>
+          <div><dt>Project</dt><dd>${topology.project_name}</dd></div>
+          <div><dt>Version</dt><dd>${projectVersion ?? "unavailable"}</dd></div>
+          <div><dt>Measurement groups</dt><dd>${topology.group_count}</dd></div>
+        </dl>
+        <table class="evidence-table">
+          <thead><tr><th>Source</th><th>Add-ons</th><th>Evidence</th></tr></thead>
+          <tbody>${topology.evidence.map((item) => html`
+            <tr><td>${item.source.replaceAll("_", " ")}</td><td>${item.addon_count}</td><td>${item.detail}</td></tr>
+          `)}</tbody>
+        </table>
+      </details>
       ${mismatch ? html`
         <div class="error-panel" role="alert" tabindex="-1">
           <strong>Topology mismatch</strong>

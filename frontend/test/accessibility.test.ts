@@ -1,12 +1,21 @@
 import { render } from "lit";
+import "../src/index";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ctInventoryStep, type CtDraft } from "../src/components/ct-inventory-step";
+import { defaultTotalsSection } from "../src/components/default-totals-section";
+import { automaticTotalsSection } from "../src/components/automatic-totals-section";
+import { advancedTotalsEditor } from "../src/components/advanced-totals-editor";
+import { totalsMigrationReview } from "../src/components/totals-migration-review";
 import { currentStep } from "../src/components/current-step";
 import { espWebInstaller } from "../src/components/esp-web-installer";
+import { meterSettingsStep } from "../src/components/meter-settings-step";
 import { setupDeviceStep } from "../src/components/setup-device-step";
 import { panelStyles } from "../src/styles";
 import { voltageStep } from "../src/components/voltage-step";
+import { calibrationEvidence, calibrationProgress } from "../src/components/measurement-evidence";
+import { safetyStep } from "../src/components/safety-step";
 import type { CtInventory, MeterTopology } from "../src/types";
+import { meterResponse, newInstallScenario } from "./workflow-scenarios";
 
 const topology: MeterTopology = {
   addon_count: 1,
@@ -20,6 +29,18 @@ const topology: MeterTopology = {
 };
 
 const noop = () => undefined;
+
+it("groups legacy choices by relationship with a described disabled acceptance button", () => {
+  const meter = meterResponse();
+  meter.configuration.aggregates = ["child", "parent"].map((id, index) => ({ aggregate_id: id, name: id, role: "custom",
+    sources: [{ kind: "channel", channel: index + 1 }], measurement_method: "direct", energy_mode: "none", outputs: { watts: true, amps: false, kwh: false }, origin: "migrated" }));
+  meter.totals.migration.legacy_parent_links = [{ child_id: "child", proposed_parent_id: "parent" }];
+  const root = mount(totalsMigrationReview(meter, noop));
+  expect(root.querySelector("fieldset legend")?.textContent).toBe("child → parent");
+  const button = [...root.querySelectorAll("button")].find((item) => item.textContent === "Use this parent relationship")!;
+  expect(button.disabled).toBe(true);
+  expect(root.querySelector(`#${button.getAttribute("aria-describedby")}`)?.textContent).toContain("cannot mix CTs");
+});
 let container: HTMLDivElement;
 
 afterEach(() => container?.remove());
@@ -30,6 +51,26 @@ const mount = (template: ReturnType<typeof currentStep>) => {
   render(template, container);
   return container;
 };
+
+it("marks exactly the active workflow step and exposes mobile progress state", async () => {
+  const panel = document.createElement("circuitsetup-energy-meter-helper-panel") as import("../src/panel").CircuitSetupPanel;
+  panel.panel = { config: { entry_id: "entry-1" } };
+  panel.hass = {
+    callWS: async <T>() => newInstallScenario.setup as T,
+    connection: { subscribeMessage: async () => () => undefined },
+  };
+  document.body.append(panel);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await panel.updateComplete;
+
+  expect(panel.shadowRoot?.querySelectorAll("nav [aria-current=step]")).toHaveLength(1);
+  const heading = panel.shadowRoot?.querySelector<HTMLElement>("#step-heading");
+  expect(heading?.getAttribute("tabindex")).toBe("-1");
+  expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".mobile-progress button")?.getAttribute("aria-expanded")).toBe("false");
+  panel.shadowRoot?.querySelector<HTMLButtonElement>(".mobile-progress button")?.click();
+  await panel.updateComplete;
+  expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".mobile-progress button")?.getAttribute("aria-expanded")).toBe("true");
+});
 
 it("gives the firmware activation control the panel target size and focus treatment", async () => {
   container = document.createElement("div");
@@ -48,6 +89,52 @@ it("gives the firmware activation control the panel target size and focus treatm
   expect(panelStyles.cssText).toContain(".esp-web-installer [slot=\"activate\"]:focus-visible");
 });
 
+it("keeps default total switches explicitly named and visible in the narrow layout", () => {
+  const response = meterResponse();
+  container = document.createElement("div");
+  document.body.append(container);
+  render(defaultTotalsSection(response.configuration, response.totals, true, true, noop), container);
+
+  expect([...container.querySelectorAll<HTMLInputElement>('[role="switch"]')].map((input) => input.getAttribute("aria-label"))).toEqual([
+    "Overall meter total Watts", "Overall meter total Amps", "Overall meter total kWh",
+  ]);
+  expect(panelStyles.cssText).toContain(".default-total-controls { align-items: stretch; flex-direction: column;");
+});
+
+it("names suggested total controls and keeps them visible in the narrow layout", () => {
+  const response = meterResponse();
+  const candidate = { candidate_id: "grid-ct1-ct2", aggregate_id: "auto-grid", name: "Service mains", role: "grid" as const,
+    sources: [{ kind: "channel" as const, channel: 1 }, { kind: "channel" as const, channel: 2 }], measurement_method: "two_ct_sum" as const,
+    energy_mode: "bidirectional" as const, recommended_outputs: { watts: true, amps: false, kwh: true } };
+  response.totals.automatic_candidates = [candidate]; response.totals.automatic_totals = [{ candidate, enabled: true, outputs: candidate.recommended_outputs }];
+  response.configuration.automatic_totals = [{ candidate_id: candidate.candidate_id, enabled: true, outputs: candidate.recommended_outputs }];
+  container = document.createElement("div"); document.body.append(container);
+  render(automaticTotalsSection(response.configuration, response.totals, true, noop), container);
+
+  expect([...container.querySelectorAll<HTMLInputElement>('[role="switch"]')].map((input) => input.getAttribute("aria-label"))).toEqual([
+    "Create Service mains total", "Service mains Watts", "Service mains Amps", "Service mains kWh",
+  ]);
+  expect(panelStyles.cssText).toContain(".automatic-total-controls { align-items: stretch; flex-direction: column;");
+});
+
+it("supports keyboard-focused hierarchical source controls and named source groups", () => {
+  const response = meterResponse();
+  response.configuration.aggregates = [{ aggregate_id: "home", name: "Home", role: "custom", sources: [],
+    measurement_method: "direct", energy_mode: "consumption", outputs: { watts: true, amps: false, kwh: true }, origin: "advanced" }];
+  const update = vi.fn();
+  const root = mount(advancedTotalsEditor(response.configuration, new Map(), update, true, "", response.totals));
+  const summary = root.querySelector<HTMLElement>(".advanced-totals > summary")!;
+  summary.focus(); summary.click();
+  expect(document.activeElement).toBe(summary);
+  expect(root.querySelector<HTMLDetailsElement>(".advanced-totals")?.open).toBe(true);
+  const source = root.querySelector<HTMLInputElement>('[aria-label="Home: Overall meter total"]')!;
+  source.focus(); source.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true })); source.click();
+  expect(document.activeElement).toBe(source);
+  expect(update).toHaveBeenCalledWith(expect.objectContaining({ aggregates: [expect.objectContaining({ sources: [{ kind: "native_total", source_id: "overall" }] })] }));
+  expect(source.closest("fieldset")?.querySelector("legend")?.textContent).toBe("Native totals");
+  expect(panelStyles.cssText).toContain(".aggregate-source-options { grid-template-columns: 1fr;");
+});
+
 it("keeps Setup Device free of legacy installer and IO0 controls", () => {
   container = document.createElement("div");
   document.body.append(container);
@@ -61,6 +148,31 @@ it("keeps Setup Device free of legacy installer and IO0 controls", () => {
   expect([...container.querySelectorAll("input")].some((input) =>
     [input.getAttribute("name"), input.getAttribute("aria-label"), input.getAttribute("autocomplete"), input.getAttribute("data-testid")]
       .some((value) => /ssid|network password|wifi password|passphrase/i.test(value ?? "")))).toBe(false);
+});
+
+it("opens advanced meter settings and confirms the profile with keyboard focus", () => {
+  container = document.createElement("div");
+  document.body.append(container);
+  const response = meterResponse();
+  let confirmed = false;
+  render(meterSettingsStep({ ...response.configuration.meter, authoritative: true, warnings: [] }, response.voltage_transformer_catalog, false,
+    noop, noop, noop, noop, noop, noop, noop, null, noop, false,
+    (value) => { confirmed = value; }), container);
+
+  const advanced = container.querySelector<HTMLDetailsElement>('[data-section="advanced-meter-settings"]')!;
+  const summary = advanced.querySelector<HTMLElement>("summary")!;
+  summary.focus();
+  summary.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  summary.click();
+  expect(document.activeElement).toBe(summary);
+  expect(advanced.open).toBe(true);
+
+  const confirmation = container.querySelector<HTMLInputElement>('[aria-label="Confirm electrical profile"]')!;
+  confirmation.focus();
+  confirmation.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+  confirmation.click();
+  expect(document.activeElement).toBe(confirmation);
+  expect(confirmed).toBe(true);
 });
 
 describe("calibration tab semantics", () => {
@@ -221,12 +333,80 @@ it("gives the CT inventory table explicit header and data-cell semantics", () =>
   document.body.append(container);
   render(ctInventoryStep(inventory, 0, drafts, noop, noop, noop, noop), container);
 
-  expect(container.querySelectorAll('[role="columnheader"]')).toHaveLength(11);
-  expect(container.querySelector('[data-ct-row]')?.querySelectorAll(':scope > [role="cell"]')).toHaveLength(11);
+  expect(container.querySelectorAll('[role="columnheader"]')).toHaveLength(6);
+  expect(container.querySelector('[data-ct-row]')?.querySelectorAll(':scope > [role="cell"]')).toHaveLength(6);
   const table = container.querySelector('[role="table"]');
   expect(table?.getAttribute("aria-rowcount")).toBe("7");
   expect(table?.querySelector('.ct-header')?.getAttribute("aria-rowindex")).toBe("1");
   expect(Array.from(table?.querySelectorAll('[data-ct-row]') ?? []).map((row) => row.getAttribute("aria-rowindex"))).toEqual([
     "2", "3", "4", "5", "6", "7",
   ]);
+});
+
+describe("guided calibration copy", () => {
+  it("makes units, circuit identity, and blank-gain preservation visible", () => {
+    const root = mount(currentStep(topology, { plan_id: "plan", source_sha256: "a".repeat(64), channels: [{
+      channel: 1, name: "Kitchen range", raw_gain_ct: 5500, reporting_multiplier: 1,
+      selected_model_id: "preset", selection_verified_against_config: true, display_label: null,
+      stored_selection_present: false, address: { channel: 1, board_index: 0, group_index: 0, phase: "A" },
+    }], catalog: { presets: [], source_repository: "repo", source_ref: "ref", schema_version: 1 } }, null,
+    1, new Map(), 1, null, null, new Set(), noop, noop, noop, noop, noop, noop, noop));
+    const voltage = mount(voltageStep(topology, null, 0, [120], [], null, [], false, noop, noop, noop, noop, noop, noop));
+
+    expect(voltage.querySelector<HTMLInputElement>("input")?.getAttribute("aria-label")).toContain("(V)");
+    expect(root.querySelector<HTMLInputElement>("[data-current-reference=\"1\"]")?.closest("label")?.textContent)
+      .toContain("CT1 · Kitchen range reference (A)");
+    expect(root.textContent).toContain("Blank entries keep the existing gains.");
+  });
+
+  it("explains runtime-only multiplier selection", () => {
+    const root = mount(currentStep(topology, null, null, 1, new Map([[1, 5]]), null, null, null,
+      new Set(), noop, noop, noop, noop, noop, noop, noop));
+
+    expect(root.querySelector("[data-role=reporting-multiplier]")).not.toBeNull();
+    expect(root.textContent).toContain("ESPHome source editing is unavailable");
+  });
+
+  it("shows plan-specific subprogress and user-facing stability states", () => {
+    const standard = mount(calibrationProgress(false, null, null, "standard"));
+    const full = mount(calibrationProgress(false, null, null, "full"));
+    const waiting = mount(voltageStep(topology, null, 0, [120], [], { target: "voltage", target_id: "main", stable: false, windows: [] }, [], false, noop, noop, noop, noop, noop, noop));
+    const changing = mount(currentStep(topology, null, null, 1, new Map([[1, 5]]), 1, { target: "current", target_id: "1", stable: false, windows: [{ samples: [4, 6], mean: 5, standard_deviation: 1, range_percent: 40 }] }, null, new Set(), noop, noop, noop, noop, noop, noop, noop));
+    const stable = mount(voltageStep(topology, null, 0, [120], [], { target: "voltage", target_id: "main", stable: true, windows: [{ samples: [120], mean: 120, standard_deviation: 0, range_percent: 0 }] }, [], false, noop, noop, noop, noop, noop, noop));
+
+    expect(standard.querySelectorAll(".progress-steps li")).toHaveLength(4);
+    expect(standard.textContent).not.toContain("Zero reference");
+    expect(full.querySelectorAll(".progress-steps li")).toHaveLength(5);
+    expect(full.textContent).toContain("Zero reference");
+    expect(waiting.textContent).toContain("Waiting for live data");
+    expect(changing.textContent).toContain("Data is changing too much");
+    expect(stable.textContent).toContain("Stable and ready for calibration");
+  });
+
+  it("keeps raw backend state inside Technical details", () => {
+    container = document.createElement("div"); document.body.append(container);
+    render(calibrationEvidence({ state: "applied_pending_restart_verification", group_key: "main_1", phase: null,
+      changed_channels: [1], iteration: 1, before_values: [1], after_values: [2], error_percent_values: [0],
+      gain_evidence: null, restore_evidence: null, retry_allowed: false }), container);
+
+    expect(container.querySelector("details > summary")?.textContent).toBe("Technical details");
+    expect(container.querySelector("details")?.textContent).toContain("Backend state");
+    expect(container.querySelector("dl > div > dt")?.textContent).not.toBe("State");
+  });
+
+  it("warns that CT inventory needs physical work", () => {
+    const inventory = { plan_id: "plan", source_sha256: "a".repeat(64), channels: [],
+      catalog: { presets: [], source_repository: "repo", source_ref: "ref", schema_version: 1 } } as CtInventory;
+    container = document.createElement("div"); document.body.append(container);
+    render(ctInventoryStep(inventory, 0, new Map(), noop, noop, noop, noop), container);
+
+    expect(container.textContent).toContain("Physical work required");
+  });
+
+  it.each(["standard", "full"] as const)("describes the %s calibration roadmap", (plan) => {
+    const root = mount(safetyStep({ session_id: "session", device_id: "meter", state: "safety_required", safety_acknowledged: false,
+      calibration_plan: plan, preflight: { issues: [], zeroed_roles: [] } }, false, noop, noop, noop, noop));
+
+    expect(root.textContent).toContain(plan === "full" ? "offsets, voltage, and current" : "voltage and current");
+  });
 });

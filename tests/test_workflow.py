@@ -63,9 +63,945 @@ OFFSET_TABLE = ((1, 2), (3, 4), (5, 6))
 POWER_OFFSET_TABLE = ((7, 8), (9, 10), (11, 12))
 
 
-def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper() -> (
+async def _persisted_totals_workflow(
+    content: str, store: Any = None, topology: Any = None
+) -> tuple[Any, ...]:
+    from custom_components.circuitsetup_energy_meter_helper.config_document import (
+        ESPHomeConfigDocument,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionManager,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.store import HelperStore
+    from custom_components.circuitsetup_energy_meter_helper.workflow import _PlanHandle
+    from tests.test_config_mutator import _inventory, _topology
+    from tests.test_config_transaction import Builder, Verifier, _evidence
+    from tests.test_store import _CopyingStorage
+
+    if store is None:
+        store = object.__new__(HelperStore)
+        store._store = _CopyingStorage()
+        store._update_lock = asyncio.Lock()
+    snapshot = ESPHomeConfigSnapshot(
+        "meter.yaml", content, sha256(content.encode()).hexdigest()
+    )
+    inventory = _inventory(
+        snapshot, topology or _topology(), stored=await store.async_get_meter_configuration(MAC)
+    )
+    builder = Builder(remote_content=content)
+    evidence = expected_meter_entity_evidence(
+        inventory.configuration,
+        inventory.topology,
+        document=ESPHomeConfigDocument.parse(content),
+        previous=inventory.configuration,
+    )
+    verifier = Verifier(
+        replace(
+            _evidence(),
+            ct_names={
+                item.channel: item.name for item in inventory.configuration.channels
+            },
+            sensor_entities=evidence.sensor_entities,
+        )
+    )
+    manager = ConfigTransactionManager(
+        builder,
+        verifier,
+        store,
+        SessionManager(),
+        reconnect_timeout=0.01,
+        reconnect_backoff_initial=0.001,
+    )
+    workflow = object.__new__(EntryWorkflow)
+    plan = _PlanHandle(
+        "plan", "meter", MAC, inventory.topology, snapshot, inventory, 100
+    )
+    workflow._plans = {"plan": plan}
+    workflow.transactions = manager
+    workflow._clock = lambda: 0
+    return workflow, plan, store, builder, verifier
+
+
+async def _install_totals_preview(
+    workflow: Any, plan: Any, requested: Any, verifier: Any
+) -> Any:
+    from custom_components.circuitsetup_energy_meter_helper.config_document import (
+        ESPHomeConfigDocument,
+    )
+    from tests.test_config_transaction import _evidence
+
+    topology = plan.topology
+    content = plan.snapshot.content
+    previous = plan.inventory.configuration
+    status = await workflow._async_preview_meter_configuration(plan, requested)
+    expected = expected_meter_entity_evidence(
+        requested,
+        topology,
+        document=ESPHomeConfigDocument.parse(content),
+        previous=previous,
+        native_visibility_resolved=plan.inventory.native_visibility_resolved,
+    )
+    verifier.evidence = replace(
+        _evidence(),
+        ct_names={item.channel: item.name for item in requested.channels},
+        sensor_entities=expected.sensor_entities,
+    )
+    manager = workflow.transactions
+    await manager.async_confirm_write(status.transaction_id, "admin")
+    await manager.async_compile(status.transaction_id)
+    return await manager.async_confirm_install(status.transaction_id, "admin")
+
+
+@pytest.mark.parametrize("addons", (0, 1))
+@pytest.mark.parametrize("visible", (False, True))
+@pytest.mark.parametrize("rollback", (False, True))
+def test_migrated_native_additive_override_commit_reload(addons: int, visible: bool, rollback: bool) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionState,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        TotalOutputSettings,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        LegacyParentLink,
+        TotalsMigrationRecord,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+        native_total_sources,
+    )
+    from tests.test_config_mutator import _native_total_setup
+    from tests.test_config_transaction import _evidence
+    from tests.test_store import _record
+
+    async def run() -> None:
+        snapshot, topology, _ = _native_total_setup(addons)
+        overrides = "".join(f"  - id: !extend {sensor_id}\n    internal: {str(visible).lower()}\n"
+            for definition in native_total_sources(topology)
+            for sensor_id in (definition.power_id, definition.current_id, definition.existing_energy_id)
+            if sensor_id is not None)
+        content = snapshot.content.replace("sensor:\n", "sensor:\n" + overrides)
+        workflow, plan, store, _, _ = await _persisted_totals_workflow(content, topology=topology)
+        current = plan.inventory.configuration
+        pending = TotalsMigrationRecord(True, (LegacyParentLink("old-child", "old-parent"),), True)
+        stored = StoredMeterConfiguration(plan.snapshot.sha256, current.meter, current.channels,
+            current.default_totals, (), (), current.power_quality, current.status_fields, totals_migration=pending)
+        await store.async_save_meter(replace(_record(plan.snapshot.sha256), topology=replace(
+            _record().topology, addon_count=addons, board_count=topology.board_count,
+            ct_count=topology.ct_count, group_count=topology.group_count, project_name=topology.project_name)))
+        await store.async_save_verified_meter_configuration(MAC, plan.snapshot.sha256, stored)
+        workflow, plan, _, builder, verifier = await _persisted_totals_workflow(content, store, topology)
+        assert plan.inventory.capabilities.native_totals_writable
+        assert await store.async_get_meter_configuration(MAC) == stored
+        assert builder.calls == []
+        requested = replace(plan.inventory.configuration, default_totals=replace(current.default_totals,
+            overall=TotalOutputSettings(visible, not visible, not visible)))
+        status = await workflow._async_preview_meter_configuration(plan, requested)
+        transaction = workflow.transactions._transaction(status.transaction_id)
+        verifier.evidence = replace(_evidence(), topology=topology, current_sensor_count=topology.ct_count,
+            ct_names={channel.channel: channel.name for channel in requested.channels},
+            sensor_entities=transaction.expected_sensor_entities)
+        manager = workflow.transactions
+        await manager.async_confirm_write(status.transaction_id, "admin")
+        if rollback:
+            from tests.test_config_transaction import Job
+            builder.compile = Job(False)
+        await manager.async_compile(status.transaction_id)
+        if rollback:
+            assert await store.async_get_meter_configuration(MAC) == stored
+            await manager.async_rollback(status.transaction_id)
+            assert builder.remote_content == content
+            assert await store.async_get_meter_configuration(MAC) == stored
+            return
+        installed = await manager.async_confirm_install(status.transaction_id, "admin")
+        assert installed.state is ConfigTransactionState.VERIFIED
+        saved = await store.async_get_meter_configuration(MAC)
+        assert saved.totals_migration == replace(pending, native_visibility_confirmation_required=False)
+        assert saved.default_totals == requested.default_totals
+        assert overrides in builder.remote_content
+        _, loaded, _, loaded_builder, _ = await _persisted_totals_workflow(builder.remote_content, store, topology)
+        assert loaded.inventory.configuration.default_totals == requested.default_totals
+        assert loaded.inventory.capabilities.native_totals_writable
+        assert loaded.inventory.native_visibility_resolved
+        assert loaded_builder.calls == []
+        assert await store.async_get_meter_configuration(MAC) == saved
+
+    asyncio.run(run())
+
+
+def test_unrelated_save_reload_keeps_totals_unowned_and_native_unresolved() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionState,
+    )
+    from tests.test_config_mutator import _contract_snapshot
+
+    async def run() -> None:
+        workflow, plan, store, builder, verifier = await _persisted_totals_workflow(
+            _contract_snapshot().content
+        )
+        assert not plan.inventory.native_visibility_resolved
+        requested = replace(
+            plan.inventory.configuration,
+            meter=replace(plan.inventory.configuration.meter, update_interval_s=10),
+        )
+        status = await _install_totals_preview(workflow, plan, requested, verifier)
+        assert status.state is ConfigTransactionState.VERIFIED
+        stored = await store.async_get_meter_configuration(MAC)
+        assert stored.meter.update_interval_s == 10
+        assert not stored.totals_managed
+        _, loaded, _, _, _ = await _persisted_totals_workflow(
+            builder.remote_content, store
+        )
+        assert not loaded.inventory.native_visibility_resolved
+        assert not loaded.inventory.capabilities.managed_advanced_totals
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("edit", ("model", "role"))
+def test_ct_review_preserves_unmanaged_totals_after_suggestions_refresh(edit: str) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionState,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AutomaticTotalSettings,
+        CircuitRole,
+    )
+    from tests.test_config_mutator import _contract_snapshot_for, _topology_for_addons
+
+    async def run() -> None:
+        topology = _topology_for_addons(3)
+        source_total = (
+            "  - platform: template\n    id: totalWatts\n    name: House Total Watts\n"
+            "    lambda: return id(ct1Watts).state + id(ct2Watts).state;\n"
+        )
+        content = _contract_snapshot_for(topology).content.replace(
+            "ct17_name: CT 17", "ct17_name: Dryer L1"
+        ).replace("ct18_name: CT 18", "ct18_name: Dryer L2").replace(
+            "logger:\n", source_total + "logger:\n"
+        )
+        workflow, plan, _, builder, _ = await _persisted_totals_workflow(content, topology=topology)
+        original = plan.inventory.configuration
+        assert not plan.inventory.capabilities.managed_automatic_totals
+        changed = replace(original.channels[0], **(
+            {"model_id": "sct_024_200a_100ma", "reporting_multiplier": 4,
+             "custom_gain_ct": None, "custom_label": None}
+            if edit == "model" else {"role": CircuitRole.GRID}
+        ))
+        requested = replace(original, channels=(changed, *original.channels[1:]))
+        preview = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, requested)
+        reviewed = replace(requested, automatic_totals=tuple(
+            AutomaticTotalSettings(item.candidate.candidate_id, item.enabled, item.outputs)
+            for item in preview["automatic_totals"]
+        ))
+        assert reviewed.automatic_totals != original.automatic_totals
+        assert not any(item.enabled for item in reviewed.automatic_totals)
+        with pytest.raises(ValueError, match="explicit adoption"):
+            plan.inventory.validate_totals_change(replace(reviewed, automatic_totals=(
+                replace(reviewed.automatic_totals[0], enabled=True),
+            )))
+        status = await workflow._async_preview_meter_configuration(plan, reviewed)
+        assert status.state is ConfigTransactionState.PREVIEWED
+        status = await workflow.transactions.async_confirm_write(status.transaction_id, "admin")
+        assert status.state is ConfigTransactionState.VALIDATED
+        assert source_total in builder.remote_content
+        assert "# CircuitSetup Energy Meter Helper: aggregates" not in builder.remote_content
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("role", (CircuitRole.BRANCH, CircuitRole.GRID, CircuitRole.SOLAR, CircuitRole.SUBPANEL))
+def test_analyzer_circuit_suppresses_duplicate_suggestion(role: CircuitRole) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.workflow import (
+        _existing_circuit_suggestions,
+    )
+    from tests.test_config_mutator import _contract_snapshot
+
+    async def run() -> None:
+        workflow, plan, _, builder, _ = await _persisted_totals_workflow(_contract_snapshot().content)
+        config = replace(plan.inventory.configuration, channels=tuple(
+            replace(channel, name=f"Dryer L{channel.channel}", role=role)
+            if channel.channel <= 2 else channel
+            for channel in plan.inventory.configuration.channels
+        ))
+        plan.existing_circuit_channels = frozenset({frozenset({1, 2})})
+        normalized, candidates = _existing_circuit_suggestions(config, plan.existing_circuit_channels)
+        assert not candidates
+        assert normalized.automatic_totals and not normalized.automatic_totals[0].enabled
+        plan.inventory = replace(plan.inventory, configuration=normalized, automatic_candidates=candidates, automatic_totals=())
+        preview = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, config)
+        assert not preview["automatic_candidates"]
+        assert not preview["graph"]["ordered_nodes"]
+        with pytest.raises(ValueError, match="unique"):
+            await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256,
+                replace(normalized, automatic_totals=normalized.automatic_totals * 2))
+        # A name/model edit must not bring the duplicate back or add firmware totals.
+        status = await workflow._async_preview_meter_configuration(plan, config)
+        await workflow.transactions.async_confirm_write(status.transaction_id, "admin")
+        assert "# CircuitSetup Energy Meter Helper: aggregates" not in builder.remote_content
+        enabled = replace(config, automatic_totals=(replace(normalized.automatic_totals[0], enabled=True),))
+        preserved, candidates = _existing_circuit_suggestions(enabled, plan.existing_circuit_channels)
+        assert candidates and preserved.automatic_totals[0].enabled
+        unrelated, candidates = _existing_circuit_suggestions(config, frozenset({frozenset({3, 4})}))
+        assert candidates and not unrelated.automatic_totals
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("source_group", ("circuits", "mains_source_entities"))
+@pytest.mark.parametrize("matched", (True, False))
+def test_analyzer_sources_match_initial_inventory_and_refresh(
+    monkeypatch: pytest.MonkeyPatch, source_group: str, matched: bool,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper import workflow as module
+    from tests.totals_browser_fixture import Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("source-only", addons=3)
+        fixture.builder.remote_content = fixture.builder.remote_content.replace(
+            "ct17_name: CT17", "ct17_name: Dryer L1"
+        ).replace("ct18_name: CT18", "ct18_name: Dryer L2")
+        entities = [SimpleNamespace(
+            entity_id=f"sensor.renamed_{channel}_{suffix.replace(' ', '_')}",
+            original_name=f"Dryer L{channel - 16} {suffix}", platform="esphome",
+            config_entry_id="meter-1" if matched or channel == 17 else "other-meter",
+        ) for channel in (17, 18) for suffix in ("Watts", "Amps", "Power Factor", "VA", "VAR")]
+        registry = SimpleNamespace(entities=SimpleNamespace(
+            get_entries_for_config_entry_id=lambda entry: [item for item in entities if item.config_entry_id == entry]
+        ), async_get=lambda entity_id: SimpleNamespace(original_device_class=entity_id.removeprefix("sensor.shared_")))
+        monkeypatch.setattr(module.er, "async_get", lambda _hass: registry)
+        sources = [item.entity_id for item in entities]
+        value = [{"name": "Renamed appliance", "sensors": [
+            *({"entity_id": source, "role": "real_power"} for source in sources),
+            {"entity_id": "sensor.shared_voltage", "role": "voltage"},
+            {"entity_id": "sensor.shared_frequency", "role": "frequency"},
+        ]}] if source_group == "circuits" else [*sources, "sensor.shared_voltage", "sensor.shared_frequency"]
+        # Explicit options override old entry data; repeated references remain one CT.
+        entries = [SimpleNamespace(data={source_group: []}, options={source_group: value})]
+        fixture.workflow._hass.config_entries.async_entries = lambda domain: entries if domain == "circuitsetup_energy_analyzer" else []
+        initial = await fixture.workflow.async_get_meter_configuration("meter-1")
+        assert bool(initial["totals"]["automatic_candidates"]) is not matched
+        assert not initial["configuration"].automatic_totals
+        preview = await fixture.workflow.async_preview_total_graph("meter-1", initial["plan_id"], initial["source_sha256"], initial["configuration"])
+        assert preview["automatic_candidates"] == initial["totals"]["automatic_candidates"]
+        assert preview["automatic_totals"] == initial["totals"]["automatic_totals"]
+
+    asyncio.run(run())
+
+
+def test_hidden_analyzer_duplicate_preserves_managed_output_choices(monkeypatch: pytest.MonkeyPatch) -> None:
+    from custom_components.circuitsetup_energy_meter_helper import workflow as module
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        TotalOutputSettings,
+    )
+    from tests.test_config_mutator import _inventory
+    from tests.totals_browser_fixture import Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("automatic-off")
+        stored = await fixture.store.async_get_meter_configuration(MAC)
+        settings = (replace(stored.automatic_totals[0], outputs=TotalOutputSettings(False, True, False)),)
+        await fixture.store.async_save_verified_meter_configuration(MAC, stored.config_sha256,
+            replace(stored, automatic_totals=settings))
+        monkeypatch.setattr(module, "_analyzer_circuit_channels", lambda *_args: frozenset({frozenset({1, 2})}))
+        initial = await fixture.workflow.async_get_meter_configuration("meter-1")
+        assert not initial["configuration"].automatic_totals
+        assert not initial["totals"]["automatic_candidates"]
+        requested = replace(initial["configuration"], meter=replace(initial["configuration"].meter, update_interval_s=10))
+        await fixture.workflow.async_preview_total_graph("meter-1", initial["plan_id"], initial["source_sha256"], requested)
+        plan = fixture.workflow._plans[initial["plan_id"]]
+        status = await fixture.workflow._async_preview_meter_configuration(plan, requested)
+        await fixture.manager.async_confirm_write(status.transaction_id, "admin")
+        content = fixture.builder.remote_content
+        retained = fixture.manager._transaction(status.transaction_id).meter_configuration
+        assert retained.automatic_totals == settings
+        saved = _inventory(ESPHomeConfigSnapshot("meter.yaml", content, sha256(content.encode()).hexdigest()), plan.topology, stored=retained)
+        assert saved.configuration.automatic_totals == settings
+
+    asyncio.run(run())
+
+
+def test_partial_unowned_native_visibility_survives_initial_preview_and_unrelated_write() -> (
     None
 ):
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionState,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        TotalsChangeIntent,
+    )
+    from tests.test_config_mutator import _contract_snapshot
+
+    class Hass:
+        config_entries = SimpleNamespace(
+            async_get_entry=lambda _entry: SimpleNamespace(unique_id=MAC),
+            async_entries=lambda _domain: [],
+        )
+
+        async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
+            return target(*args)
+
+    async def run() -> None:
+        content = (
+            "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
+            + _contract_snapshot().content.replace(
+                "logger:\n",
+                "  - id: !extend totalWattsMain\n    internal: true\nlogger:\n",
+            )
+        )
+        original, _, store, builder, verifier = await _persisted_totals_workflow(
+            content
+        )
+        provisioning = SimpleNamespace(
+            snapshot=SimpleNamespace(
+                devices=(
+                    DiscoveredDevice(
+                        "meter",
+                        "Energy meter",
+                        "circuitsetup.6c-energy-meter",
+                        configuration="meter.yaml",
+                    ),
+                )
+            )
+        )
+        workflow = EntryWorkflow(
+            Hass(), provisioning, SessionManager(), store, "meter", None, builder
+        )
+        workflow.transactions = original.transactions
+        initial = await workflow.async_get_meter_configuration("meter")
+        assert not initial["totals"]["migration"]["native_visibility_resolved"]
+        assert initial["configuration_impact"].public_total_entity_count == 0
+        assert initial["configuration_impact"].internal_total_sensor_count == 1
+        plan = workflow._plans[initial["plan_id"]]
+        preview = await workflow.async_preview_total_graph(
+            "meter", plan.plan_id, plan.snapshot.sha256, plan.inventory.configuration
+        )
+        assert preview["configuration_impact"].public_total_entity_count == 0
+        with pytest.raises(ValueError, match="visibility-confirmed"):
+            plan.inventory.validate_totals_change(
+                replace(
+                    plan.inventory.configuration,
+                    totals_change_intent=TotalsChangeIntent(True),
+                )
+            )
+        requested = replace(
+            plan.inventory.configuration,
+            meter=replace(plan.inventory.configuration.meter, update_interval_s=30),
+        )
+        status = await workflow._async_preview_meter_configuration(plan, requested)
+        verifier.evidence = replace(
+            verifier.evidence, topology=plan.topology, sensor_entities=frozenset()
+        )
+        manager = workflow.transactions
+        await manager.async_confirm_write(status.transaction_id, "admin")
+        await manager.async_compile(status.transaction_id)
+        installed = await manager.async_confirm_install(status.transaction_id, "admin")
+        assert installed.state is ConfigTransactionState.VERIFIED, installed.evidence
+        assert (
+            "  - id: !extend totalWattsMain\n    internal: true\n"
+            in builder.remote_content
+        )
+        reloaded = await workflow.async_get_meter_configuration("meter")
+        assert not reloaded["totals"]["migration"]["native_visibility_resolved"]
+        assert reloaded["configuration_impact"].public_total_entity_count == 0
+        assert not (await store.async_get_meter_configuration(MAC)).totals_managed
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("accepted", (False, True))
+@pytest.mark.parametrize(
+    "outcome", ("success", "compile", "install", "rollback", "retry")
+)
+def test_explicit_adoption_and_partial_parent_review_commit_only_on_success(
+    outcome: str, accepted: bool
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionState,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AggregateTotalSource,
+        ChannelTotalSource,
+        CircuitAggregate,
+        EnergyMode,
+        LegacyParentDecision,
+        MeasurementMethod,
+        TotalOutputSettings,
+        TotalsChangeIntent,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        LegacyParentLink,
+        TotalsMigrationRecord,
+    )
+    from tests.test_config_mutator import _contract_snapshot
+    from tests.test_config_transaction import Job, _evidence
+    from tests.test_store import _record
+
+    async def run() -> None:
+        content = _contract_snapshot().content.replace(
+            "logger:\n",
+            "".join(
+                f"  - id: !extend {sensor_id}\n    internal: false\n"
+                for sensor_id in ("totalWattsMain", "totalAmpsMain", "totalEnergyDaily")
+            )
+            + "logger:\n",
+        )
+        workflow, plan, store, builder, verifier = await _persisted_totals_workflow(
+            content
+        )
+        source = plan.inventory.configuration
+        pending = TotalsMigrationRecord(
+            True,
+            (LegacyParentLink("child", "parent"), LegacyParentLink("other", "parent")),
+            True,
+        )
+        stored = StoredMeterConfiguration(
+            plan.snapshot.sha256,
+            source.meter,
+            source.channels,
+            source.default_totals,
+            source.automatic_totals,
+            source.aggregates,
+            source.power_quality,
+            source.status_fields,
+            totals_migration=pending,
+            totals_managed=False,
+        )
+        await store.async_save_meter(_record(plan.snapshot.sha256))
+        await store.async_save_verified_meter_configuration(
+            MAC, plan.snapshot.sha256, stored
+        )
+        workflow, plan, _, builder, verifier = await _persisted_totals_workflow(
+            content, store
+        )
+        requested = replace(
+            plan.inventory.configuration,
+            totals_change_intent=TotalsChangeIntent(
+                True, (LegacyParentDecision("child", "parent", accepted),)
+            ),
+        )
+        if accepted:
+            child = CircuitAggregate(
+                "child",
+                "Child",
+                CircuitRole.CUSTOM,
+                (ChannelTotalSource("channel", 1),),
+                MeasurementMethod.DIRECT,
+                EnergyMode.NONE,
+                TotalOutputSettings(False, False, False),
+            )
+            parent = replace(
+                child,
+                aggregate_id="parent",
+                name="Parent",
+                sources=(AggregateTotalSource("aggregate", "child"),),
+                outputs=TotalOutputSettings(True, False, False),
+            )
+            requested = replace(requested, aggregates=(child, parent))
+        if outcome == "rollback":
+            requested = replace(
+                requested, meter=replace(requested.meter, update_interval_s=10)
+            )
+        before = await store.async_get_meter_configuration(MAC)
+        status = await workflow._async_preview_meter_configuration(plan, requested)
+        assert await store.async_get_meter_configuration(MAC) == before
+        retained = workflow.transactions._transaction(status.transaction_id)
+        assert retained.totals_change_intent == requested.totals_change_intent
+        if outcome in ("compile", "rollback"):
+            builder.compile = Job(False)
+        if outcome == "install":
+            builder.upload = Job(False)
+        verifier.evidence = replace(
+            _evidence(),
+            ct_names={item.channel: item.name for item in requested.channels},
+            sensor_entities=expected_meter_entity_evidence(
+                requested, retained.topology
+            ).sensor_entities,
+        )
+        complete_evidence = verifier.evidence
+        if outcome == "retry":
+            verifier.evidence = replace(complete_evidence, sensor_entities=frozenset())
+        manager = workflow.transactions
+        await manager.async_confirm_write(status.transaction_id, "admin")
+        if outcome == "rollback":
+            await manager.async_compile(status.transaction_id)
+            await manager.async_rollback(status.transaction_id)
+        else:
+            compiled = await manager.async_compile(status.transaction_id)
+            if compiled.state is not ConfigTransactionState.FAILED:
+                installed = await manager.async_confirm_install(
+                    status.transaction_id, "admin"
+                )
+                if outcome == "retry":
+                    assert (
+                        installed.state
+                        is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+                    )
+                    assert await store.async_get_meter_configuration(MAC) == before
+                    assert (
+                        manager._transaction(status.transaction_id).totals_change_intent
+                        == requested.totals_change_intent
+                    )
+                    verifier.evidence = complete_evidence
+                    assert (
+                        await manager.async_confirm_install(
+                            status.transaction_id, "admin"
+                        )
+                    ).state is ConfigTransactionState.VERIFIED
+        loaded = await store.async_get_meter_configuration(MAC)
+        if outcome in ("success", "retry"):
+            assert loaded.totals_managed
+            assert loaded.totals_migration == TotalsMigrationRecord(
+                True, (LegacyParentLink("other", "parent"),), False
+            )
+            _, fresh, _, _, _ = await _persisted_totals_workflow(
+                builder.remote_content, store
+            )
+            assert fresh.inventory.totals_managed
+            assert loaded.aggregates == requested.aggregates
+            assert fresh.inventory.configuration.aggregates == requested.aggregates
+        else:
+            assert loaded == before
+
+    asyncio.run(run())
+
+
+def test_persisted_automatic_off_survives_role_disappearance_save_and_return() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionState,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AutomaticTotalSettings,
+        TotalOutputSettings,
+    )
+    from tests.test_config_mutator import _contract_snapshot
+    from tests.test_store import _record
+
+    async def run() -> None:
+        workflow, plan, store, _, _ = await _persisted_totals_workflow(
+            _contract_snapshot().content
+        )
+        source = plan.inventory.configuration
+        roles = tuple(
+            replace(channel, role=CircuitRole.GRID) if channel.channel <= 2 else channel
+            for channel in source.channels
+        )
+        off = AutomaticTotalSettings(
+            "grid-ct1-ct2", False, TotalOutputSettings(True, False, True)
+        )
+        stored = StoredMeterConfiguration(
+            plan.snapshot.sha256,
+            source.meter,
+            roles,
+            source.default_totals,
+            (off,),
+            (),
+            source.power_quality,
+            source.status_fields,
+        )
+        await store.async_save_meter(_record(plan.snapshot.sha256))
+        await store.async_save_verified_meter_configuration(
+            MAC, plan.snapshot.sha256, stored
+        )
+        workflow, plan, _, builder, verifier = await _persisted_totals_workflow(
+            plan.snapshot.content, store
+        )
+        requested = replace(
+            plan.inventory.configuration, channels=source.channels, automatic_totals=()
+        )
+        status = await _install_totals_preview(workflow, plan, requested, verifier)
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert (await store.async_get_meter_configuration(MAC)).automatic_totals == (
+            off,
+        )
+        workflow, plan, _, builder, verifier = await _persisted_totals_workflow(
+            builder.remote_content, store
+        )
+        assert plan.inventory.stale_automatic_total_settings == (off,)
+        requested = replace(
+            plan.inventory.configuration,
+            meter=replace(source.meter, update_interval_s=30),
+        )
+        installed = await _install_totals_preview(workflow, plan, requested, verifier)
+        assert installed.state is ConfigTransactionState.VERIFIED, installed.evidence
+        workflow, plan, _, builder, verifier = await _persisted_totals_workflow(
+            builder.remote_content, store
+        )
+        assert plan.inventory.stale_automatic_total_settings == (off,)
+        requested = replace(
+            plan.inventory.configuration, channels=roles, automatic_totals=(off,)
+        )
+        assert (
+            await _install_totals_preview(workflow, plan, requested, verifier)
+        ).state is ConfigTransactionState.VERIFIED
+        _, loaded, _, _, _ = await _persisted_totals_workflow(
+            builder.remote_content, store
+        )
+        assert not loaded.inventory.automatic_totals[0].enabled
+        assert "csemh_auto_mains_power" not in builder.remote_content
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("owned", (False, True))
+@pytest.mark.parametrize("visibility_confirmed", (False, True))
+def test_calibration_replay_preserves_pending_links_stale_off_and_hidden_native(
+    owned: bool, visibility_confirmed: bool,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
+        ConfigMutationError,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionState,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AutomaticTotalSettings,
+        TotalOutputSettings,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        LegacyParentLink,
+        TotalsMigrationRecord,
+        VerifiedCalibrationRecord,
+        VerifiedGainGroup,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.topology import (
+        voltage_reference_fingerprint_for_meter,
+    )
+    from tests.test_config_mutator import _contract_snapshot
+    from tests.test_store import _record
+
+    async def run() -> None:
+        content = (
+            _contract_snapshot()
+            .content.replace(
+                'voltage_cal1: "7304"', "voltage_cal1: 7305"
+            )
+            .replace(
+                "logger:\n",
+                "".join(
+                    f"  - id: !extend {sensor_id}\n    internal: true\n"
+                    for sensor_id in (
+                        "totalWattsMain",
+                        "totalAmpsMain",
+                        "totalEnergyDaily",
+                    )
+                )
+                + "logger:\n",
+            )
+        )
+        workflow, plan, store, builder, _verifier = await _persisted_totals_workflow(
+            content if visibility_confirmed else _contract_snapshot().content.replace(
+                'voltage_cal1: "7304"', "voltage_cal1: 7305"
+            )
+        )
+        source = plan.inventory.configuration
+        off = AutomaticTotalSettings(
+            "grid-ct1-ct2", False, TotalOutputSettings(True, False, True)
+        )
+        pending = TotalsMigrationRecord(
+            True, (LegacyParentLink("child", "parent"),), True
+        )
+        stored = StoredMeterConfiguration(
+            plan.snapshot.sha256,
+            source.meter,
+            source.channels,
+            replace(
+                source.default_totals, overall=TotalOutputSettings(True, True, False)
+            ),
+            (off,),
+            (),
+            source.power_quality,
+            source.status_fields,
+            totals_migration=pending,
+            totals_managed=owned,
+        )
+        await store.async_save_meter(_record(plan.snapshot.sha256))
+        await store.async_save_verified_meter_configuration(
+            MAC, plan.snapshot.sha256, stored
+        )
+        record = VerifiedCalibrationRecord(
+            mac=MAC,
+            config_filename="meter.yaml",
+            config_sha256=plan.snapshot.sha256,
+            topology_addon_count=0,
+            topology_project_name=plan.topology.project_name,
+            topology_connection_type=plan.topology.connection_type,
+            topology_voltage_layout=plan.topology.voltage_layout,
+            topology_voltage_fingerprint=voltage_reference_fingerprint_for_meter(
+                plan.topology
+            ),
+            connection_generation=2,
+            groups=(VerifiedGainGroup("meter_main1", ((7305, 11144),) * 3),),
+            verification_id="a" * 32,
+        )
+        await store.async_save_verified_calibration(record)
+        manager = workflow.transactions
+        if not visibility_confirmed:
+            with pytest.raises(ConfigMutationError, match="native total visibility must be confirmed"):
+                await manager.async_preview_calibrated_gains(MAC, plan.topology, record.verification_id)
+            assert await store.async_get_meter_configuration(MAC) == stored
+            assert await store.async_get_verified_calibration(MAC) == record
+            assert builder.calls == ["read"]
+            return
+        status = await manager.async_preview_calibrated_gains(
+            MAC, plan.topology, record.verification_id
+        )
+        retained = manager._transaction(status.transaction_id).meter_configuration
+        assert retained.default_totals.overall == TotalOutputSettings(
+            False, False, True
+        )
+        assert retained.automatic_totals == (off,)
+        assert retained.totals_migration == pending
+        assert retained.totals_managed is owned
+        assert (await store.async_get_meter_configuration(MAC)) == stored
+        await manager.async_confirm_write(status.transaction_id, "admin")
+        await manager.async_compile(status.transaction_id)
+        assert (
+            await manager.async_confirm_install(status.transaction_id, "admin")
+        ).state is ConfigTransactionState.VERIFIED
+        loaded = await store.async_get_meter_configuration(MAC)
+        assert loaded.totals_managed is owned
+        assert loaded.automatic_totals == (off,)
+        assert loaded.totals_migration == replace(
+            pending, native_visibility_confirmation_required=False
+        )
+        assert loaded.default_totals.overall == TotalOutputSettings(False, False, True)
+        assert "internal: true" in builder.remote_content
+
+    asyncio.run(run())
+
+
+def _total_preview_workflow() -> tuple[EntryWorkflow, Any]:
+    from custom_components.circuitsetup_energy_meter_helper.workflow import _PlanHandle
+    from tests.test_meter_inventory import _document, _inventory
+
+    inventory = _inventory(_document(contract=True))
+    snapshot = ESPHomeConfigSnapshot("meter.yaml", _document(contract=True), inventory.source_sha256)
+    plan = _PlanHandle("plan", "meter", MAC, inventory.topology, snapshot, inventory, 100)
+    workflow = object.__new__(EntryWorkflow)
+    workflow._plans = {"plan": plan}
+    workflow._clock = lambda: 0
+    workflow.transactions = None
+    return workflow, plan
+
+
+def test_total_graph_preview_is_repeatable_read_only_and_recomputes_roles() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AutomaticTotalSettings,
+        TotalOutputSettings,
+    )
+
+    async def run() -> None:
+        workflow, plan = _total_preview_workflow()
+        original = plan.inventory.configuration
+        draft = replace(original, channels=tuple(
+            replace(channel, role=CircuitRole.GRID) if channel.channel in (1, 2) else channel
+            for channel in original.channels
+        ))
+        preview = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, draft)
+        assert preview["automatic_candidates"][0].candidate_id == "grid-ct1-ct2"
+        assert preview["graph"]["leaf_channels"]["auto-mains"] == [1, 2]
+        assert preview["configuration_impact"].public_total_entity_count == 2
+        assert preview == await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, draft)
+        disabled = replace(draft, automatic_totals=(AutomaticTotalSettings("grid-ct1-ct2", False, TotalOutputSettings(True, False, True)),))
+        await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, disabled)
+        gone = replace(disabled, channels=original.channels)
+        result = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, gone)
+        assert result["automatic_totals"] == ()
+        assert result["configuration_impact"].public_total_entity_count == 0
+        assert result["stale_automatic_total_settings"] == disabled.automatic_totals
+        restored = await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, disabled)
+        assert not restored["automatic_totals"][0].enabled
+        assert plan.inventory.configuration == original
+        assert workflow._plans["plan"] is plan
+        assert plan.snapshot.content
+        other_workflow, other_plan = _total_preview_workflow()
+        with pytest.raises(ValueError, match="candidate"):
+            await other_workflow.async_preview_total_graph("meter", "plan", other_plan.snapshot.sha256, gone)
+        with pytest.raises(ValueError, match="candidate"):
+            plan.inventory.validate_totals_change(gone)
+        unknown = replace(draft, automatic_totals=(AutomaticTotalSettings("invented", True, TotalOutputSettings(True, False, True)),))
+        with pytest.raises(ValueError, match="candidate"):
+            await workflow.async_preview_total_graph("meter", "plan", plan.snapshot.sha256, unknown)
+        plan.scrub()
+        assert not plan.issued_total_candidate_ids
+
+    asyncio.run(run())
+
+
+def test_bound_details_expose_source_aware_summary_without_writes() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        sanitize_payload,
+    )
+    from tests.totals_browser_fixture import Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("summary")
+        before = await fixture.store.async_get_meter_configuration(MAC)
+        response = await fixture.workflow.async_get_meter_configuration("meter-1")
+        calls = list(fixture.builder.calls)
+        details = await fixture.workflow.async_get_total_details("meter-1", response["plan_id"], response["source_sha256"])
+        assert fixture.builder.calls == calls
+        assert "total_details" not in response
+        rows = {row.total_id: row for row in details["total_details"]}
+        assert set(rows) == {"overall", "auto-mains", "hidden", "parent", "watts-only"}
+        assert rows["auto-mains"].public_outputs == ("Watts", "kWh")
+        assert rows["hidden"].public_outputs == ()
+        assert rows["hidden"].internal_outputs == ("Watts", "Amps")
+        assert rows["watts-only"].public_outputs == ("Watts",)
+        assert rows["parent"].ownership == "helper_managed"
+        assert response["configuration_impact"].energy_entity_count == 3
+        preview = await fixture.workflow.async_preview_total_graph("meter-1", response["plan_id"],
+            response["source_sha256"], response["configuration"])
+        assert sanitize_payload(preview)["configuration_impact"] == sanitize_payload(response["configuration_impact"])
+        transported = sanitize_payload(details)
+        assert len(transported["total_details"]) == 5
+        assert transported["total_details"][0]["kind"] == "native_total"
+        assert transported["total_details"][0]["public_outputs"] == ["Watts", "Amps", "kWh"]
+        assert fixture.builder.remote_content
+        assert not set(fixture.builder.calls) & {"write", "compile", "upload", "restore"}
+        assert await fixture.store.async_get_meter_configuration(MAC) == before
+
+    asyncio.run(run())
+
+
+def test_source_owned_summary_does_not_relabel_watts_or_invent_helper_energy() -> None:
+    from tests.totals_browser_fixture import Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("source-only")
+        response = await fixture.workflow.async_get_meter_configuration("meter-1")
+        details = await fixture.workflow.async_get_total_details("meter-1", response["plan_id"], response["source_sha256"])
+        row = next(row for row in details["total_details"] if row.kind == "aggregate")
+        assert row.ownership == "source_owned"
+        assert row.public_outputs == ("Watts",)
+        assert row.internal_outputs == ()
+        assert response["configuration_impact"].energy_entity_count == 1
+        assert not set(fixture.builder.calls) & {"write", "compile", "upload"}
+        assert await fixture.store.async_get_meter_configuration(MAC) is None
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("invalid", ("device", "hash", "expired"))
+def test_total_graph_preview_rejects_unbound_handles(invalid: str) -> None:
+    async def run() -> None:
+        workflow, plan = _total_preview_workflow()
+        if invalid == "expired":
+            workflow._clock = lambda: 100
+        with pytest.raises(WorkflowHandleError):
+            await workflow.async_preview_total_graph(
+                "other" if invalid == "device" else "meter", "plan",
+                "f" * 64 if invalid == "hash" else plan.snapshot.sha256,
+                plan.inventory.configuration,
+            )
+    asyncio.run(run())
+
+
+def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() -> None:
     """A foreign device or CT-only handle would bypass the server-owned plan boundary."""
     content = (
         "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n"
@@ -115,7 +1051,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
 
     class Hass:
         def __init__(self) -> None:
-            self.config_entries = SimpleNamespace(async_get_entry=self._entry)
+            self.config_entries = SimpleNamespace(async_get_entry=self._entry, async_entries=lambda _domain: [])
 
         @staticmethod
         def _entry(device_id: str) -> object | None:
@@ -176,6 +1112,8 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             digest,
             authoritative.meter,
             authoritative.channels,
+            authoritative.default_totals,
+            authoritative.automatic_totals,
             authoritative.aggregates,
             authoritative.power_quality,
             authoritative.status_fields,
@@ -244,7 +1182,7 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         )
         assert preview == {"transaction_id": "1"}
         assert transactions.calls[0][1]["meter_configuration"].ct_selections
-        assert not transactions.calls[0][1]["meter_configuration"].multi_reference_preparation_acknowledged
+        assert transactions.calls[0][1]["meter_configuration"].multi_reference_preparation_acknowledged
         assert (
             transactions.calls[0][1]["expected_sensor_entities"]
             == expected.sensor_entities
@@ -310,6 +1248,8 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
             MeterConfigurationRequest(
                 wrapper_configuration.meter,
                 wrapper_configuration.channels,
+                wrapper_configuration.default_totals,
+                wrapper_configuration.automatic_totals,
                 wrapper_configuration.aggregates,
                 wrapper_configuration.power_quality,
                 wrapper_configuration.status_fields,
@@ -318,11 +1258,10 @@ def test_meter_configuration_plan_uses_canonical_store_identity_and_ct_wrapper()
         assert transactions.calls[2][1]["meter_configuration"] == wrapper_configuration
         plan_ids = set(workflow._plans)
         store.stale = True
-        with pytest.raises(WorkflowHandleError, match="stored meter configuration"):
-            await workflow.async_get_meter_configuration("meter")
-        with pytest.raises(WorkflowHandleError, match="stored meter configuration"):
-            await workflow.async_get_ct_inventory("meter")
-        assert set(workflow._plans) == plan_ids
+        stale_result = await workflow.async_get_meter_configuration("meter")
+        assert "stored_semantics_stale" in stale_result["warnings"]
+        assert stale_result["capabilities"].semantic_source == "legacy_inferred"
+        assert set(workflow._plans) != plan_ids
         await workflow.async_close()
 
     asyncio.run(run())
@@ -968,6 +1907,18 @@ def test_offset_status_starts_with_capability_board_stages_and_no_pending() -> N
     asyncio.run(run())
 
 
+def test_session_status_exposes_plan_and_standard_skips_offset() -> None:
+    """Standard calibration must retain flash offsets instead of resetting them."""
+    _workflow_instance, handle, _sessions, _api = _workflow()
+    handle.calibration_plan = "standard"
+    handle.offset_skipped = True
+
+    status = handle.status()
+
+    assert status.calibration_plan == "standard"
+    assert status.offset_disposition == "skipped"
+
+
 def test_gain_only_binding_without_offset_capability_reports_unavailable() -> None:
     async def run() -> None:
         workflow, handle, _sessions, _api = _workflow()
@@ -1019,6 +1970,13 @@ def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
         workflow, handle, _sessions, api = _workflow()
         calls: list[tuple[Any, ...]] = []
 
+        async def sources(instance_ids: set[str], **kwargs: Any) -> dict[str, str]:
+            assert instance_ids == {"meter_main1", "meter_main2"}
+            assert kwargs == {"offset_stage": 1}
+            return {"meter_main1": "flash", "meter_main2": "unknown"}
+
+        api.async_calibration_sources = sources
+
         async def readiness(
             session: Any, binding: Any, board_index: int, stage: int, **kwargs: Any
         ) -> OffsetReadinessResult:
@@ -1033,6 +1991,11 @@ def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
         )
         result = await workflow.async_check_offset_readiness(handle.session_id, 0, 1)
         assert result.ready
+        assert result.saved_offset_sources == (
+            ("main_1", "flash"),
+            ("main_2", "unknown"),
+        )
+        assert handle.offset_results == {}
         assert calls == [
             (
                 api,

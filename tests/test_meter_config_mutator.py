@@ -36,6 +36,71 @@ def _content(newline: str = "\n") -> str:
     )
 
 
+def _legacy_source() -> str:
+    """Representative legacy source with unrelated user-owned YAML."""
+    return (
+        "substitutions:\n"
+        "  ct1_name: Legacy mains\n"
+        "  current_cal_ct1: 27519\n"
+        "sensor:\n"
+        "  - id: totalWatts\n"
+        "    name: Custom total\n"
+        "    lambda: return {};\n"
+        "  - id: custom_filtered\n"
+        "    name: User filter\n"
+        "    filters:\n"
+        "      - lambda: return x;\n"
+        "# CircuitSetup Energy Meter Helper: voltage references v1\n"
+        "  - id: !extend meter_main1\n"
+        "    gain_voltage: 7305\n"
+        "# End CircuitSetup Energy Meter Helper: voltage references v1\n"
+    )
+
+
+def test_legacy_read_only_inventory_source_is_byte_exact() -> None:
+    """Reviewing a legacy source does not normalize or rewrite it."""
+    source = _legacy_source()
+    unchanged = replace_managed_block(
+        source,
+        "voltage_references",
+        "  - id: !extend meter_main1\n    gain_voltage: 7305\n",
+    )
+    assert unchanged == source
+
+
+def test_legacy_gain_only_handoff_preserves_unowned_yaml() -> None:
+    """A gain-only handoff changes only the owned gain block."""
+    source = _legacy_source()
+    updated = replace_managed_block(
+        source,
+        "voltage_references",
+        "  - id: !extend meter_main1\n    gain_voltage: 7310\n",
+    )
+    assert "current_cal_ct1: 27519" in updated
+    assert "id: totalWatts" in updated
+    assert "id: custom_filtered" in updated
+    assert "gain_voltage: 7310" in updated
+    assert "gain_voltage: 7305" not in updated
+
+
+def test_legacy_opt_in_migration_preserves_generic_and_custom_totals() -> None:
+    """Full migration may replace owned blocks, never unrelated user sensors."""
+    source = _legacy_source()
+    updated = replace_managed_block(
+        replace_managed_block(
+            source,
+            "voltage_references",
+            "  - id: !extend meter_main1\n    gain_voltage: 7310\n",
+        ),
+        "aggregates",
+        "  - id: !extend helper_total\n    name: Helper total\n",
+    )
+    assert "id: totalWatts" in updated
+    assert "id: custom_filtered" in updated
+    assert "name: Custom total" in updated
+    assert "name: User filter" in updated
+
+
 def test_inserts_absent_block_at_start_of_sensor_section() -> None:
     """A missing block stays ahead of user-owned sensor content."""
     content = _content()
@@ -90,13 +155,13 @@ def test_insertion_uses_parser_owned_sensor_bounds(sensor_key: str) -> None:
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
 def test_no_final_newline_aggregate_round_trip_is_exact(newline: str) -> None:
-    """Header insertion leaves newline-less Contract-2 sources byte-exact on removal."""
+    """Tail insertion leaves newline-less Contract-2 sources byte-exact on removal."""
     content = "sensor:" + newline + "  - platform: uptime"
 
     added = replace_managed_block(content, "aggregates", "  - id: total\n")
 
     assert "csemh-owned-eof-separator" not in added
-    assert added.index("aggregates v1") < added.index("- platform: uptime")
+    assert added.index("aggregates v1") > added.index("- platform: uptime")
     assert replace_managed_block(added, "aggregates", "") == content
 
 
@@ -111,6 +176,23 @@ def test_former_eof_separator_is_an_ordinary_user_comment() -> None:
     added = replace_managed_block(content, "aggregates", "  - id: total\n")
 
     assert replace_managed_block(added, "aggregates", "") == content
+
+
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+def test_former_eof_block_before_later_sibling_keeps_line_separator(newline: str) -> None:
+    """EOF provenance cannot remove a separator after preserved source is appended."""
+    original = "sensor:" + newline + "  - platform: uptime"
+    added = replace_managed_block(original, "aggregates", "  - id: total\n")
+    sibling = "  - platform: template" + newline + "    id: later" + newline
+    evolved = added + sibling
+    expected = original + newline + sibling
+    assert replace_managed_block(evolved, "aggregates", "") == expected
+    replaced = replace_managed_block(evolved, "aggregates", "  - id: updated\n")
+    assert replaced.index("id: later") < replaced.index("id: updated")
+    assert yaml.safe_load(replaced)["sensor"] == [
+        {"platform": "uptime"}, {"platform": "template", "id": "later"}, {"id": "updated"}
+    ]
+    assert replace_managed_block(replaced, "aggregates", "") == expected
 
 
 def test_empty_newline_less_sensor_fails_with_a_manual_snippet() -> None:
@@ -130,7 +212,7 @@ def test_empty_newline_less_sensor_fails_with_a_manual_snippet() -> None:
         ("phase_overrides", "aggregates"),
     ),
 )
-def test_new_block_after_newline_less_legacy_marker_fails_safely(
+def test_new_block_after_newline_less_legacy_marker_preserves_safe_boundaries(
     newline: str, predecessor: str, successor: str
 ) -> None:
     """A new marker never glues itself to an unowned legacy EOF marker."""
@@ -143,10 +225,15 @@ def test_new_block_after_newline_less_legacy_marker_fails_safely(
     }[predecessor]
     content = newline.join(("sensor:", start, "  - id: legacy", end))
 
-    with pytest.raises(ConfigMutationError, match="document root") as error:
-        replace_managed_block(content, successor, "  - id: new\n")
-
-    assert error.value.snippet is not None
+    if successor == "aggregates":
+        actual = replace_managed_block(content, successor, "  - id: new\n")
+        assert end + newline in actual
+        assert yaml.safe_load(actual)["sensor"] == [{"id": "legacy"}, {"id": "new"}]
+        assert replace_managed_block(actual, successor, "") == content
+    else:
+        with pytest.raises(ConfigMutationError, match="document root") as error:
+            replace_managed_block(content, successor, "  - id: new\n")
+        assert error.value.snippet is not None
     assert content.endswith(end)
 
 
@@ -195,7 +282,7 @@ def test_indentless_sensor_sequence_uses_indentless_helper_items(
     assert document.sensor_item_indent == 0
     assert "\n- id: total" in actual
     assert "\n  - id: total" not in actual
-    assert yaml.safe_load(actual)["sensor"][0]["id"] == "total"
+    assert yaml.safe_load(actual)["sensor"][-1]["id"] == "total"
     assert replace_managed_block(actual, "aggregates", "") == content
 
 
@@ -267,10 +354,10 @@ def test_sensor_sequence_accepts_plain_scalar_mapping_entries(
     tuple(permutations(("voltage_references", "phase_overrides", "aggregates"))),
 )
 @pytest.mark.parametrize("indentless", (False, True))
-def test_new_managed_blocks_cluster_before_user_sensor_content(
+def test_new_managed_blocks_place_aggregates_after_user_sensor_content(
     order: tuple[str, ...], indentless: bool
 ) -> None:
-    """Any insertion order creates one canonical helper cluster at the section start."""
+    """Helper relative order is canonical; aggregate consumers follow user sensors."""
     content = (
         "sensor:\n# user comment\n- platform: uptime\n"
         if indentless
@@ -287,7 +374,12 @@ def test_new_managed_blocks_cluster_before_user_sensor_content(
 
     assert actual.index("voltage references v1") < actual.index("phase overrides v1")
     assert actual.index("phase overrides v1") < actual.index("aggregates v1")
-    assert actual.index("aggregates v1") < actual.index("# user comment")
+    assert actual.index("- platform: uptime") < actual.index("aggregates v1")
+    sensors = yaml.safe_load(actual)["sensor"]
+    assert [item["id"] for item in sensors if "id" in item] == ["voltage", "phase", "total"]
+    assert sensors.count({"platform": "uptime"}) == 1
+    assert sensors[-1] == {"id": "total"}
+    assert content.removeprefix("sensor:\n") in actual
     assert ("\n- id: voltage" in actual) is indentless
     for name in reversed(order):
         actual = replace_managed_block(actual, name, "")

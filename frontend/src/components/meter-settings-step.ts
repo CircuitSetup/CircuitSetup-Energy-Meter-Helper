@@ -27,10 +27,17 @@ export function meterSettingsStep(
   continueToCircuits: () => void,
   boardPackages: BoardPackageOptions | null = null,
   setBoardPackages: (options: BoardPackageOptions) => void = () => undefined,
+<<<<<<< HEAD
   packageCapabilities: PackageCapability[] = [],
+=======
+  profileConfirmed = true,
+  setProfileConfirmed: (value: boolean) => void = () => undefined,
+  mode: "helper_managed" | "legacy_editable" | "runtime_only" = "helper_managed",
+>>>>>>> origin/main
 ): TemplateResult {
   const multiReference = draft.voltage_references.length > 1;
-  const valid = Boolean(draft.friendly_name.trim()) && draft.voltage_references.every((reference) =>
+  const primaryReference = draft.voltage_references[0]!;
+  const valid = profileConfirmed && Boolean(draft.friendly_name.trim()) && draft.voltage_references.every((reference) =>
     reference.label.trim() && reference.phase_label.trim() && Number.isFinite(reference.nominal_voltage_v)
       && reference.nominal_voltage_v >= 1 && reference.nominal_voltage_v <= 600
       && Number.isInteger(reference.gain_voltage) && reference.gain_voltage >= 1 && reference.gain_voltage <= 65535
@@ -38,6 +45,12 @@ export function meterSettingsStep(
   const patch = (change: Partial<MeterSettingsDraft>) => {
     setAcknowledged(false);
     update({ ...draft, ...change });
+  };
+  const setTransformer = (referenceId: string, model: string) => {
+    const preset = catalog.presets.find((item) => item.model_id === model);
+    patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === referenceId
+      ? { ...item, transformer_model_id: model, gain_voltage: preset?.default_gain_voltage ?? item.gain_voltage }
+      : item) });
   };
   const moveGroup = (group: string, referenceId: string, select: HTMLSelectElement) => {
     const source = draft.voltage_references.find((reference) => reference.group_keys.includes(group));
@@ -83,6 +96,7 @@ export function meterSettingsStep(
     <section class="step-content meter-settings-step" aria-labelledby="step-heading">
       <h2>Meter settings</h2>
       <p>Edit the draft here, then continue to Circuits &amp; CTs to review your changes. Apply saves the configuration; Compile and Install send it to the meter.</p>
+      ${mode === "legacy_editable" ? html`<p class="warning-band" role="status">The existing profile identity was not recorded. Confirm it before continuing.</p>` : nothing}
       <div class="meter-settings-grid">
         <label>Friendly name <input aria-label="Friendly name" maxlength="64" .value=${draft.friendly_name}
           @input=${(event: Event) => patch({ friendly_name: (event.target as HTMLInputElement).value })} /></label>
@@ -92,27 +106,36 @@ export function meterSettingsStep(
           @change=${(event: Event) => setFrequency(Number((event.target as HTMLSelectElement).value) as LineFrequencyHz)}>${[50, 60].map((value) => html`<option value=${value} ?selected=${draft.line_frequency_hz === value}>${value} Hz</option>`)}</select></label>
         <label>Reporting interval (default: 10 seconds) <select aria-label="Reporting interval" .value=${String(draft.update_interval_s)}
           @change=${(event: Event) => patch({ update_interval_s: Number((event.target as HTMLSelectElement).value) as MeterSettingsDraft["update_interval_s"] })}>${INTERVALS.map((value) => html`<option value=${value} ?selected=${draft.update_interval_s === value}>${value} seconds</option>`)}</select></label>
+        <label>Transformer <select aria-label=${`${primaryReference.reference_id} transformer`} .value=${primaryReference.transformer_model_id}
+          @change=${(event: Event) => setTransformer(primaryReference.reference_id, (event.target as HTMLSelectElement).value)}>
+          ${catalog.presets.map((preset) => html`<option value=${preset.model_id}>${preset.label}</option>`)}
+          <option value="custom">Custom starting gain</option>
+          ${primaryReference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === primaryReference.transformer_model_id) ? html`<option value=${primaryReference.transformer_model_id}>${primaryReference.transformer_model_id}</option>` : ""}</select></label>
       </div>
       ${intervalImpact(draft.update_interval_s) ? html`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : nothing}
+<<<<<<< HEAD
       ${boardPackages ? packageOptions(boardPackages, setBoardPackages, packageCapabilities) : ""}
       <details class="advanced-voltage-options" open>
       <summary>Advanced voltage options</summary>
       <div class="voltage-options-content">
+=======
+>>>>>>> origin/main
       <h3>Voltage references</h3>
       <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
-      <div class="voltage-reference-cards">${draft.voltage_references.map((reference) => html`
+      <details class="advanced-voltage-options" data-section="advanced-voltage-options"><summary>Advanced voltage options</summary><div class="voltage-options-content"><div class="voltage-reference-cards">${draft.voltage_references.map((reference) => html`
         <section class="voltage-reference-card" aria-label=${`${reference.label} voltage reference`}>
           <label>Label <input aria-label=${`${reference.reference_id} label`} maxlength="64" .value=${reference.label}
             @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, label: (event.target as HTMLInputElement).value } : item) })} /></label>
           <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} aria-describedby=${`${reference.reference_id}-phase-help`} maxlength="64" .value=${reference.phase_label}
             @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: (event.target as HTMLInputElement).value } : item) })} /><small id=${`${reference.reference_id}-phase-help`}>Names the supply phase in the configuration review, for example L1, L2, or A. This label does not change wiring or assign CT groups.</small></label>
-          <label>Transformer <select aria-label=${`${reference.reference_id} transformer`} .value=${reference.transformer_model_id}
-            @change=${(event: Event) => { const model = (event.target as HTMLSelectElement).value; const preset = catalog.presets.find((item) => item.model_id === model); patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, transformer_model_id: model, gain_voltage: preset?.default_gain_voltage ?? item.gain_voltage } : item) }); }}>
+          ${reference !== primaryReference ? html`<label>Transformer <select aria-label=${`${reference.reference_id} transformer`} .value=${reference.transformer_model_id}
+            @change=${(event: Event) => setTransformer(reference.reference_id, (event.target as HTMLSelectElement).value)}>
             ${catalog.presets.map((preset) => html`<option value=${preset.model_id}>${preset.label}</option>`)}
             <option value="custom">Custom starting gain</option>
-            ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? html`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>
-          <label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
+            ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? html`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>` : nothing}
+          ${reference.transformer_model_id !== "custom" ? html`<p>Starting gain: ${reference.gain_voltage}</p>` : html`<label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
             @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number((event.target as HTMLInputElement).value) } : item) })} /></label>
+          `}
           ${["three_phase", "custom"].includes(draft.electrical_system) ? html`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
             @input=${(event: Event) => setNominalVoltage(reference.reference_id, Number((event.target as HTMLInputElement).value))} /></label>` : nothing}
           ${draft.voltage_references.length > 1 ? html`<button class="secondary" aria-label=${`Remove ${reference.reference_id} voltage reference`} @click=${() => removeReference(reference.reference_id)}>Remove reference</button>` : ""}
@@ -127,6 +150,12 @@ export function meterSettingsStep(
         @change=${(event: Event) => setAcknowledged((event.target as HTMLInputElement).checked)} />I prepared the separate voltage references.</label>` : ""}
       </div>
       </details>
+      <details data-section="advanced-meter-settings"><summary>Advanced meter settings</summary>
+      <div class="voltage-options-content">
+      ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
+      </div></details>
+      <label class="check-row"><input type="checkbox" aria-label="Confirm electrical profile" .checked=${profileConfirmed}
+        @change=${(event: Event) => setProfileConfirmed((event.target as HTMLInputElement).checked)} />I confirm the electrical profile and frequency.</label>
       <footer class="action-footer"><button class="secondary" @click=${back}>Back</button><button class="primary" data-action="continue-meter-settings" ?disabled=${!valid} @click=${continueToCircuits}>Continue to Circuits & CTs</button></footer>
     </section>
   `;

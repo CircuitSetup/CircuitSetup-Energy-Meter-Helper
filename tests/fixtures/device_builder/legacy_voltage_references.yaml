@@ -1,0 +1,32 @@
+# CircuitSetup Energy Meter Helper: voltage references v1
+  # csemh-voltage-references: main=[main_1,main_2]
+  - id: !extend meter_main1
+    phase_a:
+      gain_voltage: 7305
+      voltage:
+        name: "${friendly_name} Main Voltage"
+        disabled_by_default: false
+    phase_b:
+      gain_voltage: 7305
+    phase_c:
+      gain_voltage: 7305
+    frequency:
+      name: "${friendly_name} Main Frequency"
+      disabled_by_default: false
+  - id: !extend meter_main2
+    phase_a:
+      gain_voltage: 7305
+      voltage:
+        entity_category: diagnostic
+        disabled_by_default: true
+    phase_b:
+      gain_voltage: 7305
+      voltage:
+        entity_category: diagnostic
+        disabled_by_default: true
+    phase_c:
+      gain_voltage: 7305
+      voltage:
+        entity_category: diagnostic
+        disabled_by_default: true
+# End CircuitSetup Energy Meter Helper: voltage references v1

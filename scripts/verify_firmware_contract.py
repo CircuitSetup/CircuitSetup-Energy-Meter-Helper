@@ -4,7 +4,11 @@ import json
 import re
 import subprocess
 import sys
+<<<<<<< HEAD
 from importlib.util import module_from_spec, spec_from_file_location
+=======
+from dataclasses import dataclass
+>>>>>>> origin/main
 from pathlib import Path
 
 PREFIX = "6chan_energy_meter_"
@@ -47,6 +51,30 @@ EXPECTED_MATRIX = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class FirmwareBoardTotals:
+    board_index: int
+    power_id: str
+    current_id: str
+    power_channels: tuple[int, ...]
+    current_channels: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FirmwareTotals:
+    boards: tuple[FirmwareBoardTotals, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FirmwareRootTotals:
+    root_power_id: str
+    root_current_id: str
+    root_power_sources: tuple[str, ...]
+    root_current_sources: tuple[str, ...]
+    energy_id: str
+    energy_power_id: str
+
+
 def _project_for(filename: str) -> str:
     variant = filename.removeprefix(PREFIX).removesuffix(".yaml").replace("_", "-")
     if variant == "main-board":
@@ -75,6 +103,95 @@ def _indices(source: str, prefix: str, suffix: str = "") -> list[int]:
 def _has_component(source: str, name: str) -> bool:
     return (
         re.search(rf"^{re.escape(name)}:\s*(?:#.*)?$", source, re.MULTILINE) is not None
+    )
+
+
+def _template_blocks(source: str) -> tuple[str, ...]:
+    return tuple(
+        re.findall(
+            r"(?ms)^\s*- platform: template\r?\n(.*?)(?=^\s*- platform:|\Z)",
+            source,
+        )
+    )
+
+
+def _template_formula(source: str, sensor_id: str) -> tuple[str, ...]:
+    for block in _template_blocks(source):
+        if not re.search(rf"(?m)^\s*id:\s*{re.escape(sensor_id)}\s*$", block):
+            continue
+        match = re.search(r"(?m)^\s*lambda:\s*return (?P<formula>[^\r\n]+)$", block)
+        if match is None:
+            break
+        terms = re.fullmatch(
+            r"id\((?P<first>[A-Za-z_][A-Za-z0-9_]*)\)\.state"
+            r"(?: \+ id\((?P<more>[A-Za-z_][A-Za-z0-9_]*)\)\.state)* ?;",
+            match["formula"],
+        )
+        if terms is None:
+            break
+        return tuple(re.findall(r"id\(([A-Za-z_][A-Za-z0-9_]*)\)\.state", match["formula"]))
+    raise SystemExit(f"{sensor_id}: unsupported total formula")
+
+
+def _total_daily_energy(source: str) -> tuple[str, str]:
+    blocks = re.findall(
+        r"(?ms)^\s*- platform: total_daily_energy\r?\n(.*?)(?=^\s*- platform:|\Z)",
+        source,
+    )
+    if len(blocks) != 1:
+        raise SystemExit("totalEnergyDaily: total daily energy is incomplete")
+    energy_id = re.search(r"(?m)^\s*id:\s*(\S+)\s*$", blocks[0])
+    power_id = re.search(r"(?m)^\s*power_id:\s*(\S+)\s*$", blocks[0])
+    if energy_id is None or power_id is None:
+        raise SystemExit("totalEnergyDaily: total daily energy is incomplete")
+    return energy_id.group(1), power_id.group(1)
+
+
+def inspect_firmware_totals(firmware_root: Path) -> FirmwareTotals:
+    """Read the native board total formulas from the pinned firmware tree."""
+    sensors = firmware_root / "Software/ESPHome/meter_sensors"
+    boards = []
+    for board_index in range(7):
+        name = "main_sensor" if board_index == 0 else f"addon{board_index}"
+        path = sensors / f"6chan_{name}.yaml"
+        if not path.is_file():
+            raise SystemExit(f"missing meter sensor package: {path.name}")
+        source = path.read_text(encoding="utf-8")
+        current_id = "totalAmpsMain" if board_index == 0 else f"totalAmpsAddOn{board_index}"
+        power_id = "totalWattsMain" if board_index == 0 else f"totalWattsAddOn{board_index}"
+        current = _template_formula(source, current_id)
+        power = _template_formula(source, power_id)
+        first_channel = board_index * 6 + 1
+        expected_current = tuple(f"ct{channel}Amps" for channel in range(first_channel, first_channel + 6))
+        expected_power = tuple(f"ct{channel}Watts" for channel in range(first_channel, first_channel + 6))
+        if current != expected_current or power != expected_power:
+            raise SystemExit(f"{path.name}: board totals do not use their six native CTs")
+        boards.append(FirmwareBoardTotals(board_index, power_id, current_id, tuple(range(first_channel, first_channel + 6)), tuple(range(first_channel, first_channel + 6))))
+    return FirmwareTotals(tuple(boards))
+
+
+def inspect_top_level_totals(path: Path) -> FirmwareRootTotals:
+    """Read the generic root totals from an add-on firmware configuration."""
+    source = path.read_text(encoding="utf-8")
+    power_sources = _template_formula(source, "totalWatts")
+    current_sources = _template_formula(source, "totalAmps")
+    addon = re.search(r"_(\d+)-addons?(?:_|\.yaml$)", path.name)
+    if addon is None:
+        raise SystemExit(f"{path.name}: root totals require an add-on topology")
+    addon_count = int(addon.group(1))
+    expected_power = ("totalWattsMain",) + tuple(
+        f"totalWattsAddOn{index}" for index in range(1, addon_count + 1)
+    )
+    expected_current = ("totalAmpsMain",) + tuple(
+        f"totalAmpsAddOn{index}" for index in range(1, addon_count + 1)
+    )
+    if power_sources != expected_power or current_sources != expected_current:
+        raise SystemExit(f"{path.name}: root totals do not use board totals")
+    energy_id, energy_power_id = _total_daily_energy(source)
+    if energy_id != "totalEnergyDaily" or energy_power_id != "totalWatts":
+        raise SystemExit(f"{path.name}: total daily energy must use totalWatts")
+    return FirmwareRootTotals(
+        "totalWatts", "totalAmps", power_sources, current_sources, energy_id, energy_power_id
     )
 
 
@@ -127,6 +244,94 @@ def _package_names(source: str, directory: str, suffix: str = "") -> list[str]:
         source,
         re.MULTILINE,
     )
+
+
+def _verify_voltage_gain_substitutions(source: str, filename: str) -> None:
+    substitutions = re.search(
+        r"(?ms)^substitutions:\s*\n(.*?)(?=^[A-Za-z_][^\n]*:|\Z)", source
+    )
+    if substitutions is None:
+        raise SystemExit(f"{filename}: voltage gain substitutions are incomplete")
+    values = re.findall(
+        r"^  (voltage_cal[12]):\s*['\"]?([^'\"#\s]+)['\"]?\s*(?:#.*)?$",
+        substitutions.group(1),
+        re.MULTILINE,
+    )
+    if len(values) != 2 or {name for name, _ in values} != {
+        "voltage_cal1",
+        "voltage_cal2",
+    }:
+        raise SystemExit(f"{filename}: voltage gain substitutions are incomplete")
+    if any(not value.isdecimal() or not 1 <= int(value) <= 65535 for _, value in values):
+        raise SystemExit(f"{filename}: voltage gain substitutions must be integers 1..65535")
+
+
+def _verify_sensor_package(path: Path, *, main: bool) -> None:
+    source = path.read_text(encoding="utf-8")
+    instances = re.findall(
+        r"(?ms)^  - platform: atm90e32\s*\n(.*?)(?=^  - platform:|\Z)", source
+    )
+    if len(instances) != 2:
+        raise SystemExit(f"{path.name}: ATM90E32 instances are incomplete")
+    for instance_number, instance in enumerate(instances, start=1):
+        phases = re.findall(
+            r"(?ms)^    phase_([abc]):\s*\n(.*?)(?=^    phase_[abc]:|^    [^ \n]+:|\Z)",
+            instance,
+        )
+        if [phase for phase, _ in phases] != list("abc"):
+            raise SystemExit(f"{path.name}: ATM90E32 phases are incomplete")
+        for phase, body in phases:
+            if not re.search(
+                rf"^      gain_voltage: \$\{{voltage_cal{instance_number}\}}$",
+                body,
+                re.MULTILINE,
+            ):
+                raise SystemExit(f"{path.name}: voltage gain inheritance is incorrect")
+            voltage = re.search(
+                r"(?ms)^      voltage:\s*\n(.*?)(?=^      [^ \n]+:|\Z)", body
+            )
+            if voltage is None:
+                raise SystemExit(f"{path.name}: phase voltage sensor is missing")
+            public = main and instance_number == 1 and phase == "a"
+            id_prefix = "meter_main" if main else path.stem.removeprefix("6chan_") + "_"
+            expected_id = (
+                "ic1Volts"
+                if public
+                else f"{id_prefix}{instance_number}_voltage_{phase}_calibration"
+            )
+            required = (
+                ("name: Voltage 1", "accuracy_decimals: 1")
+                if public
+                else ("entity_category: diagnostic", "disabled_by_default: true")
+            )
+            if not all(
+                re.search(
+                    rf"^        {re.escape(value)}$", voltage.group(1), re.MULTILINE
+                )
+                for value in required
+            ) or not re.search(
+                rf"^        id: {re.escape(expected_id)}$",
+                voltage.group(1),
+                re.MULTILINE,
+            ) or not re.search(
+                r'''^        name:[ \t]*(?:"[^"\s][^"]*"|'[^'\s][^']*'|[^"'#\s].*)$''',
+                voltage.group(1),
+                re.MULTILINE,
+            ) or (
+                public
+                and any(
+                    re.search(
+                        rf"^        {re.escape(value)}", voltage.group(1), re.MULTILINE
+                    )
+                    for value in ("entity_category:", "disabled_by_default:")
+                )
+            ) or (
+                not public
+                and re.search(
+                    r"^        internal:\s*true$", voltage.group(1), re.MULTILINE
+                )
+            ):
+                raise SystemExit(f"{path.name}: voltage sensor defaults are incorrect")
 
 
 def _verify_calibration_package(path: Path, prefix: str) -> None:
@@ -315,6 +520,7 @@ def verify(helper_root: Path, firmware_root: Path) -> None:
     configs = {path.name: path for path in firmware_dir.glob(f"{PREFIX}*.yaml")}
     if set(configs) != EXPECTED_CONFIGS:
         raise SystemExit("firmware configuration set differs from the supported matrix")
+    inspect_firmware_totals(firmware_root)
     for filename, path in configs.items():
         source = path.read_text(encoding="utf-8")
         project = re.search(r"^    name: (\S+)$", source, re.MULTILINE)
@@ -346,12 +552,21 @@ def verify(helper_root: Path, firmware_root: Path) -> None:
             not (firmware_dir / "calibration" / name).is_file() for name in calibrations
         ):
             raise SystemExit(f"{filename}: referenced calibration package is missing")
+        if addon_count:
+            inspect_top_level_totals(path)
+        else:
+            energy_id, energy_power_id = _total_daily_energy(source)
+            if energy_id != "totalEnergyDaily" or energy_power_id != "totalWattsMain":
+                raise SystemExit(
+                    f"{filename}: main total daily energy must use totalWattsMain"
+                )
         channels = list(range(1, 6 * (addon_count + 1) + 1))
         if (
             _indices(source, "ct", "_name") != channels
             or _indices(source, "current_cal_ct") != channels
         ):
             raise SystemExit(f"{filename}: CT substitutions are not contiguous")
+        _verify_voltage_gain_substitutions(source, filename)
         if not _has_component(source, "dashboard_import"):
             raise SystemExit(f"{filename}: firmware must define dashboard_import")
         if (
@@ -380,6 +595,20 @@ def verify(helper_root: Path, firmware_root: Path) -> None:
     }
     if calibration_files != expected_calibration_files:
         raise SystemExit("firmware calibration package set is incomplete")
+    sensor_files = {
+        path.name for path in (firmware_dir / "meter_sensors").glob("6chan_*.yaml")
+    }
+    expected_sensor_files = {"6chan_main_sensor.yaml"} | {
+        f"6chan_addon{index}.yaml" for index in range(1, 7)
+    }
+    if sensor_files != expected_sensor_files:
+        raise SystemExit("firmware sensor package set is incomplete")
+    for board in range(7):
+        name = "main_sensor" if board == 0 else f"addon{board}"
+        _verify_sensor_package(
+            firmware_dir / "meter_sensors" / f"6chan_{name}.yaml",
+            main=board == 0,
+        )
     for board in range(7):
         prefix = "main" if board == 0 else f"addon{board}"
         _verify_calibration_package(

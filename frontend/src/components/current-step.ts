@@ -20,6 +20,7 @@ export function currentStep(
   calibrate: () => void,
   reconnect: () => void,
   cancel: () => void,
+  busy = false,
 ): TemplateResult {
   const ctCount = topology?.ct_count ?? inventory?.channels.length ?? 6;
   const board = Math.floor((channel - 1) / 6);
@@ -34,7 +35,7 @@ export function currentStep(
   const referenceReady = selected.length > 0 && (!multiplierRequired || multiplierValid);
   return html`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
-      ${calibrationProgress(referenceReady, stability, result)}
+      ${calibrationProgress(referenceReady, stability, result, session?.calibration_plan ?? "full")}
       <div class="board-tabs" role="tablist" aria-label="Calibration boards">
         ${Array.from({ length: Math.ceil(ctCount / 6) }, (_, index) => html`<button role="tab"
           id=${`current-board-tab-${index}`} aria-controls="current-board-panel"
@@ -48,17 +49,18 @@ export function currentStep(
           aria-pressed=${value === first} @click=${() => select(value)}>Group ${board * 2 + offset + 1}</button>`; })}
       </div>
       <h2>Calibrate CT${first}–CT${first + 2}</h2>
+      <p>Blank entries keep the existing gains. Select a reference only for channels you want to calibrate.</p>
       ${calibrationSourceEvidence(session, sourceIds, "Current", completedInstanceIds)}
       <div class="reference-block">
-        ${channels.map((value) => html`<label>CT${value} reference
+        ${channels.map((value) => html`<label>CT${value} · ${inventory?.channels.find((item) => item.channel === value)?.name ?? "Unnamed circuit"} reference (A)
           <input data-current-reference=${value} aria-label=${`CT${value} reference`} type="number" min="0.01" step="0.01"
             .value=${references.has(value) ? String(references.get(value)) : ""}
             @input=${(event: Event) => { const input = event.target as HTMLInputElement; setReference(value, input.value === "" ? null : Number(input.value)); }} /></label>`)}
-      ${multiplierRequired ? html`<label>Reporting multiplier <select data-role="reporting-multiplier" required @change=${(event: Event) => { const value = Number((event.target as HTMLSelectElement).value); setReportingMultiplier(value || null); }}><option value="" ?selected=${reportingMultiplier === null}>Choose multiplier</option>${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${reportingMultiplier === value}>${value}</option>`)}</select></label><p>Confirm the meter's reporting multiplier before runtime-only current calibration.</p>` : ""}
+      ${multiplierRequired ? html`<label>Reporting multiplier <select data-role="reporting-multiplier" required @change=${(event: Event) => { const value = Number((event.target as HTMLSelectElement).value); setReportingMultiplier(value || null); }}><option value="" ?selected=${reportingMultiplier === null}>Choose multiplier</option>${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${reportingMultiplier === value}>${value}</option>`)}</select></label><p>ESPHome source editing is unavailable, so the multiplier cannot be read from authoritative configuration. Choose it explicitly.</p>` : ""}
       </div>
-      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${!referenceReady}>Check stability</button>
-        <button class="primary" @click=${calibrate} ?disabled=${!referenceReady || !stability?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
-      ${stability ? html`<div class=${stability.stable ? "success-band" : "warning-band"} role="status">${stability.stable ? "Live data loaded" : "Live data is unavailable"}</div>` : ""}
+      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy || !referenceReady}>${busy ? "Loading live current data…" : "Check stability"}</button>
+        <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
+      ${stability ? html`<div class=${stability.stable ? "success-band" : "warning-band"} role="status">${stability.stable ? "Stable and ready for calibration." : stability.windows.length ? "Data is changing too much; keep the load steady." : "Waiting for live data…"}</div>` : ""}
       ${stabilityEvidence(stability, selected.map((value) => `CT${value}`))}
       ${result?.state === "applied_pending_restart_verification" ? html`<div class="success-band" role="status">Current calibration complete for CT${first}–CT${first + 2}.</div>` : ""}
       ${calibrationEvidence(result)}
