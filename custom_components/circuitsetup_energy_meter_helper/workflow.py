@@ -1083,6 +1083,24 @@ class EntryWorkflow:
         requested, _ = _existing_circuit_suggestions(
             requested, plan.existing_circuit_channels, plan.inventory.configuration.automatic_totals,
         )
+        document = ESPHomeConfigDocument.parse(plan.snapshot.content)
+        candidates = _source_aware_automatic_candidates(requested, document)
+        stale = stale_automatic_total_settings(candidates, requested.automatic_totals)
+        known = plan.issued_total_candidate_ids | {
+            candidate.candidate_id for candidate in plan.inventory.automatic_candidates
+        } | {setting.candidate_id for setting in plan.inventory.stale_automatic_total_settings}
+        if any(setting.candidate_id not in known for setting in stale):
+            raise ValueError("automatic total setting has no issued candidate")
+        if len({setting.candidate_id for setting in requested.automatic_totals}) != len(requested.automatic_totals):
+            raise ValueError("automatic candidate settings must be unique")
+        for setting in stale:
+            if type(setting.enabled) is not bool or any(type(value) is not bool for value in (
+                setting.outputs.watts, setting.outputs.amps, setting.outputs.kwh
+            )):
+                raise ValueError("automatic candidate settings require booleans")
+        requested = replace(requested, automatic_totals=tuple(
+            setting for setting in requested.automatic_totals if setting not in stale
+        ))
         plan.inventory.validate_totals_change(requested)
         manager = self.transactions
         if manager is None:
@@ -1113,9 +1131,10 @@ class EntryWorkflow:
             )
             for channel in requested.channels
         )
-        current_candidate_ids = {item.candidate_id for item in automatic_total_candidates(requested)}
+        current_candidate_ids = {item.candidate_id for item in candidates}
         stale_settings = {item.candidate_id: item for item in (
             *plan.inventory.stale_automatic_total_settings,
+            *stale,
             *plan.inventory.configuration.automatic_totals,
         ) if item.candidate_id not in current_candidate_ids}
         configuration = StoredMeterConfiguration(

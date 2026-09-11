@@ -32,6 +32,7 @@ it("shows the server candidate CT names, formula, persisted switch, and feeds-in
   expect(container.textContent).toContain("CT1 · Service leg A");
   expect(container.textContent).toContain("CT1 + CT2");
   expect(container.textContent).toContain("Feeds into: Home load");
+  expect(container.querySelector(".aggregate-id code")?.textContent).toBe("serviceMains");
   expect(container.querySelector<HTMLInputElement>('[aria-label="Create Service mains total"]')?.checked).toBe(true);
 });
 

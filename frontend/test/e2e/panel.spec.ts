@@ -631,6 +631,32 @@ test("CT names suggest a two-pole total only after both legs are identified", as
   expect(content).not.toContain("_export_power");
 });
 
+test("suggested totals stay reviewable after an advanced total is removed", async ({ page }) => {
+  const fixture = await totalsFixture(page, "main-only");
+  await openInventory(page, fixture.url);
+  await page.getByLabel("CT3 name", { exact: true }).fill("Dryer L1");
+  await page.getByLabel("CT4 name", { exact: true }).fill("Dryer L2");
+  const suggestion = page.getByRole("switch", { name: "Create Dryer total", exact: true });
+  await expect(suggestion).toBeVisible();
+  await suggestion.check();
+  await page.getByLabel("CT3 role", { exact: true }).selectOption("two_pole");
+  await page.getByLabel("CT4 role", { exact: true }).selectOption("two_pole");
+  await expect(suggestion).toBeChecked();
+  await page.locator("#advanced-totals-heading").press("Enter");
+  await page.getByRole("button", { name: "Create aggregate total" }).click();
+  await page.getByLabel("aggregate-1 aggregate name").fill("Service report");
+  await page.getByLabel("Main Board channels").locator("summary").click();
+  await page.getByLabel("Service report: CT1", { exact: true }).check();
+  await page.getByLabel("Service report: CT2", { exact: true }).check();
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete total", exact: true }).click();
+  await expect(page.getByLabel("Service report aggregate", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
+});
+
 test("verified Summary shows public outputs, hidden dependencies, formulas, coverage and pending migration", async ({ page }) => {
   const fixture = await totalsFixture(page, "summary");
   const errors: string[] = [];

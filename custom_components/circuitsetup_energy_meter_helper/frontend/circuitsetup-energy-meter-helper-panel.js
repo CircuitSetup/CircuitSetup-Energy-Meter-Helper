@@ -1806,6 +1806,12 @@ class HelperApi {
     }, { type: `${PREFIX}${operation}`, entry_id: this.entryId, ...data });
   }
 }
+function generatedTotalId(name) {
+  const words = name.match(/[A-Z]+(?=[A-Z][a-z]|[^a-zA-Z]|$)|[A-Z]?[a-z]+|[0-9]+/g) ?? [];
+  let stem = words.map((word, index) => index === 0 ? word.toLowerCase() : `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}`).join("") || "total";
+  if (/^\d/.test(stem)) stem = `total${stem}`;
+  return stem;
+}
 function derivedParentId(aggregateId, aggregates) {
   const parents = aggregates.filter((item) => item.sources.some((source) => source.kind === "aggregate" && source.aggregate_id === aggregateId));
   if (parents.length > 1) throw new Error("A total cannot have multiple parents.");
@@ -2213,6 +2219,7 @@ function automaticTotalsSection(configuration, totals, writable, update, existin
       changeOutput(key, input.checked);
     }} />${label}</label>`;
     return b`<fieldset class="automatic-total-card"><legend>${resolved.candidate.name}</legend>
+        <p class="aggregate-id">ID: <code>${generatedTotalId(resolved.candidate.name)}</code></p>
         <p>Sources: ${sources}</p><p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
         ${parents.length ? b`<p>Feeds into: ${parents.map((parent) => parent.name).join(" and ")}</p>` : ""}
         <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${resolved.candidate.name} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>
@@ -2396,7 +2403,7 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
     ];
     return b`<fieldset class="aggregate-card" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!writable}><legend>${aggregate.name}</legend>
         <div class="aggregate-fields">
-          <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
+          <div class="aggregate-name-field"><label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
             @input=${(event) => {
       const input = event.target;
       if (!writable) {
@@ -2405,6 +2412,8 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
       }
       patch(aggregate, { name: input.value });
     }} /></label>
+            <p class="aggregate-id">ID: <code>${generatedTotalId(aggregate.name)}</code></p>
+          </div>
           <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
             @change=${(event) => {
       const input = event.target;
@@ -2466,9 +2475,18 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
         ${nativeChoices.length ? b`<fieldset class="aggregate-sources"><legend>Native totals</legend><div class="aggregate-source-options">${nativeChoices.map((item) => option({ kind: "native_total", source_id: item.source_id }, item.label))}</div></fieldset>` : A}
         ${existingChoices.length ? b`<fieldset class="aggregate-sources"><legend>Existing totals</legend><div class="aggregate-source-options">${existingChoices.map((item) => option({ kind: "aggregate", aggregate_id: item.aggregate_id }, item.name))}</div></fieldset>` : A}
         <fieldset class="aggregate-sources aggregate-channels"><legend>CTs</legend><div class="aggregate-channel-groups">${Array.from({ length: Math.ceil(configuration.channels.length / 6) }, (_2, board) => {
-      const channels = configuration.channels.filter((item) => item.enabled && Math.floor((item.channel - 1) / 6) === board);
+      const channels = configuration.channels.filter((item) => item.enabled && Math.floor((item.channel - 1) / 6) === board).sort((left, right) => {
+        const slot = (channel) => (channel - 1) % 6;
+        const physical = (channel) => slot(channel) < 3 ? slot(channel) : 8 - slot(channel);
+        return physical(left.channel) - physical(right.channel);
+      });
       const used = channels.some((item) => aggregate.sources.some((source) => source.kind === "channel" && source.channel === item.channel));
-      return channels.length ? b`<details class="aggregate-channel-group" ?open=${used} aria-label=${board ? `Add-on ${board} channels` : "Main Board channels"}><summary>${board ? `Add-on ${board}` : "Main Board"}</summary><div>${channels.map((item) => option({ kind: "channel", channel: item.channel }, `CT${item.channel} · ${drafts.get(item.channel)?.name ?? item.name}`, `CT${item.channel}`))}</div></details>` : A;
+      return channels.length ? b`<details class="aggregate-channel-group" ?open=${used} aria-label=${board ? `Add-on ${board} channels` : "Main Board channels"}><summary>${board ? `Add-on ${board}` : "Main Board"}</summary><div>${channels.map((item) => {
+        const slot = (item.channel - 1) % 6;
+        return b`<span style=${`--ct-column:${slot < 3 ? 1 : 2};--ct-row:${slot < 3 ? slot + 1 : 6 - slot}`}>
+              ${option({ kind: "channel", channel: item.channel }, `CT${item.channel} · ${drafts.get(item.channel)?.name ?? item.name}`, `CT${item.channel}`)}
+            </span>`;
+      })}</div></details>` : A;
     })}</div></fieldset>
         ${aggregate.sources.filter((source) => !known.some((item) => sameSource(item, source))).map((source) => option(source, label(source)))}
         <div class="aggregate-actions">${output("watts", "Watts")}${output("amps", "Amps")}${output("kwh", "kWh")}
@@ -2484,7 +2502,6 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
       })) });
     }}>Delete total</button>
         </div>
-        <details><summary>Advanced details</summary><p>Stable aggregate ID: <code>${aggregate.aggregate_id}</code></p></details>
       </fieldset>`;
   })}</div>
     ${writable ? b`<button class="secondary" data-action="add-aggregate" @click=${add}>Create aggregate total</button>` : A}
@@ -2593,7 +2610,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                   <div><dt>Raw gain</dt><dd>${channel.raw_gain_ct}</dd></div>
                   <div><dt>Divided gain</dt><dd>${gain ?? "—"}</dd></div>
                   <div><dt>Voltage reference</dt><dd data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</dd></div>
-                  <div><dt>Reporting multiplier</dt><dd><label><input type="checkbox" aria-label=${`CT${channel.channel} manual multiplier`} ?checked=${draft.multiplierMode === "manual"} ?disabled=${labelOnly || draft.preserveExistingGain}
+                  <div class="ct-reporting-multiplier"><dt>Reporting multiplier</dt><dd><label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} manual multiplier`} ?checked=${draft.multiplierMode === "manual"} ?disabled=${labelOnly || draft.preserveExistingGain}
                     @change=${(event) => update(channel.channel, { multiplierMode: event.target.checked ? "manual" : "automatic", multiplier: event.target.checked ? draft.multiplier : recommendation ?? draft.multiplier })} /> Manual override</label>
                     <select aria-label=${`CT${channel.channel} multiplier`} .value=${String(draft.multiplier)} ?disabled=${labelOnly || draft.preserveExistingGain || draft.multiplierMode !== "manual"}
                       @change=${(event) => update(channel.channel, { multiplier: Number(event.target.value), multiplierMode: "manual" })}>${[1, 2, 4, 8].map((value) => b`<option value=${value} ?selected=${draft.multiplier === value}>×${value}</option>`)}</select></dd></div>
@@ -2855,7 +2872,7 @@ function packageOptions(options, change, capabilities = []) {
             @change=${(event) => change({
       ...options,
       [feature]: options[feature].map((value, index) => index === board ? event.currentTarget.checked : value)
-    })} />${status ? b`<small>${status}</small>` : ""}</td>`;
+    })} /></td>`;
   })}
         </tr>`)}
       </tbody>
@@ -2943,20 +2960,23 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
       <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
       <details class="advanced-voltage-options" data-section="advanced-voltage-options"><summary>Advanced voltage options</summary><div class="voltage-options-content"><div class="voltage-reference-cards">${draft.voltage_references.map((reference) => b`
         <section class="voltage-reference-card" aria-label=${`${reference.label} voltage reference`}>
-          <label>Label <input aria-label=${`${reference.reference_id} label`} maxlength="64" .value=${reference.label}
-            @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, label: event.target.value } : item) })} /></label>
-          <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} aria-describedby=${`${reference.reference_id}-phase-help`} maxlength="64" .value=${reference.phase_label}
-            @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: event.target.value } : item) })} /><small id=${`${reference.reference_id}-phase-help`}>Names the supply phase in the configuration review, for example L1, L2, or A. This label does not change wiring or assign CT groups.</small></label>
-          ${reference !== primaryReference ? b`<label>Transformer <select aria-label=${`${reference.reference_id} transformer`} .value=${reference.transformer_model_id}
-            @change=${(event) => setTransformer(reference.reference_id, event.target.value)}>
-            ${catalog.presets.map((preset) => b`<option value=${preset.model_id}>${preset.label}</option>`)}
-            <option value="custom">Custom starting gain</option>
-            ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? b`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>` : A}
-          ${reference.transformer_model_id !== "custom" ? b`<p>Starting gain: ${reference.gain_voltage}</p>` : b`<label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
-            @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number(event.target.value) } : item) })} /></label>
-          `}
-          ${["three_phase", "custom"].includes(draft.electrical_system) ? b`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
-            @input=${(event) => setNominalVoltage(reference.reference_id, Number(event.target.value))} /></label>` : A}
+          <div class="voltage-reference-column">
+            <label>Label <input aria-label=${`${reference.reference_id} label`} maxlength="64" .value=${reference.label}
+              @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, label: event.target.value } : item) })} /></label>
+            ${reference !== primaryReference ? b`<label>Transformer <select aria-label=${`${reference.reference_id} transformer`} .value=${reference.transformer_model_id}
+              @change=${(event) => setTransformer(reference.reference_id, event.target.value)}>
+              ${catalog.presets.map((preset) => b`<option value=${preset.model_id}>${preset.label}</option>`)}
+              <option value="custom">Custom starting gain</option>
+              ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? b`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>` : A}
+            ${["three_phase", "custom"].includes(draft.electrical_system) ? b`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
+              @input=${(event) => setNominalVoltage(reference.reference_id, Number(event.target.value))} /></label>` : A}
+            ${reference.transformer_model_id !== "custom" ? b`<p>Starting gain: ${reference.gain_voltage}</p>` : b`<label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
+              @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number(event.target.value) } : item) })} /></label>`}
+          </div>
+          <div class="voltage-reference-column voltage-phase-column">
+            <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} aria-describedby=${`${reference.reference_id}-phase-help`} maxlength="64" .value=${reference.phase_label}
+              @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: event.target.value } : item) })} /><small id=${`${reference.reference_id}-phase-help`}>Names the supply phase in the configuration review, for example L1, L2, or A. This label does not change wiring or assign CT groups.</small></label>
+          </div>
           ${draft.voltage_references.length > 1 ? b`<button class="secondary" aria-label=${`Remove ${reference.reference_id} voltage reference`} @click=${() => removeReference(reference.reference_id)}>Remove reference</button>` : ""}
         </section>`)}
       </div>
@@ -3850,6 +3870,7 @@ const panelStyles = i$5`
   h3 { font-size: var(--ha-font-size-l, 16px); font-weight: var(--ha-font-weight-medium, 500); }
   p { color: var(--muted); }
   .step-content { max-width: 1320px; }
+  .ct-step { overflow-anchor: none; }
   fieldset { border: 0; margin: 0 0 26px; padding: 0; }
   legend { font-size: var(--ha-font-size-xl, 20px); font-weight: var(--ha-font-weight-medium, 500); }
   .name-mode { display: grid; gap: 8px; }
@@ -3898,17 +3919,21 @@ const panelStyles = i$5`
   .board-tabs button, .target-tabs button { flex: 0 0 auto; border: 0; border-radius: 0; background: transparent; }
   .board-tabs button[aria-selected="true"], .target-tabs button[aria-pressed="true"] { color: var(--accent); border-bottom: 2px solid var(--accent); }
   .ct-table { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow-x: auto; overflow-y: hidden; }
-  .ct-header, .ct-row { display: grid; grid-template-columns: .45fr .45fr 1.35fr 1fr 1.45fr 1fr; align-items: center; gap: 10px; padding: 11px 12px; }
+  .ct-header, .ct-row { display: grid; grid-template-columns: .45fr .45fr 1.35fr 1fr 1.45fr 1fr; align-items: start; gap: 10px; padding: 8px 10px; }
   .ct-header { font-weight: var(--ha-font-weight-bold, 700); background: var(--surface-alt); }
-  .ct-row { min-height: 66px; border-top: 1px solid var(--border); }
+  .ct-row { min-height: 60px; border-top: 1px solid var(--border); }
   .ct-index { font-weight: var(--ha-font-weight-bold, 700); }
-  .ct-row input, .ct-row select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-small); }
+  .ct-row > label { display: grid; align-content: start; gap: 4px; }
+  .ct-row > label.check-row { display: flex; }
+  .ct-row input, .ct-row select { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); }
   .ct-row input[type="checkbox"] { width: auto; }
   .row-toggle { color: var(--accent); border: 0; padding: 4px; }
-  .preserve-gain { margin: 10px 12px; }
-  .technical-details { margin: 0; border-radius: 0; border-width: 1px 0 0; }
+  .preserve-gain { margin: 6px 10px; }
+  .technical-details { margin: 0; border: 0; border-radius: 0; }
   .mobile-label { display: none; }
-  .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 16px 30px; background: var(--surface-alt); border-top: 1px solid var(--border); }
+  .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 12px 20px; background: var(--surface-alt); border-top: 0; }
+  .ct-detail .ct-reporting-multiplier { display: grid; gap: 6px; }
+  .ct-reporting-multiplier dd { display: grid; gap: 6px; }
   .aggregate-list { display: grid; gap: 16px; margin: 14px 0; }
   .default-totals { display: grid; gap: 12px; margin: 24px 0; }
   .default-totals h2, .default-totals p { margin: 0; }
@@ -3928,9 +3953,12 @@ const panelStyles = i$5`
   .aggregate-card { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   .aggregate-card > legend { padding: 0 8px; }
   .aggregate-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 22px; }
+  .aggregate-name-field { display: grid; align-content: start; gap: 4px; }
   .aggregate-fields label { display: grid; align-content: start; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
   .aggregate-fields input, .aggregate-fields select { width: 100%; padding: 10px; border: 1px solid var(--border); }
   .aggregate-fields small { color: var(--muted); font-weight: var(--ha-font-weight-normal, 400); }
+  .aggregate-id { margin: 0; color: var(--muted); font-size: 0.9em; }
+  .aggregate-id code { color: inherit; }
   .aggregate-channels { margin: 18px 0 14px; }
   .aggregate-sources { margin: 18px 0; min-width: 0; }
   .aggregate-source-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -3940,7 +3968,8 @@ const panelStyles = i$5`
   .aggregate-channel-group { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); }
   .aggregate-channel-group > summary { font-weight: 600; }
   .aggregate-channel-group[open] > summary { margin-bottom: 8px; }
-  .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(44px, auto)); gap: 6px; }
+  .aggregate-channel-group > div > span { display: block; grid-column: var(--ct-column); grid-row: var(--ct-row); }
   .aggregate-channel-option { display: flex; align-items: center; min-width: 0; min-height: 44px; gap: 7px; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface); cursor: pointer; overflow-wrap: anywhere; }
   .aggregate-channel-option input { flex: 0 0 auto; min-height: auto; margin: 0; }
   .aggregate-channel-option.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
@@ -3966,6 +3995,7 @@ const panelStyles = i$5`
   .package-options-table th:not(:first-child), .package-options-table td { text-align: center; }
   .package-options-table input { width: 18px; height: 18px; }
   .voltage-reference-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .voltage-reference-column { display: grid; align-content: start; gap: 12px; }
   .reference-block { display: grid; max-width: 420px; gap: 12px; }
   .reference-block label { display: grid; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
   .calibration-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0 10px; }
@@ -4024,7 +4054,8 @@ const panelStyles = i$5`
     .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card, .aggregate-fields, .aggregate-channel-groups { grid-template-columns: 1fr; }
     .default-total-controls { align-items: stretch; flex-direction: column; }
     .automatic-total-controls { align-items: stretch; flex-direction: column; }
-    .aggregate-channel-group > div { grid-template-columns: 1fr; }
+    .aggregate-channel-group > div { grid-template-columns: 1fr; grid-template-rows: none; }
+    .aggregate-channel-group > div > span { grid-column: auto; grid-row: auto; }
     .aggregate-source-options { grid-template-columns: 1fr; }
     .existing-configuration .status-list > div { grid-template-columns: 1fr; gap: 2px; }
     .aggregate-actions button { width: 100%; margin-left: 0; }

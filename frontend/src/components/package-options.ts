@@ -61,7 +61,7 @@ export function packageOptions(
             aria-label=${`${board === 0 ? "Main board" : `Add-on ${board}`} ${label}`} .checked=${options[feature][board] ?? false}
             ?disabled=${disabled} title=${status ?? ""}
             @change=${(event: Event) => change({ ...options,
-              [feature]: options[feature].map((value, index) => index === board ? (event.currentTarget as HTMLInputElement).checked : value), })} />${status ? html`<small>${status}</small>` : ""}</td>`; })}
+              [feature]: options[feature].map((value, index) => index === board ? (event.currentTarget as HTMLInputElement).checked : value), })} /></td>`; })}
         </tr>`)}
       </tbody>
     </table>

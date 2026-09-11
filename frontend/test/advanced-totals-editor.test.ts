@@ -150,13 +150,23 @@ it("names children becoming independent when deleting a parent and preserves the
   expect(state.configuration().aggregates).toEqual([total("child", "Child", [ct(1)])]);
 });
 
-it("keeps the stable raw ID only in Advanced details while names remain editable", () => {
+it("shows the generated sensor ID while keeping the stable aggregate identity", () => {
   const state = mount([total("opaque-id", "Friendly name", [ct(1)])]);
-  expect(card("Friendly name")?.querySelector("details code")?.textContent ?? "").toContain("opaque-id");
+  expect(card("Friendly name")?.querySelector(".aggregate-id code")?.textContent ?? "").toBe("friendlyName");
+  expect(card("Friendly name")?.querySelector("details")?.textContent ?? "").not.toContain("Advanced details");
   expect(card("Friendly name")?.querySelector("legend")?.textContent).toBe("Friendly name");
   const name = input("opaque-id aggregate name")!;
   name.value = "Renamed"; name.dispatchEvent(new Event("input"));
   expect(state.configuration().aggregates[0]!.aggregate_id).toBe("opaque-id");
+  expect(card("Renamed")?.querySelector(".aggregate-id code")?.textContent).toBe("renamed");
+});
+
+it("lays out CT choices in physical board order", () => {
+  const state = mount([total("home", "Home")]);
+  state.response.configuration.channels = state.response.configuration.channels.map((channel) => ({ ...channel, enabled: true }));
+  state.draw();
+  expect([...card("Home")!.querySelectorAll(".aggregate-channel-group > div > span input")].map((input) => input.getAttribute("aria-label")))
+    .toEqual(["Home: CT1", "Home: CT2", "Home: CT3", "Home: CT6", "Home: CT5", "Home: CT4"]);
 });
 
 it("does not steal an already-parented child through the ordinary source picker", () => {

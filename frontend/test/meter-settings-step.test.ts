@@ -65,6 +65,18 @@ describe("meterSettingsStep", () => {
     expect(root.textContent).toContain("1–5 seconds: high traffic.");
   });
 
+  it("keeps advanced voltage fields in top-aligned columns", () => {
+    const root = document.createElement("div");
+    render(meterSettingsStep({ ...draft, electrical_system: "custom", voltage_references: [{
+      ...draft.voltage_references[0]!, transformer_model_id: "custom",
+    }] }, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    const card = root.querySelector<HTMLElement>(".voltage-reference-card")!;
+    expect(card.querySelectorAll(".voltage-reference-column")).toHaveLength(2);
+    expect([...card.querySelectorAll(".voltage-reference-column:first-child label")].map((label) => label.textContent?.trim().split(" ")[0]))
+      .toEqual(["Label", "Nominal", "Custom"]);
+    expect(card.querySelector(".voltage-phase-column")?.querySelector("label")?.textContent).toContain("Phase label");
+  });
+
   it("shows the reporting default and derives voltage for fixed profiles", () => {
     const root = document.createElement("div");
     const standard = { ...draft, update_interval_s: 10 as const };

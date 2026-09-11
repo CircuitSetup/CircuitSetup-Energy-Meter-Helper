@@ -114,20 +114,23 @@ export function meterSettingsStep(
       <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
       <details class="advanced-voltage-options" data-section="advanced-voltage-options"><summary>Advanced voltage options</summary><div class="voltage-options-content"><div class="voltage-reference-cards">${draft.voltage_references.map((reference) => html`
         <section class="voltage-reference-card" aria-label=${`${reference.label} voltage reference`}>
-          <label>Label <input aria-label=${`${reference.reference_id} label`} maxlength="64" .value=${reference.label}
-            @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, label: (event.target as HTMLInputElement).value } : item) })} /></label>
-          <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} aria-describedby=${`${reference.reference_id}-phase-help`} maxlength="64" .value=${reference.phase_label}
-            @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: (event.target as HTMLInputElement).value } : item) })} /><small id=${`${reference.reference_id}-phase-help`}>Names the supply phase in the configuration review, for example L1, L2, or A. This label does not change wiring or assign CT groups.</small></label>
-          ${reference !== primaryReference ? html`<label>Transformer <select aria-label=${`${reference.reference_id} transformer`} .value=${reference.transformer_model_id}
-            @change=${(event: Event) => setTransformer(reference.reference_id, (event.target as HTMLSelectElement).value)}>
-            ${catalog.presets.map((preset) => html`<option value=${preset.model_id}>${preset.label}</option>`)}
-            <option value="custom">Custom starting gain</option>
-            ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? html`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>` : nothing}
-          ${reference.transformer_model_id !== "custom" ? html`<p>Starting gain: ${reference.gain_voltage}</p>` : html`<label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
-            @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number((event.target as HTMLInputElement).value) } : item) })} /></label>
-          `}
-          ${["three_phase", "custom"].includes(draft.electrical_system) ? html`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
-            @input=${(event: Event) => setNominalVoltage(reference.reference_id, Number((event.target as HTMLInputElement).value))} /></label>` : nothing}
+          <div class="voltage-reference-column">
+            <label>Label <input aria-label=${`${reference.reference_id} label`} maxlength="64" .value=${reference.label}
+              @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, label: (event.target as HTMLInputElement).value } : item) })} /></label>
+            ${reference !== primaryReference ? html`<label>Transformer <select aria-label=${`${reference.reference_id} transformer`} .value=${reference.transformer_model_id}
+              @change=${(event: Event) => setTransformer(reference.reference_id, (event.target as HTMLSelectElement).value)}>
+              ${catalog.presets.map((preset) => html`<option value=${preset.model_id}>${preset.label}</option>`)}
+              <option value="custom">Custom starting gain</option>
+              ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? html`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>` : nothing}
+            ${["three_phase", "custom"].includes(draft.electrical_system) ? html`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
+              @input=${(event: Event) => setNominalVoltage(reference.reference_id, Number((event.target as HTMLInputElement).value))} /></label>` : nothing}
+            ${reference.transformer_model_id !== "custom" ? html`<p>Starting gain: ${reference.gain_voltage}</p>` : html`<label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
+              @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number((event.target as HTMLInputElement).value) } : item) })} /></label>`}
+          </div>
+          <div class="voltage-reference-column voltage-phase-column">
+            <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} aria-describedby=${`${reference.reference_id}-phase-help`} maxlength="64" .value=${reference.phase_label}
+              @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: (event.target as HTMLInputElement).value } : item) })} /><small id=${`${reference.reference_id}-phase-help`}>Names the supply phase in the configuration review, for example L1, L2, or A. This label does not change wiring or assign CT groups.</small></label>
+          </div>
           ${draft.voltage_references.length > 1 ? html`<button class="secondary" aria-label=${`Remove ${reference.reference_id} voltage reference`} @click=${() => removeReference(reference.reference_id)}>Remove reference</button>` : ""}
         </section>`)}
       </div>

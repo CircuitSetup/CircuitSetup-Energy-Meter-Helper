@@ -1,6 +1,6 @@
 import { html, type TemplateResult } from "lit";
 import { confirmTotalOutputRemoval } from "./total-output-removal";
-import { sourceFormula } from "../total-graph";
+import { generatedTotalId, sourceFormula } from "../total-graph";
 import type { AutomaticTotalSettings, MeterConfigurationRequest, TotalOutputSettings, TotalsInventory } from "../types";
 
 const automaticRoleLabels = [
@@ -48,6 +48,7 @@ export function automaticTotalsSection(
           changeOutput(key, input.checked);
         }} />${label}</label>`;
       return html`<fieldset class="automatic-total-card"><legend>${resolved.candidate.name}</legend>
+        <p class="aggregate-id">ID: <code>${generatedTotalId(resolved.candidate.name)}</code></p>
         <p>Sources: ${sources}</p><p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
         ${parents.length ? html`<p>Feeds into: ${parents.map((parent) => parent.name).join(" and ")}</p>` : ""}
         <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${resolved.candidate.name} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>

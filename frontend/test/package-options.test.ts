@@ -67,7 +67,9 @@ it("keeps package choices read-only when the source is unsafe", () => {
 
   expect(container.querySelector<HTMLInputElement>('[data-feature="power_quality"][data-board="0"]')?.disabled).toBe(true);
   expect(container.querySelector<HTMLInputElement>('[data-all-feature="power_quality"]')?.disabled).toBe(true);
-  expect(container.textContent).toContain("Read-only: unsupported package source");
+  expect(container.querySelector<HTMLInputElement>('[data-feature="power_quality"][data-board="0"]')?.title)
+    .toBe("Read-only: unsupported package source");
+  expect(container.textContent).not.toContain("Read-only: unsupported package source");
   container.querySelector<HTMLInputElement>('[data-feature="power_quality"][data-board="0"]')?.click();
   expect(changed).not.toHaveBeenCalled();
 });

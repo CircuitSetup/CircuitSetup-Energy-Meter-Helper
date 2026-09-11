@@ -160,7 +160,7 @@ export function ctInventoryStep(
                   <div><dt>Raw gain</dt><dd>${channel.raw_gain_ct}</dd></div>
                   <div><dt>Divided gain</dt><dd>${gain ?? "—"}</dd></div>
                   <div><dt>Voltage reference</dt><dd data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</dd></div>
-                  <div><dt>Reporting multiplier</dt><dd><label><input type="checkbox" aria-label=${`CT${channel.channel} manual multiplier`} ?checked=${draft.multiplierMode === "manual"} ?disabled=${labelOnly || draft.preserveExistingGain}
+                  <div class="ct-reporting-multiplier"><dt>Reporting multiplier</dt><dd><label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} manual multiplier`} ?checked=${draft.multiplierMode === "manual"} ?disabled=${labelOnly || draft.preserveExistingGain}
                     @change=${(event: Event) => update(channel.channel, { multiplierMode: (event.target as HTMLInputElement).checked ? "manual" : "automatic", multiplier: (event.target as HTMLInputElement).checked ? draft.multiplier : recommendation ?? draft.multiplier })} /> Manual override</label>
                     <select aria-label=${`CT${channel.channel} multiplier`} .value=${String(draft.multiplier)} ?disabled=${labelOnly || draft.preserveExistingGain || draft.multiplierMode !== "manual"}
                       @change=${(event: Event) => update(channel.channel, { multiplier: Number((event.target as HTMLSelectElement).value), multiplierMode: "manual" })}>${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${draft.multiplier === value}>×${value}</option>`)}</select></dd></div>

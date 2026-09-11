@@ -1,5 +1,14 @@
 import type { CircuitAggregate, TotalSource, TotalsInventory } from "./types";
 
+export function generatedTotalId(name: string): string {
+  const words = name.match(/[A-Z]+(?=[A-Z][a-z]|[^a-zA-Z]|$)|[A-Z]?[a-z]+|[0-9]+/g) ?? [];
+  let stem = words.map((word, index) => index === 0
+    ? word.toLowerCase()
+    : `${word[0]!.toUpperCase()}${word.slice(1).toLowerCase()}`).join("") || "total";
+  if (/^\d/.test(stem)) stem = `total${stem}`;
+  return stem;
+}
+
 export function derivedParentId(aggregateId: string, aggregates: readonly CircuitAggregate[]): string | null {
   const parents = aggregates.filter((item) => item.sources.some((source) => source.kind === "aggregate" && source.aggregate_id === aggregateId));
   if (parents.length > 1) throw new Error("A total cannot have multiple parents.");

@@ -932,6 +932,39 @@ def test_total_graph_preview_is_repeatable_read_only_and_recomputes_roles() -> N
     asyncio.run(run())
 
 
+def test_configuration_preview_accepts_known_automatic_settings_after_candidate_disappears() -> None:
+    """A renamed CT pair may make a previously issued suggestion stale during review."""
+
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+            AutomaticTotalSettings,
+        )
+        from tests.totals_browser_fixture import Fixture
+
+        fixture = Fixture()
+        await fixture.initialize("automatic-on")
+        response = await fixture.workflow.async_get_meter_configuration("meter-1")
+        plan = fixture.workflow._plans[response["plan_id"]]
+        candidate = plan.inventory.automatic_candidates[0]
+        requested = replace(
+            plan.inventory.configuration,
+            channels=tuple(
+                replace(channel, role=CircuitRole.BRANCH, name=f"Renamed {channel.channel}")
+                if channel.channel in (1, 2) else channel
+                for channel in plan.inventory.configuration.channels
+            ),
+            automatic_totals=(
+                AutomaticTotalSettings(candidate.candidate_id, False, candidate.recommended_outputs),
+            ),
+        )
+        status = await fixture.workflow.async_preview_meter_configuration(
+            "meter-1", response["plan_id"], response["source_sha256"], requested
+        )
+        assert status.state.value == "previewed"
+
+    asyncio.run(run())
+
+
 def test_bound_details_expose_source_aware_summary_without_writes() -> None:
     from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
         sanitize_payload,
