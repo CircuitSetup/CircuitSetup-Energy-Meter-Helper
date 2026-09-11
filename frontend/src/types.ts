@@ -430,7 +430,6 @@ export type TransactionState =
 export type TransactionFailureStage = "validating" | "building" | "installing" | "verifying_meter";
 export type TransactionFailureReason =
   | "unknown"
-  | "guided_unavailable"
   | "missing_package"
   | "unsupported_component_option"
   | "required_secret"
@@ -438,7 +437,6 @@ export type TransactionFailureReason =
   | "validation_rejected"
   | "compile_rejected"
   | "upload_failed"
-  | "upload_outcome_unknown"
   | "verification_incomplete"
   | "meter_communication_failed";
 
@@ -469,9 +467,6 @@ export interface TransactionStatus {
   aggregate_entity_mismatch: boolean;
   full_meter_configuration_verified: boolean;
   communication_failed_cs_pins?: number[];
-  guided_install?: boolean;
-  guided_running?: boolean;
-  guided_unavailable?: boolean;
   failure?: {
     stage: TransactionFailureStage;
     reason_code: TransactionFailureReason;

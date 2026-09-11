@@ -97,7 +97,6 @@ const OFFICIAL_PROJECT_REMAINDERS = new Set([
 ]);
 const REBIND_TIMEOUT_MS = 10_000;
 const REBIND_RETRY_MS = 250;
-const TRANSACTION_MARKER_PREFIX = "circuitsetup-energy-meter-helper:transaction:";
 const wait = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 const meterSettings = ({ authoritative: _authoritative, warnings: _warnings, ...meter }: MeterSettingsDraft): MeterSettings => meter;
 const profileNominalVoltage = (system: ElectricalSystem): number | null => system === "split_phase_120_240" ? 120
@@ -306,8 +305,7 @@ export class CircuitSetupPanel extends LitElement {
         this.sourcePackageOptions = newInstallPackageOptions(intent.addon_count);
         this.refreshFirmwareOptions();
       }
-      const recovered = await this.recoverMarkedTransaction(generation, api);
-      if (!recovered && this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.firstDeviceId(this.setup.devices));
+      if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.firstDeviceId(this.setup.devices));
       await this.subscribeSetup(generation, api);
       if (this.transaction) await this.subscribeTransaction(generation);
       if (this.session && this.session.state !== "cancelled") await this.subscribeSession(generation);
@@ -815,78 +813,6 @@ export class CircuitSetupPanel extends LitElement {
     }, "Rescan failed.", () => this.ownsOperation(generation, api, deviceId));
     if (this.pendingAction === "rescan") this.pendingAction = "";
     this.requestUpdate();
-  }
-
-  private transactionMarkerKey(): string | null {
-    const entryId = this.panel?.config.entry_id;
-    return entryId ? `${TRANSACTION_MARKER_PREFIX}${entryId}` : null;
-  }
-
-  private rememberTransaction(transaction: TransactionStatus, deviceId: string): void {
-    if (!transaction.guided_install) return;
-    const key = this.transactionMarkerKey();
-    if (!key) return;
-    try {
-      localStorage.setItem(key, JSON.stringify({ deviceId, transactionId: transaction.transaction_id, sourceSha256: transaction.source_sha256 }));
-    } catch { /* Recovery is best effort when storage is unavailable. */ }
-  }
-
-  private forgetTransaction(): void {
-    const key = this.transactionMarkerKey();
-    if (!key) return;
-    try { localStorage.removeItem(key); } catch { /* Storage failures must not interrupt setup. */ }
-  }
-
-  private async recoverMarkedTransaction(generation: number, api: HelperApi): Promise<boolean> {
-    const key = this.transactionMarkerKey();
-    if (!key) return false;
-    let marker: { deviceId: string; transactionId: string; sourceSha256: string };
-    try {
-      const raw = localStorage.getItem(key);
-      if (!raw) return false;
-      const value: unknown = JSON.parse(raw);
-      if (!value || typeof value !== "object") throw new Error("invalid marker");
-      const item = value as Record<string, unknown>;
-      if (typeof item.deviceId !== "string" || typeof item.transactionId !== "string" || typeof item.sourceSha256 !== "string") throw new Error("invalid marker");
-      marker = { deviceId: item.deviceId, transactionId: item.transactionId, sourceSha256: item.sourceSha256 };
-    } catch {
-      this.forgetTransaction();
-      return false;
-    }
-    if (!this.setup?.devices.some((device) => device.entry_id === marker.deviceId)) {
-      this.forgetTransaction();
-      return false;
-    }
-    try {
-      const result = await api.getTopology(marker.deviceId);
-      if (!this.owns(generation, api)) return false;
-      const expected = "topology" in result && result.topology ? result.topology : result as MeterTopology;
-      const active = await api.getActiveWork(marker.deviceId, expected);
-      if (!this.owns(generation, api)) return false;
-      if (!active.transaction || active.transaction.transaction_id !== marker.transactionId
-        || active.transaction.source_sha256 !== marker.sourceSha256) {
-        this.forgetTransaction();
-        return false;
-      }
-      this.selectDevice(marker.deviceId);
-      this.showTopologyResult(result);
-      if (active.transaction.guided_install) {
-        const [configuration, inventory] = await Promise.all([
-          api.getMeterConfiguration(marker.deviceId),
-          api.getCtInventory(marker.deviceId),
-        ]);
-        if (!this.owns(generation, api)) return false;
-        this.setMeterConfiguration(configuration);
-        this.showInventory(inventory);
-      }
-      this.transaction = active.transaction;
-      this.navigate("install-configuration");
-      await this.subscribeTransaction(generation);
-      return this.owns(generation, api);
-    } catch {
-      this.forgetTransaction();
-      return false;
-    }
   }
 
   private async findExistingMeters(): Promise<void> {
@@ -1598,7 +1524,6 @@ export class CircuitSetupPanel extends LitElement {
       }
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.transaction = transaction;
-      this.rememberTransaction(transaction, deviceId);
       this.navigate("install-configuration");
       await this.subscribeTransaction(this.connectionGeneration);
     }, "The configuration preview is stale. Reload the CT inventory and review again.",
@@ -1626,7 +1551,6 @@ export class CircuitSetupPanel extends LitElement {
           && status.transaction_id === transactionId
           && status.source_sha256 === sourceSha256) {
           this.transaction = status;
-          this.transactionStatusUpdated(status);
           this.requestUpdate();
         }
       },
@@ -1683,7 +1607,6 @@ export class CircuitSetupPanel extends LitElement {
     await this.run(async () => {
       this.transaction = await api.previewMeterConfiguration(deviceId, meter.plan_id, meter.source_sha256, configuration);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      this.rememberTransaction(this.transaction, deviceId);
       this.navigate("install-configuration"); await this.subscribeTransaction(this.connectionGeneration);
     }, "Circuit configuration could not be reviewed.", () => this.ownsOperation(generation, api, deviceId));
     this.pendingAction = ""; this.requestUpdate();
@@ -1744,7 +1667,7 @@ export class CircuitSetupPanel extends LitElement {
     () => this.ownsOperation(generation, api, deviceId));
   }
 
-  private async transactionAction(action: "apply" | "compile" | "install" | "rollback" | "guided-install" | "recheck"): Promise<void> {
+  private async transactionAction(action: "apply" | "compile" | "install" | "rollback"): Promise<void> {
     if (!this.api || !this.transaction || !this.selectedDeviceId || this.pendingAction) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const current = this.transaction;
     const generation = ++this.operationGeneration;
@@ -1757,8 +1680,6 @@ export class CircuitSetupPanel extends LitElement {
         transaction = action === "apply" ? await api.applyCtConfig(...args)
           : action === "compile" ? await api.compileCtConfig(...args)
           : action === "install" ? await api.installCtConfig(...args)
-          : action === "guided-install" ? await api.installMeterConfiguration(...args)
-          : action === "recheck" ? await api.recheckMeterVerification(...args)
           : await api.rollbackCtConfig(...args);
       } catch (error) {
         if ((error as WsError).code !== "stale_confirmation") throw error;
@@ -1769,7 +1690,6 @@ export class CircuitSetupPanel extends LitElement {
         || this.transaction?.transaction_id !== current.transaction_id
         || this.transaction.source_sha256 !== current.source_sha256) return;
       this.transaction = transaction;
-      this.transactionStatusUpdated(transaction);
       this.announcement = `Configuration ${this.transaction.state}.`;
       if (action === "apply" && transaction.state === "validated" && this.sourcePackageOptions) {
         this.sourcePackageOptions = {
@@ -1819,7 +1739,7 @@ export class CircuitSetupPanel extends LitElement {
         this.restartResult = result;
         this.announcement = "Calibration was saved to YAML, installed, verified, and cleared from flash.";
         this.navigate("summary");
-      } else if ((action === "install" || action === "guided-install") && transaction.state === "verified") {
+      } else if (action === "install" && transaction.state === "verified") {
         this.configurationInstalled = true;
         this.verifiedMeterConfiguration = null;
         this.sourceMeterConfiguration = null;
@@ -1891,11 +1811,6 @@ export class CircuitSetupPanel extends LitElement {
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.session = active.session?.state === "cancelled" ? null : active.session;
         this.transaction = active.transaction;
-        if (this.transaction?.guided_install && this.transaction.state === "verified"
-          && this.transaction.full_meter_configuration_verified) {
-          this.clearSubscription("transaction");
-          this.transaction = null;
-        }
         this.safetyAcknowledged = this.session?.safety_acknowledged ?? false;
         this.calibrationHandoff = this.transaction?.purpose === "save_calibration";
         this.transactionPurpose = this.transaction?.purpose ?? null;
@@ -1935,21 +1850,6 @@ export class CircuitSetupPanel extends LitElement {
       this.pendingAction = "";
       this.requestUpdate();
     }
-  }
-
-  private transactionStatusUpdated(status: TransactionStatus): void {
-    if (status.guided_install && status.state !== "verified" && status.state !== "rolled_back"
-      && (status.state !== "failed" || status.rollback_available) && this.selectedDeviceId) this.rememberTransaction(status, this.selectedDeviceId);
-    if (status.state === "verified" || status.state === "rolled_back"
-      || status.state === "failed" && !status.rollback_available) this.forgetTransaction();
-    if (status.state !== "verified" || !status.guided_install || this.calibrationHandoff) return;
-    if (this.meterConfiguration) this.verifiedMeterConfiguration = {
-      ...this.meterConfiguration,
-      configuration: { ...this.meterConfiguration.configuration, multi_reference_preparation_acknowledged: false },
-    };
-    this.acceptInstalledDrafts();
-    this.canonicalConfigurationChanged = false;
-    this.announcement = "Configuration changes were installed and verified. Continue to safety and calibration.";
   }
 
   private async prepareCalibration(): Promise<void> {
@@ -2567,8 +2467,6 @@ export class CircuitSetupPanel extends LitElement {
     if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
     return code === "stale_confirmation"
       ? "This confirmation expired. Reload live data and review again."
-      : code === "guided_install_unavailable"
-        ? "Guided installation is unavailable. Use Advanced controls or update Device Builder."
       : code === "stale_handle"
         ? "The selected device changed or is no longer available. Rescan and try again."
         : fallback;
@@ -2657,9 +2555,7 @@ export class CircuitSetupPanel extends LitElement {
       this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null,
       this.pendingAction === "review-back", this.reviewCorrection !== null, this.pendingAction,
       this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper", this.meterConfiguration,
-      this.totalGraphState === "ready" ? this.totalGraphPreview : null,
-      this.transaction?.guided_install === true, () => void this.transactionAction("guided-install"),
-      () => void this.transactionAction("recheck"));
+       this.totalGraphState === "ready" ? this.totalGraphPreview : null);
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back(), this.pendingAction === "safety");
     if (this.step === "calibration-plan") return calibrationPlanStep(this.calibrationPlan, (plan) => {

@@ -21,9 +21,6 @@ export function buildInstallStep(
   legacyMigration = false,
   meterInventory: MeterConfiguration | null = null,
   totalPreview: TotalGraphPreview | null = null,
-  guidedInstall = false,
-  guidedAction: (() => void) | null = null,
-  recheck: (() => void) | null = null,
 ): TemplateResult {
   if (!status) return html`
     <section class="step-content" aria-labelledby="step-heading">
@@ -36,10 +33,9 @@ export function buildInstallStep(
     : { heading: purpose === "offset_preparation" ? "Install offset preparation" : purpose === "offset_finalization" ? "Install captured offsets" : legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
   const state = status.state;
   const retryClear = purpose === "save_calibration" && state === "verified";
-  const busy = Boolean(pendingAction) || status.guided_running === true;
-  const guidedRunning = status.guided_running === true;
+  const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
-    ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
+    ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
   const failedPins = status?.communication_failed_cs_pins ?? [];
   const waitingForStartup = state === "reconnecting";
@@ -52,9 +48,7 @@ export function buildInstallStep(
     : status?.upload_progress.length ? status.progress.includes("firmware_compiled") ? "Install" : "Compile" : null;
   const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
-  const guided = guidedInstall || status?.guided_install === true;
-  const stage = status?.failure?.stage === "verifying_meter" || state === "reconnecting" || state === "verified" ? "Verifying meter" : status?.failure?.stage === "installing" || state === "installing" || state === "install_confirmation_required" || state === "compiled" ? "Installing" : status?.failure?.stage === "building" || state === "validated" ? "Building" : "Validating";
-  const failureMessage = status?.failure?.reason_code === "upload_outcome_unknown" ? "Upload outcome unknown. Device Builder may still be uploading. Recheck its status before making further changes; this does not upload firmware again." : status?.failure?.reason_code === "missing_package" ? "A required supported package is missing. Review the package selection and create a fresh review." : status?.failure?.reason_code === "unsupported_component_option" ? "The selected option is not supported by this ESPHome version. Choose a supported firmware version and review again." : status?.failure?.reason_code === "required_secret" ? "A required secret name is unresolved. Add it in ESPHome and create a fresh review." : status?.failure?.reason_code === "conflicting_managed_override" ? "A managed configuration override conflicts with the reviewed source. Restore the source or create a fresh review." : status?.failure?.reason_code === "verification_incomplete" ? "Uploaded; verification incomplete. Reconnect the meter and recheck verification." : null;
+  const failureMessage = status?.failure?.reason_code === "missing_package" ? "A required supported package is missing. Review the package selection and create a fresh review." : status?.failure?.reason_code === "unsupported_component_option" ? "The selected option is not supported by this ESPHome version. Choose a supported firmware version and review again." : status?.failure?.reason_code === "required_secret" ? "A required secret name is unresolved. Add it in ESPHome and create a fresh review." : status?.failure?.reason_code === "conflicting_managed_override" ? "A managed configuration override conflicts with the reviewed source. Restore the source or create a fresh review." : status?.failure?.reason_code === "verification_incomplete" ? "Uploaded; verification incomplete. Reconnect the meter and retry installation." : null;
   return html`
     <section class="step-content" aria-labelledby="step-heading">
       <h2>${labels.heading}</h2>
@@ -62,7 +56,6 @@ export function buildInstallStep(
       ${purpose === "offset_finalization" ? html`<p>Captured signed offsets, including zeros, are installed with native offset restore disabled. Confirm configuration selection after installation; this is not register readback and does not clear saved gain calibration.</p>` : ""}
       ${configReview(status, configuration, impact, meterInventory?.totals)}
       ${meterInventory ? totalsMigrationReview(meterInventory, () => undefined, totalPreview, impact !== null, true, status) : ""}
-      ${status?.guided_unavailable ? html`<p class="info-band" role="status">One-click installation is unavailable in this Device Builder. Use Advanced controls to review, build, and install.</p>` : ""}
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
           <strong>${communicationFailure ? "Meter chip communication failed" : failureMessage ?? "Build or install needs attention"}</strong>
@@ -76,10 +69,8 @@ export function buildInstallStep(
               <li>If the ESP32 model, seating, and CS assignments are correct, try another known-good ESP32 with the correct firmware.</li>
               <li>If an add-on still fails, move its CS jumper to a different unused, supported CS pin and update the configuration to match before rebuilding and installing. A fault that follows the GPIO points to the ESP32 pin or its connection; a fault that stays with the same add-on on a known-good GPIO points to that add-on board or meter chip.</li>
             </ol>
-            <p>After correcting the hardware or configuration, power up and use ${guided ? "Recheck verification" : "Retry Install"}. ${guided ? "This does not upload firmware again." : "This uploads the firmware again and repeats startup verification."}</p>
+            <p>After correcting the hardware or configuration, power up and use Retry Install. This uploads the firmware again and repeats startup verification.</p>
           ` : html`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
-          ${guided && status?.failure?.reason_code === "verification_incomplete" ? html`<p>Firmware was uploaded, but meter verification is incomplete. Recheck verification after reconnecting; this does not upload firmware again.</p>` : ""}
-          ${guided && retryableInstall && recheck ? html`<button class="secondary" @click=${recheck} ?disabled=${busy}>Recheck verification</button>` : ""}
           ${status?.rollback_available ? html`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
@@ -88,21 +79,15 @@ export function buildInstallStep(
         ${failureMessage ? html`<p>${failureMessage}</p>` : html`<p>Open ESPHome Device Builder details for the failed operation.</p>`}
         ${status.failure.context.map(([key, value]) => html`<p>${key === "secret_name" ? "Required secret" : key === "component" ? "Component" : key === "field" ? "Option" : "Package"}: <code>${value}</code></p>`)}
       </div>` : ""}
-      ${guided ? html`<div class="job-progress" role="status" aria-live="polite"><strong>${stage}</strong></div>` : ""}
       ${waitingForStartup ? html`<div class="job-progress" role="status" aria-live="polite">
         <span>Meter is rebooting. Waiting for startup verification.</span>
         <progress max="100" aria-label="Waiting for meter startup"></progress>
       </div>` : ""}
-      ${guided ? html`<div class="confirmation-actions"><p>Install changes writes the reviewed configuration to the selected meter, builds firmware, uploads it, and reboots the meter.</p><button class="primary" data-action="install-changes" @click=${guidedAction ?? install} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "guided-install" || guidedRunning ? "Installing changes…" : "Install changes"}</button></div>` : html`      <div class="confirmation-actions">
+      <div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
         <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? "Installing…" : retryClear ? "Retry clearing saved flash values" : retryableInstall ? "Retry Install" : labels.install}</button>
-      </div>`}
-      ${guided ? html`<details class="advanced-controls"><summary>Advanced controls</summary><div class="confirmation-actions">
-        <button class="secondary" @click=${apply} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Save and validate"}</button>
-        <button class="secondary" @click=${compile} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Build only"}</button>
-        <button class="secondary" @click=${install} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : "Install only"}</button>
-      </div></details>` : ""}
+      </div>
       ${status?.validation_detail ? html`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
         <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>

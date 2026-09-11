@@ -57,9 +57,7 @@ from .ct_catalog import REPORTING_MULTIPLIERS, CTPresetCatalog
 from .ct_inventory import CTInventory
 from .device_builder import (
     DeviceBuilderClient,
-    DeviceBuilderCommandError,
     ESPHomeConfigSnapshot,
-    JobResult,
     _wait_for_owned_cleanup,
 )
 from .entity_binding import (
@@ -549,46 +547,6 @@ class LazyDeviceBuilder:
     ) -> Any:
         return await (await self._ready()).async_upload(configuration, progress)
 
-    async def async_prepare_review(
-        self, configuration: str, source_sha256: str, proposed_content: str
-    ) -> Any:
-        return await (await self._ready()).async_prepare_review(
-            configuration, source_sha256, proposed_content
-        )
-
-    async def async_compile_review(
-        self,
-        review_id: str,
-        source_sha256: str,
-        proposed_sha256: str,
-        inputs_sha256: str,
-        progress: Callable[[Any], None] | None = None,
-    ) -> Any:
-        return await (await self._ready()).async_compile_review(
-            review_id, source_sha256, proposed_sha256, inputs_sha256, progress
-        )
-
-    async def async_upload_review(
-        self,
-        review_id: str,
-        compile_job_id: str,
-        artifact_sha256: str,
-        progress: Callable[[Any], None] | None = None,
-    ) -> Any:
-        return await (await self._ready()).async_upload_review(
-            review_id, compile_job_id, artifact_sha256, progress
-        )
-
-    async def async_reconcile_review_upload(
-        self, review_id: str, compile_job_id: str, artifact_sha256: str
-    ) -> JobResult | None:
-        return await (await self._ready()).async_reconcile_review_upload(
-            review_id, compile_job_id, artifact_sha256
-        )
-
-    async def async_release_review(self, review_id: str) -> None:
-        await (await self._ready()).async_release_review(review_id)
-
     async def async_restore_content(
         self,
         configuration: str,
@@ -1003,7 +961,7 @@ class EntryWorkflow:
                 power_quality=options["power_quality"],
                 status_fields=options["status_fields"],
             )
-        return await self._async_preview_meter_configuration(plan, requested, guided=False)
+        return await self._async_preview_meter_configuration(plan, requested)
 
     async def async_preview_total_graph(
         self, device_id: str, plan_id: str, source_sha256: str,
@@ -1120,7 +1078,7 @@ class EntryWorkflow:
         return status
 
     async def _async_preview_meter_configuration(
-        self, plan: _PlanHandle, requested: MeterConfigurationRequest, *, guided: bool = False
+        self, plan: _PlanHandle, requested: MeterConfigurationRequest
     ) -> Any:
         requested, _ = _existing_circuit_suggestions(
             requested, plan.existing_circuit_channels, plan.inventory.configuration.automatic_totals,
@@ -1181,53 +1139,18 @@ class EntryWorkflow:
         expected = expected_meter_entity_evidence(requested, plan.topology,
             document=ESPHomeConfigDocument.parse(plan.snapshot.content), previous=plan.inventory.configuration,
             native_visibility_resolved=plan.inventory.native_visibility_resolved)
-        if not guided:
-            status = await manager.async_preview(
-                plan.mac,
-                plan.topology,
-                mutation,
-                plan.snapshot,
-                meter_configuration=configuration,
-                    reconcile_stale_metadata=True,
-                    totals_change_intent=requested.totals_change_intent,
-                    native_visibility_resolved=plan.inventory.native_visibility_resolved,
-                expected_sensor_entities=expected.sensor_entities,
-                expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
-            )
-        else:
-            try:
-                status = await manager.async_preview(
-                    plan.mac,
-                    plan.topology,
-                    mutation,
-                    plan.snapshot,
-                    meter_configuration=configuration,
-                    reconcile_stale_metadata=True,
-                    totals_change_intent=requested.totals_change_intent,
-                    native_visibility_resolved=plan.inventory.native_visibility_resolved,
-                    expected_sensor_entities=expected.sensor_entities,
-                    expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
-                    guided=True,
-                )
-            except DeviceBuilderCommandError as error:
-                if error.code != "unknown_command":
-                    raise WorkflowCapabilityUnavailable(
-                        "Device Builder could not prepare a fresh reviewed install"
-                    ) from error
-                # The command itself is the capability probe; keep the advanced path usable.
-                status = await manager.async_preview(
-                    plan.mac,
-                    plan.topology,
-                    mutation,
-                    plan.snapshot,
-                    meter_configuration=configuration,
-                    reconcile_stale_metadata=True,
-                    totals_change_intent=requested.totals_change_intent,
-                    native_visibility_resolved=plan.inventory.native_visibility_resolved,
-                    expected_sensor_entities=expected.sensor_entities,
-                    expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
-                    guided_unavailable=True,
-                )
+        status = await manager.async_preview(
+            plan.mac,
+            plan.topology,
+            mutation,
+            plan.snapshot,
+            meter_configuration=configuration,
+            reconcile_stale_metadata=True,
+            totals_change_intent=requested.totals_change_intent,
+            native_visibility_resolved=plan.inventory.native_visibility_resolved,
+            expected_sensor_entities=expected.sensor_entities,
+            expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
+        )
         admission_source = plan.snapshot.sha256
         unsubscribe: Callable[[], None] | None = None
 

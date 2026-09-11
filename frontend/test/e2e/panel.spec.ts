@@ -4,12 +4,10 @@ import type { MeterConfiguration, MeterConfigurationRequest, OffsetBoardStatus, 
 
 type Frame = Record<string, unknown> & { id?: number; type: string; response?: unknown };
 type Outcome = "success" | "collision" | "validation" | "compile";
-type GuidedStage = "validating" | "building" | "installing" | "verifying_meter";
-type GuidedOutcome = "success" | "validation_failed" | "compile_failed" | "verification_incomplete";
 type Calibration = "main-success" | "addon-indeterminate" | undefined;
 type Scenario = "single-phase-pq" | "existing-inspection" | "calibration-unavailable" | "calibration-missing" | undefined;
 type ExistingOutcome = "success" | "inspect-stale" | "adopt-busy";
-type GuidedMode = "helper" | "legacy" | "runtime";
+type SourceMode = "helper" | "legacy" | "runtime";
 const pageErrors = new WeakMap<Page, string[]>();
 const consoleErrors = new WeakMap<Page, string[]>();
 test.beforeEach(({ page }) => {
@@ -107,7 +105,7 @@ function inventory(addons: number, scenario: Scenario = undefined) {
     schema_version: 1 } };
 }
 
-function meterConfiguration(backend: MeterConfiguration, addons: number, scenario: Scenario = undefined, mode: GuidedMode = "helper") {
+function meterConfiguration(backend: MeterConfiguration, addons: number, scenario: Scenario = undefined, mode: SourceMode = "helper") {
   const live = inventory(addons, scenario); const references = Array.from({ length: addons + 1 }, (_, board) => ({
     reference_id: board ? `addon${board}` : "main", label: board ? `Add-on ${board}` : "Main", phase_label: "A/B",
     nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305,
@@ -137,8 +135,7 @@ function meterConfiguration(backend: MeterConfiguration, addons: number, scenari
 }
 
 function transaction(state: string, channel: number, options: { evidence?: string[]; progress?: string[];
-  rollback?: boolean; validation?: boolean; guided?: boolean; guidedRunning?: boolean;
-  failure?: { stage: GuidedStage; reason_code: string; context: Array<[string, string]> } | null;
+  rollback?: boolean; validation?: boolean;
   uploadProgress?: Array<{ stage: string; percentage: number | null }>; verified?: boolean } = {}) {
   return { ...sanitizerContract.sanitized, transaction_id: "b".repeat(32), state, source_sha256: hash,
     changes: [{ key: `channel.${channel}.name`, old_value: `CT${channel}`, new_value: `Load ${channel}` }],
@@ -148,46 +145,7 @@ function transaction(state: string, channel: number, options: { evidence?: strin
       reported_warning_count: 0, error_record_count: 1, warning_record_count: 0 } : null,
     upload_progress: options.uploadProgress ?? [], aggregate_entity_mismatch: false,
     full_meter_configuration_verified: options.verified ?? true,
-    ...(options.guided === undefined ? {} : { guided_install: options.guided }),
-    ...(options.guidedRunning === undefined ? {} : { guided_running: options.guidedRunning }),
-    ...(options.guided === undefined ? {} : { guided_unavailable: false }),
-    ...(options.guided === undefined ? {} : { failure: options.failure ?? null }),
   };
-}
-
-function guidedTransaction(stage: GuidedStage, outcome: GuidedOutcome = "success") {
-  const progress = ["config_written", "config_validated", "firmware_compiled", "ota_uploaded"];
-  const running = outcome === "success";
-  if (outcome === "validation_failed") return transaction("rolled_back", 1, {
-    evidence: ["validation_failed"], progress: ["config_written"], rollback: false, validation: true,
-    guided: true, guidedRunning: false,
-    failure: { stage: "validating", reason_code: "validation_rejected", context: [] }, verified: false,
-  });
-  if (outcome === "compile_failed") return transaction("failed", 1, {
-    evidence: ["compile_failed"], progress: progress.slice(0, 2), rollback: true,
-    guided: true, guidedRunning: false,
-    failure: { stage: "building", reason_code: "compile_rejected", context: [] }, verified: false,
-  });
-  if (outcome === "verification_incomplete") return transaction("install_confirmation_required", 1, {
-    evidence: ["reconnect_unavailable"], progress, rollback: true,
-    guided: true, guidedRunning: false,
-    failure: { stage: "verifying_meter", reason_code: "verification_incomplete", context: [] }, verified: false,
-  });
-  const state = stage === "validating" ? "written" : stage === "building" ? "validated"
-    : stage === "installing" ? "installing" : "reconnecting";
-  const stageProgress = stage === "validating" ? ["config_written"] : stage === "building" ? progress.slice(0, 2)
-    : stage === "installing" ? progress.slice(0, 3) : progress;
-  return transaction(state, 1, { progress: stageProgress, rollback: true, guided: true,
-    guidedRunning: running, uploadProgress: stage === "installing"
-      ? [{ stage: "uploading", percentage: 42 }] : stage === "verifying_meter"
-        ? [{ stage: "completed", percentage: 100 }] : [], verified: false });
-}
-
-function guidedVerifiedTransaction() {
-  return transaction("verified", 1, {
-    progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"],
-    guided: true, guidedRunning: false, verified: true,
-  });
 }
 
 function offsetBoards(addons: number, stageState: "not_started" | "skipped" = "not_started"): OffsetBoardStatus[] {
@@ -265,14 +223,11 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
   firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean; scenario?: Scenario;
-  existingOutcome?: ExistingOutcome; slowClearCalibration?: boolean; guidedStage?: GuidedStage;
-  guidedOutcome?: GuidedOutcome; delayedGraph?: boolean; delayedInventory?: boolean; guidedMode?: GuidedMode; activeWork?: "normal" | "handoff" | "safety" | "ready"; oneDevice?: boolean } = {}) {
+  existingOutcome?: ExistingOutcome; slowClearCalibration?: boolean; delayedGraph?: boolean;
+  delayedInventory?: boolean; sourceMode?: SourceMode; activeWork?: "normal" | "handoff" | "safety" | "ready"; oneDevice?: boolean } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
-  const guided = options.guidedStage !== undefined || options.guidedOutcome !== undefined;
   const offsetCapability = options.scenario === "calibration-unavailable" ? "unavailable" as const : "available" as const;
-  const guidedStage = options.guidedStage ?? "validating";
-  const guidedOutcome = options.guidedOutcome ?? "success";
   const frames: Frame[] = [];
   const fixtureUrl = `http://127.0.0.1:${process.env.CSEMH_FIXTURE_PORT ?? 4174}/rpc?fixture=main-only&session=legacy-${crypto.randomUUID()}&addons=${addons}`;
   const backendCall = async <T>(message: Record<string, unknown>): Promise<T> => {
@@ -294,9 +249,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   let imported = false;
   let nextSetupStatusUnavailable = false;
   let setupSubscriptionGeneration = 0;
-  let currentTransaction = transaction("previewed", addons ? 42 : 1, guided ? {
-    guided: true, guidedRunning: false, verified: false,
-  } : {});
+  let currentTransaction = transaction("previewed", addons ? 42 : 1);
   let currentSession = session(options.activeWork === "handoff" ? "verified" : options.activeWork === "ready" ? "ready" : "safety_required",
     options.activeWork === "handoff" || options.activeWork === "ready", addons, false,
     options.activeWork ? "skipped" : "not_started", options.activeWork ? "standard" : "full", offsetCapability);
@@ -311,45 +264,19 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   let freshPlanGeneration = 0;
   const discoveredDevice = (entryId = "meter-1") => ({
     ...device(addons, options.importable, entryId),
-    configuration: options.guidedMode === "runtime" || options.importable ? null : "meter.yaml",
+    configuration: options.sourceMode === "runtime" || options.importable ? null : "meter.yaml",
   });
   const setupDevices = options.scenario === "existing-inspection" ? [existingDevice()] : options.setupEvent === "devices"
     ? [discoveredDevice(), discoveredDevice("meter-2")]
     : options.setupEvent === "device" ? [discoveredDevice()] : [];
-  const authoritative = () => options.guidedMode !== "runtime" && (!options.importable || imported);
+  const authoritative = () => options.sourceMode !== "runtime" && (!options.importable || imported);
   const setupSnapshot = () => boundDeviceId || deviceSeen
     ? { state: "topology_review", devices: (setupDevices.length ? setupDevices : [discoveredDevice()]).map((item) => item.entry_id === (boundDeviceId ?? "meter-1") && imported
       ? { ...item, importable: false, configuration: "meter.yaml" } : item), bound_device_id: boundDeviceId ?? "meter-1",
     configuration_authoritative: authoritative() }
     : { state: "no_device", devices: [] };
   let availableDevices = [...setupDevices];
-  let guidedStarted = false;
-  let guidedSubscriptionCount = 0;
-  let guidedSubscriptionsAtInstall = 0;
-  let guidedCompletionScheduled = false;
   const transactionSubscriptions: Array<{ id: number; send: (message: string) => void }> = [];
-  const publishTransaction = () => {
-    for (const subscription of transactionSubscriptions) {
-      subscription.send(JSON.stringify({ id: subscription.id, type: "event", event: currentTransaction }));
-    }
-  };
-  const guidedStages: GuidedStage[] = ["validating", "building", "installing", "verifying_meter"];
-  const currentGuidedStage = (): GuidedStage => currentTransaction.state === "written" ? "validating"
-    : currentTransaction.state === "validated" ? "building"
-    : currentTransaction.state === "installing" ? "installing" : "verifying_meter";
-  const scheduleGuidedCompletion = () => {
-    if (!guided || guidedOutcome !== "success" || guidedCompletionScheduled) return;
-    guidedCompletionScheduled = true;
-    const currentIndex = guidedStages.indexOf(currentGuidedStage());
-    const advance = (index: number) => {
-      if (index >= guidedStages.length) currentTransaction = guidedVerifiedTransaction();
-      else currentTransaction = guidedTransaction(guidedStages[index]!, guidedOutcome);
-      publishTransaction();
-      if (index < guidedStages.length) setTimeout(() => advance(index + 1), 150);
-    };
-    setTimeout(() => advance(currentIndex + 1), 2_000);
-  };
-
   await mockFirmwareIndex(page, options.firmwareIndex, options.firmwareRequests);
 
   await page.routeWebSocket("**/api/websocket", (socket) => {
@@ -425,7 +352,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           freshPlanGeneration += 1;
           if (options.freshSourceChanged) activeSourceSha256 = "f".repeat(64);
         }
-        const { total_details: _details, ...live } = meterConfiguration(backend, addons, options.scenario, options.guidedMode);
+        const { total_details: _details, ...live } = meterConfiguration(backend, addons, options.scenario, options.sourceMode);
         const configuration = committedConfiguration ?? live.configuration;
         const graph = await graphFor(configuration);
         result = { ...live, plan_id: activePlan ?? "b".repeat(32), source_sha256: activeSourceSha256,
@@ -449,7 +376,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         }
       }
       else if (operation === "get_ct_inventory") result = inventory(addons, options.scenario);
-      else if (operation === "get_active_work") result = guided && guidedStarted ? {session: null, transaction: currentTransaction, verified_calibration: null} : transactionActive || sessionActive
+      else if (operation === "get_active_work") result = transactionActive || sessionActive
         ? { session: sessionActive ? currentSession : null, transaction: transactionActive ? currentTransaction : null,
           verified_calibration: resumeRestart ?? currentRestart }
         : options.activeWork === "normal"
@@ -477,9 +404,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         }
         transactionActive = true;
         reviewedConfiguration = frame.configuration as MeterConfigurationRequest;
-        result = currentTransaction = transaction("previewed", 1, guided ? {
-          guided: true, guidedRunning: false, verified: false,
-        } : {});
+        result = currentTransaction = transaction("previewed", 1);
         if (options.consumePlans) {
           activePlan = null;
           pendingPreview = true;
@@ -511,16 +436,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         result = currentTransaction = { ...transaction("verified", addons ? 42 : 1,
           { progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"] }),
           purpose: currentTransaction.purpose, transaction_id: String(frame.transaction_id) };
-      } else if (operation === "install_meter_configuration") {
-        if (!guidedStarted) {
-          guidedStarted = true;
-          guidedSubscriptionsAtInstall = guidedSubscriptionCount;
-          currentTransaction = guidedTransaction(guidedStage, guidedOutcome);
-          publishTransaction();
-        }
-        result = currentTransaction;
-      }
-      else if (operation === "abandon_ct_config") {
+      } else if (operation === "abandon_ct_config") {
         if (options.consumePlans && !pendingPreview) return fail("stale_confirmation", "no pending preview");
         pendingPreview = false;
         result = currentTransaction = { ...currentTransaction, state: "failed", evidence: ["cancelled"] };
@@ -533,11 +449,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           return;
         }
       }
-      else if (operation === "rollback_ct_config") result = currentTransaction = guided
-        ? transaction("rolled_back", addons ? 42 : 1, {
-          progress: ["config_restored"], guided: true, guidedRunning: false, verified: false,
-        })
-        : transaction("rolled_back", addons ? 42 : 1, { progress: ["config_restored"] });
+      else if (operation === "rollback_ct_config") result = currentTransaction = transaction("rolled_back", addons ? 42 : 1, { progress: ["config_restored"] });
       else if (operation === "start_session") {
         sessionActive = true;
         result = currentSession = session("safety_required", false, addons, false,
@@ -588,10 +500,10 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         const base = restart(addons);
         currentSession = { ...currentSession, state: "verified" };
         result = currentRestart = { ...base,
-          config_filename: options.guidedMode === "runtime" ? null : base.config_filename,
-          config_sha256: options.guidedMode === "runtime" ? null : base.config_sha256,
+          config_filename: options.sourceMode === "runtime" ? null : base.config_filename,
+          config_sha256: options.sourceMode === "runtime" ? null : base.config_sha256,
           offset_groups: offsetCalibrated ? [{ instance_id: "meter_main1", phase_offsets: [[1, -1], [2, -2], [3, -3]] }] : [],
-          source_handoff_available: options.guidedMode !== "runtime" && !offsetCalibrated };
+          source_handoff_available: options.sourceMode !== "runtime" && !offsetCalibrated };
       }
       else if (operation === "complete_calibration_without_changes") result = currentSession = {
         ...currentSession, state: "verified", has_pending_calibration: false,
@@ -601,18 +513,9 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         ++setupSubscriptionGeneration;
         result = setupSnapshot();
       }
-      else if (operation === "recheck_meter_verification") {
-        if (guidedOutcome === "verification_incomplete") currentTransaction = guidedVerifiedTransaction();
-        result = currentTransaction;
-        publishTransaction();
-      }
       else if (operation === "subscribe_config_transaction") {
-        if (guided) {
-          transactionSubscriptions.push({ id, send: (message) => socket.send(message) });
-          ++guidedSubscriptionCount;
-        }
+        transactionSubscriptions.push({ id, send: (message) => socket.send(message) });
         result = currentTransaction;
-        if (guided && guidedStarted && guidedSubscriptionCount > guidedSubscriptionsAtInstall) scheduleGuidedCompletion();
       }
       else if (operation === "subscribe_session") result = currentSession;
       else return fail("unknown_command", operation);
@@ -1720,97 +1623,6 @@ test("add-on CT42 indeterminate disconnect never auto-represses calibration", as
   expect(operations(frames).filter((value) => value === "calibrate_current")).toHaveLength(1);
 });
 
-const guidedStageLabels: Array<[GuidedStage, string]> = [
-  ["validating", "Validating"],
-  ["building", "Building"],
-  ["installing", "Installing"],
-  ["verifying_meter", "Verifying meter"],
-];
-
-for (const [guidedStage, label] of guidedStageLabels) {
-  test(`guided install recovers the ${guidedStage} stage after reload`, async ({ page }) => {
-    const frames = await mockHomeAssistant(page, { guidedStage });
-    await openInventory(page);
-    await reviewChannel(page, 1);
-
-    const install = page.locator('[data-action="install-changes"]');
-    await expect(install).toHaveCount(1);
-    await install.click();
-    await expect(install).toBeDisabled();
-    await expect(page.locator(".job-progress strong")).toHaveText(label);
-
-    const beforeReload = frames.length;
-    await page.reload();
-    await expect(page.getByRole("heading", { name: "Install Configuration" })).toBeVisible();
-    await expect(page.locator(".job-progress strong")).toHaveText(label);
-    await expect(page.locator(".review-region")).toContainText("CT1 CT1");
-    await expect(page.locator('[aria-label="Redacted substitution diff"]')).toContainText("ct1_name");
-    await expect(page.locator('[data-action="install-changes"]')).toBeDisabled();
-    await expect.poll(() => {
-      const recovered = new Set(operations(frames.slice(beforeReload)));
-      return ["get_topology", "get_active_work", "get_meter_configuration", "get_ct_inventory", "subscribe_config_transaction"]
-        .every((operation) => recovered.has(operation));
-    }, { timeout: 8_000 }).toBe(true);
-    await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled({ timeout: 8_000 });
-    await expect(page.locator(".sr-status")).toContainText("Configuration changes were installed and verified.");
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Choose calibration", exact: true })).toBeVisible();
-    await page.getByLabel(/Keep existing calibration/).click();
-    await expect(page.getByRole("heading", { name: "Setup complete", exact: true })).toBeVisible();
-
-    expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
-    expect(operations(frames).filter((operation) => ["apply_ct_config", "compile_ct_config", "install_ct_config", "calibrate_current", "calibrate_voltage", "clear_calibration"].includes(operation ?? ""))).toEqual([]);
-  });
-}
-
-test("guided validation failure stays rolled back without compile or upload", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedOutcome: "validation_failed" });
-  await openInventory(page);
-  await reviewChannel(page, 1);
-  await page.locator('[data-action="install-changes"]').click();
-  await expect(page.getByText("The original config was restored.", { exact: false })).toBeVisible();
-  await expect(page.locator('[data-action="install-changes"]')).toBeDisabled();
-
-  expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
-  expect(operations(frames).filter((operation) => ["apply_ct_config", "compile_ct_config", "install_ct_config", "calibrate_current", "calibrate_voltage", "clear_calibration"].includes(operation ?? ""))).toEqual([]);
-});
-
-test("guided compile failure survives reload and only offers rollback", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedOutcome: "compile_failed" });
-  await openInventory(page);
-  await reviewChannel(page, 1);
-  await page.locator('[data-action="install-changes"]').click();
-  await expect(page.locator(".recovery-panel").first()).toContainText("compile_failed");
-
-  await page.reload();
-  await expect(page.getByRole("heading", { name: "Install Configuration" })).toBeVisible();
-  await expect(page.locator(".recovery-panel").first()).toContainText("compile_failed");
-  await expect(page.getByRole("button", { name: "Rollback", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Rollback", exact: true }).click();
-  await expect(page.locator(".recovery-panel")).toHaveCount(0);
-
-  expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
-  expect(operations(frames).filter((operation) => operation === "rollback_ct_config")).toHaveLength(1);
-  expect(operations(frames).filter((operation) => ["apply_ct_config", "compile_ct_config", "install_ct_config", "calibrate_current", "calibrate_voltage", "clear_calibration"].includes(operation ?? ""))).toEqual([]);
-});
-
-test("guided verification incomplete survives reload and rechecks without another upload", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedOutcome: "verification_incomplete" });
-  await openInventory(page);
-  await reviewChannel(page, 1);
-  await page.locator('[data-action="install-changes"]').click();
-  await expect(page.locator(".recovery-panel").first()).toContainText("Uploaded; verification incomplete");
-
-  await page.reload();
-  await expect(page.getByRole("heading", { name: "Install Configuration" })).toBeVisible();
-  await expect(page.locator(".recovery-panel").first()).toContainText("Uploaded; verification incomplete");
-  await page.getByRole("button", { name: "Recheck verification", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
-
-  expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
-  expect(operations(frames).filter((operation) => operation === "recheck_meter_verification")).toHaveLength(1);
-  expect(operations(frames).filter((operation) => ["apply_ct_config", "compile_ct_config", "install_ct_config", "calibrate_current", "calibrate_voltage", "clear_calibration"].includes(operation ?? ""))).toEqual([]);
-});
 
 // These are deliberately browser-level tests: the assertions inspect the WebSocket
 // frames that caused each route change, not panel implementation state.
@@ -1860,7 +1672,7 @@ function expectLatestSourceBinding(frames: Frame[], operation: string) {
   }
 }
 
-async function openGuidedMeter(page: Page) {
+async function openMeter(page: Page) {
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
@@ -1926,7 +1738,7 @@ test("journey 1: new meter imports, installs, then keeps calibration", async ({ 
 
 test("journey 2: new standard calibration reaches restart before gain save", async ({ page }) => {
   const frames = await mockHomeAssistant(page);
-  await openGuidedMeter(page);
+  await openMeter(page);
   await page.locator('[data-action="continue-meter-settings"]').click();
   expect(mutations(frames)).toEqual([]);
   await page.getByRole("button", { name: "Continue" }).click();
@@ -1949,7 +1761,7 @@ test("journey 2: new standard calibration reaches restart before gain save", asy
 
 test("restart handoff can be kept in flash before any YAML preview", async ({ page }) => {
   const frames = await mockHomeAssistant(page);
-  await openGuidedMeter(page);
+  await openMeter(page);
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByLabel(/Standard calibration/).click();
@@ -1966,8 +1778,8 @@ test("restart handoff can be kept in flash before any YAML preview", async ({ pa
 });
 
 test("journey 3: runtime-only full calibration keeps verified offsets in flash", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "runtime" });
-  await openGuidedMeter(page);
+  const frames = await mockHomeAssistant(page, { sourceMode: "runtime" });
+  await openMeter(page);
   expect(mutations(frames)).toEqual([]);
   await page.getByLabel(/Full calibration/).click();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
@@ -1997,8 +1809,8 @@ test("journey 3: runtime-only full calibration keeps verified offsets in flash",
 });
 
 test("24-channel source review preserves untouched CTs while editing two circuits", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "legacy", addons: 3 });
-  await openGuidedMeter(page);
+  const frames = await mockHomeAssistant(page, { sourceMode: "legacy", addons: 3 });
+  await openMeter(page);
   await expect(page.getByText("Ready for setup", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Review and manage with helper" }).click();
   await page.getByLabel("Confirm electrical profile").check();
@@ -2027,8 +1839,8 @@ test("24-channel source review preserves untouched CTs while editing two circuit
 });
 
 test("journey 4: legacy manage requires review before migration preview", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "legacy" });
-  await openGuidedMeter(page);
+  const frames = await mockHomeAssistant(page, { sourceMode: "legacy" });
+  await openMeter(page);
   await expect(page.getByRole("heading", { name: "Review Existing Setup", exact: true }).first()).toBeVisible();
   expect(mutations(frames)).toEqual([]);
   await page.getByRole("button", { name: "Review and manage with helper" }).click();
@@ -2049,7 +1861,7 @@ test("journey 4: legacy manage requires review before migration preview", async 
 });
 
 test("topology Continue waits for authoritative configuration classification", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "legacy", delayedInventory: true });
+  const frames = await mockHomeAssistant(page, { sourceMode: "legacy", delayedInventory: true });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
@@ -2062,8 +1874,8 @@ test("topology Continue waits for authoritative configuration classification", a
 });
 
 test("journey 5: legacy calibrate-only never previews configuration", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "legacy" });
-  await openGuidedMeter(page);
+  const frames = await mockHomeAssistant(page, { sourceMode: "legacy" });
+  await openMeter(page);
   expect(mutations(frames)).toEqual([]);
   await page.getByRole("button", { name: "Keep ESPHome configuration and calibrate only" }).click();
   await page.getByLabel(/Standard calibration/).click();
@@ -2084,8 +1896,8 @@ test("journey 5: legacy calibrate-only never previews configuration", async ({ p
 });
 
 test("journey 6: runtime-only skips every source configuration command", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "runtime" });
-  await openGuidedMeter(page);
+  const frames = await mockHomeAssistant(page, { sourceMode: "runtime" });
+  await openMeter(page);
   await expect(page.getByRole("heading", { name: "Choose calibration" })).toBeVisible();
   await expect(page.getByText("ESPHome source editing is unavailable.")).toBeVisible();
   await expect(page.getByText(/Circuit names, CT models, roles, multipliers, entities, and totals cannot be changed/)).toBeVisible();
@@ -2104,7 +1916,7 @@ test("journey 6: runtime-only skips every source configuration command", async (
 });
 
 test("journey 7: imported existing configuration enters legacy review", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { importable: true, guidedMode: "legacy", setupEvent: "devices" });
+  const frames = await mockHomeAssistant(page, { importable: true, sourceMode: "legacy", setupEvent: "devices" });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   expect(mutations(frames)).toEqual([]);
@@ -2130,7 +1942,7 @@ test("journey 8: an active normal transaction resumes at Install Configuration",
 });
 
 test("a legacy migration transaction resumes without repeating the branch choice", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { activeWork: "normal", guidedMode: "legacy" });
+  const frames = await mockHomeAssistant(page, { activeWork: "normal", sourceMode: "legacy" });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
@@ -2141,7 +1953,7 @@ test("a legacy migration transaction resumes without repeating the branch choice
 
 for (const [activeWork, heading] of [["safety", "Safety"], ["ready", "Voltage"]] as const) {
   test(`a legacy calibration-only ${activeWork} session resumes at ${heading}`, async ({ page }) => {
-    const frames = await mockHomeAssistant(page, { activeWork, guidedMode: "legacy" });
+    const frames = await mockHomeAssistant(page, { activeWork, sourceMode: "legacy" });
     await page.goto("/test/harness.html");
     await page.locator('[data-action="rescan"]').click();
     await page.locator('[data-action="configure-device"]').first().click();
@@ -2166,7 +1978,7 @@ test("journey 9: an active calibration handoff resumes at Save Calibration", asy
 });
 
 test("a legacy calibration-only handoff resumes without repeating the branch choice", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { activeWork: "handoff", guidedMode: "legacy" });
+  const frames = await mockHomeAssistant(page, { activeWork: "handoff", sourceMode: "legacy" });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
@@ -2176,9 +1988,9 @@ test("a legacy calibration-only handoff resumes without repeating the branch cho
 });
 
 test("journey 10: mobile phases only advance as the conditional flow advances", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "legacy" });
+  const frames = await mockHomeAssistant(page, { sourceMode: "legacy" });
   await page.setViewportSize({ width: 390, height: 844 });
-  await openGuidedMeter(page);
+  await openMeter(page);
   const progress = page.locator(".mobile-progress");
   await expect(progress).toContainText(/Phase \d+ of \d+/);
   const phase = async () => Number((await progress.textContent())?.match(/Phase (\d+) of/)?.[1]);

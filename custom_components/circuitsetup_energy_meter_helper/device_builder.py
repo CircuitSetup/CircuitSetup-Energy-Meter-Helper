@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
 from typing import Any, Protocol
@@ -78,21 +78,6 @@ class JobResult:
     job_id: str | None = None
     error_count: int | None = None
     warning_count: int | None = None
-    review_id: str | None = None
-    inputs_sha256: str | None = None
-    artifact_sha256: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewDescriptor:
-    """The non-sensitive handle for one frozen prospective build."""
-
-    review_id: str
-    source_sha256: str
-    proposed_sha256: str
-    inputs_sha256: str
-    esphome_version: str
-    expires_in_seconds: int
 
 
 class JobProgressStage(StrEnum):
@@ -121,14 +106,6 @@ class ConfigChangedError(RuntimeError):
         super().__init__("Device Builder configuration changed before update")
         self.expected = expected
         self.actual = actual
-
-
-class DeviceBuilderCommandError(ConnectionError):
-    """A bounded protocol error, retaining only its allowlisted code."""
-
-    def __init__(self, code: str) -> None:
-        self.code = code if re.fullmatch(r"[a-z0-9_]{1,64}", code) else "unknown"
-        super().__init__("Device Builder command failed")
 
 
 class RollbackError(RuntimeError):
@@ -438,126 +415,6 @@ class DeviceBuilderClient:
         )
         return await self._async_follow_job(result, progress)
 
-    async def async_prepare_review(
-        self, configuration: str, source_sha256: str, proposed_content: str
-    ) -> ReviewDescriptor:
-        result = await self.async_command(
-            "firmware/prepare_review",
-            {
-                "configuration": configuration,
-                "source_sha256": source_sha256,
-                "proposed_content": proposed_content,
-            },
-        )
-        if not isinstance(result, Mapping):
-            raise ConnectionError("Device Builder returned an invalid review")
-        descriptor = ReviewDescriptor(
-            result.get("review_id", ""),
-            result.get("source_sha256", ""),
-            result.get("proposed_sha256", ""),
-            result.get("inputs_sha256", ""),
-            result.get("esphome_version", ""),
-            result.get("expires_in_seconds", 0),
-        )
-        if (
-            _bounded_protocol_string(descriptor.review_id) is None
-            or not isinstance(descriptor.source_sha256, str)
-            or not isinstance(descriptor.proposed_sha256, str)
-            or not isinstance(descriptor.inputs_sha256, str)
-            or not re.fullmatch(r"[0-9a-f]{64}", descriptor.source_sha256)
-            or not re.fullmatch(r"[0-9a-f]{64}", descriptor.proposed_sha256)
-            or not re.fullmatch(r"[0-9a-f]{64}", descriptor.inputs_sha256)
-            or not isinstance(descriptor.esphome_version, str)
-            or not descriptor.esphome_version
-            or len(descriptor.esphome_version) > 128
-            or not isinstance(descriptor.expires_in_seconds, int)
-            or isinstance(descriptor.expires_in_seconds, bool)
-            or not 1 <= descriptor.expires_in_seconds <= 3600
-        ):
-            raise ConnectionError("Device Builder returned an invalid review")
-        return descriptor
-
-    async def async_compile_review(
-        self,
-        review_id: str,
-        source_sha256: str,
-        proposed_sha256: str,
-        inputs_sha256: str,
-        progress: Callable[[JobProgress], None] | None = None,
-    ) -> JobResult:
-        result = await self.async_command(
-            "firmware/compile_review",
-            {
-                "review_id": review_id,
-                "source_sha256": source_sha256,
-                "proposed_sha256": proposed_sha256,
-                "inputs_sha256": inputs_sha256,
-            },
-        )
-        followed = await self._async_follow_job(result, progress)
-        return await self._enrich_job(followed)
-
-    async def async_upload_review(
-        self,
-        review_id: str,
-        compile_job_id: str,
-        artifact_sha256: str,
-        progress: Callable[[JobProgress], None] | None = None,
-    ) -> JobResult:
-        result = await self.async_command(
-            "firmware/upload_review",
-            {
-                "review_id": review_id,
-                "compile_job_id": compile_job_id,
-                "artifact_sha256": artifact_sha256,
-            },
-        )
-        followed = await self._async_follow_job(result, progress)
-        return await self._enrich_job(followed)
-
-    async def async_release_review(self, review_id: str) -> None:
-        result = await self.async_command("firmware/release_review", {"review_id": review_id})
-        if not isinstance(result, Mapping) or result.get("released") is not True:
-            raise ConnectionError("Device Builder returned an invalid release result")
-
-    async def async_reconcile_review_upload(
-        self, review_id: str, compile_job_id: str, artifact_sha256: str
-    ) -> JobResult | None:
-        """Read the unique bound upload, including when its admission reply was lost."""
-        compiled = await self.async_command("firmware/get_job", {"job_id": compile_job_id})
-        if (
-            not isinstance(compiled, Mapping)
-            or compiled.get("job_id") != compile_job_id
-            or compiled.get("job_type") != "compile"
-            or compiled.get("status") != "completed"
-            or compiled.get("review_id") != review_id
-            or compiled.get("artifact_sha256") != artifact_sha256
-            or not isinstance(compiled.get("configuration"), str)
-        ):
-            raise ConnectionError("Reviewed compile evidence is unavailable")
-        jobs = await self.async_command(
-            "firmware/get_jobs", {"configuration": compiled["configuration"]}
-        )
-        if not isinstance(jobs, list):
-            raise ConnectionError("Reviewed upload evidence is unavailable")
-        matching = [job for job in jobs if isinstance(job, Mapping)
-            and job.get("review_id") == review_id and job.get("job_type") == "upload"]
-        if not matching:
-            return None
-        if len(matching) != 1:
-            raise ConnectionError("Reviewed upload evidence is ambiguous")
-        job = matching[0]
-        if (job.get("configuration") != compiled["configuration"]
-            or job.get("artifact_sha256") != artifact_sha256
-            or job.get("inputs_sha256") != compiled.get("inputs_sha256")
-            or _bounded_protocol_string(job.get("job_id")) is None):
-            raise ConnectionError("Reviewed upload binding changed")
-        if job.get("status") in {"queued", "running"}:
-            return None
-        if job.get("status") not in {"completed", "failed", "cancelled"}:
-            raise ConnectionError("Reviewed upload status is unavailable")
-        return self._job_result(dict(job), job["job_id"])
-
     async def async_restore_content(
         self,
         configuration: str,
@@ -603,24 +460,6 @@ class DeviceBuilderClient:
         )
         return self._job_result(terminal, job_id, output)
 
-    async def _enrich_job(self, result: JobResult) -> JobResult:
-        if result.job_id is None:
-            return result
-        try:
-            full = await self.async_command("firmware/get_job", {"job_id": result.job_id})
-        except Exception:  # noqa: BLE001 - terminal output remains bounded
-            return result
-        if not isinstance(full, Mapping):
-            return result
-        if full.get("job_id") != result.job_id:
-            raise ConnectionError("Device Builder returned a mismatched job")
-        return replace(
-            result,
-            review_id=_bounded_protocol_string(full.get("review_id")),
-            inputs_sha256=_bounded_hash(full.get("inputs_sha256")),
-            artifact_sha256=_bounded_hash(full.get("artifact_sha256")),
-        )
-
     def _job_result(
         self,
         result: dict[str, Any],
@@ -636,9 +475,6 @@ class DeviceBuilderClient:
             result.get("error", ""),
             tuple(str(line) for line in output[-self._output_tail_size :]),
             job_id,
-            review_id=_bounded_protocol_string(result.get("review_id")),
-            inputs_sha256=_bounded_hash(result.get("inputs_sha256")),
-            artifact_sha256=_bounded_hash(result.get("artifact_sha256")),
         )
 
     def _validation_result(
@@ -683,7 +519,7 @@ class DeviceBuilderClient:
                     and not stream_future.done()
                 ):
                     stream_future.set_exception(
-                        DeviceBuilderCommandError(str(message.get("error_code", "unknown")))
+                        ConnectionError("Device Builder command failed")
                     )
                     continue
                 future = self._pending.get(message_id)
@@ -691,7 +527,7 @@ class DeviceBuilderClient:
                     continue
                 if "error_code" in message:
                     future.set_exception(
-                        DeviceBuilderCommandError(str(message.get("error_code", "unknown")))
+                        ConnectionError("Device Builder command failed")
                     )
                 elif "result" in message:
                     future.set_result(message["result"])
@@ -762,11 +598,3 @@ def _structured_count(value: object) -> int | None:
         if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 999
         else None
     )
-
-
-def _bounded_protocol_string(value: object) -> str | None:
-    return value if isinstance(value, str) and 0 < len(value) <= 256 else None
-
-
-def _bounded_hash(value: object) -> str | None:
-    return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) else None

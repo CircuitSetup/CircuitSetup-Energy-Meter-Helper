@@ -52,43 +52,6 @@ it("shows affected SPI pins and hardware troubleshooting without allowing Contin
   expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
 });
 
-it("shows one guided install action and verification-only recovery", () => {
-  const host = document.createElement("div");
-  const install = vi.fn();
-  const recheck = vi.fn();
-  const noop = () => undefined;
-  const status = {
-    purpose: "install_configuration", transaction_id: "tx", state: "previewed", source_sha256: "a".repeat(64),
-    changes: [], redacted_diff: "", rollback_available: false, evidence: [],
-    communication_failed_cs_pins: [], progress: [], upload_progress: [],
-    validation_detail: null, aggregate_entity_mismatch: false,
-    full_meter_configuration_verified: false, guided_install: true, failure: null,
-  } as import("../src/types").TransactionStatus;
-  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop, null, null, false, false, "", false, null, null, true, install, recheck), host);
-  expect(host.querySelector('[data-action="install-changes"]')?.textContent).toBe("Install changes");
-  expect(host.textContent).toContain("writes the reviewed configuration");
-  expect(host.textContent).toContain("uploads it, and reboots");
-  expect(host.querySelector(".advanced-controls summary")?.textContent).toBe("Advanced controls");
-  expect(host.querySelectorAll('[data-action="install-changes"]').length).toBe(1);
-  host.querySelector<HTMLButtonElement>('[data-action="install-changes"]')?.click();
-  expect(install).toHaveBeenCalledOnce();
-
-  render(buildInstallStep("install_configuration", { ...status, state: "install_confirmation_required", evidence: ["reconnect_unavailable"], rollback_available: true,
-    failure: { stage: "verifying_meter", reason_code: "verification_incomplete", context: [] } }, noop, noop, noop, noop, noop, noop,
-  null, null, false, false, "", false, null, null, true, noop, recheck), host);
-  expect(host.textContent).toContain("does not upload firmware again");
-  expect(host.querySelector("button")?.textContent).not.toBe("Retry Install");
-  [...host.querySelectorAll("button")].find((button) => button.textContent === "Recheck verification")?.click();
-  expect(recheck).toHaveBeenCalledOnce();
-
-  render(buildInstallStep("install_configuration", { ...status, state: "validated" }, noop, noop, noop, noop, noop, noop,
-    null, null, false, false, "", false, null, null, true, noop, recheck), host);
-  expect(host.textContent).toContain("Building");
-
-  render(buildInstallStep("install_configuration", { ...status, guided_running: true }, noop, noop, noop, noop, noop, noop,
-    null, null, false, false, "", false, null, null, true, install, recheck), host);
-  expect(host.querySelector<HTMLButtonElement>('[data-action="install-changes"]')?.disabled).toBe(true);
-});
 
 it("renders purpose-specific configuration installation controls", () => {
   const host = document.createElement("div");
