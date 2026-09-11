@@ -3,11 +3,53 @@ name: CI
 on:
   pull_request:
   push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect firmware-affecting changes
+    runs-on: ubuntu-latest
+    outputs:
+      firmware: ${{ steps.filter.outputs.firmware }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        name: Check changed paths
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+            head="$PUSH_SHA"
+          else
+            base="$PUSH_BEFORE_SHA"
+            head="$PUSH_SHA"
+          fi
+
+          if [[ "$base" == 0000000000000000000000000000000000000000 ]]; then
+            changed_files="$(git show --format= --name-only "$head")"
+          else
+            changed_files="$(git diff --name-only "$base" "$head")"
+          fi
+
+          printf '%s\n' "$changed_files"
+          if printf '%s\n' "$changed_files" | grep -Eq \
+            '^(\.github/workflows/ci\.yml|custom_components/circuitsetup_energy_meter_helper/.*\.py|scripts/(generate_esphome_validation_configs|verify_firmware_contract)\.py|tests/test_firmware_.*\.py|pyproject\.toml)$'; then
+            echo "firmware=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "firmware=false" >> "$GITHUB_OUTPUT"
+          fi
+
   unit:
     name: Unit tests and lint
     runs-on: ubuntu-latest
@@ -91,6 +133,8 @@ jobs:
           echo "Home Assistant contract matrix completed successfully."
 
   firmware-contract:
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
