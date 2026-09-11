@@ -144,6 +144,7 @@ export class CircuitSetupPanel extends LitElement {
   private transactionPurpose: TransactionPurpose = null;
   private selectedDeviceId: string | null = null;
   private existingCandidates: ExistingDeviceCandidate[] = [];
+  private existingSearchComplete = false;
   private existingInspection: ExistingMeterInspection | null = null;
   private inspectionToken: object | null = null;
   private adoptionToken: object | null = null;
@@ -264,6 +265,7 @@ export class CircuitSetupPanel extends LitElement {
     this.resolvedFirmwareOptions = [];
     this.setupDeviceIds = new Set();
     this.existingCandidates = [];
+    this.existingSearchComplete = false;
     this.existingInspection = null;
     this.calibrationPreparation = null;
     this.inspectionToken = null;
@@ -494,6 +496,8 @@ export class CircuitSetupPanel extends LitElement {
     this.clearSubscription("session");
     const isNewInstall = deviceId !== null && deviceId === this.newInstallDeviceId;
     this.selectedDeviceId = deviceId;
+    this.existingCandidates = [];
+    this.existingSearchComplete = false;
     this.existingInspection = null;
     if (deviceId !== this.newInstallDeviceId) this.newInstallDeviceId = null;
     this.journeyOrigin = isNewInstall ? "new_install" : "existing_meter";
@@ -793,14 +797,16 @@ export class CircuitSetupPanel extends LitElement {
     const setupDeviceIds = new Set(this.setupDeviceIds);
     const generation = ++this.operationGeneration;
     await this.run(async () => {
-      await api.setInstallerIntent(
-        this.addonCount,
-        this.connection,
-        this.selectedFirmware(),
-        this.packageOptions,
-        null,
-        null,
-      );
+      if (deviceId === null || this.setup?.bound_device_id !== deviceId) {
+        await api.setInstallerIntent(
+          this.addonCount,
+          this.connection,
+          this.selectedFirmware(),
+          this.packageOptions,
+          null,
+          null,
+        );
+      }
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -818,6 +824,8 @@ export class CircuitSetupPanel extends LitElement {
   private async findExistingMeters(): Promise<void> {
     if (!this.api || this.pendingAction) return;
     this.pendingAction = "find-existing";
+    this.existingCandidates = [];
+    this.existingSearchComplete = false;
     this.existingInspection = null;
     this.requestUpdate();
     const api = this.api;
@@ -828,9 +836,10 @@ export class CircuitSetupPanel extends LitElement {
       const candidates = await api.listExistingMeters();
       if (!this.ownsInspection(token, api)) return;
       this.existingCandidates = candidates;
+      this.existingSearchComplete = true;
       this.announcement = candidates.length
         ? "Select an ESPHome meter to inspect."
-        : "No ESPHome meters were found.";
+        : "No more ESPHome meters could be found";
     }, "Existing ESPHome meters could not be listed.", () => this.ownsInspection(token, api));
     if (this.ownsInspection(token, api)) {
       this.pendingAction = "";
@@ -2484,7 +2493,7 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.connection = value; this.refreshFirmwareOptions(); },
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, Boolean(this.topology),
       this.firmwareCatalog(), this.importFailedDeviceId, this.existingCandidates, this.existingInspection,
-      () => void this.findExistingMeters(), (id) => void this.inspectExistingMeter(id), (id) => void this.adopt(id))}
+      () => void this.findExistingMeters(), (id) => void this.inspectExistingMeter(id), (id) => void this.adopt(id), this.existingSearchComplete)}
       ${this.topology ? topologyStep(this.topology, this.selectedProjectVersion(),
         () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.selectedConfigurationAvailable()
           ? this.loadInventory() : this.navigate("calibration-plan")), this.error === "Topology mismatch", this.pendingAction.startsWith("topology:") || this.pendingAction === "inventory" || this.pendingAction === "session" || this.pendingAction === "prepare-calibration", this.calibrationPreparation, () => void this.prepareCalibration()) : nothing}`;

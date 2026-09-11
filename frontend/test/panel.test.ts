@@ -2079,6 +2079,40 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("(15, 26)");
   });
 
+  it("shows the empty result for an existing-meter search", async () => {
+    const panel = await mount(makeHass({
+      setup_status: { state: "no_device", devices: [] },
+      list_existing_meters: [],
+    }));
+
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="find-existing"]')?.click();
+    await tick(); await panel.updateComplete;
+
+    expect(text(panel)).toContain("No more ESPHome meters could be found");
+  });
+
+  it("does not persist installer intent when rescanning a bound meter", async () => {
+    const configured = { ...device, importable: false, configuration: "meter.yaml" };
+    const calls: string[] = [];
+    const hass = makeHass({
+      setup_status: { state: "device_discovered", devices: [configured], bound_device_id: device.entry_id },
+      rescan: { state: "device_discovered", devices: [configured], bound_device_id: device.entry_id },
+    });
+    const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      calls.push(String(message.type));
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as { topology: MeterTopology; rescan: () => Promise<void>; error: string };
+    state.topology = meterResponse().topology;
+    await state.rescan();
+
+    expect(calls.some((type) => type.endsWith("/set_installer_intent"))).toBe(false);
+    expect(calls.some((type) => type.endsWith("/rescan"))).toBe(true);
+    expect(state.error).toBe("");
+  });
+
   it("keeps electrical profile values out of new-meter setup and installer intent", async () => {
     const messages: Record<string, unknown>[] = [];
     const hass: HomeAssistant = {

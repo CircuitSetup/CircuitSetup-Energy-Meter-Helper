@@ -3312,13 +3312,14 @@ function existingConfigurationStep(configuration, metadata, onManage, onCalibrat
     <div class="action-footer"><button class="secondary" @click=${onBack}>Back</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="primary" @click=${onManage}>Review and manage with helper</button></div>
   </section>`;
 }
-function existingMeterInspection(candidates, inspection, busyAction, find, inspect, adopt) {
+function existingMeterInspection(candidates, inspection, busyAction, find, inspect, adopt, searched = false) {
   return b`<section class="existing-inspection" aria-labelledby="find-existing-heading">
     <h3 id="find-existing-heading">Find another ESPHome meter</h3>
     <p>This checks one selected ESPHome entry before it can be adopted. It does not install firmware.</p>
     <button class="secondary" data-action="find-existing" ?disabled=${Boolean(busyAction)} @click=${find}>
       ${busyAction === "find-existing" ? "Finding meters…" : "Find another ESPHome meter"}
     </button>
+    ${searched && !candidates.length ? b`<p class="info-band" role="status">No more ESPHome meters could be found</p>` : A}
     ${candidates.length ? b`<div class="meter-list">
       ${candidates.map((candidate) => b`<div class="meter-row">
         <span><strong>${candidate.title}</strong><small>${candidate.project_name ?? "Project label unavailable"}${candidate.project_version ? ` · ${candidate.project_version}` : ""}</small></span>
@@ -3512,7 +3513,7 @@ const CONNECTIONS = [
   ["ethernet_waveshare", "Waveshare Ethernet"]
 ];
 const ADDON_PINS = ["(0, 16)", "(27, 17)", "(2, 21)", "(13, 22)", "(14, 25)", "(15, 26)"];
-function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnection, rescan, configure, adopt, busyAction = "", discoverOnly = false, firmwareCatalog = b``, importFailedDeviceId = null, existingCandidates = [], inspection = null, findExisting = () => void 0, inspectExisting = () => void 0, adoptInspected = () => void 0) {
+function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnection, rescan, configure, adopt, busyAction = "", discoverOnly = false, firmwareCatalog = b``, importFailedDeviceId = null, existingCandidates = [], inspection = null, findExisting = () => void 0, inspectExisting = () => void 0, adoptInspected = () => void 0, existingSearchComplete = false) {
   return b`
     <section class="step-content setup-step" aria-labelledby="step-heading">
       ${snapshot?.devices.length ? b`<section aria-labelledby="existing-device-heading">
@@ -3534,7 +3535,7 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
           `)}
         </div>
       </section>` : b``}
-      ${existingMeterInspection(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected)}
+      ${existingMeterInspection(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected, existingSearchComplete)}
       ${discoverOnly ? "" : b`<hr />
       <h2>Set up a new meter</h2>
       <fieldset class="choice-field">
@@ -3582,7 +3583,7 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
       </section>
       <p class="info-band">${connection === "wifi" ? "Use a USB data cable. ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter. This helper does not store or send those credentials to Home Assistant." : "Use a USB data cable, connect Ethernet and power, then wait for an address from DHCP."}</p>
       `}
-      <button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>
+      ${discoverOnly ? A : b`<button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>`}
     </section>
   `;
 }
@@ -4260,6 +4261,7 @@ class CircuitSetupPanel extends i$2 {
     this.transactionPurpose = null;
     this.selectedDeviceId = null;
     this.existingCandidates = [];
+    this.existingSearchComplete = false;
     this.existingInspection = null;
     this.inspectionToken = null;
     this.adoptionToken = null;
@@ -4384,6 +4386,7 @@ class CircuitSetupPanel extends i$2 {
     this.resolvedFirmwareOptions = [];
     this.setupDeviceIds = /* @__PURE__ */ new Set();
     this.existingCandidates = [];
+    this.existingSearchComplete = false;
     this.existingInspection = null;
     this.calibrationPreparation = null;
     this.inspectionToken = null;
@@ -4590,6 +4593,8 @@ class CircuitSetupPanel extends i$2 {
     this.clearSubscription("session");
     const isNewInstall = deviceId !== null && deviceId === this.newInstallDeviceId;
     this.selectedDeviceId = deviceId;
+    this.existingCandidates = [];
+    this.existingSearchComplete = false;
     this.existingInspection = null;
     if (deviceId !== this.newInstallDeviceId) this.newInstallDeviceId = null;
     this.journeyOrigin = isNewInstall ? "new_install" : "existing_meter";
@@ -4871,14 +4876,16 @@ class CircuitSetupPanel extends i$2 {
     const setupDeviceIds = new Set(this.setupDeviceIds);
     const generation = ++this.operationGeneration;
     await this.run(async () => {
-      await api.setInstallerIntent(
-        this.addonCount,
-        this.connection,
-        this.selectedFirmware(),
-        this.packageOptions,
-        null,
-        null
-      );
+      if (deviceId === null || this.setup?.bound_device_id !== deviceId) {
+        await api.setInstallerIntent(
+          this.addonCount,
+          this.connection,
+          this.selectedFirmware(),
+          this.packageOptions,
+          null,
+          null
+        );
+      }
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup2 = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -4895,6 +4902,8 @@ class CircuitSetupPanel extends i$2 {
   async findExistingMeters() {
     if (!this.api || this.pendingAction) return;
     this.pendingAction = "find-existing";
+    this.existingCandidates = [];
+    this.existingSearchComplete = false;
     this.existingInspection = null;
     this.requestUpdate();
     const api = this.api;
@@ -4905,7 +4914,8 @@ class CircuitSetupPanel extends i$2 {
       const candidates = await api.listExistingMeters();
       if (!this.ownsInspection(token, api)) return;
       this.existingCandidates = candidates;
-      this.announcement = candidates.length ? "Select an ESPHome meter to inspect." : "No ESPHome meters were found.";
+      this.existingSearchComplete = true;
+      this.announcement = candidates.length ? "Select an ESPHome meter to inspect." : "No more ESPHome meters could be found";
     }, "Existing ESPHome meters could not be listed.", () => this.ownsInspection(token, api));
     if (this.ownsInspection(token, api)) {
       this.pendingAction = "";
@@ -6662,7 +6672,8 @@ class CircuitSetupPanel extends i$2 {
       this.existingInspection,
       () => void this.findExistingMeters(),
       (id2) => void this.inspectExistingMeter(id2),
-      (id2) => void this.adopt(id2)
+      (id2) => void this.adopt(id2),
+      this.existingSearchComplete
     )}
       ${this.topology ? topologyStep(
       this.topology,

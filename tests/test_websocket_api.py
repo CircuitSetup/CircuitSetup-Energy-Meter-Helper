@@ -860,6 +860,48 @@ def test_setup_status_exposes_the_runtime_bound_device_id() -> None:
     asyncio.run(run())
 
 
+def test_existing_meter_listing_omits_the_controller_binding() -> None:
+    """The "another meter" route excludes the ESPHome entry this helper owns."""
+
+    async def run() -> None:
+        entries = (
+            SimpleNamespace(
+                domain="esphome",
+                entry_id="bound",
+                title="Current meter",
+                runtime_data=SimpleNamespace(
+                    device_info=SimpleNamespace(
+                        project_name="circuitsetup.6c-energy-meter"
+                    )
+                ),
+            ),
+            SimpleNamespace(
+                domain="esphome",
+                entry_id="other",
+                title="Other meter",
+                runtime_data=SimpleNamespace(
+                    device_info=SimpleNamespace(project_name="legacy.custom-meter")
+                ),
+            ),
+        )
+        hass = FakeHass(entries)
+        controller = EntryWebsocketController(
+            ProvisioningCoordinator(hass),
+            SessionManager(),
+            SimpleNamespace(),  # type: ignore[arg-type]
+            esphome_entry_id="bound",
+        )
+
+        result = await controller.async_call(
+            f"{DOMAIN}/list_existing_meters", {}, None
+        )
+
+        assert [candidate.entry_id for candidate in result] == ["other"]
+        await controller.async_close()
+
+    asyncio.run(run())
+
+
 def test_setup_subscription_preserves_the_runtime_bound_device_id() -> None:
     async def run() -> None:
         hass = FakeHass()

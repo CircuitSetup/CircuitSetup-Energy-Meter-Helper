@@ -71,9 +71,9 @@ function topology(addons: number, projectName = project(addons)) {
       { source: "native_entity_counts", addon_count: addons, detail: `${6 * boards} current sensors` }] };
 }
 
-function existingInspection(addons: number) {
+function existingInspection(addons: number, entryId = "meter-1") {
   const boards = addons + 1;
-  return { device: existingCandidate(), configuration: "meter.yaml", source_sha256: hash,
+  return { device: existingCandidate(entryId), configuration: "meter.yaml", source_sha256: hash,
     topology: topology(addons, CUSTOM_PROJECT),
     package_options: { power_quality: Array(boards).fill(false), status_fields: Array(boards).fill(false) },
     package_capabilities: Array.from({ length: boards }, (_value, board) => [
@@ -313,10 +313,10 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         }
         result = setupSnapshot();
       }
-      else if (operation === "list_existing_meters") result = [existingCandidate()];
+      else if (operation === "list_existing_meters") result = [existingCandidate("meter-2")];
       else if (operation === "inspect_existing_meter") {
         if (options.existingOutcome === "inspect-stale") return fail("stale_handle", "inspection is stale");
-        result = existingInspection(addons);
+        result = existingInspection(addons, String(frame.device_id));
       }
       else if (operation === "set_installer_intent") result = { state: "installer_guide", devices: [],
         installer_intent: { addon_count: frame.addon_count, connection_type: frame.connection_type } };
@@ -1029,6 +1029,7 @@ test("Find, inspect, and adopt keeps custom meter work behind the explicit bound
   const ordered = operations(frames);
   expect(ordered.indexOf("list_existing_meters")).toBeLessThan(ordered.indexOf("inspect_existing_meter"));
   expect(ordered.indexOf("inspect_existing_meter")).toBeLessThan(ordered.indexOf("adopt_device"));
+  expect(frames.find((frame) => frame.type.endsWith("/adopt_device"))?.device_id).toBe("meter-2");
   expect(ordered).toEqual(expect.arrayContaining(["get_meter_configuration", "get_topology"]));
 });
 

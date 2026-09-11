@@ -211,7 +211,9 @@ class ProvisioningCoordinator:
         self._publish()
         return self.snapshot
 
-    async def async_list_existing_meters(self) -> tuple[ExistingDeviceCandidate, ...]:
+    async def async_list_existing_meters(
+        self, exclude_device_id: str | None = None
+    ) -> tuple[ExistingDeviceCandidate, ...]:
         """List ESPHome identities for the user-requested inspection path."""
         return tuple(
             existing_device_candidate(entry)
@@ -219,6 +221,7 @@ class ProvisioningCoordinator:
                 self._hass.config_entries.async_entries("esphome"),
                 key=lambda item: str(getattr(item, "entry_id", "")),
             )
+            if getattr(entry, "entry_id", None) != exclude_device_id
         )
 
     def _device(

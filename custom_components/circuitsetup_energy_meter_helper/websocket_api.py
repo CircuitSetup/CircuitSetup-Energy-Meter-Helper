@@ -444,7 +444,9 @@ class EntryWebsocketController:
         if operation == "list_meters":
             return self.provisioning.snapshot.devices
         if operation == "list_existing_meters":
-            return await self.provisioning.async_list_existing_meters()
+            return await self.provisioning.async_list_existing_meters(
+                self.esphome_entry_id
+            )
         workflow = self.workflow
         if operation == "get_topology" and workflow is not None:
             return await workflow.async_get_topology(msg["device_id"])
