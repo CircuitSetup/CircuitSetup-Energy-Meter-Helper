@@ -399,7 +399,7 @@ def _decode(data: bytes) -> OffsetRecoveryRecord:
             raise ValueError("invalid recovery topology")
         source_keys = raw["original"]
         if not isinstance(source_keys, dict):
-            raise ValueError("invalid recovery source")
+            raise TypeError("invalid recovery source")
         if set(source_keys) == {"configuration", "content", "sha256"}:
             source = _exact_mapping(source_keys, set(source_keys), "source")
             source["configuration_authoritative"] = True

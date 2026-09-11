@@ -2,12 +2,12 @@
 
 from typing import Any
 
-import voluptuous as vol
 from aiohasupervisor import SupervisorError
 from aiohasupervisor.models.addons import InstalledAddonComplete
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.core import callback
+import voluptuous as vol
 
 from .const import (
     CONF_DEVICE_BUILDER_SLUG,
