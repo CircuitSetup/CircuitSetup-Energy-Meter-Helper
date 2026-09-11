@@ -209,7 +209,8 @@ class Fixture:
             return {"state": "device_discovered", "devices": [self.device],
                 "bound_device_id": "meter-1", "configuration_authoritative": self.name != "runtime-only"}
         if operation == "rescan":
-            return {"state": "device_discovered", "devices": [self.device]}
+            return {"state": "device_discovered", "devices": [self.device],
+                "bound_device_id": "meter-1", "configuration_authoritative": self.name != "runtime-only"}
         if operation == "get_topology":
             return {"topology": self.topology, "configuration_authoritative": self.name != "runtime-only"}
         if operation == "get_meter_configuration":
