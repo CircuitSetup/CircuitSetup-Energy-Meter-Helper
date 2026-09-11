@@ -460,6 +460,52 @@ describe("HelperApi", () => {
     }]);
   });
 
+  it("sends guided install and verification recheck with the exact confirmation handle", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    const guided = { ...transaction, guided_install: true, guided_running: true,
+      guided_unavailable: false, failure: null, full_meter_configuration_verified: false };
+    hass.responses.install_meter_configuration = guided;
+    hass.responses.recheck_meter_verification = { ...guided, state: "verified", guided_running: false,
+      full_meter_configuration_verified: true };
+
+    await expect(api.installMeterConfiguration("meter-1", "tx-1", "a".repeat(64))).resolves.toMatchObject({
+      guided_install: true, guided_running: true,
+    });
+    await expect(api.recheckMeterVerification("meter-1", "tx-1", "a".repeat(64))).resolves.toMatchObject({
+      state: "verified", full_meter_configuration_verified: true,
+    });
+    expect(hass.messages).toEqual([
+      { type: "circuitsetup_energy_meter_helper/install_meter_configuration", entry_id: "entry-1",
+        device_id: "meter-1", transaction_id: "tx-1", source_sha256: "a".repeat(64) },
+      { type: "circuitsetup_energy_meter_helper/recheck_meter_verification", entry_id: "entry-1",
+        device_id: "meter-1", transaction_id: "tx-1", source_sha256: "a".repeat(64) },
+    ]);
+  });
+
+  it("accepts only allowlisted guided failure context", async () => {
+    const hass = new FakeHass();
+    const api = new HelperApi(hass, "entry-1");
+    const guided = { ...transaction, guided_install: true, guided_running: false,
+      guided_unavailable: false, full_meter_configuration_verified: false };
+    const validFailure = { stage: "validating", reason_code: "required_secret",
+      context: [["secret_name", "meter_api_key"]] };
+    hass.responses.install_meter_configuration = { ...guided, failure: validFailure };
+    await expect(api.installMeterConfiguration("meter-1", "tx-1", "a".repeat(64))).resolves.toMatchObject({
+      failure: validFailure,
+    });
+
+    for (const failure of [
+      { ...validFailure, stage: "writing" },
+      { ...validFailure, reason_code: "private_error" },
+      { ...validFailure, context: [["password", "hidden"]] },
+      { ...validFailure, extra: true },
+    ]) {
+      hass.responses.install_meter_configuration = { ...guided, failure };
+      await expect(api.installMeterConfiguration("meter-1", "tx-1", "a".repeat(64))).rejects.toThrow("install_meter_configuration");
+    }
+  });
+
   it("sends the exact Task 19 command identifiers and confirmation handles", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");

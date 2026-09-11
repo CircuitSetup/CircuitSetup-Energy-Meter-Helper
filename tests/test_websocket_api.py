@@ -35,6 +35,9 @@ from custom_components.circuitsetup_energy_meter_helper.calibration_engine impor
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
     ConfigTransactionManager,
     ConfigTransactionState,
+    TransactionFailure,
+    TransactionFailureReason,
+    TransactionFailureStage,
     TransactionStatus,
 )
 from custom_components.circuitsetup_energy_meter_helper.const import (
@@ -3626,6 +3629,97 @@ def test_transaction_confirmation_rejects_hash_device_and_replay_before_mutation
         await _invoke(hass, connection, forged)
         assert transactions.calls == 1
         assert connection.errors[-1][:2] == (3, "stale_confirmation")
+
+    asyncio.run(run())
+
+
+def test_guided_transaction_routes_exact_identity_and_safe_failure_payload() -> None:
+    """Guided install and recheck share ownership checks without leaking details."""
+
+    class Transactions:
+        def __init__(self) -> None:
+            self.confirmations: list[tuple[str, str, str]] = []
+            self.guided_calls: list[tuple[str, str]] = []
+            self.recheck_calls: list[str] = []
+
+        def assert_confirmation(
+            self, transaction_id: str, device_id: str, source_sha256: str
+        ) -> None:
+            if (transaction_id, device_id, source_sha256) != (
+                "transaction",
+                "meter",
+                "a" * 64,
+            ):
+                raise KeyError("private payload must not escape")
+            self.confirmations.append((transaction_id, device_id, source_sha256))
+
+        async def async_guided_install(
+            self, transaction_id: str, user_id: str
+        ) -> TransactionStatus:
+            self.guided_calls.append((transaction_id, user_id))
+            return TransactionStatus(
+                "transaction",
+                ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
+                "a" * 64,
+                (SubstitutionChange("ct1_name", "CT 1", "Kitchen"),),
+                "Reviewed CT rename",
+                rollback_available=True,
+                guided_install=True,
+                failure=TransactionFailure(
+                    TransactionFailureStage.VERIFYING_METER,
+                    TransactionFailureReason.VERIFICATION_INCOMPLETE,
+                ),
+            )
+
+        async def async_recheck_verification(
+            self, transaction_id: str
+        ) -> TransactionStatus:
+            self.recheck_calls.append(transaction_id)
+            return TransactionStatus(
+                "transaction",
+                ConfigTransactionState.VERIFIED,
+                "a" * 64,
+                (SubstitutionChange("ct1_name", "CT 1", "Kitchen"),),
+                "Reviewed CT rename",
+                guided_install=True,
+                full_meter_configuration_verified=True,
+            )
+
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+        transactions = Transactions()
+        controller.transactions = transactions
+        connection = FakeConnection()
+
+        await _invoke(hass, connection, _message(f"{DOMAIN}/install_meter_configuration"))
+        assert transactions.guided_calls == [("transaction", "admin")]
+        assert connection.results[-1][1]["changes"] == [
+            {"key": "channel.1.name", "old_value": "CT 1", "new_value": "Kitchen"}
+        ]
+        assert connection.results[-1][1]["failure"] == {
+            "stage": "verifying_meter", "reason_code": "verification_incomplete", "context": []
+        }
+
+        await _invoke(hass, connection, _message(f"{DOMAIN}/recheck_meter_verification", 2))
+        assert transactions.recheck_calls == ["transaction"]
+        assert connection.results[-1][1]["state"] == "verified"
+        assert connection.results[-1][1]["full_meter_configuration_verified"] is True
+
+        for msg_id, field, value in (
+            (3, "source_sha256", "b" * 64),
+            (4, "device_id", "other"),
+            (5, "transaction_id", "other"),
+        ):
+            forged = _message(f"{DOMAIN}/install_meter_configuration", msg_id)
+            forged[field] = value
+            await _invoke(hass, connection, forged)
+            assert connection.errors[-1][:2] == (msg_id, "stale_confirmation")
+
+        assert transactions.guided_calls == [("transaction", "admin")]
+        assert transactions.recheck_calls == ["transaction"]
+        assert len(transactions.confirmations) == 2
 
     asyncio.run(run())
 

@@ -3,6 +3,8 @@ import sanitizerContract from "../../../tests/fixtures/task20_sanitized_change.j
 
 type Frame = Record<string, unknown> & { id?: number; type: string };
 type Outcome = "success" | "collision" | "validation" | "compile";
+type GuidedStage = "validating" | "building" | "installing" | "verifying_meter";
+type GuidedOutcome = "success" | "validation_failed" | "compile_failed" | "verification_incomplete";
 type Calibration = "main-success" | "addon-indeterminate" | undefined;
 type Scenario = "single-phase-pq" | "existing-inspection" | "calibration-unavailable" | "calibration-missing" | undefined;
 type ExistingOutcome = "success" | "inspect-stale" | "adopt-busy";
@@ -114,14 +116,57 @@ function meterConfiguration(addons: number, scenario: Scenario = undefined) {
 }
 
 function transaction(state: string, channel: number, options: { evidence?: string[]; progress?: string[];
-  rollback?: boolean; validation?: boolean } = {}) {
+  rollback?: boolean; validation?: boolean; guided?: boolean; guidedRunning?: boolean;
+  failure?: { stage: GuidedStage; reason_code: string; context: Array<[string, string]> } | null;
+  uploadProgress?: Array<{ stage: string; percentage: number | null }>; verified?: boolean } = {}) {
   return { ...sanitizerContract.sanitized, transaction_id: "b".repeat(32), state, source_sha256: hash,
     changes: [{ key: `channel.${channel}.name`, old_value: `CT${channel}`, new_value: `Load ${channel}` }],
     redacted_diff: `- ct${channel}_name: <redacted>\n+ ct${channel}_name: <redacted>`,
     rollback_available: options.rollback ?? false, evidence: options.evidence ?? [], progress: options.progress ?? [],
     validation_detail: options.validation ? { code: 1, reported_error_count: 1,
       reported_warning_count: 0, error_record_count: 1, warning_record_count: 0 } : null,
-    upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: true };
+    upload_progress: options.uploadProgress ?? [], aggregate_entity_mismatch: false,
+    full_meter_configuration_verified: options.verified ?? true,
+    ...(options.guided === undefined ? {} : { guided_install: options.guided }),
+    ...(options.guidedRunning === undefined ? {} : { guided_running: options.guidedRunning }),
+    ...(options.guided === undefined ? {} : { guided_unavailable: false }),
+    ...(options.guided === undefined ? {} : { failure: options.failure ?? null }),
+  };
+}
+
+function guidedTransaction(stage: GuidedStage, outcome: GuidedOutcome = "success") {
+  const progress = ["config_written", "config_validated", "firmware_compiled", "ota_uploaded"];
+  const running = outcome === "success";
+  if (outcome === "validation_failed") return transaction("rolled_back", 1, {
+    evidence: ["validation_failed"], progress: ["config_written"], rollback: false, validation: true,
+    guided: true, guidedRunning: false,
+    failure: { stage: "validating", reason_code: "validation_rejected", context: [] }, verified: false,
+  });
+  if (outcome === "compile_failed") return transaction("failed", 1, {
+    evidence: ["compile_failed"], progress: progress.slice(0, 2), rollback: true,
+    guided: true, guidedRunning: false,
+    failure: { stage: "building", reason_code: "compile_rejected", context: [] }, verified: false,
+  });
+  if (outcome === "verification_incomplete") return transaction("install_confirmation_required", 1, {
+    evidence: ["reconnect_unavailable"], progress, rollback: true,
+    guided: true, guidedRunning: false,
+    failure: { stage: "verifying_meter", reason_code: "verification_incomplete", context: [] }, verified: false,
+  });
+  const state = stage === "validating" ? "written" : stage === "building" ? "validated"
+    : stage === "installing" ? "installing" : "reconnecting";
+  const stageProgress = stage === "validating" ? ["config_written"] : stage === "building" ? progress.slice(0, 2)
+    : stage === "installing" ? progress.slice(0, 3) : progress;
+  return transaction(state, 1, { progress: stageProgress, rollback: true, guided: true,
+    guidedRunning: running, uploadProgress: stage === "installing"
+      ? [{ stage: "uploading", percentage: 42 }] : stage === "verifying_meter"
+        ? [{ stage: "completed", percentage: 100 }] : [], verified: false });
+}
+
+function guidedVerifiedTransaction() {
+  return transaction("verified", 1, {
+    progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"],
+    guided: true, guidedRunning: false, verified: true,
+  });
 }
 
 function offsetBoards(addons: number, stageState: "not_started" | "skipped" = "not_started") {
@@ -195,19 +240,29 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
   firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean; scenario?: Scenario;
-  existingOutcome?: ExistingOutcome; slowClearCalibration?: boolean } = {}) {
+  existingOutcome?: ExistingOutcome; slowClearCalibration?: boolean; guidedStage?: GuidedStage;
+  guidedOutcome?: GuidedOutcome } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
+  const guided = options.guidedStage !== undefined || options.guidedOutcome !== undefined;
+  const guidedStage = options.guidedStage ?? "validating";
+  const guidedOutcome = options.guidedOutcome ?? "success";
   const frames: Frame[] = [];
   let rescans = 0;
   let boundDeviceId: string | null = null;
   let nextSetupStatusUnavailable = false;
   let setupSubscriptionGeneration = 0;
-  let currentTransaction = transaction("previewed", addons ? 42 : 1);
+  let currentTransaction = transaction("previewed", addons ? 42 : 1, guided ? {
+    guided: true, guidedRunning: false, verified: false,
+  } : {});
   let activePlan: string | null = "b".repeat(32);
   let activeSourceSha256 = hash;
   let pendingPreview = false;
   let freshPlanGeneration = 0;
+  let guidedStarted = false;
+  let guidedSubscriptionCount = 0;
+  let guidedSubscriptionsAtInstall = 0;
+  let guidedCompletionScheduled = false;
   const offsetCapability = options.scenario === "calibration-unavailable" ? "unavailable" : "available";
   let currentSession = session("safety_required", false, addons, false, "not_started", offsetCapability);
   const setupDevices = options.scenario === "existing-inspection"
@@ -215,9 +270,35 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
     : options.setupEvent === "devices"
     ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
     : options.setupEvent === "device" ? [device(addons, options.importable)] : [];
-  const setupSnapshot = () => boundDeviceId
-    ? { state: "topology_review", devices: setupDevices, bound_device_id: boundDeviceId }
-    : { state: "no_device", devices: [] };
+  let availableDevices = [...setupDevices];
+  const transactionSubscriptions: Array<{ id: number; send: (message: string) => void }> = [];
+  const setupSnapshot = () => guided
+    ? availableDevices.length ? { state: "device_discovered", devices: availableDevices, bound_device_id: boundDeviceId }
+      : { state: "no_device", devices: [] }
+    : boundDeviceId
+      ? { state: "topology_review", devices: setupDevices, bound_device_id: boundDeviceId }
+      : { state: "no_device", devices: [] };
+  const publishTransaction = () => {
+    for (const subscription of transactionSubscriptions) {
+      subscription.send(JSON.stringify({ id: subscription.id, type: "event", event: currentTransaction }));
+    }
+  };
+  const guidedStages: GuidedStage[] = ["validating", "building", "installing", "verifying_meter"];
+  const currentGuidedStage = (): GuidedStage => currentTransaction.state === "written" ? "validating"
+    : currentTransaction.state === "validated" ? "building"
+    : currentTransaction.state === "installing" ? "installing" : "verifying_meter";
+  const scheduleGuidedCompletion = () => {
+    if (!guided || guidedOutcome !== "success" || guidedCompletionScheduled) return;
+    guidedCompletionScheduled = true;
+    const currentIndex = guidedStages.indexOf(currentGuidedStage());
+    const advance = (index: number) => {
+      if (index >= guidedStages.length) currentTransaction = guidedVerifiedTransaction();
+      else currentTransaction = guidedTransaction(guidedStages[index]!, guidedOutcome);
+      publishTransaction();
+      if (index < guidedStages.length) setTimeout(() => advance(index + 1), 150);
+    };
+    setTimeout(() => advance(currentIndex + 1), 2_000);
+  };
 
   await mockFirmwareIndex(page, options.firmwareIndex, options.firmwareRequests);
 
@@ -237,7 +318,13 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       const ok = (result: unknown) => socket.send(JSON.stringify({ id, type: "result", success: true, result }));
       const fail = (code: string, message: string) => socket.send(JSON.stringify({ id, type: "result", success: false,
         error: { code, message } }));
-      if (operation === "unsubscribe_events") return ok(null);
+      if (operation === "unsubscribe_events") {
+        const subscriptionId = Number(frame.subscription);
+        for (let index = transactionSubscriptions.length - 1; index >= 0; --index) {
+          if (transactionSubscriptions[index]?.id === subscriptionId) transactionSubscriptions.splice(index, 1);
+        }
+        return ok(null);
+      }
       let result: unknown;
       if (operation === "setup_status") {
         if (nextSetupStatusUnavailable) {
@@ -255,10 +342,12 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         installer_intent: { addon_count: frame.addon_count, connection_type: frame.connection_type } };
       else if (operation === "rescan") {
         const state = options.rescan?.[rescans++] ?? "devices";
-        result = state === "none" ? { state: "no_device", devices: [] }
-          : { state: "device_discovered", devices: state === "devices"
-            ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
-            : [device(addons, options.importable)], configuration_authoritative: false };
+        const devices = state === "devices"
+          ? [device(addons, options.importable), device(addons, options.importable, "meter-2")]
+          : state === "device" ? [device(addons, options.importable)] : [];
+        if (guided) availableDevices = devices;
+        result = devices.length ? { state: "device_discovered", devices, configuration_authoritative: false }
+          : { state: "no_device", devices: [] };
       } else if (operation === "adopt_device") {
         if (options.existingOutcome === "adopt-busy") return fail("device_busy", "device busy");
         boundDeviceId = String(frame.device_id);
@@ -290,7 +379,9 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       }
       else if (operation === "get_ct_inventory") result = inventory(addons, options.scenario);
       else if (operation === "get_active_work") result = {
-        session: null, transaction: null, verified_calibration: null,
+        session: null,
+        transaction: guided && guidedStarted ? currentTransaction : null,
+        verified_calibration: null,
       };
       else if (operation === "set_ha_labels") result = { mode: "home_assistant_labels",
         results: [{ channel: 1, state: "updated" }] };
@@ -301,7 +392,9 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         if (options.consumePlans && (frame.plan_id !== activePlan || frame.source_sha256 !== activeSourceSha256 || pendingPreview)) {
           return fail("stale_confirmation", "preview plan was already consumed");
         }
-        result = currentTransaction = transaction("previewed", 1);
+        result = currentTransaction = transaction("previewed", 1, guided ? {
+          guided: true, guidedRunning: false, verified: false,
+        } : {});
         if (options.consumePlans) {
           activePlan = null;
           pendingPreview = true;
@@ -326,6 +419,15 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       } else if (operation === "install_ct_config") result = currentTransaction = { ...transaction("verified", addons ? 42 : 1,
         { progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"] }),
         transaction_id: String(frame.transaction_id) };
+      else if (operation === "install_meter_configuration") {
+        if (!guidedStarted) {
+          guidedStarted = true;
+          guidedSubscriptionsAtInstall = guidedSubscriptionCount;
+          currentTransaction = guidedTransaction(guidedStage, guidedOutcome);
+          publishTransaction();
+        }
+        result = currentTransaction;
+      }
       else if (operation === "abandon_ct_config") {
         if (options.consumePlans && !pendingPreview) return fail("stale_confirmation", "no pending preview");
         pendingPreview = false;
@@ -339,8 +441,11 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           return;
         }
       }
-      else if (operation === "rollback_ct_config") result = currentTransaction = transaction("rolled_back", addons ? 42 : 1,
-        { progress: ["config_restored"] });
+      else if (operation === "rollback_ct_config") result = currentTransaction = guided
+        ? transaction("rolled_back", addons ? 42 : 1, {
+          progress: ["config_restored"], guided: true, guidedRunning: false, verified: false,
+        })
+        : transaction("rolled_back", addons ? 42 : 1, { progress: ["config_restored"] });
       else if (operation === "start_session") result = currentSession = session("safety_required", false, addons, false, "not_started", offsetCapability);
       else if (operation === "acknowledge_safety") result = currentSession = session("ready", true, addons, false, "not_started", offsetCapability);
       else if (operation === "check_offset_readiness") result = offsetReadiness(frame);
@@ -379,7 +484,19 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         ++setupSubscriptionGeneration;
         result = setupSnapshot();
       }
-      else if (operation === "subscribe_config_transaction") result = currentTransaction;
+      else if (operation === "recheck_meter_verification") {
+        if (guidedOutcome === "verification_incomplete") currentTransaction = guidedVerifiedTransaction();
+        result = currentTransaction;
+        publishTransaction();
+      }
+      else if (operation === "subscribe_config_transaction") {
+        if (guided) {
+          transactionSubscriptions.push({ id, send: (message) => socket.send(message) });
+          ++guidedSubscriptionCount;
+        }
+        result = currentTransaction;
+        if (guided && guidedStarted && guidedSubscriptionCount > guidedSubscriptionsAtInstall) scheduleGuidedCompletion();
+      }
       else if (operation === "subscribe_session") result = currentSession;
       else return fail("unknown_command", operation);
       ok(result);
@@ -1037,4 +1154,92 @@ test("add-on CT42 indeterminate disconnect never auto-represses calibration", as
   await page.getByRole("button", { name: "Reconnect and inspect" }).click();
   await expect.poll(() => operations(frames).filter((value) => value === "get_session").length).toBe(1);
   expect(operations(frames).filter((value) => value === "calibrate_current")).toHaveLength(1);
+});
+
+const guidedStageLabels: Array<[GuidedStage, string]> = [
+  ["validating", "Validating"],
+  ["building", "Building"],
+  ["installing", "Installing"],
+  ["verifying_meter", "Verifying meter"],
+];
+
+for (const [guidedStage, label] of guidedStageLabels) {
+  test(`guided install recovers the ${guidedStage} stage after reload`, async ({ page }) => {
+    const frames = await mockHomeAssistant(page, { guidedStage });
+    await openInventory(page);
+    await reviewChannel(page, 1);
+
+    const install = page.locator('[data-action="install-changes"]');
+    await expect(install).toHaveCount(1);
+    await install.click();
+    await expect(install).toBeDisabled();
+    await expect(page.locator(".job-progress strong")).toHaveText(label);
+
+    const beforeReload = frames.length;
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+    await expect(page.locator(".job-progress strong")).toHaveText(label);
+    await expect(page.locator(".review-region")).toContainText("CT1 CT1");
+    await expect(page.locator('[aria-label="Redacted substitution diff"]')).toContainText("ct1_name");
+    await expect(page.locator('[data-action="install-changes"]')).toBeDisabled();
+    await expect.poll(() => {
+      const recovered = new Set(operations(frames.slice(beforeReload)));
+      return ["get_topology", "get_active_work", "get_meter_configuration", "get_ct_inventory", "subscribe_config_transaction"]
+        .every((operation) => recovered.has(operation));
+    }, { timeout: 8_000 }).toBe(true);
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled({ timeout: 8_000 });
+    await expect(page.locator(".sr-status")).toContainText("Configuration changes were installed and verified.");
+
+    expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
+    expect(operations(frames)).not.toEqual(expect.arrayContaining(["apply_ct_config", "compile_ct_config", "install_ct_config"]));
+  });
+}
+
+test("guided validation failure stays rolled back without compile or upload", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { guidedOutcome: "validation_failed" });
+  await openInventory(page);
+  await reviewChannel(page, 1);
+  await page.locator('[data-action="install-changes"]').click();
+  await expect(page.getByText("The original config was restored.", { exact: false })).toBeVisible();
+  await expect(page.locator('[data-action="install-changes"]')).toBeDisabled();
+
+  expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
+  expect(operations(frames)).not.toEqual(expect.arrayContaining(["apply_ct_config", "compile_ct_config", "install_ct_config"]));
+});
+
+test("guided compile failure survives reload and only offers rollback", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { guidedOutcome: "compile_failed" });
+  await openInventory(page);
+  await reviewChannel(page, 1);
+  await page.locator('[data-action="install-changes"]').click();
+  await expect(page.locator(".recovery-panel").first()).toContainText("compile_failed");
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.locator(".recovery-panel").first()).toContainText("compile_failed");
+  await expect(page.getByRole("button", { name: "Rollback", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Rollback", exact: true }).click();
+  await expect(page.locator(".recovery-panel")).toHaveCount(0);
+
+  expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
+  expect(operations(frames).filter((operation) => operation === "rollback_ct_config")).toHaveLength(1);
+  expect(operations(frames)).not.toEqual(expect.arrayContaining(["apply_ct_config", "compile_ct_config", "install_ct_config"]));
+});
+
+test("guided verification incomplete survives reload and rechecks without another upload", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { guidedOutcome: "verification_incomplete" });
+  await openInventory(page);
+  await reviewChannel(page, 1);
+  await page.locator('[data-action="install-changes"]').click();
+  await expect(page.locator(".recovery-panel").first()).toContainText("Uploaded; verification incomplete");
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Flash & Verify" })).toBeVisible();
+  await expect(page.locator(".recovery-panel").first()).toContainText("Uploaded; verification incomplete");
+  await page.getByRole("button", { name: "Recheck verification", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
+
+  expect(operations(frames).filter((operation) => operation === "install_meter_configuration")).toHaveLength(1);
+  expect(operations(frames).filter((operation) => operation === "recheck_meter_verification")).toHaveLength(1);
+  expect(operations(frames)).not.toEqual(expect.arrayContaining(["apply_ct_config", "compile_ct_config", "install_ct_config"]));
 });
