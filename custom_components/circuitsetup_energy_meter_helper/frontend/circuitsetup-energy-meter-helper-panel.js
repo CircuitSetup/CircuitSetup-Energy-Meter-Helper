@@ -543,6 +543,8 @@ const PHASES = /* @__PURE__ */ new Set(["A", "B", "C"]);
 const JOB_STAGES = /* @__PURE__ */ new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
 const TRANSACTION_EVIDENCE = /* @__PURE__ */ new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
 const TRANSACTION_PROGRESS = /* @__PURE__ */ new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
+const TRANSACTION_FAILURE_STAGES = /* @__PURE__ */ new Set(["validating", "building", "installing", "verifying_meter"]);
+const TRANSACTION_FAILURE_REASONS = /* @__PURE__ */ new Set(["unknown", "guided_unavailable", "missing_package", "unsupported_component_option", "required_secret", "conflicting_managed_override", "validation_rejected", "compile_rejected", "upload_failed", "verification_incomplete", "meter_communication_failed"]);
 const PREFLIGHT_CODES = /* @__PURE__ */ new Set(["count_mismatch", "invalid_kind", "invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
 const AUTHORITATIVE_EVIDENCE = /* @__PURE__ */ new Set(["config_project", "config_packages", "native_project"]);
 const CHANGE_KEY = /^(?:meter|voltage_reference|channel|aggregate|package|calibration)\.[a-z0-9_.-]+$/;
@@ -942,7 +944,7 @@ function ctInventory(value, label) {
 }
 function transaction(value, label) {
   const item = record(value, label);
-  exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ..."communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []], label);
+  exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ..."communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : [], ..."guided_install" in item ? ["guided_install"] : [], ..."failure" in item ? ["failure"] : []], label);
   string(item.transaction_id, label);
   enumeration(item.state, TRANSACTION_STATES, label);
   if (!SHA256.test(string(item.source_sha256, label))) throw new Error(`${label} response is invalid`);
@@ -982,6 +984,16 @@ function transaction(value, label) {
     if (pins.some((pin) => pin < 0 || pin > 63) || new Set(pins).size !== pins.length || pins.length && !item.evidence.includes("meter_communication_failed")) {
       throw new Error(`${label} response is invalid`);
     }
+  }
+  if ("guided_install" in item && typeof item.guided_install !== "boolean") throw new Error(`${label} response is invalid`);
+  if ("failure" in item && item.failure !== null) {
+    const failure = record(item.failure, label);
+    exactKeys(failure, ["stage", "reason_code", "context"], label);
+    if (!TRANSACTION_FAILURE_STAGES.has(string(failure.stage, label))) throw new Error(`${label} response is invalid`);
+    if (!TRANSACTION_FAILURE_REASONS.has(string(failure.reason_code, label))) throw new Error(`${label} response is invalid`);
+    array(failure.context, label, 4).forEach((entry) => {
+      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || typeof entry[1] !== "string") throw new Error(`${label} response is invalid`);
+    });
   }
   return value;
 }
@@ -1380,6 +1392,8 @@ class HelperApi {
     this.applyCtConfig = (deviceId, transactionId, sourceSha256) => this.transaction("apply_ct_config", deviceId, transactionId, sourceSha256);
     this.compileCtConfig = (deviceId, transactionId, sourceSha256) => this.transaction("compile_ct_config", deviceId, transactionId, sourceSha256);
     this.installCtConfig = (deviceId, transactionId, sourceSha256) => this.transaction("install_ct_config", deviceId, transactionId, sourceSha256);
+    this.installMeterConfiguration = (deviceId, transactionId, sourceSha256) => this.transaction("install_meter_configuration", deviceId, transactionId, sourceSha256);
+    this.recheckMeterVerification = (deviceId, transactionId, sourceSha256) => this.transaction("recheck_meter_verification", deviceId, transactionId, sourceSha256);
     this.abandonCtConfig = (deviceId, transactionId, sourceSha256) => this.transaction("abandon_ct_config", deviceId, transactionId, sourceSha256);
     this.rollbackCtConfig = (deviceId, transactionId, sourceSha256) => this.transaction("rollback_ct_config", deviceId, transactionId, sourceSha256);
     this.startSession = (deviceId) => this.call("start_session", (value) => session(value, "start_session"), { device_id: deviceId });
@@ -1533,7 +1547,7 @@ function configReview(status, configuration = null, impact = null) {
     </section>
   `;
 }
-function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "") {
+function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "", guidedInstall = false, guidedAction = null, recheck = null) {
   const state = status?.state ?? "previewed";
   const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
@@ -1545,12 +1559,15 @@ function buildInstallStep(status, apply, compile, install, rollback, back, conti
   const progressAction = waitingForStartup ? null : pendingAction === "compile" ? "Compile" : pendingAction === "install" ? "Install" : status?.upload_progress.length ? status.progress.includes("firmware_compiled") ? "Install" : "Compile" : null;
   const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
+  const guided = guidedInstall || status?.guided_install === true;
+  const stage = state === "reconnecting" ? "Verifying meter" : state === "installing" || state === "install_confirmation_required" || state === "compiled" ? "Installing" : state === "previewed" ? "Ready to install" : "Validating";
+  const failureMessage = status?.failure?.reason_code === "missing_package" ? "A required supported package is missing. Review the package selection and create a fresh review." : status?.failure?.reason_code === "unsupported_component_option" ? "The selected option is not supported by this ESPHome version. Choose a supported firmware version and review again." : status?.failure?.reason_code === "required_secret" ? "A required secret name is unresolved. Add it in ESPHome and create a fresh review." : status?.failure?.reason_code === "conflicting_managed_override" ? "A managed configuration override conflicts with the reviewed source. Restore the source or create a fresh review." : status?.failure?.reason_code === "verification_incomplete" ? "Uploaded; verification incomplete. Reconnect the meter and recheck verification." : null;
   return b`
     <section class="step-content" aria-labelledby="step-heading">
       ${configReview(status, configuration, impact)}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
-          <strong>${communicationFailure ? "Meter chip communication failed" : "Build or install needs attention"}</strong>
+          <strong>${communicationFailure ? "Meter chip communication failed" : failureMessage ?? "Build or install needs attention"}</strong>
           ${communicationFailure ? b`<p>The ESP32 reconnected, but reported that it could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is the connection between the ESP32 and the meter chip, not a Wi-Fi or Home Assistant connection problem.</p>
@@ -1561,21 +1578,29 @@ function buildInstallStep(status, apply, compile, install, rollback, back, conti
               <li>If the ESP32 model, seating, and CS assignments are correct, try another known-good ESP32 with the correct firmware.</li>
               <li>If an add-on still fails, move its CS jumper to a different unused, supported CS pin and update the configuration to match before rebuilding and installing. A fault that follows the GPIO points to the ESP32 pin or its connection; a fault that stays with the same add-on on a known-good GPIO points to that add-on board or meter chip.</li>
             </ol>
-            <p>After correcting the hardware or configuration, power up and use Retry Install. This uploads the firmware again and repeats startup verification.</p>
+            <p>After correcting the hardware or configuration, power up and use ${guided ? "Recheck verification" : "Retry Install"}. ${guided ? "This does not upload firmware again." : "This uploads the firmware again and repeats startup verification."}</p>
           ` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
+          ${guided && status?.failure?.reason_code === "verification_incomplete" ? b`<p>Firmware was uploaded, but meter verification is incomplete. Recheck verification after reconnecting; this does not upload firmware again.</p>` : ""}
+          ${guided && retryableInstall && recheck ? b`<button class="secondary" @click=${recheck} ?disabled=${busy}>Recheck verification</button>` : ""}
           ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
       ${validationFailed ? b`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>The original config was restored. Review the config changes and open ESPHome Device Builder logs for the exact validation error.</p></div>` : ""}
+      ${guided ? b`<div class="job-progress" role="status" aria-live="polite"><strong>${stage}</strong></div>` : ""}
       ${waitingForStartup ? b`<div class="job-progress" role="status" aria-live="polite">
         <span>Meter is rebooting. Waiting for startup verification.</span>
         <progress max="100" aria-label="Waiting for meter startup"></progress>
       </div>` : ""}
-      <div class="confirmation-actions">
+      ${guided ? b`<div class="confirmation-actions"><button class="primary" data-action="install-changes" @click=${guidedAction ?? install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "guided-install" ? "Installing changes…" : "Install changes"}</button></div>` : b`<div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Apply"}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Compile"}</button>
         <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : retryableInstall ? "Retry Install" : "Install"}</button>
-      </div>
+      </div>`}
+      ${guided ? b`<details class="advanced-controls"><summary>Advanced controls</summary><div class="confirmation-actions">
+        <button class="secondary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Save and validate"}</button>
+        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Build only"}</button>
+        <button class="secondary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : "Install only"}</button>
+      </div></details>` : ""}
       ${status?.validation_detail ? b`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
         <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>
@@ -3090,6 +3115,7 @@ const OFFICIAL_PROJECT_REMAINDERS = /* @__PURE__ */ new Set([
 ]);
 const REBIND_TIMEOUT_MS = 1e4;
 const REBIND_RETRY_MS = 250;
+const TRANSACTION_MARKER_PREFIX = "circuitsetup-energy-meter-helper:transaction:";
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const meterSettings = ({ authoritative: _authoritative, warnings: _warnings, ...meter }) => meter;
 const profileNominalVoltage = (system) => system === "split_phase_120_240" ? 120 : system === "single_phase_230" ? 230 : null;
@@ -3269,7 +3295,8 @@ class CircuitSetupPanel extends i$2 {
         }
         this.refreshFirmwareOptions();
       }
-      if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.firstDeviceId(this.setup.devices));
+      const recovered = await this.recoverMarkedTransaction(generation, api);
+      if (!recovered && this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.firstDeviceId(this.setup.devices));
       await this.subscribeSetup(generation, api);
       if (this.transaction) await this.subscribeTransaction(generation);
       if (this.session && this.session.state !== "cancelled") await this.subscribeSession(generation);
@@ -3673,6 +3700,68 @@ class CircuitSetupPanel extends i$2 {
     }, "Rescan failed.", () => this.ownsOperation(generation, api, deviceId));
     if (this.pendingAction === "rescan") this.pendingAction = "";
     this.requestUpdate();
+  }
+  transactionMarkerKey() {
+    const entryId = this.panel?.config.entry_id;
+    return entryId ? `${TRANSACTION_MARKER_PREFIX}${entryId}` : null;
+  }
+  rememberTransaction(transaction2, deviceId) {
+    if (!transaction2.guided_install) return;
+    const key = this.transactionMarkerKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify({ deviceId, transactionId: transaction2.transaction_id, sourceSha256: transaction2.source_sha256 }));
+    } catch {
+    }
+  }
+  forgetTransaction() {
+    const key = this.transactionMarkerKey();
+    if (!key) return;
+    try {
+      localStorage.removeItem(key);
+    } catch {
+    }
+  }
+  async recoverMarkedTransaction(generation, api) {
+    const key = this.transactionMarkerKey();
+    if (!key) return false;
+    let marker;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return false;
+      const value = JSON.parse(raw);
+      if (!value || typeof value !== "object") throw new Error("invalid marker");
+      const item = value;
+      if (typeof item.deviceId !== "string" || typeof item.transactionId !== "string" || typeof item.sourceSha256 !== "string") throw new Error("invalid marker");
+      marker = { deviceId: item.deviceId, transactionId: item.transactionId, sourceSha256: item.sourceSha256 };
+    } catch {
+      this.forgetTransaction();
+      return false;
+    }
+    if (!this.setup?.devices.some((device2) => device2.entry_id === marker.deviceId)) {
+      this.forgetTransaction();
+      return false;
+    }
+    try {
+      const result = await api.getTopology(marker.deviceId);
+      if (!this.owns(generation, api)) return false;
+      const expected = "topology" in result && result.topology ? result.topology : result;
+      const active = await api.getActiveWork(marker.deviceId, expected);
+      if (!this.owns(generation, api)) return false;
+      if (!active.transaction || active.transaction.transaction_id !== marker.transactionId || active.transaction.source_sha256 !== marker.sourceSha256) {
+        this.forgetTransaction();
+        return false;
+      }
+      this.selectDevice(marker.deviceId);
+      this.showTopologyResult(result);
+      this.transaction = active.transaction;
+      this.navigate("build");
+      await this.subscribeTransaction(generation);
+      return this.owns(generation, api);
+    } catch {
+      this.forgetTransaction();
+      return false;
+    }
   }
   async findExistingMeters() {
     if (!this.api || this.pendingAction) return;
@@ -4163,6 +4252,7 @@ class CircuitSetupPanel extends i$2 {
         }
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.transaction = transaction2;
+        this.rememberTransaction(transaction2, deviceId);
         this.navigate("build");
         await this.subscribeTransaction(this.connectionGeneration);
       },
@@ -4186,6 +4276,7 @@ class CircuitSetupPanel extends i$2 {
         (status) => {
           if (this.owns(generation, api) && scope === this.transactionSubscriptionScope && this.selectedDeviceId === deviceId && this.transaction?.transaction_id === transactionId && this.transaction.source_sha256 === sourceSha256 && status.transaction_id === transactionId && status.source_sha256 === sourceSha256) {
             this.transaction = status;
+            this.transactionStatusUpdated(status);
             this.requestUpdate();
           }
         }
@@ -4237,6 +4328,7 @@ class CircuitSetupPanel extends i$2 {
     await this.run(async () => {
       this.transaction = await api.previewMeterConfiguration(deviceId, meter.plan_id, meter.source_sha256, configuration);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.rememberTransaction(this.transaction, deviceId);
       this.navigate("build");
       await this.subscribeTransaction(this.connectionGeneration);
     }, "Circuit configuration could not be reviewed.", () => this.ownsOperation(generation, api, deviceId));
@@ -4308,7 +4400,7 @@ class CircuitSetupPanel extends i$2 {
         const args = [deviceId, current.transaction_id, current.source_sha256];
         let transaction2;
         try {
-          transaction2 = action === "apply" ? await api.applyCtConfig(...args) : action === "compile" ? await api.compileCtConfig(...args) : action === "install" ? await api.installCtConfig(...args) : await api.rollbackCtConfig(...args);
+          transaction2 = action === "apply" ? await api.applyCtConfig(...args) : action === "compile" ? await api.compileCtConfig(...args) : action === "install" ? await api.installCtConfig(...args) : action === "guided-install" ? await api.installMeterConfiguration(...args) : action === "recheck" ? await api.recheckMeterVerification(...args) : await api.rollbackCtConfig(...args);
         } catch (error) {
           if (error.code !== "stale_confirmation") throw error;
           await this.recoverCtInventory(api, deviceId, generation, this.drafts);
@@ -4316,6 +4408,7 @@ class CircuitSetupPanel extends i$2 {
         }
         if (!this.ownsOperation(generation, api, deviceId) || this.transaction?.transaction_id !== current.transaction_id || this.transaction.source_sha256 !== current.source_sha256) return;
         this.transaction = transaction2;
+        this.transactionStatusUpdated(transaction2);
         this.announcement = `Configuration ${this.transaction.state}.`;
         if (action === "apply" && transaction2.state === "validated" && this.sourcePackageOptions) {
           this.sourcePackageOptions = {
@@ -4336,7 +4429,7 @@ class CircuitSetupPanel extends i$2 {
           }
           this.sourcePackageOptions = restored;
         }
-        if (action === "install" && this.calibrationHandoff && transaction2.state === "verified" && this.session && this.topology && this.restartResult) {
+        if ((action === "install" || action === "guided-install") && this.calibrationHandoff && transaction2.state === "verified" && this.session && this.topology && this.restartResult) {
           this.restartResult = {
             ...this.restartResult,
             source_handoff_available: false,
@@ -4353,7 +4446,7 @@ class CircuitSetupPanel extends i$2 {
           if (!this.ownsOperation(generation, api, deviceId)) return;
           this.restartResult = result;
           this.finishFlow("Calibration was saved to YAML, installed, verified, and cleared from flash.");
-        } else if (action === "install" && transaction2.state === "verified") {
+        } else if ((action === "install" || action === "guided-install") && transaction2.state === "verified") {
           if (this.meterConfiguration) this.verifiedMeterConfiguration = {
             ...this.meterConfiguration,
             configuration: { ...this.meterConfiguration.configuration, multi_reference_preparation_acknowledged: false }
@@ -4412,6 +4505,17 @@ class CircuitSetupPanel extends i$2 {
       this.pendingAction = "";
       this.requestUpdate();
     }
+  }
+  transactionStatusUpdated(status) {
+    if (["verified", "failed", "rolled_back"].includes(status.state)) this.forgetTransaction();
+    if (status.state !== "verified" || !status.guided_install || this.calibrationHandoff) return;
+    if (this.meterConfiguration) this.verifiedMeterConfiguration = {
+      ...this.meterConfiguration,
+      configuration: { ...this.meterConfiguration.configuration, multi_reference_preparation_acknowledged: false }
+    };
+    this.acceptInstalledDrafts();
+    this.canonicalConfigurationChanged = false;
+    this.announcement = "Configuration changes were installed and verified. Continue to safety and calibration.";
   }
   async prepareCalibration() {
     if (!this.api || !this.selectedDeviceId || this.pendingAction) return;
@@ -4882,14 +4986,14 @@ class CircuitSetupPanel extends i$2 {
     } catch (error) {
       if (!isCurrent()) return;
       const code = error.code;
-      const message = code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
+      const message = code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "guided_install_unavailable" ? "Guided installation is unavailable. Use Advanced controls or update Device Builder." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
       this.fail(error, message);
     }
     if (isCurrent()) this.requestUpdate();
   }
   safeErrorMessage(error, fallback) {
     const code = error.code;
-    return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
+    return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "guided_install_unavailable" ? "Guided installation is unavailable. Use Advanced controls or update Device Builder." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
   }
   fail(_error, safeMessage) {
     this.error = safeMessage;
@@ -5001,7 +5105,10 @@ class CircuitSetupPanel extends i$2 {
       this.meterConfiguration ? configurationImpact(this.meterConfiguration.configuration, this.meterConfiguration.topology) : null,
       this.pendingAction === "review-back",
       this.reviewCorrection !== null,
-      this.pendingAction
+      this.pendingAction,
+      this.transaction?.guided_install === true,
+      () => void this.transactionAction("guided-install"),
+      () => void this.transactionAction("recheck")
     );
     if (this.step === "safety") return safetyStep(
       this.session,

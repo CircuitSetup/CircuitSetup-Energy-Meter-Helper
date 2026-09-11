@@ -71,6 +71,8 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}apply_ct_config",
     f"{_PREFIX}compile_ct_config",
     f"{_PREFIX}install_ct_config",
+    f"{_PREFIX}install_meter_configuration",
+    f"{_PREFIX}recheck_meter_verification",
     f"{_PREFIX}abandon_ct_config",
     f"{_PREFIX}rollback_ct_config",
     f"{_PREFIX}start_session",
@@ -103,6 +105,8 @@ _TRANSACTION_STATUS_COMMANDS = frozenset(
         "apply_ct_config",
         "compile_ct_config",
         "install_ct_config",
+        "install_meter_configuration",
+        "recheck_meter_verification",
         "abandon_ct_config",
         "rollback_ct_config",
         "subscribe_config_transaction",
@@ -200,6 +204,12 @@ class TransactionOwner(Protocol):
     async def async_confirm_install(
         self, transaction_id: str, confirmed_by_admin_user_id: str
     ) -> Any: ...
+
+    async def async_guided_install(
+        self, transaction_id: str, confirmed_by_admin_user_id: str
+    ) -> Any: ...
+
+    async def async_recheck_verification(self, transaction_id: str) -> Any: ...
 
     async def async_rollback(self, transaction_id: str) -> Any: ...
 
@@ -472,6 +482,8 @@ class EntryWebsocketController:
             "apply_ct_config",
             "compile_ct_config",
             "install_ct_config",
+            "install_meter_configuration",
+            "recheck_meter_verification",
             "abandon_ct_config",
             "rollback_ct_config",
         }:
@@ -571,6 +583,12 @@ class EntryWebsocketController:
                 result = await owner.async_confirm_install(
                     msg["transaction_id"], _admin_user_id(user_id)
                 )
+            elif operation == "install_meter_configuration":
+                result = await owner.async_guided_install(
+                    msg["transaction_id"], _admin_user_id(user_id)
+                )
+            elif operation == "recheck_meter_verification":
+                result = await owner.async_recheck_verification(msg["transaction_id"])
             elif operation == "abandon_ct_config":
                 result = await owner.async_abandon(msg["transaction_id"])
             else:
@@ -583,7 +601,14 @@ class EntryWebsocketController:
             raise ApiFailure(
                 "config_rollback_failed", "Configuration rollback requires attention"
             ) from error
-        except (KeyError, RuntimeError) as error:
+        except RuntimeError as error:
+            if operation == "install_meter_configuration":
+                raise ApiFailure(
+                    "guided_install_unavailable",
+                    "Guided installation is unavailable; use Advanced controls or update Device Builder",
+                ) from error
+            raise StaleConfirmation from error
+        except KeyError as error:
             raise StaleConfirmation from error
         return result
 
@@ -1112,6 +1137,8 @@ def _schema(command: str) -> Any:
         "apply_ct_config",
         "compile_ct_config",
         "install_ct_config",
+        "install_meter_configuration",
+        "recheck_meter_verification",
         "abandon_ct_config",
         "rollback_ct_config",
         "subscribe_config_transaction",

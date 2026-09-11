@@ -443,6 +443,42 @@ class LazyDeviceBuilder:
     ) -> Any:
         return await (await self._ready()).async_upload(configuration, progress)
 
+    async def async_prepare_review(
+        self, configuration: str, source_sha256: str, proposed_content: str
+    ) -> Any:
+        return await (await self._ready()).async_prepare_review(
+            configuration, source_sha256, proposed_content
+        )
+
+    async def async_supports_reviewed_install(self) -> bool:
+        return (await self._ready()).supports_reviewed_install
+
+    async def async_compile_review(
+        self,
+        review_id: str,
+        source_sha256: str,
+        proposed_sha256: str,
+        inputs_sha256: str,
+        progress: Callable[[Any], None] | None = None,
+    ) -> Any:
+        return await (await self._ready()).async_compile_review(
+            review_id, source_sha256, proposed_sha256, inputs_sha256, progress
+        )
+
+    async def async_upload_review(
+        self,
+        review_id: str,
+        compile_job_id: str,
+        artifact_sha256: str,
+        progress: Callable[[Any], None] | None = None,
+    ) -> Any:
+        return await (await self._ready()).async_upload_review(
+            review_id, compile_job_id, artifact_sha256, progress
+        )
+
+    async def async_release_review(self, review_id: str) -> None:
+        await (await self._ready()).async_release_review(review_id)
+
     async def async_restore_content(
         self,
         configuration: str,
@@ -922,6 +958,10 @@ class EntryWorkflow:
             False,
         )
         expected = expected_meter_entity_evidence(requested, plan.topology)
+        supports_reviewed = getattr(
+            self._require_builder(), "async_supports_reviewed_install", None
+        )
+        guided = bool(await supports_reviewed()) if supports_reviewed is not None else False
         status = await manager.async_preview(
             plan.mac,
             plan.topology,
@@ -930,6 +970,7 @@ class EntryWorkflow:
             meter_configuration=configuration,
             expected_sensor_entities=expected.sensor_entities,
             expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
+            guided=guided,
         )
         admission_source = plan.snapshot.sha256
         unsubscribe: Callable[[], None] | None = None
@@ -2150,8 +2191,14 @@ class EntryWorkflow:
                 for handle in self._sessions.values()
             ):
                 raise CalibrationBusyError(mac)
-        if self.transactions is not None and self.transactions.active_status(mac) is not None:
-            raise CalibrationBusyError(mac)
+        if self.transactions is not None:
+            transaction = self.transactions.active_status(mac)
+            if transaction is not None and (
+                getattr(transaction, "rollback_available", True)
+                or getattr(transaction, "state", None)
+                not in {"verified", "failed", "rolled_back"}
+            ):
+                raise CalibrationBusyError(mac)
 
     def _entry(self, device_id: str) -> Any:
         getter = getattr(self._hass.config_entries, "async_get_entry", None)

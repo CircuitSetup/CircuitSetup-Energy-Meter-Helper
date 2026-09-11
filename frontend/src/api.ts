@@ -59,6 +59,8 @@ const PHASES = new Set(["A", "B", "C"]);
 const JOB_STAGES = new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
 const TRANSACTION_EVIDENCE = new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
 const TRANSACTION_PROGRESS = new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
+const TRANSACTION_FAILURE_STAGES = new Set(["validating", "building", "installing", "verifying_meter"]);
+const TRANSACTION_FAILURE_REASONS = new Set(["unknown", "guided_unavailable", "missing_package", "unsupported_component_option", "required_secret", "conflicting_managed_override", "validation_rejected", "compile_rejected", "upload_failed", "verification_incomplete", "meter_communication_failed"]);
 const PREFLIGHT_CODES = new Set(["count_mismatch", "invalid_kind", "invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
 const AUTHORITATIVE_EVIDENCE = new Set(["config_project", "config_packages", "native_project"]);
 const CHANGE_KEY = /^(?:meter|voltage_reference|channel|aggregate|package|calibration)\.[a-z0-9_.-]+$/;
@@ -333,7 +335,7 @@ function ctInventory(value: unknown, label: string): CtInventory {
   return value as CtInventory;
 }
 function transaction(value: unknown, label: string): TransactionStatus {
-  const item = record(value, label); exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ...("communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : [])], label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); if (!SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`); boolean(item.rollback_available, label); if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
+  const item = record(value, label); exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ...("communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []), ...("guided_install" in item ? ["guided_install"] : []), ...("failure" in item ? ["failure"] : [])], label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); if (!SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`); boolean(item.rollback_available, label); if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
   array(item.changes, label).forEach((entry) => { const change = record(entry, label); exactKeys(change, ["key", "old_value", "new_value"], label); const key = string(change.key, label); if (!CHANGE_KEY.test(key!)) throw new Error(`${label} response is invalid`); if (change.old_value !== null) string(change.old_value, label); string(change.new_value, label); });
   array(item.evidence, label).forEach((entry) => enumeration(entry, TRANSACTION_EVIDENCE, label)); array(item.progress, label).forEach((entry) => enumeration(entry, TRANSACTION_PROGRESS, label));
   if (item.validation_detail !== null) { const detail = record(item.validation_detail, label); exactKeys(detail, ["code", "reported_error_count", "reported_warning_count", "error_record_count", "warning_record_count"], label); for (const key of ["reported_error_count", "reported_warning_count"] as const) if (detail[key] !== null) integer(detail[key], label); if (detail.code !== null) integer(detail.code, label); integer(detail.error_record_count, label); integer(detail.warning_record_count, label); }
@@ -345,6 +347,16 @@ function transaction(value: unknown, label: string): TransactionStatus {
       || (pins.length && !(item.evidence as string[]).includes("meter_communication_failed"))) {
       throw new Error(`${label} response is invalid`);
     }
+  }
+  if ("guided_install" in item && typeof item.guided_install !== "boolean") throw new Error(`${label} response is invalid`);
+  if ("failure" in item && item.failure !== null) {
+    const failure = record(item.failure, label);
+    exactKeys(failure, ["stage", "reason_code", "context"], label);
+    if (!TRANSACTION_FAILURE_STAGES.has(string(failure.stage, label)!)) throw new Error(`${label} response is invalid`);
+    if (!TRANSACTION_FAILURE_REASONS.has(string(failure.reason_code, label)!)) throw new Error(`${label} response is invalid`);
+    array(failure.context, label, 4).forEach((entry) => {
+      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || typeof entry[1] !== "string") throw new Error(`${label} response is invalid`);
+    });
   }
   return value as TransactionStatus;
 }
@@ -800,6 +812,10 @@ export class HelperApi {
     this.transaction("compile_ct_config", deviceId, transactionId, sourceSha256);
   public installCtConfig = (deviceId: string, transactionId: string, sourceSha256: string) =>
     this.transaction("install_ct_config", deviceId, transactionId, sourceSha256);
+  public installMeterConfiguration = (deviceId: string, transactionId: string, sourceSha256: string) =>
+    this.transaction("install_meter_configuration", deviceId, transactionId, sourceSha256);
+  public recheckMeterVerification = (deviceId: string, transactionId: string, sourceSha256: string) =>
+    this.transaction("recheck_meter_verification", deviceId, transactionId, sourceSha256);
   public abandonCtConfig = (deviceId: string, transactionId: string, sourceSha256: string) =>
     this.transaction("abandon_ct_config", deviceId, transactionId, sourceSha256);
   public rollbackCtConfig = (deviceId: string, transactionId: string, sourceSha256: string) =>

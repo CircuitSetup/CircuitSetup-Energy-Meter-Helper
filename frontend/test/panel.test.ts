@@ -51,6 +51,34 @@ it("shows affected SPI pins and hardware troubleshooting without allowing Contin
   expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
 });
 
+it("shows one guided install action and verification-only recovery", () => {
+  const host = document.createElement("div");
+  const install = vi.fn();
+  const recheck = vi.fn();
+  const noop = () => undefined;
+  const status = {
+    transaction_id: "tx", state: "previewed", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: false, evidence: [],
+    communication_failed_cs_pins: [], progress: [], upload_progress: [],
+    validation_detail: null, aggregate_entity_mismatch: false,
+    full_meter_configuration_verified: false, guided_install: true, failure: null,
+  } as import("../src/types").TransactionStatus;
+  render(buildInstallStep(status, noop, noop, noop, noop, noop, noop, null, null, false, false, "", true, install, recheck), host);
+  expect(host.querySelector('[data-action="install-changes"]')?.textContent).toBe("Install changes");
+  expect(host.querySelector(".advanced-controls summary")?.textContent).toBe("Advanced controls");
+  expect(host.querySelectorAll('[data-action="install-changes"]').length).toBe(1);
+  host.querySelector<HTMLButtonElement>('[data-action="install-changes"]')?.click();
+  expect(install).toHaveBeenCalledOnce();
+
+  render(buildInstallStep({ ...status, state: "install_confirmation_required", evidence: ["reconnect_unavailable"], rollback_available: true,
+    failure: { stage: "verifying_meter", reason_code: "verification_incomplete", context: [] } }, noop, noop, noop, noop, noop, noop,
+  null, null, false, false, "", true, noop, recheck), host);
+  expect(host.textContent).toContain("does not upload firmware again");
+  expect(host.querySelector("button")?.textContent).not.toBe("Retry Install");
+  [...host.querySelectorAll("button")].find((button) => button.textContent === "Recheck verification")?.click();
+  expect(recheck).toHaveBeenCalledOnce();
+});
+
 it("renders the live Install percentage", () => {
   const host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "installing", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [], progress: ["firmware_compiled"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 48 }], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;

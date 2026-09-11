@@ -599,6 +599,8 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         "apply_ct_config",
         "compile_ct_config",
         "install_ct_config",
+        "install_meter_configuration",
+        "recheck_meter_verification",
         "abandon_ct_config",
         "rollback_ct_config",
         "subscribe_config_transaction",
