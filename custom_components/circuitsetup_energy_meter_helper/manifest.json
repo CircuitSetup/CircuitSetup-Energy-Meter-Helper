@@ -14,7 +14,7 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/CircuitSetup/CircuitSetup-Energy-Meter-Helper/issues",
   "requirements": [
-    "aioesphomeapi==45.6.1",
+    "aioesphomeapi>=45.6.1,<47.0.0",
     "aiohasupervisor==0.6.0"
   ],
   "single_config_entry": true,
