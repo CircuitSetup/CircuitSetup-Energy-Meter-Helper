@@ -4695,7 +4695,7 @@ class CircuitSetupPanel extends i$2 {
         customGainCt: modelId === "custom" ? settings?.custom_gain_ct ?? channel.raw_gain_ct * channel.reporting_multiplier : void 0,
         customLabel: channel.display_label ?? settings?.custom_label ?? void 0,
         burdenAcknowledged: settings?.burden_output_acknowledged ?? (channel.selection_verified_against_config && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
-        expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518,
+        expanded: false,
         preserveExistingGain: this.configurationMode === "legacy_editable" && !channel.selection_verified_against_config && channel.raw_gain_ct > 0,
         multiplierMode: "automatic"
       }];

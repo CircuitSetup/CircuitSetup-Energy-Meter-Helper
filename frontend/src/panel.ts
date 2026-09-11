@@ -604,7 +604,7 @@ export class CircuitSetupPanel extends LitElement {
         burdenAcknowledged: settings?.burden_output_acknowledged
           ?? (channel.selection_verified_against_config
             && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
-        expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518,
+        expanded: false,
         preserveExistingGain: this.configurationMode === "legacy_editable" && !channel.selection_verified_against_config && channel.raw_gain_ct > 0,
         multiplierMode: "automatic" as const,
       }];

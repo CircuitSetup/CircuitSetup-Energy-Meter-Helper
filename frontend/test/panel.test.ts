@@ -1215,6 +1215,17 @@ describe("CircuitSetup panel", () => {
     expect((panel as unknown as { meterConfiguration: typeof configuration }).meterConfiguration.configuration.channels[0]).toMatchObject({ enabled: false, role: "unused" });
   });
 
+  it("collapses CT technical details on initial inventory render", async () => {
+    const response = meterResponse();
+    response.channels[0] = { ...response.channels[0]!, selected_model_id: null, raw_gain_ct: 27518,
+      selection_verified_against_config: false };
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    panel.showInventory(response as unknown as CtInventory);
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector<HTMLDetailsElement>("details.technical-details")?.open).toBe(false);
+  });
+
   it("reloads role, model, and multiplier from the authoritative meter configuration", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const state = panel as unknown as {
