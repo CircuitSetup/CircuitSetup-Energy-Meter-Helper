@@ -729,7 +729,13 @@ export class HelperApi {
       entry_id: this.entryId,
       ...data,
     });
-    HelperApi.assertPublicPayload(result, TRANSACTION_OPERATIONS.has(operation));
+    if (operation === "get_active_work") {
+      const { transaction: recoveredTransaction, ...envelope } = record(result, operation);
+      HelperApi.assertPublicPayload(envelope);
+      HelperApi.assertPublicPayload(recoveredTransaction, true);
+    } else {
+      HelperApi.assertPublicPayload(result, TRANSACTION_OPERATIONS.has(operation));
+    }
     return validator(result);
   }
 
