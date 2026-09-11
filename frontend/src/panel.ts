@@ -754,6 +754,15 @@ export class CircuitSetupPanel extends LitElement {
       }
       this.selectDevice(marker.deviceId);
       this.showTopologyResult(result);
+      if (active.transaction.guided_install) {
+        const [configuration, inventory] = await Promise.all([
+          api.getMeterConfiguration(marker.deviceId),
+          api.getCtInventory(marker.deviceId),
+        ]);
+        if (!this.owns(generation, api)) return false;
+        this.setMeterConfiguration(configuration);
+        this.showInventory(inventory);
+      }
       this.transaction = active.transaction;
       this.navigate("build");
       await this.subscribeTransaction(generation);
@@ -1517,7 +1526,10 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private transactionStatusUpdated(status: TransactionStatus): void {
-    if (["verified", "failed", "rolled_back"].includes(status.state)) this.forgetTransaction();
+    if (status.guided_install && status.state !== "verified" && status.state !== "rolled_back"
+      && (status.state !== "failed" || status.rollback_available) && this.selectedDeviceId) this.rememberTransaction(status, this.selectedDeviceId);
+    if (status.state === "verified" || status.state === "rolled_back"
+      || status.state === "failed" && !status.rollback_available) this.forgetTransaction();
     if (status.state !== "verified" || !status.guided_install || this.calibrationHandoff) return;
     if (this.meterConfiguration) this.verifiedMeterConfiguration = {
       ...this.meterConfiguration,

@@ -483,6 +483,11 @@ class SessionManager:
             pending.difference_update(protected_pending)
         for transaction in transactions:
             try:
+                review = getattr(transaction, "review", None)
+                release_review = getattr(transaction, "review_release", None)
+                if review is not None and release_review is not None:
+                    await release_review(review.review_id)
+                    transaction.review = None
                 release_reservation = getattr(
                     transaction, "async_release_reservation", None
                 )

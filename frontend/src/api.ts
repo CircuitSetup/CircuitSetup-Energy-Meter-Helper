@@ -70,7 +70,7 @@ const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
 const FIRMWARE_PRODUCT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const ESPHOME_VERSION = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$/;
-const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_configuration", "prepare_calibration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
+const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_configuration", "prepare_calibration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "install_meter_configuration", "recheck_meter_verification", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
 const OFFSET_CAPABILITIES = new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
@@ -335,7 +335,7 @@ function ctInventory(value: unknown, label: string): CtInventory {
   return value as CtInventory;
 }
 function transaction(value: unknown, label: string): TransactionStatus {
-  const item = record(value, label); exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ...("communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []), ...("guided_install" in item ? ["guided_install"] : []), ...("failure" in item ? ["failure"] : [])], label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); if (!SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`); boolean(item.rollback_available, label); if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
+  const item = record(value, label); exactKeys(item, ["transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ...("communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []), ...("guided_install" in item ? ["guided_install"] : []), ...("guided_running" in item ? ["guided_running"] : []), ...("guided_unavailable" in item ? ["guided_unavailable"] : []), ...("failure" in item ? ["failure"] : [])], label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); if (!SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`); boolean(item.rollback_available, label); if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
   array(item.changes, label).forEach((entry) => { const change = record(entry, label); exactKeys(change, ["key", "old_value", "new_value"], label); const key = string(change.key, label); if (!CHANGE_KEY.test(key!)) throw new Error(`${label} response is invalid`); if (change.old_value !== null) string(change.old_value, label); string(change.new_value, label); });
   array(item.evidence, label).forEach((entry) => enumeration(entry, TRANSACTION_EVIDENCE, label)); array(item.progress, label).forEach((entry) => enumeration(entry, TRANSACTION_PROGRESS, label));
   if (item.validation_detail !== null) { const detail = record(item.validation_detail, label); exactKeys(detail, ["code", "reported_error_count", "reported_warning_count", "error_record_count", "warning_record_count"], label); for (const key of ["reported_error_count", "reported_warning_count"] as const) if (detail[key] !== null) integer(detail[key], label); if (detail.code !== null) integer(detail.code, label); integer(detail.error_record_count, label); integer(detail.warning_record_count, label); }
@@ -349,6 +349,8 @@ function transaction(value: unknown, label: string): TransactionStatus {
     }
   }
   if ("guided_install" in item && typeof item.guided_install !== "boolean") throw new Error(`${label} response is invalid`);
+  if ("guided_running" in item && typeof item.guided_running !== "boolean") throw new Error(`${label} response is invalid`);
+  if ("guided_unavailable" in item && typeof item.guided_unavailable !== "boolean") throw new Error(`${label} response is invalid`);
   if ("failure" in item && item.failure !== null) {
     const failure = record(item.failure, label);
     exactKeys(failure, ["stage", "reason_code", "context"], label);
@@ -356,6 +358,7 @@ function transaction(value: unknown, label: string): TransactionStatus {
     if (!TRANSACTION_FAILURE_REASONS.has(string(failure.reason_code, label)!)) throw new Error(`${label} response is invalid`);
     array(failure.context, label, 4).forEach((entry) => {
       if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || typeof entry[1] !== "string") throw new Error(`${label} response is invalid`);
+      if (!/^[a-z_]{1,32}$/.test(entry[0]) || !/^[a-z0-9_.-]{1,64}$/.test(entry[1])) throw new Error(`${label} response is invalid`);
     });
   }
   return value as TransactionStatus;

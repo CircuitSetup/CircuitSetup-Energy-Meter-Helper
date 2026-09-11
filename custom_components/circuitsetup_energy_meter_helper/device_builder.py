@@ -120,6 +120,14 @@ class ConfigChangedError(RuntimeError):
         self.actual = actual
 
 
+class DeviceBuilderCommandError(ConnectionError):
+    """A bounded protocol error, retaining only its allowlisted code."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code if re.fullmatch(r"[a-z0-9_]{1,64}", code) else "unknown"
+        super().__init__("Device Builder command failed")
+
+
 class RollbackError(RuntimeError):
     """The original configuration could not be restored and validated."""
 
@@ -172,13 +180,6 @@ class DeviceBuilderClient:
     def server_version(self) -> AwesomeVersion | None:
         """Return the last successfully parsed Device Builder version."""
         return self._server_version
-
-    @property
-    def supports_reviewed_install(self) -> bool:
-        return self._server_version is not None and (
-            AwesomeVersion("1.14.6") <= self._server_version < AwesomeVersion("2.0.0")
-            or self._server_version >= AwesomeVersion("2026.9.0")
-        )
 
     async def async_connect(self) -> None:
         """Connect to `/ws` and perform opaque-token auth only if requested."""
@@ -553,7 +554,9 @@ class DeviceBuilderClient:
         result: dict[str, Any],
         progress: Callable[[JobProgress], None] | None = None,
     ) -> JobResult:
-        job_id = result["job_id"]
+        job_id = result.get("job_id")
+        if not isinstance(job_id, str) or not 0 < len(job_id) <= 256:
+            raise ConnectionError("Device Builder returned an invalid job")
         terminal, output = await self._async_stream_command(
             "firmware/follow_job", {"job_id": job_id}, progress
         )
@@ -568,6 +571,8 @@ class DeviceBuilderClient:
             return result
         if not isinstance(full, Mapping):
             return result
+        if full.get("job_id") != result.job_id:
+            raise ConnectionError("Device Builder returned a mismatched job")
         return replace(
             result,
             review_id=_bounded_protocol_string(full.get("review_id")),
@@ -628,7 +633,7 @@ class DeviceBuilderClient:
                     and not stream_future.done()
                 ):
                     stream_future.set_exception(
-                        ConnectionError("Device Builder command failed")
+                        DeviceBuilderCommandError(str(message.get("error_code", "unknown")))
                     )
                     continue
                 future = self._pending.get(message_id)
@@ -636,7 +641,7 @@ class DeviceBuilderClient:
                     continue
                 if "error_code" in message:
                     future.set_exception(
-                        ConnectionError("Device Builder command failed")
+                        DeviceBuilderCommandError(str(message.get("error_code", "unknown")))
                     )
                 elif "result" in message:
                     future.set_result(message["result"])

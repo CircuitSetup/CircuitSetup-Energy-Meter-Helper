@@ -27,6 +27,7 @@ from .ct_catalog import CTPresetCatalog
 from .ct_inventory import CTInventory
 from .device_builder import (
     ConfigChangedError,
+    DeviceBuilderCommandError,
     ESPHomeConfigSnapshot,
     JobProgress,
     JobProgressStage,
@@ -165,6 +166,16 @@ class TransactionFailure:
     stage: TransactionFailureStage
     reason_code: TransactionFailureReason
     context: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if len(self.context) > 4 or any(
+            not isinstance(key, str)
+            or not re.fullmatch(r"[a-z_]{1,32}", key)
+            or not isinstance(value, str)
+            or not re.fullmatch(r"[a-z0-9_.-]{1,64}", value)
+            for key, value in self.context
+        ):
+            raise ValueError("transaction failure context is not allowlisted")
 
 
 _RETRYABLE_INSTALL_EVIDENCE = {
@@ -339,6 +350,8 @@ class TransactionStatus:
     full_meter_configuration_verified: bool = False
     communication_failed_cs_pins: tuple[int, ...] = ()
     guided_install: bool = False
+    guided_running: bool = False
+    guided_unavailable: bool = False
     failure: TransactionFailure | None = None
 
 
@@ -390,10 +403,14 @@ class _ConfigTransaction:
     closed: bool = field(default=False, repr=False)
     guided_install: bool = False
     review: ReviewDescriptor | None = field(default=None, repr=False)
+    review_expires_at: float | None = field(default=None, repr=False)
+    review_release: Callable[[str], Awaitable[None]] | None = field(default=None, repr=False)
     compile_job_id: str | None = field(default=None, repr=False)
     artifact_sha256: str | None = field(default=None, repr=False)
     verification_retry_only: bool = False
     guided_task: asyncio.Task[TransactionStatus] | None = field(default=None, repr=False)
+    verification_task: asyncio.Task[TransactionStatus] | None = field(default=None, repr=False)
+    guided_unavailable: bool = False
     failure: TransactionFailure | None = field(default=None, repr=False)
 
     async def async_release_reservation(self) -> None:
@@ -428,6 +445,8 @@ class _ConfigTransaction:
         self.meter_record = None
         self._legacy_ct_selections = ()
         self.review = None
+        self.review_expires_at = None
+        self.review_release = None
         self.compile_job_id = None
         self.artifact_sha256 = None
         self.closed = True
@@ -481,16 +500,32 @@ class ConfigTransactionManager:
         self._clock = clock
         self._subscribers: dict[str, set[Callable[[TransactionStatus], None]]] = {}
         self._retained_status: dict[str, tuple[float, TransactionStatus]] = {}
+        self._retained_by_id: dict[str, tuple[float, TransactionStatus]] = {}
+        self._retained_device_by_id: dict[str, str] = {}
 
     def assert_confirmation(
         self, transaction_id: str, device_id: str, source_sha256: str
     ) -> None:
         """Require the exact live device/hash-bound server transaction."""
-        transaction = self._transaction(transaction_id)
         try:
             canonical_device_id = canonical_mac(device_id)
         except ValueError:
             raise KeyError("stale configuration transaction") from None
+        transaction = self.sessions._get_transaction(transaction_id)
+        if not isinstance(transaction, _ConfigTransaction):
+            status = self._retained_by_id.get(transaction_id)
+            if status is None or self._clock() >= status[0]:
+                self._retained_by_id.pop(transaction_id, None)
+                raise KeyError("stale configuration transaction")
+            retained = status[1]
+            if retained.source_sha256 != source_sha256:
+                raise KeyError("stale configuration transaction")
+            if self._retained_device_by_id.get(transaction_id) != canonical_device_id:
+                raise KeyError("stale configuration transaction")
+            return
+        if self._clock() >= transaction.expires_at and not self._task_owns(transaction):
+            self._expire(transaction)
+            raise KeyError("expired configuration transaction")
         if (
             transaction.mac != canonical_device_id
             or transaction.source_sha256 != source_sha256
@@ -514,6 +549,8 @@ class ConfigTransactionManager:
             if self._clock() < retained[0]:
                 return retained[1]
             self._retained_status.pop(mac, None)
+            self._retained_by_id.pop(retained[1].transaction_id, None)
+            self._retained_device_by_id.pop(retained[1].transaction_id, None)
         return None
 
     def _is_proposed_source_authorized(
@@ -551,6 +588,14 @@ class ConfigTransactionManager:
         callback: Callable[[TransactionStatus], None],
     ) -> Callable[[], None]:
         """Subscribe to safe DTO updates without retaining transaction history."""
+        transaction = self.sessions._get_transaction(transaction_id)
+        if not isinstance(transaction, _ConfigTransaction):
+            retained = self._retained_by_id.get(transaction_id)
+            if retained is None or self._clock() >= retained[0]:
+                self._retained_by_id.pop(transaction_id, None)
+                self._retained_device_by_id.pop(transaction_id, None)
+                raise KeyError("unknown configuration transaction")
+            return lambda: None
         self._transaction(transaction_id)
         subscribers = self._subscribers.setdefault(transaction_id, set())
         subscribers.add(callback)
@@ -586,6 +631,7 @@ class ConfigTransactionManager:
         expected_sensor_entities: frozenset[tuple[str, str]] = frozenset(),
         expected_aggregate_sensor_entities: frozenset[tuple[str, str]] = frozenset(),
         guided: bool = False,
+        guided_unavailable: bool = False,
     ) -> TransactionStatus:
         """Retain full content only in memory and return a safe review surface."""
         if (
@@ -655,6 +701,8 @@ class ConfigTransactionManager:
                     plan.source_sha256,
                     plan.proposed_content,
                 )
+            except DeviceBuilderCommandError:
+                raise
             except Exception as error:
                 raise RuntimeError("guided installation is unavailable") from error
             if (
@@ -665,7 +713,10 @@ class ConfigTransactionManager:
                 raise RuntimeError("guided review binding is invalid")
         transaction = _ConfigTransaction(
             uuid4().hex,
-            self._clock() + self._confirmation_ttl,
+            self._clock() + min(
+                self._confirmation_ttl,
+                review.expires_in_seconds if review is not None else self._confirmation_ttl,
+            ),
             mac,
             topology,
             plan.source_sha256,
@@ -679,9 +730,18 @@ class ConfigTransactionManager:
             _legacy_ct_selections=selections,
             meter_record=_trusted_meter_record(mac, topology, source_snapshot),
             guided_install=guided,
+            guided_unavailable=guided_unavailable,
             review=review,
         )
-        self._retained_status.pop(mac, None)
+        release_review = getattr(self._device_builder, "async_release_review", None)
+        transaction.review_release = release_review
+        if review is not None:
+            transaction.review_expires_at = self._clock() + review.expires_in_seconds
+        previous = self._retained_status.pop(mac, None)
+        if previous is not None:
+            previous_id = previous[1].transaction_id
+            self._retained_by_id.pop(previous_id, None)
+            self._retained_device_by_id.pop(previous_id, None)
         self.sessions._register_transaction(transaction.transaction_id, transaction)
         return _status(transaction)
 
@@ -873,7 +933,15 @@ class ConfigTransactionManager:
 
     def status(self, transaction_id: str) -> TransactionStatus:
         """Return only the safe DTO for a live transaction."""
-        return _status(self._transaction(transaction_id))
+        transaction = self.sessions._get_transaction(transaction_id)
+        if isinstance(transaction, _ConfigTransaction):
+            return _status(self._transaction(transaction_id))
+        retained = self._retained_by_id.get(transaction_id)
+        if retained is None or self._clock() >= retained[0]:
+            self._retained_by_id.pop(transaction_id, None)
+            self._retained_device_by_id.pop(transaction_id, None)
+            raise KeyError("unknown configuration transaction")
+        return retained[1]
 
     async def async_abandon(self, transaction_id: str) -> TransactionStatus:
         """Abandon one unconfirmed preview and scrub all retained configuration."""
@@ -889,14 +957,19 @@ class ConfigTransactionManager:
                 TransactionEvidenceCode.CANCELLED,
             )
 
-    async def _async_release_review(self, transaction: _ConfigTransaction) -> None:
+    async def _async_release_review(
+        self, transaction: _ConfigTransaction, review_id: str | None = None
+    ) -> None:
         review = transaction.review
-        release = getattr(self._device_builder, "async_release_review", None)
-        if review is None or release is None:
+        review_id = review_id or (review.review_id if review is not None else None)
+        release = transaction.review_release or getattr(
+            self._device_builder, "async_release_review", None
+        )
+        if review_id is None or release is None:
             return
         transaction.review = None
         try:
-            await release(review.review_id)
+            await release(review_id)
         except Exception:
             _LOGGER.warning("guided review release failed", exc_info=True)
 
@@ -906,6 +979,7 @@ class ConfigTransactionManager:
         """Write and validate after the first administrator confirmation."""
         _require_confirmation(confirmed_by_admin_user_id)
         transaction = self._transaction(transaction_id)
+        self._reject_guided_race(transaction)
         async with _operation(transaction):
             if transaction.state is not ConfigTransactionState.PREVIEWED:
                 raise RuntimeError(
@@ -1038,7 +1112,6 @@ class ConfigTransactionManager:
         )
         transaction.guided_task = task
         transaction.active_tasks.add(task)
-        task.add_done_callback(transaction.active_tasks.discard)
         return _status(transaction)
 
     async def _run_guided_install(
@@ -1070,8 +1143,11 @@ class ConfigTransactionManager:
                 )
             return _status(transaction)
         finally:
-            if review_id is not None and not transaction.verification_retry_only:
-                await self._async_release_review(transaction)
+            if review_id is not None:
+                await self._async_release_review(transaction, review_id)
+            if transaction.guided_task is asyncio.current_task():
+                transaction.guided_task = None
+                transaction.active_tasks.discard(asyncio.current_task())
 
     async def _claim_verified_calibration(
         self, transaction: _ConfigTransaction
@@ -1178,6 +1254,7 @@ class ConfigTransactionManager:
     async def async_compile(self, transaction_id: str) -> TransactionStatus:
         """Compile one valid edit; concurrent/replayed calls cannot claim it twice."""
         transaction = self._transaction(transaction_id)
+        self._reject_guided_race(transaction)
         async with _operation(transaction):
             return await self._compile_locked(transaction)
 
@@ -1216,9 +1293,8 @@ class ConfigTransactionManager:
             transaction.state = ConfigTransactionState.FAILED
             transaction.rollback_available = True
             _evidence(transaction, TransactionEvidenceCode.COMPILE_FAILED)
-            transaction.failure = TransactionFailure(
-                TransactionFailureStage.BUILDING,
-                TransactionFailureReason.COMPILE_REJECTED,
+            transaction.failure = _job_failure(
+                TransactionFailureStage.BUILDING, result, TransactionFailureReason.COMPILE_REJECTED
             )
             status = _status(transaction)
             self.publish_status(status)
@@ -1233,6 +1309,7 @@ class ConfigTransactionManager:
                 or result.review_id != review.review_id
                 or result.inputs_sha256 != review.inputs_sha256
                 or result.artifact_sha256 is None
+                or re.fullmatch(r"[0-9a-f]{64}", result.artifact_sha256) is None
             ):
                 transaction.state = ConfigTransactionState.FAILED
                 transaction.rollback_available = True
@@ -1258,6 +1335,7 @@ class ConfigTransactionManager:
         """Run OTA only after the second confirmation, then verify and persist."""
         _require_confirmation(confirmed_by_admin_user_id)
         transaction = self._transaction(transaction_id)
+        self._reject_guided_race(transaction)
         async with _operation(transaction):
             if (
                 transaction.state
@@ -1319,9 +1397,8 @@ class ConfigTransactionManager:
             except Exception:  # noqa: BLE001 - external transport boundary
                 result = None
             if result is None or not result.success:
-                transaction.failure = TransactionFailure(
-                    TransactionFailureStage.INSTALLING,
-                    TransactionFailureReason.UPLOAD_FAILED,
+                transaction.failure = _job_failure(
+                    TransactionFailureStage.INSTALLING, result, TransactionFailureReason.UPLOAD_FAILED
                 )
                 return self._finish(
                     transaction,
@@ -1334,6 +1411,7 @@ class ConfigTransactionManager:
                     review is None
                     or result.review_id != review.review_id
                     or result.artifact_sha256 != transaction.artifact_sha256
+                    or re.fullmatch(r"[0-9a-f]{64}", result.artifact_sha256 or "") is None
                 ):
                     transaction.failure = TransactionFailure(
                         TransactionFailureStage.INSTALLING,
@@ -1344,97 +1422,40 @@ class ConfigTransactionManager:
                         ConfigTransactionState.FAILED,
                         TransactionEvidenceCode.UPLOAD_FAILED,
                     )
+                await self._async_release_review(transaction, review.review_id)
             _progress(transaction, TransactionProgress.OTA_UPLOADED)
-            transaction.state = ConfigTransactionState.RECONNECTING
-            self.publish_status(_status(transaction))
-            error: TransactionEvidenceCode | None = None
-            deadline = self._clock() + self._reconnect_timeout
-            attempt = 0
-            try:
-                while (remaining := deadline - self._clock()) > 0:
-                    transaction.aggregate_entity_mismatch = False
-                    try:
-                        async with asyncio.timeout(remaining):
-                            verification = await self._verifier.async_verify(
-                                transaction.mac
-                            )
-                    except MeterCommunicationError as communication_error:
-                        transaction.communication_failed_cs_pins = communication_error.cs_pins
-                        return self._retain_install_retry(
-                            transaction, TransactionEvidenceCode.METER_COMMUNICATION_FAILED
-                        )
-                    except Exception:  # noqa: BLE001 - external verifier boundary
-                        error = TransactionEvidenceCode.RECONNECT_UNAVAILABLE
-                    else:
-                        error = _verify_reconnect(transaction, verification)
-                    if error is None or error not in _RETRYABLE_INSTALL_EVIDENCE:
-                        break
-                    delay = min(
-                        self._reconnect_backoff_initial * (2**attempt),
-                        5.0,
-                        max(0.0, deadline - self._clock()),
-                    )
-                    attempt += 1
-                    if delay:
-                        await asyncio.sleep(delay)
-            except asyncio.CancelledError:
-                self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.CANCELLED,
-                )
-                raise
-            if error is not None:
-                if error in _RETRYABLE_INSTALL_EVIDENCE:
-                    return self._retain_install_retry(transaction, error)
-                return self._finish(transaction, ConfigTransactionState.FAILED, error)
-            _progress(transaction, TransactionProgress.DEVICE_VERIFIED)
-            self.publish_status(_status(transaction))
-            try:
-                installed, cancelled = await self._drain_persistence_commit(
-                    transaction,
-                    self._persist_verified_metadata(transaction, plan)
-                )
-            except asyncio.CancelledError:
-                self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.CANCELLED,
-                )
-                raise
-            except Exception:  # noqa: BLE001 - external storage boundary
-                return self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.PERSISTENCE_FAILED,
-                )
-            if not installed:
-                status = self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.PERSISTENCE_FAILED,
-                )
-                if cancelled:
-                    raise asyncio.CancelledError
-                return status
-            _progress(transaction, TransactionProgress.METADATA_PERSISTED)
-            status = self._finish(transaction, ConfigTransactionState.VERIFIED)
-            if cancelled:
-                raise asyncio.CancelledError
-            return status
+            return await self._verify_existing_upload_locked(transaction)
 
     async def async_recheck_verification(self, transaction_id: str) -> TransactionStatus:
         """Retry only reconnect verification for an already uploaded guided install."""
         transaction = self._transaction(transaction_id)
+        if not transaction.guided_install or not transaction.verification_retry_only:
+            raise RuntimeError("verification recheck is not available")
+        existing = transaction.verification_task
+        if existing is not None and not existing.done():
+            return await asyncio.shield(existing)
+        task = asyncio.create_task(self._run_verification_recheck(transaction))
+        transaction.verification_task = task
+        transaction.active_tasks.add(task)
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done():
+                transaction.active_tasks.discard(task)
+                if transaction.verification_task is task:
+                    transaction.verification_task = None
+
+    async def _run_verification_recheck(
+        self, transaction: _ConfigTransaction
+    ) -> TransactionStatus:
         async with _operation(transaction):
-            if not transaction.guided_install or not transaction.verification_retry_only:
-                raise RuntimeError("verification recheck is not available")
             return await self._verify_existing_upload_locked(transaction)
 
     async def _verify_existing_upload_locked(
         self, transaction: _ConfigTransaction
     ) -> TransactionStatus:
         plan, _ = _sensitive(transaction)
+        transaction.failure = None
         transaction.aggregate_entity_mismatch = False
         transaction.communication_failed_cs_pins = ()
         transaction.state = ConfigTransactionState.RECONNECTING
@@ -1444,6 +1465,7 @@ class ConfigTransactionManager:
         attempt = 0
         try:
             while (remaining := deadline - self._clock()) > 0:
+                transaction.aggregate_entity_mismatch = False
                 try:
                     async with asyncio.timeout(remaining):
                         verification = await self._verifier.async_verify(transaction.mac)
@@ -1681,13 +1703,26 @@ class ConfigTransactionManager:
         transaction = self.sessions._get_transaction(transaction_id)
         if not isinstance(transaction, _ConfigTransaction):
             raise KeyError("unknown configuration transaction")
-        if self._clock() >= transaction.expires_at:
+        if self._clock() >= transaction.expires_at and not self._task_owns(transaction):
             self._expire(transaction)
             raise KeyError("expired configuration transaction")
         return transaction
 
+    @staticmethod
+    def _task_owns(transaction: _ConfigTransaction) -> bool:
+        task = asyncio.current_task()
+        return task is not None and task in transaction.active_tasks
+
+    @staticmethod
+    def _reject_guided_race(transaction: _ConfigTransaction) -> None:
+        task = transaction.guided_task
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            raise RuntimeError("guided installation is already running")
+
     def _refresh_deadline(self, transaction: _ConfigTransaction) -> None:
         transaction.expires_at = self._clock() + self._confirmation_ttl
+        if transaction.review_expires_at is not None:
+            transaction.expires_at = min(transaction.expires_at, transaction.review_expires_at)
 
     def _expire(self, transaction: _ConfigTransaction) -> None:
         """Refuse an expired handle and recover any uncompiled remote write."""
@@ -1695,6 +1730,7 @@ class ConfigTransactionManager:
             transaction.closed
             or transaction.expiry_cleanup_started
             or transaction.persistence_commit_started
+            or self._task_owns(transaction)
         ):
             return
         recover_write = transaction.write_started and transaction.state not in {
@@ -1733,6 +1769,7 @@ class ConfigTransactionManager:
                     _LOGGER.exception("configuration reservation release failed")
                     raise
                 finally:
+                    await self._async_release_review(transaction)
                     transaction.scrub()
                     self.sessions._remove_transaction(transaction.transaction_id)
                     self._subscribers.pop(transaction.transaction_id, None)
@@ -1742,6 +1779,20 @@ class ConfigTransactionManager:
             transaction.active_tasks.add(cleanup)
             return
         _release(transaction)
+        if transaction.review is not None:
+            async def release_then_scrub() -> None:
+                try:
+                    await self._async_release_review(transaction)
+                finally:
+                    transaction.scrub()
+                    self.sessions._remove_transaction(transaction.transaction_id)
+                    self._subscribers.pop(transaction.transaction_id, None)
+
+            transaction.expiry_cleanup_started = True
+            cleanup = asyncio.create_task(release_then_scrub())
+            transaction.active_tasks.add(cleanup)
+            cleanup.add_done_callback(transaction.active_tasks.discard)
+            return
         transaction.scrub()
         self.sessions._remove_transaction(transaction.transaction_id)
         self._subscribers.pop(transaction.transaction_id, None)
@@ -1761,10 +1812,10 @@ class ConfigTransactionManager:
         status = _status(transaction)
         self.publish_status(status)
         if transaction.guided_install:
-            self._retained_status[transaction.mac] = (
-                self._clock() + self._confirmation_ttl,
-                status,
-            )
+            expires_at = self._clock() + self._confirmation_ttl
+            self._retained_status[transaction.mac] = (expires_at, status)
+            self._retained_by_id[transaction.transaction_id] = (expires_at, status)
+            self._retained_device_by_id[transaction.transaction_id] = transaction.mac
         _release(transaction)
         transaction.scrub()
         self.sessions._remove_transaction(transaction.transaction_id)
@@ -1781,7 +1832,8 @@ async def _operation(transaction: _ConfigTransaction) -> AsyncIterator[None]:
         async with transaction.operation_lock:
             yield
     finally:
-        transaction.active_tasks.discard(task)
+        if task not in {transaction.guided_task, transaction.verification_task}:
+            transaction.active_tasks.discard(task)
 
 
 def _require_confirmation(user_id: str) -> None:
@@ -1908,6 +1960,14 @@ def _status(transaction: _ConfigTransaction) -> TransactionStatus:
         and transaction.state is ConfigTransactionState.VERIFIED,
         transaction.communication_failed_cs_pins,
         transaction.guided_install,
+        transaction.state not in {
+            ConfigTransactionState.VERIFIED,
+            ConfigTransactionState.FAILED,
+            ConfigTransactionState.ROLLED_BACK,
+        }
+        and transaction.guided_task is not None
+        and not transaction.guided_task.done(),
+        transaction.guided_unavailable,
         transaction.failure,
     )
 
@@ -1938,6 +1998,27 @@ def _upload_progress(transaction: _ConfigTransaction, progress: JobProgress) -> 
         and len(repr(transaction.upload_progress).encode()) > MAX_UPLOAD_PROGRESS_BYTES
     ):
         del transaction.upload_progress[0]
+
+
+def _job_failure(
+    stage: TransactionFailureStage,
+    result: JobResult | None,
+    fallback: TransactionFailureReason,
+) -> TransactionFailure:
+    """Classify provider failures without exposing provider text or secrets."""
+    if result is None:
+        return TransactionFailure(stage, fallback)
+    summary = result.summary.casefold()
+    markers = (
+        (TransactionFailureReason.MISSING_PACKAGE, ("package", "include")),
+        (TransactionFailureReason.UNSUPPORTED_COMPONENT_OPTION, ("unsupported", "option")),
+        (TransactionFailureReason.REQUIRED_SECRET, ("secret", "credential")),
+        (TransactionFailureReason.CONFLICTING_MANAGED_OVERRIDE, ("managed", "override")),
+    )
+    for reason, words in markers:
+        if all(word in summary for word in words):
+            return TransactionFailure(stage, reason)
+    return TransactionFailure(stage, fallback)
 
 
 _DIAGNOSTIC_RECORD = re.compile(

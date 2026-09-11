@@ -466,6 +466,11 @@ class EntryWebsocketController:
                 raise ApiFailure(
                     "meter_configuration_invalid", "The meter configuration is invalid"
                 ) from error
+            except WorkflowCapabilityUnavailable as error:
+                raise ApiFailure(
+                    "guided_install_unavailable",
+                    "Guided review could not be prepared; refresh and create a fresh review",
+                ) from error
         if operation == "prepare_calibration" and workflow is not None:
             try:
                 return await workflow.async_prepare_calibration(msg["device_id"])

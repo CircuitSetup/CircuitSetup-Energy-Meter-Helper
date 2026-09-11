@@ -21,6 +21,7 @@ export function buildInstallStep(
 ): TemplateResult {
   const state = status?.state ?? "previewed";
   const busy = Boolean(pendingAction);
+  const guidedRunning = status?.guided_running === true;
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
     ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
@@ -36,11 +37,12 @@ export function buildInstallStep(
   const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
   const guided = guidedInstall || status?.guided_install === true;
-  const stage = state === "reconnecting" ? "Verifying meter" : state === "installing" || state === "install_confirmation_required" || state === "compiled" ? "Installing" : state === "previewed" ? "Ready to install" : "Validating";
+  const stage = status?.failure?.stage === "verifying_meter" || state === "reconnecting" || state === "verified" ? "Verifying meter" : status?.failure?.stage === "installing" || state === "installing" || state === "install_confirmation_required" || state === "compiled" ? "Installing" : status?.failure?.stage === "building" || state === "validated" ? "Building" : "Validating";
   const failureMessage = status?.failure?.reason_code === "missing_package" ? "A required supported package is missing. Review the package selection and create a fresh review." : status?.failure?.reason_code === "unsupported_component_option" ? "The selected option is not supported by this ESPHome version. Choose a supported firmware version and review again." : status?.failure?.reason_code === "required_secret" ? "A required secret name is unresolved. Add it in ESPHome and create a fresh review." : status?.failure?.reason_code === "conflicting_managed_override" ? "A managed configuration override conflicts with the reviewed source. Restore the source or create a fresh review." : status?.failure?.reason_code === "verification_incomplete" ? "Uploaded; verification incomplete. Reconnect the meter and recheck verification." : null;
   return html`
     <section class="step-content" aria-labelledby="step-heading">
       ${configReview(status, configuration, impact)}
+      ${status?.guided_unavailable ? html`<p class="info-band" role="status">One-click installation is unavailable in this Device Builder. Use Advanced controls to review, build, and install.</p>` : ""}
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
           <strong>${communicationFailure ? "Meter chip communication failed" : failureMessage ?? "Build or install needs attention"}</strong>
@@ -67,15 +69,15 @@ export function buildInstallStep(
         <span>Meter is rebooting. Waiting for startup verification.</span>
         <progress max="100" aria-label="Waiting for meter startup"></progress>
       </div>` : ""}
-      ${guided ? html`<div class="confirmation-actions"><button class="primary" data-action="install-changes" @click=${guidedAction ?? install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "guided-install" ? "Installing changes…" : "Install changes"}</button></div>` : html`<div class="confirmation-actions">
+      ${guided ? html`<div class="confirmation-actions"><p>Install changes writes the reviewed configuration to the selected meter, builds firmware, uploads it, and reboots the meter.</p><button class="primary" data-action="install-changes" @click=${guidedAction ?? install} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "guided-install" || guidedRunning ? "Installing changes…" : "Install changes"}</button></div>` : html`<div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Apply"}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Compile"}</button>
         <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : retryableInstall ? "Retry Install" : "Install"}</button>
       </div>`}
       ${guided ? html`<details class="advanced-controls"><summary>Advanced controls</summary><div class="confirmation-actions">
-        <button class="secondary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Save and validate"}</button>
-        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Build only"}</button>
-        <button class="secondary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : "Install only"}</button>
+        <button class="secondary" @click=${apply} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Save and validate"}</button>
+        <button class="secondary" @click=${compile} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Build only"}</button>
+        <button class="secondary" @click=${install} ?disabled=${busy || guidedRunning || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : "Install only"}</button>
       </div></details>` : ""}
       ${status?.validation_detail ? html`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>

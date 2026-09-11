@@ -65,6 +65,8 @@ it("shows one guided install action and verification-only recovery", () => {
   } as import("../src/types").TransactionStatus;
   render(buildInstallStep(status, noop, noop, noop, noop, noop, noop, null, null, false, false, "", true, install, recheck), host);
   expect(host.querySelector('[data-action="install-changes"]')?.textContent).toBe("Install changes");
+  expect(host.textContent).toContain("writes the reviewed configuration");
+  expect(host.textContent).toContain("uploads it, and reboots");
   expect(host.querySelector(".advanced-controls summary")?.textContent).toBe("Advanced controls");
   expect(host.querySelectorAll('[data-action="install-changes"]').length).toBe(1);
   host.querySelector<HTMLButtonElement>('[data-action="install-changes"]')?.click();
@@ -77,6 +79,14 @@ it("shows one guided install action and verification-only recovery", () => {
   expect(host.querySelector("button")?.textContent).not.toBe("Retry Install");
   [...host.querySelectorAll("button")].find((button) => button.textContent === "Recheck verification")?.click();
   expect(recheck).toHaveBeenCalledOnce();
+
+  render(buildInstallStep({ ...status, state: "validated" }, noop, noop, noop, noop, noop, noop,
+    null, null, false, false, "", true, noop, recheck), host);
+  expect(host.textContent).toContain("Building");
+
+  render(buildInstallStep({ ...status, guided_running: true }, noop, noop, noop, noop, noop, noop,
+    null, null, false, false, "", true, install, recheck), host);
+  expect(host.querySelector<HTMLButtonElement>('[data-action="install-changes"]')?.disabled).toBe(true);
 });
 
 it("renders the live Install percentage", () => {

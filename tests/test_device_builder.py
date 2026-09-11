@@ -9,6 +9,7 @@ from awesomeversion import AwesomeVersion
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ConfigChangedError,
     DeviceBuilderClient,
+    DeviceBuilderCommandError,
     ESPHomeConfigSnapshot,
     JobProgress,
     JobProgressStage,
@@ -354,6 +355,25 @@ def test_command_result_is_correlated() -> None:
         await ws.send_result("1", {"first": True})
         assert await first == {"first": True}
         assert await second == {"second": True}
+        await client.async_disconnect()
+
+    asyncio.run(run())
+
+
+def test_protocol_error_preserves_only_the_bounded_error_code() -> None:
+    async def run() -> None:
+        client, ws = await connected_client()
+        request = asyncio.create_task(client.async_command("firmware/prepare_review", {}))
+        await asyncio.sleep(0)
+        await ws._received.put({
+            "message_id": "1",
+            "error_code": "unknown_command",
+            "details": "secret provider text",
+        })
+        with pytest.raises(DeviceBuilderCommandError) as error:
+            await request
+        assert error.value.code == "unknown_command"
+        assert "secret provider text" not in str(error.value)
         await client.async_disconnect()
 
     asyncio.run(run())

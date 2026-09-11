@@ -57,6 +57,7 @@ from .ct_catalog import REPORTING_MULTIPLIERS, CTPresetCatalog
 from .ct_inventory import CTInventory
 from .device_builder import (
     DeviceBuilderClient,
+    DeviceBuilderCommandError,
     ESPHomeConfigSnapshot,
     _wait_for_owned_cleanup,
 )
@@ -449,9 +450,6 @@ class LazyDeviceBuilder:
         return await (await self._ready()).async_prepare_review(
             configuration, source_sha256, proposed_content
         )
-
-    async def async_supports_reviewed_install(self) -> bool:
-        return (await self._ready()).supports_reviewed_install
 
     async def async_compile_review(
         self,
@@ -851,7 +849,7 @@ class EntryWorkflow:
                 power_quality=options["power_quality"],
                 status_fields=options["status_fields"],
             )
-        return await self._async_preview_meter_configuration(plan, requested)
+        return await self._async_preview_meter_configuration(plan, requested, guided=False)
 
     async def async_preview_meter_configuration(
         self,
@@ -916,7 +914,7 @@ class EntryWorkflow:
         return status
 
     async def _async_preview_meter_configuration(
-        self, plan: _PlanHandle, requested: MeterConfigurationRequest
+        self, plan: _PlanHandle, requested: MeterConfigurationRequest, *, guided: bool = True
     ) -> Any:
         manager = self.transactions
         if manager is None:
@@ -958,20 +956,44 @@ class EntryWorkflow:
             False,
         )
         expected = expected_meter_entity_evidence(requested, plan.topology)
-        supports_reviewed = getattr(
-            self._require_builder(), "async_supports_reviewed_install", None
-        )
-        guided = bool(await supports_reviewed()) if supports_reviewed is not None else False
-        status = await manager.async_preview(
-            plan.mac,
-            plan.topology,
-            mutation,
-            plan.snapshot,
-            meter_configuration=configuration,
-            expected_sensor_entities=expected.sensor_entities,
-            expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
-            guided=guided,
-        )
+        if not guided:
+            status = await manager.async_preview(
+                plan.mac,
+                plan.topology,
+                mutation,
+                plan.snapshot,
+                meter_configuration=configuration,
+                expected_sensor_entities=expected.sensor_entities,
+                expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
+            )
+        else:
+            try:
+                status = await manager.async_preview(
+                    plan.mac,
+                    plan.topology,
+                    mutation,
+                    plan.snapshot,
+                    meter_configuration=configuration,
+                    expected_sensor_entities=expected.sensor_entities,
+                    expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
+                    guided=True,
+                )
+            except DeviceBuilderCommandError as error:
+                if error.code != "unknown_command":
+                    raise WorkflowCapabilityUnavailable(
+                        "Device Builder could not prepare a fresh reviewed install"
+                    ) from error
+                # The command itself is the capability probe; keep the advanced path usable.
+                status = await manager.async_preview(
+                    plan.mac,
+                    plan.topology,
+                    mutation,
+                    plan.snapshot,
+                    meter_configuration=configuration,
+                    expected_sensor_entities=expected.sensor_entities,
+                    expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
+                    guided_unavailable=True,
+                )
         admission_source = plan.snapshot.sha256
         unsubscribe: Callable[[], None] | None = None
 

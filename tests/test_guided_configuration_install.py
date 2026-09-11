@@ -1,11 +1,13 @@
 import asyncio
 from hashlib import sha256
 
+import pytest
 import test_config_transaction as transaction_tests
 
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
     ConfigTransactionManager,
     ConfigTransactionState,
+    TransactionStatus,
 )
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     JobResult,
@@ -14,6 +16,63 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
 from custom_components.circuitsetup_energy_meter_helper.log_parser import (
     MeterCommunicationError,
 )
+
+
+class ReviewedFailureBuilder(transaction_tests.Builder):
+    def __init__(self, compile_result: JobResult, upload_result: JobResult) -> None:
+        super().__init__()
+        self.compile_result = compile_result
+        self.upload_result = upload_result
+        self.releases: list[str] = []
+
+    async def async_prepare_review(self, configuration: str, source_sha256: str, proposed_content: str) -> ReviewDescriptor:
+        return ReviewDescriptor("review-1", source_sha256, sha256(proposed_content.encode()).hexdigest(), "i" * 64, "2026.9.0", 900)
+
+    async def async_compile_review(self, *args: object, **kwargs: object) -> JobResult:
+        del args, kwargs
+        self.calls.append("compile_review")
+        return self.compile_result
+
+    async def async_upload_review(self, *args: object, **kwargs: object) -> JobResult:
+        del args, kwargs
+        self.calls.append("upload_review")
+        return self.upload_result
+
+    async def async_release_review(self, review_id: str) -> None:
+        self.releases.append(review_id)
+
+
+async def _guided_preview(builder: transaction_tests.Builder) -> tuple[ConfigTransactionManager, TransactionStatus]:
+    plan = transaction_tests._managed_entity_plan()
+    configuration = transaction_tests._meter_configuration(plan)
+    manager = transaction_tests._manager(
+        builder,
+        transaction_tests.Persistence(),
+        evidence=transaction_tests.ReconnectEvidence(
+            "aabbccddeeff",
+            transaction_tests._topology(),
+            {channel.channel: channel.name for channel in configuration.channels},
+            6,
+            transaction_tests.expected_meter_entity_evidence(
+                transaction_tests.MeterConfigurationRequest(
+                    configuration.meter,
+                    configuration.channels,
+                    configuration.aggregates,
+                    configuration.power_quality,
+                    configuration.status_fields,
+                ),
+                transaction_tests._topology(),
+            ).sensor_entities,
+        ),
+    )
+    return manager, await manager.async_preview(
+        "aabbccddeeff",
+        transaction_tests._topology(),
+        plan,
+        transaction_tests._source(),
+        meter_configuration=configuration,
+        guided=True,
+    )
 
 
 def test_manager_exposes_guided_install_for_ordinary_configuration() -> None:
@@ -86,6 +145,38 @@ def test_guided_install_uses_one_reviewed_compile_and_upload() -> None:
         assert task is not None
         assert (await task).state is ConfigTransactionState.VERIFIED
         assert builder.calls == ["write", "validate", "compile_review", "upload_review"]
+        assert manager.status(preview.transaction_id).state is ConfigTransactionState.VERIFIED
+        manager.assert_confirmation(preview.transaction_id, "aabbccddeeff", preview.source_sha256)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("compile_result", "upload_result", "calls", "reason"),
+    (
+        (JobResult(False, 1, "missing package include", (), "compile-1"), JobResult(True, 0, "", (), "upload-1", None, None, "review-1", "i" * 64, "a" * 64), ["compile_review"], "missing_package"),
+        (JobResult(True, 0, "", (), "compile-1", None, None, "review-1", "i" * 64, "a" * 64), JobResult(False, 1, "upload rejected", (), "upload-1"), ["compile_review", "upload_review"], "upload_failed"),
+    ),
+)
+def test_guided_failures_stop_at_the_failed_stage_and_release_review(
+    compile_result: JobResult,
+    upload_result: JobResult,
+    calls: list[str],
+    reason: str,
+) -> None:
+    async def run() -> None:
+        builder = ReviewedFailureBuilder(compile_result, upload_result)
+        manager, preview = await _guided_preview(builder)
+        await manager.async_guided_install(preview.transaction_id, "admin")
+        task = manager._transaction(preview.transaction_id).guided_task
+        assert task is not None
+        status = await task
+        assert status.state is ConfigTransactionState.FAILED
+        assert status.failure is not None and status.failure.reason_code.value == reason
+        assert builder.calls[-len(calls):] == calls
+        if reason == "missing_package":
+            assert "upload_review" not in builder.calls
+        assert builder.releases == ["review-1"]
 
     asyncio.run(run())
 
