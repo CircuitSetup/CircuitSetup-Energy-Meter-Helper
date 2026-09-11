@@ -154,7 +154,7 @@ def test_guided_install_uses_one_reviewed_compile_and_upload() -> None:
 @pytest.mark.parametrize(
     ("compile_result", "upload_result", "calls", "reason"),
     (
-        (JobResult(False, 1, "missing package include", (), "compile-1"), JobResult(True, 0, "", (), "upload-1", None, None, "review-1", "i" * 64, "a" * 64), ["compile_review"], "missing_package"),
+        (JobResult(False, 1, "", ("Software/ESPHome/power_quality/6chan_main_power_quality.yaml does not exist in repository",), "compile-1"), JobResult(True, 0, "", (), "upload-1", None, None, "review-1", "i" * 64, "a" * 64), ["compile_review"], "missing_package"),
         (JobResult(True, 0, "", (), "compile-1", None, None, "review-1", "i" * 64, "a" * 64), JobResult(False, 1, "upload rejected", (), "upload-1"), ["compile_review", "upload_review"], "upload_failed"),
     ),
 )

@@ -20,7 +20,7 @@ export function buildInstallStep(
   recheck: (() => void) | null = null,
 ): TemplateResult {
   const state = status?.state ?? "previewed";
-  const busy = Boolean(pendingAction);
+  const busy = Boolean(pendingAction) || status?.guided_running === true;
   const guidedRunning = status?.guided_running === true;
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
     ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
@@ -64,6 +64,10 @@ export function buildInstallStep(
         </div>
       ` : ""}
       ${validationFailed ? html`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>The original config was restored. Review the config changes and open ESPHome Device Builder logs for the exact validation error.</p></div>` : ""}
+      ${status?.failure ? html`<div class="recovery-panel" role="status">
+        ${failureMessage ? html`<p>${failureMessage}</p>` : html`<p>Open ESPHome Device Builder details for the failed operation.</p>`}
+        ${status.failure.context.map(([key, value]) => html`<p>${key === "secret_name" ? "Required secret" : key === "component" ? "Component" : key === "field" ? "Option" : "Package"}: <code>${value}</code></p>`)}
+      </div>` : ""}
       ${guided ? html`<div class="job-progress" role="status" aria-live="polite"><strong>${stage}</strong></div>` : ""}
       ${waitingForStartup ? html`<div class="job-progress" role="status" aria-live="polite">
         <span>Meter is rebooting. Waiting for startup verification.</span>

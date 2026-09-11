@@ -995,7 +995,9 @@ function transaction(value, label) {
     if (!TRANSACTION_FAILURE_REASONS.has(string(failure.reason_code, label))) throw new Error(`${label} response is invalid`);
     array(failure.context, label, 4).forEach((entry) => {
       if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || typeof entry[1] !== "string") throw new Error(`${label} response is invalid`);
-      if (!/^[a-z_]{1,32}$/.test(entry[0]) || !/^[a-z0-9_.-]{1,64}$/.test(entry[1])) throw new Error(`${label} response is invalid`);
+      const [key, value2] = entry;
+      const allowed = key === "secret_name" && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(value2) || key === "component" && value2 === "sensor.atm90e32" || key === "package" && ["power_quality", "status_fields"].includes(value2) || key === "field" && ["current", "power", "voltage", "reactive_power", "apparent_power", "power_factor", "phase_angle", "harmonic_power", "peak_current", "phase_status", "frequency_status", "update_interval"].includes(value2);
+      if (!allowed) throw new Error(`${label} response is invalid`);
     });
   }
   return value;
@@ -1552,7 +1554,7 @@ function configReview(status, configuration = null, impact = null) {
 }
 function buildInstallStep(status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "", guidedInstall = false, guidedAction = null, recheck = null) {
   const state = status?.state ?? "previewed";
-  const busy = Boolean(pendingAction);
+  const busy = Boolean(pendingAction) || status?.guided_running === true;
   const guidedRunning = status?.guided_running === true;
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
@@ -1591,6 +1593,10 @@ function buildInstallStep(status, apply, compile, install, rollback, back, conti
         </div>
       ` : ""}
       ${validationFailed ? b`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>The original config was restored. Review the config changes and open ESPHome Device Builder logs for the exact validation error.</p></div>` : ""}
+      ${status?.failure ? b`<div class="recovery-panel" role="status">
+        ${failureMessage ? b`<p>${failureMessage}</p>` : b`<p>Open ESPHome Device Builder details for the failed operation.</p>`}
+        ${status.failure.context.map(([key, value]) => b`<p>${key === "secret_name" ? "Required secret" : key === "component" ? "Component" : key === "field" ? "Option" : "Package"}: <code>${value}</code></p>`)}
+      </div>` : ""}
       ${guided ? b`<div class="job-progress" role="status" aria-live="polite"><strong>${stage}</strong></div>` : ""}
       ${waitingForStartup ? b`<div class="job-progress" role="status" aria-live="polite">
         <span>Meter is rebooting. Waiting for startup verification.</span>

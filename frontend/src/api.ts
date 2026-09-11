@@ -358,7 +358,12 @@ function transaction(value: unknown, label: string): TransactionStatus {
     if (!TRANSACTION_FAILURE_REASONS.has(string(failure.reason_code, label)!)) throw new Error(`${label} response is invalid`);
     array(failure.context, label, 4).forEach((entry) => {
       if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || typeof entry[1] !== "string") throw new Error(`${label} response is invalid`);
-      if (!/^[a-z_]{1,32}$/.test(entry[0]) || !/^[a-z0-9_.-]{1,64}$/.test(entry[1])) throw new Error(`${label} response is invalid`);
+      const [key, value] = entry;
+      const allowed = key === "secret_name" && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(value)
+        || key === "component" && value === "sensor.atm90e32"
+        || key === "package" && ["power_quality", "status_fields"].includes(value)
+        || key === "field" && ["current", "power", "voltage", "reactive_power", "apparent_power", "power_factor", "phase_angle", "harmonic_power", "peak_current", "phase_status", "frequency_status", "update_interval"].includes(value);
+      if (!allowed) throw new Error(`${label} response is invalid`);
     });
   }
   return value as TransactionStatus;
