@@ -14,10 +14,12 @@ from enum import Enum
 from functools import wraps
 from typing import Any, Protocol
 
+# isort: off
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant
 import voluptuous as vol
+# isort: on
 
 from .config_mutator import ConfigMutationError
 from .config_transaction import RollbackFailedError

@@ -13,6 +13,7 @@ from threading import get_ident
 from types import SimpleNamespace
 from typing import Any
 
+# isort: off
 import pytest
 from aioesphomeapi import ButtonInfo as ApiButtonInfo
 from aioesphomeapi import NumberInfo as ApiNumberInfo
@@ -23,6 +24,7 @@ from homeassistant.components.hassio.const import DATA_COMPONENT
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.exceptions import ConfigEntryNotReady, Unauthorized
 import voluptuous as vol
+# isort: on
 
 from custom_components.circuitsetup_energy_meter_helper import (
     async_setup_entry,

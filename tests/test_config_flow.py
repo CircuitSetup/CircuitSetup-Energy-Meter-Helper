@@ -4,10 +4,12 @@ import asyncio
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+# isort: off
 import pytest
 from aiohasupervisor import SupervisorError
 from homeassistant.data_entry_flow import FlowResultType
 import voluptuous as vol
+# isort: on
 
 from custom_components.circuitsetup_energy_meter_helper import config_flow
 from custom_components.circuitsetup_energy_meter_helper.config_flow import ConfigFlow

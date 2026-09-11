@@ -14,6 +14,7 @@ from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
 
+# isort: off
 from aiohttp import web
 
 from custom_components.circuitsetup_energy_meter_helper.config_document import (
@@ -60,6 +61,7 @@ from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
 )
 from custom_components.circuitsetup_energy_meter_helper.workflow import EntryWorkflow
 import voluptuous as vol
+# isort: on
 from tests.test_config_transaction import Builder, Job, Verifier, _evidence
 from tests.test_meter_inventory import _document, _inventory
 from tests.test_store import _CopyingStorage, _record
