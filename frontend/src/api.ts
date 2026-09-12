@@ -1,6 +1,7 @@
 import type {
   ActiveWork,
   BoardPackageOptions,
+  CalibrationPreparationCapability,
   CalibrationResult,
   ConnectionType,
   ConfigurationImpact,
@@ -8,6 +9,8 @@ import type {
   CtInventory,
   LabelUpdateResult,
   DiscoveredDevice,
+  ExistingDeviceCandidate,
+  ExistingMeterInspection,
   MeterTopology,
   MeterConfiguration,
   MeterConfigurationRequest,
@@ -20,6 +23,8 @@ import type {
   OffsetFinalizationPreview,
   OffsetReadinessResult,
   OffsetTable,
+  PackageCapability,
+  TopologyResult,
   RestartVerificationResult,
   SessionStatus,
   SetupSnapshot,
@@ -42,6 +47,8 @@ export interface HomeAssistant {
 const PREFIX = "circuitsetup_energy_meter_helper/";
 const PRIVATE_FIELD = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
 const SECRET_VALUE = /(?:api[_ -]?key|password|secret|ssid|token)\s*[:=]/i;
+const DIFF_SECRET_VALUE = /(?:authorization|cookie|ssid)\s*[:=]|[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/i;
+const SAFE_REDACTED_DIFF_LINE = /^[ +\-]?\s*(?:[^:\r\n]+:\s*)?\[redacted\]\s*$/i;
 const CONTROL = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const PROPERTY_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const SETUP_STATES = new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]);
@@ -59,20 +66,26 @@ const PHASES = new Set(["A", "B", "C"]);
 const JOB_STAGES = new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
 const TRANSACTION_EVIDENCE = new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
 const TRANSACTION_PROGRESS = new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
+const TRANSACTION_FAILURE_STAGES = new Set(["validating", "building", "installing", "verifying_meter"]);
+const TRANSACTION_FAILURE_REASONS = new Set(["unknown", "missing_package", "unsupported_component_option", "required_secret", "conflicting_managed_override", "validation_rejected", "compile_rejected", "upload_failed", "verification_incomplete", "meter_communication_failed"]);
 const PREFLIGHT_CODES = new Set(["count_mismatch", "invalid_kind", "invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
 const AUTHORITATIVE_EVIDENCE = new Set(["config_project", "config_packages", "native_project"]);
-const CHANGE_KEY = /^(?:meter|voltage_reference|channel|aggregate|package)\.[a-z0-9_.-]+$/;
+const CHANGE_KEY = /^(?:meter|voltage_reference|channel|aggregate|package|calibration)\.[a-z0-9_.-]+$/;
 const MAC = /^[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
 const FIRMWARE_PRODUCT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const ESPHOME_VERSION = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$/;
-const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_configuration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
+const TRANSACTION_OPERATIONS = new Set(["preview_ct_config", "preview_meter_configuration", "prepare_calibration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
 const OFFSET_CAPABILITIES = new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
 const OFFSET_RESULT_STATES = new Set(["applied_pending_restart_verification", "captured_pending_configuration", "partial", "indeterminate"]);
+const PACKAGE_CAPABILITY_STATES = new Set(["already_present", "available_to_prepare", "cannot_safely_manage"]);
+const PACKAGE_CAPABILITY_REASONS = new Set(["official_package_present", "official_source_ready", "unsupported_package_source", "ambiguous_package_source", "package_source_unavailable", "duplicate_package_reference"]);
+const CALIBRATION_PREPARATION_REASONS = new Set(["calibration_package_present", "calibration_source_ready", "calibration_flag_unavailable", "calibration_flag_invalid", "unsupported_package_source", "ambiguous_package_source", "package_source_unavailable", "duplicate_package_reference"]);
+const PACKAGE_FEATURES = new Set(["power_quality", "status_fields"]);
 
 type PublicRecord = Record<string, unknown>;
 type Validator<T> = (value: unknown) => T;
@@ -136,6 +149,15 @@ function device(value: unknown, label: string): void {
   string(item.entry_id, label); string(item.title, label); string(item.project_name, label);
   string(item.project_version, label, true); boolean(item.importable, label, true); string(item.configuration, label, true);
 }
+function existingDevice(value: unknown, label: string): ExistingDeviceCandidate {
+  const item = record(value, label);
+  exactKeys(item, ["entry_id", "title", "project_name", "project_version", "compatibility"], label);
+  string(item.entry_id, label); string(item.title, label); string(item.project_name, label, true);
+  string(item.project_version, label, true);
+  const compatibility = array(item.compatibility, label, 8).map((entry) => string(entry, label)!);
+  return { entry_id: item.entry_id as string, title: item.title as string, project_name: item.project_name as string | null,
+    project_version: item.project_version as string | null, compatibility };
+}
 function setup(value: unknown, label: string): SetupSnapshot {
   const item = record(value, label); enumeration(item.state, SETUP_STATES, label);
   array(item.devices, label).forEach((entry) => device(entry, label));
@@ -165,7 +187,7 @@ function setup(value: unknown, label: string): SetupSnapshot {
   }
   return value as SetupSnapshot;
 }
-function topology(value: unknown, label: string): MeterTopology {
+function topology(value: unknown, label: string, inspection = false): MeterTopology {
   const item = record(value, label);
   exactKeys(item, ["addon_count", "board_count", "ct_count", "group_count", "connection_type", "voltage_layout", "project_name", "evidence"], label);
   const addonCount = integer(item.addon_count, label);
@@ -183,18 +205,59 @@ function topology(value: unknown, label: string): MeterTopology {
   const evidenceItems = array(item.evidence, label);
   if (evidenceItems.length < 1 || evidenceItems.length > EVIDENCE_SOURCES.size) throw new Error(`${label} response is invalid`);
   const sources = evidenceItems.map((entry) => { const evidence = record(entry, label); exactKeys(evidence, ["source", "addon_count", "detail"], label); const source = enumeration(evidence.source, EVIDENCE_SOURCES, label); const evidenceAddons = integer(evidence.addon_count, label); if (evidenceAddons < 0 || evidenceAddons > 6) throw new Error(`${label} response is invalid`); string(evidence.detail, label); return source; });
-  if (new Set(sources).size !== sources.length || !sources.some((source) => AUTHORITATIVE_EVIDENCE.has(source))) throw new Error(`${label} response is invalid`);
+  if (new Set(sources).size !== sources.length || !sources.some((source) => AUTHORITATIVE_EVIDENCE.has(source) || inspection && source === "native_entity_counts")) throw new Error(`${label} response is invalid`);
   return value as MeterTopology;
 }
-function topologyResponse(value: unknown, label: string): MeterTopology | { topology: MeterTopology } {
+function topologyResponse(value: unknown, label: string): MeterTopology | TopologyResult {
   const item = record(value, label);
   if ("topology" in item) {
     const parsed = topology(item.topology, label);
     if (item.configuration_authoritative !== undefined) boolean(item.configuration_authoritative, label);
     if (item.package_options !== undefined) packageOptions(item.package_options, label, parsed.board_count);
-    return value as { topology: MeterTopology };
+    if (item.package_capabilities !== undefined
+      && packageCapabilities(item.package_capabilities, label, parsed.board_count).length !== parsed.board_count * 2) {
+      throw new Error(`${label} response is invalid`);
+    }
+    if (item.calibration_preparation !== undefined) calibrationPreparation(item.calibration_preparation, label);
+    return value as TopologyResult;
   }
   return topology(value, label);
+}
+function packageCapabilities(value: unknown, label: string, boardCount: number): PackageCapability[] {
+  return array(value, label, 14).map((entry) => {
+    const item = record(entry, label);
+    exactKeys(item, ["feature", "board_index", "state", "reason_code"], label);
+    const feature = string(item.feature, label)!;
+    const board = integer(item.board_index, label);
+    if (!PACKAGE_FEATURES.has(feature) || board < 0 || board >= boardCount) throw new Error(`${label} response is invalid`);
+    const state = enumeration(item.state, PACKAGE_CAPABILITY_STATES, label);
+    const reason = string(item.reason_code, label)!;
+    if (!PACKAGE_CAPABILITY_REASONS.has(reason)) throw new Error(`${label} response is invalid`);
+    return { feature, board_index: board, state, reason_code: reason } as PackageCapability;
+  });
+}
+function calibrationPreparation(value: unknown, label: string): CalibrationPreparationCapability {
+  const item = record(value, label);
+  exactKeys(item, ["state", "reason_code"], label);
+  const state = enumeration(item.state, PACKAGE_CAPABILITY_STATES, label);
+  const reason = string(item.reason_code, label)!;
+  if (!CALIBRATION_PREPARATION_REASONS.has(reason)) throw new Error(`${label} response is invalid`);
+  return { state: state as CalibrationPreparationCapability["state"], reason_code: reason };
+}
+function existingInspection(value: unknown, label: string): ExistingMeterInspection {
+  const item = record(value, label);
+  exactKeys(item, ["device", "configuration", "source_sha256", "topology", "package_options", "package_capabilities", "calibration_preparation"], label);
+  const candidate = existingDevice(item.device, label);
+  const parsedTopology = topology(item.topology, label, true);
+  const configuration = string(item.configuration, label)!;
+  if (!CONFIGURATION.test(configuration) || !SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`);
+  const options = packageOptions(item.package_options, label, parsedTopology.board_count);
+  const capabilities = packageCapabilities(item.package_capabilities, label, parsedTopology.board_count);
+  if (capabilities.length !== parsedTopology.board_count * 2) throw new Error(`${label} response is invalid`);
+  const preparation = calibrationPreparation(item.calibration_preparation, label);
+  return { device: candidate, configuration, source_sha256: item.source_sha256 as string,
+    topology: parsedTopology, package_options: options, package_capabilities: capabilities,
+    calibration_preparation: preparation };
 }
 function totalOutputs(value: unknown, label: string): void {
   const item = record(value, label); exactKeys(item, ["watts", "amps", "kwh"], label);
@@ -249,7 +312,7 @@ function advancedTotal(value: unknown, label: string, count = 42): Record<string
 }
 
 function automaticSettings(value: unknown, label: string): Record<string, unknown>[] {
-  const settings = array(value, label, 100).map((entry) => { const item = record(entry, label); exactKeys(item, ["candidate_id", "enabled", "outputs"], label); id(item.candidate_id, label); boolean(item.enabled, label); totalOutputs(item.outputs, label); return item; });
+  const settings = array(value, label, 100).map((entry) => { const item = record(entry, label); exactKeys(item, ["candidate_id", "enabled", "outputs", ...("name" in item ? ["name"] : [])], label); id(item.candidate_id, label); boolean(item.enabled, label); totalOutputs(item.outputs, label); optionalString(item.name, label); if (item.name === null) delete item.name; return item; });
   if (new Set(settings.map((item) => item.candidate_id)).size !== settings.length) throw new Error(`${label} response is invalid`);
   return settings;
 }
@@ -437,7 +500,7 @@ function ctInventory(value: unknown, label: string): CtInventory {
   return value as CtInventory;
 }
 function transaction(value: unknown, label: string): TransactionStatus {
-  const item = record(value, label); exactKeys(item, ["purpose", "transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ...("communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : [])], label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); if (!SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`); boolean(item.rollback_available, label); if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
+  const item = record(value, label); exactKeys(item, ["purpose", "transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ...("communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []), ...("failure" in item ? ["failure"] : [])], label); string(item.transaction_id, label); enumeration(item.state, TRANSACTION_STATES, label); if (!SHA256.test(string(item.source_sha256, label)!)) throw new Error(`${label} response is invalid`); boolean(item.rollback_available, label); if (typeof item.redacted_diff !== "string") throw new Error(`${label} response is invalid`);
   enumeration(item.purpose, new Set(["install_configuration", "save_calibration", "offset_preparation", "offset_finalization"]), label);
   array(item.changes, label).forEach((entry) => { const change = record(entry, label); exactKeys(change, ["key", "old_value", "new_value"], label); const key = string(change.key, label); if (!CHANGE_KEY.test(key!)) throw new Error(`${label} response is invalid`); if (change.old_value !== null) string(change.old_value, label); string(change.new_value, label); });
   array(item.evidence, label).forEach((entry) => enumeration(entry, TRANSACTION_EVIDENCE, label)); array(item.progress, label).forEach((entry) => enumeration(entry, TRANSACTION_PROGRESS, label));
@@ -450,6 +513,21 @@ function transaction(value: unknown, label: string): TransactionStatus {
       || (pins.length && !(item.evidence as string[]).includes("meter_communication_failed"))) {
       throw new Error(`${label} response is invalid`);
     }
+  }
+  if ("failure" in item && item.failure !== null) {
+    const failure = record(item.failure, label);
+    exactKeys(failure, ["stage", "reason_code", "context"], label);
+    if (!TRANSACTION_FAILURE_STAGES.has(string(failure.stage, label)!)) throw new Error(`${label} response is invalid`);
+    if (!TRANSACTION_FAILURE_REASONS.has(string(failure.reason_code, label)!)) throw new Error(`${label} response is invalid`);
+    array(failure.context, label, 4).forEach((entry) => {
+      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || typeof entry[1] !== "string") throw new Error(`${label} response is invalid`);
+      const [key, value] = entry;
+      const allowed = key === "secret_name" && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(value)
+        || key === "component" && value === "sensor.atm90e32"
+        || key === "package" && ["power_quality", "status_fields"].includes(value)
+        || key === "field" && ["current", "power", "voltage", "reactive_power", "apparent_power", "power_factor", "phase_angle", "harmonic_power", "peak_current", "phase_status", "frequency_status", "update_interval"].includes(value);
+      if (!allowed) throw new Error(`${label} response is invalid`);
+    });
   }
   return value as TransactionStatus;
 }
@@ -861,7 +939,16 @@ export class HelperApi {
     if (typeof value === "string") {
       const multiline = value.includes("\n") || value.includes("\r");
       const limit = field === "redacted_diff" ? 32_768 : 4_096;
-      if (value.length > limit || CONTROL.test(value) || SECRET_VALUE.test(value) || (multiline && field !== "redacted_diff") || (field === "redacted_diff" && value.includes("\r"))) {
+      const unsafeDiff = field === "redacted_diff" && (() => {
+        let unsafe = false;
+        const unchecked = value.split("\n").map((line) => {
+          if (!SECRET_VALUE.test(line) && !DIFF_SECRET_VALUE.test(line)) return line;
+          unsafe ||= !SAFE_REDACTED_DIFF_LINE.test(line);
+          return "";
+        }).join("");
+        return unsafe || SECRET_VALUE.test(unchecked) || DIFF_SECRET_VALUE.test(unchecked);
+      })();
+      if (value.length > limit || CONTROL.test(value) || field !== "redacted_diff" && SECRET_VALUE.test(value) || unsafeDiff || (multiline && field !== "redacted_diff") || (field === "redacted_diff" && value.includes("\r"))) {
         throw new Error(`unsafe string ${field || "value"} refused`);
       }
       return;
@@ -918,6 +1005,22 @@ export class HelperApi {
 
   public setupStatus = () => this.call("setup_status", (value) => setup(value, "setup_status"));
   public listMeters = () => this.call("list_meters", (value) => { array(value, "list_meters").forEach((item) => device(item, "list_meters")); return value as DiscoveredDevice[]; });
+  public async listExistingMeters(): Promise<ExistingDeviceCandidate[]> {
+    const candidates: ExistingDeviceCandidate[] = [];
+    let after = "";
+    for (;;) {
+      const page = await this.call("list_existing_meters", (value) => array(value, "list_existing_meters", 32)
+        .map((item) => existingDevice(item, "list_existing_meters")), after ? { after_entry_id: after } : {});
+      for (const candidate of page) {
+        if (candidate.entry_id <= after) throw new Error("list_existing_meters page is out of order");
+        after = candidate.entry_id;
+        candidates.push(candidate);
+      }
+      if (page.length < 32) return candidates;
+    }
+  }
+  public inspectExistingMeter = (deviceId: string) =>
+    this.call("inspect_existing_meter", (value) => existingInspection(value, "inspect_existing_meter"), { device_id: deviceId });
   public getTopology = (deviceId: string) =>
     this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
   public getCtInventory = (deviceId: string) =>
@@ -972,6 +1075,10 @@ export class HelperApi {
   public previewMeterConfiguration = (deviceId: string, planId: string, sourceSha256: string, configuration: MeterConfigurationRequest) =>
     this.call("preview_meter_configuration", (value) => transaction(value, "preview_meter_configuration"), {
       device_id: deviceId, plan_id: planId, source_sha256: sourceSha256, configuration,
+    });
+  public prepareCalibration = (deviceId: string) =>
+    this.call("prepare_calibration", (value) => transaction(value, "prepare_calibration"), {
+      device_id: deviceId,
     });
 
   public previewTotalGraph = (deviceId: string, planId: string, sourceSha256: string, configuration: MeterConfigurationRequest) =>

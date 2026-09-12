@@ -20,6 +20,7 @@ from .config_document import (
     MANAGED_BLOCK_MARKERS,
     ConfigScalar,
     ESPHomeConfigDocument,
+    PackageFileReference,
 )
 from .ct_catalog import (
     REPORTING_MULTIPLIERS,
@@ -35,6 +36,15 @@ from .models import (
     PhaseOffsetTable,
     PhasePowerOffsetTable,
     SubstitutionChange,
+)
+from .package_contract import (
+    OFFICIAL_PACKAGE_REPOSITORY,
+    SUPPORTED_PACKAGE_CONTRACTS,
+    CalibrationPreparationCapability,
+    PackageCapability,
+    calibration_package_path,
+    is_static_package_ref,
+    package_path,
 )
 from .store import VerifiedCalibrationRecord, _validate_group_table
 from .topology import (
@@ -70,10 +80,7 @@ _YAML_FLOW_KEY_RE = re.compile(
     rf"[{{,][ \t]*(?:(?:![^\s]+|&[^\s]+)[ \t]+)*"
     rf"(?P<key>{_YAML_KEY_TOKEN})[ \t]*:"
 )
-_PACKAGE_FEATURES = {
-    "power_quality": ("power_quality", "power_quality"),
-    "status_fields": ("status_fields", "status"),
-}
+_PACKAGE_FEATURES = SUPPORTED_PACKAGE_CONTRACTS
 
 
 class ConfigSnapshot(Protocol):
@@ -92,9 +99,16 @@ class ConfigSnapshot(Protocol):
 class ConfigMutationError(ValueError):
     """A safe refusal that can offer substitutions for manual application."""
 
-    def __init__(self, message: str, *, snippet: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        snippet: str | None = None,
+        reason_code: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.snippet = snippet
+        self.reason_code = reason_code
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +271,8 @@ def _apply_package_options(
     topology: MeterTopology,
     package_options: Mapping[str, Iterable[bool]],
 ) -> tuple[str, list[SubstitutionChange]]:
+    if ESPHomeConfigDocument.parse(content).unresolved_package_sources:
+        raise ConfigMutationError("unresolved package source", reason_code="unsupported_package_source")
     if set(package_options) != set(_PACKAGE_FEATURES):
         raise ConfigMutationError("package options are invalid")
     desired = {name: tuple(values) for name, values in package_options.items()}
@@ -267,75 +283,55 @@ def _apply_package_options(
     ):
         raise ConfigMutationError("package options require one state per installed board")
 
-    lines = content.splitlines(keepends=True)
-    active_package_line = re.compile(
-        r"^(?P<indent> *)-\s+Software/ESPHome/.*\.yaml(?:\s*(?:#.*)?)?(?:\r?\n)?$"
-    )
-    files_line = re.compile(r"^(?P<indent> *)files:\s*(?:#.*)?(?:\r?\n)?$")
-
-    def package_indent(target_index: int, fallback: str) -> str:
-        def belongs_to_files_block(line: str, parent_indent: int) -> bool:
-            body = line.rstrip("\r\n")
-            stripped = body.lstrip(" ")
-            if not stripped or stripped.startswith("#"):
-                return True
-            indent = len(body) - len(stripped)
-            return indent > parent_indent or (
-                indent == parent_indent and stripped.startswith("-")
-            )
-
-        for start in range(target_index - 1, -1, -1):
-            if (files := files_line.fullmatch(lines[start])) is None:
-                continue
-            parent_indent = len(files.group("indent"))
-            end = next(
-                (
-                    index
-                    for index in range(start + 1, len(lines))
-                    if not belongs_to_files_block(lines[index], parent_indent)
-                ),
-                len(lines),
-            )
-            if target_index >= end:
-                continue
-            peers = [
-                (abs(index - target_index), peer.group("indent"))
-                for index in range(start + 1, end)
-                if (peer := active_package_line.fullmatch(lines[index])) is not None
-            ]
-            return min(peers)[1] if peers else fallback
-        return fallback
-
     changes: list[SubstitutionChange] = []
-    for feature, (directory, suffix) in _PACKAGE_FEATURES.items():
+    proposed = content
+    for feature in _PACKAGE_FEATURES:
         for board_index, enabled in enumerate(desired[feature]):
             board = "main" if board_index == 0 else f"addon{board_index}"
-            path = f"Software/ESPHome/{directory}/6chan_{board}_{suffix}.yaml"
-            pattern = re.compile(
-                rf"^(?P<indent> *)(?P<comment>#\s*)?(?P<entry>-\s+{re.escape(path)}"
-                rf"(?P<tail>\s*(?:#.*)?))(?P<newline>\r?\n)?$"
-            )
-            matches = [
-                (index, match)
-                for index, line in enumerate(lines)
-                if (match := pattern.fullmatch(line)) is not None
+            path = package_path(feature, board_index)
+            document = ESPHomeConfigDocument.parse(proposed)
+            references = [
+                reference
+                for reference in document.package_references
+                if reference.path == path
             ]
-            if len(matches) > 1:
-                raise ConfigMutationError(f"{feature} package line is duplicated")
-            current = bool(matches and matches[0][1].group("comment") is None)
+            if len(references) > 1:
+                raise ConfigMutationError(
+                    f"{feature} package line is duplicated",
+                    reason_code="duplicate_package_reference",
+                )
+            reference = references[0] if references else None
+            current = reference is not None and reference.active
+            if reference is not None and not _official_package_reference(reference):
+                raise ConfigMutationError(
+                    f"{feature} package cannot be safely managed "
+                    "from this package source",
+                    reason_code=_package_reference_reason(reference),
+                )
             if current == enabled:
                 continue
-            if not matches:
-                raise ConfigMutationError(f"{feature} package line is unavailable")
-            index, match = matches[0]
-            indent = match.group("indent")
-            if enabled:
-                indent = package_indent(index, indent)
-            lines[index] = (
-                indent
-                + ("" if enabled else "#")
-                + match.group("entry")
-                + (match.group("newline") or "")
+            if reference is None:
+                if not enabled:
+                    continue
+                capability = _package_capability(
+                    document, topology, feature, board_index
+                )
+                if capability.state != "available_to_prepare":
+                    raise ConfigMutationError(
+                        f"{feature} package cannot be safely prepared "
+                        f"({capability.reason_code})",
+                        reason_code=capability.reason_code,
+                    )
+                source = _writable_package_sources(document)[0]
+                proposed = _insert_package_reference(proposed, source, path)
+                changes.append(
+                    SubstitutionChange(
+                        f"{feature}_{board}", "disabled", "enabled"
+                    )
+                )
+                continue
+            proposed = _toggle_package_reference(
+                proposed, document, reference, enabled, feature
             )
             changes.append(
                 SubstitutionChange(
@@ -344,7 +340,415 @@ def _apply_package_options(
                     "enabled" if enabled else "disabled",
                 )
             )
-    return "".join(lines), changes
+    return proposed, changes
+
+
+def build_calibration_preparation_mutation(
+    snapshot: ConfigSnapshot, topology: MeterTopology
+) -> ConfigMutationPlan:
+    """Build the reviewed official calibration-controls package preparation."""
+    if getattr(snapshot, "configuration_authoritative", True) is not True:
+        raise ConfigMutationError(
+            "configuration snapshot is not authoritative",
+            reason_code="configuration_not_authoritative",
+        )
+    if sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256:
+        raise ConfigMutationError("configuration snapshot hash does not match content")
+    proposed = snapshot.content
+    changes: list[SubstitutionChange] = []
+    document = ESPHomeConfigDocument.parse(proposed)
+    if document.unresolved_package_sources:
+        raise ConfigMutationError("unresolved package source", reason_code="unsupported_package_source")
+    proposed = _apply_calibration_flags(proposed, document, changes)
+    for board_index in range(topology.board_count):
+        path = calibration_package_path(board_index)
+        document = ESPHomeConfigDocument.parse(proposed)
+        references = [
+            reference
+            for reference in document.package_references
+            if reference.path == path
+        ]
+        if len(references) > 1:
+            raise ConfigMutationError(
+                "calibration package line is duplicated",
+                reason_code="duplicate_package_reference",
+            )
+        reference = references[0] if references else None
+        if reference is not None:
+            if not _official_package_reference(reference):
+                raise ConfigMutationError(
+                    "calibration package cannot be safely managed from this source",
+                    reason_code=_package_reference_reason(reference),
+                )
+            if reference.active:
+                continue
+            proposed = _toggle_package_reference(
+                proposed, document, reference, True, "calibration"
+            )
+        else:
+            sources = _package_sources(document)
+            if len(sources) != 1:
+                reason = "ambiguous_package_source" if len(sources) > 1 else "package_source_unavailable"
+                raise ConfigMutationError(
+                    "calibration package cannot be safely prepared",
+                    reason_code=reason,
+                )
+            if not _official_package_reference(sources[0]):
+                raise ConfigMutationError(
+                    "calibration package cannot be safely prepared from this source",
+                    reason_code="unsupported_package_source",
+                )
+            proposed = _insert_package_reference(proposed, sources[0], path)
+        board = "main" if board_index == 0 else f"addon{board_index}"
+        changes.append(
+            SubstitutionChange(f"package.{board}.calibration", "disabled", "enabled")
+        )
+    if proposed == snapshot.content:
+        return ConfigMutationPlan(
+            snapshot.configuration, snapshot.sha256, (), "", snapshot.content
+        )
+    return ConfigMutationPlan(
+        snapshot.configuration,
+        snapshot.sha256,
+        tuple(changes),
+        _review_diff(changes, snapshot.content, proposed),
+        proposed,
+    )
+
+
+def _apply_calibration_flags(
+    content: str,
+    document: ESPHomeConfigDocument,
+    changes: list[SubstitutionChange],
+) -> str:
+    """Enable only literal official calibration substitutions."""
+    values: dict[str, str] = {}
+    flag_changes: list[SubstitutionChange] = []
+    for key in ("offset_calibration", "gain_calibration"):
+        scalar = document.substitutions.get(key)
+        if scalar is None:
+            raise ConfigMutationError(
+                f"{key} substitution is unavailable",
+                reason_code="calibration_flag_unavailable",
+            )
+        if scalar.value not in {"true", "false"}:
+            raise ConfigMutationError(
+                f"{key} substitution is not a literal true/false flag",
+                reason_code="calibration_flag_invalid",
+            )
+        if scalar.value == "false":
+            flag_changes.append(SubstitutionChange(key, scalar.value, "true"))
+            values[key] = "true"
+    if not flag_changes:
+        return content
+    changes.extend(flag_changes)
+    return _apply_changes(document, flag_changes, values)
+
+
+def package_capabilities_from_document(
+    document: ESPHomeConfigDocument, topology: MeterTopology
+) -> tuple[PackageCapability, ...]:
+    """Describe package edits before the browser offers an enabled checkbox."""
+    if document.unresolved_package_sources:
+        return tuple(
+            PackageCapability(feature, board, "cannot_safely_manage", "unsupported_package_source")
+            for feature in _PACKAGE_FEATURES for board in range(topology.board_count)
+        )
+    return tuple(
+        _package_capability(document, topology, feature, board_index)
+        for feature in _PACKAGE_FEATURES
+        for board_index in range(topology.board_count)
+    )
+
+
+def calibration_preparation_capability_from_document(
+    document: ESPHomeConfigDocument, topology: MeterTopology
+) -> CalibrationPreparationCapability:
+    """Describe whether the reviewed calibration controls can be prepared."""
+    if document.unresolved_package_sources:
+        return CalibrationPreparationCapability("cannot_safely_manage", "unsupported_package_source")
+    for key in ("offset_calibration", "gain_calibration"):
+        scalar = document.substitutions.get(key)
+        if scalar is None:
+            return CalibrationPreparationCapability(
+                "cannot_safely_manage", "calibration_flag_unavailable"
+            )
+        if scalar.value not in {"true", "false"}:
+            return CalibrationPreparationCapability(
+                "cannot_safely_manage", "calibration_flag_invalid"
+            )
+
+    needs_change = any(
+        document.substitutions[key].value == "false"
+        for key in ("offset_calibration", "gain_calibration")
+    )
+    for board_index in range(topology.board_count):
+        path = calibration_package_path(board_index)
+        references = [
+            reference
+            for reference in document.package_references
+            if reference.path == path
+        ]
+        if len(references) > 1:
+            return CalibrationPreparationCapability(
+                "cannot_safely_manage", "duplicate_package_reference"
+            )
+        if not references:
+            sources = _package_sources(document)
+            if len(sources) != 1:
+                return CalibrationPreparationCapability(
+                    "cannot_safely_manage",
+                    "ambiguous_package_source"
+                    if len(sources) > 1
+                    else "package_source_unavailable",
+                )
+            if not _official_package_reference(sources[0]):
+                return CalibrationPreparationCapability(
+                    "cannot_safely_manage", "unsupported_package_source"
+                )
+            needs_change = True
+            continue
+        reference = references[0]
+        official_identity = (
+            reference.repository == OFFICIAL_PACKAGE_REPOSITORY
+            and is_static_package_ref(reference.ref)
+        )
+        if not official_identity:
+            return CalibrationPreparationCapability(
+                "cannot_safely_manage", "unsupported_package_source"
+            )
+        if not reference.active:
+            if not _official_package_reference(reference):
+                return CalibrationPreparationCapability(
+                    "cannot_safely_manage", "package_source_unavailable"
+                )
+            needs_change = True
+    return CalibrationPreparationCapability(
+        "available_to_prepare" if needs_change else "already_present",
+        "calibration_source_ready"
+        if needs_change
+        else "calibration_package_present",
+    )
+
+
+def _package_capability(
+    document: ESPHomeConfigDocument,
+    topology: MeterTopology,
+    feature: str,
+    board_index: int,
+) -> PackageCapability:
+    path = package_path(feature, board_index)
+    references = [
+        reference
+        for reference in document.package_references
+        if reference.path == path
+    ]
+    if len(references) > 1:
+        return PackageCapability(
+            feature, board_index, "cannot_safely_manage", "duplicate_package_reference"
+        )
+    if references:
+        reference = references[0]
+        if _official_package_reference(reference):
+            return PackageCapability(
+                feature,
+                board_index,
+                "already_present" if reference.active else "available_to_prepare",
+                "official_package_present" if reference.active else "official_source_ready",
+            )
+        return PackageCapability(
+            feature,
+            board_index,
+            "cannot_safely_manage",
+            _package_reference_reason(reference),
+        )
+    sources = _package_sources(document)
+    if len(sources) == 1 and _official_package_reference(sources[0]):
+        return PackageCapability(
+            feature, board_index, "available_to_prepare", "official_source_ready"
+        )
+    if len(sources) == 1:
+        reason = "unsupported_package_source"
+    else:
+        reason = "ambiguous_package_source" if sources else "package_source_unavailable"
+    return PackageCapability(feature, board_index, "cannot_safely_manage", reason)
+
+
+def _official_package_reference(reference: PackageFileReference) -> bool:
+    return (
+        reference.repository == OFFICIAL_PACKAGE_REPOSITORY
+        and is_static_package_ref(reference.ref)
+        and reference.files_span is not None
+    )
+
+
+def package_graph_owner_is_official(document: ESPHomeConfigDocument) -> bool:
+    """Return whether every parsed package reference has the official source."""
+    references = document.package_references
+    return not document.unresolved_package_sources and bool(references) and all(
+        reference.repository == OFFICIAL_PACKAGE_REPOSITORY
+        and is_static_package_ref(reference.ref)
+        for reference in references
+    )
+
+
+def _package_reference_reason(reference: PackageFileReference) -> str:
+    if reference.repository != OFFICIAL_PACKAGE_REPOSITORY:
+        return "unsupported_package_source"
+    return "package_source_unavailable"
+
+
+def _toggle_package_reference(
+    content: str,
+    document: ESPHomeConfigDocument,
+    reference: PackageFileReference,
+    enabled: bool,
+    feature: str,
+) -> str:
+    """Toggle one exact official package reference without rewriting its list."""
+    pattern = re.compile(
+        rf"^(?P<indent> *)(?P<comment>#\s*)?(?P<entry>-\s+{re.escape(reference.path)}"
+        rf"(?P<tail>\s*(?:#.*)?))(?P<newline>\r?\n)?$"
+    )
+    index = reference.line - 1
+    lines = content.splitlines(keepends=True)
+    if index < 0 or index >= len(lines):
+        raise ConfigMutationError(
+            f"{feature} package line is unavailable",
+            reason_code="package_reference_changed",
+        )
+    match = pattern.fullmatch(lines[index])
+    if match is None:
+        raise ConfigMutationError(
+            f"{feature} package line is unavailable",
+            reason_code="package_reference_changed",
+        )
+    indent = match.group("indent")
+    if enabled:
+        indent = _package_item_indent(document, reference, indent)
+    lines[index] = (
+        indent
+        + ("" if enabled else "#")
+        + match.group("entry")
+        + (match.group("newline") or "")
+    )
+    return "".join(lines)
+
+
+def _writable_package_sources(
+    document: ESPHomeConfigDocument,
+) -> list[PackageFileReference]:
+    return [
+        source
+        for source in _package_sources(document)
+        if _official_package_reference(source)
+    ]
+
+
+def _package_sources(document: ESPHomeConfigDocument) -> list[PackageFileReference]:
+    sources: dict[tuple[object, ...], PackageFileReference] = {}
+    for reference in document.package_references:
+        if reference.files_span is None:
+            continue
+        sources[_package_source_key(reference)] = reference
+    return list(sources.values())
+
+
+def _insert_package_reference(
+    content: str, source: PackageFileReference, path: str
+) -> str:
+    lines = content.splitlines(keepends=True)
+    span = source.files_span
+    item_indent = source.item_indent
+    if span is None:
+        raise ConfigMutationError(
+            "package source has no writable files list",
+            reason_code="package_source_unavailable",
+        )
+    indent = " " * (item_indent or 0)
+    source_key = _package_source_key(source)
+    source_references = [
+        reference
+        for reference in ESPHomeConfigDocument.parse(content).package_references
+        if _package_source_key(reference) == source_key
+    ]
+    target_order = _package_path_order(path)
+    later = [
+        reference
+        for reference in source_references
+        if _package_path_order(reference.path) > target_order
+    ]
+    if later:
+        insert_at = min(reference.line for reference in later) - 1
+        start = span.line - 1
+        while insert_at > start:
+            previous = lines[insert_at - 1].strip()
+            if not previous or previous.startswith("#"):
+                insert_at -= 1
+                continue
+            break
+    else:
+        insert_at = _line_index_at_offset(lines, span.end)
+    newline = _line_ending(lines, span.line - 1)
+    prefix = ""
+    if insert_at and not lines[insert_at - 1].endswith(("\n", "\r")):
+        prefix = newline
+    lines.insert(insert_at, prefix + f"{indent}- {path}{newline}")
+    return "".join(lines)
+
+
+def _package_item_indent(
+    document: ESPHomeConfigDocument,
+    target: PackageFileReference,
+    fallback: str,
+) -> str:
+    peers = [
+        reference
+        for reference in document.package_references
+        if reference.active
+        and _package_source_key(reference) == _package_source_key(target)
+        and reference.item_indent is not None
+    ]
+    if not peers or target.item_indent is None:
+        return fallback
+    nearest = min(peers, key=lambda reference: abs(reference.line - target.line))
+    return " " * (nearest.item_indent or 0)
+
+
+def _package_source_key(reference: PackageFileReference) -> tuple[object, ...]:
+    span = reference.files_span
+    return (
+        span.start if span is not None else None,
+        span.end if span is not None else None,
+        reference.repository,
+        reference.ref,
+    )
+
+
+def _package_path_order(path: str) -> tuple[int, int]:
+    for feature_index, feature in enumerate(_PACKAGE_FEATURES):
+        for board_index in range(7):
+            if package_path(feature, board_index) == path:
+                return feature_index, board_index
+    return len(_PACKAGE_FEATURES), 7
+
+
+def _line_index_at_offset(lines: list[str], offset: int) -> int:
+    position = 0
+    for index, line in enumerate(lines):
+        if position >= offset:
+            return index
+        position += len(line)
+    return len(lines)
+
+
+def _line_ending(lines: list[str], start: int) -> str:
+    for line in lines[start:]:
+        if line.endswith("\r\n"):
+            return "\r\n"
+        if line.endswith("\n"):
+            return "\n"
+    return "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
 
 
 def package_options_from_document(
@@ -354,12 +758,10 @@ def package_options_from_document(
     active = set(document.package_files)
     return {
         feature: tuple(
-            f"Software/ESPHome/{directory}/6chan_"
-            f"{'main' if board_index == 0 else f'addon{board_index}'}_{suffix}.yaml"
-            in active
+            package_path(feature, board_index) in active
             for board_index in range(topology.board_count)
         )
-        for feature, (directory, suffix) in _PACKAGE_FEATURES.items()
+        for feature in _PACKAGE_FEATURES
     }
 
 
@@ -1100,29 +1502,45 @@ def _flow_owner_identifier(line: str) -> str | None:
 def _phase_override_lines(
     enabled: bool, multiplier: float, power_quality: bool
 ) -> tuple[str, ...]:
+    """Render only the current official package metrics for one CT phase."""
     lines: list[str] = []
-    if multiplier != 1:
-        value = f"{multiplier:g}"
-        outputs = ["current", "power"]
-        if enabled and power_quality:
-            outputs.extend(("reactive_power", "apparent_power"))
-        for output in outputs:
-            lines.extend(
-                (f"      {output}:", "        filters:", f"          - multiply: {value}")
-            )
-    if not enabled:
-        for output in ("current", "power"):
-            if multiplier == 1:
-                lines.append(f"      {output}:")
+    value = f"{multiplier:g}"
+    power_quality_contract = SUPPORTED_PACKAGE_CONTRACTS["power_quality"]
+    outputs: list[str] = []
+    if not enabled or multiplier != 1:
+        outputs.extend(("current", "power"))
+    if enabled and power_quality and multiplier != 1:
+        outputs.extend(power_quality_contract.scalable_phase_metrics)
+    for output in outputs:
+        lines.append(f"      {output}:")
+        if not enabled and output in ("current", "power"):
+            if multiplier != 1:
+                lines.extend(("        filters:", f"          - multiply: {value}"))
             lines.append("        internal: true")
+        elif multiplier != 1:
+            lines.extend(("        filters:", f"          - multiply: {value}"))
     if power_quality and not enabled:
-        removals = (
-            "reactive_power",
-            "apparent_power",
-            "power_factor",
-            "phase_angle",
+        lines.extend(
+            f"      {output}: !remove"
+            for output in power_quality_contract.phase_metrics
         )
-        lines.extend(f"      {output}: !remove" for output in removals)
+    return tuple(lines)
+
+
+def _legacy_phase_override_lines(
+    multiplier: float, power_quality: bool
+) -> tuple[str, ...]:
+    """Recognize the historical enabled shape during managed-block migration."""
+    lines = list(_phase_override_lines(True, multiplier, power_quality))
+    if power_quality:
+        legacy_metrics = SUPPORTED_PACKAGE_CONTRACTS[
+            "power_quality"
+        ].legacy_phase_metrics
+        lines.extend(
+            f"      {output}: !remove"
+            for output in legacy_metrics
+            if output != "phase_angle"
+        )
     return tuple(lines)
 
 
@@ -1138,15 +1556,12 @@ def _legacy_unused_phase_override_lines(
                 (f"      {output}:", "        filters:", f"          - multiply: {value}")
             )
     if power_quality:
+        # Preserve the exact historical order for source-owned block recognition.
         lines.extend(
             f"      {output}: !remove"
             for output in (
-                "reactive_power",
-                "apparent_power",
-                "harmonic_power",
-                "peak_current",
-                "power_factor",
-                "phase_angle",
+                "reactive_power", "apparent_power", "harmonic_power",
+                "peak_current", "power_factor", "phase_angle",
             )
         )
     return tuple(lines)
@@ -1319,14 +1734,19 @@ def _read_phase_channel_states(
             for multiplier in REPORTING_MULTIPLIERS:
                 legacy = _phase_override_lines(True, multiplier, False)
                 enabled = _phase_override_lines(True, multiplier, board_pq)
+                legacy_enabled = _legacy_phase_override_lines(multiplier, board_pq)
                 unused = _phase_override_lines(False, multiplier, board_pq)
                 legacy_unused = _legacy_unused_phase_override_lines(
                     multiplier, board_pq
                 )
-                if body in {unused, legacy_unused} and unused != enabled:
+                legacy_internal = (
+                    _phase_override_lines(False, 1, False) + legacy_unused
+                    if multiplier == 1 else ()
+                )
+                if body in {unused, legacy_unused, legacy_internal} and unused != enabled:
                     state = _PhaseChannelState(False, multiplier)
                     break
-                if body in {legacy, enabled}:
+                if body in {legacy, enabled, legacy_enabled}:
                     state = _PhaseChannelState(True, multiplier)
                     break
             if state is None:
@@ -1669,6 +2089,8 @@ def _render_value(key: str, value: str, content: str, current: ConfigScalar) -> 
     old_token = content[current.span.start : current.span.end]
     if _is_gain_key(key):
         return _render_gain(value, old_token)
+    if key in {"offset_calibration", "gain_calibration"}:
+        return _render_boolean(value, old_token)
     if key == "electric_freq":
         return _render_frequency(value, old_token)
     return _render_name(value, old_token)
@@ -1696,6 +2118,14 @@ def _prevailing_quote(document: ESPHomeConfigDocument, key: str) -> str:
 
 
 def _render_gain(value: str, old_token: str) -> str:
+    if old_token.startswith("'"):
+        return f"'{value}'"
+    if old_token.startswith('"'):
+        return json.dumps(value)
+    return value
+
+
+def _render_boolean(value: str, old_token: str) -> str:
     if old_token.startswith("'"):
         return f"'{value}'"
     if old_token.startswith('"'):

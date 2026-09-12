@@ -11,7 +11,12 @@ export function configReview(
   impact: ConfigurationImpact | null = null,
   totals: TotalsInventory | null = null,
 ): TemplateResult {
-  const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split("\n");
+  const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split(/\r?\n/);
+  const diffLine = (line: string) => {
+    const kind = line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : "context";
+    const prefixed = line.startsWith(" ") || line.startsWith("+") || line.startsWith("-");
+    return { kind, value: prefixed ? line.slice(1) : line };
+  };
   const channels = configuration?.channels ?? [];
   const pqBoards = configuration?.power_quality.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
   const statusBoards = configuration?.status_fields.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
@@ -35,7 +40,7 @@ export function configReview(
         <ul class="status-list">${configuration.meter.voltage_references.map((reference) => html`<li>${reference.label} (${reference.phase_label}): ${reference.nominal_voltage_v} V · ${reference.transformer_model_id} · ${reference.group_keys.join(", ")}</li>`)}</ul>
         ${configuration.meter.voltage_references.length > 1 ? html`<p class=${configuration.multi_reference_preparation_acknowledged ? "info-band" : "warning-band"}>Multi-reference hardware preparation: ${configuration.multi_reference_preparation_acknowledged ? "acknowledged" : "not acknowledged"}.</p>` : ""}
         <h3>Channels</h3>
-        <ul class="status-list">${channels.map((channel) => html`<li>CT${channel.channel} ${channel.name}: ${channel.enabled ? `${channel.role.replaceAll("_", " ")} on ${channel.voltage_reference_id}; ${channel.model_id || "no model"} × ${channel.reporting_multiplier}; burden ${channel.burden_output_acknowledged ? "acknowledged" : "not acknowledged"}` : "unused"}</li>`)}</ul>
+        <ul class="status-list">${channels.map((channel) => html`<li>CT${channel.channel} ${channel.name}: ${channel.enabled ? `${channel.role.replaceAll("_", " ")} on ${channel.voltage_reference_id}; ${channel.model_id || "no model"} × ${channel.reporting_multiplier}` : "unused"}</li>`)}</ul>
         <h3>Default meter totals</h3>
         <ul><li>Overall meter total: ${outputs(configuration.default_totals.overall)}</li>${configuration.default_totals.boards.map((board) => html`<li>${board.board_index === 0 ? "Main Board" : `Add-on ${board.board_index}`} total: ${outputs(board.outputs)}</li>`)}</ul>
         <h3>Suggested circuit totals</h3>
@@ -46,7 +51,7 @@ export function configReview(
         <ul>${configuration.totals_change_intent?.legacy_parent_decisions.map((decision) => html`<li>${configuration.aggregates.find((item) => item.aggregate_id === decision.child_id)?.name ?? decision.child_id} → ${configuration.aggregates.find((item) => item.aggregate_id === decision.proposed_parent_id)?.name ?? decision.proposed_parent_id}: ${decision.accepted ? "Use this parent relationship" : "Keep totals independent"}; awaiting successful commit.</li>`)}</ul>
         ${impact ? html`<p>${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors. Hidden outputs can remain internal dependencies.</p>` : html`<p>Current total counts are unavailable.</p>`}
         <h3>Package and entity impact</h3>
-        <dl class="status-list"><div><dt>Power quality</dt><dd>${pqBoards.length ? `Boards ${pqBoards.join(", ")}` : "Not selected"}</dd></div><div><dt>Phase status</dt><dd>${statusBoards.length ? `Boards ${statusBoards.join(", ")}` : "Not selected"}</dd></div>${impact ? html`<div><dt>Entity impact</dt><dd>${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text, ${impact.energy_entity_count} energy; ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec</dd></div>` : ""}</dl>
+        <dl class="status-list"><div><dt>Power quality</dt><dd>${pqBoards.length ? `Boards ${pqBoards.join(", ")} · reactive power, apparent power, and power factor for each used CT` : "Not selected"}</dd></div><div><dt>Phase status</dt><dd>${statusBoards.length ? `Boards ${statusBoards.join(", ")} · native API diagnostics, disabled by default in Home Assistant` : "Not selected"}</dd></div>${impact ? html`<div><dt>Helper-managed measurements</dt><dd>${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text, ${impact.energy_entity_count} energy; ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec</dd></div>` : ""}</dl>
       ` : ""}
       <dl class="status-list">
         <div><dt>Validation</dt><dd>${status?.state === "validated" || status?.progress.includes("config_validated") ? "Validated" : "Pending"}</dd></div>
@@ -61,7 +66,7 @@ export function configReview(
           <div><dt>Evidence</dt><dd>${status?.evidence.join(", ") || "No evidence recorded."}</dd></div>
           <div><dt>Upload trace</dt><dd>${status?.upload_progress.map((item) => `${item.stage}: ${item.percentage ?? "in progress"}`).join(", ") || "No upload trace."}</dd></div>
         </dl>
-        <pre class="config-diff" aria-label="Redacted substitution diff"><code>${diff.map((line, index) => html`<span class=${`diff-line ${line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : "context"}`}>${line}</span>${index < diff.length - 1 ? "\n" : ""}`)}</code></pre>
+        <pre class="config-diff" aria-label="Configuration file diff"><code>${diff.map((line) => { const item = diffLine(line); return html`<span class=${`diff-line ${item.kind}`}>${item.value}</span>`; })}</code></pre>
       </details>
     </section>
   `;

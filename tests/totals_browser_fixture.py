@@ -14,7 +14,7 @@ from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
 
-import voluptuous as vol
+# isort: off
 from aiohttp import web
 
 from custom_components.circuitsetup_energy_meter_helper.config_document import (
@@ -60,6 +60,8 @@ from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
     sanitize_payload,
 )
 from custom_components.circuitsetup_energy_meter_helper.workflow import EntryWorkflow
+import voluptuous as vol
+# isort: on
 from tests.test_config_transaction import Builder, Job, Verifier, _evidence
 from tests.test_meter_inventory import _document, _inventory
 from tests.test_store import _CopyingStorage, _record
@@ -80,6 +82,7 @@ class Fixture:
         self.name = name
         addons = addons if addons is not None else int(name in ("one-addon", "native-parent", "child-parent", "custom-overall"))
         content = _document(contract=True, addon_count=addons)
+        content = content.replace("packages:\n  files:\n", "packages:\n  circuitsetup:\n    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter\n    ref: master\n    files:\n").replace("    - Software/ESPHome/", "      - Software/ESPHome/")
         # Known models and unchanged channel names make every fixture immediately reviewable.
         content = re.sub(r"(current_cal_ct\d+:) \d+", r"\1 11143", content)
         content = re.sub(r"ct(\d+)_name: [^\n]+", r"ct\1_name: CT\1", content)
@@ -206,7 +209,8 @@ class Fixture:
             return {"state": "device_discovered", "devices": [self.device],
                 "bound_device_id": "meter-1", "configuration_authoritative": self.name != "runtime-only"}
         if operation == "rescan":
-            return {"state": "device_discovered", "devices": [self.device]}
+            return {"state": "device_discovered", "devices": [self.device],
+                "bound_device_id": "meter-1", "configuration_authoritative": self.name != "runtime-only"}
         if operation == "get_topology":
             return {"topology": self.topology, "configuration_authoritative": self.name != "runtime-only"}
         if operation == "get_meter_configuration":

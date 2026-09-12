@@ -40,10 +40,13 @@ import {
 import type {
   CalibrationResult,
   BoardPackageOptions,
+  CalibrationPreparationCapability,
   AutomaticTotalSettings,
   TotalGraphPreview,
   ConnectionType,
   ElectricalSystem,
+  ExistingDeviceCandidate,
+  ExistingMeterInspection,
   LineFrequencyHz,
   MeterConfiguration,
   MeterConfigurationRequest,
@@ -54,6 +57,7 @@ import type {
   MeterTopology,
   OffsetCalibrationResult,
   OffsetReadinessResult,
+  PackageCapability,
   RestartVerificationResult,
   SessionStatus,
   SetupSnapshot,
@@ -86,6 +90,11 @@ const CALIBRATION_LABELS: Record<WorkflowSubstepId, string> = {
   restart: "Restart & verify",
 };
 const CIRCUITSETUP_PROJECT_PREFIX = "circuitsetup.6c-energy-meter";
+const OFFICIAL_PROJECT_REMAINDERS = new Set([
+  "", "-ethernet", "-ethernet-waveshare", "-2-voltages",
+  "-ethernet-2-voltages", "-2-voltages-ethernet",
+  "-ethernet-waveshare-2-voltages", "-2-voltages-ethernet-waveshare",
+]);
 const REBIND_TIMEOUT_MS = 10_000;
 const REBIND_RETRY_MS = 250;
 const wait = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -94,6 +103,18 @@ const profileNominalVoltage = (system: ElectricalSystem): number | null => syste
   : system === "single_phase_230" ? 230 : null;
 // UI capacity warning only; it does not configure the meter or firmware.
 const ENTITY_COUNT_WARNING_THRESHOLD = 100;
+
+function isOfficialProjectName(value: string | null): boolean {
+  if (!value?.startsWith(CIRCUITSETUP_PROJECT_PREFIX)) return false;
+  const suffix = value.slice(CIRCUITSETUP_PROJECT_PREFIX.length);
+  const addons = [...suffix.matchAll(/-(?:[1-6])-addons?(?=-|$)/g)];
+  if (addons.length > 1) return false;
+  const addon = addons[0];
+  const remainder = addon
+    ? suffix.slice(0, addon.index) + suffix.slice(addon.index + addon[0].length)
+    : suffix;
+  return OFFICIAL_PROJECT_REMAINDERS.has(remainder);
+}
 
 interface PanelConfig {
   config: { entry_id: string };
@@ -122,6 +143,11 @@ export class CircuitSetupPanel extends LitElement {
   private skipCircuitChanges = false;
   private transactionPurpose: TransactionPurpose = null;
   private selectedDeviceId: string | null = null;
+  private existingCandidates: ExistingDeviceCandidate[] = [];
+  private existingSearchComplete = false;
+  private existingInspection: ExistingMeterInspection | null = null;
+  private inspectionToken: object | null = null;
+  private adoptionToken: object | null = null;
   private topology: MeterTopology | null = null;
   private inventory: CtInventory | null = null;
   private transaction: TransactionStatus | null = null;
@@ -137,6 +163,8 @@ export class CircuitSetupPanel extends LitElement {
   private handoffDeclined = false;
   private addonCount = 0;
   private packageOptions = newInstallPackageOptions(0);
+  private packageCapabilities: PackageCapability[] = [];
+  private calibrationPreparation: CalibrationPreparationCapability | null = null;
   private sourcePackageOptions: BoardPackageOptions | null = newInstallPackageOptions(0);
   private packageOptionsTouched = false;
   private connection: Exclude<ConnectionType, "unknown"> = "wifi";
@@ -236,6 +264,12 @@ export class CircuitSetupPanel extends LitElement {
     this.firmwareCatalogError = "";
     this.resolvedFirmwareOptions = [];
     this.setupDeviceIds = new Set();
+    this.existingCandidates = [];
+    this.existingSearchComplete = false;
+    this.existingInspection = null;
+    this.calibrationPreparation = null;
+    this.inspectionToken = null;
+    this.adoptionToken = null;
     this.newInstallDeviceId = null;
     this.pendingAction = "";
     super.disconnectedCallback();
@@ -381,6 +415,13 @@ export class CircuitSetupPanel extends LitElement {
     return generation === this.operationGeneration && api === this.api && deviceId === this.selectedDeviceId;
   }
 
+  private ownsInspection(token: object, api: HelperApi, deviceId: string | null = null): boolean {
+    return this.isConnected && api === this.api && token === this.inspectionToken
+      && (deviceId === null || deviceId === this.inspectionTargetId);
+  }
+
+  private inspectionTargetId: string | null = null;
+
   private async ownSubscription(
     pending: Promise<() => void>,
     generation: number,
@@ -448,10 +489,16 @@ export class CircuitSetupPanel extends LitElement {
 
   private selectDevice(deviceId: string | null): void {
     ++this.operationGeneration;
+    this.inspectionToken = null;
+    this.inspectionTargetId = null;
+    this.adoptionToken = null;
     this.clearSubscription("transaction");
     this.clearSubscription("session");
     const isNewInstall = deviceId !== null && deviceId === this.newInstallDeviceId;
     this.selectedDeviceId = deviceId;
+    this.existingCandidates = [];
+    this.existingSearchComplete = false;
+    this.existingInspection = null;
     if (deviceId !== this.newInstallDeviceId) this.newInstallDeviceId = null;
     this.journeyOrigin = isNewInstall ? "new_install" : "existing_meter";
     this.configurationMode = null;
@@ -460,6 +507,8 @@ export class CircuitSetupPanel extends LitElement {
     this.skipCircuitChanges = false;
     this.transactionPurpose = null;
     this.topology = null;
+    this.packageCapabilities = [];
+    this.calibrationPreparation = null;
     this.inventory = null;
     this.transaction = null;
     this.reviewCorrection = null;
@@ -490,8 +539,11 @@ export class CircuitSetupPanel extends LitElement {
 
   public showTopology(topology: MeterTopology): void {
     this.topology = topology;
+    const selectedProject = this.selectedProjectName();
+    const projectMismatch = selectedProject !== null && selectedProject !== "unknown"
+      && topology.project_name !== selectedProject;
     this.error = topologyMismatch(topology)
-      || topology.project_name !== this.selectedProjectName()
+      || projectMismatch
       ? "Topology mismatch"
       : "";
     this.requestUpdate();
@@ -511,9 +563,13 @@ export class CircuitSetupPanel extends LitElement {
           status_fields: [...result.package_options.status_fields],
         };
       }
+      this.packageCapabilities = result.package_capabilities ? [...result.package_capabilities] : [];
+      this.calibrationPreparation = result.calibration_preparation ?? null;
       this.showTopology(result.topology);
     } else {
       this.sourcePackageOptions = null;
+      this.packageCapabilities = [];
+      this.calibrationPreparation = null;
       this.showTopology(result as MeterTopology);
     }
   }
@@ -522,6 +578,7 @@ export class CircuitSetupPanel extends LitElement {
     this.addonCount = value;
     this.packageOptions = resizePackageOptions(this.packageOptions, value);
     this.sourcePackageOptions = newInstallPackageOptions(value);
+    this.packageCapabilities = [];
     this.refreshFirmwareOptions();
   }
 
@@ -543,11 +600,10 @@ export class CircuitSetupPanel extends LitElement {
         multiplier: channel.reporting_multiplier,
         customGainCt: modelId === "custom"
           ? settings?.custom_gain_ct ?? channel.raw_gain_ct * channel.reporting_multiplier : undefined,
-        customLabel: channel.display_label ?? settings?.custom_label ?? undefined,
         burdenAcknowledged: settings?.burden_output_acknowledged
           ?? (channel.selection_verified_against_config
             && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
-        expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518,
+        expanded: false,
         preserveExistingGain: this.configurationMode === "legacy_editable" && !channel.selection_verified_against_config && channel.raw_gain_ct > 0,
         multiplierMode: "automatic" as const,
       }];
@@ -574,7 +630,7 @@ export class CircuitSetupPanel extends LitElement {
       return { ...channel, name: draft.name.trim(), selected_model_id: draft.modelId,
         reporting_multiplier: draft.multiplier,
         raw_gain_ct: gain === undefined ? channel.raw_gain_ct : Math.round(gain / draft.multiplier),
-        display_label: draft.modelId === "custom" ? draft.customLabel?.trim() || null : null,
+        display_label: draft.modelId === "custom" ? draft.name.trim() || null : null,
         selection_verified_against_config: true, stored_selection_present: true };
     }) };
   }
@@ -674,6 +730,11 @@ export class CircuitSetupPanel extends LitElement {
 
   private async configureDevice(deviceId: string): Promise<void> {
     if (this.pendingAction) return;
+    const device = this.setup?.devices.find((item) => item.entry_id === deviceId);
+    if (device && !isOfficialProjectName(device.project_name)) {
+      await this.inspectExistingMeter(deviceId);
+      return;
+    }
     if (this.setup?.bound_device_id !== undefined && this.setup.bound_device_id !== deviceId) {
       await this.adopt(deviceId);
       return;
@@ -735,14 +796,16 @@ export class CircuitSetupPanel extends LitElement {
     const setupDeviceIds = new Set(this.setupDeviceIds);
     const generation = ++this.operationGeneration;
     await this.run(async () => {
-      await api.setInstallerIntent(
-        this.addonCount,
-        this.connection,
-        this.selectedFirmware(),
-        this.packageOptions,
-        null,
-        null,
-      );
+      if (deviceId === null || this.setup?.bound_device_id !== deviceId) {
+        await api.setInstallerIntent(
+          this.addonCount,
+          this.connection,
+          this.selectedFirmware(),
+          this.packageOptions,
+          null,
+          null,
+        );
+      }
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -757,10 +820,65 @@ export class CircuitSetupPanel extends LitElement {
     this.requestUpdate();
   }
 
+  private async findExistingMeters(): Promise<void> {
+    if (!this.api || this.pendingAction) return;
+    this.pendingAction = "find-existing";
+    this.existingCandidates = [];
+    this.existingSearchComplete = false;
+    this.existingInspection = null;
+    this.requestUpdate();
+    const api = this.api;
+    const token = {};
+    this.inspectionToken = token;
+    this.inspectionTargetId = null;
+    await this.run(async () => {
+      const candidates = await api.listExistingMeters();
+      if (!this.ownsInspection(token, api)) return;
+      this.existingCandidates = candidates;
+      this.existingSearchComplete = true;
+      this.announcement = candidates.length
+        ? "Select an ESPHome meter to inspect."
+        : "Could not find any more CircuitSetup energy meters";
+    }, "Could not find any more CircuitSetup energy meters", () => this.ownsInspection(token, api));
+    if (this.ownsInspection(token, api)) {
+      this.pendingAction = "";
+      this.requestUpdate();
+    }
+  }
+
+  private async inspectExistingMeter(deviceId: string): Promise<void> {
+    if (!this.api || this.pendingAction) return;
+    this.pendingAction = `inspect:${deviceId}`;
+    this.existingInspection = null;
+    this.error = "";
+    this.requestUpdate();
+    const api = this.api;
+    const token = {};
+    this.inspectionToken = token;
+    this.inspectionTargetId = deviceId;
+    await this.run(async () => {
+      const inspection = await api.inspectExistingMeter(deviceId);
+      if (!this.ownsInspection(token, api, deviceId)) return;
+      this.existingInspection = inspection;
+      this.announcement = "The selected meter passed live identity and topology inspection. Review it before adoption.";
+    }, "This ESPHome meter could not be safely inspected.", () => this.ownsInspection(token, api, deviceId));
+    if (this.ownsInspection(token, api, deviceId)) {
+      this.pendingAction = "";
+      this.requestUpdate();
+    }
+  }
+
   private async adopt(deviceId = this.selectedDeviceId): Promise<void> {
     if (!this.api || !deviceId || this.pendingAction) return;
-    if (deviceId !== this.selectedDeviceId) this.selectDevice(deviceId);
-    const api = this.api; const generation = ++this.operationGeneration;
+    const inspected = this.existingInspection?.device.entry_id === deviceId;
+    const newInstallDeviceId = inspected ? null : this.setup?.devices.find((device) => device.entry_id === deviceId)?.configuration
+      ? null : deviceId;
+    const api = this.api;
+    const token = {};
+    this.adoptionToken = token;
+    const ownsAdoption = () => this.isConnected && api === this.api && token === this.adoptionToken;
+    let generation: number | null = null;
+    const owns = () => generation === null ? ownsAdoption() : this.ownsOperation(generation, api, deviceId);
     const connectionGeneration = this.connectionGeneration;
     this.pendingAction = `adopt:${deviceId}`;
     this.importFailedDeviceId = null;
@@ -769,29 +887,36 @@ export class CircuitSetupPanel extends LitElement {
     let fallback = "Adoption is unavailable for this meter.";
     try {
       await api.adoptDevice(deviceId);
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!ownsAdoption()) return;
+      if (deviceId !== this.selectedDeviceId) {
+        this.selectDevice(deviceId);
+        this.adoptionToken = token;
+      }
+      this.newInstallDeviceId = newInstallDeviceId;
+      generation = ++this.operationGeneration;
       this.clearSetupSubscription();
       const setup = await this.waitForBinding(api, deviceId, generation);
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!owns()) return;
       this.setup = setup;
       this.setupDeviceIds = new Set(setup.devices.map((device) => device.entry_id));
       fallback = "Meter setup could not be loaded.";
       await this.subscribeSetup(connectionGeneration, api);
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!owns()) return;
       fallback = "Meter settings could not be loaded.";
       const importedConfiguration = await api.getMeterConfiguration(deviceId);
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!owns()) return;
       this.setMeterConfiguration(importedConfiguration);
       fallback = "Topology evidence could not be loaded.";
       const result = await api.getTopology(deviceId);
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!owns()) return;
       this.importFailedDeviceId = null;
+      this.existingInspection = null;
       this.announcement = "Meter imported into ESPHome Builder.";
       this.showTopologyResult(result);
       fallback = "Saved work could not be loaded.";
       await this.restoreActiveWork(api, deviceId, generation);
     } catch (error) {
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!owns()) return;
       this.importFailedDeviceId = deviceId;
       const message = (error as WsError).code === "device_busy"
         ? "Finish or cancel current work before importing another meter."
@@ -800,7 +925,8 @@ export class CircuitSetupPanel extends LitElement {
           : this.safeErrorMessage(error, fallback);
       this.fail(error, message);
     } finally {
-      if (this.ownsOperation(generation, api, deviceId)) {
+      if (owns()) {
+        this.adoptionToken = null;
         this.pendingAction = "";
         this.requestUpdate();
       }
@@ -905,6 +1031,10 @@ export class CircuitSetupPanel extends LitElement {
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
+    const calibrationPreparation = current !== null && this.isCalibrationPreparationTransaction(current);
+    const chipFailureRetry = current?.purpose === "install_configuration"
+      && current.state === "install_confirmation_required"
+      && current.evidence.includes("meter_communication_failed");
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
         this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first."); return;
@@ -922,7 +1052,7 @@ export class CircuitSetupPanel extends LitElement {
       }, "The review could not be cancelled. Recovery and captured values are retained.", () => this.ownsOperation(generation, api, deviceId));
       this.pendingAction = ""; this.requestUpdate(); return;
     }
-    if (current && current.state !== "previewed") {
+    if (current && !["previewed", "rolled_back"].includes(current.state) && !chipFailureRetry) {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
     }
@@ -939,7 +1069,7 @@ export class CircuitSetupPanel extends LitElement {
       meterFrequencyTouched: this.meterFrequencyTouched,
       meterNominalVoltageTouched: new Set(this.meterNominalVoltageTouched),
     } : null);
-    if (!this.calibrationHandoff && !correction) {
+    if (!chipFailureRetry && !this.calibrationHandoff && !calibrationPreparation && !correction) {
       this.fail(new Error(), "The edited configuration is unavailable. Return to setup and reload the meter.");
       return;
     }
@@ -947,14 +1077,25 @@ export class CircuitSetupPanel extends LitElement {
     this.error = "";
     this.requestUpdate();
     const generation = ++this.operationGeneration;
-    let abandoned = current === null;
+    let abandoned = current === null || current?.state === "rolled_back";
     try {
-      if (current) {
+      if (current?.state === "previewed" || chipFailureRetry) {
         await api.abandonCtConfig(deviceId, current.transaction_id, current.source_sha256);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.clearSubscription("transaction");
         this.transaction = null;
         abandoned = true;
+      } else if (current?.state === "rolled_back") {
+        this.clearSubscription("transaction");
+        this.transaction = null;
+      }
+      if (calibrationPreparation) {
+        this.clearSubscription("session");
+        this.session = null;
+        this.reviewCorrection = null;
+        this.navigate("setup");
+        this.announcement = "Calibration preparation review cancelled. Start a new calibration session to try again.";
+        return;
       }
       if (this.calibrationHandoff) {
         this.calibrationHandoff = false;
@@ -964,6 +1105,16 @@ export class CircuitSetupPanel extends LitElement {
       this.reviewCorrection = correction;
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (chipFailureRetry) {
+        this.packageOptionsTouched = false;
+        this.meterFrequencyTouched = false;
+        this.meterNominalVoltageTouched = new Set();
+        this.setMeterConfiguration(fresh);
+        this.showInventory(this.meterConfiguration!);
+        this.reviewCorrection = null;
+        this.announcement = "Review cancelled. Live saved configuration was reloaded.";
+        return;
+      }
       if (fresh.source_sha256 !== correction!.sourceSha256) {
         this.packageOptionsTouched = false;
         this.meterFrequencyTouched = false;
@@ -1027,7 +1178,7 @@ export class CircuitSetupPanel extends LitElement {
     const voltageMismatch = fixedVoltage !== null
       && importedMeter.voltage_references.some((reference) => reference.nominal_voltage_v !== fixedVoltage);
     const existingReadOnly = this.journeyOrigin === "existing_meter";
-    const resolvedMeter = !existingReadOnly && voltageMismatch ? { ...importedMeter, voltage_references: importedMeter.voltage_references.map((reference) =>
+    const resolvedMeter = voltageMismatch ? { ...importedMeter, voltage_references: importedMeter.voltage_references.map((reference) =>
       ({ ...reference, nominal_voltage_v: fixedVoltage })) } : importedMeter;
     const seeded = { ...normalized, configuration: { ...normalized.configuration, meter: resolvedMeter } };
     this.verifiedMeterConfiguration = existingReadOnly && this.configurationMode === "helper_managed"
@@ -1050,8 +1201,8 @@ export class CircuitSetupPanel extends LitElement {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields],
     };
-    this.canonicalConfigurationChanged = !existingReadOnly
-      && (this.packageOptionsTouched || (this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter));
+    this.canonicalConfigurationChanged = this.packageOptionsTouched
+      || (this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter);
     this.meterSettingsDraft = { ...this.meterConfiguration.configuration.meter,
       authoritative: configuration.capabilities.configuration_authoritative, warnings: configuration.warnings };
     this.multiReferencePreparationAcknowledged = false;
@@ -1161,7 +1312,7 @@ export class CircuitSetupPanel extends LitElement {
           ...item, name: draft.name, model_id: draft.modelId,
           reporting_multiplier: draft.multiplier,
           custom_gain_ct: draft.modelId === "custom" ? draft.customGainCt ?? null : null,
-          custom_label: draft.modelId === "custom" ? draft.customLabel?.trim() || null : null,
+          custom_label: draft.modelId === "custom" ? draft.name.trim() || null : null,
           burden_output_acknowledged: draft.burdenAcknowledged,
         } : item) });
     }
@@ -1248,6 +1399,12 @@ export class CircuitSetupPanel extends LitElement {
   private async refreshTotalGraph(configuration: MeterConfigurationRequest): Promise<void> {
     if (!this.api || !this.selectedDeviceId || !this.meterConfiguration?.capabilities.configuration_authoritative
       || this.configurationMode === "runtime_only") { this.totalGraphState = "invalid"; return; }
+    if (configuration.automatic_totals.some((item) => item.name !== undefined && !item.name.trim())) {
+      this.totalGraphPreview = null;
+      this.totalGraphState = "invalid";
+      this.requestUpdate();
+      return;
+    }
     const api = this.api; const deviceId = this.selectedDeviceId; const generation = this.operationGeneration;
     const meter = this.meterConfiguration;
     const settings = new Map(this.issuedAutomaticSettings.map((item) => [item.candidate_id, item]));
@@ -1260,7 +1417,11 @@ export class CircuitSetupPanel extends LitElement {
       const preview = await api.previewTotalGraph(deviceId, meter.plan_id, meter.source_sha256,
         { ...configuration, automatic_totals: this.issuedAutomaticSettings });
       if (!current()) return;
-      const automatic = preview.automatic_totals.map((item) => ({ candidate_id: item.candidate.candidate_id, enabled: item.enabled, outputs: item.outputs }));
+      const automatic = preview.automatic_totals.map((item) => {
+        const previous = settings.get(item.candidate.candidate_id);
+        return { candidate_id: item.candidate.candidate_id, enabled: item.enabled, outputs: item.outputs,
+          ...(previous?.name !== undefined ? { name: item.candidate.name } : {}) };
+      });
       automatic.forEach((item) => settings.set(item.candidate_id, item));
       this.issuedAutomaticSettings = [...settings.values()];
       this.meterConfiguration = { ...meter, configuration: { ...configuration, automatic_totals: automatic },
@@ -1632,7 +1793,9 @@ export class CircuitSetupPanel extends LitElement {
           await this.refreshInstalledConfiguration();
         }
       }
-    }, action === "install" && this.calibrationHandoff
+    }, action === "rollback"
+      ? "Rollback could not be completed. The failed configuration remains active; retry Rollback or reload before navigating."
+      : action === "install" && this.calibrationHandoff
       ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values."
       : "This confirmation is stale. Reload the CT inventory before making another change.",
     () => this.ownsOperation(generation, api, deviceId));
@@ -1723,6 +1886,33 @@ export class CircuitSetupPanel extends LitElement {
       this.pendingAction = "";
       this.requestUpdate();
     }
+  }
+
+  private async prepareCalibration(): Promise<void> {
+    if (!this.api || !this.selectedDeviceId || this.pendingAction) return;
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const generation = ++this.operationGeneration;
+    this.pendingAction = "prepare-calibration";
+    this.clearSubscription("transaction");
+    this.requestUpdate();
+    await this.run(async () => {
+      const transaction = await api.prepareCalibration(deviceId);
+      if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.clearSubscription("session");
+      this.session = null;
+      this.transaction = transaction;
+      this.navigate("install-configuration");
+      await this.subscribeTransaction(this.connectionGeneration);
+    }, "Reviewed calibration controls could not be prepared. No firmware was changed.",
+    () => this.ownsOperation(generation, api, deviceId));
+    if (this.ownsOperation(generation, api, deviceId)) this.pendingAction = "";
+    this.requestUpdate();
+  }
+
+  private isCalibrationPreparationTransaction(transaction: TransactionStatus | null): boolean {
+    return Boolean(transaction?.changes.length && transaction.changes.every((change) =>
+      /^(?:offset_calibration|gain_calibration|calibration\.(?:offset_calibration|gain_calibration)|package\.(?:main|addon[1-6])\.calibration)$/.test(change.key)));
   }
 
   private finishFlow(message: string): void {
@@ -2309,7 +2499,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private safeErrorMessage(error: unknown, fallback: string): string {
     const code = (error as WsError).code;
-    if (code === "offset_tables_unavailable") return "Meter diagnostics did not provide complete offset tables for this stage. Stock ESPHome can omit these before the first offset calibration. Preparation requires firmware with read-only offset-table reporting. You can choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data, if any, is unchanged.";
+    if (code === "offset_tables_unavailable") return "The meter did not report all offset values needed to back up this calibration stage. This can happen before the first offset calibration, even when the firmware supports offset calibration. Retry to request fresh diagnostics, or choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data is unchanged.";
     if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
     return code === "stale_confirmation"
       ? "This confirmation expired. Reload live data and review again."
@@ -2329,10 +2519,11 @@ export class CircuitSetupPanel extends LitElement {
       (value) => this.setAddonCount(value),
       (value) => { this.connection = value; this.refreshFirmwareOptions(); },
       () => void this.rescan(), (id) => void this.configureDevice(id), (id) => void this.adopt(id), this.pendingAction, Boolean(this.topology),
-      this.firmwareCatalog(), this.importFailedDeviceId)}
+      this.firmwareCatalog(), this.importFailedDeviceId, this.existingCandidates, this.existingInspection,
+      () => void this.findExistingMeters(), (id) => void this.inspectExistingMeter(id), (id) => void this.adopt(id), this.existingSearchComplete)}
       ${this.topology ? topologyStep(this.topology, this.selectedProjectVersion(),
         () => { this.selectDevice(null); this.navigate("setup"); }, () => void (this.selectedConfigurationAvailable()
-          ? this.loadInventory() : this.navigate("calibration-plan")), this.error === "Topology mismatch", this.pendingAction.startsWith("topology:") || this.pendingAction === "inventory" || this.pendingAction === "session") : nothing}`;
+          ? this.loadInventory() : this.navigate("calibration-plan")), this.error === "Topology mismatch", this.pendingAction.startsWith("topology:") || this.pendingAction === "inventory" || this.pendingAction === "session" || this.pendingAction === "prepare-calibration", this.calibrationPreparation, () => void this.prepareCalibration()) : nothing}`;
     if (this.step === "legacy-review" && this.meterConfiguration) return existingConfigurationStep(this.meterConfiguration, {
       configurationFilename: this.selectedConfiguration() ?? "Unavailable",
       projectName: this.selectedProjectName() ?? this.meterConfiguration.topology.project_name,
@@ -2354,9 +2545,9 @@ export class CircuitSetupPanel extends LitElement {
       this.packageOptions, (options) => this.setPackageOptions(options),
       this.meterProfileConfirmed,
       (value) => { this.meterProfileConfirmed = value; this.requestUpdate(); },
-      this.configurationMode ?? "helper_managed",
+      this.configurationMode ?? "helper_managed", this.packageCapabilities,
     );
-    if (this.step === "ct" && this.inventory) { const impact = this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null; const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0; return html`${impact ? html`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? html`<strong>Warning: high entity count. </strong>` : nothing}${impact.enabled_channel_count} enabled channels; ${total} ${this.meterConfiguration?.totals.migration.native_visibility_resolved ? "public entities" : "confirmed public entities (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : this.meterConfiguration ? html`<p role="status">${this.totalGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</p>` : nothing}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
+    if (this.step === "ct" && this.inventory) { const impact = this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null; const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0; return html`${impact ? html`<div class=${`${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} graph-status`} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? html`<strong>Warning: high entity count. </strong>` : nothing}${impact.enabled_channel_count} enabled channels; ${total} ${this.meterConfiguration?.totals.migration.native_visibility_resolved ? "Helper-managed measurements" : "confirmed Helper-managed measurements (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : this.meterConfiguration ? html`<div class="info-band graph-status" role="status">${this.totalGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</div>` : nothing}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
       (board) => { this.board = board; this.requestUpdate(); },
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session",
       this.labelOnly ? null : this.meterConfiguration?.configuration ?? null, (configuration) => this.updateCircuitConfiguration(configuration), (channel) => this.disableCircuit(channel),
@@ -2400,7 +2591,7 @@ export class CircuitSetupPanel extends LitElement {
       this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null,
       this.pendingAction === "review-back", this.reviewCorrection !== null, this.pendingAction,
       this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper", this.meterConfiguration,
-      this.totalGraphState === "ready" ? this.totalGraphPreview : null);
+       this.totalGraphState === "ready" ? this.totalGraphPreview : null);
     if (this.step === "safety") return safetyStep(this.session, this.safetyAcknowledged,
       (value) => { this.safetyAcknowledged = value; this.requestUpdate(); }, () => void this.acknowledgeSafety(), () => void this.cancelSession(), () => this.back(), this.pendingAction === "safety");
     if (this.step === "calibration-plan") return calibrationPlanStep(this.calibrationPlan, (plan) => {

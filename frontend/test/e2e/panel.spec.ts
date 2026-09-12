@@ -5,8 +5,9 @@ import type { MeterConfiguration, MeterConfigurationRequest, OffsetBoardStatus, 
 type Frame = Record<string, unknown> & { id?: number; type: string; response?: unknown };
 type Outcome = "success" | "collision" | "validation" | "compile";
 type Calibration = "main-success" | "addon-indeterminate" | undefined;
-type Scenario = "single-phase-pq" | undefined;
-type GuidedMode = "helper" | "legacy" | "runtime";
+type Scenario = "single-phase-pq" | "existing-inspection" | "calibration-unavailable" | "calibration-missing" | undefined;
+type ExistingOutcome = "success" | "inspect-stale" | "adopt-busy";
+type SourceMode = "helper" | "legacy" | "runtime";
 const pageErrors = new WeakMap<Page, string[]>();
 const consoleErrors = new WeakMap<Page, string[]>();
 test.beforeEach(({ page }) => {
@@ -50,13 +51,36 @@ function device(addons: number, importable = false, entryId = "meter-1") {
     project_version: "2026.8.0", importable, configuration: importable ? null : "meter.yaml" };
 }
 
-function topology(addons: number) {
+const CUSTOM_PROJECT = "legacy.custom-meter";
+
+function existingCandidate(entryId = "meter-1") {
+  return { entry_id: entryId, title: "Legacy CircuitSetup meter", project_name: CUSTOM_PROJECT,
+    project_version: null, compatibility: ["custom_or_older_project"] };
+}
+
+function existingDevice(entryId = "meter-1") {
+  return { ...device(0, false, entryId), title: "Legacy CircuitSetup meter", project_name: CUSTOM_PROJECT };
+}
+
+function topology(addons: number, projectName = project(addons)) {
   const boards = addons + 1;
   return { addon_count: addons, board_count: boards, ct_count: 6 * boards, group_count: 2 * boards,
-    connection_type: "wifi", voltage_layout: "two_groups_per_board", project_name: project(addons),
+    connection_type: "wifi", voltage_layout: "two_groups_per_board", project_name: projectName,
     evidence: [{ source: "config_project", addon_count: addons, detail: "Project identity" },
       { source: "config_packages", addon_count: addons, detail: `${boards} board packages` },
       { source: "native_entity_counts", addon_count: addons, detail: `${6 * boards} current sensors` }] };
+}
+
+function existingInspection(addons: number, entryId = "meter-1") {
+  const boards = addons + 1;
+  return { device: existingCandidate(entryId), configuration: "meter.yaml", source_sha256: hash,
+    topology: topology(addons, CUSTOM_PROJECT),
+    package_options: { power_quality: Array(boards).fill(false), status_fields: Array(boards).fill(false) },
+    package_capabilities: Array.from({ length: boards }, (_value, board) => [
+      { feature: "power_quality", board_index: board, state: "cannot_safely_manage", reason_code: "unsupported_package_source" },
+      { feature: "status_fields", board_index: board, state: "cannot_safely_manage", reason_code: "unsupported_package_source" },
+    ]).flat(),
+    calibration_preparation: { state: "cannot_safely_manage", reason_code: "calibration_flag_unavailable" } };
 }
 
 function inventory(addons: number, scenario: Scenario = undefined) {
@@ -81,7 +105,7 @@ function inventory(addons: number, scenario: Scenario = undefined) {
     schema_version: 1 } };
 }
 
-function meterConfiguration(backend: MeterConfiguration, addons: number, scenario: Scenario = undefined, mode: GuidedMode = "helper") {
+function meterConfiguration(backend: MeterConfiguration, addons: number, scenario: Scenario = undefined, mode: SourceMode = "helper") {
   const live = inventory(addons, scenario); const references = Array.from({ length: addons + 1 }, (_, board) => ({
     reference_id: board ? `addon${board}` : "main", label: board ? `Add-on ${board}` : "Main", phase_label: "A/B",
     nominal_voltage_v: 120, transformer_model_id: "default", gain_voltage: 7305,
@@ -91,10 +115,12 @@ function meterConfiguration(backend: MeterConfiguration, addons: number, scenari
     model_id: channel.selected_model_id ?? "custom", reporting_multiplier: channel.reporting_multiplier, role: "branch",
     voltage_reference_id: channel.address.board_index ? `addon${channel.address.board_index}` : "main",
     custom_gain_ct: channel.selected_model_id === null ? channel.raw_gain_ct : null,
-    custom_label: channel.selected_model_id === null ? "Custom CT" : null,
+    custom_label: channel.selected_model_id === null ? channel.name : null,
     burden_output_acknowledged: channel.selected_model_id === null }));
   const singlePhase = scenario === "single-phase-pq";
-  return { plan_id: "b".repeat(32), source_sha256: live.source_sha256, topology: { ...topology(addons), voltage_layout: "standard" },
+  const projectName = scenario === "existing-inspection" ? CUSTOM_PROJECT : project(addons);
+  const numericEntityCount = live.channels.length * 2 + 2 * (addons + 1) + (singlePhase ? 18 : 0);
+  return { plan_id: "b".repeat(32), source_sha256: live.source_sha256, topology: { ...topology(addons, projectName), voltage_layout: "standard" },
     configuration: { meter: { friendly_name: "Energy meter", electrical_system: singlePhase ? "single_phase_230" : "split_phase_120_240", line_frequency_hz: singlePhase ? 50 : 60,
       update_interval_s: 5, voltage_layout: addons ? "multi_reference" : "standard", voltage_references: references.map((reference) => singlePhase ? { ...reference, nominal_voltage_v: 230 } : reference) }, channels,
       default_totals: backend.configuration.default_totals, automatic_totals: [], aggregates: [],
@@ -109,14 +135,17 @@ function meterConfiguration(backend: MeterConfiguration, addons: number, scenari
 }
 
 function transaction(state: string, channel: number, options: { evidence?: string[]; progress?: string[];
-  rollback?: boolean; validation?: boolean } = {}) {
+  rollback?: boolean; validation?: boolean;
+  uploadProgress?: Array<{ stage: string; percentage: number | null }>; verified?: boolean } = {}) {
   return { ...sanitizerContract.sanitized, transaction_id: "b".repeat(32), state, source_sha256: hash,
     changes: [{ key: `channel.${channel}.name`, old_value: `CT${channel}`, new_value: `Load ${channel}` }],
     redacted_diff: `- ct${channel}_name: <redacted>\n+ ct${channel}_name: <redacted>`,
     rollback_available: options.rollback ?? false, evidence: options.evidence ?? [], progress: options.progress ?? [],
     validation_detail: options.validation ? { code: 1, reported_error_count: 1,
       reported_warning_count: 0, error_record_count: 1, warning_record_count: 0 } : null,
-    upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: true };
+    upload_progress: options.uploadProgress ?? [], aggregate_entity_mismatch: false,
+    full_meter_configuration_verified: options.verified ?? true,
+  };
 }
 
 function offsetBoards(addons: number, stageState: "not_started" | "skipped" = "not_started"): OffsetBoardStatus[] {
@@ -125,10 +154,11 @@ function offsetBoards(addons: number, stageState: "not_started" | "skipped" = "n
 }
 
 function session(state: string, acknowledged: boolean, addons = 0, pending = false,
-  offsetState: "not_started" | "skipped" = "not_started", calibrationPlan: "standard" | "full" = "full"): SessionStatus {
+  offsetState: "not_started" | "skipped" = "not_started", calibrationPlan: "standard" | "full" = "full",
+  offsetCapability: "available" | "unavailable" | "invalid" = "available"): SessionStatus {
   return { session_id: "session-1", device_id: "meter-1", state, safety_acknowledged: acknowledged,
     preflight: { issues: [], zeroed_roles: ["main_1.reference_voltage", "ct1.reference_current"] },
-    entity_role_counts: {}, offset_capability: { status: "available", repair_reason: null },
+    entity_role_counts: {}, offset_capability: { status: offsetCapability, repair_reason: null },
     calibration_plan: calibrationPlan, offset_disposition: offsetState, offset_boards: offsetBoards(addons, offsetState),
     has_pending_calibration: pending };
 }
@@ -193,9 +223,11 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   calibration?: Calibration; rescan?: Array<"none" | "device" | "devices">; importable?: boolean;
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
   firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean; scenario?: Scenario;
-  slowClearCalibration?: boolean; delayedGraph?: boolean; delayedInventory?: boolean; guidedMode?: GuidedMode; activeWork?: "normal" | "handoff" | "safety" | "ready"; oneDevice?: boolean } = {}) {
+  existingOutcome?: ExistingOutcome; slowClearCalibration?: boolean; delayedGraph?: boolean;
+  delayedInventory?: boolean; sourceMode?: SourceMode; activeWork?: "normal" | "handoff" | "safety" | "ready"; oneDevice?: boolean } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
+  const offsetCapability = options.scenario === "calibration-unavailable" ? "unavailable" as const : "available" as const;
   const frames: Frame[] = [];
   const fixtureUrl = `http://127.0.0.1:${process.env.CSEMH_FIXTURE_PORT ?? 4174}/rpc?fixture=main-only&session=legacy-${crypto.randomUUID()}&addons=${addons}`;
   const backendCall = async <T>(message: Record<string, unknown>): Promise<T> => {
@@ -220,7 +252,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   let currentTransaction = transaction("previewed", addons ? 42 : 1);
   let currentSession = session(options.activeWork === "handoff" ? "verified" : options.activeWork === "ready" ? "ready" : "safety_required",
     options.activeWork === "handoff" || options.activeWork === "ready", addons, false,
-    options.activeWork ? "skipped" : "not_started", options.activeWork ? "standard" : "full");
+    options.activeWork ? "skipped" : "not_started", options.activeWork ? "standard" : "full", offsetCapability);
   let currentRestart: RestartVerificationResult | null = null;
   let resumeRestart: RestartVerificationResult | null = null;
   let transactionActive = false;
@@ -232,18 +264,19 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   let freshPlanGeneration = 0;
   const discoveredDevice = (entryId = "meter-1") => ({
     ...device(addons, options.importable, entryId),
-    configuration: options.guidedMode === "runtime" || options.importable ? null : "meter.yaml",
+    configuration: options.sourceMode === "runtime" || options.importable ? null : "meter.yaml",
   });
-  const setupDevices = options.setupEvent === "devices"
+  const setupDevices = options.scenario === "existing-inspection" ? [existingDevice()] : options.setupEvent === "devices"
     ? [discoveredDevice(), discoveredDevice("meter-2")]
     : options.setupEvent === "device" ? [discoveredDevice()] : [];
-  const authoritative = () => options.guidedMode !== "runtime" && (!options.importable || imported);
+  const authoritative = () => options.sourceMode !== "runtime" && (!options.importable || imported);
   const setupSnapshot = () => boundDeviceId || deviceSeen
     ? { state: "topology_review", devices: (setupDevices.length ? setupDevices : [discoveredDevice()]).map((item) => item.entry_id === (boundDeviceId ?? "meter-1") && imported
       ? { ...item, importable: false, configuration: "meter.yaml" } : item), bound_device_id: boundDeviceId ?? "meter-1",
     configuration_authoritative: authoritative() }
     : { state: "no_device", devices: [] };
-
+  let availableDevices = [...setupDevices];
+  const transactionSubscriptions: Array<{ id: number; send: (message: string) => void }> = [];
   await mockFirmwareIndex(page, options.firmwareIndex, options.firmwareRequests);
 
   await page.routeWebSocket("**/api/websocket", (socket) => {
@@ -265,7 +298,13 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       };
       const fail = (code: string, message: string) => socket.send(JSON.stringify({ id, type: "result", success: false,
         error: { code, message } }));
-      if (operation === "unsubscribe_events") return ok(null);
+      if (operation === "unsubscribe_events") {
+        const subscriptionId = Number(frame.subscription);
+        for (let index = transactionSubscriptions.length - 1; index >= 0; --index) {
+          if (transactionSubscriptions[index]?.id === subscriptionId) transactionSubscriptions.splice(index, 1);
+        }
+        return ok(null);
+      }
       let result: unknown;
       if (operation === "setup_status") {
         if (nextSetupStatusUnavailable) {
@@ -273,6 +312,11 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           return fail("capability_unavailable", "helper reload in progress");
         }
         result = setupSnapshot();
+      }
+      else if (operation === "list_existing_meters") result = [existingCandidate("meter-2")];
+      else if (operation === "inspect_existing_meter") {
+        if (options.existingOutcome === "inspect-stale") return fail("stale_handle", "inspection is stale");
+        result = existingInspection(addons, String(frame.device_id));
       }
       else if (operation === "set_installer_intent") result = { state: "installer_guide", devices: [],
         installer_intent: { addon_count: frame.addon_count, connection_type: frame.connection_type } };
@@ -284,17 +328,21 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
             ? [discoveredDevice(), discoveredDevice("meter-2")]
             : [discoveredDevice()], configuration_authoritative: authoritative() };
       } else if (operation === "adopt_device") {
-        boundDeviceId = "meter-1";
+        if (options.existingOutcome === "adopt-busy") return fail("device_busy", "device busy");
+        boundDeviceId = String(frame.device_id);
         imported = true;
         nextSetupStatusUnavailable = true;
-        result = { device_id: "meter-1", configuration: "meter.yaml" };
+        result = { device_id: String(frame.device_id), configuration: "meter.yaml" };
       }
       else if (operation === "get_topology") result = {
-        topology: topology(addons),
+        topology: topology(addons, options.scenario === "existing-inspection" ? CUSTOM_PROJECT : project(addons)),
         package_options: {
           power_quality: Array.from({ length: addons + 1 }, (_value, board) => options.scenario === "single-phase-pq" && board === 1),
           status_fields: Array.from({ length: addons + 1 }, () => false),
         },
+        ...(options.scenario === "calibration-missing" ? {
+          calibration_preparation: { state: "available_to_prepare", reason_code: "calibration_source_ready" },
+        } : {}),
       };
       else if (operation === "get_meter_configuration") {
         if (options.delayedInventory) await new Promise((resolve) => setTimeout(resolve, 800));
@@ -304,7 +352,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           freshPlanGeneration += 1;
           if (options.freshSourceChanged) activeSourceSha256 = "f".repeat(64);
         }
-        const { total_details: _details, ...live } = meterConfiguration(backend, addons, options.scenario, options.guidedMode);
+        const { total_details: _details, ...live } = meterConfiguration(backend, addons, options.scenario, options.sourceMode);
         const configuration = committedConfiguration ?? live.configuration;
         const graph = await graphFor(configuration);
         result = { ...live, plan_id: activePlan ?? "b".repeat(32), source_sha256: activeSourceSha256,
@@ -361,6 +409,10 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           activePlan = null;
           pendingPreview = true;
         }
+      } else if (operation === "prepare_calibration") {
+        result = currentTransaction = { ...transaction("previewed", 1),
+          changes: [{ key: "package.main.calibration", old_value: "disabled", new_value: "enabled" }],
+          redacted_diff: "+ official calibration controls" };
       } else if (operation === "preview_calibrated_gains") {
         transactionActive = true;
         result = currentTransaction = { ...transaction("previewed", 1), purpose: "save_calibration", transaction_id: "d".repeat(32) };
@@ -384,8 +436,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         result = currentTransaction = { ...transaction("verified", addons ? 42 : 1,
           { progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"] }),
           purpose: currentTransaction.purpose, transaction_id: String(frame.transaction_id) };
-      }
-      else if (operation === "abandon_ct_config") {
+      } else if (operation === "abandon_ct_config") {
         if (options.consumePlans && !pendingPreview) return fail("stale_confirmation", "no pending preview");
         pendingPreview = false;
         result = currentTransaction = { ...currentTransaction, state: "failed", evidence: ["cancelled"] };
@@ -398,12 +449,11 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           return;
         }
       }
-      else if (operation === "rollback_ct_config") result = currentTransaction = transaction("rolled_back", addons ? 42 : 1,
-        { progress: ["config_restored"] });
+      else if (operation === "rollback_ct_config") result = currentTransaction = transaction("rolled_back", addons ? 42 : 1, { progress: ["config_restored"] });
       else if (operation === "start_session") {
         sessionActive = true;
         result = currentSession = session("safety_required", false, addons, false,
-          frame.calibration_plan === "standard" ? "skipped" : "not_started", frame.calibration_plan === "standard" ? "standard" : "full");
+          frame.calibration_plan === "standard" ? "skipped" : "not_started", frame.calibration_plan === "standard" ? "standard" : "full", offsetCapability);
       }
       else if (operation === "acknowledge_safety") result = currentSession = { ...currentSession, state: "ready", safety_acknowledged: true };
       else if (operation === "get_offset_preparation") result = { backup_available: false, operation_id: null, stage: null,
@@ -427,7 +477,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           expected_tables: keys.map((key) => [key, [[1, -1], [2, -2], [3, -3]]]),
           unfinished_group_keys: [], retry_allowed: false, error: null };
       } else if (operation === "skip_offset_calibration") {
-        result = currentSession = session("ready", true, addons, currentSession.has_pending_calibration as boolean, "skipped");
+        result = currentSession = session("ready", true, addons, currentSession.has_pending_calibration as boolean, "skipped", currentSession.calibration_plan);
       }
       else if (operation === "check_stability") result = stability(frame);
       else if (operation === "calibrate_voltage") result = voltageCalibration(frame);
@@ -450,10 +500,10 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         const base = restart(addons);
         currentSession = { ...currentSession, state: "verified" };
         result = currentRestart = { ...base,
-          config_filename: options.guidedMode === "runtime" ? null : base.config_filename,
-          config_sha256: options.guidedMode === "runtime" ? null : base.config_sha256,
+          config_filename: options.sourceMode === "runtime" ? null : base.config_filename,
+          config_sha256: options.sourceMode === "runtime" ? null : base.config_sha256,
           offset_groups: offsetCalibrated ? [{ instance_id: "meter_main1", phase_offsets: [[1, -1], [2, -2], [3, -3]] }] : [],
-          source_handoff_available: options.guidedMode !== "runtime" && !offsetCalibrated };
+          source_handoff_available: options.sourceMode !== "runtime" && !offsetCalibrated };
       }
       else if (operation === "complete_calibration_without_changes") result = currentSession = {
         ...currentSession, state: "verified", has_pending_calibration: false,
@@ -463,7 +513,10 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         ++setupSubscriptionGeneration;
         result = setupSnapshot();
       }
-      else if (operation === "subscribe_config_transaction") result = currentTransaction;
+      else if (operation === "subscribe_config_transaction") {
+        transactionSubscriptions.push({ id, send: (message) => socket.send(message) });
+        result = currentTransaction;
+      }
       else if (operation === "subscribe_session") result = currentSession;
       else return fail("unknown_command", operation);
       ok(result);
@@ -566,16 +619,52 @@ test("CT names suggest a two-pole total only after both legs are identified", as
   const suggestion = page.getByRole("switch", { name: "Create Dryer total", exact: true });
   await expect(suggestion).toBeVisible();
   await expect(suggestion).not.toBeChecked();
+  const suggestedName = page.getByLabel("two-pole-ct3-ct4 suggested total name", { exact: true });
+  await expect(suggestedName).toHaveValue("Dryer");
+  const graphRequestsBeforeClear = (await fixture.state()).frames.filter((frame: Frame) => frame.type.endsWith("/preview_total_graph")).length;
+  await suggestedName.fill("");
+  await expect(suggestedName).toHaveValue("");
+  await expect.poll(async () => (await fixture.state()).frames.filter((frame: Frame) => frame.type.endsWith("/preview_total_graph")).length).toBe(graphRequestsBeforeClear);
+  await suggestedName.fill("Workshop");
+  const renamedSuggestion = page.getByRole("switch", { name: "Create Workshop total", exact: true });
+  await expect(renamedSuggestion).toBeVisible();
+  await expect(page.locator(".automatic-total-card").filter({ hasText: "Workshop" })).toContainText("workshopWatts");
+  await renamedSuggestion.check();
+  await page.getByLabel("CT3 role", { exact: true }).selectOption("two_pole");
+  await page.getByLabel("CT4 role", { exact: true }).selectOption("two_pole");
+  await expect(renamedSuggestion).toBeChecked();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
+  const content = (await fixture.state()).proposed_content;
+  expect(content).toContain("id: workshopWatts");
+  expect(content).not.toContain("_import_power");
+  expect(content).not.toContain("_export_power");
+});
+
+test("suggested totals stay reviewable after an advanced total is removed", async ({ page }) => {
+  const fixture = await totalsFixture(page, "main-only");
+  await openInventory(page, fixture.url);
+  await page.getByLabel("CT3 name", { exact: true }).fill("Dryer L1");
+  await page.getByLabel("CT4 name", { exact: true }).fill("Dryer L2");
+  const suggestion = page.getByRole("switch", { name: "Create Dryer total", exact: true });
+  await expect(suggestion).toBeVisible();
   await suggestion.check();
   await page.getByLabel("CT3 role", { exact: true }).selectOption("two_pole");
   await page.getByLabel("CT4 role", { exact: true }).selectOption("two_pole");
   await expect(suggestion).toBeChecked();
+  await page.locator("#advanced-totals-heading").press("Enter");
+  await page.getByRole("button", { name: "Create aggregate total" }).click();
+  await page.getByLabel("aggregate-1 aggregate name").fill("Service report");
+  await page.getByLabel("Main Board channels").locator("summary").click();
+  await page.getByLabel("Service report: CT1", { exact: true }).check();
+  await page.getByLabel("Service report: CT2", { exact: true }).check();
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete total", exact: true }).click();
+  await expect(page.getByLabel("Service report aggregate", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
-  const content = (await fixture.state()).proposed_content;
-  expect(content).toContain("id: csemh_auto_two_pole_ct3_ct4_power");
-  expect(content).not.toContain("_import_power");
-  expect(content).not.toContain("_export_power");
 });
 
 test("verified Summary shows public outputs, hidden dependencies, formulas, coverage and pending migration", async ({ page }) => {
@@ -668,6 +757,49 @@ test("rapid role changes ignore a late automatic preview and gate Continue on th
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   const latest = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!.configuration as MeterConfigurationRequest;
   expect(latest.channels.filter((channel) => channel.role === "grid").map((channel) => channel.channel)).toEqual([1, 2, 3]);
+});
+
+test("CT name editing survives repeated delayed previews without moving the viewport", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { delayedGraph: true });
+  await openInventory(page);
+  await page.getByLabel("CT1 role", { exact: true }).selectOption("grid");
+  await page.getByLabel("CT2 role", { exact: true }).selectOption("grid");
+  await expect(page.getByRole("switch", { name: "Create Mains total", exact: true })).toBeVisible();
+
+  const name = page.getByLabel("CT1 name", { exact: true });
+  await name.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  const measure = () => name.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, left: rect.left, width: rect.width, height: rect.height, scrollY: window.scrollY };
+  });
+  const baseline = await measure();
+  expect(baseline.scrollY).toBeGreaterThan(0);
+  const completed = () => frames.filter((frame) => frame.type.endsWith("/preview_total_graph") && frame.response !== undefined).length;
+  await expect.poll(completed).toBeGreaterThan(0);
+  let previousCompleted = completed();
+  for (const value of ["Kitchen mains", "Kitchen mains revised", "Kitchen mains final"]) {
+    await name.fill(value);
+    const request = frames.filter((frame) => frame.type.endsWith("/preview_total_graph")).at(-1)!;
+    await expect.poll(() => request.response === undefined).toBe(true);
+    const during = await measure();
+    await expect.poll(() => request.response !== undefined).toBe(true);
+    await expect.poll(completed).toBeGreaterThan(previousCompleted);
+    previousCompleted = completed();
+    const after = await measure();
+    await expect(name).toBeFocused();
+    await expect(name).toHaveValue(value);
+    await expect(page.locator(".automatic-totals")).toContainText(`CT1 · ${value}`);
+    for (const position of [during, after]) {
+      expect(Math.abs(position.top - baseline.top)).toBeLessThan(2);
+      expect(Math.abs(position.left - baseline.left)).toBeLessThan(2);
+      expect(Math.abs(position.width - baseline.width)).toBeLessThan(2);
+      expect(Math.abs(position.height - baseline.height)).toBeLessThan(2);
+      expect(Math.abs(position.scrollY - baseline.scrollY)).toBeLessThan(2);
+    }
+  }
+  const requests = frames.filter((frame) => frame.type.endsWith("/preview_total_graph"))
+    .map((frame) => (frame.configuration as MeterConfigurationRequest).channels.find((channel) => channel.channel === 1)?.name);
+  expect(requests).toEqual(expect.arrayContaining(["Kitchen mains", "Kitchen mains revised", "Kitchen mains final"]));
 });
 
 test("referenced automatic disable uses native confirmation and repairs an invalid parent with keyboard controls", async ({ page }) => {
@@ -812,18 +944,20 @@ test("non-helper opening performs no write and explicit adoption is a metadata-o
   await expect.poll(async () => (await fixture.state()).stored.configuration.totals_managed).toBe(true);
 });
 
-test("adoption exact review identifies source-aware native overrides before any write", async ({ page }) => {
+test("adoption review uses one authoritative source diff before any write", async ({ page }) => {
   const fixture = await totalsFixture(page, "non-helper");
   await openInventory(page, fixture.url);
   await page.getByRole("button", { name: "Adopt managed totals", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("switch", { name: "Overall meter total Watts", exact: true }).uncheck();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByText("Exact source-aware additions and helper blocks (server transaction diff)", { exact: true }).click();
-  const diff = page.getByLabel("Exact adoption transaction diff", { exact: true });
+  await page.getByRole("region", { name: "Review changes" }).getByText("Technical details", { exact: true }).click();
+  const diff = page.getByLabel("Configuration file diff", { exact: true });
+  await expect(diff).toBeVisible();
   await expect(diff).toContainText("totalWattsMain");
   await expect(diff).toContainText("internal: true");
-  expect(await diff.textContent()).toContain("\nExact generated total changes\n+ id: !extend totalWattsMain; internal: true");
+  await expect(page.getByLabel("Configuration file diff", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("Exact source-aware additions and helper blocks (server transaction diff)", { exact: true })).toHaveCount(0);
   expect((await fixture.state()).builder_calls).not.toContain("write");
 });
 
@@ -935,6 +1069,88 @@ test("multiple newly discovered meters wait for an Import click", async ({ page 
   await expect.poll(() => operations(frames).filter((operation) => operation === "adopt_device").length).toBe(1);
 });
 
+test("Find, inspect, and adopt keeps custom meter work behind the explicit boundary", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { scenario: "existing-inspection" });
+  await page.goto("/test/harness.html");
+
+  await page.getByRole("button", { name: "Find another ESPHome meter" }).click();
+  await expect(page.getByRole("button", { name: "Inspect", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Inspect", exact: true }).click();
+  await expect(page.getByText("passed inspection.")).toBeVisible();
+  await page.getByRole("button", { name: "Adopt inspected meter" }).click();
+  await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
+
+  const ordered = operations(frames);
+  expect(ordered.indexOf("list_existing_meters")).toBeLessThan(ordered.indexOf("inspect_existing_meter"));
+  expect(ordered.indexOf("inspect_existing_meter")).toBeLessThan(ordered.indexOf("adopt_device"));
+  expect(frames.find((frame) => frame.type.endsWith("/adopt_device"))?.device_id).toBe("meter-2");
+  expect(ordered).toEqual(expect.arrayContaining(["get_meter_configuration", "get_topology"]));
+});
+
+test("stale existing-meter inspection remains actionable", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { scenario: "existing-inspection", existingOutcome: "inspect-stale" });
+  await page.goto("/test/harness.html");
+
+  await page.getByRole("button", { name: "Find another ESPHome meter" }).click();
+  await page.getByRole("button", { name: "Inspect", exact: true }).click();
+
+  await expect(page.getByRole("alert")).toContainText("selected device changed or is no longer available");
+  expect(operations(frames)).not.toContain("adopt_device");
+});
+
+test("busy existing-meter adoption stays on setup without rebinding", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { scenario: "existing-inspection", existingOutcome: "adopt-busy" });
+  await page.goto("/test/harness.html");
+
+  await page.getByRole("button", { name: "Find another ESPHome meter" }).click();
+  await page.getByRole("button", { name: "Inspect", exact: true }).click();
+  await page.getByRole("button", { name: "Adopt inspected meter" }).click();
+
+  await expect(page.getByRole("alert")).toContainText("Finish or cancel current work before importing another meter");
+  await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
+  expect(operations(frames)).toContain("adopt_device");
+  expect(operations(frames)).not.toContain("get_topology");
+});
+
+test("runtime offset limitation keeps calibration-only skip without a prep promise", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { scenario: "calibration-unavailable" });
+  await openInventory(page);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Choose calibration", exact: true })).toBeVisible();
+  await page.getByLabel(/Full calibration/).click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Offset", exact: true })).toBeVisible();
+  await expect(page.getByText("Offset calibration is not available on this firmware.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Prepare reviewed official calibration controls" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Skip offset calibration" })).toBeVisible();
+  expect(operations(frames)).not.toContain("prepare_calibration");
+});
+
+test("missing calibration controls can be prepared before starting a session", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { scenario: "calibration-missing" });
+  await page.goto("/test/harness.html");
+  await page.locator('[data-action="rescan"]').click();
+  await page.locator('[data-action="configure-device"]').first().click();
+  await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Prepare reviewed official calibration controls" }).click();
+  await expect(page.getByRole("heading", { name: "Install Configuration", exact: true })).toBeVisible();
+  expect(operations(frames)).not.toContain("start_session");
+  await page.getByRole("button", { name: "Save and validate configuration" }).click();
+  await expect(page.getByRole("button", { name: "Build firmware" })).toBeEnabled();
+  await page.getByRole("button", { name: "Build firmware" }).click();
+  await expect(page.getByRole("button", { name: "Install on meter" })).toBeEnabled();
+  await page.getByRole("button", { name: "Install on meter" }).click();
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Choose calibration", exact: true })).toBeVisible();
+  await page.getByLabel(/Full calibration/).click();
+  await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
+  expect(operations(frames)).toEqual(expect.arrayContaining(["prepare_calibration", "apply_ct_config", "compile_ct_config", "install_ct_config", "start_session"]));
+});
+
 test("inline provisioning resolves selected manifests without popup, navigation, credentials, or URL payloads", async ({ page }) => {
   const firmwareRequests: string[] = [];
   const frames = await mockHomeAssistant(page, { firmwareRequests });
@@ -1019,6 +1235,32 @@ test("six-channel inventory routes canonical edits through Meter Settings and fu
   expect(alignment.every((difference) => difference < 1)).toBe(true);
   await expect(page.getByLabel("CT4 model")).toHaveValue("custom");
   await expect(page.getByLabel("CT4 custom gain")).toHaveCount(0);
+  await expect(page.getByLabel("CT4 custom label")).toHaveCount(0);
+  await expect(page.locator(".row-toggle")).toHaveCount(0);
+  await page.locator("details.technical-details").nth(3).locator("summary").click();
+  await expect(page.getByLabel("CT4 custom gain")).toHaveValue("27518");
+  const firstDetails = page.locator("details.technical-details").first();
+  await firstDetails.locator("summary").click();
+  await page.getByLabel("CT1 manual multiplier").check();
+  const desktopMultiplierLayout = await page.getByLabel("CT1 manual multiplier").evaluate((input) => {
+    const row = input.closest(".ct-reporting-multiplier")!;
+    const dt = row.querySelector("dt")!.getBoundingClientRect();
+    const dd = row.querySelector("dd")!.getBoundingClientRect();
+    const override = input.closest("label")!.getBoundingClientRect();
+    return { dtTop: dt.top, ddTop: dd.top, overrideTop: override.top };
+  });
+  expect(Math.abs(desktopMultiplierLayout.dtTop - desktopMultiplierLayout.ddTop)).toBeLessThan(2);
+  expect(Math.abs(desktopMultiplierLayout.ddTop - desktopMultiplierLayout.overrideTop)).toBeLessThan(2);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByLabel("CT1 manual multiplier").check();
+  const multiplierLayout = await page.getByLabel("CT1 multiplier").evaluate((select) => {
+    const row = select.closest(".ct-reporting-multiplier")!;
+    const dd = select.parentElement!;
+    return { display: getComputedStyle(dd).display, wrap: getComputedStyle(dd).flexWrap,
+      selectWidth: select.getBoundingClientRect().width, rowWidth: row.getBoundingClientRect().width };
+  });
+  expect(multiplierLayout).toMatchObject({ display: "flex", wrap: "wrap" });
+  expect(multiplierLayout.selectWidth).toBeLessThan(multiplierLayout.rowWidth);
   await page.getByLabel("Home Assistant labels only").check();
   await expect(page.getByLabel("CT1 model")).toBeDisabled();
   await expect(page.getByLabel("CT1 multiplier")).toBeDisabled();
@@ -1128,13 +1370,18 @@ test("validation failure exposes evidence and performs only a user-requested rol
   const frames = await mockHomeAssistant(page, { outcome: "validation" });
   await openInventory(page);
   await reviewChannel(page, 1);
-  await expect(page.getByLabel("Redacted substitution diff")).toContainText("<redacted>");
+  await expect(page.getByLabel("Configuration file diff")).toContainText("<redacted>");
   await page.getByRole("button", { name: "Save and validate configuration" }).click();
   await expect(page.locator(".recovery-panel").filter({ hasText: "validation_failed" }).first()).toBeVisible();
   await page.getByRole("button", { name: "Rollback" }).click();
   await expect(page.getByText("rolled_back", { exact: true })).toBeVisible();
   expect(operations(frames)).toEqual(expect.arrayContaining(["preview_meter_configuration", "apply_ct_config", "rollback_ct_config"]));
   expect(operations(frames)).not.toContain("compile_ct_config");
+  const configurationReads = frames.filter((frame) => frame.type.endsWith("/get_meter_configuration") && frame.response).length;
+  await page.locator(".action-footer").getByRole("button", { name: "Back", exact: true }).click();
+  await expect.poll(() => frames.filter((frame) => frame.type.endsWith("/get_meter_configuration") && frame.response).length)
+    .toBeGreaterThan(configurationReads);
+  await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
 });
 
 test("compile failure blocks upload after a distinct apply acknowledgement", async ({ page }) => {
@@ -1267,7 +1514,7 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
       { channel: 1, enabled: true, name: "CT1", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "grid", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
       { channel: 2, enabled: true, name: "CT2", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "grid", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
       { channel: 3, enabled: true, name: "CT3", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
-      { channel: 4, enabled: true, name: "CT4", model_id: "custom", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: 27518, custom_label: "Custom CT", burden_output_acknowledged: true },
+      { channel: 4, enabled: true, name: "CT4", model_id: "custom", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: 27518, custom_label: "CT4", burden_output_acknowledged: true },
       { channel: 5, enabled: true, name: "CT5", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
       { channel: 6, enabled: true, name: "CT6", model_id: "cs-ct-200a", reporting_multiplier: 1, role: "branch", voltage_reference_id: "main", custom_gain_ct: null, custom_label: null, burden_output_acknowledged: false },
     ],
@@ -1444,7 +1691,7 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await page.getByRole("button", { name: "Review and save calibration to YAML" }).click();
   await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
   await page.getByRole("region", { name: "Review changes" }).getByText("Technical details", { exact: true }).click();
-  await expect(page.getByLabel("Redacted substitution diff")).toBeVisible();
+  await expect(page.getByLabel("Configuration file diff")).toBeVisible();
   await page.getByRole("button", { name: "Write verified gains to ESPHome" }).click();
   await page.getByRole("button", { name: "Build firmware" }).click();
   await page.getByRole("button", { name: "Install calibrated firmware" }).click();
@@ -1488,6 +1735,7 @@ test("add-on CT42 indeterminate disconnect never auto-represses calibration", as
   expect(operations(frames).filter((value) => value === "get_session").length).toBeGreaterThan(priorSessionReads);
   expect(operations(frames).filter((value) => value === "calibrate_current")).toHaveLength(1);
 });
+
 
 // These are deliberately browser-level tests: the assertions inspect the WebSocket
 // frames that caused each route change, not panel implementation state.
@@ -1537,7 +1785,7 @@ function expectLatestSourceBinding(frames: Frame[], operation: string) {
   }
 }
 
-async function openGuidedMeter(page: Page) {
+async function openMeter(page: Page) {
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
@@ -1603,7 +1851,7 @@ test("journey 1: new meter imports, installs, then keeps calibration", async ({ 
 
 test("journey 2: new standard calibration reaches restart before gain save", async ({ page }) => {
   const frames = await mockHomeAssistant(page);
-  await openGuidedMeter(page);
+  await openMeter(page);
   await page.locator('[data-action="continue-meter-settings"]').click();
   expect(mutations(frames)).toEqual([]);
   await page.getByRole("button", { name: "Continue" }).click();
@@ -1626,7 +1874,7 @@ test("journey 2: new standard calibration reaches restart before gain save", asy
 
 test("restart handoff can be kept in flash before any YAML preview", async ({ page }) => {
   const frames = await mockHomeAssistant(page);
-  await openGuidedMeter(page);
+  await openMeter(page);
   await page.locator('[data-action="continue-meter-settings"]').click();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByLabel(/Standard calibration/).click();
@@ -1643,8 +1891,8 @@ test("restart handoff can be kept in flash before any YAML preview", async ({ pa
 });
 
 test("journey 3: runtime-only full calibration keeps verified offsets in flash", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "runtime" });
-  await openGuidedMeter(page);
+  const frames = await mockHomeAssistant(page, { sourceMode: "runtime" });
+  await openMeter(page);
   expect(mutations(frames)).toEqual([]);
   await page.getByLabel(/Full calibration/).click();
   await expect(page.getByRole("heading", { name: "Safety", exact: true })).toBeVisible();
@@ -1674,8 +1922,8 @@ test("journey 3: runtime-only full calibration keeps verified offsets in flash",
 });
 
 test("24-channel source review preserves untouched CTs while editing two circuits", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "legacy", addons: 3 });
-  await openGuidedMeter(page);
+  const frames = await mockHomeAssistant(page, { sourceMode: "legacy", addons: 3 });
+  await openMeter(page);
   await expect(page.getByText("Ready for setup", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Review and manage with helper" }).click();
   await page.getByLabel("Confirm electrical profile").check();
@@ -1704,8 +1952,8 @@ test("24-channel source review preserves untouched CTs while editing two circuit
 });
 
 test("journey 4: legacy manage requires review before migration preview", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "legacy" });
-  await openGuidedMeter(page);
+  const frames = await mockHomeAssistant(page, { sourceMode: "legacy" });
+  await openMeter(page);
   await expect(page.getByRole("heading", { name: "Review Existing Setup", exact: true }).first()).toBeVisible();
   expect(mutations(frames)).toEqual([]);
   await page.getByRole("button", { name: "Review and manage with helper" }).click();
@@ -1716,7 +1964,7 @@ test("journey 4: legacy manage requires review before migration preview", async 
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Install Configuration", exact: true })).toBeVisible();
   await page.getByRole("region", { name: "Review changes" }).getByText("Technical details", { exact: true }).click();
-  await expect(page.getByLabel("Redacted substitution diff")).toBeVisible();
+  await expect(page.getByLabel("Configuration file diff")).toBeVisible();
   await installConfiguration(page);
   await page.getByLabel(/Keep existing calibration/).click();
   await expect(page.getByRole("heading", { name: "Review complete", exact: true })).toBeVisible();
@@ -1726,7 +1974,7 @@ test("journey 4: legacy manage requires review before migration preview", async 
 });
 
 test("topology Continue waits for authoritative configuration classification", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "legacy", delayedInventory: true });
+  const frames = await mockHomeAssistant(page, { sourceMode: "legacy", delayedInventory: true });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
@@ -1739,8 +1987,8 @@ test("topology Continue waits for authoritative configuration classification", a
 });
 
 test("journey 5: legacy calibrate-only never previews configuration", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "legacy" });
-  await openGuidedMeter(page);
+  const frames = await mockHomeAssistant(page, { sourceMode: "legacy" });
+  await openMeter(page);
   expect(mutations(frames)).toEqual([]);
   await page.getByRole("button", { name: "Keep ESPHome configuration and calibrate only" }).click();
   await page.getByLabel(/Standard calibration/).click();
@@ -1761,8 +2009,8 @@ test("journey 5: legacy calibrate-only never previews configuration", async ({ p
 });
 
 test("journey 6: runtime-only skips every source configuration command", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "runtime" });
-  await openGuidedMeter(page);
+  const frames = await mockHomeAssistant(page, { sourceMode: "runtime" });
+  await openMeter(page);
   await expect(page.getByRole("heading", { name: "Choose calibration" })).toBeVisible();
   await expect(page.getByText("ESPHome source editing is unavailable.")).toBeVisible();
   await expect(page.getByText(/Circuit names, CT models, roles, multipliers, entities, and totals cannot be changed/)).toBeVisible();
@@ -1781,7 +2029,7 @@ test("journey 6: runtime-only skips every source configuration command", async (
 });
 
 test("journey 7: imported existing configuration enters legacy review", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { importable: true, guidedMode: "legacy", setupEvent: "devices" });
+  const frames = await mockHomeAssistant(page, { importable: true, sourceMode: "legacy", setupEvent: "devices" });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   expect(mutations(frames)).toEqual([]);
@@ -1807,7 +2055,7 @@ test("journey 8: an active normal transaction resumes at Install Configuration",
 });
 
 test("a legacy migration transaction resumes without repeating the branch choice", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { activeWork: "normal", guidedMode: "legacy" });
+  const frames = await mockHomeAssistant(page, { activeWork: "normal", sourceMode: "legacy" });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
@@ -1818,7 +2066,7 @@ test("a legacy migration transaction resumes without repeating the branch choice
 
 for (const [activeWork, heading] of [["safety", "Safety"], ["ready", "Voltage"]] as const) {
   test(`a legacy calibration-only ${activeWork} session resumes at ${heading}`, async ({ page }) => {
-    const frames = await mockHomeAssistant(page, { activeWork, guidedMode: "legacy" });
+    const frames = await mockHomeAssistant(page, { activeWork, sourceMode: "legacy" });
     await page.goto("/test/harness.html");
     await page.locator('[data-action="rescan"]').click();
     await page.locator('[data-action="configure-device"]').first().click();
@@ -1843,7 +2091,7 @@ test("journey 9: an active calibration handoff resumes at Save Calibration", asy
 });
 
 test("a legacy calibration-only handoff resumes without repeating the branch choice", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { activeWork: "handoff", guidedMode: "legacy" });
+  const frames = await mockHomeAssistant(page, { activeWork: "handoff", sourceMode: "legacy" });
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
@@ -1853,9 +2101,9 @@ test("a legacy calibration-only handoff resumes without repeating the branch cho
 });
 
 test("journey 10: mobile phases only advance as the conditional flow advances", async ({ page }) => {
-  const frames = await mockHomeAssistant(page, { guidedMode: "legacy" });
+  const frames = await mockHomeAssistant(page, { sourceMode: "legacy" });
   await page.setViewportSize({ width: 390, height: 844 });
-  await openGuidedMeter(page);
+  await openMeter(page);
   const progress = page.locator(".mobile-progress");
   await expect(progress).toContainText(/Phase \d+ of \d+/);
   const phase = async () => Number((await progress.textContent())?.match(/Phase (\d+) of/)?.[1]);

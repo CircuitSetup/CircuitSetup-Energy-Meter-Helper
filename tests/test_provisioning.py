@@ -271,6 +271,58 @@ def test_rescan_requires_circuitsetup_runtime_project_prefix() -> None:
     asyncio.run(run())
 
 
+def test_existing_meter_listing_excludes_the_bound_entry() -> None:
+    """The explicit "another meter" search does not return the current meter."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        hass.config_entries.entries.extend(
+            [
+                FakeEntry(
+                    "bound",
+                    "Current meter",
+                    FakeRuntimeData(FakeDeviceInfo("circuitsetup.6c-energy-meter")),
+                ),
+                FakeEntry(
+                    "other",
+                    "Other meter",
+                    FakeRuntimeData(FakeDeviceInfo("legacy.custom-meter")),
+                ),
+            ]
+        )
+
+        candidates = await ProvisioningCoordinator(hass).async_list_existing_meters(
+            "bound"
+        )
+
+        assert [candidate.entry_id for candidate in candidates] == ["other"]
+
+    asyncio.run(run())
+
+
+def test_existing_meter_listing_pages_past_32_entries_without_losing_candidates() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        hass.config_entries.entries.extend(
+            FakeEntry(f"device-{index:03}", f"Device {index}",
+                FakeRuntimeData(FakeDeviceInfo("legacy.custom-meter")))
+            for index in reversed(range(130))
+        )
+        coordinator = ProvisioningCoordinator(hass)
+        found = []
+        after = None
+        while True:
+            page = await coordinator.async_list_existing_meters("device-040", after)
+            assert len(page) <= 32
+            found.extend(candidate.entry_id for candidate in page)
+            if len(page) < 32:
+                break
+            after = page[-1].entry_id
+        assert found == [f"device-{index:03}" for index in range(130) if index != 40]
+
+    asyncio.run(run())
+
+
 def test_production_setup_reports_unavailable_device_builder_state_as_unknown() -> None:
     """The real integration setup never claims unavailability as a false value."""
 

@@ -179,16 +179,15 @@ it("lists exact preview visibility and helper blocks for explicit adoption", () 
   expect(host.textContent).not.toContain("opaque_w");
 });
 
-it("separates requested visibility from the actual source-aware transaction additions", () => {
+it("leaves the file diff to the authoritative configuration review", () => {
   const meter = unowned(); meter.configuration.totals_change_intent!.adopt_managed_totals = true;
   const preview: TotalGraphPreview = { plan_id: meter.plan_id, source_sha256: meter.source_sha256, configuration_impact: meter.configuration_impact,
     automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
     graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
   host = document.createElement("div");
-  const status = { transaction_id: "1".repeat(32), state: "previewed" as const, source_sha256: meter.source_sha256,
-    changes: [], redacted_diff: "+ id: !extend totalWattsMain\n+ internal: false", rollback_available: false, evidence: [], progress: [],
-    validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
-  render(totalsMigrationReview(meter, () => {}, preview, true, true, status), host);
+  render(totalsMigrationReview(meter, () => {}, preview, true, true), host);
   expect(host.textContent).toContain("Requested visibility changes versus firmware defaults");
-  expect(host.querySelector('[aria-label="Exact adoption transaction diff"]')?.textContent).toContain("+ id: !extend totalWattsMain");
+  expect(host.textContent).not.toContain("Exact source-aware additions and helper blocks (server transaction diff)");
+  expect(host.textContent).not.toContain("server transaction diff");
+  expect(host.querySelector('[aria-label="Exact adoption transaction diff"]')).toBeNull();
 });

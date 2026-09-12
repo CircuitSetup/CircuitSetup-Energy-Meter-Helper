@@ -76,6 +76,7 @@ export const panelStyles = css`
   .connection-options .selected { border-color: var(--accent); }
   .connection-options .selected::before { border: 6px solid var(--accent); }
   .summary-band, .info-band, .success-band, .warning-band, .status-band { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .graph-status { min-height: calc(3.2em + 30px); }
   dl { margin: 0; }
   dl div { display: flex; gap: 12px; }
   dt { font-weight: var(--ha-font-weight-bold, 700); }
@@ -106,17 +107,21 @@ export const panelStyles = css`
   .board-tabs button, .target-tabs button { flex: 0 0 auto; border: 0; border-radius: 0; background: transparent; }
   .board-tabs button[aria-selected="true"], .target-tabs button[aria-pressed="true"] { color: var(--accent); border-bottom: 2px solid var(--accent); }
   .ct-table { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow-x: auto; overflow-y: hidden; }
-  .ct-header, .ct-row { display: grid; grid-template-columns: .45fr .45fr 1.35fr 1fr 1.45fr 1fr; align-items: center; gap: 10px; padding: 11px 12px; }
+  .ct-header, .ct-row { display: grid; grid-template-columns: .45fr .45fr 1.35fr 1fr 1.45fr 1fr; align-items: start; gap: 10px; padding: 8px 10px; }
   .ct-header { font-weight: var(--ha-font-weight-bold, 700); background: var(--surface-alt); }
-  .ct-row { min-height: 66px; border-top: 1px solid var(--border); }
+  .ct-row { min-height: 60px; border-top: 1px solid var(--border); }
   .ct-index { font-weight: var(--ha-font-weight-bold, 700); }
-  .ct-row input, .ct-row select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-small); }
+  .ct-row > label { display: grid; align-content: start; gap: 4px; }
+  .ct-row > label.check-row { display: flex; }
+  .ct-row input, .ct-row select { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); }
   .ct-row input[type="checkbox"] { width: auto; }
-  .row-toggle { color: var(--accent); border: 0; padding: 4px; }
-  .preserve-gain { margin: 10px 12px; }
-  .technical-details { margin: 0; border-radius: 0; border-width: 1px 0 0; }
+  .preserve-gain { margin: 6px 10px; }
+  .technical-details { margin: 0; border: 0; border-radius: 0; }
   .mobile-label { display: none; }
-  .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 16px 30px; background: var(--surface-alt); border-top: 1px solid var(--border); }
+  .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 12px 20px; background: var(--surface-alt); border-top: 0; }
+  .ct-detail .ct-reporting-multiplier { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: start; gap: 6px 12px; }
+  .ct-reporting-multiplier dd { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .ct-reporting-multiplier dd select { width: auto; min-width: 6rem; }
   .aggregate-list { display: grid; gap: 16px; margin: 14px 0; }
   .default-totals { display: grid; gap: 12px; margin: 24px 0; }
   .default-totals h2, .default-totals p { margin: 0; }
@@ -136,9 +141,12 @@ export const panelStyles = css`
   .aggregate-card { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   .aggregate-card > legend { padding: 0 8px; }
   .aggregate-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 22px; }
+  .aggregate-name-field { display: grid; align-content: start; gap: 4px; }
   .aggregate-fields label { display: grid; align-content: start; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
   .aggregate-fields input, .aggregate-fields select { width: 100%; padding: 10px; border: 1px solid var(--border); }
   .aggregate-fields small { color: var(--muted); font-weight: var(--ha-font-weight-normal, 400); }
+  .aggregate-id { margin: 0; color: var(--muted); font-size: 0.9em; }
+  .aggregate-id code { color: inherit; }
   .aggregate-channels { margin: 18px 0 14px; }
   .aggregate-sources { margin: 18px 0; min-width: 0; }
   .aggregate-source-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -148,7 +156,8 @@ export const panelStyles = css`
   .aggregate-channel-group { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); }
   .aggregate-channel-group > summary { font-weight: 600; }
   .aggregate-channel-group[open] > summary { margin-bottom: 8px; }
-  .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(44px, auto)); gap: 6px; }
+  .aggregate-channel-group > div > span { display: block; grid-column: var(--ct-column); grid-row: var(--ct-row); }
   .aggregate-channel-option { display: flex; align-items: center; min-width: 0; min-height: 44px; gap: 7px; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface); cursor: pointer; overflow-wrap: anywhere; }
   .aggregate-channel-option input { flex: 0 0 auto; min-height: auto; margin: 0; }
   .aggregate-channel-option.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
@@ -174,6 +183,7 @@ export const panelStyles = css`
   .package-options-table th:not(:first-child), .package-options-table td { text-align: center; }
   .package-options-table input { width: 18px; height: 18px; }
   .voltage-reference-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .voltage-reference-column { display: grid; align-content: start; gap: 12px; }
   .reference-block { display: grid; max-width: 420px; gap: 12px; }
   .reference-block label { display: grid; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
   .calibration-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0 10px; }
@@ -232,7 +242,8 @@ export const panelStyles = css`
     .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card, .aggregate-fields, .aggregate-channel-groups { grid-template-columns: 1fr; }
     .default-total-controls { align-items: stretch; flex-direction: column; }
     .automatic-total-controls { align-items: stretch; flex-direction: column; }
-    .aggregate-channel-group > div { grid-template-columns: 1fr; }
+    .aggregate-channel-group > div { grid-template-columns: 1fr; grid-template-rows: none; }
+    .aggregate-channel-group > div > span { grid-column: auto; grid-row: auto; }
     .aggregate-source-options { grid-template-columns: 1fr; }
     .existing-configuration .status-list > div { grid-template-columns: 1fr; gap: 2px; }
     .aggregate-actions button { width: 100%; margin-left: 0; }
@@ -241,5 +252,6 @@ export const panelStyles = css`
     .offset-step { padding-bottom: 84px; }
     .identity-strip, .confirmation-actions, .group-nav { align-items: stretch; flex-direction: column; }
     .evidence-table { display: block; overflow-x: auto; }
+    .graph-status { min-height: calc(4.8em + 30px); }
   }
 `;

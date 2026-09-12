@@ -230,20 +230,18 @@ def resolve_automatic_totals(
 ) -> tuple[ResolvedAutomaticTotal, ...]:
     """Apply persisted choices to current server candidates without changing sources."""
     settings_by_id = {setting.candidate_id: setting for setting in settings}
-    return tuple(
-        ResolvedAutomaticTotal(
-            candidate,
-            settings_by_id[candidate.candidate_id].enabled,
-            settings_by_id[candidate.candidate_id].outputs,
-        )
-        if candidate.candidate_id in settings_by_id
-        else ResolvedAutomaticTotal(
-            candidate,
-            not candidate.aggregate_id.startswith("auto-two-pole-ct"),
-            candidate.recommended_outputs,
-        )
-        for candidate in candidates
-    )
+    def resolve(candidate: AutomaticTotalCandidate) -> ResolvedAutomaticTotal:
+        setting = settings_by_id.get(candidate.candidate_id)
+        if setting is None:
+            return ResolvedAutomaticTotal(
+                candidate,
+                not candidate.aggregate_id.startswith("auto-two-pole-ct"),
+                candidate.recommended_outputs,
+            )
+        named = replace(candidate, name=setting.name) if setting.name else candidate
+        return ResolvedAutomaticTotal(named, setting.enabled, setting.outputs)
+
+    return tuple(resolve(candidate) for candidate in candidates)
 
 
 def enabled_automatic_totals(

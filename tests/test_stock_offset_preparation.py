@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -27,7 +28,7 @@ ZERO = ((0, 0), (0, 0), (0, 0))
 
 
 @pytest.mark.parametrize("stage", (1, 2))
-def test_first_stock_preparation_reports_missing_tables_without_writes(
+def test_first_stock_preparation_blocks_unproven_builder_source_without_writes(
     tmp_path: Path, stage: int
 ) -> None:
     async def run() -> None:
@@ -50,12 +51,21 @@ def test_first_stock_preparation_reports_missing_tables_without_writes(
 
         workflow, handle, sessions, _ = _workflow()
         handle.binding = binding_with_offset_controls(0)
+        running_source = _snapshot()
+        builder_source = replace(
+            running_source,
+            content=running_source.content + "\n# edited after firmware build\n",
+            sha256=sha256(
+                (running_source.content + "\n# edited after firmware build\n").encode()
+                ).hexdigest(),
+        )
+        assert running_source.sha256 != builder_source.sha256
         handle.configuration = "meter.yaml"
-        handle.configuration_sha256 = _snapshot().sha256
+        handle.configuration_sha256 = builder_source.sha256
         session = StockSession(handle.binding)
         session.snapshot_unknown = True
         workflow._api = session
-        builder = workflow._builder = Builder(remote_content=_snapshot().content)
+        builder = workflow._builder = Builder(remote_content=builder_source.content)
         recovery = workflow._offset_recovery = OffsetRecovery(hass_at(tmp_path), sessions)
         preview = AsyncMock()
         workflow.transactions = SimpleNamespace(async_preview=preview)
@@ -71,6 +81,7 @@ def test_first_stock_preparation_reports_missing_tables_without_writes(
             (1, "offset_tables_unavailable", "Complete offset tables are unavailable")
         ]
         assert not any(event[0] == "button" for event in session.events)
+        assert session.configuration_selections == []
         assert "write" not in builder.calls
         preview.assert_not_awaited()
         lease = await sessions.async_acquire_calibration(MAC)
@@ -102,6 +113,7 @@ class StockSession(FakeOffsetSession):
         self.no_stored = no_stored
         self.snapshot_unknown = False
         self.snapshot_overrides: dict[tuple[str, int], Any] = {}
+        self.configuration_selections: list[tuple[str, ...]] = []
 
     async def async_offset_table_snapshot(
         self, targets: set[str], *, offset_stage: int, **kwargs: Any
@@ -117,6 +129,13 @@ class StockSession(FakeOffsetSession):
             )
             for instance in targets
         }
+
+    async def async_offset_configuration_selection(
+        self, targets: set[str], **kwargs: Any
+    ) -> dict[str, int]:
+        del kwargs
+        self.configuration_selections.append(tuple(sorted(targets)))
+        return {instance: self.connection_generation for instance in targets}
 
     async def async_press_button(self, key: int, *, device_id: int = 0) -> None:
         await super().async_press_button(key, device_id=device_id)

@@ -14,6 +14,7 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     RollbackFailedError,
     TransactionEvidenceCode,
     TransactionStatus,
+    _safe_source_diff,
 )
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ConfigChangedError,
@@ -488,14 +489,14 @@ def test_reconnect_evidence_accepts_simultaneous_supported_maximum() -> None:
         ),
     )
     evidence = expected_meter_entity_evidence(configuration, topology(6))
-    assert len(evidence.sensor_entities) == 259
+    assert len(evidence.sensor_entities) == 343
     _validate_expected_sensor_entities(evidence.sensor_entities)
     document = ESPHomeConfigDocument.parse(_supported_source_totals(40))
     evidence = expected_meter_entity_evidence(
         configuration, topology(6), document=document, native_visibility_resolved=True
     )
     assert len(evidence.source_owned_sensor_entities) == 80
-    assert len(evidence.sensor_entities) == 339
+    assert len(evidence.sensor_entities) == 423
     _validate_expected_sensor_entities(evidence.sensor_entities)
     _validate_expected_sensor_entities(
         frozenset((f"s{index}", f"Sensor {index}") for index in range(1024))
@@ -535,6 +536,78 @@ def _evidence(mac: str = "aabbccddeeff") -> ReconnectEvidence:
         },
         6,
     )
+
+
+def _max_power_quality_configuration(
+    plan: ConfigMutationPlan,
+) -> StoredMeterConfiguration:
+    topology = _topology(6)
+    meter = MeterSettings(
+        "Energy meter",
+        ElectricalSystem.SPLIT_PHASE_120_240,
+        60,
+        5,
+        VoltageLayout.STANDARD,
+        (
+            VoltageReferenceConfig(
+                "main",
+                "Main",
+                "A",
+                120.0,
+                "vt",
+                1,
+                tuple(
+                    f"{('main' if board == 0 else f'addon{board}')}_{group}"
+                    for board in range(7)
+                    for group in (1, 2)
+                ),
+            ),
+        ),
+    )
+    channels = tuple(
+        ChannelSettings(
+            channel,
+            True,
+            f"CT {channel}",
+            "ct",
+            1.0,
+            CircuitRole.BRANCH,
+            "main",
+        )
+        for channel in range(1, topology.ct_count + 1)
+    )
+    config_sha256 = sha256(plan.proposed_content.encode()).hexdigest()
+    return StoredMeterConfiguration(
+        config_sha256,
+        meter,
+        channels,
+        default_total_settings(topology), (), (),
+        (True,) * topology.board_count,
+        (False,) * topology.board_count,
+        tuple(
+            StoredCTSelection(channel, "ct", None, 27518, 1.0, config_sha256)
+            for channel in range(1, topology.ct_count + 1)
+        ),
+    )
+
+
+def test_max_topology_power_quality_fits_transaction_review_bound() -> None:
+    async def run() -> None:
+        manager = _manager(Builder(), Persistence())
+        plan = _managed_entity_plan()
+        configuration = _max_power_quality_configuration(plan)
+        status = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(6),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+        )
+
+        transaction = manager._transaction(status.transaction_id)
+        assert len(transaction.expected_sensor_entities) == 212
+
+    asyncio.run(run())
 
 
 def _manager(
@@ -743,24 +816,287 @@ def test_cancelling_receipt_revocation_drains_storage_before_releasing_meter() -
 def test_preview_binds_source_and_exposes_only_bounded_safe_dto() -> None:
     async def run() -> None:
         manager = _manager(Builder(), Persistence())
+        prior_content = "prior baselineExampleValue"
         status = await manager.async_preview(
             "AABBCCDDEEFF",
             _topology(),
-            _plan(
-                "prior top-secret",
-                diff=" api_encryption_key: raw-diff-secret\n+ ct1_name: Kitchen",
+            replace(
+                _plan(
+                    prior_content,
+                    diff=" api_encryption_key: rawDiffExampleValue\n+ ct1_name: Kitchen",
+                ),
+                proposed_content=(
+                    "api:\n  encryption_key: abc123ExampleValue\n"
+                    "substitutions:\n  ct1_name: Kitchen\n"
+                ),
             ),
-            _source("prior top-secret"),
+            _source(prior_content),
         )
         assert isinstance(status, TransactionStatus)
         assert not hasattr(status, "plan") and not hasattr(status, "prior_content")
-        assert "top-secret" not in repr(status)
-        assert "raw-diff-secret" not in status.redacted_diff
+        assert "abc123ExampleValue" not in repr(status)
+        assert "rawDiffExampleValue" not in status.redacted_diff
         assert len(status.redacted_diff.encode()) <= 32_768
 
         bad = ESPHomeConfigSnapshot("meter.yaml", "different", _source().sha256)
         with pytest.raises(ValueError, match="source snapshot"):
             await manager.async_preview("aabbccddeeff", _topology(), _plan(), bad)
+
+    asyncio.run(run())
+
+
+def test_preview_exposes_exact_safe_source_diff() -> None:
+    async def run() -> None:
+        source = """substitutions:
+  ct1_name: Old
+sensor:
+  - platform: atm90e32
+    current_cal_ct1: 100
+    filters:
+      - lambda: return x;
+api:
+  encryption:
+    key: abc123ExampleValue
+  token: |
+    abc456ExampleValue
+    abc789ExampleValue
+wifi:
+  password: |
+    abc111ExampleValue
+    abc222ExampleValue
+secrets:
+  wifi_password: !secret abc333ExampleValue
+"""
+        proposed = """substitutions:
+  ct1_name: New
+sensor:
+  - platform: atm90e32
+    current_cal_ct1: 200
+    filters:
+      - lambda: return y;
+api:
+  encryption:
+    key: xyz123ExampleValue
+  token: |
+    xyz456ExampleValue
+    xyz789ExampleValue
+wifi:
+  password: |
+    xyz111ExampleValue
+    xyz222ExampleValue
+secrets:
+  wifi_password: !secret xyz333ExampleValue
+"""
+        plan = replace(_plan(source), proposed_content=proposed)
+        manager = _manager(Builder(), Persistence())
+        status = await manager.async_preview(
+            "aabbccddeeff", _topology(), plan, _source(source)
+        )
+
+        diff = status.redacted_diff
+        assert "-  ct1_name: Old" in diff
+        assert "+  ct1_name: New" in diff
+        assert "-    current_cal_ct1: 100" in diff
+        assert "+    current_cal_ct1: 200" in diff
+        assert "-      - lambda: return x;" in diff
+        assert "+      - lambda: return y;" in diff
+        for secret in (
+            "abc123ExampleValue", "xyz123ExampleValue", "abc111ExampleValue",
+            "xyz111ExampleValue", "abc222ExampleValue", "xyz222ExampleValue",
+            "abc456ExampleValue", "xyz456ExampleValue", "abc789ExampleValue",
+            "xyz789ExampleValue", "abc333ExampleValue", "xyz333ExampleValue",
+        ):
+            assert secret not in diff
+        assert diff.count("[redacted]") >= 6
+
+    asyncio.run(run())
+
+
+def test_source_diff_fails_closed_for_quoted_flow_and_alias_secrets() -> None:
+    source = '''"api": {
+  "encryption": {
+    "key": abcApiFlowExampleValue
+  },
+  "port": 6052,
+  "password": abcStableExampleValue
+}
+"password": &pw abcAnchorExampleValue
+copy: *pw
+flow_sequence: [
+  {"password": abcFlowSequenceExampleValue},
+  {"token": abcFlowSequenceTokenExampleValue}
+]
+"credentials": [
+  abcCredentialOneExampleValue,
+  abcCredentialTwoExampleValue
+]
+auth: abcAuthScalarExampleValue
+tls:
+  - abcTlsListExampleValue
+  - abcTlsListContinuationExampleValue
+"multiline_token": >-
+  abcFoldedExampleValue
+  abcFoldedContinuationExampleValue
+substitutions:
+  "wifi_password": |-
+    abcSubstitutionExampleValue
+    abcSubstitutionContinuationExampleValue
+opaque_ref: !secret abcTaggedExampleValue
+'''
+    proposed = source.replace("abcApiFlowExampleValue", "xyzApiFlowExampleValue") \
+        .replace("6052", "6053") \
+        .replace("abcAnchorExampleValue", "xyzAnchorExampleValue") \
+        .replace("abcFlowSequenceExampleValue", "xyzFlowSequenceExampleValue") \
+        .replace("abcFlowSequenceTokenExampleValue", "xyzFlowSequenceTokenExampleValue") \
+        .replace("abcCredentialOneExampleValue", "xyzCredentialOneExampleValue") \
+        .replace("abcCredentialTwoExampleValue", "xyzCredentialTwoExampleValue") \
+        .replace("abcAuthScalarExampleValue", "xyzAuthScalarExampleValue") \
+        .replace("abcTlsListExampleValue", "xyzTlsListExampleValue") \
+        .replace("abcTlsListContinuationExampleValue", "xyzTlsListContinuationExampleValue") \
+        .replace("abcFoldedExampleValue", "xyzFoldedExampleValue") \
+        .replace("abcFoldedContinuationExampleValue", "xyzFoldedContinuationExampleValue") \
+        .replace("abcSubstitutionExampleValue", "xyzSubstitutionExampleValue") \
+        .replace("abcSubstitutionContinuationExampleValue", "xyzSubstitutionContinuationExampleValue") \
+        .replace("abcTaggedExampleValue", "xyzTaggedExampleValue")
+
+    diff = _safe_source_diff(source, proposed)
+
+    for secret in (
+        "abcApiFlowExampleValue", "xyzApiFlowExampleValue", "abcAnchorExampleValue",
+        "xyzAnchorExampleValue", "abcFoldedExampleValue", "xyzFoldedExampleValue",
+        "abcFlowSequenceExampleValue", "xyzFlowSequenceExampleValue",
+        "abcFlowSequenceTokenExampleValue", "xyzFlowSequenceTokenExampleValue",
+        "abcCredentialOneExampleValue", "xyzCredentialOneExampleValue",
+        "abcCredentialTwoExampleValue", "xyzCredentialTwoExampleValue",
+        "abcStableExampleValue",
+        "abcAuthScalarExampleValue", "xyzAuthScalarExampleValue",
+        "abcTlsListExampleValue", "xyzTlsListExampleValue",
+        "abcTlsListContinuationExampleValue", "xyzTlsListContinuationExampleValue",
+        "abcFoldedContinuationExampleValue", "xyzFoldedContinuationExampleValue",
+        "abcSubstitutionExampleValue", "xyzSubstitutionExampleValue",
+        "abcSubstitutionContinuationExampleValue", "xyzSubstitutionContinuationExampleValue",
+        "abcTaggedExampleValue", "xyzTaggedExampleValue",
+    ):
+        assert secret not in diff
+    assert '"port": 6052' in diff
+    assert '"port": 6053' in diff
+    assert "copy: [redacted]" in diff
+
+    malformed = _safe_source_diff("safe: abcNeutralValue\nbroken: [\n", "safe: xyzNeutralValue\nbroken: [\n")
+    assert "abcNeutralValue" not in malformed and "xyzNeutralValue" not in malformed
+    assert "[redacted]" in malformed
+
+
+def test_source_diff_redacts_credentials_and_keeps_field_names() -> None:
+    source = """wifi:
+  ssid: HomeNetwork
+  password: oldWifiValue
+http_request:
+  headers:
+    Authorization: BearerOldValue
+    Cookie: session=oldCookieValue
+package:
+  source: https://alice:oldUrlValue@example.invalid/repo
+"""
+    proposed = (
+        source.replace("oldWifiValue", "newWifiValue")
+        .replace("BearerOldValue", "BearerNewValue")
+        .replace("oldCookieValue", "newCookieValue")
+        .replace("oldUrlValue", "newUrlValue")
+    )
+
+    diff = _safe_source_diff(source, proposed)
+
+    for value in (
+        "HomeNetwork",
+        "oldWifiValue",
+        "newWifiValue",
+        "BearerOldValue",
+        "BearerNewValue",
+        "oldCookieValue",
+        "newCookieValue",
+        "oldUrlValue",
+        "newUrlValue",
+    ):
+        assert value not in diff
+    for key in ("ssid:", "password:", "Authorization:", "Cookie:", "source:"):
+        assert key in diff
+
+
+def test_preview_diff_marks_line_truncation() -> None:
+    async def run() -> None:
+        source = "\n".join(f"setting_{index}: old" for index in range(600))
+        proposed = "\n".join(f"setting_{index}: new" for index in range(600))
+        plan = replace(_plan(source), proposed_content=proposed)
+        status = await _manager(Builder(), Persistence()).async_preview(
+            "aabbccddeeff", _topology(), plan, _source(source)
+        )
+
+        assert status.redacted_diff.endswith("[truncated]")
+        assert len(status.redacted_diff.encode()) <= 32_768
+        assert len(status.redacted_diff.splitlines()) <= 512
+
+    asyncio.run(run())
+
+
+def test_chip_failure_can_abandon_without_rollback_and_release_lock() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+        MeterCommunicationError,
+    )
+
+    async def run() -> None:
+        builder = Builder()
+        persistence = Persistence()
+        manager = _manager(
+            builder, persistence, evidence=MeterCommunicationError((0, 16))
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        failed = await manager.async_confirm_install(preview.transaction_id, "admin")
+        internal = manager._transaction(preview.transaction_id)
+        proposed = internal.plan.proposed_content
+
+        abandoned = await manager.async_abandon(preview.transaction_id)
+
+        assert abandoned.state is ConfigTransactionState.FAILED
+        assert TransactionEvidenceCode.CANCELLED in abandoned.evidence
+        assert builder.remote_content == proposed
+        assert "restore" not in builder.calls
+        assert not persistence.saved
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
+        with pytest.raises(KeyError):
+            manager.status(preview.transaction_id)
+        assert failed.communication_failed_cs_pins == (0, 16)
+
+    asyncio.run(run())
+
+
+def test_chip_failure_abandon_rejects_external_source_changes() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+        MeterCommunicationError,
+    )
+
+    async def run() -> None:
+        builder = Builder()
+        manager = _manager(
+            builder, Persistence(), evidence=MeterCommunicationError((0,))
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        builder.remote_content = "external edit"
+
+        with pytest.raises(ValueError, match="confirmed configuration source"):
+            await manager.async_abandon(preview.transaction_id)
+
+        status = manager.status(preview.transaction_id)
+        assert status.state is ConfigTransactionState.FAILED
+        assert status.rollback_available
+        assert manager.sessions.is_config_locked("aabbccddeeff")
+        assert "restore" not in builder.calls
+        await manager.sessions.async_unload()
 
     asyncio.run(run())
 
@@ -800,7 +1136,7 @@ def test_hierarchical_totals_transaction_preserves_graph_and_public_only_evidenc
         assert graph[-1].sources[0].aggregate_id == "east"
         assert graph[-1].sources[1].aggregate_id == "west"
         public_ids = {identifier for identifier, _ in retained.expected_sensor_entities}
-        assert public_ids == {"garage_meter_whole_building_energy"}
+        assert public_ids == {"whole_building_energy"}
         if outcome == "validation":
             fixture.builder.validation = [Job(False)]
         if outcome == "compile":
@@ -978,6 +1314,68 @@ def test_full_meter_configuration_persists_only_after_verified_reconnect(
         assert status.full_meter_configuration_verified
         assert persistence.meter_configuration == configuration
         assert persistence.selections == configuration.ct_selections
+
+    asyncio.run(run())
+
+
+def test_verified_reconnect_scopes_entity_and_name_checks_to_enabled_channels() -> None:
+    """Disabled CTs may stay internal without blocking the install proof."""
+
+    async def run() -> None:
+        plan = _managed_entity_plan()
+        base_configuration = _meter_configuration(plan)
+        configuration = replace(
+            base_configuration,
+            channels=tuple(
+                replace(
+                    channel,
+                    enabled=channel.channel != 6,
+                    role=(
+                        CircuitRole.UNUSED
+                        if channel.channel == 6
+                        else channel.role
+                    ),
+                )
+                for channel in base_configuration.channels
+            ),
+        )
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.default_totals, configuration.automatic_totals, configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        evidence = ReconnectEvidence(
+            "aabbccddeeff",
+            _topology(),
+            {
+                channel.channel: channel.name
+                for channel in configuration.channels
+                if channel.enabled
+            },
+            5,
+            expected.sensor_entities,
+        )
+        persistence = Persistence()
+        manager = _manager(Builder(), persistence, evidence=evidence)
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+        )
+
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert persistence.meter_configuration == configuration
 
     asyncio.run(run())
 
@@ -1275,7 +1673,9 @@ def test_full_reconnect_rejects_duplicate_required_sensor_object_id() -> None:
             _topology(),
         )
         # Source-unresolved native totals are not required by this managed-block fixture.
-        duplicate = min(expected.aggregate_sensor_entities)[0]
+        duplicate = min(
+            expected.aggregate_sensor_entities - expected.native_sensor_entities
+        )[0]
         manager = _manager(
             Builder(),
             Persistence(),

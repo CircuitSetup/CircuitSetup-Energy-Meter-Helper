@@ -35,10 +35,10 @@ const r$4 = (t2) => new n$5("string" == typeof t2 ? t2 : t2 + "", void 0, s$4), 
   for (const s2 of t3.cssRules) e2 += s2.cssText;
   return r$4(e2);
 })(t2) : t2;
-const { is: i$4, defineProperty: e$2, getOwnPropertyDescriptor: h$3, getOwnPropertyNames: r$3, getOwnPropertySymbols: o$3, getPrototypeOf: n$4 } = Object, a$1 = globalThis, c$3 = a$1.trustedTypes, l$1 = c$3 ? c$3.emptyScript : "", p$1 = a$1.reactiveElementPolyfillSupport, d$1 = (t2, s2) => t2, u$1 = { toAttribute(t2, s2) {
+const { is: i$4, defineProperty: e$2, getOwnPropertyDescriptor: h$3, getOwnPropertyNames: r$3, getOwnPropertySymbols: o$3, getPrototypeOf: n$4 } = Object, a$1 = globalThis, c$3 = a$1.trustedTypes, l$2 = c$3 ? c$3.emptyScript : "", p$2 = a$1.reactiveElementPolyfillSupport, d$1 = (t2, s2) => t2, u$1 = { toAttribute(t2, s2) {
   switch (s2) {
     case Boolean:
-      t2 = t2 ? l$1 : null;
+      t2 = t2 ? l$2 : null;
       break;
     case Object:
     case Array:
@@ -246,9 +246,9 @@ let y$1 = class y extends HTMLElement {
   firstUpdated(t2) {
   }
 };
-y$1.elementStyles = [], y$1.shadowRootOptions = { mode: "open" }, y$1[d$1("elementProperties")] = /* @__PURE__ */ new Map(), y$1[d$1("finalized")] = /* @__PURE__ */ new Map(), p$1?.({ ReactiveElement: y$1 }), (a$1.reactiveElementVersions ??= []).push("2.1.2");
-const t$1 = globalThis, i$3 = (t2) => t2, s$3 = t$1.trustedTypes, e$1 = s$3 ? s$3.createPolicy("lit-html", { createHTML: (t2) => t2 }) : void 0, h$2 = "$lit$", o$2 = `lit$${Math.random().toFixed(9).slice(2)}$`, n$3 = "?" + o$2, r$2 = `<${n$3}>`, l = document, c$2 = () => l.createComment(""), a = (t2) => null === t2 || "object" != typeof t2 && "function" != typeof t2, u = Array.isArray, d = (t2) => u(t2) || "function" == typeof t2?.[Symbol.iterator], f$1 = "[ 	\n\f\r]", v = /<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g, _ = /-->/g, m$1 = />/g, p = RegExp(`>|${f$1}(?:([^\\s"'>=/]+)(${f$1}*=${f$1}*(?:[^\x20\t
-\f\r"'\`<>=]|("|')|))|$)`, "g"), g = /'/g, $ = /"/g, y2 = /^(?:script|style|textarea|title)$/i, x = (t2) => (i4, ...s2) => ({ _$litType$: t2, strings: i4, values: s2 }), b = x(1), E = /* @__PURE__ */ Symbol.for("lit-noChange"), A = /* @__PURE__ */ Symbol.for("lit-nothing"), C = /* @__PURE__ */ new WeakMap(), P = l.createTreeWalker(l, 129);
+y$1.elementStyles = [], y$1.shadowRootOptions = { mode: "open" }, y$1[d$1("elementProperties")] = /* @__PURE__ */ new Map(), y$1[d$1("finalized")] = /* @__PURE__ */ new Map(), p$2?.({ ReactiveElement: y$1 }), (a$1.reactiveElementVersions ??= []).push("2.1.2");
+const t$1 = globalThis, i$3 = (t2) => t2, s$3 = t$1.trustedTypes, e$1 = s$3 ? s$3.createPolicy("lit-html", { createHTML: (t2) => t2 }) : void 0, h$2 = "$lit$", o$2 = `lit$${Math.random().toFixed(9).slice(2)}$`, n$3 = "?" + o$2, r$2 = `<${n$3}>`, l$1 = document, c$2 = () => l$1.createComment(""), a = (t2) => null === t2 || "object" != typeof t2 && "function" != typeof t2, u = Array.isArray, d = (t2) => u(t2) || "function" == typeof t2?.[Symbol.iterator], f$1 = "[ 	\n\f\r]", v = /<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g, _ = /-->/g, m$2 = />/g, p$1 = RegExp(`>|${f$1}(?:([^\\s"'>=/]+)(${f$1}*=${f$1}*(?:[^\x20\t
+\f\r"'\`<>=]|("|')|))|$)`, "g"), g = /'/g, $ = /"/g, y2 = /^(?:script|style|textarea|title)$/i, x = (t2) => (i4, ...s2) => ({ _$litType$: t2, strings: i4, values: s2 }), b = x(1), E = /* @__PURE__ */ Symbol.for("lit-noChange"), A = /* @__PURE__ */ Symbol.for("lit-nothing"), C = /* @__PURE__ */ new WeakMap(), P = l$1.createTreeWalker(l$1, 129);
 function V(t2, i4) {
   if (!u(t2) || !t2.hasOwnProperty("raw")) throw Error("invalid template strings array");
   return void 0 !== e$1 ? e$1.createHTML(i4) : i4;
@@ -259,8 +259,8 @@ const N = (t2, i4) => {
   for (let i5 = 0; i5 < s2; i5++) {
     const s3 = t2[i5];
     let a2, u2, d2 = -1, f2 = 0;
-    for (; f2 < s3.length && (c2.lastIndex = f2, u2 = c2.exec(s3), null !== u2); ) f2 = c2.lastIndex, c2 === v ? "!--" === u2[1] ? c2 = _ : void 0 !== u2[1] ? c2 = m$1 : void 0 !== u2[2] ? (y2.test(u2[2]) && (n3 = RegExp("</" + u2[2], "g")), c2 = p) : void 0 !== u2[3] && (c2 = p) : c2 === p ? ">" === u2[0] ? (c2 = n3 ?? v, d2 = -1) : void 0 === u2[1] ? d2 = -2 : (d2 = c2.lastIndex - u2[2].length, a2 = u2[1], c2 = void 0 === u2[3] ? p : '"' === u2[3] ? $ : g) : c2 === $ || c2 === g ? c2 = p : c2 === _ || c2 === m$1 ? c2 = v : (c2 = p, n3 = void 0);
-    const x2 = c2 === p && t2[i5 + 1].startsWith("/>") ? " " : "";
+    for (; f2 < s3.length && (c2.lastIndex = f2, u2 = c2.exec(s3), null !== u2); ) f2 = c2.lastIndex, c2 === v ? "!--" === u2[1] ? c2 = _ : void 0 !== u2[1] ? c2 = m$2 : void 0 !== u2[2] ? (y2.test(u2[2]) && (n3 = RegExp("</" + u2[2], "g")), c2 = p$1) : void 0 !== u2[3] && (c2 = p$1) : c2 === p$1 ? ">" === u2[0] ? (c2 = n3 ?? v, d2 = -1) : void 0 === u2[1] ? d2 = -2 : (d2 = c2.lastIndex - u2[2].length, a2 = u2[1], c2 = void 0 === u2[3] ? p$1 : '"' === u2[3] ? $ : g) : c2 === $ || c2 === g ? c2 = p$1 : c2 === _ || c2 === m$2 ? c2 = v : (c2 = p$1, n3 = void 0);
+    const x2 = c2 === p$1 && t2[i5 + 1].startsWith("/>") ? " " : "";
     l2 += c2 === v ? s3 + r$2 : d2 >= 0 ? (e2.push(a2), s3.slice(0, d2) + h$2 + s3.slice(d2) + o$2 + x2) : s3 + o$2 + (-2 === d2 ? i5 : x2);
   }
   return [V(t2, l2 + (t2[s2] || "<?>") + (2 === i4 ? "</svg>" : 3 === i4 ? "</math>" : "")), e2];
@@ -298,7 +298,7 @@ class S {
     }
   }
   static createElement(t2, i4) {
-    const s2 = l.createElement("template");
+    const s2 = l$1.createElement("template");
     return s2.innerHTML = t2, s2;
   }
 }
@@ -319,7 +319,7 @@ class R {
     return this._$AM._$AU;
   }
   u(t2) {
-    const { el: { content: i4 }, parts: s2 } = this._$AD, e2 = (t2?.creationScope ?? l).importNode(i4, true);
+    const { el: { content: i4 }, parts: s2 } = this._$AD, e2 = (t2?.creationScope ?? l$1).importNode(i4, true);
     P.currentNode = e2;
     let h2 = P.nextNode(), o2 = 0, n3 = 0, r2 = s2[0];
     for (; void 0 !== r2; ) {
@@ -329,7 +329,7 @@ class R {
       }
       o2 !== r2?.index && (h2 = P.nextNode(), o2++);
     }
-    return P.currentNode = l, e2;
+    return P.currentNode = l$1, e2;
   }
   p(t2) {
     let i4 = 0;
@@ -364,7 +364,7 @@ class k {
     this._$AH !== t2 && (this._$AR(), this._$AH = this.O(t2));
   }
   _(t2) {
-    this._$AH !== A && a(this._$AH) ? this._$AA.nextSibling.data = t2 : this.T(l.createTextNode(t2)), this._$AH = t2;
+    this._$AH !== A && a(this._$AH) ? this._$AA.nextSibling.data = t2 : this.T(l$1.createTextNode(t2)), this._$AH = t2;
   }
   $(t2) {
     const { values: i4, _$litType$: s2 } = t2, e2 = "number" == typeof s2 ? this._$AC(t2) : (void 0 === s2.el && (s2.el = S.createElement(V(s2.h, s2.h[0]), this.options)), s2);
@@ -501,6 +501,8 @@ o$1?.({ LitElement: i$2 });
 const PREFIX = "circuitsetup_energy_meter_helper/";
 const PRIVATE_FIELD = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
 const SECRET_VALUE = /(?:api[_ -]?key|password|secret|ssid|token)\s*[:=]/i;
+const DIFF_SECRET_VALUE = /(?:authorization|cookie|ssid)\s*[:=]|[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/i;
+const SAFE_REDACTED_DIFF_LINE = /^[ +\-]?\s*(?:[^:\r\n]+:\s*)?\[redacted\]\s*$/i;
 const CONTROL$1 = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const PROPERTY_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const SETUP_STATES = /* @__PURE__ */ new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]);
@@ -518,20 +520,26 @@ const PHASES = /* @__PURE__ */ new Set(["A", "B", "C"]);
 const JOB_STAGES = /* @__PURE__ */ new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
 const TRANSACTION_EVIDENCE = /* @__PURE__ */ new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
 const TRANSACTION_PROGRESS = /* @__PURE__ */ new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
+const TRANSACTION_FAILURE_STAGES = /* @__PURE__ */ new Set(["validating", "building", "installing", "verifying_meter"]);
+const TRANSACTION_FAILURE_REASONS = /* @__PURE__ */ new Set(["unknown", "missing_package", "unsupported_component_option", "required_secret", "conflicting_managed_override", "validation_rejected", "compile_rejected", "upload_failed", "verification_incomplete", "meter_communication_failed"]);
 const PREFLIGHT_CODES = /* @__PURE__ */ new Set(["count_mismatch", "invalid_kind", "invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
 const AUTHORITATIVE_EVIDENCE = /* @__PURE__ */ new Set(["config_project", "config_packages", "native_project"]);
-const CHANGE_KEY = /^(?:meter|voltage_reference|channel|aggregate|package)\.[a-z0-9_.-]+$/;
+const CHANGE_KEY = /^(?:meter|voltage_reference|channel|aggregate|package|calibration)\.[a-z0-9_.-]+$/;
 const MAC = /^[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SERVER_ID = /^[0-9a-f]{32}$/;
 const CONFIGURATION = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.yaml$/;
 const FIRMWARE_PRODUCT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const ESPHOME_VERSION = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:-[A-Za-z0-9.-]+)?$/;
-const TRANSACTION_OPERATIONS = /* @__PURE__ */ new Set(["preview_ct_config", "preview_meter_configuration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
+const TRANSACTION_OPERATIONS = /* @__PURE__ */ new Set(["preview_ct_config", "preview_meter_configuration", "prepare_calibration", "preview_calibrated_gains", "apply_ct_config", "compile_ct_config", "install_ct_config", "abandon_ct_config", "rollback_ct_config", "subscribe_config_transaction"]);
 const OFFSET_CAPABILITIES = /* @__PURE__ */ new Set(["available", "unavailable", "invalid"]);
 const OFFSET_DISPOSITIONS = /* @__PURE__ */ new Set(["not_started", "in_progress", "completed", "skipped", "partial"]);
 const OFFSET_STAGE_STATES = /* @__PURE__ */ new Set(["not_started", "in_progress", "completed", "skipped", "partial", "indeterminate"]);
 const OFFSET_RESULT_STATES = /* @__PURE__ */ new Set(["applied_pending_restart_verification", "captured_pending_configuration", "partial", "indeterminate"]);
+const PACKAGE_CAPABILITY_STATES = /* @__PURE__ */ new Set(["already_present", "available_to_prepare", "cannot_safely_manage"]);
+const PACKAGE_CAPABILITY_REASONS = /* @__PURE__ */ new Set(["official_package_present", "official_source_ready", "unsupported_package_source", "ambiguous_package_source", "package_source_unavailable", "duplicate_package_reference"]);
+const CALIBRATION_PREPARATION_REASONS = /* @__PURE__ */ new Set(["calibration_package_present", "calibration_source_ready", "calibration_flag_unavailable", "calibration_flag_invalid", "unsupported_package_source", "ambiguous_package_source", "package_source_unavailable", "duplicate_package_reference"]);
+const PACKAGE_FEATURES = /* @__PURE__ */ new Set(["power_quality", "status_fields"]);
 function record(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} response is invalid`);
   return value;
@@ -591,6 +599,22 @@ function device(value, label) {
   boolean(item.importable, label, true);
   string(item.configuration, label, true);
 }
+function existingDevice(value, label) {
+  const item = record(value, label);
+  exactKeys(item, ["entry_id", "title", "project_name", "project_version", "compatibility"], label);
+  string(item.entry_id, label);
+  string(item.title, label);
+  string(item.project_name, label, true);
+  string(item.project_version, label, true);
+  const compatibility = array(item.compatibility, label, 8).map((entry) => string(entry, label));
+  return {
+    entry_id: item.entry_id,
+    title: item.title,
+    project_name: item.project_name,
+    project_version: item.project_version,
+    compatibility
+  };
+}
 function setup(value, label) {
   const item = record(value, label);
   enumeration(item.state, SETUP_STATES, label);
@@ -618,7 +642,7 @@ function setup(value, label) {
   }
   return value;
 }
-function topology(value, label) {
+function topology(value, label, inspection = false) {
   const item = record(value, label);
   exactKeys(item, ["addon_count", "board_count", "ct_count", "group_count", "connection_type", "voltage_layout", "project_name", "evidence"], label);
   const addonCount = integer(item.addon_count, label);
@@ -640,7 +664,7 @@ function topology(value, label) {
     string(evidence.detail, label);
     return source;
   });
-  if (new Set(sources).size !== sources.length || !sources.some((source) => AUTHORITATIVE_EVIDENCE.has(source))) throw new Error(`${label} response is invalid`);
+  if (new Set(sources).size !== sources.length || !sources.some((source) => AUTHORITATIVE_EVIDENCE.has(source) || inspection && source === "native_entity_counts")) throw new Error(`${label} response is invalid`);
   return value;
 }
 function topologyResponse(value, label) {
@@ -649,9 +673,55 @@ function topologyResponse(value, label) {
     const parsed = topology(item.topology, label);
     if (item.configuration_authoritative !== void 0) boolean(item.configuration_authoritative, label);
     if (item.package_options !== void 0) packageOptions$1(item.package_options, label, parsed.board_count);
+    if (item.package_capabilities !== void 0 && packageCapabilities(item.package_capabilities, label, parsed.board_count).length !== parsed.board_count * 2) {
+      throw new Error(`${label} response is invalid`);
+    }
+    if (item.calibration_preparation !== void 0) calibrationPreparation(item.calibration_preparation, label);
     return value;
   }
   return topology(value, label);
+}
+function packageCapabilities(value, label, boardCount) {
+  return array(value, label, 14).map((entry) => {
+    const item = record(entry, label);
+    exactKeys(item, ["feature", "board_index", "state", "reason_code"], label);
+    const feature = string(item.feature, label);
+    const board = integer(item.board_index, label);
+    if (!PACKAGE_FEATURES.has(feature) || board < 0 || board >= boardCount) throw new Error(`${label} response is invalid`);
+    const state = enumeration(item.state, PACKAGE_CAPABILITY_STATES, label);
+    const reason = string(item.reason_code, label);
+    if (!PACKAGE_CAPABILITY_REASONS.has(reason)) throw new Error(`${label} response is invalid`);
+    return { feature, board_index: board, state, reason_code: reason };
+  });
+}
+function calibrationPreparation(value, label) {
+  const item = record(value, label);
+  exactKeys(item, ["state", "reason_code"], label);
+  const state = enumeration(item.state, PACKAGE_CAPABILITY_STATES, label);
+  const reason = string(item.reason_code, label);
+  if (!CALIBRATION_PREPARATION_REASONS.has(reason)) throw new Error(`${label} response is invalid`);
+  return { state, reason_code: reason };
+}
+function existingInspection(value, label) {
+  const item = record(value, label);
+  exactKeys(item, ["device", "configuration", "source_sha256", "topology", "package_options", "package_capabilities", "calibration_preparation"], label);
+  const candidate = existingDevice(item.device, label);
+  const parsedTopology = topology(item.topology, label, true);
+  const configuration = string(item.configuration, label);
+  if (!CONFIGURATION.test(configuration) || !SHA256.test(string(item.source_sha256, label))) throw new Error(`${label} response is invalid`);
+  const options = packageOptions$1(item.package_options, label, parsedTopology.board_count);
+  const capabilities = packageCapabilities(item.package_capabilities, label, parsedTopology.board_count);
+  if (capabilities.length !== parsedTopology.board_count * 2) throw new Error(`${label} response is invalid`);
+  const preparation = calibrationPreparation(item.calibration_preparation, label);
+  return {
+    device: candidate,
+    configuration,
+    source_sha256: item.source_sha256,
+    topology: parsedTopology,
+    package_options: options,
+    package_capabilities: capabilities,
+    calibration_preparation: preparation
+  };
 }
 function totalOutputs(value, label) {
   const item = record(value, label);
@@ -710,10 +780,12 @@ function advancedTotal(value, label, count = 42) {
 function automaticSettings(value, label) {
   const settings = array(value, label, 100).map((entry) => {
     const item = record(entry, label);
-    exactKeys(item, ["candidate_id", "enabled", "outputs"], label);
+    exactKeys(item, ["candidate_id", "enabled", "outputs", ..."name" in item ? ["name"] : []], label);
     id(item.candidate_id, label);
     boolean(item.enabled, label);
     totalOutputs(item.outputs, label);
+    optionalString(item.name, label);
+    if (item.name === null) delete item.name;
     return item;
   });
   if (new Set(settings.map((item) => item.candidate_id)).size !== settings.length) throw new Error(`${label} response is invalid`);
@@ -1052,7 +1124,7 @@ function ctInventory(value, label) {
 }
 function transaction(value, label) {
   const item = record(value, label);
-  exactKeys(item, ["purpose", "transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ..."communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : []], label);
+  exactKeys(item, ["purpose", "transaction_id", "state", "source_sha256", "changes", "redacted_diff", "rollback_available", "evidence", "progress", "validation_detail", "upload_progress", "aggregate_entity_mismatch", "full_meter_configuration_verified", ..."communication_failed_cs_pins" in item ? ["communication_failed_cs_pins"] : [], ..."failure" in item ? ["failure"] : []], label);
   string(item.transaction_id, label);
   enumeration(item.state, TRANSACTION_STATES, label);
   if (!SHA256.test(string(item.source_sha256, label))) throw new Error(`${label} response is invalid`);
@@ -1093,6 +1165,18 @@ function transaction(value, label) {
     if (pins.some((pin) => pin < 0 || pin > 63) || new Set(pins).size !== pins.length || pins.length && !item.evidence.includes("meter_communication_failed")) {
       throw new Error(`${label} response is invalid`);
     }
+  }
+  if ("failure" in item && item.failure !== null) {
+    const failure = record(item.failure, label);
+    exactKeys(failure, ["stage", "reason_code", "context"], label);
+    if (!TRANSACTION_FAILURE_STAGES.has(string(failure.stage, label))) throw new Error(`${label} response is invalid`);
+    if (!TRANSACTION_FAILURE_REASONS.has(string(failure.reason_code, label))) throw new Error(`${label} response is invalid`);
+    array(failure.context, label, 4).forEach((entry) => {
+      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || typeof entry[1] !== "string") throw new Error(`${label} response is invalid`);
+      const [key, value2] = entry;
+      const allowed = key === "secret_name" && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(value2) || key === "component" && value2 === "sensor.atm90e32" || key === "package" && ["power_quality", "status_fields"].includes(value2) || key === "field" && ["current", "power", "voltage", "reactive_power", "apparent_power", "power_factor", "phase_angle", "harmonic_power", "peak_current", "phase_status", "frequency_status", "update_interval"].includes(value2);
+      if (!allowed) throw new Error(`${label} response is invalid`);
+    });
   }
   return value;
 }
@@ -1504,6 +1588,7 @@ class HelperApi {
       array(value, "list_meters").forEach((item) => device(item, "list_meters"));
       return value;
     });
+    this.inspectExistingMeter = (deviceId) => this.call("inspect_existing_meter", (value) => existingInspection(value, "inspect_existing_meter"), { device_id: deviceId });
     this.getTopology = (deviceId) => this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
     this.getCtInventory = (deviceId) => this.call("get_ct_inventory", (value) => ctInventory(value, "get_ct_inventory"), { device_id: deviceId });
     this.getMeterConfiguration = async (deviceId) => {
@@ -1544,6 +1629,9 @@ class HelperApi {
       plan_id: planId,
       source_sha256: sourceSha256,
       configuration
+    });
+    this.prepareCalibration = (deviceId) => this.call("prepare_calibration", (value) => transaction(value, "prepare_calibration"), {
+      device_id: deviceId
     });
     this.previewTotalGraph = (deviceId, planId, sourceSha256, configuration) => this.call("preview_total_graph", (value) => totalGraphPreview(value, "preview_total_graph", planId, sourceSha256, configuration), {
       device_id: deviceId,
@@ -1673,7 +1761,16 @@ class HelperApi {
     if (typeof value === "string") {
       const multiline = value.includes("\n") || value.includes("\r");
       const limit = field === "redacted_diff" ? 32768 : 4096;
-      if (value.length > limit || CONTROL$1.test(value) || SECRET_VALUE.test(value) || multiline && field !== "redacted_diff" || field === "redacted_diff" && value.includes("\r")) {
+      const unsafeDiff = field === "redacted_diff" && (() => {
+        let unsafe = false;
+        const unchecked = value.split("\n").map((line) => {
+          if (!SECRET_VALUE.test(line) && !DIFF_SECRET_VALUE.test(line)) return line;
+          unsafe ||= !SAFE_REDACTED_DIFF_LINE.test(line);
+          return "";
+        }).join("");
+        return unsafe || SECRET_VALUE.test(unchecked) || DIFF_SECRET_VALUE.test(unchecked);
+      })();
+      if (value.length > limit || CONTROL$1.test(value) || field !== "redacted_diff" && SECRET_VALUE.test(value) || unsafeDiff || multiline && field !== "redacted_diff" || field === "redacted_diff" && value.includes("\r")) {
         throw new Error(`unsafe string ${field || "value"} refused`);
       }
       return;
@@ -1720,6 +1817,39 @@ class HelperApi {
       callback(validator(message));
     }, { type: `${PREFIX}${operation}`, entry_id: this.entryId, ...data });
   }
+  async listExistingMeters() {
+    const candidates = [];
+    let after = "";
+    for (; ; ) {
+      const page = await this.call("list_existing_meters", (value) => array(value, "list_existing_meters", 32).map((item) => existingDevice(item, "list_existing_meters")), after ? { after_entry_id: after } : {});
+      for (const candidate of page) {
+        if (candidate.entry_id <= after) throw new Error("list_existing_meters page is out of order");
+        after = candidate.entry_id;
+        candidates.push(candidate);
+      }
+      if (page.length < 32) return candidates;
+    }
+  }
+}
+function generatedTotalId(name) {
+  const words = name.match(/[A-Z]+(?=[A-Z][a-z]|[^a-zA-Z]|$)|[A-Z]?[a-z]+|[0-9]+/g) ?? [];
+  let stem = words.map((word, index) => index === 0 ? word.toLowerCase() : `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}`).join("") || "total";
+  if (/^\d/.test(stem)) stem = `total${stem}`;
+  return stem;
+}
+function generatedTotalSensorIds(name, energyMode, outputs) {
+  const stem = generatedTotalId(name);
+  const ids = outputs.watts || outputs.kwh ? [`${stem}Watts`] : [];
+  if (outputs.amps) ids.push(`${stem}Amps`);
+  if (energyMode === "bidirectional" && (outputs.watts || outputs.kwh)) {
+    ids.push(`${stem}ExportWatts`);
+    if (outputs.kwh) ids.push(`${stem}ExportEnergy`);
+    ids.push(`${stem}ImportWatts`);
+    if (outputs.kwh) ids.push(`${stem}ImportEnergy`);
+  } else if (outputs.kwh && energyMode !== "none") {
+    ids.push(`${stem}Energy`);
+  }
+  return ids;
 }
 function derivedParentId(aggregateId, aggregates) {
   const parents = aggregates.filter((item) => item.sources.some((source) => source.kind === "aggregate" && source.aggregate_id === aggregateId));
@@ -1782,7 +1912,12 @@ const emptyTotals = {
   migration: { parent_review_required: false, legacy_parent_links: [], native_visibility_confirmation_required: false, native_visibility_resolved: false }
 };
 function configReview(status, configuration = null, impact = null, totals = null) {
-  const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split("\n");
+  const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split(/\r?\n/);
+  const diffLine = (line) => {
+    const kind = line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : "context";
+    const prefixed = line.startsWith(" ") || line.startsWith("+") || line.startsWith("-");
+    return { kind, value: prefixed ? line.slice(1) : line };
+  };
   const channels = configuration?.channels ?? [];
   const pqBoards = configuration?.power_quality.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
   const statusBoards = configuration?.status_fields.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
@@ -1807,7 +1942,7 @@ function configReview(status, configuration = null, impact = null, totals = null
         <ul class="status-list">${configuration.meter.voltage_references.map((reference) => b`<li>${reference.label} (${reference.phase_label}): ${reference.nominal_voltage_v} V · ${reference.transformer_model_id} · ${reference.group_keys.join(", ")}</li>`)}</ul>
         ${configuration.meter.voltage_references.length > 1 ? b`<p class=${configuration.multi_reference_preparation_acknowledged ? "info-band" : "warning-band"}>Multi-reference hardware preparation: ${configuration.multi_reference_preparation_acknowledged ? "acknowledged" : "not acknowledged"}.</p>` : ""}
         <h3>Channels</h3>
-        <ul class="status-list">${channels.map((channel) => b`<li>CT${channel.channel} ${channel.name}: ${channel.enabled ? `${channel.role.replaceAll("_", " ")} on ${channel.voltage_reference_id}; ${channel.model_id || "no model"} × ${channel.reporting_multiplier}; burden ${channel.burden_output_acknowledged ? "acknowledged" : "not acknowledged"}` : "unused"}</li>`)}</ul>
+        <ul class="status-list">${channels.map((channel) => b`<li>CT${channel.channel} ${channel.name}: ${channel.enabled ? `${channel.role.replaceAll("_", " ")} on ${channel.voltage_reference_id}; ${channel.model_id || "no model"} × ${channel.reporting_multiplier}` : "unused"}</li>`)}</ul>
         <h3>Default meter totals</h3>
         <ul><li>Overall meter total: ${outputs(configuration.default_totals.overall)}</li>${configuration.default_totals.boards.map((board) => b`<li>${board.board_index === 0 ? "Main Board" : `Add-on ${board.board_index}`} total: ${outputs(board.outputs)}</li>`)}</ul>
         <h3>Suggested circuit totals</h3>
@@ -1818,7 +1953,7 @@ function configReview(status, configuration = null, impact = null, totals = null
         <ul>${configuration.totals_change_intent?.legacy_parent_decisions.map((decision) => b`<li>${configuration.aggregates.find((item) => item.aggregate_id === decision.child_id)?.name ?? decision.child_id} → ${configuration.aggregates.find((item) => item.aggregate_id === decision.proposed_parent_id)?.name ?? decision.proposed_parent_id}: ${decision.accepted ? "Use this parent relationship" : "Keep totals independent"}; awaiting successful commit.</li>`)}</ul>
         ${impact ? b`<p>${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors. Hidden outputs can remain internal dependencies.</p>` : b`<p>Current total counts are unavailable.</p>`}
         <h3>Package and entity impact</h3>
-        <dl class="status-list"><div><dt>Power quality</dt><dd>${pqBoards.length ? `Boards ${pqBoards.join(", ")}` : "Not selected"}</dd></div><div><dt>Phase status</dt><dd>${statusBoards.length ? `Boards ${statusBoards.join(", ")}` : "Not selected"}</dd></div>${impact ? b`<div><dt>Entity impact</dt><dd>${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text, ${impact.energy_entity_count} energy; ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec</dd></div>` : ""}</dl>
+        <dl class="status-list"><div><dt>Power quality</dt><dd>${pqBoards.length ? `Boards ${pqBoards.join(", ")} · reactive power, apparent power, and power factor for each used CT` : "Not selected"}</dd></div><div><dt>Phase status</dt><dd>${statusBoards.length ? `Boards ${statusBoards.join(", ")} · native API diagnostics, disabled by default in Home Assistant` : "Not selected"}</dd></div>${impact ? b`<div><dt>Helper-managed measurements</dt><dd>${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text, ${impact.energy_entity_count} energy; ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec</dd></div>` : ""}</dl>
       ` : ""}
       <dl class="status-list">
         <div><dt>Validation</dt><dd>${status?.state === "validated" || status?.progress.includes("config_validated") ? "Validated" : "Pending"}</dd></div>
@@ -1833,7 +1968,10 @@ function configReview(status, configuration = null, impact = null, totals = null
           <div><dt>Evidence</dt><dd>${status?.evidence.join(", ") || "No evidence recorded."}</dd></div>
           <div><dt>Upload trace</dt><dd>${status?.upload_progress.map((item) => `${item.stage}: ${item.percentage ?? "in progress"}`).join(", ") || "No upload trace."}</dd></div>
         </dl>
-        <pre class="config-diff" aria-label="Redacted substitution diff"><code>${diff.map((line, index) => b`<span class=${`diff-line ${line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : "context"}`}>${line}</span>${index < diff.length - 1 ? "\n" : ""}`)}</code></pre>
+        <pre class="config-diff" aria-label="Configuration file diff"><code>${diff.map((line) => {
+    const item = diffLine(line);
+    return b`<span class=${`diff-line ${item.kind}`}>${item.value}</span>`;
+  })}</code></pre>
       </details>
     </section>
   `;
@@ -1847,7 +1985,7 @@ function totalsEditable(meter, capability) {
 function legacyTotalsNotice(capabilities) {
   return b`${capabilities.reason_codes.includes("legacy_custom_totals_unmanaged") || capabilities.reason_codes.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band">Arbitrary unmanaged custom totals remain outside helper control. Recognized existing Watts/Amps/kWh remain unchanged until edited. After adoption, editing a supported total creates replacement helper entities and new kWh counters; its original sensors are retained internally. Unresolved native default totals remain read-only. Preserved unsupported external custom energy remains unchanged and outside the computed entity count. Review these changes before saving.</p>` : A}`;
 }
-function totalsMigrationReview(meter, update, preview = null, fresh = true, readOnly = false, transaction2 = null) {
+function totalsMigrationReview(meter, update, preview = null, fresh = true, readOnly = false) {
   const { configuration, totals, capabilities } = meter;
   const intent = configuration.totals_change_intent ?? { adopt_managed_totals: false, legacy_parent_decisions: [] };
   const adoptionRequired = capabilities.reason_codes.includes("totals_adoption_required");
@@ -1863,13 +2001,13 @@ function totalsMigrationReview(meter, update, preview = null, fresh = true, read
     if (canAdoptTotals(meter) && !intent.adopt_managed_totals) update({ ...configuration, totals_change_intent: { ...intent, adopt_managed_totals: true } });
   }}>Adopt managed totals</button>` : !canAdoptTotals(meter) ? b`<p role="status">Adoption requires authoritative editable YAML, confirmed native visibility and supported contract.</p>` : A}
       ${intent.adopt_managed_totals ? b`<p role="status">Adoption selected; awaiting successful commit. Review the exact native visibility overrides and helper blocks before Save and validate.</p>
-        ${fresh && preview ? b`<h3>Requested visibility changes versus firmware defaults</h3><p>These are requested outputs, not the source-aware overrides to be added. The server transaction diff below is authoritative for actual YAML changes.</p><ul>${preview.graph.native_visibility.map((item) => {
+        ${fresh && preview ? b`<h3>Requested visibility changes versus firmware defaults</h3><p>These are requested outputs, not the source-aware overrides to be added. Review the exact source-aware YAML diff in Configuration review.</p><ul>${preview.graph.native_visibility.map((item) => {
     const native = totals.native_sources.find((source) => source.power_id === item.sensor_id || source.current_id === item.sensor_id || source.existing_energy_id === item.sensor_id);
     const output = native?.power_id === item.sensor_id ? "Watts" : native?.current_id === item.sensor_id ? "Amps" : "kWh";
     return b`<li>${native?.label ?? "Native total"} ${output}: ${item.internal ? "internal dependency" : "public output"}</li>`;
   })}</ul><h3>Requested helper totals</h3><ul>${preview.graph.ordered_nodes.map((node) => b`<li>${node.aggregate.name}: ${[node.power_required ? "Watts" : "", node.current_required ? "Amps" : "", node.energy_required ? "kWh" : ""].filter(Boolean).join(", ")}</li>`)}
           ${totals.native_sources.filter((source) => source.source_id !== "overall").map((source, index) => source.existing_energy_id === null && configuration.default_totals.boards.find((board) => board.board_index === index)?.outputs.kwh ? b`<li>${source.label}: kWh</li>` : A)}</ul>` : b`<p role="status">Current validated total preview is required to list requested visibility and helper blocks.</p>`}
-        ${transaction2 ? b`<details><summary>Exact source-aware additions and helper blocks (server transaction diff)</summary><pre class="config-diff" aria-label="Exact adoption transaction diff">${transaction2.redacted_diff}</pre></details>` : b`<p>Continue to configuration review for the exact source-aware additions and helper blocks in the server transaction diff.</p>`}` : A}
+        ` : A}
     </section>` : A}
     ${legacyTotalsNotice(capabilities)}
     ${totals.migration.legacy_parent_links.length ? b`<section class="totals-migration" aria-labelledby="legacy-parent-heading">
@@ -1926,16 +2064,17 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
   const progressAction = waitingForStartup ? null : pendingAction === "compile" ? "Compile" : pendingAction === "install" ? "Install" : status?.upload_progress.length ? status.progress.includes("firmware_compiled") ? "Install" : "Compile" : null;
   const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
+  const failureMessage = status?.failure?.reason_code === "missing_package" ? "A required supported package is missing. Review the package selection and create a fresh review." : status?.failure?.reason_code === "unsupported_component_option" ? "The selected option is not supported by this ESPHome version. Choose a supported firmware version and review again." : status?.failure?.reason_code === "required_secret" ? "A required secret name is unresolved. Add it in ESPHome and create a fresh review." : status?.failure?.reason_code === "conflicting_managed_override" ? "A managed configuration override conflicts with the reviewed source. Restore the source or create a fresh review." : status?.failure?.reason_code === "verification_incomplete" ? "Uploaded; verification incomplete. Reconnect the meter and retry installation." : null;
   return b`
     <section class="step-content" aria-labelledby="step-heading">
       <h2>${labels.heading}</h2>
       ${purpose === "offset_preparation" ? b`<p>This installs a reviewed zero baseline for only the unfinished chips. Installation does not run calibration. Return to the same board and stage, acknowledge physical preparation again, and check measured readiness before explicit Run.</p>` : ""}
       ${purpose === "offset_finalization" ? b`<p>Captured signed offsets, including zeros, are installed with native offset restore disabled. Confirm configuration selection after installation; this is not register readback and does not clear saved gain calibration.</p>` : ""}
       ${configReview(status, configuration, impact, meterInventory?.totals)}
-      ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true, status) : ""}
+      ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
-          <strong>${communicationFailure ? "Meter chip communication failed" : "Build or install needs attention"}</strong>
+          <strong>${communicationFailure ? "Meter chip communication failed" : failureMessage ?? "Build or install needs attention"}</strong>
           ${communicationFailure ? b`<p>The ESP32 reconnected, but reported that it could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is the connection between the ESP32 and the meter chip, not a Wi-Fi or Home Assistant connection problem.</p>
@@ -1947,11 +2086,16 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
               <li>If an add-on still fails, move its CS jumper to a different unused, supported CS pin and update the configuration to match before rebuilding and installing. A fault that follows the GPIO points to the ESP32 pin or its connection; a fault that stays with the same add-on on a known-good GPIO points to that add-on board or meter chip.</li>
             </ol>
             <p>After correcting the hardware or configuration, power up and use Retry Install. This uploads the firmware again and repeats startup verification.</p>
+            <p>Use Back to keep this saved configuration and edit it; rollback is optional.</p>
           ` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
       ${validationFailed ? b`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>The original config was restored. Review the config changes and open ESPHome Device Builder logs for the exact validation error.</p></div>` : ""}
+      ${status?.failure ? b`<div class="recovery-panel" role="status">
+        ${failureMessage ? b`<p>${failureMessage}</p>` : b`<p>Open ESPHome Device Builder details for the failed operation.</p>`}
+        ${status.failure.context.map(([key, value]) => b`<p>${key === "secret_name" ? "Required secret" : key === "component" ? "Component" : key === "field" ? "Option" : "Package"}: <code>${value}</code></p>`)}
+      </div>` : ""}
       ${waitingForStartup ? b`<div class="job-progress" role="status" aria-live="polite">
         <span>Meter is rebooting. Waiting for startup verification.</span>
         <progress max="100" aria-label="Waiting for meter startup"></progress>
@@ -1961,6 +2105,11 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
         <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required" && !retryClear}>${pendingAction === "install" ? "Installing…" : retryClear ? "Retry clearing saved flash values" : retryableInstall ? "Retry Install" : labels.install}</button>
       </div>
+      ${status?.validation_detail ? b`<dl class="status-list evidence-list">
+        <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
+        <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>
+        <div><dt>Warnings</dt><dd>${status.validation_detail.warning_record_count} records (${status.validation_detail.reported_warning_count === null ? "unreported" : `${status.validation_detail.reported_warning_count} reported`})</dd></div>
+      </dl>` : ""}
       ${progressAction ? b`<div class="job-progress" role="status" aria-live="polite">
         <span>${progressAction} progress: ${percentage === null ? "in progress" : `${percentage}%`}</span>
         ${percentage === null ? b`<progress max="100" aria-label="${progressAction} progress: in progress"></progress>` : b`<progress max="100" value=${percentage} aria-label="${progressAction} progress: ${percentage}%"></progress>`}
@@ -1993,6 +2142,43 @@ function calibrationPlanStep(selected, choose, back, runtimeOnly, busy) {
     <footer class="action-footer"><button class="secondary" ?disabled=${busy} @click=${back}>Back</button></footer>
   </section>`;
 }
+const t = { ATTRIBUTE: 1, CHILD: 2, PROPERTY: 3, BOOLEAN_ATTRIBUTE: 4 }, e = (t2) => (...e2) => ({ _$litDirective$: t2, values: e2 });
+let i$1 = class i2 {
+  constructor(t2) {
+  }
+  get _$AU() {
+    return this._$AM._$AU;
+  }
+  _$AT(t2, e2, i4) {
+    this._$Ct = t2, this._$AM = e2, this._$Ci = i4;
+  }
+  _$AS(t2, e2) {
+    return this.update(t2, e2);
+  }
+  update(t2, e2) {
+    return this.render(...e2);
+  }
+};
+const n$2 = (o2) => null === o2 || "object" != typeof o2 && "function" != typeof o2, r$1 = (o2) => void 0 === o2.strings, m$1 = {}, p = (o2, t2 = m$1) => o2._$AH = t2;
+const l = e(class extends i$1 {
+  constructor(r2) {
+    if (super(r2), r2.type !== t.PROPERTY && r2.type !== t.ATTRIBUTE && r2.type !== t.BOOLEAN_ATTRIBUTE) throw Error("The `live` directive is not allowed on child or event bindings");
+    if (!r$1(r2)) throw Error("`live` bindings can only contain a single expression");
+  }
+  render(r2) {
+    return r2;
+  }
+  update(i4, [t$12]) {
+    if (t$12 === E || t$12 === A) return t$12;
+    const o2 = i4.element, l2 = i4.name;
+    if (i4.type === t.PROPERTY) {
+      if (t$12 === o2[l2]) return E;
+    } else if (i4.type === t.BOOLEAN_ATTRIBUTE) {
+      if (!!t$12 === o2.hasAttribute(l2)) return E;
+    } else if (i4.type === t.ATTRIBUTE && o2.getAttribute(l2) === t$12 + "") return E;
+    return p(i4), t$12;
+  }
+});
 const moveTab = (event, index) => {
   if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
@@ -2087,19 +2273,22 @@ function automaticTotalsSection(configuration, totals, writable, update, existin
     ${totals.automatic_totals.length ? totals.automatic_totals.map((resolved) => {
     const saved = configuration.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id);
     const current = saved ?? { candidate_id: resolved.candidate.candidate_id, enabled: resolved.enabled, outputs: resolved.outputs };
+    const currentName = current.name ?? resolved.candidate.name;
+    const savedSensorIds = Boolean(existingConfiguration && (existingConfiguration.automatic_totals.some((item) => item.candidate_id === resolved.candidate.candidate_id && item.enabled) || existingConfiguration.aggregates.some((item) => item.aggregate_id === resolved.candidate.aggregate_id)));
+    const sensorIds = currentName.trim() ? generatedTotalSensorIds(currentName, resolved.candidate.energy_mode, current.outputs) : [];
     const published = existingConfiguration?.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id && item.enabled)?.outputs;
     const parents = configuration.aggregates.filter((aggregate) => aggregate.sources.some((source) => source.kind === "aggregate" && source.aggregate_id === resolved.candidate.aggregate_id));
     const sources = resolved.candidate.sources.map((source) => `CT${source.channel} · ${configuration.channels.find((channel) => channel.channel === source.channel)?.name ?? "Unnamed"}`).join(", ");
     const changeOutput = (key, checked) => patch(resolved.candidate.candidate_id, current, { outputs: { ...current.outputs, [key]: checked } });
     const changeEnabled = (event) => {
       const input = event.target;
-      if (!writable || !confirmTotalOutputRemoval(resolved.candidate.name, published && Object.values(published).some(Boolean), input.checked)) {
+      if (!writable || !confirmTotalOutputRemoval(currentName, published && Object.values(published).some(Boolean), input.checked)) {
         input.checked = current.enabled;
         return;
       }
       if (input.checked || !parents.length) return patch(resolved.candidate.candidate_id, current, { enabled: input.checked });
       const names = parents.map((parent) => parent.name).join(" and ");
-      if (!window.confirm(`${names} uses ${resolved.candidate.name}. Remove it from ${names}?`)) {
+      if (!window.confirm(`${names} uses ${currentName}. Remove it from ${names}?`)) {
         input.checked = true;
         return;
       }
@@ -2108,19 +2297,23 @@ function automaticTotalsSection(configuration, totals, writable, update, existin
         sources: aggregate.sources.filter((source) => source.kind !== "aggregate" || source.aggregate_id !== resolved.candidate.aggregate_id)
       })));
     };
-    const control = (key, label, disabled = false) => b`<label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`${resolved.candidate.name} ${label}`} .checked=${current.outputs[key]} ?disabled=${!writable || disabled}
+    const control = (key, label, disabled = false) => b`<label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`${currentName} ${label}`} .checked=${current.outputs[key]} ?disabled=${!writable || disabled}
         @change=${(event) => {
       const input = event.target;
-      if (!writable || disabled || !confirmTotalOutputRemoval(`${resolved.candidate.name} ${label}`, published?.[key], input.checked)) {
+      if (!writable || disabled || !confirmTotalOutputRemoval(`${currentName} ${label}`, published?.[key], input.checked)) {
         input.checked = current.outputs[key];
         return;
       }
       changeOutput(key, input.checked);
     }} />${label}</label>`;
-    return b`<fieldset class="automatic-total-card"><legend>${resolved.candidate.name}</legend>
+    return b`<fieldset class="automatic-total-card"><legend>${currentName}</legend>
+        <p class="aggregate-id">Total ID: <code>${resolved.candidate.aggregate_id}</code></p>
+        <label class="automatic-total-name">Name <input aria-label=${`${resolved.candidate.candidate_id} suggested total name`} maxlength="64" required .value=${l(currentName)} ?disabled=${!writable}
+          @input=${(event) => patch(resolved.candidate.candidate_id, current, { name: event.target.value })} /></label>
+        ${savedSensorIds ? b`<p class="aggregate-id">Existing sensor IDs are preserved; see the reviewed configuration for the exact firmware IDs.</p>` : b`<p class="aggregate-id">Proposed sensor IDs: <code>${sensorIds.length ? sensorIds.join(", ") : currentName.trim() ? "none until an output is selected" : "enter a name first"}</code></p>`}
         <p>Sources: ${sources}</p><p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
         ${parents.length ? b`<p>Feeds into: ${parents.map((parent) => parent.name).join(" and ")}</p>` : ""}
-        <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${resolved.candidate.name} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>
+        <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${currentName} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>
         <div class="automatic-total-controls">${control("watts", "Watts")}${control("amps", "Amps")}${control("kwh", "kWh", resolved.candidate.energy_mode === "none")}</div>
       </fieldset>`;
   }) : b`<p class="info-band" role="status">No server-suggested totals are available for this circuit configuration.</p>`}
@@ -2301,7 +2494,7 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
     ];
     return b`<fieldset class="aggregate-card" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!writable}><legend>${aggregate.name}</legend>
         <div class="aggregate-fields">
-          <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
+          <div class="aggregate-name-field"><label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
             @input=${(event) => {
       const input = event.target;
       if (!writable) {
@@ -2310,6 +2503,9 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
       }
       patch(aggregate, { name: input.value });
     }} /></label>
+            <p class="aggregate-id">Total ID: <code>${aggregate.aggregate_id}</code></p>
+            ${existingConfiguration && !existingConfiguration.aggregates.some((item) => item.aggregate_id === aggregate.aggregate_id) ? b`<p class="proposed-sensor-id">Proposed sensor ID prefix: <code>${generatedTotalId(aggregate.name)}</code></p>` : A}
+          </div>
           <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
             @change=${(event) => {
       const input = event.target;
@@ -2371,9 +2567,18 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
         ${nativeChoices.length ? b`<fieldset class="aggregate-sources"><legend>Native totals</legend><div class="aggregate-source-options">${nativeChoices.map((item) => option({ kind: "native_total", source_id: item.source_id }, item.label))}</div></fieldset>` : A}
         ${existingChoices.length ? b`<fieldset class="aggregate-sources"><legend>Existing totals</legend><div class="aggregate-source-options">${existingChoices.map((item) => option({ kind: "aggregate", aggregate_id: item.aggregate_id }, item.name))}</div></fieldset>` : A}
         <fieldset class="aggregate-sources aggregate-channels"><legend>CTs</legend><div class="aggregate-channel-groups">${Array.from({ length: Math.ceil(configuration.channels.length / 6) }, (_2, board) => {
-      const channels = configuration.channels.filter((item) => item.enabled && Math.floor((item.channel - 1) / 6) === board);
+      const channels = configuration.channels.filter((item) => item.enabled && Math.floor((item.channel - 1) / 6) === board).sort((left, right) => {
+        const slot = (channel) => (channel - 1) % 6;
+        const physical = (channel) => slot(channel) < 3 ? slot(channel) : 8 - slot(channel);
+        return physical(left.channel) - physical(right.channel);
+      });
       const used = channels.some((item) => aggregate.sources.some((source) => source.kind === "channel" && source.channel === item.channel));
-      return channels.length ? b`<details class="aggregate-channel-group" ?open=${used} aria-label=${board ? `Add-on ${board} channels` : "Main Board channels"}><summary>${board ? `Add-on ${board}` : "Main Board"}</summary><div>${channels.map((item) => option({ kind: "channel", channel: item.channel }, `CT${item.channel} · ${drafts.get(item.channel)?.name ?? item.name}`, `CT${item.channel}`))}</div></details>` : A;
+      return channels.length ? b`<details class="aggregate-channel-group" ?open=${used} aria-label=${board ? `Add-on ${board} channels` : "Main Board channels"}><summary>${board ? `Add-on ${board}` : "Main Board"}</summary><div>${channels.map((item) => {
+        const slot = (item.channel - 1) % 6;
+        return b`<span style=${`--ct-column:${slot < 3 ? 1 : 2};--ct-row:${slot < 3 ? slot + 1 : 6 - slot}`}>
+              ${option({ kind: "channel", channel: item.channel }, `CT${item.channel} · ${drafts.get(item.channel)?.name ?? item.name}`, `CT${item.channel}`)}
+            </span>`;
+      })}</div></details>` : A;
     })}</div></fieldset>
         ${aggregate.sources.filter((source) => !known.some((item) => sameSource(item, source))).map((source) => option(source, label(source)))}
         <div class="aggregate-actions">${output("watts", "Watts")}${output("amps", "Amps")}${output("kwh", "kWh")}
@@ -2389,7 +2594,6 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
       })) });
     }}>Delete total</button>
         </div>
-        <details><summary>Advanced details</summary><p>Stable aggregate ID: <code>${aggregate.aggregate_id}</code></p></details>
       </fieldset>`;
   })}</div>
     ${writable ? b`<button class="secondary" data-action="add-aggregate" @click=${add}>Create aggregate total</button>` : A}
@@ -2404,6 +2608,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
   const referenceByGroup = new Map(configuration?.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference])) ?? []);
+  const preserveNamedAutomaticDraft = configuration?.automatic_totals.some((item) => item.name !== void 0) === true;
   const patchChannel = (channel, patch) => configuration && updateConfiguration({
     ...configuration,
     channels: configuration.channels.map((item) => item.channel === channel ? { ...item, ...patch } : item)
@@ -2437,10 +2642,8 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
     };
     const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
     const gain = resultingGain(preset, draft.multiplier, draft.modelId === "custom" ? draft.customGainCt : void 0);
-    const dirty = isDirty(channel, draft);
     const existing = existingConfiguration?.channels.find((item) => item.channel === channel.channel);
     const retained = keepsExistingCtSettings(draft, existing);
-    const valid = labelOnly ? Boolean(draft.name.trim()) : validDraft(inventory, draft, existing);
     const recommendation = preset ? recommendedReportingMultiplier(preset.rated_current_a) : null;
     const effectiveRange = draft.multiplier * 65.535;
     const circuit = configuration?.channels.find((item) => item.channel === channel.channel);
@@ -2450,7 +2653,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                 <strong class="ct-index" role="cell">CT${channel.channel}</strong>
                 ${circuit ? b`<label role="cell" class="check-row"><span class="mobile-label">Used</span><input type="checkbox" aria-label=${`CT${channel.channel} used`} .checked=${circuit.enabled}
                   @change=${(event) => event.target.checked ? patchChannel(channel.channel, { enabled: true, role: circuit.role === "unused" ? "branch" : circuit.role }) : disableChannel(channel.channel)} /></label>` : b`<span role="cell"><span class="mobile-label">Used</span>—</span>`}
-                <label role="cell"><span class="mobile-label">Circuit name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
+                <label role="cell"><span class="mobile-label">Circuit name</span><input aria-label=${`CT${channel.channel} name`} .value=${l(draft.name)}
                   @input=${(event) => update(channel.channel, { name: event.target.value })} /></label>
                 ${circuit ? b`<label role="cell"><span class="mobile-label">Circuit type</span><select aria-label=${`CT${channel.channel} role`} .value=${circuit.role} ?disabled=${!circuit.enabled}
                   @change=${(event) => patchChannel(channel.channel, { role: event.target.value })}>
@@ -2470,35 +2673,33 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
     }}>
                   <option value="" ?selected=${draft.modelId === ""}>Choose model</option>
                   ${inventory.catalog.presets.map((item) => b`<option value=${item.model_id} ?selected=${draft.modelId === item.model_id}>${item.label}</option>`)}
-                  <option value="custom" ?selected=${draft.modelId === "custom"}>${retained && existing?.model_id === "custom" && !existing.burden_output_acknowledged ? "Keep existing gain" : "Custom"}</option>
-                </select>${preset ? b`<small>${preset.rated_current_a} A</small>` : A}<button class="row-toggle" aria-label=${`CT${channel.channel} technical details`} aria-expanded=${draft.expanded} @click=${() => update(channel.channel, { expanded: !draft.expanded })}>${!valid ? "Needs attention" : draft.modelId ? dirty ? "Changed" : "OK" : "Choose model"}</button><span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
+                  <option value="custom" ?selected=${draft.modelId === "custom"}>Custom Gain</option>
+                </select>${preset ? b`<small>${preset.rated_current_a} A</small>` : A}<span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
                 <span role="cell"><span class="mobile-label">Range status</span>${draft.preserveExistingGain ? "Existing gain kept" : recommendation === null && preset ? "Rating exceeds ×8 range" : effectiveRange < (preset?.rated_current_a ?? 0) ? `Too small: ${effectiveRange} A` : `Up to ${effectiveRange} A`}</span>
               </div>
               ${allowPreserveExistingGain && !channel.selection_verified_against_config && channel.raw_gain_ct > 0 ? b`<label class="check-row preserve-gain"><input type="checkbox" aria-label=${`CT${channel.channel} keep existing gain`} ?disabled=${labelOnly} .checked=${draft.preserveExistingGain === true}
                 @change=${(event) => update(channel.channel, { preserveExistingGain: event.target.checked, expanded: true })} />Keep existing gain; CT model not recorded.</label>` : A}
-              ${draft.modelId === "custom" && draft.expanded ? b`<div class="ct-detail custom-fields">
-                <label>Custom gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
-                  ?disabled=${labelOnly}
-                  .value=${draft.customGainCt === void 0 ? "" : String(draft.customGainCt)}
-                  @input=${(event) => update(channel.channel, { customGainCt: Number(event.target.value) })} /></label>
-                <label>Custom label <input maxlength="64" aria-label=${`CT${channel.channel} custom label`} ?disabled=${labelOnly} .value=${draft.customLabel ?? ""}
-                  @input=${(event) => update(channel.channel, { customLabel: event.target.value })} /></label>
-              </div>` : A}
-              ${draft.expanded && retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : A}
-              ${draft.expanded && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
-                <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
-                  ?disabled=${labelOnly}
-                  .checked=${draft.burdenAcknowledged}
-                  @change=${(event) => update(channel.channel, { burdenAcknowledged: event.target.checked })} />
-                  I checked the burden-output requirement for CT${channel.channel}</label>
-              </div>` : A}
               ${!draft.preserveExistingGain && preset && (recommendation === null || effectiveRange < preset.rated_current_a) ? b`<div class="warning-band" role="status">CT${channel.channel}: this selection needs a range of at least ${preset.rated_current_a} A. Continue is blocked.</div>` : A}
-              <details class="technical-details" ?open=${draft.expanded}><summary>Technical details</summary>
+              <details class="technical-details" ?open=${draft.expanded} @toggle=${(event) => update(channel.channel, { expanded: event.currentTarget.open })}><summary>Technical details</summary>
+                ${draft.modelId === "custom" && draft.expanded ? b`<div class="ct-detail custom-fields">
+                  <label>Custom Gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
+                    ?disabled=${labelOnly}
+                    .value=${draft.customGainCt === void 0 ? "" : String(draft.customGainCt)}
+                    @input=${(event) => update(channel.channel, { customGainCt: Number(event.target.value) })} /></label>
+                </div>` : A}
+                ${draft.expanded && retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : A}
+                ${draft.expanded && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
+                  <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
+                    ?disabled=${labelOnly}
+                    .checked=${draft.burdenAcknowledged}
+                    @change=${(event) => update(channel.channel, { burdenAcknowledged: event.target.checked })} />
+                    I checked the burden-output requirement for CT${channel.channel}</label>
+                </div>` : A}
                 <dl class="ct-detail">
                   <div><dt>Raw gain</dt><dd>${channel.raw_gain_ct}</dd></div>
                   <div><dt>Divided gain</dt><dd>${gain ?? "—"}</dd></div>
                   <div><dt>Voltage reference</dt><dd data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</dd></div>
-                  <div><dt>Reporting multiplier</dt><dd><label><input type="checkbox" aria-label=${`CT${channel.channel} manual multiplier`} ?checked=${draft.multiplierMode === "manual"} ?disabled=${labelOnly || draft.preserveExistingGain}
+                  <div class="ct-reporting-multiplier"><dt>Reporting multiplier</dt><dd><label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} manual multiplier`} ?checked=${draft.multiplierMode === "manual"} ?disabled=${labelOnly || draft.preserveExistingGain}
                     @change=${(event) => update(channel.channel, { multiplierMode: event.target.checked ? "manual" : "automatic", multiplier: event.target.checked ? draft.multiplier : recommendation ?? draft.multiplier })} /> Manual override</label>
                     <select aria-label=${`CT${channel.channel} multiplier`} .value=${String(draft.multiplier)} ?disabled=${labelOnly || draft.preserveExistingGain || draft.multiplierMode !== "manual"}
                       @change=${(event) => update(channel.channel, { multiplier: Number(event.target.value), multiplierMode: "manual" })}>${[1, 2, 4, 8].map((value) => b`<option value=${value} ?selected=${draft.multiplier === value}>×${value}</option>`)}</select></dd></div>
@@ -2516,7 +2717,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
       ${configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : A}
       ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState, meterInventory?.capabilities.reason_codes, existingConfiguration) : A}
-      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration, existingConfiguration) : A}
+      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals || preserveNamedAutomaticDraft ? totals : null, automaticTotalsWritable, updateConfiguration, existingConfiguration) : A}
       ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh, existingConfiguration) : A}
       ${reviewRequirements}
       <footer class="action-footer offset-footer">
@@ -2550,6 +2751,7 @@ function circuitConfigurationIsValid(configuration, ctCount) {
   } catch {
     return false;
   }
+  if (configuration.automatic_totals.some((item) => item.name !== void 0 && !item.name.trim())) return false;
   return true;
 }
 function changesFromDrafts(inventory, drafts) {
@@ -2566,7 +2768,7 @@ function changesFromDrafts(inventory, drafts) {
     const change = { channel: channel.channel, name: draft.name.trim(), model_id: draft.modelId, reporting_multiplier: draft.multiplier };
     if (draft.modelId === "custom") {
       if (draft.customGainCt !== void 0) change.custom_gain_ct = draft.customGainCt;
-      if (draft.customLabel !== void 0) change.custom_label = draft.customLabel.trim();
+      change.custom_label = change.name;
       change.burden_output_acknowledged = draft.burdenAcknowledged;
     } else if (preset?.requires_burden_jumper_cut) {
       change.burden_output_acknowledged = draft.burdenAcknowledged;
@@ -2576,15 +2778,15 @@ function changesFromDrafts(inventory, drafts) {
 }
 function isDirty(channel, draft) {
   if (draft.preserveExistingGain) return draft.name !== channel.name;
-  return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier || draft.modelId === "custom" && (resultingGain(void 0, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct || (draft.customLabel?.trim() ?? "") !== (channel.display_label ?? ""));
+  return draft.name !== channel.name || draft.modelId !== (channel.selected_model_id ?? "") || draft.multiplier !== channel.reporting_multiplier || draft.modelId === "custom" && resultingGain(void 0, draft.multiplier, draft.customGainCt) !== channel.raw_gain_ct;
 }
 function keepsExistingCtSettings(draft, existing) {
-  return Boolean(existing && draft.modelId === existing.model_id && draft.multiplier === existing.reporting_multiplier && (draft.customGainCt ?? null) === existing.custom_gain_ct && (draft.customLabel?.trim() || null) === existing.custom_label);
+  return Boolean(existing && draft.modelId === existing.model_id && draft.multiplier === existing.reporting_multiplier && (draft.customGainCt ?? null) === existing.custom_gain_ct);
 }
 function validDraft(inventory, draft, existing) {
   if (draft.preserveExistingGain) return true;
   if (!draft.name.trim() || !draft.modelId || ![1, 2, 4, 8].includes(draft.multiplier)) return false;
-  if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt >= 1 && draft.customGainCt <= 65535 && Boolean(draft.customLabel?.trim()) && !/[\r\n]/.test(draft.customLabel) && (draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
+  if (draft.modelId === "custom") return Number.isInteger(draft.customGainCt) && draft.customGainCt >= 1 && draft.customGainCt <= 65535 && (draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
   const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
   return Boolean(preset) && effectiveRangeIsSafe(preset, draft.multiplier) && (!preset?.requires_burden_jumper_cut || draft.burdenAcknowledged || keepsExistingCtSettings(draft, existing));
 }
@@ -2721,18 +2923,28 @@ const resizePackageOptions = (options, addonCount) => {
     status_fields: defaults.status_fields.map((value, index) => options.status_fields[index] ?? value)
   };
 };
-function packageOptions(options, change) {
+function packageOptions(options, change, capabilities = []) {
+  const capability = (feature, board) => capabilities.find((item) => item.feature === feature && item.board_index === board);
+  const reason = (feature, board) => {
+    const item = capability(feature, board);
+    if (!item) return null;
+    if (item.state === "already_present") return "Already included";
+    if (item.state === "available_to_prepare") return "Can be prepared";
+    return item.reason_code === "unsupported_package_source" ? "Read-only: unsupported package source" : item.reason_code === "ambiguous_package_source" ? "Read-only: multiple package sources" : "Read-only: package source cannot be managed safely";
+  };
   return b`<section class="package-options" aria-labelledby="package-options-heading">
     <h2 id="package-options-heading">Optional meter fields</h2>
-    <p>Choose which meter boards expose additional power quality and status entities.</p>
-    <p>Power quality sensors are used with the CircuitSetup Energy Analyzer. Enable them for the boards you want to analyze.</p>
+    <p>Choose which meter boards include additional firmware measurements.</p>
+    <p>Power quality adds reactive power, apparent power, and power factor for each used CT for the CircuitSetup Energy Analyzer. Status diagnostics remain available through the native API and are disabled by default in Home Assistant.</p>
     <table class="package-options-table">
       <thead><tr><th scope="col">Board</th>${FEATURES.map(([_feature, label]) => b`<th scope="col">${label}</th>`)}</tr></thead>
       <tbody>
         <tr><th scope="row">All boards</th>${FEATURES.map(([feature, label]) => {
     const states = options[feature];
     const all = states.every(Boolean);
+    const blocked = states.some((_state, board) => capability(feature, board)?.state === "cannot_safely_manage");
     return b`<td><input type="checkbox" data-all-feature=${feature} aria-label=${`All boards ${label}`}
+            ?disabled=${blocked} title=${blocked ? "Some boards are read-only" : ""}
             .checked=${all} .indeterminate=${states.some(Boolean) && !all}
             @change=${(event) => change({
       ...options,
@@ -2741,12 +2953,17 @@ function packageOptions(options, change) {
   })}</tr>
         ${options.power_quality.map((_enabled, board) => b`<tr>
           <th scope="row">${board === 0 ? "Main board" : `Add-on ${board}`}</th>
-          ${FEATURES.map(([feature, label]) => b`<td><input type="checkbox" data-feature=${feature} data-board=${board}
+          ${FEATURES.map(([feature, label]) => {
+    const disabled = capability(feature, board)?.state === "cannot_safely_manage";
+    const status = reason(feature, board);
+    return b`<td><input type="checkbox" data-feature=${feature} data-board=${board}
             aria-label=${`${board === 0 ? "Main board" : `Add-on ${board}`} ${label}`} .checked=${options[feature][board] ?? false}
+            ?disabled=${disabled} title=${status ?? ""}
             @change=${(event) => change({
-    ...options,
-    [feature]: options[feature].map((value, index) => index === board ? event.currentTarget.checked : value)
-  })} /></td>`)}
+      ...options,
+      [feature]: options[feature].map((value, index) => index === board ? event.currentTarget.checked : value)
+    })} /></td>`;
+  })}
         </tr>`)}
       </tbody>
     </table>
@@ -2760,9 +2977,10 @@ const SYSTEMS = [
 ];
 const INTERVALS = [1, 2, 5, 10, 30, 60];
 const intervalImpact = (interval) => interval <= 5 ? "1–5 seconds: high traffic." : interval === 10 ? null : interval >= 30 ? "30–60 seconds: lower traffic; guided calibration takes longer." : "This interval affects update traffic and guided calibration time.";
-function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, setFrequency, setNominalVoltage, setAcknowledged, back, continueToCircuits, boardPackages = null, setBoardPackages = () => void 0, profileConfirmed = true, setProfileConfirmed = () => void 0, mode = "helper_managed") {
+function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, setFrequency, setNominalVoltage, setAcknowledged, back, continueToCircuits, boardPackages = null, setBoardPackages = () => void 0, profileConfirmed = true, setProfileConfirmed = () => void 0, mode = "helper_managed", packageCapabilities2 = []) {
   const multiReference = draft.voltage_references.length > 1;
   const primaryReference = draft.voltage_references[0];
+  const fixedNominalVoltage = draft.electrical_system === "split_phase_120_240" ? 120 : draft.electrical_system === "single_phase_230" ? 230 : null;
   const valid = profileConfirmed && Boolean(draft.friendly_name.trim()) && draft.voltage_references.every((reference) => reference.label.trim() && reference.phase_label.trim() && Number.isFinite(reference.nominal_voltage_v) && reference.nominal_voltage_v >= 1 && reference.nominal_voltage_v <= 600 && Number.isInteger(reference.gain_voltage) && reference.gain_voltage >= 1 && reference.gain_voltage <= 65535 && reference.group_keys.length) && (!multiReference || acknowledged);
   const patch = (change) => {
     setAcknowledged(false);
@@ -2827,26 +3045,30 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
           ${catalog.presets.map((preset) => b`<option value=${preset.model_id}>${preset.label}</option>`)}
           <option value="custom">Custom starting gain</option>
           ${primaryReference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === primaryReference.transformer_model_id) ? b`<option value=${primaryReference.transformer_model_id}>${primaryReference.transformer_model_id}</option>` : ""}</select></label>
+        ${fixedNominalVoltage === null ? A : b`<p class="fixed-nominal-voltage">Nominal voltage: ${fixedNominalVoltage} V (fixed for this electrical system).</p>`}
       </div>
       ${intervalImpact(draft.update_interval_s) ? b`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : A}
       <h3>Voltage references</h3>
       <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
       <details class="advanced-voltage-options" data-section="advanced-voltage-options"><summary>Advanced voltage options</summary><div class="voltage-options-content"><div class="voltage-reference-cards">${draft.voltage_references.map((reference) => b`
         <section class="voltage-reference-card" aria-label=${`${reference.label} voltage reference`}>
-          <label>Label <input aria-label=${`${reference.reference_id} label`} maxlength="64" .value=${reference.label}
-            @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, label: event.target.value } : item) })} /></label>
-          <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} aria-describedby=${`${reference.reference_id}-phase-help`} maxlength="64" .value=${reference.phase_label}
-            @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: event.target.value } : item) })} /><small id=${`${reference.reference_id}-phase-help`}>Names the supply phase in the configuration review, for example L1, L2, or A. This label does not change wiring or assign CT groups.</small></label>
-          ${reference !== primaryReference ? b`<label>Transformer <select aria-label=${`${reference.reference_id} transformer`} .value=${reference.transformer_model_id}
-            @change=${(event) => setTransformer(reference.reference_id, event.target.value)}>
-            ${catalog.presets.map((preset) => b`<option value=${preset.model_id}>${preset.label}</option>`)}
-            <option value="custom">Custom starting gain</option>
-            ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? b`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>` : A}
-          ${reference.transformer_model_id !== "custom" ? b`<p>Starting gain: ${reference.gain_voltage}</p>` : b`<label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
-            @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number(event.target.value) } : item) })} /></label>
-          `}
-          ${["three_phase", "custom"].includes(draft.electrical_system) ? b`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
-            @input=${(event) => setNominalVoltage(reference.reference_id, Number(event.target.value))} /></label>` : A}
+          <div class="voltage-reference-column">
+            <label>Label <input aria-label=${`${reference.reference_id} label`} maxlength="64" .value=${reference.label}
+              @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, label: event.target.value } : item) })} /></label>
+            ${reference !== primaryReference ? b`<label>Transformer <select aria-label=${`${reference.reference_id} transformer`} .value=${reference.transformer_model_id}
+              @change=${(event) => setTransformer(reference.reference_id, event.target.value)}>
+              ${catalog.presets.map((preset) => b`<option value=${preset.model_id}>${preset.label}</option>`)}
+              <option value="custom">Custom starting gain</option>
+              ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? b`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>` : A}
+            ${["three_phase", "custom"].includes(draft.electrical_system) ? b`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
+              @input=${(event) => setNominalVoltage(reference.reference_id, Number(event.target.value))} /></label>` : A}
+            ${reference.transformer_model_id !== "custom" ? b`<p>Starting gain: ${reference.gain_voltage}</p>` : b`<label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
+              @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number(event.target.value) } : item) })} /></label>`}
+          </div>
+          <div class="voltage-reference-column voltage-phase-column">
+            <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} aria-describedby=${`${reference.reference_id}-phase-help`} maxlength="64" .value=${reference.phase_label}
+              @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: event.target.value } : item) })} /><small id=${`${reference.reference_id}-phase-help`}>Names the supply phase in the configuration review, for example L1, L2, or A. This label does not change wiring or assign CT groups.</small></label>
+          </div>
           ${draft.voltage_references.length > 1 ? b`<button class="secondary" aria-label=${`Remove ${reference.reference_id} voltage reference`} @click=${() => removeReference(reference.reference_id)}>Remove reference</button>` : ""}
         </section>`)}
       </div>
@@ -2861,7 +3083,7 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
       </details>
       <details data-section="advanced-meter-settings"><summary>Advanced meter settings</summary>
       <div class="voltage-options-content">
-      ${boardPackages ? packageOptions(boardPackages, setBoardPackages) : ""}
+      ${boardPackages ? packageOptions(boardPackages, setBoardPackages, packageCapabilities2) : ""}
       </div></details>
       <label class="check-row"><input type="checkbox" aria-label="Confirm electrical profile" .checked=${profileConfirmed}
         @change=${(event) => setProfileConfirmed(event.target.checked)} />I confirm the electrical profile and frequency.</label>
@@ -2869,24 +3091,6 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
     </section>
   `;
 }
-const n$2 = (o2) => null === o2 || "object" != typeof o2 && "function" != typeof o2, r$1 = (o2) => void 0 === o2.strings;
-const t = { CHILD: 2 }, e = (t2) => (...e2) => ({ _$litDirective$: t2, values: e2 });
-let i$1 = class i2 {
-  constructor(t2) {
-  }
-  get _$AU() {
-    return this._$AM._$AU;
-  }
-  _$AT(t2, e2, i4) {
-    this._$Ct = t2, this._$AM = e2, this._$Ci = i4;
-  }
-  _$AS(t2, e2) {
-    return this.update(t2, e2);
-  }
-  update(t2, e2) {
-    return this.render(...e2);
-  }
-};
 const s$1 = (i4, t2) => {
   const e2 = i4._$AN;
   if (void 0 === e2) return false;
@@ -3182,6 +3386,32 @@ function existingConfigurationStep(configuration, metadata, onManage, onCalibrat
     <div class="action-footer"><button class="secondary" @click=${onBack}>Back</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="primary" @click=${onManage}>Review and manage with helper</button></div>
   </section>`;
 }
+function existingMeterInspection(candidates, inspection, busyAction, find, inspect, adopt, searched = false) {
+  return b`<section class="existing-inspection" aria-labelledby="find-existing-heading">
+    <h3 id="find-existing-heading">Find another ESPHome meter</h3>
+    <p>This checks one selected ESPHome entry before it can be adopted. It does not install firmware.</p>
+    <button class="secondary" data-action="find-existing" ?disabled=${Boolean(busyAction)} @click=${find}>
+      ${busyAction === "find-existing" ? "Finding meters…" : "Find another ESPHome meter"}
+    </button>
+    ${searched && !candidates.length ? b`<p class="info-band" role="status">Could not find any more CircuitSetup energy meters</p>` : A}
+    ${candidates.length ? b`<div class="meter-list">
+      ${candidates.map((candidate) => b`<div class="meter-row">
+        <span><strong>${candidate.title}</strong><small>${candidate.project_name ?? "Project label unavailable"}${candidate.project_version ? ` · ${candidate.project_version}` : ""}</small></span>
+        <span>${candidate.compatibility.join(", ")}</span>
+        <button class="primary" data-action="inspect-existing" ?disabled=${Boolean(busyAction)} @click=${() => inspect(candidate.entry_id)}>
+          ${busyAction === `inspect:${candidate.entry_id}` ? "Inspecting…" : "Inspect"}
+        </button>
+      </div>`)}
+    </div>` : ""}
+    ${inspection ? b`<div class="info-band" role="status">
+      <strong>${inspection.device.title} passed inspection.</strong>
+      <span>${inspection.topology.board_count} board${inspection.topology.board_count === 1 ? "" : "s"}; live meter-chip communication corroborated.</span>
+      <button class="primary" data-action="adopt-inspected" ?disabled=${Boolean(busyAction)} @click=${() => adopt(inspection.device.entry_id)}>
+        ${busyAction === `adopt:${inspection.device.entry_id}` ? "Adopting…" : "Adopt inspected meter"}
+      </button>
+    </div>` : ""}
+  </section>`;
+}
 const boardLabel = (index) => index === 0 ? "Main Board" : `Add-on ${index}`;
 const groupKeys = (board) => board === 0 ? ["main_1", "main_2"] : [`addon${board}_1`, `addon${board}_2`];
 function offsetStep(topology2, session2, board, stage, acknowledged, retryConfirmed, readiness, result, busy, selectBoard, selectStage, setAcknowledged, setRetryConfirmed, check, calibrate, reconnect, skip, back, continueToVoltage, stock = null) {
@@ -3357,7 +3587,7 @@ const CONNECTIONS = [
   ["ethernet_waveshare", "Waveshare Ethernet"]
 ];
 const ADDON_PINS = ["(0, 16)", "(27, 17)", "(2, 21)", "(13, 22)", "(14, 25)", "(15, 26)"];
-function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnection, rescan, configure, adopt, busyAction = "", discoverOnly = false, firmwareCatalog = b``, importFailedDeviceId = null) {
+function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnection, rescan, configure, adopt, busyAction = "", discoverOnly = false, firmwareCatalog = b``, importFailedDeviceId = null, existingCandidates = [], inspection = null, findExisting = () => void 0, inspectExisting = () => void 0, adoptInspected = () => void 0, existingSearchComplete = false) {
   return b`
     <section class="step-content setup-step" aria-labelledby="step-heading">
       ${snapshot?.devices.length ? b`<section aria-labelledby="existing-device-heading">
@@ -3379,6 +3609,7 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
           `)}
         </div>
       </section>` : b``}
+      ${existingMeterInspection(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected, existingSearchComplete)}
       ${discoverOnly ? "" : b`<hr />
       <h2>Set up a new meter</h2>
       <fieldset class="choice-field">
@@ -3426,7 +3657,7 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
       </section>
       <p class="info-band">${connection === "wifi" ? "Use a USB data cable. ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter. This helper does not store or send those credentials to Home Assistant." : "Use a USB data cable, connect Ethernet and power, then wait for an address from DHCP."}</p>
       `}
-      <button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>
+      ${discoverOnly ? A : b`<button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>`}
     </section>
   `;
 }
@@ -3511,7 +3742,7 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
       <label class="check-row"><input type="checkbox" .checked=${newCycleAcknowledged} @change=${(event) => setNewCycleAcknowledged(event.target.checked)}> I acknowledge a new offset cycle and backup retention.</label>
       <button class="secondary" ?disabled=${busy || !newCycleAcknowledged || !offsetComplete} @click=${newCycle}>Start new offset cycle</button>
     </section>` : ""}
-    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"}; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"}</dd></div><div><dt>Reporting and entities</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} public entities, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
+    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"} � reactive power, apparent power, and power factor for used CTs; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"} � native API diagnostics disabled by default in Home Assistant</dd></div><div><dt>Reporting and measurements</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} Helper-managed measurements, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
     ${totalsEvidence ? b`<section aria-labelledby="summary-totals-heading"><h2 id="summary-totals-heading">${!meterConfiguration2 || totalsEvidence.capabilities.reason_codes.includes("totals_adoption_required") ? "Legacy read-only totals" : "Helper-managed totals"}</h2>
       ${!meterConfiguration2 ? b`<p>Authoritative source snapshot: these totals have not been adopted or verified as installed by this workflow.</p>` : ""}
       ${totalsImpact ? b`<p>${totalsImpact.public_total_entity_count} public total entities; ${totalsImpact.internal_total_sensor_count} internal total sensors; ${totalsImpact.energy_entity_count} public energy entities.</p>` : b`<p>Current total counts are unavailable.</p>`}
@@ -3540,7 +3771,7 @@ function topologyMismatch(topology2) {
   const sources = topology2.evidence.map((item) => item.source);
   return expected < 0 || expected > 6 || topology2.board_count !== expected + 1 || topology2.ct_count !== 6 * (expected + 1) || topology2.group_count !== 2 * (expected + 1) || topology2.evidence.length < 1 || topology2.evidence.length > 5 || new Set(sources).size !== sources.length || !sources.some((source) => ["config_project", "config_packages", "native_project"].includes(source)) || topology2.evidence.some((item) => item.addon_count !== expected);
 }
-function topologyStep(topology2, projectVersion, back, continueFlow, forceMismatch = false, busy = false) {
+function topologyStep(topology2, projectVersion, back, continueFlow, forceMismatch = false, busy = false, calibrationPreparation2 = null, prepareCalibration = () => void 0) {
   const mismatch = forceMismatch || topologyMismatch(topology2);
   return b`
     <section class="step-content" aria-labelledby="step-heading">
@@ -3565,6 +3796,19 @@ function topologyStep(topology2, projectVersion, back, continueFlow, forceMismat
           <span>Configuration and runtime evidence disagree. Resolve the mismatch before continuing.</span>
         </div>
       ` : b`<div class="success-band" role="status">All topology evidence agrees.</div>`}
+      ${!mismatch && calibrationPreparation2?.state === "available_to_prepare" ? b`
+        <div class="info-band" role="status">
+          <strong>Calibration controls are missing from this firmware configuration.</strong>
+          <span>Review the official calibration package and its literal enable flags before installing.</span>
+          <button class="secondary" data-action="prepare-calibration" ?disabled=${busy} @click=${prepareCalibration}>
+            ${busy ? "Preparing calibration controls…" : "Prepare reviewed official calibration controls"}
+          </button>
+        </div>
+      ` : !mismatch && calibrationPreparation2?.state === "cannot_safely_manage" ? b`
+        <div class="warning-band" role="status">
+          Calibration preparation is unavailable: ${calibrationPreparation2.reason_code.replaceAll("_", " ")}.
+        </div>
+      ` : ""}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
         ${mismatch ? "" : b`<button class="primary" data-action="continue" ?disabled=${busy} @click=${continueFlow}>${busy ? "Loading CTs…" : "Continue"}</button>`}
@@ -3719,6 +3963,7 @@ const panelStyles = i$5`
   .connection-options .selected { border-color: var(--accent); }
   .connection-options .selected::before { border: 6px solid var(--accent); }
   .summary-band, .info-band, .success-band, .warning-band, .status-band { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .graph-status { min-height: calc(3.2em + 30px); }
   dl { margin: 0; }
   dl div { display: flex; gap: 12px; }
   dt { font-weight: var(--ha-font-weight-bold, 700); }
@@ -3749,17 +3994,21 @@ const panelStyles = i$5`
   .board-tabs button, .target-tabs button { flex: 0 0 auto; border: 0; border-radius: 0; background: transparent; }
   .board-tabs button[aria-selected="true"], .target-tabs button[aria-pressed="true"] { color: var(--accent); border-bottom: 2px solid var(--accent); }
   .ct-table { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow-x: auto; overflow-y: hidden; }
-  .ct-header, .ct-row { display: grid; grid-template-columns: .45fr .45fr 1.35fr 1fr 1.45fr 1fr; align-items: center; gap: 10px; padding: 11px 12px; }
+  .ct-header, .ct-row { display: grid; grid-template-columns: .45fr .45fr 1.35fr 1fr 1.45fr 1fr; align-items: start; gap: 10px; padding: 8px 10px; }
   .ct-header { font-weight: var(--ha-font-weight-bold, 700); background: var(--surface-alt); }
-  .ct-row { min-height: 66px; border-top: 1px solid var(--border); }
+  .ct-row { min-height: 60px; border-top: 1px solid var(--border); }
   .ct-index { font-weight: var(--ha-font-weight-bold, 700); }
-  .ct-row input, .ct-row select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-small); }
+  .ct-row > label { display: grid; align-content: start; gap: 4px; }
+  .ct-row > label.check-row { display: flex; }
+  .ct-row input, .ct-row select { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); }
   .ct-row input[type="checkbox"] { width: auto; }
-  .row-toggle { color: var(--accent); border: 0; padding: 4px; }
-  .preserve-gain { margin: 10px 12px; }
-  .technical-details { margin: 0; border-radius: 0; border-width: 1px 0 0; }
+  .preserve-gain { margin: 6px 10px; }
+  .technical-details { margin: 0; border: 0; border-radius: 0; }
   .mobile-label { display: none; }
-  .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 16px 30px; background: var(--surface-alt); border-top: 1px solid var(--border); }
+  .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 12px 20px; background: var(--surface-alt); border-top: 0; }
+  .ct-detail .ct-reporting-multiplier { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: start; gap: 6px 12px; }
+  .ct-reporting-multiplier dd { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .ct-reporting-multiplier dd select { width: auto; min-width: 6rem; }
   .aggregate-list { display: grid; gap: 16px; margin: 14px 0; }
   .default-totals { display: grid; gap: 12px; margin: 24px 0; }
   .default-totals h2, .default-totals p { margin: 0; }
@@ -3779,9 +4028,12 @@ const panelStyles = i$5`
   .aggregate-card { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
   .aggregate-card > legend { padding: 0 8px; }
   .aggregate-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 22px; }
+  .aggregate-name-field { display: grid; align-content: start; gap: 4px; }
   .aggregate-fields label { display: grid; align-content: start; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
   .aggregate-fields input, .aggregate-fields select { width: 100%; padding: 10px; border: 1px solid var(--border); }
   .aggregate-fields small { color: var(--muted); font-weight: var(--ha-font-weight-normal, 400); }
+  .aggregate-id { margin: 0; color: var(--muted); font-size: 0.9em; }
+  .aggregate-id code { color: inherit; }
   .aggregate-channels { margin: 18px 0 14px; }
   .aggregate-sources { margin: 18px 0; min-width: 0; }
   .aggregate-source-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -3791,7 +4043,8 @@ const panelStyles = i$5`
   .aggregate-channel-group { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-alt); }
   .aggregate-channel-group > summary { font-weight: 600; }
   .aggregate-channel-group[open] > summary { margin-bottom: 8px; }
-  .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .aggregate-channel-group > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(44px, auto)); gap: 6px; }
+  .aggregate-channel-group > div > span { display: block; grid-column: var(--ct-column); grid-row: var(--ct-row); }
   .aggregate-channel-option { display: flex; align-items: center; min-width: 0; min-height: 44px; gap: 7px; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface); cursor: pointer; overflow-wrap: anywhere; }
   .aggregate-channel-option input { flex: 0 0 auto; min-height: auto; margin: 0; }
   .aggregate-channel-option.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
@@ -3817,6 +4070,7 @@ const panelStyles = i$5`
   .package-options-table th:not(:first-child), .package-options-table td { text-align: center; }
   .package-options-table input { width: 18px; height: 18px; }
   .voltage-reference-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .voltage-reference-column { display: grid; align-content: start; gap: 12px; }
   .reference-block { display: grid; max-width: 420px; gap: 12px; }
   .reference-block label { display: grid; gap: 6px; font-weight: var(--ha-font-weight-bold, 700); }
   .calibration-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0 10px; }
@@ -3875,7 +4129,8 @@ const panelStyles = i$5`
     .ct-detail, .technical-grid, .group-grid, .offset-stage-stepper, .threshold-grid, .meter-settings-grid, .voltage-reference-cards, .voltage-reference-card, .aggregate-fields, .aggregate-channel-groups { grid-template-columns: 1fr; }
     .default-total-controls { align-items: stretch; flex-direction: column; }
     .automatic-total-controls { align-items: stretch; flex-direction: column; }
-    .aggregate-channel-group > div { grid-template-columns: 1fr; }
+    .aggregate-channel-group > div { grid-template-columns: 1fr; grid-template-rows: none; }
+    .aggregate-channel-group > div > span { grid-column: auto; grid-row: auto; }
     .aggregate-source-options { grid-template-columns: 1fr; }
     .existing-configuration .status-list > div { grid-template-columns: 1fr; gap: 2px; }
     .aggregate-actions button { width: 100%; margin-left: 0; }
@@ -3884,6 +4139,7 @@ const panelStyles = i$5`
     .offset-step { padding-bottom: 84px; }
     .identity-strip, .confirmation-actions, .group-nav { align-items: stretch; flex-direction: column; }
     .evidence-table { display: block; overflow-x: auto; }
+    .graph-status { min-height: calc(4.8em + 30px); }
   }
 `;
 function configurationModeFor(input) {
@@ -4039,12 +4295,31 @@ const CALIBRATION_LABELS = {
   restart: "Restart & verify"
 };
 const CIRCUITSETUP_PROJECT_PREFIX = "circuitsetup.6c-energy-meter";
+const OFFICIAL_PROJECT_REMAINDERS = /* @__PURE__ */ new Set([
+  "",
+  "-ethernet",
+  "-ethernet-waveshare",
+  "-2-voltages",
+  "-ethernet-2-voltages",
+  "-2-voltages-ethernet",
+  "-ethernet-waveshare-2-voltages",
+  "-2-voltages-ethernet-waveshare"
+]);
 const REBIND_TIMEOUT_MS = 1e4;
 const REBIND_RETRY_MS = 250;
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const meterSettings = ({ authoritative: _authoritative, warnings: _warnings, ...meter }) => meter;
 const profileNominalVoltage = (system) => system === "split_phase_120_240" ? 120 : system === "single_phase_230" ? 230 : null;
 const ENTITY_COUNT_WARNING_THRESHOLD = 100;
+function isOfficialProjectName(value) {
+  if (!value?.startsWith(CIRCUITSETUP_PROJECT_PREFIX)) return false;
+  const suffix = value.slice(CIRCUITSETUP_PROJECT_PREFIX.length);
+  const addons = [...suffix.matchAll(/-(?:[1-6])-addons?(?=-|$)/g)];
+  if (addons.length > 1) return false;
+  const addon = addons[0];
+  const remainder = addon ? suffix.slice(0, addon.index) + suffix.slice(addon.index + addon[0].length) : suffix;
+  return OFFICIAL_PROJECT_REMAINDERS.has(remainder);
+}
 class CircuitSetupPanel extends i$2 {
   constructor() {
     super(...arguments);
@@ -4060,6 +4335,11 @@ class CircuitSetupPanel extends i$2 {
     this.skipCircuitChanges = false;
     this.transactionPurpose = null;
     this.selectedDeviceId = null;
+    this.existingCandidates = [];
+    this.existingSearchComplete = false;
+    this.existingInspection = null;
+    this.inspectionToken = null;
+    this.adoptionToken = null;
     this.topology = null;
     this.inventory = null;
     this.transaction = null;
@@ -4075,6 +4355,8 @@ class CircuitSetupPanel extends i$2 {
     this.handoffDeclined = false;
     this.addonCount = 0;
     this.packageOptions = newInstallPackageOptions(0);
+    this.packageCapabilities = [];
+    this.calibrationPreparation = null;
     this.sourcePackageOptions = newInstallPackageOptions(0);
     this.packageOptionsTouched = false;
     this.connection = "wifi";
@@ -4139,6 +4421,7 @@ class CircuitSetupPanel extends i$2 {
     this.mobileStepsOpen = false;
     this.focusHeading = false;
     this.lastFocusedError = "";
+    this.inspectionTargetId = null;
   }
   static {
     this.styles = panelStyles;
@@ -4177,6 +4460,12 @@ class CircuitSetupPanel extends i$2 {
     this.firmwareCatalogError = "";
     this.resolvedFirmwareOptions = [];
     this.setupDeviceIds = /* @__PURE__ */ new Set();
+    this.existingCandidates = [];
+    this.existingSearchComplete = false;
+    this.existingInspection = null;
+    this.calibrationPreparation = null;
+    this.inspectionToken = null;
+    this.adoptionToken = null;
     this.newInstallDeviceId = null;
     this.pendingAction = "";
     super.disconnectedCallback();
@@ -4303,6 +4592,9 @@ class CircuitSetupPanel extends i$2 {
   ownsOperation(generation, api, deviceId) {
     return generation === this.operationGeneration && api === this.api && deviceId === this.selectedDeviceId;
   }
+  ownsInspection(token, api, deviceId = null) {
+    return this.isConnected && api === this.api && token === this.inspectionToken && (deviceId === null || deviceId === this.inspectionTargetId);
+  }
   async ownSubscription(pending, generation, api, isCurrent = () => true, onOwned = () => void 0) {
     const unsubscribe = await pending;
     if (!this.owns(generation, api) || !isCurrent()) {
@@ -4369,10 +4661,16 @@ class CircuitSetupPanel extends i$2 {
   }
   selectDevice(deviceId) {
     ++this.operationGeneration;
+    this.inspectionToken = null;
+    this.inspectionTargetId = null;
+    this.adoptionToken = null;
     this.clearSubscription("transaction");
     this.clearSubscription("session");
     const isNewInstall = deviceId !== null && deviceId === this.newInstallDeviceId;
     this.selectedDeviceId = deviceId;
+    this.existingCandidates = [];
+    this.existingSearchComplete = false;
+    this.existingInspection = null;
     if (deviceId !== this.newInstallDeviceId) this.newInstallDeviceId = null;
     this.journeyOrigin = isNewInstall ? "new_install" : "existing_meter";
     this.configurationMode = null;
@@ -4381,6 +4679,8 @@ class CircuitSetupPanel extends i$2 {
     this.skipCircuitChanges = false;
     this.transactionPurpose = null;
     this.topology = null;
+    this.packageCapabilities = [];
+    this.calibrationPreparation = null;
     this.inventory = null;
     this.transaction = null;
     this.reviewCorrection = null;
@@ -4409,7 +4709,9 @@ class CircuitSetupPanel extends i$2 {
   }
   showTopology(topology2) {
     this.topology = topology2;
-    this.error = topologyMismatch(topology2) || topology2.project_name !== this.selectedProjectName() ? "Topology mismatch" : "";
+    const selectedProject = this.selectedProjectName();
+    const projectMismatch = selectedProject !== null && selectedProject !== "unknown" && topology2.project_name !== selectedProject;
+    this.error = topologyMismatch(topology2) || projectMismatch ? "Topology mismatch" : "";
     this.requestUpdate();
   }
   showTopologyResult(result) {
@@ -4426,9 +4728,13 @@ class CircuitSetupPanel extends i$2 {
           status_fields: [...result.package_options.status_fields]
         };
       }
+      this.packageCapabilities = result.package_capabilities ? [...result.package_capabilities] : [];
+      this.calibrationPreparation = result.calibration_preparation ?? null;
       this.showTopology(result.topology);
     } else {
       this.sourcePackageOptions = null;
+      this.packageCapabilities = [];
+      this.calibrationPreparation = null;
       this.showTopology(result);
     }
   }
@@ -4436,6 +4742,7 @@ class CircuitSetupPanel extends i$2 {
     this.addonCount = value;
     this.packageOptions = resizePackageOptions(this.packageOptions, value);
     this.sourcePackageOptions = newInstallPackageOptions(value);
+    this.packageCapabilities = [];
     this.refreshFirmwareOptions();
   }
   initializeInventory(inventory) {
@@ -4461,9 +4768,8 @@ class CircuitSetupPanel extends i$2 {
         modelId,
         multiplier: channel.reporting_multiplier,
         customGainCt: modelId === "custom" ? settings?.custom_gain_ct ?? channel.raw_gain_ct * channel.reporting_multiplier : void 0,
-        customLabel: channel.display_label ?? settings?.custom_label ?? void 0,
         burdenAcknowledged: settings?.burden_output_acknowledged ?? (channel.selection_verified_against_config && (modelId === "custom" || preset?.requires_burden_jumper_cut === true)),
-        expanded: channel.selected_model_id === null && channel.raw_gain_ct === 27518,
+        expanded: false,
         preserveExistingGain: this.configurationMode === "legacy_editable" && !channel.selection_verified_against_config && channel.raw_gain_ct > 0,
         multiplierMode: "automatic"
       }];
@@ -4490,7 +4796,7 @@ class CircuitSetupPanel extends i$2 {
         selected_model_id: draft.modelId,
         reporting_multiplier: draft.multiplier,
         raw_gain_ct: gain === void 0 ? channel.raw_gain_ct : Math.round(gain / draft.multiplier),
-        display_label: draft.modelId === "custom" ? draft.customLabel?.trim() || null : null,
+        display_label: draft.modelId === "custom" ? draft.name.trim() || null : null,
         selection_verified_against_config: true,
         stored_selection_present: true
       };
@@ -4580,6 +4886,11 @@ class CircuitSetupPanel extends i$2 {
   }
   async configureDevice(deviceId) {
     if (this.pendingAction) return;
+    const device2 = this.setup?.devices.find((item) => item.entry_id === deviceId);
+    if (device2 && !isOfficialProjectName(device2.project_name)) {
+      await this.inspectExistingMeter(deviceId);
+      return;
+    }
     if (this.setup?.bound_device_id !== void 0 && this.setup.bound_device_id !== deviceId) {
       await this.adopt(deviceId);
       return;
@@ -4639,14 +4950,16 @@ class CircuitSetupPanel extends i$2 {
     const setupDeviceIds = new Set(this.setupDeviceIds);
     const generation = ++this.operationGeneration;
     await this.run(async () => {
-      await api.setInstallerIntent(
-        this.addonCount,
-        this.connection,
-        this.selectedFirmware(),
-        this.packageOptions,
-        null,
-        null
-      );
+      if (deviceId === null || this.setup?.bound_device_id !== deviceId) {
+        await api.setInstallerIntent(
+          this.addonCount,
+          this.connection,
+          this.selectedFirmware(),
+          this.packageOptions,
+          null,
+          null
+        );
+      }
       if (!this.ownsOperation(generation, api, deviceId)) return;
       const setup2 = await api.rescan();
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -4660,11 +4973,60 @@ class CircuitSetupPanel extends i$2 {
     if (this.pendingAction === "rescan") this.pendingAction = "";
     this.requestUpdate();
   }
+  async findExistingMeters() {
+    if (!this.api || this.pendingAction) return;
+    this.pendingAction = "find-existing";
+    this.existingCandidates = [];
+    this.existingSearchComplete = false;
+    this.existingInspection = null;
+    this.requestUpdate();
+    const api = this.api;
+    const token = {};
+    this.inspectionToken = token;
+    this.inspectionTargetId = null;
+    await this.run(async () => {
+      const candidates = await api.listExistingMeters();
+      if (!this.ownsInspection(token, api)) return;
+      this.existingCandidates = candidates;
+      this.existingSearchComplete = true;
+      this.announcement = candidates.length ? "Select an ESPHome meter to inspect." : "Could not find any more CircuitSetup energy meters";
+    }, "Could not find any more CircuitSetup energy meters", () => this.ownsInspection(token, api));
+    if (this.ownsInspection(token, api)) {
+      this.pendingAction = "";
+      this.requestUpdate();
+    }
+  }
+  async inspectExistingMeter(deviceId) {
+    if (!this.api || this.pendingAction) return;
+    this.pendingAction = `inspect:${deviceId}`;
+    this.existingInspection = null;
+    this.error = "";
+    this.requestUpdate();
+    const api = this.api;
+    const token = {};
+    this.inspectionToken = token;
+    this.inspectionTargetId = deviceId;
+    await this.run(async () => {
+      const inspection = await api.inspectExistingMeter(deviceId);
+      if (!this.ownsInspection(token, api, deviceId)) return;
+      this.existingInspection = inspection;
+      this.announcement = "The selected meter passed live identity and topology inspection. Review it before adoption.";
+    }, "This ESPHome meter could not be safely inspected.", () => this.ownsInspection(token, api, deviceId));
+    if (this.ownsInspection(token, api, deviceId)) {
+      this.pendingAction = "";
+      this.requestUpdate();
+    }
+  }
   async adopt(deviceId = this.selectedDeviceId) {
     if (!this.api || !deviceId || this.pendingAction) return;
-    if (deviceId !== this.selectedDeviceId) this.selectDevice(deviceId);
+    const inspected = this.existingInspection?.device.entry_id === deviceId;
+    const newInstallDeviceId = inspected ? null : this.setup?.devices.find((device2) => device2.entry_id === deviceId)?.configuration ? null : deviceId;
     const api = this.api;
-    const generation = ++this.operationGeneration;
+    const token = {};
+    this.adoptionToken = token;
+    const ownsAdoption = () => this.isConnected && api === this.api && token === this.adoptionToken;
+    let generation = null;
+    const owns = () => generation === null ? ownsAdoption() : this.ownsOperation(generation, api, deviceId);
     const connectionGeneration = this.connectionGeneration;
     this.pendingAction = `adopt:${deviceId}`;
     this.importFailedDeviceId = null;
@@ -4673,34 +5035,42 @@ class CircuitSetupPanel extends i$2 {
     let fallback = "Adoption is unavailable for this meter.";
     try {
       await api.adoptDevice(deviceId);
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!ownsAdoption()) return;
+      if (deviceId !== this.selectedDeviceId) {
+        this.selectDevice(deviceId);
+        this.adoptionToken = token;
+      }
+      this.newInstallDeviceId = newInstallDeviceId;
+      generation = ++this.operationGeneration;
       this.clearSetupSubscription();
       const setup2 = await this.waitForBinding(api, deviceId, generation);
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!owns()) return;
       this.setup = setup2;
       this.setupDeviceIds = new Set(setup2.devices.map((device2) => device2.entry_id));
       fallback = "Meter setup could not be loaded.";
       await this.subscribeSetup(connectionGeneration, api);
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!owns()) return;
       fallback = "Meter settings could not be loaded.";
       const importedConfiguration = await api.getMeterConfiguration(deviceId);
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!owns()) return;
       this.setMeterConfiguration(importedConfiguration);
       fallback = "Topology evidence could not be loaded.";
       const result = await api.getTopology(deviceId);
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!owns()) return;
       this.importFailedDeviceId = null;
+      this.existingInspection = null;
       this.announcement = "Meter imported into ESPHome Builder.";
       this.showTopologyResult(result);
       fallback = "Saved work could not be loaded.";
       await this.restoreActiveWork(api, deviceId, generation);
     } catch (error) {
-      if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (!owns()) return;
       this.importFailedDeviceId = deviceId;
       const message = error.code === "device_busy" ? "Finish or cancel current work before importing another meter." : error instanceof Error && error.message === "helper rebind timed out" ? "Import completed, but Home Assistant is still reconnecting. Retry import or reload the helper." : this.safeErrorMessage(error, fallback);
       this.fail(error, message);
     } finally {
-      if (this.ownsOperation(generation, api, deviceId)) {
+      if (owns()) {
+        this.adoptionToken = null;
         this.pendingAction = "";
         this.requestUpdate();
       }
@@ -4802,6 +5172,8 @@ class CircuitSetupPanel extends i$2 {
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
+    const calibrationPreparation2 = current !== null && this.isCalibrationPreparationTransaction(current);
+    const chipFailureRetry = current?.purpose === "install_configuration" && current.state === "install_confirmation_required" && current.evidence.includes("meter_communication_failed");
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
         this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first.");
@@ -4825,7 +5197,7 @@ class CircuitSetupPanel extends i$2 {
       this.requestUpdate();
       return;
     }
-    if (current && current.state !== "previewed") {
+    if (current && !["previewed", "rolled_back"].includes(current.state) && !chipFailureRetry) {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
     }
@@ -4844,7 +5216,7 @@ class CircuitSetupPanel extends i$2 {
       meterFrequencyTouched: this.meterFrequencyTouched,
       meterNominalVoltageTouched: new Set(this.meterNominalVoltageTouched)
     } : null);
-    if (!this.calibrationHandoff && !correction) {
+    if (!chipFailureRetry && !this.calibrationHandoff && !calibrationPreparation2 && !correction) {
       this.fail(new Error(), "The edited configuration is unavailable. Return to setup and reload the meter.");
       return;
     }
@@ -4852,14 +5224,25 @@ class CircuitSetupPanel extends i$2 {
     this.error = "";
     this.requestUpdate();
     const generation = ++this.operationGeneration;
-    let abandoned = current === null;
+    let abandoned = current === null || current?.state === "rolled_back";
     try {
-      if (current) {
+      if (current?.state === "previewed" || chipFailureRetry) {
         await api.abandonCtConfig(deviceId, current.transaction_id, current.source_sha256);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.clearSubscription("transaction");
         this.transaction = null;
         abandoned = true;
+      } else if (current?.state === "rolled_back") {
+        this.clearSubscription("transaction");
+        this.transaction = null;
+      }
+      if (calibrationPreparation2) {
+        this.clearSubscription("session");
+        this.session = null;
+        this.reviewCorrection = null;
+        this.navigate("setup");
+        this.announcement = "Calibration preparation review cancelled. Start a new calibration session to try again.";
+        return;
       }
       if (this.calibrationHandoff) {
         this.calibrationHandoff = false;
@@ -4869,6 +5252,16 @@ class CircuitSetupPanel extends i$2 {
       this.reviewCorrection = correction;
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (chipFailureRetry) {
+        this.packageOptionsTouched = false;
+        this.meterFrequencyTouched = false;
+        this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
+        this.setMeterConfiguration(fresh);
+        this.showInventory(this.meterConfiguration);
+        this.reviewCorrection = null;
+        this.announcement = "Review cancelled. Live saved configuration was reloaded.";
+        return;
+      }
       if (fresh.source_sha256 !== correction.sourceSha256) {
         this.packageOptionsTouched = false;
         this.meterFrequencyTouched = false;
@@ -4932,7 +5325,7 @@ class CircuitSetupPanel extends i$2 {
     const fixedVoltage = profileNominalVoltage(importedMeter.electrical_system);
     const voltageMismatch = fixedVoltage !== null && importedMeter.voltage_references.some((reference) => reference.nominal_voltage_v !== fixedVoltage);
     const existingReadOnly = this.journeyOrigin === "existing_meter";
-    const resolvedMeter = !existingReadOnly && voltageMismatch ? { ...importedMeter, voltage_references: importedMeter.voltage_references.map((reference) => ({ ...reference, nominal_voltage_v: fixedVoltage })) } : importedMeter;
+    const resolvedMeter = voltageMismatch ? { ...importedMeter, voltage_references: importedMeter.voltage_references.map((reference) => ({ ...reference, nominal_voltage_v: fixedVoltage })) } : importedMeter;
     const seeded = { ...normalized, configuration: { ...normalized.configuration, meter: resolvedMeter } };
     this.verifiedMeterConfiguration = existingReadOnly && this.configurationMode === "helper_managed" && configuration.capabilities.configuration_authoritative ? configuration : null;
     this.sourcePackageOptions = {
@@ -4952,7 +5345,7 @@ class CircuitSetupPanel extends i$2 {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields]
     };
-    this.canonicalConfigurationChanged = !existingReadOnly && (this.packageOptionsTouched || this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter);
+    this.canonicalConfigurationChanged = this.packageOptionsTouched || this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter;
     this.meterSettingsDraft = {
       ...this.meterConfiguration.configuration.meter,
       authoritative: configuration.capabilities.configuration_authoritative,
@@ -5056,7 +5449,7 @@ class CircuitSetupPanel extends i$2 {
           model_id: draft.modelId,
           reporting_multiplier: draft.multiplier,
           custom_gain_ct: draft.modelId === "custom" ? draft.customGainCt ?? null : null,
-          custom_label: draft.modelId === "custom" ? draft.customLabel?.trim() || null : null,
+          custom_label: draft.modelId === "custom" ? draft.name.trim() || null : null,
           burden_output_acknowledged: draft.burdenAcknowledged
         } : item)
       });
@@ -5152,6 +5545,12 @@ class CircuitSetupPanel extends i$2 {
       this.totalGraphState = "invalid";
       return;
     }
+    if (configuration.automatic_totals.some((item) => item.name !== void 0 && !item.name.trim())) {
+      this.totalGraphPreview = null;
+      this.totalGraphState = "invalid";
+      this.requestUpdate();
+      return;
+    }
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const generation = this.operationGeneration;
@@ -5168,7 +5567,15 @@ class CircuitSetupPanel extends i$2 {
         { ...configuration, automatic_totals: this.issuedAutomaticSettings }
       );
       if (!current()) return;
-      const automatic = preview.automatic_totals.map((item) => ({ candidate_id: item.candidate.candidate_id, enabled: item.enabled, outputs: item.outputs }));
+      const automatic = preview.automatic_totals.map((item) => {
+        const previous = settings.get(item.candidate.candidate_id);
+        return {
+          candidate_id: item.candidate.candidate_id,
+          enabled: item.enabled,
+          outputs: item.outputs,
+          ...previous?.name !== void 0 ? { name: item.candidate.name } : {}
+        };
+      });
       automatic.forEach((item) => settings.set(item.candidate_id, item));
       this.issuedAutomaticSettings = [...settings.values()];
       this.meterConfiguration = {
@@ -5570,7 +5977,7 @@ class CircuitSetupPanel extends i$2 {
           }
         }
       },
-      action === "install" && this.calibrationHandoff ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values." : "This confirmation is stale. Reload the CT inventory before making another change.",
+      action === "rollback" ? "Rollback could not be completed. The failed configuration remains active; retry Rollback or reload before navigating." : action === "install" && this.calibrationHandoff ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values." : "This confirmation is stale. Reload the CT inventory before making another change.",
       () => this.ownsOperation(generation, api, deviceId)
     );
     if (this.pendingAction === action) this.pendingAction = "";
@@ -5662,6 +6069,33 @@ class CircuitSetupPanel extends i$2 {
       this.pendingAction = "";
       this.requestUpdate();
     }
+  }
+  async prepareCalibration() {
+    if (!this.api || !this.selectedDeviceId || this.pendingAction) return;
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const generation = ++this.operationGeneration;
+    this.pendingAction = "prepare-calibration";
+    this.clearSubscription("transaction");
+    this.requestUpdate();
+    await this.run(
+      async () => {
+        const transaction2 = await api.prepareCalibration(deviceId);
+        if (!this.ownsOperation(generation, api, deviceId)) return;
+        this.clearSubscription("session");
+        this.session = null;
+        this.transaction = transaction2;
+        this.navigate("install-configuration");
+        await this.subscribeTransaction(this.connectionGeneration);
+      },
+      "Reviewed calibration controls could not be prepared. No firmware was changed.",
+      () => this.ownsOperation(generation, api, deviceId)
+    );
+    if (this.ownsOperation(generation, api, deviceId)) this.pendingAction = "";
+    this.requestUpdate();
+  }
+  isCalibrationPreparationTransaction(transaction2) {
+    return Boolean(transaction2?.changes.length && transaction2.changes.every((change) => /^(?:offset_calibration|gain_calibration|calibration\.(?:offset_calibration|gain_calibration)|package\.(?:main|addon[1-6])\.calibration)$/.test(change.key)));
   }
   finishFlow(message) {
     if (this.offsetRecoveryPending()) {
@@ -6310,7 +6744,7 @@ class CircuitSetupPanel extends i$2 {
   }
   safeErrorMessage(error, fallback) {
     const code = error.code;
-    if (code === "offset_tables_unavailable") return "Meter diagnostics did not provide complete offset tables for this stage. Stock ESPHome can omit these before the first offset calibration. Preparation requires firmware with read-only offset-table reporting. You can choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data, if any, is unchanged.";
+    if (code === "offset_tables_unavailable") return "The meter did not report all offset values needed to back up this calibration stage. This can happen before the first offset calibration, even when the firmware supports offset calibration. Retry to request fresh diagnostics, or choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data is unchanged.";
     if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
     return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
   }
@@ -6335,7 +6769,13 @@ class CircuitSetupPanel extends i$2 {
       this.pendingAction,
       Boolean(this.topology),
       this.firmwareCatalog(),
-      this.importFailedDeviceId
+      this.importFailedDeviceId,
+      this.existingCandidates,
+      this.existingInspection,
+      () => void this.findExistingMeters(),
+      (id2) => void this.inspectExistingMeter(id2),
+      (id2) => void this.adopt(id2),
+      this.existingSearchComplete
     )}
       ${this.topology ? topologyStep(
       this.topology,
@@ -6346,7 +6786,9 @@ class CircuitSetupPanel extends i$2 {
       },
       () => void (this.selectedConfigurationAvailable() ? this.loadInventory() : this.navigate("calibration-plan")),
       this.error === "Topology mismatch",
-      this.pendingAction.startsWith("topology:") || this.pendingAction === "inventory" || this.pendingAction === "session"
+      this.pendingAction.startsWith("topology:") || this.pendingAction === "inventory" || this.pendingAction === "session" || this.pendingAction === "prepare-calibration",
+      this.calibrationPreparation,
+      () => void this.prepareCalibration()
     ) : A}`;
     if (this.step === "legacy-review" && this.meterConfiguration) return existingConfigurationStep(
       this.meterConfiguration,
@@ -6386,12 +6828,13 @@ class CircuitSetupPanel extends i$2 {
         this.meterProfileConfirmed = value;
         this.requestUpdate();
       },
-      this.configurationMode ?? "helper_managed"
+      this.configurationMode ?? "helper_managed",
+      this.packageCapabilities
     );
     if (this.step === "ct" && this.inventory) {
       const impact = this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null;
       const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0;
-      return b`${impact ? b`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? b`<strong>Warning: high entity count. </strong>` : A}${impact.enabled_channel_count} enabled channels; ${total} ${this.meterConfiguration?.totals.migration.native_visibility_resolved ? "public entities" : "confirmed public entities (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : this.meterConfiguration ? b`<p role="status">${this.totalGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</p>` : A}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => {
+      return b`${impact ? b`<div class=${`${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} graph-status`} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? b`<strong>Warning: high entity count. </strong>` : A}${impact.enabled_channel_count} enabled channels; ${total} ${this.meterConfiguration?.totals.migration.native_visibility_resolved ? "Helper-managed measurements" : "confirmed Helper-managed measurements (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : this.meterConfiguration ? b`<div class="info-band graph-status" role="status">${this.totalGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</div>` : A}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => {
         this.labelOnly = false;
         this.requestUpdate();
       }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => {

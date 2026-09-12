@@ -20,6 +20,7 @@ from .models import (
     TopologyEvidenceSource,
     VoltageReferenceTopology,
 )
+from .package_contract import OFFICIAL_PACKAGE_REPOSITORY, is_static_package_ref
 
 if TYPE_CHECKING:
     from .meter_configuration import MeterConfigurationRequest
@@ -98,6 +99,17 @@ def connection_type_from_project(name: str) -> ConnectionType:
 def voltage_layout_from_project(name: str) -> str:
     """Return the standard or special two-voltage layout."""
     return _project_metadata(name)[2]
+
+
+def is_supported_project(name: str | None) -> bool:
+    """Return whether runtime metadata names a known official variant."""
+    if not isinstance(name, str):
+        return False
+    try:
+        _project_metadata(name)
+    except TopologyParseError:
+        return False
+    return True
 
 
 def _expected_group_keys(topology: MeterTopology) -> tuple[str, ...]:
@@ -369,6 +381,15 @@ def addon_count_from_dashboard_import(url: str | None) -> int | None:
     return None
 
 
+def _official_package_graph(document: ESPHomeConfigDocument) -> bool:
+    references = document.package_references
+    return not document.unresolved_package_sources and bool(references) and all(
+        reference.repository == OFFICIAL_PACKAGE_REPOSITORY
+        and is_static_package_ref(reference.ref)
+        for reference in references
+    )
+
+
 def topology_from_config(
     document: ESPHomeConfigDocument, *, native_project_name: str | None = None
 ) -> MeterTopology:
@@ -446,6 +467,110 @@ def topology_from_config(
         connection_type=metadata[1] if metadata else "unknown",
         voltage_layout=metadata[2] if metadata else "standard",
         project_name=document.project_name or native_project_name or "unknown",
+        evidence=tuple(evidence),
+    )
+
+
+def topology_from_inspection(
+    document: ESPHomeConfigDocument,
+    *,
+    native_project_name: str | None,
+    physical_chip_count: int | None,
+) -> MeterTopology:
+    """Reconcile package and live-chip evidence for explicit legacy inspection."""
+    if physical_chip_count is not None and (
+        type(physical_chip_count) is not int
+        or physical_chip_count < 2
+        or physical_chip_count > 14
+        or physical_chip_count % 2
+    ):
+        raise TopologyParseError("inspection chip count is not a supported meter layout")
+
+    evidence: list[TopologyEvidence] = []
+    package_count = addon_count_from_packages(document.package_files)
+    if package_count is not None and _official_package_graph(document):
+        evidence.append(
+            TopologyEvidence(
+                TopologyEvidenceSource.CONFIG_PACKAGES,
+                package_count,
+                f"contiguous add-on packages 1..{package_count}",
+            )
+        )
+
+    known_metadata: list[tuple[str, tuple[int, ConnectionType, str]]] = []
+    for source, name in (
+        ("config project", document.project_name),
+        ("native project", native_project_name),
+    ):
+        if not isinstance(name, str):
+            continue
+        if not name.startswith(BASE_PROJECT):
+            continue
+        metadata = _project_metadata(name)
+        known_metadata.append((source, metadata))
+        evidence.append(
+            TopologyEvidence(
+                TopologyEvidenceSource.CONFIG_PROJECT
+                if source == "config project"
+                else TopologyEvidenceSource.NATIVE_PROJECT,
+                metadata[0],
+                name,
+            )
+        )
+    if len(known_metadata) == 2 and known_metadata[0][1] != known_metadata[1][1]:
+        raise TopologyMismatchError("inspection project metadata disagrees")
+    if (
+        document.project_name is not None
+        and native_project_name is not None
+        and not document.project_name.startswith(BASE_PROJECT)
+        and document.project_name != native_project_name
+    ):
+        raise TopologyMismatchError("inspection project labels disagree")
+
+    dashboard_count = addon_count_from_dashboard_import(document.dashboard_import)
+    if dashboard_count is not None:
+        evidence.append(
+            TopologyEvidence(
+                TopologyEvidenceSource.DASHBOARD_IMPORT,
+                dashboard_count,
+                document.dashboard_import or "dashboard import",
+            )
+        )
+
+    counts = [
+        count
+        for count in (
+            package_count,
+            *(metadata[0] for _, metadata in known_metadata),
+            dashboard_count,
+        )
+        if count is not None
+    ]
+    if not counts:
+        raise TopologyParseError("inspection has no supported configuration topology")
+    addon_count = counts[0]
+    if any(count != addon_count for count in counts[1:]):
+        raise TopologyMismatchError("inspection topology evidence disagrees")
+    expected_chips = 2 * (addon_count + 1)
+    if physical_chip_count is not None and physical_chip_count != expected_chips:
+        raise TopologyMismatchError(
+            f"inspection expected {expected_chips} meter chips, "
+            f"observed {physical_chip_count}"
+        )
+    if physical_chip_count is not None:
+        evidence.append(
+            TopologyEvidence(
+                TopologyEvidenceSource.NATIVE_ENTITY_COUNTS,
+                addon_count,
+                f"{physical_chip_count} ATM90E32 chips corroborated",
+            )
+        )
+    known_metadata_value = known_metadata[0][1] if known_metadata else None
+    return MeterTopology.from_addon_count(
+        addon_count,
+        connection_type=known_metadata_value[1] if known_metadata_value else "unknown",
+        voltage_layout=known_metadata_value[2] if known_metadata_value else "standard",
+        project_name=document.project_name or native_project_name or "inspected-meter",
         evidence=tuple(evidence),
     )
 

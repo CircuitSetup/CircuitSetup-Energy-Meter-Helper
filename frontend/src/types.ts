@@ -47,6 +47,14 @@ export interface DiscoveredDevice {
   configuration: string | null;
 }
 
+export interface ExistingDeviceCandidate {
+  entry_id: string;
+  title: string;
+  project_name: string | null;
+  project_version: string | null;
+  compatibility: string[];
+}
+
 export interface InstallerIntent {
   addon_count: number;
   connection_type: Exclude<ConnectionType, "unknown">;
@@ -131,6 +139,7 @@ export interface AutomaticTotalSettings {
   candidate_id: string;
   enabled: boolean;
   outputs: TotalOutputSettings;
+  name?: string;
 }
 
 export interface MeterConfigurationRequest {
@@ -225,6 +234,20 @@ export interface BoardPackageOptions {
   status_fields: boolean[];
 }
 
+export type PackageCapabilityState = "already_present" | "available_to_prepare" | "cannot_safely_manage";
+
+export interface CalibrationPreparationCapability {
+  state: PackageCapabilityState;
+  reason_code: string;
+}
+
+export interface PackageCapability {
+  feature: keyof BoardPackageOptions;
+  board_index: number;
+  state: PackageCapabilityState;
+  reason_code: string;
+}
+
 export interface SetupSnapshot {
   state: SetupState;
   devices: DiscoveredDevice[];
@@ -259,6 +282,18 @@ export interface TopologyResult {
   configuration_authoritative?: boolean;
   topology?: MeterTopology;
   package_options?: BoardPackageOptions;
+  package_capabilities?: PackageCapability[];
+  calibration_preparation?: CalibrationPreparationCapability;
+}
+
+export interface ExistingMeterInspection {
+  device: ExistingDeviceCandidate;
+  configuration: string;
+  source_sha256: string;
+  topology: MeterTopology;
+  package_options: BoardPackageOptions;
+  package_capabilities: PackageCapability[];
+  calibration_preparation: CalibrationPreparationCapability;
 }
 
 export interface ChannelAddress {
@@ -393,6 +428,19 @@ export type TransactionState =
   | "rolled_back"
   | "failed";
 
+export type TransactionFailureStage = "validating" | "building" | "installing" | "verifying_meter";
+export type TransactionFailureReason =
+  | "unknown"
+  | "missing_package"
+  | "unsupported_component_option"
+  | "required_secret"
+  | "conflicting_managed_override"
+  | "validation_rejected"
+  | "compile_rejected"
+  | "upload_failed"
+  | "verification_incomplete"
+  | "meter_communication_failed";
+
 export interface SubstitutionChange {
   key: string;
   old_value: string | null;
@@ -420,6 +468,11 @@ export interface TransactionStatus {
   aggregate_entity_mismatch: boolean;
   full_meter_configuration_verified: boolean;
   communication_failed_cs_pins?: number[];
+  failure?: {
+    stage: TransactionFailureStage;
+    reason_code: TransactionFailureReason;
+    context: Array<[string, string]>;
+  } | null;
 }
 
 export interface PreflightIssue {

@@ -13,8 +13,8 @@ from threading import get_ident
 from types import SimpleNamespace
 from typing import Any
 
+# isort: off
 import pytest
-import voluptuous as vol
 from aioesphomeapi import ButtonInfo as ApiButtonInfo
 from aioesphomeapi import NumberInfo as ApiNumberInfo
 from aioesphomeapi import SensorInfo as ApiSensorInfo
@@ -23,6 +23,8 @@ from homeassistant.components.hassio import HassIO
 from homeassistant.components.hassio.const import DATA_COMPONENT
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.exceptions import ConfigEntryNotReady, Unauthorized
+import voluptuous as vol
+# isort: on
 
 from custom_components.circuitsetup_energy_meter_helper import (
     async_setup_entry,
@@ -36,6 +38,7 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     ConfigTransactionManager,
     ConfigTransactionState,
     TransactionStatus,
+    _safe_source_diff,
 )
 from custom_components.circuitsetup_energy_meter_helper.const import (
     CONF_ESPHOME_ENTRY_ID,
@@ -54,6 +57,8 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeApiSession,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    AutomaticTotalSettings,
+    TotalOutputSettings,
     VoltageReferenceConfig,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
@@ -556,6 +561,8 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         "get_ct_inventory",
         "get_meter_configuration",
         "adopt_device",
+        "inspect_existing_meter",
+        "prepare_calibration",
     }:
         base["device_id"] = "meter"
     elif suffix == "get_total_details":
@@ -852,6 +859,52 @@ def test_setup_status_exposes_the_runtime_bound_device_id() -> None:
     async def run() -> None:
         assert (await snapshot({}))["bound_device_id"] is None
         assert (await snapshot({CONF_ESPHOME_ENTRY_ID: "meter-1"}))["bound_device_id"] == "meter-1"
+
+    asyncio.run(run())
+
+
+def test_existing_meter_listing_omits_the_controller_binding() -> None:
+    """The "another meter" route excludes the ESPHome entry this helper owns."""
+
+    async def run() -> None:
+        entries = (
+            SimpleNamespace(
+                domain="esphome",
+                entry_id="bound",
+                title="Current meter",
+                runtime_data=SimpleNamespace(
+                    device_info=SimpleNamespace(
+                        project_name="circuitsetup.6c-energy-meter"
+                    )
+                ),
+            ),
+            SimpleNamespace(
+                domain="esphome",
+                entry_id="other",
+                title="Other meter",
+                runtime_data=SimpleNamespace(
+                    device_info=SimpleNamespace(project_name="legacy.custom-meter")
+                ),
+            ),
+        )
+        hass = FakeHass(entries)
+        controller = EntryWebsocketController(
+            ProvisioningCoordinator(hass),
+            SessionManager(),
+            SimpleNamespace(),  # type: ignore[arg-type]
+            esphome_entry_id="bound",
+        )
+
+        result = await controller.async_call(
+            f"{DOMAIN}/list_existing_meters", {}, None
+        )
+
+        assert [candidate.entry_id for candidate in result] == ["other"]
+        result = await controller.async_call(
+            f"{DOMAIN}/list_existing_meters", {"after_entry_id": "other"}, None
+        )
+        assert result == ()
+        await controller.async_close()
 
     asyncio.run(run())
 
@@ -1359,6 +1412,8 @@ substitutions:
   current_cal_ct6: '27518'
 packages:
   circuitsetup_meter:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
     files:
       #- Software/ESPHome/power_quality/6chan_main_power_quality.yaml
       - Software/ESPHome/status_fields/6chan_main_status.yaml
@@ -3062,9 +3117,9 @@ def test_total_graph_preview_route_serializes_server_graph_without_transaction()
         result = sanitize_payload(await controller.async_call(command, payload, "user"))
         assert result["graph"]["leaf_channels"]["auto-mains"] == [1, 2]
         assert result["configuration_impact"] == {
-            "enabled_channel_count": 6, "numeric_entity_count": 40,
+            "enabled_channel_count": 6, "numeric_entity_count": 34,
             "text_entity_count": 6, "energy_entity_count": 1,
-            "approximate_publications_per_second": 4.6,
+            "approximate_publications_per_second": 4.0,
             "public_total_entity_count": 2, "internal_total_sensor_count": 0,
         }
         assert result["graph"]["ordered_nodes"][0]["sources"][0]["power_id"] == "ct1Watts"
@@ -3139,7 +3194,33 @@ def test_redacted_diff_preserves_lines_without_weakening_terminal_or_secret_sani
     assert sanitize_payload({"detail": value}) == {"detail": "<redacted>"}
     for unsafe in ("pass\nword=canary", "token:\ncanary", "secret\r\n=canary"):
         assert sanitize_payload({"redacted_diff": unsafe}) == {"redacted_diff": "<redacted>"}
+    safe_fields = "-  password: [redacted]\n   ssid: [redacted]\n-    Authorization: [redacted]\n+    Cookie: [redacted]\n-  source: [redacted]"
+    assert sanitize_payload({"redacted_diff": safe_fields}) == {
+        "redacted_diff": safe_fields
+    }
+    for unsafe in (
+        "-  password: visible",
+        "-  ssid: HomeNetwork",
+        "-    Authorization: BearerVisible",
+        "-    Cookie: session=visible",
+        "-  source: https://alice:visible@example.invalid/repo",
+        "-  password: [redacted]\npass\nword=visible",
+    ):
+        assert sanitize_payload({"redacted_diff": unsafe}) == {
+            "redacted_diff": "<redacted>"
+        }
     assert len(sanitize_payload({"redacted_diff": "x\n" * 20_000})["redacted_diff"].encode()) <= 32_768
+
+
+def test_optional_automatic_total_name_is_omitted_only_when_absent() -> None:
+    base = AutomaticTotalSettings("grid-ct1-ct2", False, TotalOutputSettings(True, False, True))
+    assert sanitize_payload(base) == {
+        "candidate_id": "grid-ct1-ct2", "enabled": False,
+        "outputs": {"watts": True, "amps": False, "kwh": True},
+    }
+    assert sanitize_payload(AutomaticTotalSettings(
+        "grid-ct1-ct2", False, TotalOutputSettings(True, False, True), "Dryer"
+    ))["name"] == "Dryer"
 
 
 def test_largest_total_review_remains_exact_or_visibly_truncated_over_transport() -> None:
@@ -3172,13 +3253,14 @@ def test_largest_total_review_remains_exact_or_visibly_truncated_over_transport(
             transaction = fixture.manager._transaction(status["transaction_id"])
             raw = transaction.plan.redacted_diff
             visible = status["redacted_diff"]
-            assert "Exact generated total changes" in visible
-            assert "csemh-aggregate:" not in visible and "lambda:" not in visible
+            expected = _safe_source_diff(
+                transaction.prior_content, transaction.plan.proposed_content
+            )
+            assert visible == expected
+            assert "Exact generated total changes" in raw
             assert len(visible.encode()) <= 32_768
-            if len(raw.encode()) > 32_768 or len(raw.splitlines()) > 512:
-                assert visible.endswith("[truncated]")
-            else:
-                assert "Managed totals metadata:" in visible
+            assert len(visible.splitlines()) <= 512
+            if not visible.endswith("[truncated]"):
                 assert f"electricalReport{prefix.title()}31ImportEnergy" in visible
             if prefix == "before":
                 fixture.verifier.evidence = replace(fixture.verifier.evidence, topology=transaction.topology,
@@ -4092,6 +4174,7 @@ def test_transaction_confirmation_rejects_hash_device_and_replay_before_mutation
         assert connection.errors[-1][:2] == (3, "stale_confirmation")
 
     asyncio.run(run())
+
 
 
 def test_abandon_routes_to_the_exact_confirmed_preview() -> None:
@@ -5035,9 +5118,11 @@ def test_transaction_serializer_normalizes_only_known_server_change_dtos() -> No
             SubstitutionChange("update_time", "5s", "10s"),
             SubstitutionChange("electric_freq", "60Hz", "50Hz"),
             SubstitutionChange("power_quality_main", "disabled", "enabled"),
-            SubstitutionChange("status_fields_addon1", "disabled", "enabled"),
-            SubstitutionChange("calibrated_voltage_gains", "managed", "removed"),
-            SubstitutionChange("not_a_server_key", "old", "new"),
+        SubstitutionChange("status_fields_addon1", "disabled", "enabled"),
+        SubstitutionChange("calibrated_voltage_gains", "managed", "removed"),
+        SubstitutionChange("offset_calibration", "false", "true"),
+        SubstitutionChange("gain_calibration", "false", "true"),
+        SubstitutionChange("not_a_server_key", "old", "new"),
         ),
         "managed calibrated voltage gains removed",
     )
@@ -5054,6 +5139,8 @@ def test_transaction_serializer_normalizes_only_known_server_change_dtos() -> No
         "package.main.power_quality",
         "package.addon1.status_fields",
         "meter.calibrated_voltage_gains",
+        "calibration.offset_calibration",
+        "calibration.gain_calibration",
     ]
     assert payload["redacted_diff"] == "managed calibrated voltage gains removed"
     assert sanitize_payload(

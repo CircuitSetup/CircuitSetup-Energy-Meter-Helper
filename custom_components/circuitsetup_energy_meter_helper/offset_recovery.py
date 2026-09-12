@@ -147,8 +147,13 @@ def _validate_observation(
         or type(snapshot.register_verified) is not bool
         or type(snapshot.config_differs_from_flash) is not bool
         or snapshot.config_differs_from_flash != (snapshot.reported_state == "mismatch")
+        or snapshot.reported_state == "configuration" and snapshot.register_verified
     ):
-        raise ValueError("invalid recovery observation")
+        raise ValueError(
+            "configuration observation cannot claim register verification"
+            if snapshot.reported_state == "configuration" and snapshot.register_verified
+            else "invalid recovery observation"
+        )
     _gain_group_address(snapshot.instance_id, topology)
     _validate_group_table(
         snapshot.instance_id, snapshot.phase_values, signed=True, label="offsets"
@@ -397,11 +402,19 @@ def _decode(data: bytes) -> OffsetRecoveryRecord:
         topology = replace(topology_from_native(identity[1]), evidence=())
         if list(_topology_identity(topology)) != identity:
             raise ValueError("invalid recovery topology")
-        original = ESPHomeConfigSnapshot(
-            **_exact_mapping(
-                raw["original"], {"configuration", "content", "sha256"}, "source"
+        source_keys = raw["original"]
+        if not isinstance(source_keys, dict):
+            raise TypeError("invalid recovery source")
+        if set(source_keys) == {"configuration", "content", "sha256"}:
+            source = _exact_mapping(source_keys, set(source_keys), "source")
+            source["configuration_authoritative"] = True
+        else:
+            source = _exact_mapping(
+                source_keys,
+                {"configuration", "configuration_authoritative", "content", "sha256"},
+                "source",
             )
-        )
+        original = ESPHomeConfigSnapshot(**source)
         observations = []
         if (
             not isinstance(raw["observations"], list)

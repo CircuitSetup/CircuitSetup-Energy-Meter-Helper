@@ -26,6 +26,29 @@ class FakeHass implements HomeAssistant {
   }
 }
 
+it.each([33, 128])("lists all %i ESPHome entries through bounded pages", async (count) => {
+  const entries = Array.from({ length: count }, (_, index) => ({
+    entry_id: `device-${String(index).padStart(3, "0")}`, title: `Device ${index}`,
+    project_name: null, project_version: null, compatibility: ["project_label_missing"],
+  }));
+  const hass = new FakeHass();
+  hass.callWS = async <T>(message: Record<string, unknown>) => {
+    hass.messages.push(message);
+    return entries.filter((entry) => entry.entry_id > String(message.after_entry_id ?? "")).slice(0, 32) as T;
+  };
+  expect(await new HelperApi(hass, "helper").listExistingMeters()).toEqual(entries);
+  expect(hass.messages).toHaveLength(Math.floor(count / 32) + 1);
+});
+
+it("rejects a repeated discovery page instead of looping indefinitely", async () => {
+  const hass = new FakeHass();
+  hass.responses.list_existing_meters = Array.from({ length: 32 }, (_, index) => ({
+    entry_id: `device-${String(index).padStart(3, "0")}`, title: `Device ${index}`,
+    project_name: null, project_version: null, compatibility: [],
+  }));
+  await expect(new HelperApi(hass, "helper").listExistingMeters()).rejects.toThrow();
+});
+
 const device = {
   entry_id: "meter-1", title: "Meter", project_name: "circuitsetup.6c-energy-meter",
   project_version: "2026.8.0", importable: true, configuration: null,
@@ -1006,6 +1029,16 @@ describe("HelperApi", () => {
     }
     expect(() => HelperApi.assertPublicPayload({ detail: "ordinary safe whitespace" })).not.toThrow();
     expect(() => HelperApi.assertPublicPayload({ redacted_diff: "- old\n+ new" })).not.toThrow();
+    expect(() => HelperApi.assertPublicPayload({ redacted_diff:
+      "-  password: [redacted]\n   ssid: [redacted]\n-    Authorization: [redacted]\n+    Cookie: [redacted]\n-  source: [redacted]" })).not.toThrow();
+    for (const unsafe of [
+      "-  password: visible",
+      "-  ssid: HomeNetwork",
+      "-    Authorization: BearerVisible",
+      "-    Cookie: session=visible",
+      "-  source: https://alice:visible@example.invalid/repo",
+      "-  password: [redacted]\npass\nword=visible",
+    ]) expect(() => HelperApi.assertPublicPayload({ redacted_diff: unsafe })).toThrow("unsafe string");
     for (const key of ["safe\tkey", "api\tkey", "safe\nkey", "x".repeat(257)]) {
       expect(() => HelperApi.assertPublicPayload({ evidence: [{ [key]: "value" }] })).toThrow();
     }
@@ -1124,11 +1157,16 @@ describe("HelperApi", () => {
       changes: [
         { key: "package.main.power_quality", old_value: "disabled", new_value: "enabled" },
         { key: "package.addon6.status_fields", old_value: "enabled", new_value: "disabled" },
+        { key: "calibration.offset_calibration", old_value: "false", new_value: "true" },
       ],
     };
 
     await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({
-      changes: [{ key: "package.main.power_quality" }, { key: "package.addon6.status_fields" }],
+      changes: [
+        { key: "package.main.power_quality" },
+        { key: "package.addon6.status_fields" },
+        { key: "calibration.offset_calibration" },
+      ],
     });
     hass.responses.preview_ct_config = {
       ...transaction,

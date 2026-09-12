@@ -1,6 +1,6 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { confirmTotalOutputRemoval } from "./total-output-removal";
-import { derivedParentId, reparentAggregate, sourceFormula, sourceLeaves } from "../total-graph";
+import { derivedParentId, generatedTotalId, reparentAggregate, sourceFormula, sourceLeaves } from "../total-graph";
 import type { CircuitAggregate, MeterConfigurationRequest, TotalGraphPreview, TotalOutputSettings, TotalSource, TotalsInventory } from "../types";
 import type { CtDraft } from "./ct-inventory-step";
 
@@ -147,8 +147,12 @@ export function advancedTotalsEditor(
         ...configuration.channels.filter((item) => item.enabled).map((item): TotalSource => ({ kind: "channel", channel: item.channel }))];
       return html`<fieldset class="aggregate-card" aria-label=${`${aggregate.name} aggregate`} ?disabled=${!writable}><legend>${aggregate.name}</legend>
         <div class="aggregate-fields">
-          <label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
+          <div class="aggregate-name-field"><label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
             @input=${(event: Event) => { const input = event.target as HTMLInputElement; if (!writable) { input.value = aggregate.name; return; } patch(aggregate, { name: input.value }); }} /></label>
+            <p class="aggregate-id">Total ID: <code>${aggregate.aggregate_id}</code></p>
+            ${existingConfiguration && !existingConfiguration.aggregates.some((item) => item.aggregate_id === aggregate.aggregate_id)
+              ? html`<p class="proposed-sensor-id">Proposed sensor ID prefix: <code>${generatedTotalId(aggregate.name)}</code></p>` : nothing}
+          </div>
           <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
             @change=${(event: Event) => { const input = event.target as HTMLSelectElement; if (!writable || !roles.includes(input.value as typeof roles[number])) { input.value = aggregate.role; return; } patch(aggregate, { role: input.value as CircuitAggregate["role"] }); }}>
             ${roles.map((role) => html`<option value=${role} ?selected=${role === aggregate.role}>${role === "grid" ? "Mains" : role === "branch" ? "Branch circuit" : role.replaceAll("_", " ")}</option>`)}</select></label>
@@ -187,9 +191,19 @@ export function advancedTotalsEditor(
         ${nativeChoices.length ? html`<fieldset class="aggregate-sources"><legend>Native totals</legend><div class="aggregate-source-options">${nativeChoices.map((item) => option({ kind: "native_total", source_id: item.source_id }, item.label))}</div></fieldset>` : nothing}
         ${existingChoices.length ? html`<fieldset class="aggregate-sources"><legend>Existing totals</legend><div class="aggregate-source-options">${existingChoices.map((item) => option({ kind: "aggregate", aggregate_id: item.aggregate_id }, item.name))}</div></fieldset>` : nothing}
         <fieldset class="aggregate-sources aggregate-channels"><legend>CTs</legend><div class="aggregate-channel-groups">${Array.from({ length: Math.ceil(configuration.channels.length / 6) }, (_, board) => {
-          const channels = configuration.channels.filter((item) => item.enabled && Math.floor((item.channel - 1) / 6) === board);
+          const channels = configuration.channels.filter((item) => item.enabled && Math.floor((item.channel - 1) / 6) === board)
+            .sort((left, right) => {
+              const slot = (channel: number) => (channel - 1) % 6;
+              const physical = (channel: number) => slot(channel) < 3 ? slot(channel) : 8 - slot(channel);
+              return physical(left.channel) - physical(right.channel);
+            });
           const used = channels.some((item) => aggregate.sources.some((source) => source.kind === "channel" && source.channel === item.channel));
-          return channels.length ? html`<details class="aggregate-channel-group" ?open=${used} aria-label=${board ? `Add-on ${board} channels` : "Main Board channels"}><summary>${board ? `Add-on ${board}` : "Main Board"}</summary><div>${channels.map((item) => option({ kind: "channel", channel: item.channel }, `CT${item.channel} · ${drafts.get(item.channel)?.name ?? item.name}`, `CT${item.channel}`))}</div></details>` : nothing;
+          return channels.length ? html`<details class="aggregate-channel-group" ?open=${used} aria-label=${board ? `Add-on ${board} channels` : "Main Board channels"}><summary>${board ? `Add-on ${board}` : "Main Board"}</summary><div>${channels.map((item) => {
+            const slot = (item.channel - 1) % 6;
+            return html`<span style=${`--ct-column:${slot < 3 ? 1 : 2};--ct-row:${slot < 3 ? slot + 1 : 6 - slot}`}>
+              ${option({ kind: "channel", channel: item.channel }, `CT${item.channel} · ${drafts.get(item.channel)?.name ?? item.name}`, `CT${item.channel}`)}
+            </span>`;
+          })}</div></details>` : nothing;
         })}</div></fieldset>
         ${aggregate.sources.filter((source) => !known.some((item) => sameSource(item, source))).map((source) => option(source, label(source)))}
         <div class="aggregate-actions">${output("watts", "Watts")}${output("amps", "Amps")}${output("kwh", "kWh")}
@@ -203,7 +217,6 @@ export function advancedTotalsEditor(
               sources: item.sources.filter((source) => source.kind !== "aggregate" || source.aggregate_id !== aggregate.aggregate_id) })) });
           }}>Delete total</button>
         </div>
-        <details><summary>Advanced details</summary><p>Stable aggregate ID: <code>${aggregate.aggregate_id}</code></p></details>
       </fieldset>`;
     })}</div>
     ${writable ? html`<button class="secondary" data-action="add-aggregate" @click=${add}>Create aggregate total</button>` : nothing}

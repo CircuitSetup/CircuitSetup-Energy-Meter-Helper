@@ -59,6 +59,7 @@ from .store import (
     _serialize_total_source,
 )
 from .total_graph import (
+    AutomaticTotalCandidate,
     NativeVisibilityOverride,
     PlannedTotalNode,
     TotalRenderPlan,
@@ -95,7 +96,7 @@ def expected_meter_entity_evidence(
     previous: MeterConfigurationRequest | None = None,
     native_visibility_resolved: bool | None = None,
 ) -> ExpectedMeterEntityEvidence:
-    """Derive reconnect evidence from rendered non-internal ESPHome entity names."""
+    """Derive reconnect evidence from rendered public measurement names."""
     validate_meter_configuration(requested, topology)
     replacements = ""
     if document is not None:
@@ -109,6 +110,39 @@ def expected_meter_entity_evidence(
         for suffix in ("Voltage", "Frequency")
     ]
     aggregate_names: list[str] = []
+    measurement_entities: list[tuple[str, str]] = []
+    for channel in requested.channels:
+        if not channel.enabled:
+            continue
+        measurement_entities.extend(
+            (
+                (
+                    _esphome_object_id(f"{channel.name} Amps"),
+                    f"{channel.name} Amps",
+                ),
+                (
+                    _esphome_object_id(f"{channel.name} Watts"),
+                    f"{channel.name} Watts",
+                ),
+            )
+        )
+        if requested.power_quality[(channel.channel - 1) // 6]:
+            measurement_entities.extend(
+                (
+                    (
+                        _esphome_object_id(f"{channel.name} VAR"),
+                        f"{channel.name} VAR",
+                    ),
+                    (
+                        _esphome_object_id(f"{channel.name} VA"),
+                        f"{channel.name} VA",
+                    ),
+                    (
+                        _esphome_object_id(f"{channel.name} Power Factor"),
+                        f"{channel.name} Power Factor",
+                    ),
+                )
+            )
     native_names: dict[str, str] = {}
     native_outputs, _ = _native_total_accounting(requested, topology, document, native_visibility_resolved)
     for source in native_total_sources(topology):
@@ -158,7 +192,7 @@ def expected_meter_entity_evidence(
         for item in _managed_sensor_items(rendered, 2)
         if item.get("internal", "false") == "false" and "name" in item
     )
-    names = (*voltage_names, *aggregate_names)
+    names = (*voltage_names, *aggregate_names, *(name for _, name in measurement_entities))
     object_ids = tuple(_esphome_object_id(name) for name in names)
     if len(set(object_ids)) != len(object_ids):
         raise ValueError("ESPHome object-ID collision for meter entities")
@@ -399,8 +433,8 @@ def build_meter_configuration_mutation(
         # Server-derived from the source-bound inventory, never a client acknowledgement.
         preserved_gain_channels=frozenset(new.channel
             for old, new in zip(previous.channels, requested.channels, strict=True)
-            if (old.model_id, old.custom_gain_ct, old.custom_label, old.reporting_multiplier)
-            == (new.model_id, new.custom_gain_ct, new.custom_label, new.reporting_multiplier)),
+            if (old.model_id, old.custom_gain_ct, old.reporting_multiplier)
+            == (new.model_id, new.custom_gain_ct, new.reporting_multiplier)),
         package_options=package_options,
         phase_channels={
             channel.channel: (channel.enabled, channel.reporting_multiplier)
@@ -1174,7 +1208,10 @@ def _name_total_sensors(body: str, requested: MeterConfigurationRequest, documen
     existing = {item.get("id") for item in _managed_sensor_items(block.content, document.sensor_item_indent)} if block else set()
     generated = {item.get("id") for item in _managed_sensor_items(body, 2) if "platform" in item}
     mapping = {}
-    for aggregate in requested.aggregates:
+    aggregates: tuple[CircuitAggregate | AutomaticTotalCandidate, ...] = (
+        *requested.aggregates, *(item.candidate for item in enabled_automatic_totals(requested))
+    )
+    for aggregate in aggregates:
         words = re.findall(r"[A-Z]+(?=[A-Z][a-z]|[^a-zA-Z]|$)|[A-Z]?[a-z]+|[0-9]+", aggregate.name)
         stem = "".join(word.lower() if index == 0 else word.title() for index, word in enumerate(words)) or "total"
         if stem[0].isdigit():
@@ -1249,7 +1286,11 @@ def _render_aggregates(
             roles = {str(channel.channel): channel.role.value for channel in configuration.channels if channel.channel in source_channels}
             roles.update({str(channel.channel): channel.role.value for channel in configuration.channels
                 if channel.enabled and channel.role is CircuitRole.SOLAR})
-            settings = [{"candidate_id": resolved.candidate.candidate_id, "enabled": resolved.enabled, "outputs": _serialize_outputs(resolved.outputs)}
+            setting_by_id = {setting.candidate_id: setting for setting in configuration.automatic_totals}
+            settings = [{"candidate_id": resolved.candidate.candidate_id, "enabled": resolved.enabled, "outputs": _serialize_outputs(resolved.outputs),
+                **({"name": resolved.candidate.name}
+                    if setting_by_id.get(resolved.candidate.candidate_id) is not None
+                    and setting_by_id[resolved.candidate.candidate_id].name is not None else {})}
                 for resolved in resolve_automatic_totals(candidates, configuration.automatic_totals)]
             metadata = urlsafe_b64encode(json.dumps({"roles": roles, "settings": settings}, separators=(",", ":"), sort_keys=True).encode()).decode().rstrip("=")
             body = f"  # csemh-automatic-totals: {metadata}\n" + body
@@ -1319,11 +1360,19 @@ def _render_native_totals(
         for source in definitions
         if source.existing_energy_id is None and _desired_native_outputs(requested, source).kwh
     }
-    source_ids = {
-        _plain_sensor_scalar(item["id"].removeprefix("!extend "))
-        for item in items
-        if "id" in item
-    }
+    source_ids: set[str] = set()
+    for item in items:
+        if "id" not in item:
+            continue
+        raw_id = item["id"].removeprefix("!extend ").strip()
+        sensor_id = _plain_sensor_scalar(raw_id)
+        if (
+            not sensor_id
+            and (match := re.fullmatch(r"\$\{([A-Za-z0-9_]+)\}", raw_id))
+            and (scalar := document.substitutions.get(match.group(1)))
+        ):
+            sensor_id = _plain_sensor_scalar(scalar.value)
+        source_ids.add(sensor_id)
     if board_energy and "" in source_ids:
         raise ConfigMutationError("unmanaged sensor ID ownership is unresolved")
     conflicts = board_energy.keys() & source_ids
@@ -1366,7 +1415,7 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
     power_internal = not aggregate.outputs.watts
     lines = _template_sensor(
         power_id,
-        f"${{friendly_name}} {aggregate.name} Power",
+        f"{aggregate.name} Power",
         _energy_power_expression(aggregate, power_expression),
         "W",
         "power",
@@ -1374,7 +1423,7 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
     ) if node.power_required else ""
     lines += _template_sensor(
         f"{identifier}_current",
-        f"${{friendly_name}} {aggregate.name} Current",
+        f"{aggregate.name} Current",
         _sum_state(tuple(source.current_id for source in node.sources)),
         "A",
         "current",
@@ -1383,7 +1432,7 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
     if node.energy_required and aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
         lines += _daily_energy(
             f"{identifier}_energy",
-            f"${{friendly_name}} {aggregate.name} Energy",
+            f"{aggregate.name} Energy",
             power_id,
         )
     elif node.power_required and aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
@@ -1393,7 +1442,7 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
         )
         lines += _template_sensor(
             export_power_id,
-            f"${{friendly_name}} {aggregate.name} Return to Grid Power",
+            f"{aggregate.name} Return to Grid Power",
             f"std::max(0.0f, -id({power_id}).state)",
             "W",
             "power",
@@ -1401,12 +1450,12 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
         )
         lines += _daily_energy(
             f"{identifier}_export_energy",
-            f"${{friendly_name}} {aggregate.name} Return to Grid Energy",
+            f"{aggregate.name} Return to Grid Energy",
             export_power_id,
         ) if node.energy_required else ""
         lines += _template_sensor(
             import_power_id,
-            f"${{friendly_name}} {aggregate.name} Import Power",
+            f"{aggregate.name} Import Power",
             f"std::max(0.0f, id({power_id}).state)",
             "W",
             "power",
@@ -1414,7 +1463,7 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
         )
         lines += _daily_energy(
             f"{identifier}_import_energy",
-            f"${{friendly_name}} {aggregate.name} Import Energy",
+            f"{aggregate.name} Import Energy",
             import_power_id,
         ) if node.energy_required else ""
     return lines

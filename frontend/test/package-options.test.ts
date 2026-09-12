@@ -11,6 +11,7 @@ it("lays out mixed package state by board and applies each all-boards choice", (
   const changed = vi.fn();
   render(packageOptions({ power_quality: [false, false], status_fields: [true, false] }, changed), container);
 
+  expect(container.textContent).toContain("CircuitSetup Energy Analyzer");
   expect(Array.from(container.querySelectorAll("th"), (header) => header.textContent?.trim())).toEqual([
     "Board", "Power quality sensors", "Status fields", "All boards", "Main board", "Add-on 1",
   ]);
@@ -47,4 +48,29 @@ it("uses disabled power quality and main-only status defaults for new boards", (
     power_quality: [false, false, false],
     status_fields: [true, false, false],
   });
+});
+
+it("keeps package choices read-only when the source is unsafe", () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const changed = vi.fn();
+  render(
+    packageOptions(
+      { power_quality: [false, false], status_fields: [true, false] },
+      changed,
+      [
+        { feature: "power_quality", board_index: 0, state: "cannot_safely_manage", reason_code: "unsupported_package_source" },
+        { feature: "power_quality", board_index: 1, state: "cannot_safely_manage", reason_code: "unsupported_package_source" },
+      ],
+    ),
+    container,
+  );
+
+  expect(container.querySelector<HTMLInputElement>('[data-feature="power_quality"][data-board="0"]')?.disabled).toBe(true);
+  expect(container.querySelector<HTMLInputElement>('[data-all-feature="power_quality"]')?.disabled).toBe(true);
+  expect(container.querySelector<HTMLInputElement>('[data-feature="power_quality"][data-board="0"]')?.title)
+    .toBe("Read-only: unsupported package source");
+  expect(container.textContent).not.toContain("Read-only: unsupported package source");
+  container.querySelector<HTMLInputElement>('[data-feature="power_quality"][data-board="0"]')?.click();
+  expect(changed).not.toHaveBeenCalled();
 });
