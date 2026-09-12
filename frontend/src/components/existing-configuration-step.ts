@@ -63,7 +63,7 @@ export function existingMeterInspection(
     <button class="secondary" data-action="find-existing" ?disabled=${Boolean(busyAction)} @click=${find}>
       ${busyAction === "find-existing" ? "Finding meters…" : "Find another ESPHome meter"}
     </button>
-    ${searched && !candidates.length ? html`<p class="info-band" role="status">No more ESPHome meters could be found</p>` : nothing}
+    ${searched && !candidates.length ? html`<p class="info-band" role="status">Could not find any more CircuitSetup energy meters</p>` : nothing}
     ${candidates.length ? html`<div class="meter-list">
       ${candidates.map((candidate) => html`<div class="meter-row">
         <span><strong>${candidate.title}</strong><small>${candidate.project_name ?? "Project label unavailable"}${candidate.project_version ? ` · ${candidate.project_version}` : ""}</small></span>

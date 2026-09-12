@@ -3328,7 +3328,7 @@ function existingMeterInspection(candidates, inspection, busyAction, find, inspe
     <button class="secondary" data-action="find-existing" ?disabled=${Boolean(busyAction)} @click=${find}>
       ${busyAction === "find-existing" ? "Finding meters…" : "Find another ESPHome meter"}
     </button>
-    ${searched && !candidates.length ? b`<p class="info-band" role="status">No more ESPHome meters could be found</p>` : A}
+    ${searched && !candidates.length ? b`<p class="info-band" role="status">Could not find any more CircuitSetup energy meters</p>` : A}
     ${candidates.length ? b`<div class="meter-list">
       ${candidates.map((candidate) => b`<div class="meter-row">
         <span><strong>${candidate.title}</strong><small>${candidate.project_name ?? "Project label unavailable"}${candidate.project_version ? ` · ${candidate.project_version}` : ""}</small></span>
@@ -4922,8 +4922,8 @@ class CircuitSetupPanel extends i$2 {
       if (!this.ownsInspection(token, api)) return;
       this.existingCandidates = candidates;
       this.existingSearchComplete = true;
-      this.announcement = candidates.length ? "Select an ESPHome meter to inspect." : "No more ESPHome meters could be found";
-    }, "Existing ESPHome meters could not be listed.", () => this.ownsInspection(token, api));
+      this.announcement = candidates.length ? "Select an ESPHome meter to inspect." : "Could not find any more CircuitSetup energy meters";
+    }, "Could not find any more CircuitSetup energy meters", () => this.ownsInspection(token, api));
     if (this.ownsInspection(token, api)) {
       this.pendingAction = "";
       this.requestUpdate();

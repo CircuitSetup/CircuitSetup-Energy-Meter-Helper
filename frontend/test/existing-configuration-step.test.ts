@@ -74,6 +74,6 @@ describe("existing configuration step", () => {
     const host = document.createElement("div");
     render(existingMeterInspection([], null, "", vi.fn(), vi.fn(), vi.fn(), true), host);
 
-    expect(host.textContent).toContain("No more ESPHome meters could be found");
+    expect(host.textContent).toContain("Could not find any more CircuitSetup energy meters");
   });
 });

@@ -2090,16 +2090,22 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("(15, 26)");
   });
 
-  it("shows the empty result for an existing-meter search", async () => {
-    const panel = await mount(makeHass({
+  it.each([false, true])("uses the requested unsuccessful-search message (request fails: %s)", async (failed) => {
+    const hass = makeHass({
       setup_status: { state: "no_device", devices: [] },
       list_existing_meters: [],
-    }));
+    });
+    const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      if (failed && String(message.type).endsWith("/list_existing_meters")) throw new Error("Search failed");
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
 
     panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="find-existing"]')?.click();
     await tick(); await panel.updateComplete;
 
-    expect(text(panel)).toContain("No more ESPHome meters could be found");
+    expect(text(panel)).toContain("Could not find any more CircuitSetup energy meters");
   });
 
   it("does not persist installer intent when rescanning a bound meter", async () => {

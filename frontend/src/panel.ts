@@ -838,8 +838,8 @@ export class CircuitSetupPanel extends LitElement {
       this.existingSearchComplete = true;
       this.announcement = candidates.length
         ? "Select an ESPHome meter to inspect."
-        : "No more ESPHome meters could be found";
-    }, "Existing ESPHome meters could not be listed.", () => this.ownsInspection(token, api));
+        : "Could not find any more CircuitSetup energy meters";
+    }, "Could not find any more CircuitSetup energy meters", () => this.ownsInspection(token, api));
     if (this.ownsInspection(token, api)) {
       this.pendingAction = "";
       this.requestUpdate();
