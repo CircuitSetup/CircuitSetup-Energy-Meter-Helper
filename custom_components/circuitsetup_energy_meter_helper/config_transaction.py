@@ -18,7 +18,11 @@ from uuid import uuid4
 
 import yaml  # type: ignore[import-untyped]
 from yaml.events import AliasEvent  # type: ignore[import-untyped]
-from yaml.nodes import MappingNode, ScalarNode, SequenceNode  # type: ignore[import-untyped]
+from yaml.nodes import (  # type: ignore[import-untyped]
+    MappingNode,
+    ScalarNode,
+    SequenceNode,
+)
 
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import (
