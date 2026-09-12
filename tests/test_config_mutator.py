@@ -2374,7 +2374,7 @@ def test_automatic_metadata_preserves_enabled_and_off_without_storage(enabled) -
     assert not recovered.capabilities.managed_automatic_totals
     evidence = expected_meter_entity_evidence(requested, topology)
     assert {name for _, name in evidence.aggregate_sensor_entities - evidence.native_sensor_entities} == (
-        {f"{requested.meter.friendly_name} Mains Energy"}
+        {"Mains Energy"}
         if enabled else set())
     stored = StoredMeterConfiguration(installed.sha256, requested.meter, requested.channels,
         requested.default_totals, requested.automatic_totals, (), requested.power_quality, requested.status_fields)
@@ -2695,6 +2695,44 @@ def test_board_energy_rejects_unmanaged_sensor_id_ownership(
     assert build_meter_configuration_mutation(snapshot, topology, current, configuration).proposed_content == content
 
 
+def test_board_energy_accepts_unrelated_substituted_meter_extension() -> None:
+    snapshot, topology, current = _native_total_setup()
+    content = snapshot.content.replace(
+        "substitutions:\n",
+        "substitutions:\n  main_meter_id: meter_main1\n",
+    ).replace(
+        "logger:\n",
+        "  - id: !extend ${main_meter_id}\n    update_interval: 10s\nlogger:\n",
+    )
+    digest = sha256(content.encode()).hexdigest()
+    configuration = current.configuration
+    stored = StoredMeterConfiguration(
+        digest, configuration.meter, configuration.channels,
+        configuration.default_totals, configuration.automatic_totals,
+        configuration.aggregates, configuration.power_quality,
+        configuration.status_fields,
+    )
+    snapshot = replace(snapshot, content=content, sha256=digest)
+    current = _inventory(snapshot, topology, stored=stored)
+    requested = replace(configuration, default_totals=replace(
+        configuration.default_totals,
+        boards=(
+            replace(
+                configuration.default_totals.boards[0],
+                outputs=TotalOutputSettings(False, False, True),
+            ),
+            *configuration.default_totals.boards[1:],
+        ),
+    ))
+
+    proposed = build_meter_configuration_mutation(
+        snapshot, topology, current, requested
+    ).proposed_content
+
+    assert "id: csemh_board_main_energy" in proposed
+    assert "id: !extend ${main_meter_id}" in proposed
+
+
 def test_board_energy_own_block_remains_idempotent() -> None:
     snapshot, topology, current = _native_total_setup()
     requested = replace(current.configuration, default_totals=replace(
@@ -2788,7 +2826,7 @@ def test_unchanged_custom_total_is_not_copied_during_other_total_edit() -> None:
     assert "csemh_load_power" in source
     evidence = expected_meter_entity_evidence(requested, topology,
         document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration)
-    assert {name for _, name in evidence.aggregate_sensor_entities - evidence.native_sensor_entities} == {f"{requested.meter.friendly_name} Load Power", "Charger Power"}
+    assert {name for _, name in evidence.aggregate_sensor_entities - evidence.native_sensor_entities} == {"Load Power", "Charger Power"}
     impact = estimate_configuration_impact(requested, topology, document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration, native_visibility_resolved=current.native_visibility_resolved)
     assert (impact.public_total_entity_count, impact.numeric_entity_count) == (5, 19)
     selected = replace(requested, aggregates=tuple(replace(item, name="Updated Charger") if item.aggregate_id == "total-charger" else item for item in requested.aggregates))
@@ -3013,7 +3051,7 @@ def test_replaced_totals_do_not_return_after_reload_or_unrelated_edit(
     assert ESPHomeConfigDocument.parse(edited.proposed_content).managed_blocks["aggregates"].content == owned
     evidence = expected_meter_entity_evidence(renamed, topology)
     assert {name for _object_id, name in evidence.aggregate_sensor_entities - evidence.native_sensor_entities} == {
-        f"{requested.meter.friendly_name} Mains {suffix}"
+        f"Mains {suffix}"
         for suffix in (
             "Power", "Import Power", "Import Energy",
             "Return to Grid Power", "Return to Grid Energy",
@@ -3095,9 +3133,9 @@ def test_mains_and_solar_templates_split_grid_import_from_export() -> None:
     _assert_daily_energy(block, "mainsImportWatts")
     _assert_daily_energy(block, "mainsExportWatts")
     assert "id: mainsAmps" not in block
-    assert 'name: "${friendly_name} Mains Import Energy"' in block
-    assert 'name: "${friendly_name} Mains Return to Grid Power"' in block
-    assert 'name: "${friendly_name} Mains Return to Grid Energy"' in block
+    assert 'name: "Mains Import Energy"' in block
+    assert 'name: "Mains Return to Grid Power"' in block
+    assert 'name: "Mains Return to Grid Energy"' in block
     assert block.index("Mains Return to Grid Power") < block.index("Mains Import Power")
     assert block.index("Mains Return to Grid Energy") < block.index("Mains Import Power")
     assert (
@@ -3558,7 +3596,8 @@ def test_aggregate_names_are_yaml_scalars_and_repeated_preview_is_identical() ->
         requested,
     )
 
-    assert 'name: "${friendly_name} Dryer: \\"Main\\" # 240V Power"' in first.proposed_content
+    assert 'name: "Dryer: \\"Main\\" # 240V Power"' in first.proposed_content
+    assert '${friendly_name} Dryer: \\"Main\\" # 240V' not in first.proposed_content
     assert "lambda: return std::max(0.0f, id(ct1Watts).state + id(ct2Watts).state);" in first.proposed_content
     assert repeated.proposed_content == first.proposed_content
 

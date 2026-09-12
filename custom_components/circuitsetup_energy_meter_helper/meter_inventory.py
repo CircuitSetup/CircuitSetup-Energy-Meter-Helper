@@ -1515,11 +1515,12 @@ def _aggregate_name(
         if not value:
             continue
         decoded = json.loads(value)
-        if not isinstance(decoded, str) or not decoded.startswith("${friendly_name} "):
+        if not isinstance(decoded, str):
             continue
+        decoded = decoded.removeprefix("${friendly_name} ")
         for suffix in suffixes:
-            if decoded.endswith(suffix):
-                return decoded[len("${friendly_name} ") : -len(suffix)]
+            if decoded.endswith(suffix) and len(decoded) > len(suffix):
+                return decoded[: -len(suffix)]
     if internal_name is not None and all(
         candidate.get("internal") == "true" and "name" not in candidate
         for candidate in related.values()

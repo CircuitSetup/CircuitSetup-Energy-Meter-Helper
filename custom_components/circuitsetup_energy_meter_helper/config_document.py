@@ -10,7 +10,7 @@ CT_NAME_RE = re.compile(r"^ct(?P<channel>[1-9]|[1-3][0-9]|4[0-2])_name$")
 CT_GAIN_RE = re.compile(r"^current_cal_ct(?P<channel>[1-9]|[1-3][0-9]|4[0-2])$")
 VOLTAGE_GAIN_RE = re.compile(r"^voltage_cal[12]$")
 GROUP_NAME_RE = re.compile(r"^(?:main_meter_name[12]|addon[1-6]_name[12])$")
-METER_ID_RE = re.compile(r"^(?:main_meter_id[12]|addon[1-6]_id[12])$")
+METER_ID_RE = re.compile(r"^(?:main_meter_id(?:[12])?|addon[1-6]_id[12])$")
 METER_SETTING_RE = re.compile(
     r"^(?:friendly_name|update_time|electric_freq|csemh_config_contract)$"
 )

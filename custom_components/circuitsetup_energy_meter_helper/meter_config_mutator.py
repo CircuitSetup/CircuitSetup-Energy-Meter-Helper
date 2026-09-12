@@ -1360,11 +1360,19 @@ def _render_native_totals(
         for source in definitions
         if source.existing_energy_id is None and _desired_native_outputs(requested, source).kwh
     }
-    source_ids = {
-        _plain_sensor_scalar(item["id"].removeprefix("!extend "))
-        for item in items
-        if "id" in item
-    }
+    source_ids: set[str] = set()
+    for item in items:
+        if "id" not in item:
+            continue
+        raw_id = item["id"].removeprefix("!extend ").strip()
+        sensor_id = _plain_sensor_scalar(raw_id)
+        if (
+            not sensor_id
+            and (match := re.fullmatch(r"\$\{([A-Za-z0-9_]+)\}", raw_id))
+            and (scalar := document.substitutions.get(match.group(1)))
+        ):
+            sensor_id = _plain_sensor_scalar(scalar.value)
+        source_ids.add(sensor_id)
     if board_energy and "" in source_ids:
         raise ConfigMutationError("unmanaged sensor ID ownership is unresolved")
     conflicts = board_energy.keys() & source_ids
@@ -1407,7 +1415,7 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
     power_internal = not aggregate.outputs.watts
     lines = _template_sensor(
         power_id,
-        f"${{friendly_name}} {aggregate.name} Power",
+        f"{aggregate.name} Power",
         _energy_power_expression(aggregate, power_expression),
         "W",
         "power",
@@ -1415,7 +1423,7 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
     ) if node.power_required else ""
     lines += _template_sensor(
         f"{identifier}_current",
-        f"${{friendly_name}} {aggregate.name} Current",
+        f"{aggregate.name} Current",
         _sum_state(tuple(source.current_id for source in node.sources)),
         "A",
         "current",
@@ -1424,7 +1432,7 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
     if node.energy_required and aggregate.energy_mode in (EnergyMode.CONSUMPTION, EnergyMode.GENERATION):
         lines += _daily_energy(
             f"{identifier}_energy",
-            f"${{friendly_name}} {aggregate.name} Energy",
+            f"{aggregate.name} Energy",
             power_id,
         )
     elif node.power_required and aggregate.energy_mode is EnergyMode.BIDIRECTIONAL:
@@ -1434,7 +1442,7 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
         )
         lines += _template_sensor(
             export_power_id,
-            f"${{friendly_name}} {aggregate.name} Return to Grid Power",
+            f"{aggregate.name} Return to Grid Power",
             f"std::max(0.0f, -id({power_id}).state)",
             "W",
             "power",
@@ -1442,12 +1450,12 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
         )
         lines += _daily_energy(
             f"{identifier}_export_energy",
-            f"${{friendly_name}} {aggregate.name} Return to Grid Energy",
+            f"{aggregate.name} Return to Grid Energy",
             export_power_id,
         ) if node.energy_required else ""
         lines += _template_sensor(
             import_power_id,
-            f"${{friendly_name}} {aggregate.name} Import Power",
+            f"{aggregate.name} Import Power",
             f"std::max(0.0f, id({power_id}).state)",
             "W",
             "power",
@@ -1455,7 +1463,7 @@ def _aggregate_entry(node: PlannedTotalNode) -> str:
         )
         lines += _daily_energy(
             f"{identifier}_import_energy",
-            f"${{friendly_name}} {aggregate.name} Import Energy",
+            f"{aggregate.name} Import Energy",
             import_power_id,
         ) if node.energy_required else ""
     return lines

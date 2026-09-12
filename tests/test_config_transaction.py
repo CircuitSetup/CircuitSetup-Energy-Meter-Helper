@@ -1136,7 +1136,7 @@ def test_hierarchical_totals_transaction_preserves_graph_and_public_only_evidenc
         assert graph[-1].sources[0].aggregate_id == "east"
         assert graph[-1].sources[1].aggregate_id == "west"
         public_ids = {identifier for identifier, _ in retained.expected_sensor_entities}
-        assert public_ids == {"garage_meter_whole_building_energy"}
+        assert public_ids == {"whole_building_energy"}
         if outcome == "validation":
             fixture.builder.validation = [Job(False)]
         if outcome == "compile":
@@ -1673,7 +1673,9 @@ def test_full_reconnect_rejects_duplicate_required_sensor_object_id() -> None:
             _topology(),
         )
         # Source-unresolved native totals are not required by this managed-block fixture.
-        duplicate = min(expected.aggregate_sensor_entities)[0]
+        duplicate = min(
+            expected.aggregate_sensor_entities - expected.native_sensor_entities
+        )[0]
         manager = _manager(
             Builder(),
             Persistence(),
