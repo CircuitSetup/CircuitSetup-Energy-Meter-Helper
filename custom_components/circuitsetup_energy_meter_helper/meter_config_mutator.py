@@ -59,6 +59,7 @@ from .store import (
     _serialize_total_source,
 )
 from .total_graph import (
+    AutomaticTotalCandidate,
     NativeVisibilityOverride,
     PlannedTotalNode,
     TotalRenderPlan,
@@ -1207,7 +1208,9 @@ def _name_total_sensors(body: str, requested: MeterConfigurationRequest, documen
     existing = {item.get("id") for item in _managed_sensor_items(block.content, document.sensor_item_indent)} if block else set()
     generated = {item.get("id") for item in _managed_sensor_items(body, 2) if "platform" in item}
     mapping = {}
-    aggregates = (*requested.aggregates, *(item.candidate for item in enabled_automatic_totals(requested)))
+    aggregates: tuple[CircuitAggregate | AutomaticTotalCandidate, ...] = (
+        *requested.aggregates, *(item.candidate for item in enabled_automatic_totals(requested))
+    )
     for aggregate in aggregates:
         words = re.findall(r"[A-Z]+(?=[A-Z][a-z]|[^a-zA-Z]|$)|[A-Z]?[a-z]+|[0-9]+", aggregate.name)
         stem = "".join(word.lower() if index == 0 else word.title() for index, word in enumerate(words)) or "total"
