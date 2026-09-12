@@ -38,6 +38,7 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     ConfigTransactionManager,
     ConfigTransactionState,
     TransactionStatus,
+    _safe_source_diff,
 )
 from custom_components.circuitsetup_energy_meter_helper.const import (
     CONF_ESPHOME_ENTRY_ID,
@@ -3237,13 +3238,14 @@ def test_largest_total_review_remains_exact_or_visibly_truncated_over_transport(
             transaction = fixture.manager._transaction(status["transaction_id"])
             raw = transaction.plan.redacted_diff
             visible = status["redacted_diff"]
-            assert "Exact generated total changes" in visible
-            assert "csemh-aggregate:" not in visible and "lambda:" not in visible
+            expected = _safe_source_diff(
+                transaction.prior_content, transaction.plan.proposed_content
+            )
+            assert visible == expected
+            assert "Exact generated total changes" in raw
             assert len(visible.encode()) <= 32_768
-            if len(raw.encode()) > 32_768 or len(raw.splitlines()) > 512:
-                assert visible.endswith("[truncated]")
-            else:
-                assert "Managed totals metadata:" in visible
+            assert len(visible.splitlines()) <= 512
+            if not visible.endswith("[truncated]"):
                 assert f"electricalReport{prefix.title()}31ImportEnergy" in visible
             if prefix == "before":
                 fixture.verifier.evidence = replace(fixture.verifier.evidence, topology=transaction.topology,

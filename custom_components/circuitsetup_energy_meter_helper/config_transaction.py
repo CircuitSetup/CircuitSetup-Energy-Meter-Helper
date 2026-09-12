@@ -8,12 +8,17 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
+from difflib import unified_diff
 from enum import StrEnum
 from hashlib import sha256
 from math import isfinite
 from time import monotonic
 from typing import Any, Literal, Protocol
 from uuid import uuid4
+
+import yaml  # type: ignore[import-untyped]
+from yaml.events import AliasEvent  # type: ignore[import-untyped]
+from yaml.nodes import MappingNode, ScalarNode, SequenceNode  # type: ignore[import-untyped]
 
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import (
@@ -731,7 +736,7 @@ class ConfigTransactionManager:
             topology,
             plan.source_sha256,
             plan.changes,
-            _safe_diff(plan.redacted_diff),
+            _safe_source_diff(source_snapshot.content, plan.proposed_content),
             plan,
             source_snapshot.content,
             meter_configuration,
@@ -981,12 +986,27 @@ class ConfigTransactionManager:
         return _status(self._transaction(transaction_id))
 
     async def async_abandon(self, transaction_id: str) -> TransactionStatus:
-        """Abandon one unconfirmed preview and scrub all retained configuration."""
+        """Abandon a preview or a safe ordinary install retry."""
         transaction = self._transaction(transaction_id)
         async with _operation(transaction):
-            if transaction.state is not ConfigTransactionState.PREVIEWED:
-                raise RuntimeError("only an unconfirmed preview can be abandoned")
-            await transaction.async_release_reservation()
+            retryable = (
+                transaction.purpose == "install_configuration"
+                and transaction.state
+                is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+                and TransactionEvidenceCode.METER_COMMUNICATION_FAILED
+                in transaction.evidence
+            )
+            if transaction.state is ConfigTransactionState.PREVIEWED:
+                await transaction.async_release_reservation()
+            elif retryable:
+                # The flashed firmware and proposed YAML are retained. Check the
+                # exact applied source while the transaction still owns the lock.
+                await self._check_configuration_source(transaction, proposed=True)
+            else:
+                raise RuntimeError(
+                    "only an unconfirmed preview or meter communication retry "
+                    "can be abandoned"
+                )
             return self._finish(
                 transaction,
                 ConfigTransactionState.FAILED,
@@ -2167,31 +2187,215 @@ def _validate_expected_sensor_entities(
         object_ids.add(object_id)
 
 
+_DIFF_HUNK_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
+_DIFF_SENSITIVE_RE = re.compile(
+    r"(?:api[_ -]?key|credential|encryption[_ -]?key|noise[_ -]?psk|"
+    r"password|passphrase|secret|token|!secret)",
+    re.IGNORECASE,
+)
+_DIFF_BLOCK_SCALAR_RE = re.compile(r"(?:^|[ \t])[|>][1-9+-]*(?:[ \t]+#.*)?$")
+_DIFF_MAPPING_KEY_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?:-[ \t]+)?(?P<key>[A-Za-z0-9_-]+|'[^']*'|\"[^\"]*\")[ \t]*:"
+)
+_DIFF_SENSITIVE_CONTEXT = frozenset(
+    {"api", "auth", "authentication", "credential", "credentials", "encryption", "private", "secret", "secrets", "tls"}
+)
+
+
+def _safe_source_diff(prior_content: str, proposed_content: str) -> str:
+    """Return the exact bounded diff while masking sensitive YAML scalars."""
+    prior = _classified_yaml_lines(prior_content)
+    proposed = _classified_yaml_lines(proposed_content)
+    raw = list(
+        unified_diff(
+            [line for line, _sensitive in prior],
+            [line for line, _sensitive in proposed],
+            n=3,
+            lineterm="",
+        )
+    )[2:]
+    visible: list[str] = []
+    prior_index = proposed_index = 0
+    for raw_line in raw:
+        hunk = _DIFF_HUNK_RE.match(raw_line)
+        if hunk is not None:
+            prior_index = int(hunk["old"]) - 1
+            proposed_index = int(hunk["new"]) - 1
+            visible.append(_clean_diff_line(raw_line, "", False))
+            continue
+        prefix = raw_line[:1]
+        if prefix == " ":
+            sensitive = (
+                prior_index < len(prior) and prior[prior_index][1]
+            ) or (proposed_index < len(proposed) and proposed[proposed_index][1])
+            visible.append(_clean_diff_line(raw_line[1:], prefix, sensitive))
+            prior_index += 1
+            proposed_index += 1
+        elif prefix == "-":
+            sensitive = prior_index < len(prior) and prior[prior_index][1]
+            visible.append(_clean_diff_line(raw_line[1:], prefix, sensitive))
+            prior_index += 1
+        elif prefix == "+":
+            sensitive = proposed_index < len(proposed) and proposed[proposed_index][1]
+            visible.append(_clean_diff_line(raw_line[1:], prefix, sensitive))
+            proposed_index += 1
+        else:
+            visible.append(_clean_diff_line(raw_line, "", False))
+    return _bounded_diff(visible)
+
+
+def _classified_yaml_lines(content: str) -> list[tuple[str, bool]]:
+    """Classify source lines from YAML nodes and fail closed on parse errors."""
+    lines = content.splitlines()
+    sensitive_lines: set[int] = set()
+    try:
+        roots = tuple(yaml.compose_all(content, Loader=yaml.BaseLoader))
+        for root in roots:
+            _mark_sensitive_yaml_node(root, sensitive_lines)
+        _mark_sensitive_aliases(content, sensitive_lines)
+    except Exception:  # noqa: BLE001 - unsafe classification must fail closed
+        sensitive_lines.update(range(len(lines)))
+    return [(line, index in sensitive_lines) for index, line in enumerate(lines)]
+
+
+def _mark_sensitive_yaml_node(
+    node: MappingNode | ScalarNode | SequenceNode,
+    sensitive_lines: set[int],
+    *,
+    parent_sensitive: bool = False,
+) -> None:
+    if _yaml_node_is_sensitive(node):
+        _mark_yaml_node_lines(node, sensitive_lines)
+        return
+    if isinstance(node, MappingNode):
+        for key_node, value_node in node.value:
+            key = key_node.value if isinstance(key_node, ScalarNode) else None
+            if key is None or _sensitive_yaml_key(key, parent_sensitive=parent_sensitive):
+                _mark_yaml_node_lines(key_node, sensitive_lines)
+                _mark_yaml_node_lines(value_node, sensitive_lines)
+                continue
+            context_sensitive = key.casefold() in _DIFF_SENSITIVE_CONTEXT
+            if context_sensitive and not isinstance(value_node, MappingNode):
+                _mark_yaml_node_lines(value_node, sensitive_lines)
+                continue
+            _mark_sensitive_yaml_node(
+                value_node,
+                sensitive_lines,
+                parent_sensitive=parent_sensitive or context_sensitive,
+            )
+    elif isinstance(node, SequenceNode):
+        for child in node.value:
+            _mark_sensitive_yaml_node(
+                child, sensitive_lines, parent_sensitive=parent_sensitive
+            )
+
+
+def _mark_sensitive_aliases(content: str, sensitive_lines: set[int]) -> None:
+    anchors: dict[str, bool] = {}
+    for event in yaml.parse(content, Loader=yaml.BaseLoader):
+        anchor = getattr(event, "anchor", None)
+        if isinstance(event, AliasEvent):
+            if isinstance(anchor, str) and anchors.get(anchor):
+                _mark_yaml_mark_lines(event.start_mark, event.end_mark, sensitive_lines)
+        elif isinstance(anchor, str):
+            anchors[anchor] = _yaml_mark_overlaps_lines(
+                event.start_mark, event.end_mark, sensitive_lines
+            )
+
+
+def _yaml_node_is_sensitive(node: MappingNode | ScalarNode | SequenceNode) -> bool:
+    tag = getattr(node, "tag", "")
+    return isinstance(tag, str) and _DIFF_SENSITIVE_RE.search(tag) is not None
+
+
+def _sensitive_yaml_key(key: str, *, parent_sensitive: bool) -> bool:
+    return _DIFF_SENSITIVE_RE.search(key) is not None or (
+        key.casefold() == "key" and parent_sensitive
+    )
+
+
+def _mark_yaml_node_lines(
+    node: MappingNode | ScalarNode | SequenceNode, sensitive_lines: set[int]
+) -> None:
+    _mark_yaml_mark_lines(node.start_mark, node.end_mark, sensitive_lines)
+
+
+def _mark_yaml_mark_lines(start_mark: Any, end_mark: Any, lines: set[int]) -> None:
+    lines.update(range(start_mark.line, end_mark.line + 1))
+
+
+def _yaml_mark_overlaps_lines(start_mark: Any, end_mark: Any, lines: set[int]) -> bool:
+    return any(line in lines for line in range(start_mark.line, end_mark.line + 1))
+
+
 def _safe_diff(diff: str) -> str:
-    """Redact secret-bearing lines, controls, line count, and encoded bytes."""
-    lines: list[str] = []
-    for raw_line in diff.splitlines()[:MAX_VISIBLE_DIFF_LINES]:
+    """Redact a diff fallback, including multiline secret continuations."""
+    visible: list[str] = []
+    block_indents: dict[str, int] = {}
+    raw_lines = diff.splitlines()
+    for raw_line in raw_lines:
+        if raw_line.startswith("@@"):
+            block_indents.clear()
+        prefix = raw_line[:1] if raw_line[:1] in {" ", "+", "-"} else ""
+        body = raw_line[1:] if prefix else raw_line
+        indent = _diff_indent(body)
+        sensitive = _sensitive_yaml_line(body, broad_key=True)
+        block = block_indents.get(prefix)
+        if block is not None:
+            if not body.strip() or indent > block:
+                sensitive = True
+            else:
+                block_indents.pop(prefix, None)
+        visible.append(_clean_diff_line(body, prefix, sensitive))
+        if sensitive and _DIFF_BLOCK_SCALAR_RE.search(body):
+            block_indents[prefix] = indent
+    return _bounded_diff(visible)
+
+
+def _sensitive_yaml_line(
+    line: str, *, parent_sensitive: bool = False, broad_key: bool = False
+) -> bool:
+    if _DIFF_SENSITIVE_RE.search(line) is not None:
+        return True
+    key = _DIFF_MAPPING_KEY_RE.match(line)
+    normalized_key = "" if key is None else _normalize_diff_key(key["key"])
+    return bool(
+        key is not None
+        and normalized_key == "key"
+        and (parent_sensitive or broad_key)
+    )
+
+
+def _normalize_diff_key(key: str) -> str:
+    if len(key) >= 2 and key[0] == key[-1] and key[0] in "\"'":
+        return key[1:-1].casefold()
+    return key.casefold()
+
+
+def _diff_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def _clean_diff_line(line: str, prefix: str, sensitive: bool) -> str:
+    if sensitive:
+        line = line[:_diff_indent(line)] + "[redacted]"
+    else:
         line = "".join(
             character
-            for character in raw_line
+            for character in line
             if character == "\t" or ord(character) >= 32 and ord(character) != 127
         )
-        lowered = line.lower()
-        if any(
-            marker in lowered
-            for marker in ("password", "token", "secret", "encryption_key", "api_key")
-        ):
-            line = "[redacted]"
-        lines.append(line)
+    return prefix + line
+
+
+def _bounded_diff(lines: list[str]) -> str:
     visible = "\n".join(lines)
-    encoded = visible.encode()
-    if len(encoded) <= MAX_VISIBLE_DIFF_BYTES:
+    if len(lines) <= MAX_VISIBLE_DIFF_LINES and len(visible.encode()) <= MAX_VISIBLE_DIFF_BYTES:
         return visible
-    marker = b"\n[truncated]"
-    return (
-        encoded[: MAX_VISIBLE_DIFF_BYTES - len(marker)].decode("utf-8", "ignore")
-        + marker.decode()
-    )
+    suffix = ("\n" if visible else "") + "[truncated]"
+    visible = "\n".join(lines[: MAX_VISIBLE_DIFF_LINES - 1])
+    limit = MAX_VISIBLE_DIFF_BYTES - len(suffix.encode())
+    return visible.encode()[:limit].decode("utf-8", "ignore") + suffix
 
 
 def _verify_reconnect(

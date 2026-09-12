@@ -51,6 +51,25 @@ def observed(instance: str = "meter_main1", generation: int = 1) -> OffsetTableS
     return OffsetTableSnapshot(generation, instance, 1, OLD, "restored", False, False)
 
 
+def test_configuration_observation_cannot_claim_register_readback() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        OffsetRecoveryRecord,
+        SavedOffsetObservation,
+        _encode,
+    )
+
+    snapshot = replace(observed(), reported_state="configuration", register_verified=True)
+    with pytest.raises(ValueError, match="configuration observation"):
+        _encode(
+            OffsetRecoveryRecord(
+                MAC,
+                _snapshot(),
+                _topology(),
+                (SavedOffsetObservation(_snapshot().sha256, snapshot),),
+            )
+        )
+
+
 def test_unfinished_selected_preparation_cannot_authorize_or_rotate_recovery(tmp_path: Path) -> None:
     from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
         _final_evidence_hash,

@@ -147,8 +147,13 @@ def _validate_observation(
         or type(snapshot.register_verified) is not bool
         or type(snapshot.config_differs_from_flash) is not bool
         or snapshot.config_differs_from_flash != (snapshot.reported_state == "mismatch")
+        or snapshot.reported_state == "configuration" and snapshot.register_verified
     ):
-        raise ValueError("invalid recovery observation")
+        raise ValueError(
+            "configuration observation cannot claim register verification"
+            if snapshot.reported_state == "configuration" and snapshot.register_verified
+            else "invalid recovery observation"
+        )
     _gain_group_address(snapshot.instance_id, topology)
     _validate_group_table(
         snapshot.instance_id, snapshot.phase_values, signed=True, label="offsets"

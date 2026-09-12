@@ -14,6 +14,7 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     RollbackFailedError,
     TransactionEvidenceCode,
     TransactionStatus,
+    _safe_source_diff,
 )
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ConfigChangedError,
@@ -815,24 +816,251 @@ def test_cancelling_receipt_revocation_drains_storage_before_releasing_meter() -
 def test_preview_binds_source_and_exposes_only_bounded_safe_dto() -> None:
     async def run() -> None:
         manager = _manager(Builder(), Persistence())
+        prior_content = "prior baselineExampleValue"
         status = await manager.async_preview(
             "AABBCCDDEEFF",
             _topology(),
-            _plan(
-                "prior top-secret",
-                diff=" api_encryption_key: raw-diff-secret\n+ ct1_name: Kitchen",
+            replace(
+                _plan(
+                    prior_content,
+                    diff=" api_encryption_key: rawDiffExampleValue\n+ ct1_name: Kitchen",
+                ),
+                proposed_content=(
+                    "api:\n  encryption_key: abc123ExampleValue\n"
+                    "substitutions:\n  ct1_name: Kitchen\n"
+                ),
             ),
-            _source("prior top-secret"),
+            _source(prior_content),
         )
         assert isinstance(status, TransactionStatus)
         assert not hasattr(status, "plan") and not hasattr(status, "prior_content")
-        assert "top-secret" not in repr(status)
-        assert "raw-diff-secret" not in status.redacted_diff
+        assert "abc123ExampleValue" not in repr(status)
+        assert "rawDiffExampleValue" not in status.redacted_diff
         assert len(status.redacted_diff.encode()) <= 32_768
 
         bad = ESPHomeConfigSnapshot("meter.yaml", "different", _source().sha256)
         with pytest.raises(ValueError, match="source snapshot"):
             await manager.async_preview("aabbccddeeff", _topology(), _plan(), bad)
+
+    asyncio.run(run())
+
+
+def test_preview_exposes_exact_safe_source_diff() -> None:
+    async def run() -> None:
+        source = """substitutions:
+  ct1_name: Old
+sensor:
+  - platform: atm90e32
+    current_cal_ct1: 100
+    filters:
+      - lambda: return x;
+api:
+  encryption:
+    key: abc123ExampleValue
+  token: |
+    abc456ExampleValue
+    abc789ExampleValue
+wifi:
+  password: |
+    abc111ExampleValue
+    abc222ExampleValue
+secrets:
+  wifi_password: !secret abc333ExampleValue
+"""
+        proposed = """substitutions:
+  ct1_name: New
+sensor:
+  - platform: atm90e32
+    current_cal_ct1: 200
+    filters:
+      - lambda: return y;
+api:
+  encryption:
+    key: xyz123ExampleValue
+  token: |
+    xyz456ExampleValue
+    xyz789ExampleValue
+wifi:
+  password: |
+    xyz111ExampleValue
+    xyz222ExampleValue
+secrets:
+  wifi_password: !secret xyz333ExampleValue
+"""
+        plan = replace(_plan(source), proposed_content=proposed)
+        manager = _manager(Builder(), Persistence())
+        status = await manager.async_preview(
+            "aabbccddeeff", _topology(), plan, _source(source)
+        )
+
+        diff = status.redacted_diff
+        assert "-  ct1_name: Old" in diff
+        assert "+  ct1_name: New" in diff
+        assert "-    current_cal_ct1: 100" in diff
+        assert "+    current_cal_ct1: 200" in diff
+        assert "-      - lambda: return x;" in diff
+        assert "+      - lambda: return y;" in diff
+        for secret in (
+            "abc123ExampleValue", "xyz123ExampleValue", "abc111ExampleValue",
+            "xyz111ExampleValue", "abc222ExampleValue", "xyz222ExampleValue",
+            "abc456ExampleValue", "xyz456ExampleValue", "abc789ExampleValue",
+            "xyz789ExampleValue", "abc333ExampleValue", "xyz333ExampleValue",
+        ):
+            assert secret not in diff
+        assert diff.count("[redacted]") >= 6
+
+    asyncio.run(run())
+
+
+def test_source_diff_fails_closed_for_quoted_flow_and_alias_secrets() -> None:
+    source = '''"api": {
+  "encryption": {
+    "key": abcApiFlowExampleValue
+  },
+  "port": 6052,
+  "password": abcStableExampleValue
+}
+"password": &pw abcAnchorExampleValue
+copy: *pw
+flow_sequence: [
+  {"password": abcFlowSequenceExampleValue},
+  {"token": abcFlowSequenceTokenExampleValue}
+]
+"credentials": [
+  abcCredentialOneExampleValue,
+  abcCredentialTwoExampleValue
+]
+auth: abcAuthScalarExampleValue
+tls:
+  - abcTlsListExampleValue
+  - abcTlsListContinuationExampleValue
+"multiline_token": >-
+  abcFoldedExampleValue
+  abcFoldedContinuationExampleValue
+substitutions:
+  "wifi_password": |-
+    abcSubstitutionExampleValue
+    abcSubstitutionContinuationExampleValue
+opaque_ref: !secret abcTaggedExampleValue
+'''
+    proposed = source.replace("abcApiFlowExampleValue", "xyzApiFlowExampleValue") \
+        .replace("6052", "6053") \
+        .replace("abcAnchorExampleValue", "xyzAnchorExampleValue") \
+        .replace("abcFlowSequenceExampleValue", "xyzFlowSequenceExampleValue") \
+        .replace("abcFlowSequenceTokenExampleValue", "xyzFlowSequenceTokenExampleValue") \
+        .replace("abcCredentialOneExampleValue", "xyzCredentialOneExampleValue") \
+        .replace("abcCredentialTwoExampleValue", "xyzCredentialTwoExampleValue") \
+        .replace("abcAuthScalarExampleValue", "xyzAuthScalarExampleValue") \
+        .replace("abcTlsListExampleValue", "xyzTlsListExampleValue") \
+        .replace("abcTlsListContinuationExampleValue", "xyzTlsListContinuationExampleValue") \
+        .replace("abcFoldedExampleValue", "xyzFoldedExampleValue") \
+        .replace("abcFoldedContinuationExampleValue", "xyzFoldedContinuationExampleValue") \
+        .replace("abcSubstitutionExampleValue", "xyzSubstitutionExampleValue") \
+        .replace("abcSubstitutionContinuationExampleValue", "xyzSubstitutionContinuationExampleValue") \
+        .replace("abcTaggedExampleValue", "xyzTaggedExampleValue")
+
+    diff = _safe_source_diff(source, proposed)
+
+    for secret in (
+        "abcApiFlowExampleValue", "xyzApiFlowExampleValue", "abcAnchorExampleValue",
+        "xyzAnchorExampleValue", "abcFoldedExampleValue", "xyzFoldedExampleValue",
+        "abcFlowSequenceExampleValue", "xyzFlowSequenceExampleValue",
+        "abcFlowSequenceTokenExampleValue", "xyzFlowSequenceTokenExampleValue",
+        "abcCredentialOneExampleValue", "xyzCredentialOneExampleValue",
+        "abcCredentialTwoExampleValue", "xyzCredentialTwoExampleValue",
+        "abcStableExampleValue",
+        "abcAuthScalarExampleValue", "xyzAuthScalarExampleValue",
+        "abcTlsListExampleValue", "xyzTlsListExampleValue",
+        "abcTlsListContinuationExampleValue", "xyzTlsListContinuationExampleValue",
+        "abcFoldedContinuationExampleValue", "xyzFoldedContinuationExampleValue",
+        "abcSubstitutionExampleValue", "xyzSubstitutionExampleValue",
+        "abcSubstitutionContinuationExampleValue", "xyzSubstitutionContinuationExampleValue",
+        "abcTaggedExampleValue", "xyzTaggedExampleValue",
+    ):
+        assert secret not in diff
+    assert '"port": 6052' in diff
+    assert '"port": 6053' in diff
+    assert "copy:" not in diff and "[redacted]" in diff
+
+    malformed = _safe_source_diff("safe: abcNeutralValue\nbroken: [\n", "safe: xyzNeutralValue\nbroken: [\n")
+    assert "abcNeutralValue" not in malformed and "xyzNeutralValue" not in malformed
+    assert "[redacted]" in malformed
+
+
+def test_preview_diff_marks_line_truncation() -> None:
+    async def run() -> None:
+        source = "\n".join(f"setting_{index}: old" for index in range(600))
+        proposed = "\n".join(f"setting_{index}: new" for index in range(600))
+        plan = replace(_plan(source), proposed_content=proposed)
+        status = await _manager(Builder(), Persistence()).async_preview(
+            "aabbccddeeff", _topology(), plan, _source(source)
+        )
+
+        assert status.redacted_diff.endswith("[truncated]")
+        assert len(status.redacted_diff.encode()) <= 32_768
+        assert len(status.redacted_diff.splitlines()) <= 512
+
+    asyncio.run(run())
+
+
+def test_chip_failure_can_abandon_without_rollback_and_release_lock() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+        MeterCommunicationError,
+    )
+
+    async def run() -> None:
+        builder = Builder()
+        persistence = Persistence()
+        manager = _manager(
+            builder, persistence, evidence=MeterCommunicationError((0, 16))
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        failed = await manager.async_confirm_install(preview.transaction_id, "admin")
+        internal = manager._transaction(preview.transaction_id)
+        proposed = internal.plan.proposed_content
+
+        abandoned = await manager.async_abandon(preview.transaction_id)
+
+        assert abandoned.state is ConfigTransactionState.FAILED
+        assert TransactionEvidenceCode.CANCELLED in abandoned.evidence
+        assert builder.remote_content == proposed
+        assert "restore" not in builder.calls
+        assert not persistence.saved
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
+        with pytest.raises(KeyError):
+            manager.status(preview.transaction_id)
+        assert failed.communication_failed_cs_pins == (0, 16)
+
+    asyncio.run(run())
+
+
+def test_chip_failure_abandon_rejects_external_source_changes() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+        MeterCommunicationError,
+    )
+
+    async def run() -> None:
+        builder = Builder()
+        manager = _manager(
+            builder, Persistence(), evidence=MeterCommunicationError((0,))
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        builder.remote_content = "external edit"
+
+        with pytest.raises(ValueError, match="confirmed configuration source"):
+            await manager.async_abandon(preview.transaction_id)
+
+        status = manager.status(preview.transaction_id)
+        assert status.state is ConfigTransactionState.FAILED
+        assert status.rollback_available
+        assert manager.sessions.is_config_locked("aabbccddeeff")
+        assert "restore" not in builder.calls
+        await manager.sessions.async_unload()
 
     asyncio.run(run())
 

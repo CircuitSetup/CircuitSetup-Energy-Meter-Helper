@@ -63,7 +63,7 @@ it("renders purpose-specific configuration installation controls", () => {
   expect(host.textContent).toContain("Save and validate configuration");
   expect(host.textContent).toContain("Build firmware");
   expect(host.textContent).toContain("Install on meter");
-  expect(host.querySelector("details pre")?.getAttribute("aria-label")).toBe("Redacted substitution diff");
+  expect(host.querySelector("details pre")?.getAttribute("aria-label")).toBe("Configuration file diff");
   expect(host.querySelector("details")?.textContent).toContain("source_checked");
 
   render(buildInstallStep("save_calibration", status, noop, noop, noop, noop, noop, noop), host);
@@ -953,7 +953,7 @@ describe("meter configuration review and summary", () => {
   it("reviews physical, semantic, package, and entity details without threshold controls", () => {
     const meter = meterResponse() as unknown as import("../src/types").MeterConfiguration;
     meter.configuration.aggregates = [{ aggregate_id: "main-service", name: "Main service", role: "grid", sources: [{ kind: "channel" as const, channel: 1 }, { kind: "channel" as const, channel: 2 }], measurement_method: "two_ct_sum", energy_mode: "bidirectional", outputs: { watts: true, amps: true, kwh: true }, origin: "advanced" as const }];
-    const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "Meter:\n- - old\n+ - new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: true } as import("../src/types").TransactionStatus;
+    const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "@@ -1,3 +1,3 @@\n Meter:\n- - old\n+ - new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: true } as import("../src/types").TransactionStatus;
     const root = document.createElement("div");
     render(configReview(transaction, meter.configuration, meter.configuration_impact), root);
     const review = root.textContent ?? "";
@@ -965,8 +965,8 @@ describe("meter configuration review and summary", () => {
     expect(review).toContain("Power quality");
     expect(review).not.toContain("threshold");
     const diff = [...root.querySelectorAll(".diff-line")];
-    expect(diff.map((line) => line.textContent)).toEqual(["Meter:", " - old", " - new"]);
-    expect(diff.map((line) => line.className)).toEqual(["diff-line context", "diff-line removed", "diff-line added"]);
+    expect(diff.map((line) => line.textContent)).toEqual(["@@ -1,3 +1,3 @@", "Meter:", " - old", " - new"]);
+    expect(diff.map((line) => line.className)).toEqual(["diff-line context", "diff-line context", "diff-line removed", "diff-line added"]);
 
     const finish = vi.fn();
     render(summaryStep(meter.topology, null, { ...transaction, state: "verified" }, new Map(), new Map(), null, false, "2026.8.0", () => undefined, () => undefined, meter, meter.configuration_impact, finish), root);
@@ -1578,6 +1578,41 @@ describe("CircuitSetup panel", () => {
     await tick();
     await state.continueFromCt();
     expect(operations.filter(({ operation }) => operation === "preview_meter_configuration").map(({ planId }) => planId)).toEqual(["b".repeat(32), "c".repeat(32)]);
+  });
+
+  it("abandons a chip-failure retry and keeps the fresh applied baseline", async () => {
+    const calls: string[] = [];
+    const saved = meterResponse(); saved.source_sha256 = "c".repeat(64); saved.configuration.meter.friendly_name = "Fresh external edit";
+    const retry = { transaction_id: "1".repeat(32), state: "install_confirmation_required" as const,
+      source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true,
+      evidence: ["meter_communication_failed"], progress: ["firmware_compiled", "ota_uploaded"],
+      validation_detail: null, upload_progress: [], purpose: "install_configuration" as const,
+      aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] }, get_meter_configuration: saved,
+      abandon_ct_config: { ...retry, state: "failed", rollback_available: false, evidence: ["meter_communication_failed", "cancelled"] } });
+    const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      calls.push(String(message.type).split("/").at(-1) ?? "");
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void>; canonicalConfigurationChanged: boolean };
+    const edited = meterResponse(); edited.configuration.meter.friendly_name = "Stale edit";
+    state.selectedDeviceId = "meter-1";
+    state.meterConfiguration = edited;
+    state.transaction = retry;
+    state.step = "install-configuration";
+
+    await state.backFromBuild();
+
+    expect(calls).toContain("abandon_ct_config");
+    expect(calls).not.toContain("rollback_ct_config");
+    expect(calls).not.toContain("preview_meter_configuration");
+    expect(state.transaction).toBeNull();
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).source_sha256).toBe("c".repeat(64));
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.meter.friendly_name).toBe("Fresh external edit");
+    expect(state.canonicalConfigurationChanged).toBe(false);
+    expect(state.step).toBe("ct");
   });
 
   it("keeps a failed review cancellation visible and does not discard edits", async () => {
@@ -2711,7 +2746,7 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("private backend details");
     expect(text(panel)).not.toContain("Recovery is retained.");
     expect(text(panel)).toContain(code === "offset_tables_unavailable"
-      ? "Stock ESPHome can omit these before the first offset calibration"
+      ? "even when the firmware supports offset calibration"
       : "preparation could not be reviewed");
     if (code === "operation_failed") expect(text(panel)).not.toContain("Stock ESPHome");
     expect(state.transaction).toBeNull();

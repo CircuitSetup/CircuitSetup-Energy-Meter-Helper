@@ -944,18 +944,20 @@ test("non-helper opening performs no write and explicit adoption is a metadata-o
   await expect.poll(async () => (await fixture.state()).stored.configuration.totals_managed).toBe(true);
 });
 
-test("adoption exact review identifies source-aware native overrides before any write", async ({ page }) => {
+test("adoption review uses one authoritative source diff before any write", async ({ page }) => {
   const fixture = await totalsFixture(page, "non-helper");
   await openInventory(page, fixture.url);
   await page.getByRole("button", { name: "Adopt managed totals", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("switch", { name: "Overall meter total Watts", exact: true }).uncheck();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByText("Exact source-aware additions and helper blocks (server transaction diff)", { exact: true }).click();
-  const diff = page.getByLabel("Exact adoption transaction diff", { exact: true });
+  await page.getByRole("region", { name: "Review changes" }).getByText("Technical details", { exact: true }).click();
+  const diff = page.getByLabel("Configuration file diff", { exact: true });
+  await expect(diff).toBeVisible();
   await expect(diff).toContainText("totalWattsMain");
   await expect(diff).toContainText("internal: true");
-  expect(await diff.textContent()).toContain("\nExact generated total changes\n+ id: !extend totalWattsMain; internal: true");
+  await expect(page.getByLabel("Configuration file diff", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("Exact source-aware additions and helper blocks (server transaction diff)", { exact: true })).toHaveCount(0);
   expect((await fixture.state()).builder_calls).not.toContain("write");
 });
 
@@ -1368,7 +1370,7 @@ test("validation failure exposes evidence and performs only a user-requested rol
   const frames = await mockHomeAssistant(page, { outcome: "validation" });
   await openInventory(page);
   await reviewChannel(page, 1);
-  await expect(page.getByLabel("Redacted substitution diff")).toContainText("<redacted>");
+  await expect(page.getByLabel("Configuration file diff")).toContainText("<redacted>");
   await page.getByRole("button", { name: "Save and validate configuration" }).click();
   await expect(page.locator(".recovery-panel").filter({ hasText: "validation_failed" }).first()).toBeVisible();
   await page.getByRole("button", { name: "Rollback" }).click();
@@ -1689,7 +1691,7 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await page.getByRole("button", { name: "Review and save calibration to YAML" }).click();
   await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
   await page.getByRole("region", { name: "Review changes" }).getByText("Technical details", { exact: true }).click();
-  await expect(page.getByLabel("Redacted substitution diff")).toBeVisible();
+  await expect(page.getByLabel("Configuration file diff")).toBeVisible();
   await page.getByRole("button", { name: "Write verified gains to ESPHome" }).click();
   await page.getByRole("button", { name: "Build firmware" }).click();
   await page.getByRole("button", { name: "Install calibrated firmware" }).click();
@@ -1962,7 +1964,7 @@ test("journey 4: legacy manage requires review before migration preview", async 
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Install Configuration", exact: true })).toBeVisible();
   await page.getByRole("region", { name: "Review changes" }).getByText("Technical details", { exact: true }).click();
-  await expect(page.getByLabel("Redacted substitution diff")).toBeVisible();
+  await expect(page.getByLabel("Configuration file diff")).toBeVisible();
   await installConfiguration(page);
   await page.getByLabel(/Keep existing calibration/).click();
   await expect(page.getByRole("heading", { name: "Review complete", exact: true })).toBeVisible();

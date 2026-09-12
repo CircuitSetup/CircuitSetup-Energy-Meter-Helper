@@ -1904,7 +1904,8 @@ function configReview(status, configuration = null, impact = null, totals = null
   const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split(/\r?\n/);
   const diffLine = (line) => {
     const kind = line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : "context";
-    return { kind, value: kind === "context" ? line : line.slice(1) };
+    const prefixed = line.startsWith(" ") || line.startsWith("+") || line.startsWith("-");
+    return { kind, value: prefixed ? line.slice(1) : line };
   };
   const channels = configuration?.channels ?? [];
   const pqBoards = configuration?.power_quality.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
@@ -1956,7 +1957,7 @@ function configReview(status, configuration = null, impact = null, totals = null
           <div><dt>Evidence</dt><dd>${status?.evidence.join(", ") || "No evidence recorded."}</dd></div>
           <div><dt>Upload trace</dt><dd>${status?.upload_progress.map((item) => `${item.stage}: ${item.percentage ?? "in progress"}`).join(", ") || "No upload trace."}</dd></div>
         </dl>
-        <pre class="config-diff" aria-label="Redacted substitution diff"><code>${diff.map((line) => {
+        <pre class="config-diff" aria-label="Configuration file diff"><code>${diff.map((line) => {
     const item = diffLine(line);
     return b`<span class=${`diff-line ${item.kind}`}>${item.value}</span>`;
   })}</code></pre>
@@ -1973,7 +1974,7 @@ function totalsEditable(meter, capability) {
 function legacyTotalsNotice(capabilities) {
   return b`${capabilities.reason_codes.includes("legacy_custom_totals_unmanaged") || capabilities.reason_codes.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band">Arbitrary unmanaged custom totals remain outside helper control. Recognized existing Watts/Amps/kWh remain unchanged until edited. After adoption, editing a supported total creates replacement helper entities and new kWh counters; its original sensors are retained internally. Unresolved native default totals remain read-only. Preserved unsupported external custom energy remains unchanged and outside the computed entity count. Review these changes before saving.</p>` : A}`;
 }
-function totalsMigrationReview(meter, update, preview = null, fresh = true, readOnly = false, transaction2 = null) {
+function totalsMigrationReview(meter, update, preview = null, fresh = true, readOnly = false) {
   const { configuration, totals, capabilities } = meter;
   const intent = configuration.totals_change_intent ?? { adopt_managed_totals: false, legacy_parent_decisions: [] };
   const adoptionRequired = capabilities.reason_codes.includes("totals_adoption_required");
@@ -1989,13 +1990,13 @@ function totalsMigrationReview(meter, update, preview = null, fresh = true, read
     if (canAdoptTotals(meter) && !intent.adopt_managed_totals) update({ ...configuration, totals_change_intent: { ...intent, adopt_managed_totals: true } });
   }}>Adopt managed totals</button>` : !canAdoptTotals(meter) ? b`<p role="status">Adoption requires authoritative editable YAML, confirmed native visibility and supported contract.</p>` : A}
       ${intent.adopt_managed_totals ? b`<p role="status">Adoption selected; awaiting successful commit. Review the exact native visibility overrides and helper blocks before Save and validate.</p>
-        ${fresh && preview ? b`<h3>Requested visibility changes versus firmware defaults</h3><p>These are requested outputs, not the source-aware overrides to be added. The server transaction diff below is authoritative for actual YAML changes.</p><ul>${preview.graph.native_visibility.map((item) => {
+        ${fresh && preview ? b`<h3>Requested visibility changes versus firmware defaults</h3><p>These are requested outputs, not the source-aware overrides to be added. Review the exact source-aware YAML diff in Configuration review.</p><ul>${preview.graph.native_visibility.map((item) => {
     const native = totals.native_sources.find((source) => source.power_id === item.sensor_id || source.current_id === item.sensor_id || source.existing_energy_id === item.sensor_id);
     const output = native?.power_id === item.sensor_id ? "Watts" : native?.current_id === item.sensor_id ? "Amps" : "kWh";
     return b`<li>${native?.label ?? "Native total"} ${output}: ${item.internal ? "internal dependency" : "public output"}</li>`;
   })}</ul><h3>Requested helper totals</h3><ul>${preview.graph.ordered_nodes.map((node) => b`<li>${node.aggregate.name}: ${[node.power_required ? "Watts" : "", node.current_required ? "Amps" : "", node.energy_required ? "kWh" : ""].filter(Boolean).join(", ")}</li>`)}
           ${totals.native_sources.filter((source) => source.source_id !== "overall").map((source, index) => source.existing_energy_id === null && configuration.default_totals.boards.find((board) => board.board_index === index)?.outputs.kwh ? b`<li>${source.label}: kWh</li>` : A)}</ul>` : b`<p role="status">Current validated total preview is required to list requested visibility and helper blocks.</p>`}
-        ${transaction2 ? b`<details><summary>Exact source-aware additions and helper blocks (server transaction diff)</summary><pre class="config-diff" aria-label="Exact adoption transaction diff">${transaction2.redacted_diff}</pre></details>` : b`<p>Continue to configuration review for the exact source-aware additions and helper blocks in the server transaction diff.</p>`}` : A}
+        ` : A}
     </section>` : A}
     ${legacyTotalsNotice(capabilities)}
     ${totals.migration.legacy_parent_links.length ? b`<section class="totals-migration" aria-labelledby="legacy-parent-heading">
@@ -2059,7 +2060,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       ${purpose === "offset_preparation" ? b`<p>This installs a reviewed zero baseline for only the unfinished chips. Installation does not run calibration. Return to the same board and stage, acknowledge physical preparation again, and check measured readiness before explicit Run.</p>` : ""}
       ${purpose === "offset_finalization" ? b`<p>Captured signed offsets, including zeros, are installed with native offset restore disabled. Confirm configuration selection after installation; this is not register readback and does not clear saved gain calibration.</p>` : ""}
       ${configReview(status, configuration, impact, meterInventory?.totals)}
-      ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true, status) : ""}
+      ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
           <strong>${communicationFailure ? "Meter chip communication failed" : failureMessage ?? "Build or install needs attention"}</strong>
@@ -2074,6 +2075,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
               <li>If an add-on still fails, move its CS jumper to a different unused, supported CS pin and update the configuration to match before rebuilding and installing. A fault that follows the GPIO points to the ESP32 pin or its connection; a fault that stays with the same add-on on a known-good GPIO points to that add-on board or meter chip.</li>
             </ol>
             <p>After correcting the hardware or configuration, power up and use Retry Install. This uploads the firmware again and repeats startup verification.</p>
+            <p>Use Back to keep this saved configuration and edit it; rollback is optional.</p>
           ` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
@@ -5160,6 +5162,7 @@ class CircuitSetupPanel extends i$2 {
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
     const calibrationPreparation2 = current !== null && this.isCalibrationPreparationTransaction(current);
+    const chipFailureRetry = current?.purpose === "install_configuration" && current.state === "install_confirmation_required" && current.evidence.includes("meter_communication_failed");
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
         this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first.");
@@ -5183,7 +5186,7 @@ class CircuitSetupPanel extends i$2 {
       this.requestUpdate();
       return;
     }
-    if (current && !["previewed", "rolled_back"].includes(current.state)) {
+    if (current && !["previewed", "rolled_back"].includes(current.state) && !chipFailureRetry) {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
     }
@@ -5202,7 +5205,7 @@ class CircuitSetupPanel extends i$2 {
       meterFrequencyTouched: this.meterFrequencyTouched,
       meterNominalVoltageTouched: new Set(this.meterNominalVoltageTouched)
     } : null);
-    if (!this.calibrationHandoff && !calibrationPreparation2 && !correction) {
+    if (!chipFailureRetry && !this.calibrationHandoff && !calibrationPreparation2 && !correction) {
       this.fail(new Error(), "The edited configuration is unavailable. Return to setup and reload the meter.");
       return;
     }
@@ -5212,7 +5215,7 @@ class CircuitSetupPanel extends i$2 {
     const generation = ++this.operationGeneration;
     let abandoned = current === null || current?.state === "rolled_back";
     try {
-      if (current?.state === "previewed") {
+      if (current?.state === "previewed" || chipFailureRetry) {
         await api.abandonCtConfig(deviceId, current.transaction_id, current.source_sha256);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.clearSubscription("transaction");
@@ -5238,6 +5241,16 @@ class CircuitSetupPanel extends i$2 {
       this.reviewCorrection = correction;
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (chipFailureRetry) {
+        this.packageOptionsTouched = false;
+        this.meterFrequencyTouched = false;
+        this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
+        this.setMeterConfiguration(fresh);
+        this.showInventory(this.meterConfiguration);
+        this.reviewCorrection = null;
+        this.announcement = "Review cancelled. Live saved configuration was reloaded.";
+        return;
+      }
       if (fresh.source_sha256 !== correction.sourceSha256) {
         this.packageOptionsTouched = false;
         this.meterFrequencyTouched = false;
@@ -6720,7 +6733,7 @@ class CircuitSetupPanel extends i$2 {
   }
   safeErrorMessage(error, fallback) {
     const code = error.code;
-    if (code === "offset_tables_unavailable") return "Meter diagnostics did not provide complete offset tables for this stage. Stock ESPHome can omit these before the first offset calibration. Preparation requires firmware with read-only offset-table reporting. You can choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data, if any, is unchanged.";
+    if (code === "offset_tables_unavailable") return "The meter did not report all offset values needed to back up this calibration stage. This can happen before the first offset calibration, even when the firmware supports offset calibration. Retry to request fresh diagnostics, or choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data is unchanged.";
     if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
     return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
   }

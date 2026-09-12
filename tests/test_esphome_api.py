@@ -705,6 +705,34 @@ def test_offset_table_snapshot_reads_full_fresh_dump_outside_public_log_ring() -
     asyncio.run(run())
 
 
+def test_offset_configuration_selection_reads_exact_fresh_dump() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_offset_configuration_selection(
+                {"meter_main1", "meter_main2"}, timeout=0.2
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        message = (
+            "[I][atm90e32:1010] [CALIBRATION][meter_main1] "
+            "Power & Voltage/Current offset calibration is disabled. Using config file values.\n"
+            "[I][atm90e32:1011] [CALIBRATION][meter_main2] "
+            "Power & Voltage/Current offset calibration is disabled. Using config file values."
+        )
+        client.on_log(
+            SimpleNamespace(message=message)
+        )
+
+        assert client.dump_configs[-1] is True
+        assert await pending == {"meter_main1": 1, "meter_main2": 1}
+
+    asyncio.run(run())
+
+
 def test_offset_table_snapshot_cancellation_and_generation_change_stop_capture() -> (
     None
 ):

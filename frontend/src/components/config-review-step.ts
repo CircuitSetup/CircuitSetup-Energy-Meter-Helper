@@ -14,7 +14,8 @@ export function configReview(
   const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split(/\r?\n/);
   const diffLine = (line: string) => {
     const kind = line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : "context";
-    return { kind, value: kind === "context" ? line : line.slice(1) };
+    const prefixed = line.startsWith(" ") || line.startsWith("+") || line.startsWith("-");
+    return { kind, value: prefixed ? line.slice(1) : line };
   };
   const channels = configuration?.channels ?? [];
   const pqBoards = configuration?.power_quality.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
@@ -65,7 +66,7 @@ export function configReview(
           <div><dt>Evidence</dt><dd>${status?.evidence.join(", ") || "No evidence recorded."}</dd></div>
           <div><dt>Upload trace</dt><dd>${status?.upload_progress.map((item) => `${item.stage}: ${item.percentage ?? "in progress"}`).join(", ") || "No upload trace."}</dd></div>
         </dl>
-        <pre class="config-diff" aria-label="Redacted substitution diff"><code>${diff.map((line) => { const item = diffLine(line); return html`<span class=${`diff-line ${item.kind}`}>${item.value}</span>`; })}</code></pre>
+        <pre class="config-diff" aria-label="Configuration file diff"><code>${diff.map((line) => { const item = diffLine(line); return html`<span class=${`diff-line ${item.kind}`}>${item.value}</span>`; })}</code></pre>
       </details>
     </section>
   `;

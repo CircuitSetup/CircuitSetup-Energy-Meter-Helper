@@ -1032,6 +1032,9 @@ export class CircuitSetupPanel extends LitElement {
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
     const calibrationPreparation = current !== null && this.isCalibrationPreparationTransaction(current);
+    const chipFailureRetry = current?.purpose === "install_configuration"
+      && current.state === "install_confirmation_required"
+      && current.evidence.includes("meter_communication_failed");
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
         this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first."); return;
@@ -1049,7 +1052,7 @@ export class CircuitSetupPanel extends LitElement {
       }, "The review could not be cancelled. Recovery and captured values are retained.", () => this.ownsOperation(generation, api, deviceId));
       this.pendingAction = ""; this.requestUpdate(); return;
     }
-    if (current && !["previewed", "rolled_back"].includes(current.state)) {
+    if (current && !["previewed", "rolled_back"].includes(current.state) && !chipFailureRetry) {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
     }
@@ -1066,7 +1069,7 @@ export class CircuitSetupPanel extends LitElement {
       meterFrequencyTouched: this.meterFrequencyTouched,
       meterNominalVoltageTouched: new Set(this.meterNominalVoltageTouched),
     } : null);
-    if (!this.calibrationHandoff && !calibrationPreparation && !correction) {
+    if (!chipFailureRetry && !this.calibrationHandoff && !calibrationPreparation && !correction) {
       this.fail(new Error(), "The edited configuration is unavailable. Return to setup and reload the meter.");
       return;
     }
@@ -1076,7 +1079,7 @@ export class CircuitSetupPanel extends LitElement {
     const generation = ++this.operationGeneration;
     let abandoned = current === null || current?.state === "rolled_back";
     try {
-      if (current?.state === "previewed") {
+      if (current?.state === "previewed" || chipFailureRetry) {
         await api.abandonCtConfig(deviceId, current.transaction_id, current.source_sha256);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.clearSubscription("transaction");
@@ -1102,6 +1105,16 @@ export class CircuitSetupPanel extends LitElement {
       this.reviewCorrection = correction;
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      if (chipFailureRetry) {
+        this.packageOptionsTouched = false;
+        this.meterFrequencyTouched = false;
+        this.meterNominalVoltageTouched = new Set();
+        this.setMeterConfiguration(fresh);
+        this.showInventory(this.meterConfiguration!);
+        this.reviewCorrection = null;
+        this.announcement = "Review cancelled. Live saved configuration was reloaded.";
+        return;
+      }
       if (fresh.source_sha256 !== correction!.sourceSha256) {
         this.packageOptionsTouched = false;
         this.meterFrequencyTouched = false;
@@ -2486,7 +2499,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private safeErrorMessage(error: unknown, fallback: string): string {
     const code = (error as WsError).code;
-    if (code === "offset_tables_unavailable") return "Meter diagnostics did not provide complete offset tables for this stage. Stock ESPHome can omit these before the first offset calibration. Preparation requires firmware with read-only offset-table reporting. You can choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data, if any, is unchanged.";
+    if (code === "offset_tables_unavailable") return "The meter did not report all offset values needed to back up this calibration stage. This can happen before the first offset calibration, even when the firmware supports offset calibration. Retry to request fresh diagnostics, or choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data is unchanged.";
     if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
     return code === "stale_confirmation"
       ? "This confirmation expired. Reload live data and review again."

@@ -16,6 +16,7 @@ from custom_components.circuitsetup_energy_meter_helper.log_parser import (
     parse_calibration_sources,
     parse_gain_run,
     parse_offset_clear,
+    parse_offset_configuration_selection,
     parse_offset_run,
     parse_offset_table_snapshot,
     parse_power_offset_run,
@@ -134,6 +135,65 @@ def test_detects_verified_gain_config_fallback_as_configuration() -> None:
     )
 
     assert sources == {"meter_main1": "configuration"}
+
+
+def test_parses_exact_producer_configuration_selection_for_each_chip() -> None:
+    lines = [
+        CalibrationLogLine(
+            3,
+            0,
+            11.0 + index,
+            f"[I][atm90e32:{1000 + index}] [CALIBRATION][{instance}] "
+            "Power & Voltage/Current offset calibration is disabled. Using config file values.",
+        )
+        for index, instance in enumerate(("meter_main1", "meter_main2"))
+    ]
+
+    assert parse_offset_configuration_selection(
+        lines,
+        connection_generation=3,
+        expected_instance_ids={"meter_main1", "meter_main2"},
+    ) == {"meter_main1": 3, "meter_main2": 3}
+
+
+def test_offset_snapshot_keeps_stock_no_stored_fallback_unavailable() -> None:
+    lines = [
+        CalibrationLogLine(
+            3,
+            0,
+            11.0,
+            "[W][atm90e32:1015] [CALIBRATION][meter_main1] "
+            "No stored offset calibrations found. Using default values.",
+        )
+    ]
+
+    assert parse_offset_table_snapshot(
+        lines,
+        connection_generation=3,
+        operation_sequence=0,
+        expected_instance_ids={"meter_main1"},
+        started_after=0.0,
+        offset_stage=1,
+    ) == {"meter_main1": None}
+
+
+def test_offset_snapshot_rejects_partial_stock_table() -> None:
+    lines = [
+        CalibrationLogLine(3, 0, 11.0, "[I][atm90e32:369] [CALIBRATION][meter_main1] Restored offset calibration from memory"),
+        CalibrationLogLine(3, 0, 12.0, "[I][atm90e32:371] [CALIBRATION][meter_main1] | Phase | offset_voltage | offset_current |"),
+        CalibrationLogLine(3, 0, 13.0, "[I][atm90e32:374] [CALIBRATION][meter_main1] | A | -10 | 31 |"),
+        CalibrationLogLine(3, 0, 14.0, "[I][atm90e32:374] [CALIBRATION][meter_main1] | B | 20 | -32 |"),
+    ]
+
+    with pytest.raises(LogEvidenceError, match="exactly phases"):
+        parse_offset_table_snapshot(
+            lines,
+            connection_generation=3,
+            operation_sequence=0,
+            expected_instance_ids={"meter_main1"},
+            started_after=0.0,
+            offset_stage=1,
+        )
 
 
 def log_lines(
