@@ -26,6 +26,29 @@ class FakeHass implements HomeAssistant {
   }
 }
 
+it.each([33, 128])("lists all %i ESPHome entries through bounded pages", async (count) => {
+  const entries = Array.from({ length: count }, (_, index) => ({
+    entry_id: `device-${String(index).padStart(3, "0")}`, title: `Device ${index}`,
+    project_name: null, project_version: null, compatibility: ["project_label_missing"],
+  }));
+  const hass = new FakeHass();
+  hass.callWS = async <T>(message: Record<string, unknown>) => {
+    hass.messages.push(message);
+    return entries.filter((entry) => entry.entry_id > String(message.after_entry_id ?? "")).slice(0, 32) as T;
+  };
+  expect(await new HelperApi(hass, "helper").listExistingMeters()).toEqual(entries);
+  expect(hass.messages).toHaveLength(Math.floor(count / 32) + 1);
+});
+
+it("rejects a repeated discovery page instead of looping indefinitely", async () => {
+  const hass = new FakeHass();
+  hass.responses.list_existing_meters = Array.from({ length: 32 }, (_, index) => ({
+    entry_id: `device-${String(index).padStart(3, "0")}`, title: `Device ${index}`,
+    project_name: null, project_version: null, compatibility: [],
+  }));
+  await expect(new HelperApi(hass, "helper").listExistingMeters()).rejects.toThrow();
+});
+
 const device = {
   entry_id: "meter-1", title: "Meter", project_name: "circuitsetup.6c-energy-meter",
   project_version: "2026.8.0", importable: true, configuration: null,

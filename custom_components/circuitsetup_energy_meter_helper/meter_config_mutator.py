@@ -432,8 +432,8 @@ def build_meter_configuration_mutation(
         # Server-derived from the source-bound inventory, never a client acknowledgement.
         preserved_gain_channels=frozenset(new.channel
             for old, new in zip(previous.channels, requested.channels, strict=True)
-            if (old.model_id, old.custom_gain_ct, old.custom_label, old.reporting_multiplier)
-            == (new.model_id, new.custom_gain_ct, new.custom_label, new.reporting_multiplier)),
+            if (old.model_id, old.custom_gain_ct, old.reporting_multiplier)
+            == (new.model_id, new.custom_gain_ct, new.reporting_multiplier)),
         package_options=package_options,
         phase_channels={
             channel.channel: (channel.enabled, channel.reporting_multiplier)

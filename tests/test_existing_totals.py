@@ -379,7 +379,8 @@ def test_rename_legacy_custom_ct_preserves_gain_without_new_hardware_acknowledge
         assert not original.channels[0].burden_output_acknowledged
         requested = replace(original, meter=replace(original.meter,
             electrical_system=ElectricalSystem.SPLIT_PHASE_120_240),
-            channels=tuple(replace(item, name=f"Renamed CT{item.channel}") for item in original.channels))
+            channels=tuple(replace(item, name=f"Renamed CT{item.channel}",
+                custom_label=f"Renamed CT{item.channel}") for item in original.channels))
         result = await workflow._async_preview_meter_configuration(plan, requested)
         proposed = ESPHomeConfigDocument.parse(workflow.transactions._transaction(result.transaction_id).plan.proposed_content)
         before = ESPHomeConfigDocument.parse(source)
@@ -387,7 +388,7 @@ def test_rename_legacy_custom_ct_preserves_gain_without_new_hardware_acknowledge
             assert proposed.substitutions[f"current_cal_ct{item.channel}"].value == before.substitutions[f"current_cal_ct{item.channel}"].value
             assert proposed.substitutions[f"ct{item.channel}_name"].value == f"Renamed CT{item.channel}"
         assert builder.remote_content == source
-        for fields in ({"custom_gain_ct": 12345}, {"reporting_multiplier": 2.0}, {"custom_label": "Different CT"}):
+        for fields in ({"custom_gain_ct": 12345}, {"reporting_multiplier": 2.0}):
             workflow, plan, _, _, _ = await _persisted_totals_workflow(source, topology=_inventory(source).topology)
             changed = replace(requested, channels=(replace(requested.channels[0], **fields), *requested.channels[1:]))
             with pytest.raises(ValueError, match="acknowledgement"):

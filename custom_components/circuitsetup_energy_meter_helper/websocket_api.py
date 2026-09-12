@@ -445,7 +445,7 @@ class EntryWebsocketController:
             return self.provisioning.snapshot.devices
         if operation == "list_existing_meters":
             return await self.provisioning.async_list_existing_meters(
-                self.esphome_entry_id
+                self.esphome_entry_id, msg.get("after_entry_id")
             )
         workflow = self.workflow
         if operation == "get_topology" and workflow is not None:
@@ -1124,6 +1124,8 @@ def _schema(command: str) -> Any:
         vol.Required("type"): command,
         vol.Required("entry_id"): _ID,
     }
+    if operation == "list_existing_meters":
+        schema[vol.Optional("after_entry_id")] = _ID
     if operation == "set_installer_intent":
         schema |= {
             vol.Required("addon_count"): vol.All(int, vol.Range(min=0, max=6)),

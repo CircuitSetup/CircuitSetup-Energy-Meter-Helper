@@ -994,7 +994,20 @@ export class HelperApi {
 
   public setupStatus = () => this.call("setup_status", (value) => setup(value, "setup_status"));
   public listMeters = () => this.call("list_meters", (value) => { array(value, "list_meters").forEach((item) => device(item, "list_meters")); return value as DiscoveredDevice[]; });
-  public listExistingMeters = () => this.call("list_existing_meters", (value) => array(value, "list_existing_meters", 32).map((item) => existingDevice(item, "list_existing_meters")));
+  public async listExistingMeters(): Promise<ExistingDeviceCandidate[]> {
+    const candidates: ExistingDeviceCandidate[] = [];
+    let after = "";
+    for (;;) {
+      const page = await this.call("list_existing_meters", (value) => array(value, "list_existing_meters", 32)
+        .map((item) => existingDevice(item, "list_existing_meters")), after ? { after_entry_id: after } : {});
+      for (const candidate of page) {
+        if (candidate.entry_id <= after) throw new Error("list_existing_meters page is out of order");
+        after = candidate.entry_id;
+        candidates.push(candidate);
+      }
+      if (page.length < 32) return candidates;
+    }
+  }
   public inspectExistingMeter = (deviceId: string) =>
     this.call("inspect_existing_meter", (value) => existingInspection(value, "inspect_existing_meter"), { device_id: deviceId });
   public getTopology = (deviceId: string) =>

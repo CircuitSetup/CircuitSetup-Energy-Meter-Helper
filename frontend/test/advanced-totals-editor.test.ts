@@ -14,7 +14,7 @@ const total = (aggregate_id: string, name: string, sources: TotalSource[] = []):
 let container: HTMLDivElement;
 afterEach(() => { container?.remove(); vi.restoreAllMocks(); });
 
-function mount(aggregates = [total("home", "Home")], writable = true, fresh = true, preview: TotalGraphPreview | null = null, automaticSourcesFresh = fresh) {
+function mount(aggregates = [total("home", "Home")], writable = true, fresh = true, preview: TotalGraphPreview | null = null, automaticSourcesFresh = fresh, saved = false) {
   const response = meterResponse();
   response.configuration.aggregates = aggregates;
   const base = response.totals.native_sources[0]!;
@@ -29,9 +29,10 @@ function mount(aggregates = [total("home", "Home")], writable = true, fresh = tr
   response.totals.automatic_candidates = [candidate];
   response.totals.automatic_totals = [{ candidate, enabled: true, outputs: candidate.recommended_outputs }];
   let configuration = response.configuration;
+  const existingConfiguration = saved ? structuredClone(configuration) : null;
   container = document.createElement("div"); document.body.append(container);
   const update = vi.fn((next: typeof configuration) => { configuration = next; draw(); });
-  const draw = () => render(advancedTotalsEditor(configuration, new Map(), update, writable, "unmanaged_total_present", response.totals, preview, fresh, automaticSourcesFresh), container);
+  const draw = () => render(advancedTotalsEditor(configuration, new Map(), update, writable, "unmanaged_total_present", response.totals, preview, fresh, automaticSourcesFresh, existingConfiguration), container);
   draw();
   return { response, update, draw, configuration: () => configuration };
 }
@@ -150,15 +151,26 @@ it("names children becoming independent when deleting a parent and preserves the
   expect(state.configuration().aggregates).toEqual([total("child", "Child", [ct(1)])]);
 });
 
-it("shows the generated sensor ID while keeping the stable aggregate identity", () => {
-  const state = mount([total("opaque-id", "Friendly name", [ct(1)])]);
-  expect(card("Friendly name")?.querySelector(".aggregate-id code")?.textContent ?? "").toBe("friendlyName");
+it("shows the actual total ID across renames", () => {
+  const state = mount([total("opaque-id", "Friendly name", [ct(1)])], true, true, null, true, true);
+  expect(card("Friendly name")?.querySelector(".aggregate-id code")?.textContent ?? "").toBe("opaque-id");
   expect(card("Friendly name")?.querySelector("details")?.textContent ?? "").not.toContain("Advanced details");
   expect(card("Friendly name")?.querySelector("legend")?.textContent).toBe("Friendly name");
   const name = input("opaque-id aggregate name")!;
   name.value = "Renamed"; name.dispatchEvent(new Event("input"));
   expect(state.configuration().aggregates[0]!.aggregate_id).toBe("opaque-id");
-  expect(card("Renamed")?.querySelector(".aggregate-id code")?.textContent).toBe("renamed");
+  expect(card("Renamed")?.querySelector(".aggregate-id code")?.textContent).toBe("opaque-id");
+  expect(card("Renamed")?.querySelector(".proposed-sensor-id")).toBeNull();
+});
+
+it("labels the name-derived sensor prefix as proposed only for a new total", () => {
+  const state = mount([], true, true, null, true, true);
+  container.querySelector<HTMLButtonElement>('[data-action="add-aggregate"]')!.click();
+  expect(card("Aggregate total 1")?.querySelector(".proposed-sensor-id code")?.textContent).toBe("aggregateTotal1");
+  const name = input("aggregate-1 aggregate name")!;
+  name.value = "Dryer"; name.dispatchEvent(new Event("input"));
+  expect(card("Dryer")?.querySelector(".proposed-sensor-id")?.textContent).toBe("Proposed sensor ID prefix: dryer");
+  expect(card("Dryer")?.querySelector(".aggregate-id code")?.textContent).toBe(state.configuration().aggregates[0]!.aggregate_id);
 });
 
 it("lays out CT choices in physical board order", () => {

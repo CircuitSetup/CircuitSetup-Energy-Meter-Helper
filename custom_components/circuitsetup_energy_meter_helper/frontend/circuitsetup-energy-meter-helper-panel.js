@@ -1584,7 +1584,6 @@ class HelperApi {
       array(value, "list_meters").forEach((item) => device(item, "list_meters"));
       return value;
     });
-    this.listExistingMeters = () => this.call("list_existing_meters", (value) => array(value, "list_existing_meters", 32).map((item) => existingDevice(item, "list_existing_meters")));
     this.inspectExistingMeter = (deviceId) => this.call("inspect_existing_meter", (value) => existingInspection(value, "inspect_existing_meter"), { device_id: deviceId });
     this.getTopology = (deviceId) => this.call("get_topology", (value) => topologyResponse(value, "get_topology"), { device_id: deviceId });
     this.getCtInventory = (deviceId) => this.call("get_ct_inventory", (value) => ctInventory(value, "get_ct_inventory"), { device_id: deviceId });
@@ -1804,6 +1803,19 @@ class HelperApi {
       HelperApi.assertPublicPayload(message, TRANSACTION_OPERATIONS.has(operation));
       callback(validator(message));
     }, { type: `${PREFIX}${operation}`, entry_id: this.entryId, ...data });
+  }
+  async listExistingMeters() {
+    const candidates = [];
+    let after = "";
+    for (; ; ) {
+      const page = await this.call("list_existing_meters", (value) => array(value, "list_existing_meters", 32).map((item) => existingDevice(item, "list_existing_meters")), after ? { after_entry_id: after } : {});
+      for (const candidate of page) {
+        if (candidate.entry_id <= after) throw new Error("list_existing_meters page is out of order");
+        after = candidate.entry_id;
+        candidates.push(candidate);
+      }
+      if (page.length < 32) return candidates;
+    }
   }
 }
 function generatedTotalId(name) {
@@ -2219,7 +2231,7 @@ function automaticTotalsSection(configuration, totals, writable, update, existin
       changeOutput(key, input.checked);
     }} />${label}</label>`;
     return b`<fieldset class="automatic-total-card"><legend>${resolved.candidate.name}</legend>
-        <p class="aggregate-id">ID: <code>${generatedTotalId(resolved.candidate.name)}</code></p>
+        <p class="aggregate-id">Total ID: <code>${resolved.candidate.aggregate_id}</code></p>
         <p>Sources: ${sources}</p><p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
         ${parents.length ? b`<p>Feeds into: ${parents.map((parent) => parent.name).join(" and ")}</p>` : ""}
         <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${resolved.candidate.name} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>
@@ -2412,7 +2424,8 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
       }
       patch(aggregate, { name: input.value });
     }} /></label>
-            <p class="aggregate-id">ID: <code>${generatedTotalId(aggregate.name)}</code></p>
+            <p class="aggregate-id">Total ID: <code>${aggregate.aggregate_id}</code></p>
+            ${existingConfiguration && !existingConfiguration.aggregates.some((item) => item.aggregate_id === aggregate.aggregate_id) ? b`<p class="proposed-sensor-id">Proposed sensor ID prefix: <code>${generatedTotalId(aggregate.name)}</code></p>` : A}
           </div>
           <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
             @change=${(event) => {

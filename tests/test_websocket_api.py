@@ -897,6 +897,10 @@ def test_existing_meter_listing_omits_the_controller_binding() -> None:
         )
 
         assert [candidate.entry_id for candidate in result] == ["other"]
+        result = await controller.async_call(
+            f"{DOMAIN}/list_existing_meters", {"after_entry_id": "other"}, None
+        )
+        assert result == ()
         await controller.async_close()
 
     asyncio.run(run())

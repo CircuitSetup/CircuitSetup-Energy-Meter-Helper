@@ -149,7 +149,9 @@ export function advancedTotalsEditor(
         <div class="aggregate-fields">
           <div class="aggregate-name-field"><label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
             @input=${(event: Event) => { const input = event.target as HTMLInputElement; if (!writable) { input.value = aggregate.name; return; } patch(aggregate, { name: input.value }); }} /></label>
-            <p class="aggregate-id">ID: <code>${generatedTotalId(aggregate.name)}</code></p>
+            <p class="aggregate-id">Total ID: <code>${aggregate.aggregate_id}</code></p>
+            ${existingConfiguration && !existingConfiguration.aggregates.some((item) => item.aggregate_id === aggregate.aggregate_id)
+              ? html`<p class="proposed-sensor-id">Proposed sensor ID prefix: <code>${generatedTotalId(aggregate.name)}</code></p>` : nothing}
           </div>
           <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
             @change=${(event: Event) => { const input = event.target as HTMLSelectElement; if (!writable || !roles.includes(input.value as typeof roles[number])) { input.value = aggregate.role; return; } patch(aggregate, { role: input.value as CircuitAggregate["role"] }); }}>

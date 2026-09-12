@@ -212,9 +212,9 @@ class ProvisioningCoordinator:
         return self.snapshot
 
     async def async_list_existing_meters(
-        self, exclude_device_id: str | None = None
+        self, exclude_device_id: str | None = None, after_entry_id: str | None = None
     ) -> tuple[ExistingDeviceCandidate, ...]:
-        """List ESPHome identities for the user-requested inspection path."""
+        """List a bounded page of ESPHome identities in stable entry-ID order."""
         return tuple(
             existing_device_candidate(entry)
             for entry in sorted(
@@ -222,7 +222,8 @@ class ProvisioningCoordinator:
                 key=lambda item: str(getattr(item, "entry_id", "")),
             )
             if getattr(entry, "entry_id", None) != exclude_device_id
-        )
+            and (after_entry_id is None or entry.entry_id > after_entry_id)
+        )[:32]
 
     def _device(
         self, entry: Any, project_name: str, listing: Mapping[str, Any] | None
