@@ -34,6 +34,8 @@ export function meterSettingsStep(
 ): TemplateResult {
   const multiReference = draft.voltage_references.length > 1;
   const primaryReference = draft.voltage_references[0]!;
+  const fixedNominalVoltage = draft.electrical_system === "split_phase_120_240" ? 120
+    : draft.electrical_system === "single_phase_230" ? 230 : null;
   const valid = profileConfirmed && Boolean(draft.friendly_name.trim()) && draft.voltage_references.every((reference) =>
     reference.label.trim() && reference.phase_label.trim() && Number.isFinite(reference.nominal_voltage_v)
       && reference.nominal_voltage_v >= 1 && reference.nominal_voltage_v <= 600
@@ -108,6 +110,7 @@ export function meterSettingsStep(
           ${catalog.presets.map((preset) => html`<option value=${preset.model_id}>${preset.label}</option>`)}
           <option value="custom">Custom starting gain</option>
           ${primaryReference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === primaryReference.transformer_model_id) ? html`<option value=${primaryReference.transformer_model_id}>${primaryReference.transformer_model_id}</option>` : ""}</select></label>
+        ${fixedNominalVoltage === null ? nothing : html`<p class="fixed-nominal-voltage">Nominal voltage: ${fixedNominalVoltage} V (fixed for this electrical system).</p>`}
       </div>
       ${intervalImpact(draft.update_interval_s) ? html`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : nothing}
       <h3>Voltage references</h3>

@@ -1,4 +1,4 @@
-import type { CircuitAggregate, TotalSource, TotalsInventory } from "./types";
+import type { CircuitAggregate, EnergyMode, TotalOutputSettings, TotalSource, TotalsInventory } from "./types";
 
 export function generatedTotalId(name: string): string {
   const words = name.match(/[A-Z]+(?=[A-Z][a-z]|[^a-zA-Z]|$)|[A-Z]?[a-z]+|[0-9]+/g) ?? [];
@@ -7,6 +7,21 @@ export function generatedTotalId(name: string): string {
     : `${word[0]!.toUpperCase()}${word.slice(1).toLowerCase()}`).join("") || "total";
   if (/^\d/.test(stem)) stem = `total${stem}`;
   return stem;
+}
+
+export function generatedTotalSensorIds(name: string, energyMode: EnergyMode, outputs: TotalOutputSettings): string[] {
+  const stem = generatedTotalId(name);
+  const ids = outputs.watts || outputs.kwh ? [`${stem}Watts`] : [];
+  if (outputs.amps) ids.push(`${stem}Amps`);
+  if (energyMode === "bidirectional" && (outputs.watts || outputs.kwh)) {
+    ids.push(`${stem}ExportWatts`);
+    if (outputs.kwh) ids.push(`${stem}ExportEnergy`);
+    ids.push(`${stem}ImportWatts`);
+    if (outputs.kwh) ids.push(`${stem}ImportEnergy`);
+  } else if (outputs.kwh && energyMode !== "none") {
+    ids.push(`${stem}Energy`);
+  }
+  return ids;
 }
 
 export function derivedParentId(aggregateId: string, aggregates: readonly CircuitAggregate[]): string | null {

@@ -221,8 +221,9 @@ def _existing_circuit_suggestions(
     hidden_ids = {item.candidate_id for item in hidden}
     configured = {item.candidate_id for item in configuration.automatic_totals}
     saved_outputs = {item.candidate_id: item.outputs for item in previous}
+    saved_names = {item.candidate_id: item.name for item in previous}
     return replace(configuration, automatic_totals=(*configuration.automatic_totals, *(
-        AutomaticTotalSettings(item.candidate_id, False, saved_outputs.get(item.candidate_id, item.recommended_outputs))
+        AutomaticTotalSettings(item.candidate_id, False, saved_outputs.get(item.candidate_id, item.recommended_outputs), saved_names.get(item.candidate_id))
         for item in hidden if item.candidate_id not in configured
     ))), tuple(item for item in candidates if item.candidate_id not in hidden_ids)
 

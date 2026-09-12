@@ -1207,7 +1207,8 @@ def _name_total_sensors(body: str, requested: MeterConfigurationRequest, documen
     existing = {item.get("id") for item in _managed_sensor_items(block.content, document.sensor_item_indent)} if block else set()
     generated = {item.get("id") for item in _managed_sensor_items(body, 2) if "platform" in item}
     mapping = {}
-    for aggregate in requested.aggregates:
+    aggregates = (*requested.aggregates, *(item.candidate for item in enabled_automatic_totals(requested)))
+    for aggregate in aggregates:
         words = re.findall(r"[A-Z]+(?=[A-Z][a-z]|[^a-zA-Z]|$)|[A-Z]?[a-z]+|[0-9]+", aggregate.name)
         stem = "".join(word.lower() if index == 0 else word.title() for index, word in enumerate(words)) or "total"
         if stem[0].isdigit():
@@ -1282,7 +1283,11 @@ def _render_aggregates(
             roles = {str(channel.channel): channel.role.value for channel in configuration.channels if channel.channel in source_channels}
             roles.update({str(channel.channel): channel.role.value for channel in configuration.channels
                 if channel.enabled and channel.role is CircuitRole.SOLAR})
-            settings = [{"candidate_id": resolved.candidate.candidate_id, "enabled": resolved.enabled, "outputs": _serialize_outputs(resolved.outputs)}
+            setting_by_id = {setting.candidate_id: setting for setting in configuration.automatic_totals}
+            settings = [{"candidate_id": resolved.candidate.candidate_id, "enabled": resolved.enabled, "outputs": _serialize_outputs(resolved.outputs),
+                **({"name": resolved.candidate.name}
+                    if setting_by_id.get(resolved.candidate.candidate_id) is not None
+                    and setting_by_id[resolved.candidate.candidate_id].name is not None else {})}
                 for resolved in resolve_automatic_totals(candidates, configuration.automatic_totals)]
             metadata = urlsafe_b64encode(json.dumps({"roles": roles, "settings": settings}, separators=(",", ":"), sort_keys=True).encode()).decode().rstrip("=")
             body = f"  # csemh-automatic-totals: {metadata}\n" + body

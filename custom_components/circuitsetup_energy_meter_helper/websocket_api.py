@@ -1531,6 +1531,7 @@ _METER_CONFIGURATION_SCHEMA = vol.Schema(
         vol.Required("automatic_totals"): vol.All([vol.Schema({
             vol.Required("candidate_id"): _ID, vol.Required("enabled"): bool,
             vol.Required("outputs"): _TOTAL_OUTPUTS_SCHEMA,
+            vol.Optional("name"): vol.All(str, vol.Length(min=1, max=64)),
         }, extra=vol.PREVENT_EXTRA)], vol.Length(max=_MAX_ITEMS)),
         vol.Optional("totals_change_intent"): _TOTALS_CHANGE_INTENT_SCHEMA,
         vol.Required("aggregates"): vol.All(
@@ -1618,7 +1619,7 @@ def _meter_configuration_request(
             tuple(BoardTotalSettings(board["board_index"], _parse_total_outputs(board["outputs"]))
                   for board in configuration["default_totals"]["boards"]),
         ),
-        tuple(AutomaticTotalSettings(setting["candidate_id"], setting["enabled"], _parse_total_outputs(setting["outputs"]))
+        tuple(AutomaticTotalSettings(setting["candidate_id"], setting["enabled"], _parse_total_outputs(setting["outputs"]), setting.get("name"))
               for setting in configuration["automatic_totals"]),
         tuple(_parse_advanced_total(aggregate) for aggregate in configuration["aggregates"]),
         tuple(configuration["power_quality"]),
@@ -1784,7 +1785,10 @@ def _canonical_server_change_path(key: str) -> str | None:
 
 
 def _dataclass_mapping(value: Any) -> dict[str, Any]:
-    return {field.name: getattr(value, field.name) for field in fields(value)}
+    mapping = {field.name: getattr(value, field.name) for field in fields(value)}
+    if isinstance(value, AutomaticTotalSettings) and value.name is None:
+        mapping.pop("name", None)
+    return mapping
 
 
 def _check_payload_size(value: Any) -> None:

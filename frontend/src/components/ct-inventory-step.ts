@@ -1,4 +1,5 @@
 import { html, nothing, type TemplateResult } from "lit";
+import { live } from "lit/directives/live.js";
 import type { ChannelSettings, CircuitAggregate, CircuitRole, CtChange, CtInventory, CtPreset, MeterConfiguration, MeterConfigurationRequest, TotalsInventory } from "../types";
 import { derivedParentId, reparentAggregate } from "../total-graph";
 import { moveTab } from "./tab-keyboard";
@@ -63,6 +64,7 @@ export function ctInventoryStep(
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
   const referenceByGroup = new Map(configuration?.meter.voltage_references.flatMap((reference) =>
     reference.group_keys.map((group) => [group, reference] as const)) ?? []);
+  const preserveNamedAutomaticDraft = configuration?.automatic_totals.some((item) => item.name !== undefined) === true;
   const patchChannel = (channel: number, patch: Partial<ChannelSettings>) => configuration && updateConfiguration({ ...configuration,
     channels: configuration.channels.map((item) => item.channel === channel ? { ...item, ...patch } : item) });
   return html`
@@ -107,7 +109,7 @@ export function ctInventoryStep(
                   @change=${(event: Event) => (event.target as HTMLInputElement).checked
                     ? patchChannel(channel.channel, { enabled: true, role: circuit.role === "unused" ? "branch" : circuit.role })
                     : disableChannel(channel.channel)} /></label>` : html`<span role="cell"><span class="mobile-label">Used</span>—</span>`}
-                <label role="cell"><span class="mobile-label">Circuit name</span><input aria-label=${`CT${channel.channel} name`} .value=${draft.name}
+                <label role="cell"><span class="mobile-label">Circuit name</span><input aria-label=${`CT${channel.channel} name`} .value=${live(draft.name)}
                   @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label>
                 ${circuit ? html`<label role="cell"><span class="mobile-label">Circuit type</span><select aria-label=${`CT${channel.channel} role`} .value=${circuit.role} ?disabled=${!circuit.enabled}
                   @change=${(event: Event) => patchChannel(channel.channel, { role: (event.target as HTMLSelectElement).value as ChannelSettings["role"] })}>
@@ -173,7 +175,7 @@ export function ctInventoryStep(
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
       ${configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : nothing}
       ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState, meterInventory?.capabilities.reason_codes, existingConfiguration) : nothing}
-      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals ? totals : null, automaticTotalsWritable, updateConfiguration, existingConfiguration) : nothing}
+      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals || preserveNamedAutomaticDraft ? totals : null, automaticTotalsWritable, updateConfiguration, existingConfiguration) : nothing}
       ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh, existingConfiguration) : nothing}
       ${reviewRequirements}
       <footer class="action-footer offset-footer">
@@ -217,6 +219,7 @@ export function circuitConfigurationIsValid(configuration: MeterConfigurationReq
       reparentAggregate(aggregate.aggregate_id, parent, configuration.aggregates);
     }
   } catch { return false; }
+  if (configuration.automatic_totals.some((item) => item.name !== undefined && !item.name.trim())) return false;
   return true;
 }
 

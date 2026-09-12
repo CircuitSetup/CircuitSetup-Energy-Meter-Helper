@@ -58,7 +58,6 @@ export const panelStyles = css`
   h3 { font-size: var(--ha-font-size-l, 16px); font-weight: var(--ha-font-weight-medium, 500); }
   p { color: var(--muted); }
   .step-content { max-width: 1320px; }
-  .ct-step { overflow-anchor: none; }
   fieldset { border: 0; margin: 0 0 26px; padding: 0; }
   legend { font-size: var(--ha-font-size-xl, 20px); font-weight: var(--ha-font-weight-medium, 500); }
   .name-mode { display: grid; gap: 8px; }
@@ -77,6 +76,7 @@ export const panelStyles = css`
   .connection-options .selected { border-color: var(--accent); }
   .connection-options .selected::before { border: 6px solid var(--accent); }
   .summary-band, .info-band, .success-band, .warning-band, .status-band { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .graph-status { min-height: calc(3.2em + 30px); }
   dl { margin: 0; }
   dl div { display: flex; gap: 12px; }
   dt { font-weight: var(--ha-font-weight-bold, 700); }
@@ -119,8 +119,9 @@ export const panelStyles = css`
   .technical-details { margin: 0; border: 0; border-radius: 0; }
   .mobile-label { display: none; }
   .ct-detail { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 32px; padding: 12px 20px; background: var(--surface-alt); border-top: 0; }
-  .ct-detail .ct-reporting-multiplier { display: grid; gap: 6px; }
-  .ct-reporting-multiplier dd { display: grid; gap: 6px; }
+  .ct-detail .ct-reporting-multiplier { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: start; gap: 6px 12px; }
+  .ct-reporting-multiplier dd { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .ct-reporting-multiplier dd select { width: auto; min-width: 6rem; }
   .aggregate-list { display: grid; gap: 16px; margin: 14px 0; }
   .default-totals { display: grid; gap: 12px; margin: 24px 0; }
   .default-totals h2, .default-totals p { margin: 0; }
@@ -251,5 +252,6 @@ export const panelStyles = css`
     .offset-step { padding-bottom: 84px; }
     .identity-strip, .confirmation-actions, .group-nav { align-items: stretch; flex-direction: column; }
     .evidence-table { display: block; overflow-x: auto; }
+    .graph-status { min-height: calc(4.8em + 30px); }
   }
 `;

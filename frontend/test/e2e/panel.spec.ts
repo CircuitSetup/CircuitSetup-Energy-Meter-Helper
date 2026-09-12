@@ -619,14 +619,24 @@ test("CT names suggest a two-pole total only after both legs are identified", as
   const suggestion = page.getByRole("switch", { name: "Create Dryer total", exact: true });
   await expect(suggestion).toBeVisible();
   await expect(suggestion).not.toBeChecked();
-  await suggestion.check();
+  const suggestedName = page.getByLabel("two-pole-ct3-ct4 suggested total name", { exact: true });
+  await expect(suggestedName).toHaveValue("Dryer");
+  const graphRequestsBeforeClear = (await fixture.state()).frames.filter((frame: Frame) => frame.type.endsWith("/preview_total_graph")).length;
+  await suggestedName.fill("");
+  await expect(suggestedName).toHaveValue("");
+  await expect.poll(async () => (await fixture.state()).frames.filter((frame: Frame) => frame.type.endsWith("/preview_total_graph")).length).toBe(graphRequestsBeforeClear);
+  await suggestedName.fill("Workshop");
+  const renamedSuggestion = page.getByRole("switch", { name: "Create Workshop total", exact: true });
+  await expect(renamedSuggestion).toBeVisible();
+  await expect(page.locator(".automatic-total-card").filter({ hasText: "Workshop" })).toContainText("workshopWatts");
+  await renamedSuggestion.check();
   await page.getByLabel("CT3 role", { exact: true }).selectOption("two_pole");
   await page.getByLabel("CT4 role", { exact: true }).selectOption("two_pole");
-  await expect(suggestion).toBeChecked();
+  await expect(renamedSuggestion).toBeChecked();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   const content = (await fixture.state()).proposed_content;
-  expect(content).toContain("id: csemh_auto_two_pole_ct3_ct4_power");
+  expect(content).toContain("id: workshopWatts");
   expect(content).not.toContain("_import_power");
   expect(content).not.toContain("_export_power");
 });
@@ -747,6 +757,49 @@ test("rapid role changes ignore a late automatic preview and gate Continue on th
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   const latest = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!.configuration as MeterConfigurationRequest;
   expect(latest.channels.filter((channel) => channel.role === "grid").map((channel) => channel.channel)).toEqual([1, 2, 3]);
+});
+
+test("CT name editing survives repeated delayed previews without moving the viewport", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { delayedGraph: true });
+  await openInventory(page);
+  await page.getByLabel("CT1 role", { exact: true }).selectOption("grid");
+  await page.getByLabel("CT2 role", { exact: true }).selectOption("grid");
+  await expect(page.getByRole("switch", { name: "Create Mains total", exact: true })).toBeVisible();
+
+  const name = page.getByLabel("CT1 name", { exact: true });
+  await name.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  const measure = () => name.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, left: rect.left, width: rect.width, height: rect.height, scrollY: window.scrollY };
+  });
+  const baseline = await measure();
+  expect(baseline.scrollY).toBeGreaterThan(0);
+  const completed = () => frames.filter((frame) => frame.type.endsWith("/preview_total_graph") && frame.response !== undefined).length;
+  await expect.poll(completed).toBeGreaterThan(0);
+  let previousCompleted = completed();
+  for (const value of ["Kitchen mains", "Kitchen mains revised", "Kitchen mains final"]) {
+    await name.fill(value);
+    const request = frames.filter((frame) => frame.type.endsWith("/preview_total_graph")).at(-1)!;
+    await expect.poll(() => request.response === undefined).toBe(true);
+    const during = await measure();
+    await expect.poll(() => request.response !== undefined).toBe(true);
+    await expect.poll(completed).toBeGreaterThan(previousCompleted);
+    previousCompleted = completed();
+    const after = await measure();
+    await expect(name).toBeFocused();
+    await expect(name).toHaveValue(value);
+    await expect(page.locator(".automatic-totals")).toContainText(`CT1 · ${value}`);
+    for (const position of [during, after]) {
+      expect(Math.abs(position.top - baseline.top)).toBeLessThan(2);
+      expect(Math.abs(position.left - baseline.left)).toBeLessThan(2);
+      expect(Math.abs(position.width - baseline.width)).toBeLessThan(2);
+      expect(Math.abs(position.height - baseline.height)).toBeLessThan(2);
+      expect(Math.abs(position.scrollY - baseline.scrollY)).toBeLessThan(2);
+    }
+  }
+  const requests = frames.filter((frame) => frame.type.endsWith("/preview_total_graph"))
+    .map((frame) => (frame.configuration as MeterConfigurationRequest).channels.find((channel) => channel.channel === 1)?.name);
+  expect(requests).toEqual(expect.arrayContaining(["Kitchen mains", "Kitchen mains revised", "Kitchen mains final"]));
 });
 
 test("referenced automatic disable uses native confirmation and repairs an invalid parent with keyboard controls", async ({ page }) => {
@@ -1184,6 +1237,28 @@ test("six-channel inventory routes canonical edits through Meter Settings and fu
   await expect(page.locator(".row-toggle")).toHaveCount(0);
   await page.locator("details.technical-details").nth(3).locator("summary").click();
   await expect(page.getByLabel("CT4 custom gain")).toHaveValue("27518");
+  const firstDetails = page.locator("details.technical-details").first();
+  await firstDetails.locator("summary").click();
+  await page.getByLabel("CT1 manual multiplier").check();
+  const desktopMultiplierLayout = await page.getByLabel("CT1 manual multiplier").evaluate((input) => {
+    const row = input.closest(".ct-reporting-multiplier")!;
+    const dt = row.querySelector("dt")!.getBoundingClientRect();
+    const dd = row.querySelector("dd")!.getBoundingClientRect();
+    const override = input.closest("label")!.getBoundingClientRect();
+    return { dtTop: dt.top, ddTop: dd.top, overrideTop: override.top };
+  });
+  expect(Math.abs(desktopMultiplierLayout.dtTop - desktopMultiplierLayout.ddTop)).toBeLessThan(2);
+  expect(Math.abs(desktopMultiplierLayout.ddTop - desktopMultiplierLayout.overrideTop)).toBeLessThan(2);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByLabel("CT1 manual multiplier").check();
+  const multiplierLayout = await page.getByLabel("CT1 multiplier").evaluate((select) => {
+    const row = select.closest(".ct-reporting-multiplier")!;
+    const dd = select.parentElement!;
+    return { display: getComputedStyle(dd).display, wrap: getComputedStyle(dd).flexWrap,
+      selectWidth: select.getBoundingClientRect().width, rowWidth: row.getBoundingClientRect().width };
+  });
+  expect(multiplierLayout).toMatchObject({ display: "flex", wrap: "wrap" });
+  expect(multiplierLayout.selectWidth).toBeLessThan(multiplierLayout.rowWidth);
   await page.getByLabel("Home Assistant labels only").check();
   await expect(page.getByLabel("CT1 model")).toBeDisabled();
   await expect(page.getByLabel("CT1 multiplier")).toBeDisabled();
@@ -1300,6 +1375,11 @@ test("validation failure exposes evidence and performs only a user-requested rol
   await expect(page.getByText("rolled_back", { exact: true })).toBeVisible();
   expect(operations(frames)).toEqual(expect.arrayContaining(["preview_meter_configuration", "apply_ct_config", "rollback_ct_config"]));
   expect(operations(frames)).not.toContain("compile_ct_config");
+  const configurationReads = frames.filter((frame) => frame.type.endsWith("/get_meter_configuration") && frame.response).length;
+  await page.locator(".action-footer").getByRole("button", { name: "Back", exact: true }).click();
+  await expect.poll(() => frames.filter((frame) => frame.type.endsWith("/get_meter_configuration") && frame.response).length)
+    .toBeGreaterThan(configurationReads);
+  await expect(page.locator("#step-heading")).toHaveText("Circuits & CTs");
 });
 
 test("compile failure blocks upload after a distinct apply acknowledgement", async ({ page }) => {

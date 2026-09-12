@@ -1049,7 +1049,7 @@ export class CircuitSetupPanel extends LitElement {
       }, "The review could not be cancelled. Recovery and captured values are retained.", () => this.ownsOperation(generation, api, deviceId));
       this.pendingAction = ""; this.requestUpdate(); return;
     }
-    if (current && current.state !== "previewed") {
+    if (current && !["previewed", "rolled_back"].includes(current.state)) {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
     }
@@ -1074,14 +1074,17 @@ export class CircuitSetupPanel extends LitElement {
     this.error = "";
     this.requestUpdate();
     const generation = ++this.operationGeneration;
-    let abandoned = current === null;
+    let abandoned = current === null || current?.state === "rolled_back";
     try {
-      if (current) {
+      if (current?.state === "previewed") {
         await api.abandonCtConfig(deviceId, current.transaction_id, current.source_sha256);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.clearSubscription("transaction");
         this.transaction = null;
         abandoned = true;
+      } else if (current?.state === "rolled_back") {
+        this.clearSubscription("transaction");
+        this.transaction = null;
       }
       if (calibrationPreparation) {
         this.clearSubscription("session");
@@ -1162,7 +1165,7 @@ export class CircuitSetupPanel extends LitElement {
     const voltageMismatch = fixedVoltage !== null
       && importedMeter.voltage_references.some((reference) => reference.nominal_voltage_v !== fixedVoltage);
     const existingReadOnly = this.journeyOrigin === "existing_meter";
-    const resolvedMeter = !existingReadOnly && voltageMismatch ? { ...importedMeter, voltage_references: importedMeter.voltage_references.map((reference) =>
+    const resolvedMeter = voltageMismatch ? { ...importedMeter, voltage_references: importedMeter.voltage_references.map((reference) =>
       ({ ...reference, nominal_voltage_v: fixedVoltage })) } : importedMeter;
     const seeded = { ...normalized, configuration: { ...normalized.configuration, meter: resolvedMeter } };
     this.verifiedMeterConfiguration = existingReadOnly && this.configurationMode === "helper_managed"
@@ -1185,8 +1188,8 @@ export class CircuitSetupPanel extends LitElement {
       power_quality: [...normalized.configuration.power_quality],
       status_fields: [...normalized.configuration.status_fields],
     };
-    this.canonicalConfigurationChanged = !existingReadOnly
-      && (this.packageOptionsTouched || (this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter));
+    this.canonicalConfigurationChanged = this.packageOptionsTouched
+      || (this.configurationMode !== "legacy_editable" && resolvedMeter !== importedMeter);
     this.meterSettingsDraft = { ...this.meterConfiguration.configuration.meter,
       authoritative: configuration.capabilities.configuration_authoritative, warnings: configuration.warnings };
     this.multiReferencePreparationAcknowledged = false;
@@ -1383,6 +1386,12 @@ export class CircuitSetupPanel extends LitElement {
   private async refreshTotalGraph(configuration: MeterConfigurationRequest): Promise<void> {
     if (!this.api || !this.selectedDeviceId || !this.meterConfiguration?.capabilities.configuration_authoritative
       || this.configurationMode === "runtime_only") { this.totalGraphState = "invalid"; return; }
+    if (configuration.automatic_totals.some((item) => item.name !== undefined && !item.name.trim())) {
+      this.totalGraphPreview = null;
+      this.totalGraphState = "invalid";
+      this.requestUpdate();
+      return;
+    }
     const api = this.api; const deviceId = this.selectedDeviceId; const generation = this.operationGeneration;
     const meter = this.meterConfiguration;
     const settings = new Map(this.issuedAutomaticSettings.map((item) => [item.candidate_id, item]));
@@ -1395,7 +1404,11 @@ export class CircuitSetupPanel extends LitElement {
       const preview = await api.previewTotalGraph(deviceId, meter.plan_id, meter.source_sha256,
         { ...configuration, automatic_totals: this.issuedAutomaticSettings });
       if (!current()) return;
-      const automatic = preview.automatic_totals.map((item) => ({ candidate_id: item.candidate.candidate_id, enabled: item.enabled, outputs: item.outputs }));
+      const automatic = preview.automatic_totals.map((item) => {
+        const previous = settings.get(item.candidate.candidate_id);
+        return { candidate_id: item.candidate.candidate_id, enabled: item.enabled, outputs: item.outputs,
+          ...(previous?.name !== undefined ? { name: item.candidate.name } : {}) };
+      });
       automatic.forEach((item) => settings.set(item.candidate_id, item));
       this.issuedAutomaticSettings = [...settings.values()];
       this.meterConfiguration = { ...meter, configuration: { ...configuration, automatic_totals: automatic },
@@ -1767,7 +1780,9 @@ export class CircuitSetupPanel extends LitElement {
           await this.refreshInstalledConfiguration();
         }
       }
-    }, action === "install" && this.calibrationHandoff
+    }, action === "rollback"
+      ? "Rollback could not be completed. The failed configuration remains active; retry Rollback or reload before navigating."
+      : action === "install" && this.calibrationHandoff
       ? "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values."
       : "This confirmation is stale. Reload the CT inventory before making another change.",
     () => this.ownsOperation(generation, api, deviceId));
@@ -2519,7 +2534,7 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.meterProfileConfirmed = value; this.requestUpdate(); },
       this.configurationMode ?? "helper_managed", this.packageCapabilities,
     );
-    if (this.step === "ct" && this.inventory) { const impact = this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null; const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0; return html`${impact ? html`<div class=${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? html`<strong>Warning: high entity count. </strong>` : nothing}${impact.enabled_channel_count} enabled channels; ${total} ${this.meterConfiguration?.totals.migration.native_visibility_resolved ? "Helper-managed measurements" : "confirmed Helper-managed measurements (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : this.meterConfiguration ? html`<p role="status">${this.totalGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</p>` : nothing}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
+    if (this.step === "ct" && this.inventory) { const impact = this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null; const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0; return html`${impact ? html`<div class=${`${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} graph-status`} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? html`<strong>Warning: high entity count. </strong>` : nothing}${impact.enabled_channel_count} enabled channels; ${total} ${this.meterConfiguration?.totals.migration.native_visibility_resolved ? "Helper-managed measurements" : "confirmed Helper-managed measurements (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : this.meterConfiguration ? html`<div class="info-band graph-status" role="status">${this.totalGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</div>` : nothing}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => { this.labelOnly = false; this.requestUpdate(); }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => { this.labelOnly = true; this.requestUpdate(); }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(this.inventory, this.board, this.drafts,
       (board) => { this.board = board; this.requestUpdate(); },
       (channel, patch) => this.updateDraft(channel, patch), () => this.back(), () => void this.continueFromCt(), this.labelOnly, this.pendingAction === "session",
       this.labelOnly ? null : this.meterConfiguration?.configuration ?? null, (configuration) => this.updateCircuitConfiguration(configuration), (channel) => this.disableCircuit(channel),

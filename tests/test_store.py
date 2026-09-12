@@ -442,6 +442,40 @@ def test_v15_roundtrip_preserves_graph_sources_and_stale_settings() -> None:
     )
 
 
+def test_named_automatic_total_survives_store_reload() -> None:
+    base = _configuration()
+    configuration = replace(
+        base,
+        channels=tuple(
+            replace(channel, role=CircuitRole.GRID)
+            if channel.channel <= 2 else channel
+            for channel in base.channels
+        ),
+        automatic_totals=(AutomaticTotalSettings(
+            "grid-ct1-ct2", True, TotalOutputSettings(True, False, True), "Dryer"
+        ),),
+        aggregates=(),
+    )
+
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+        await store.async_save_verified_meter_configuration(MAC, CONFIG_HASH, configuration)
+        assert await store.async_get_meter_configuration(MAC) == configuration
+        raw = backend.data["meters"][MAC]["meter_configuration"]  # type: ignore[index]
+        assert raw["automatic_totals"] == [{  # type: ignore[index]
+            "candidate_id": "grid-ct1-ct2",
+            "enabled": True,
+            "outputs": {"watts": True, "amps": False, "kwh": True},
+            "name": "Dryer",
+        }]
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     "field, value",
     (

@@ -141,6 +141,7 @@ class AutomaticTotalSettings:
     candidate_id: str
     enabled: bool
     outputs: TotalOutputSettings
+    name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,6 +357,8 @@ def validate_meter_configuration(
             raise ValueError("automatic totals must have unique IDs and boolean enabled")
         candidate_ids.add(automatic.candidate_id)
         _total_outputs(automatic.outputs, "automatic total output")
+        if automatic.name is not None:
+            _text(automatic.name, "automatic total name")
 
     aggregate_ids = {a.aggregate_id for a in request.aggregates}
     if len(aggregate_ids) != len(request.aggregates):

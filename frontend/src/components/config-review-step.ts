@@ -11,7 +11,11 @@ export function configReview(
   impact: ConfigurationImpact | null = null,
   totals: TotalsInventory | null = null,
 ): TemplateResult {
-  const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split("\n");
+  const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split(/\r?\n/);
+  const diffLine = (line: string) => {
+    const kind = line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : "context";
+    return { kind, value: kind === "context" ? line : line.slice(1) };
+  };
   const channels = configuration?.channels ?? [];
   const pqBoards = configuration?.power_quality.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
   const statusBoards = configuration?.status_fields.flatMap((enabled, board) => enabled ? [board + 1] : []) ?? [];
@@ -35,7 +39,7 @@ export function configReview(
         <ul class="status-list">${configuration.meter.voltage_references.map((reference) => html`<li>${reference.label} (${reference.phase_label}): ${reference.nominal_voltage_v} V · ${reference.transformer_model_id} · ${reference.group_keys.join(", ")}</li>`)}</ul>
         ${configuration.meter.voltage_references.length > 1 ? html`<p class=${configuration.multi_reference_preparation_acknowledged ? "info-band" : "warning-band"}>Multi-reference hardware preparation: ${configuration.multi_reference_preparation_acknowledged ? "acknowledged" : "not acknowledged"}.</p>` : ""}
         <h3>Channels</h3>
-        <ul class="status-list">${channels.map((channel) => html`<li>CT${channel.channel} ${channel.name}: ${channel.enabled ? `${channel.role.replaceAll("_", " ")} on ${channel.voltage_reference_id}; ${channel.model_id || "no model"} × ${channel.reporting_multiplier}; burden ${channel.burden_output_acknowledged ? "acknowledged" : "not acknowledged"}` : "unused"}</li>`)}</ul>
+        <ul class="status-list">${channels.map((channel) => html`<li>CT${channel.channel} ${channel.name}: ${channel.enabled ? `${channel.role.replaceAll("_", " ")} on ${channel.voltage_reference_id}; ${channel.model_id || "no model"} × ${channel.reporting_multiplier}` : "unused"}</li>`)}</ul>
         <h3>Default meter totals</h3>
         <ul><li>Overall meter total: ${outputs(configuration.default_totals.overall)}</li>${configuration.default_totals.boards.map((board) => html`<li>${board.board_index === 0 ? "Main Board" : `Add-on ${board.board_index}`} total: ${outputs(board.outputs)}</li>`)}</ul>
         <h3>Suggested circuit totals</h3>
@@ -61,7 +65,7 @@ export function configReview(
           <div><dt>Evidence</dt><dd>${status?.evidence.join(", ") || "No evidence recorded."}</dd></div>
           <div><dt>Upload trace</dt><dd>${status?.upload_progress.map((item) => `${item.stage}: ${item.percentage ?? "in progress"}`).join(", ") || "No upload trace."}</dd></div>
         </dl>
-        <pre class="config-diff" aria-label="Redacted substitution diff"><code>${diff.map((line, index) => html`<span class=${`diff-line ${line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : "context"}`}>${line}</span>${index < diff.length - 1 ? "\n" : ""}`)}</code></pre>
+        <pre class="config-diff" aria-label="Redacted substitution diff"><code>${diff.map((line) => { const item = diffLine(line); return html`<span class=${`diff-line ${item.kind}`}>${item.value}</span>`; })}</code></pre>
       </details>
     </section>
   `;

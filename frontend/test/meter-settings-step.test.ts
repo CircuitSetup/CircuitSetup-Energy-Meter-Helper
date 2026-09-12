@@ -83,6 +83,11 @@ describe("meterSettingsStep", () => {
     render(meterSettingsStep(standard, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
     expect(root.textContent).toContain("Reporting interval (default: 10 seconds)");
     expect(root.textContent).not.toContain("10 seconds: standard");
+    expect(root.textContent).toContain("Nominal voltage: 120 V");
+    expect(root.querySelector('[aria-label="main nominal voltage"]')).toBeNull();
+
+    render(meterSettingsStep({ ...standard, electrical_system: "single_phase_230" }, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    expect(root.textContent).toContain("Nominal voltage: 230 V");
     expect(root.querySelector('[aria-label="main nominal voltage"]')).toBeNull();
 
     render(meterSettingsStep({ ...standard, electrical_system: "custom" }, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);

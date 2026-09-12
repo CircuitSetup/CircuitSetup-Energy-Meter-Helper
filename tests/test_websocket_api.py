@@ -56,6 +56,8 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeApiSession,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+    AutomaticTotalSettings,
+    TotalOutputSettings,
     VoltageReferenceConfig,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
@@ -3192,6 +3194,17 @@ def test_redacted_diff_preserves_lines_without_weakening_terminal_or_secret_sani
     for unsafe in ("pass\nword=canary", "token:\ncanary", "secret\r\n=canary"):
         assert sanitize_payload({"redacted_diff": unsafe}) == {"redacted_diff": "<redacted>"}
     assert len(sanitize_payload({"redacted_diff": "x\n" * 20_000})["redacted_diff"].encode()) <= 32_768
+
+
+def test_optional_automatic_total_name_is_omitted_only_when_absent() -> None:
+    base = AutomaticTotalSettings("grid-ct1-ct2", False, TotalOutputSettings(True, False, True))
+    assert sanitize_payload(base) == {
+        "candidate_id": "grid-ct1-ct2", "enabled": False,
+        "outputs": {"watts": True, "amps": False, "kwh": True},
+    }
+    assert sanitize_payload(AutomaticTotalSettings(
+        "grid-ct1-ct2", False, TotalOutputSettings(True, False, True), "Dryer"
+    ))["name"] == "Dryer"
 
 
 def test_largest_total_review_remains_exact_or_visibly_truncated_over_transport() -> None:

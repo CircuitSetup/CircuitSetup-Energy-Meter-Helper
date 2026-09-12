@@ -41,7 +41,7 @@ export function packageOptions(
   return html`<section class="package-options" aria-labelledby="package-options-heading">
     <h2 id="package-options-heading">Optional meter fields</h2>
     <p>Choose which meter boards include additional firmware measurements.</p>
-    <p>Power quality adds reactive power, apparent power, and power factor for each used CT. Status diagnostics remain available through the native API and are disabled by default in Home Assistant.</p>
+    <p>Power quality adds reactive power, apparent power, and power factor for each used CT for the CircuitSetup Energy Analyzer. Status diagnostics remain available through the native API and are disabled by default in Home Assistant.</p>
     <table class="package-options-table">
       <thead><tr><th scope="col">Board</th>${FEATURES.map(([_feature, label]) => html`<th scope="col">${label}</th>`)}</tr></thead>
       <tbody>

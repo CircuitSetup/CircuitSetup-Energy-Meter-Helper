@@ -139,6 +139,7 @@ export interface AutomaticTotalSettings {
   candidate_id: string;
   enabled: boolean;
   outputs: TotalOutputSettings;
+  name?: string;
 }
 
 export interface MeterConfigurationRequest {

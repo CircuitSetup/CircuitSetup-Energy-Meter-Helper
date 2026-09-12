@@ -34,6 +34,7 @@ from .meter_configuration import (
     UpdateIntervalSeconds,
     VoltageLayout,
     VoltageReferenceConfig,
+    _text,
     validate_meter_configuration,
 )
 from .models import (
@@ -1126,7 +1127,8 @@ def suppress_duplicate_automatic_totals(
 ) -> MeterConfigurationRequest:
     """Carry implicit duplicate suppression through planning and metadata round trips."""
     candidates = {candidate.candidate_id for candidate in _source_aware_automatic_candidates(configuration, document)}
-    suppressed = tuple(AutomaticTotalSettings(candidate.candidate_id, False, candidate.recommended_outputs)
+    names = {item.candidate_id: item.name for item in configuration.automatic_totals}
+    suppressed = tuple(AutomaticTotalSettings(candidate.candidate_id, False, candidate.recommended_outputs, names.get(candidate.candidate_id))
         for candidate in automatic_total_candidates(configuration) if candidate.candidate_id not in candidates)
     return replace(configuration, automatic_totals=(*configuration.automatic_totals, *suppressed))
 
@@ -1153,9 +1155,11 @@ def _automatic_totals_metadata(
         raise ValueError("automatic metadata disagrees with stored roles")
     settings = []
     for item in data["settings"]:
-        if not isinstance(item, dict) or set(item) != {"candidate_id", "enabled", "outputs"} or type(item["candidate_id"]) is not str or type(item["enabled"]) is not bool:
+        if not isinstance(item, dict) or not {"candidate_id", "enabled", "outputs"} <= set(item) or not set(item) <= {"candidate_id", "enabled", "outputs", "name"} or type(item["candidate_id"]) is not str or type(item["enabled"]) is not bool:
             raise ValueError("invalid automatic setting metadata")
-        settings.append(AutomaticTotalSettings(item["candidate_id"], item["enabled"], _outputs(item["outputs"], "automatic outputs")))
+        if "name" in item:
+            _text(item["name"], "automatic total name")
+        settings.append(AutomaticTotalSettings(item["candidate_id"], item["enabled"], _outputs(item["outputs"], "automatic outputs"), item.get("name")))
     requested = replace(configuration, channels=channels, automatic_totals=tuple(settings))
     legacy_ids = {"auto-mains" for setting in settings if setting.candidate_id.startswith("grid-")}
     legacy_ids.update("auto-two-pole" for setting in settings if setting.candidate_id.startswith("two-pole-"))
@@ -1175,7 +1179,7 @@ def _automatic_totals_metadata(
             if item.aggregate_id in legacy_ids and item.sources == candidate.sources and item.role is candidate.role)
         suppressed = tuple(AutomaticTotalSettings(candidate.candidate_id, False, candidate.recommended_outputs)
             for candidate in candidates if candidate.candidate_id not in current_ids)
-        retained_settings = tuple(AutomaticTotalSettings(candidate.candidate_id, True, item.outputs)
+        retained_settings = tuple(AutomaticTotalSettings(candidate.candidate_id, True, item.outputs, next((setting.name for setting in configuration.automatic_totals if setting.candidate_id == candidate.candidate_id), None))
             for candidate in candidates for item in configuration.aggregates
             if item.aggregate_id in legacy_ids and item.sources == candidate.sources and item.role is candidate.role
             and not any(setting.candidate_id == candidate.candidate_id for setting in configuration.automatic_totals))
@@ -1191,7 +1195,7 @@ def _automatic_totals_metadata(
             item.aggregate_id == "auto-mains" and item.energy_mode is EnergyMode.BIDIRECTIONAL
             and candidate.energy_mode is EnergyMode.CONSUMPTION
             or item.aggregate_id == "auto-two-pole" and candidate.aggregate_id.startswith("auto-two-pole-ct")))
-    retained = tuple(item for item, _ in retained_pairs)
+    retained = tuple(replace(item, energy_mode=candidate.energy_mode) for item, candidate in retained_pairs)
     retained_ids = {item.aggregate_id for item in retained}
     retained_candidate_ids = {candidate.aggregate_id for _, candidate in retained_pairs}
     if retained:

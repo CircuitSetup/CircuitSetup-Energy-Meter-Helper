@@ -1,6 +1,7 @@
 import { html, type TemplateResult } from "lit";
+import { live } from "lit/directives/live.js";
 import { confirmTotalOutputRemoval } from "./total-output-removal";
-import { sourceFormula } from "../total-graph";
+import { generatedTotalSensorIds, sourceFormula } from "../total-graph";
 import type { AutomaticTotalSettings, MeterConfigurationRequest, TotalOutputSettings, TotalsInventory } from "../types";
 
 const automaticRoleLabels = [
@@ -28,30 +29,41 @@ export function automaticTotalsSection(
     ${totals.automatic_totals.length ? totals.automatic_totals.map((resolved) => {
       const saved = configuration.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id);
       const current = saved ?? { candidate_id: resolved.candidate.candidate_id, enabled: resolved.enabled, outputs: resolved.outputs };
+      const currentName = current.name ?? resolved.candidate.name;
+      const savedSensorIds = Boolean(existingConfiguration && (
+        existingConfiguration.automatic_totals.some((item) => item.candidate_id === resolved.candidate.candidate_id && item.enabled)
+        || existingConfiguration.aggregates.some((item) => item.aggregate_id === resolved.candidate.aggregate_id)
+      ));
+      const sensorIds = currentName.trim() ? generatedTotalSensorIds(currentName, resolved.candidate.energy_mode, current.outputs) : [];
       const published = existingConfiguration?.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id && item.enabled)?.outputs;
       const parents = configuration.aggregates.filter((aggregate) => aggregate.sources.some((source) => source.kind === "aggregate" && source.aggregate_id === resolved.candidate.aggregate_id));
       const sources = resolved.candidate.sources.map((source) => `CT${source.channel} · ${configuration.channels.find((channel) => channel.channel === source.channel)?.name ?? "Unnamed"}`).join(", ");
       const changeOutput = (key: keyof TotalOutputSettings, checked: boolean) => patch(resolved.candidate.candidate_id, current, { outputs: { ...current.outputs, [key]: checked } });
       const changeEnabled = (event: Event) => {
         const input = event.target as HTMLInputElement;
-        if (!writable || !confirmTotalOutputRemoval(resolved.candidate.name, published && Object.values(published).some(Boolean), input.checked)) { input.checked = current.enabled; return; }
+        if (!writable || !confirmTotalOutputRemoval(currentName, published && Object.values(published).some(Boolean), input.checked)) { input.checked = current.enabled; return; }
         if (input.checked || !parents.length) return patch(resolved.candidate.candidate_id, current, { enabled: input.checked });
         const names = parents.map((parent) => parent.name).join(" and ");
-        if (!window.confirm(`${names} uses ${resolved.candidate.name}. Remove it from ${names}?`)) { input.checked = true; return; }
+        if (!window.confirm(`${names} uses ${currentName}. Remove it from ${names}?`)) { input.checked = true; return; }
         patch(resolved.candidate.candidate_id, current, { enabled: false }, configuration.aggregates.map((aggregate) => ({ ...aggregate,
           sources: aggregate.sources.filter((source) => source.kind !== "aggregate" || source.aggregate_id !== resolved.candidate.aggregate_id) })));
       };
-      const control = (key: keyof TotalOutputSettings, label: string, disabled = false) => html`<label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`${resolved.candidate.name} ${label}`} .checked=${current.outputs[key]} ?disabled=${!writable || disabled}
+      const control = (key: keyof TotalOutputSettings, label: string, disabled = false) => html`<label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`${currentName} ${label}`} .checked=${current.outputs[key]} ?disabled=${!writable || disabled}
         @change=${(event: Event) => {
           const input = event.target as HTMLInputElement;
-          if (!writable || disabled || !confirmTotalOutputRemoval(`${resolved.candidate.name} ${label}`, published?.[key], input.checked)) { input.checked = current.outputs[key]; return; }
+          if (!writable || disabled || !confirmTotalOutputRemoval(`${currentName} ${label}`, published?.[key], input.checked)) { input.checked = current.outputs[key]; return; }
           changeOutput(key, input.checked);
         }} />${label}</label>`;
-      return html`<fieldset class="automatic-total-card"><legend>${resolved.candidate.name}</legend>
+      return html`<fieldset class="automatic-total-card"><legend>${currentName}</legend>
         <p class="aggregate-id">Total ID: <code>${resolved.candidate.aggregate_id}</code></p>
+        <label class="automatic-total-name">Name <input aria-label=${`${resolved.candidate.candidate_id} suggested total name`} maxlength="64" required .value=${live(currentName)} ?disabled=${!writable}
+          @input=${(event: Event) => patch(resolved.candidate.candidate_id, current, { name: (event.target as HTMLInputElement).value })} /></label>
+        ${savedSensorIds
+          ? html`<p class="aggregate-id">Existing sensor IDs are preserved; see the reviewed configuration for the exact firmware IDs.</p>`
+          : html`<p class="aggregate-id">Proposed sensor IDs: <code>${sensorIds.length ? sensorIds.join(", ") : currentName.trim() ? "none until an output is selected" : "enter a name first"}</code></p>`}
         <p>Sources: ${sources}</p><p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
         ${parents.length ? html`<p>Feeds into: ${parents.map((parent) => parent.name).join(" and ")}</p>` : ""}
-        <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${resolved.candidate.name} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>
+        <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${currentName} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>
         <div class="automatic-total-controls">${control("watts", "Watts")}${control("amps", "Amps")}${control("kwh", "kWh", resolved.candidate.energy_mode === "none")}</div>
       </fieldset>`;
     }) : html`<p class="info-band" role="status">No server-suggested totals are available for this circuit configuration.</p>`}

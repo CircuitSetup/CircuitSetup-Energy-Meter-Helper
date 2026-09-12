@@ -310,7 +310,7 @@ function advancedTotal(value: unknown, label: string, count = 42): Record<string
 }
 
 function automaticSettings(value: unknown, label: string): Record<string, unknown>[] {
-  const settings = array(value, label, 100).map((entry) => { const item = record(entry, label); exactKeys(item, ["candidate_id", "enabled", "outputs"], label); id(item.candidate_id, label); boolean(item.enabled, label); totalOutputs(item.outputs, label); return item; });
+  const settings = array(value, label, 100).map((entry) => { const item = record(entry, label); exactKeys(item, ["candidate_id", "enabled", "outputs", ...("name" in item ? ["name"] : [])], label); id(item.candidate_id, label); boolean(item.enabled, label); totalOutputs(item.outputs, label); optionalString(item.name, label); if (item.name === null) delete item.name; return item; });
   if (new Set(settings.map((item) => item.candidate_id)).size !== settings.length) throw new Error(`${label} response is invalid`);
   return settings;
 }

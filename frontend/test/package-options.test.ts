@@ -11,6 +11,7 @@ it("lays out mixed package state by board and applies each all-boards choice", (
   const changed = vi.fn();
   render(packageOptions({ power_quality: [false, false], status_fields: [true, false] }, changed), container);
 
+  expect(container.textContent).toContain("CircuitSetup Energy Analyzer");
   expect(Array.from(container.querySelectorAll("th"), (header) => header.textContent?.trim())).toEqual([
     "Board", "Power quality sensors", "Status fields", "All boards", "Main board", "Add-on 1",
   ]);
