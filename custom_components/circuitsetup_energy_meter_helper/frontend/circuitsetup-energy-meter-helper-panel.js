@@ -501,6 +501,8 @@ o$1?.({ LitElement: i$2 });
 const PREFIX = "circuitsetup_energy_meter_helper/";
 const PRIVATE_FIELD = /(?:^|_)(?:api_?key|contents?|credentials?|encryption(?:_key)?|logs?|noise_?psk|output_tail|password|prior(?:_content)?|proposed_content|raw(?:_logs?)?|secrets?|ssid|tokens?|yaml)(?:$|_)/i;
 const SECRET_VALUE = /(?:api[_ -]?key|password|secret|ssid|token)\s*[:=]/i;
+const DIFF_SECRET_VALUE = /(?:authorization|cookie|ssid)\s*[:=]|[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/i;
+const SAFE_REDACTED_DIFF_LINE = /^[ +\-]?\s*(?:[^:\r\n]+:\s*)?\[redacted\]\s*$/i;
 const CONTROL$1 = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const PROPERTY_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const SETUP_STATES = /* @__PURE__ */ new Set(["no_device", "installer_guide", "waiting_for_discovery", "device_discovered", "waiting_for_adoption", "reading_config", "topology_review", "ct_configuration", "config_review", "config_writing", "config_validating", "config_compiling", "waiting_for_install_confirmation", "config_installing", "waiting_for_reconnect", "ready_for_calibration", "failed"]);
@@ -1759,7 +1761,16 @@ class HelperApi {
     if (typeof value === "string") {
       const multiline = value.includes("\n") || value.includes("\r");
       const limit = field === "redacted_diff" ? 32768 : 4096;
-      if (value.length > limit || CONTROL$1.test(value) || SECRET_VALUE.test(value) || multiline && field !== "redacted_diff" || field === "redacted_diff" && value.includes("\r")) {
+      const unsafeDiff = field === "redacted_diff" && (() => {
+        let unsafe = false;
+        const unchecked = value.split("\n").map((line) => {
+          if (!SECRET_VALUE.test(line) && !DIFF_SECRET_VALUE.test(line)) return line;
+          unsafe ||= !SAFE_REDACTED_DIFF_LINE.test(line);
+          return "";
+        }).join("");
+        return unsafe || SECRET_VALUE.test(unchecked) || DIFF_SECRET_VALUE.test(unchecked);
+      })();
+      if (value.length > limit || CONTROL$1.test(value) || field !== "redacted_diff" && SECRET_VALUE.test(value) || unsafeDiff || multiline && field !== "redacted_diff" || field === "redacted_diff" && value.includes("\r")) {
         throw new Error(`unsafe string ${field || "value"} refused`);
       }
       return;

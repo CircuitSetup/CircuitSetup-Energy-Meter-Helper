@@ -980,11 +980,47 @@ opaque_ref: !secret abcTaggedExampleValue
         assert secret not in diff
     assert '"port": 6052' in diff
     assert '"port": 6053' in diff
-    assert "copy:" not in diff and "[redacted]" in diff
+    assert "copy: [redacted]" in diff
 
     malformed = _safe_source_diff("safe: abcNeutralValue\nbroken: [\n", "safe: xyzNeutralValue\nbroken: [\n")
     assert "abcNeutralValue" not in malformed and "xyzNeutralValue" not in malformed
     assert "[redacted]" in malformed
+
+
+def test_source_diff_redacts_credentials_and_keeps_field_names() -> None:
+    source = """wifi:
+  ssid: HomeNetwork
+  password: oldWifiValue
+http_request:
+  headers:
+    Authorization: BearerOldValue
+    Cookie: session=oldCookieValue
+package:
+  source: https://alice:oldUrlValue@example.invalid/repo
+"""
+    proposed = (
+        source.replace("oldWifiValue", "newWifiValue")
+        .replace("BearerOldValue", "BearerNewValue")
+        .replace("oldCookieValue", "newCookieValue")
+        .replace("oldUrlValue", "newUrlValue")
+    )
+
+    diff = _safe_source_diff(source, proposed)
+
+    for value in (
+        "HomeNetwork",
+        "oldWifiValue",
+        "newWifiValue",
+        "BearerOldValue",
+        "BearerNewValue",
+        "oldCookieValue",
+        "newCookieValue",
+        "oldUrlValue",
+        "newUrlValue",
+    ):
+        assert value not in diff
+    for key in ("ssid:", "password:", "Authorization:", "Cookie:", "source:"):
+        assert key in diff
 
 
 def test_preview_diff_marks_line_truncation() -> None:

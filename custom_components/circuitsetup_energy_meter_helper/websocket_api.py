@@ -191,6 +191,14 @@ _FORBIDDEN_VALUE = re.compile(
     r"secret|token)(?:\s*[:=]|\b)",
     re.IGNORECASE,
 )
+_DIFF_FORBIDDEN_VALUE = re.compile(
+    r"(?:authorization|cookie|ssid)\s*[:=]|"
+    r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@",
+    re.IGNORECASE,
+)
+_SAFE_REDACTED_DIFF_LINE = re.compile(
+    r"^[ +\-]?\s*(?:[^:\r\n]+:\s*)?\[redacted\]\s*$", re.IGNORECASE
+)
 _SHA256 = vol.All(str, vol.Match(r"^[0-9a-f]{64}$"))
 _SERVER_ID = vol.All(str, vol.Match(r"^[0-9a-f]{32}$"))
 _ID = vol.All(str, vol.Length(min=1, max=128))
@@ -1691,7 +1699,33 @@ def sanitize_payload(
         had_line_break = "\n" in value or "\r" in value
         flattened = sanitize_control_text(value)
         value = sanitize_control_text(value, preserve_line_breaks=True) if _field == "redacted_diff" else flattened
-        if _FORBIDDEN_VALUE.search(flattened) or _FORBIDDEN_VALUE.search(value):
+        if _field == "redacted_diff":
+            unchecked: list[str] = []
+            unsafe_value = False
+            for line in value.splitlines():
+                sensitive = (
+                    _FORBIDDEN_VALUE.search(line) is not None
+                    or _DIFF_FORBIDDEN_VALUE.search(line) is not None
+                )
+                if sensitive:
+                    unsafe_value = (
+                        unsafe_value
+                        or _SAFE_REDACTED_DIFF_LINE.fullmatch(line) is None
+                    )
+                    unchecked.append("")
+                else:
+                    unchecked.append(line)
+            unchecked_value = "".join(unchecked)
+            unsafe_value = unsafe_value or (
+                _FORBIDDEN_VALUE.search(unchecked_value) is not None
+                or _DIFF_FORBIDDEN_VALUE.search(unchecked_value) is not None
+            )
+        else:
+            unsafe_value = (
+                _FORBIDDEN_VALUE.search(flattened) is not None
+                or _FORBIDDEN_VALUE.search(value) is not None
+            )
+        if unsafe_value:
             return "<redacted>"
         if had_line_break and _field != "redacted_diff":
             return "<redacted>"

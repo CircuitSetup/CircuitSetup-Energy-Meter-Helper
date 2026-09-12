@@ -3194,6 +3194,21 @@ def test_redacted_diff_preserves_lines_without_weakening_terminal_or_secret_sani
     assert sanitize_payload({"detail": value}) == {"detail": "<redacted>"}
     for unsafe in ("pass\nword=canary", "token:\ncanary", "secret\r\n=canary"):
         assert sanitize_payload({"redacted_diff": unsafe}) == {"redacted_diff": "<redacted>"}
+    safe_fields = "-  password: [redacted]\n   ssid: [redacted]\n-    Authorization: [redacted]\n+    Cookie: [redacted]\n-  source: [redacted]"
+    assert sanitize_payload({"redacted_diff": safe_fields}) == {
+        "redacted_diff": safe_fields
+    }
+    for unsafe in (
+        "-  password: visible",
+        "-  ssid: HomeNetwork",
+        "-    Authorization: BearerVisible",
+        "-    Cookie: session=visible",
+        "-  source: https://alice:visible@example.invalid/repo",
+        "-  password: [redacted]\npass\nword=visible",
+    ):
+        assert sanitize_payload({"redacted_diff": unsafe}) == {
+            "redacted_diff": "<redacted>"
+        }
     assert len(sanitize_payload({"redacted_diff": "x\n" * 20_000})["redacted_diff"].encode()) <= 32_768
 
 

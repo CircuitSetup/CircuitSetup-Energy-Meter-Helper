@@ -2193,16 +2193,19 @@ def _validate_expected_sensor_entities(
 
 _DIFF_HUNK_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
 _DIFF_SENSITIVE_RE = re.compile(
-    r"(?:api[_ -]?key|credential|encryption[_ -]?key|noise[_ -]?psk|"
-    r"password|passphrase|secret|token|!secret)",
+    r"(?:api[_ -]?key|authorization|cookie|credential|encryption[_ -]?key|"
+    r"noise[_ -]?psk|password|passphrase|secret|ssid|token|!secret)",
     re.IGNORECASE,
+)
+_DIFF_URI_USERINFO_RE = re.compile(
+    r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@", re.IGNORECASE
 )
 _DIFF_BLOCK_SCALAR_RE = re.compile(r"(?:^|[ \t])[|>][1-9+-]*(?:[ \t]+#.*)?$")
 _DIFF_MAPPING_KEY_RE = re.compile(
     r"^(?P<indent>[ \t]*)(?:-[ \t]+)?(?P<key>[A-Za-z0-9_-]+|'[^']*'|\"[^\"]*\")[ \t]*:"
 )
 _DIFF_SENSITIVE_CONTEXT = frozenset(
-    {"api", "auth", "authentication", "credential", "credentials", "encryption", "private", "secret", "secrets", "tls"}
+    {"api", "auth", "authentication", "credential", "credentials", "encryption", "headers", "private", "secret", "secrets", "tls"}
 )
 
 
@@ -2267,6 +2270,7 @@ def _mark_sensitive_yaml_node(
     sensitive_lines: set[int],
     *,
     parent_sensitive: bool = False,
+    all_values_sensitive: bool = False,
 ) -> None:
     if _yaml_node_is_sensitive(node):
         _mark_yaml_node_lines(node, sensitive_lines)
@@ -2279,6 +2283,9 @@ def _mark_sensitive_yaml_node(
                 _mark_yaml_node_lines(value_node, sensitive_lines)
                 continue
             context_sensitive = key.casefold() in _DIFF_SENSITIVE_CONTEXT
+            if all_values_sensitive and not isinstance(value_node, MappingNode):
+                _mark_yaml_node_lines(value_node, sensitive_lines)
+                continue
             if context_sensitive and not isinstance(value_node, MappingNode):
                 _mark_yaml_node_lines(value_node, sensitive_lines)
                 continue
@@ -2286,11 +2293,16 @@ def _mark_sensitive_yaml_node(
                 value_node,
                 sensitive_lines,
                 parent_sensitive=parent_sensitive or context_sensitive,
+                all_values_sensitive=all_values_sensitive
+                or key.casefold() == "headers",
             )
     elif isinstance(node, SequenceNode):
         for child in node.value:
             _mark_sensitive_yaml_node(
-                child, sensitive_lines, parent_sensitive=parent_sensitive
+                child,
+                sensitive_lines,
+                parent_sensitive=parent_sensitive,
+                all_values_sensitive=all_values_sensitive,
             )
 
 
@@ -2309,7 +2321,12 @@ def _mark_sensitive_aliases(content: str, sensitive_lines: set[int]) -> None:
 
 def _yaml_node_is_sensitive(node: MappingNode | ScalarNode | SequenceNode) -> bool:
     tag = getattr(node, "tag", "")
-    return isinstance(tag, str) and _DIFF_SENSITIVE_RE.search(tag) is not None
+    return (
+        isinstance(tag, str) and _DIFF_SENSITIVE_RE.search(tag) is not None
+    ) or (
+        isinstance(node, ScalarNode)
+        and _DIFF_URI_USERINFO_RE.search(node.value) is not None
+    )
 
 
 def _sensitive_yaml_key(key: str, *, parent_sensitive: bool) -> bool:
@@ -2382,7 +2399,12 @@ def _diff_indent(line: str) -> int:
 
 def _clean_diff_line(line: str, prefix: str, sensitive: bool) -> str:
     if sensitive:
-        line = line[:_diff_indent(line)] + "[redacted]"
+        key = _DIFF_MAPPING_KEY_RE.match(line)
+        line = (
+            line[: key.end()] + " [redacted]"
+            if key is not None
+            else line[:_diff_indent(line)] + "[redacted]"
+        )
     else:
         line = "".join(
             character

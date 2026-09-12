@@ -1029,6 +1029,16 @@ describe("HelperApi", () => {
     }
     expect(() => HelperApi.assertPublicPayload({ detail: "ordinary safe whitespace" })).not.toThrow();
     expect(() => HelperApi.assertPublicPayload({ redacted_diff: "- old\n+ new" })).not.toThrow();
+    expect(() => HelperApi.assertPublicPayload({ redacted_diff:
+      "-  password: [redacted]\n   ssid: [redacted]\n-    Authorization: [redacted]\n+    Cookie: [redacted]\n-  source: [redacted]" })).not.toThrow();
+    for (const unsafe of [
+      "-  password: visible",
+      "-  ssid: HomeNetwork",
+      "-    Authorization: BearerVisible",
+      "-    Cookie: session=visible",
+      "-  source: https://alice:visible@example.invalid/repo",
+      "-  password: [redacted]\npass\nword=visible",
+    ]) expect(() => HelperApi.assertPublicPayload({ redacted_diff: unsafe })).toThrow("unsafe string");
     for (const key of ["safe\tkey", "api\tkey", "safe\nkey", "x".repeat(257)]) {
       expect(() => HelperApi.assertPublicPayload({ evidence: [{ [key]: "value" }] })).toThrow();
     }
