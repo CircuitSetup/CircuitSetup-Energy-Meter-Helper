@@ -39,12 +39,14 @@ jobs:
           if [[ "$base" == 0000000000000000000000000000000000000000 ]]; then
             changed_files="$(git show --format= --name-only "$head")"
           else
-            changed_files="$(git diff --name-only "$base" "$head")"
+            changed_files="$(git diff --no-renames --name-only "$base" "$head")"
           fi
 
           printf '%s\n' "$changed_files"
+          # Only YAML configuration inputs and their parsing/generation code need
+          # ESPHome validation and compilation. UI, HA plumbing, and tests do not.
           if printf '%s\n' "$changed_files" | grep -Eq \
-            '^(\.github/workflows/ci\.yml|custom_components/circuitsetup_energy_meter_helper/.*\.py|scripts/(generate_esphome_validation_configs|verify_firmware_contract)\.py|tests/test_firmware_.*\.py|pyproject\.toml)$'; then
+            '^(custom_components/circuitsetup_energy_meter_helper/(config_blocks|config_document|config_mutator|meter_config_mutator|meter_configuration|meter_inventory|total_graph|topology|voltage_gains|ct_catalog|voltage_transformer_catalog)\.py|(custom_components/|tests/fixtures/).*\.ya?ml|scripts/(generate_esphome_validation_configs|verify_firmware_contract)\.py)$'; then
             echo "firmware=true" >> "$GITHUB_OUTPUT"
           else
             echo "firmware=false" >> "$GITHUB_OUTPUT"
