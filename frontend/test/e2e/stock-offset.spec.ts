@@ -21,7 +21,7 @@ test("stock preparation installs before explicit run, retries only unfinished, f
   await page.locator('[data-action="configure-device"]').click();
   await expect(page.getByRole("heading", { name: /Optional offset calibration/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Run Stage 1 calibration", exact: true })).toBeDisabled();
-  await page.getByLabel("I acknowledge the private backup and reviewed zero-baseline installation.").check();
+  await page.getByLabel("I understand that this step creates a private backup and installs a temporary zero-offset configuration.").check();
   await page.getByRole("button", { name: "Review offset preparation", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Install offset preparation", exact: true })).toBeVisible();
   await page.reload();
@@ -36,12 +36,12 @@ test("stock preparation installs before explicit run, retries only unfinished, f
   await page.reload(); await page.locator('[data-action="configure-device"]').click();
   await expect(page.getByText("0/0, 0/0, 0/0", { exact: true })).toBeVisible();
   await page.getByLabel("I reviewed the evidence and confirm this retry.").check();
-  await page.getByLabel("I acknowledge the private backup and reviewed zero-baseline installation.").check();
+  await page.getByLabel("I understand that this step creates a private backup and installs a temporary zero-offset configuration.").check();
   await page.getByRole("button", { name: "Review unfinished-chip preparation", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Install offset preparation", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(page.getByRole("heading", { name: /Optional offset calibration/ })).toBeVisible();
-  await page.getByLabel("I acknowledge the private backup and reviewed zero-baseline installation.").check();
+  await page.getByLabel("I understand that this step creates a private backup and installs a temporary zero-offset configuration.").check();
   await page.getByRole("button", { name: "Review unfinished-chip preparation", exact: true }).click();
   await install(page);
   await runStage(page);

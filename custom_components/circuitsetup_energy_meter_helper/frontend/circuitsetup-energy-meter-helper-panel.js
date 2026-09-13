@@ -3461,11 +3461,11 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
           <h2>Optional offset calibration · Stage ${stage} · ${boardLabel(board)}</h2>
           <p>Offset calibration is optional and requires changing the power and wiring state as described below. ${stock ? "Captured values remain pending until reviewed configuration installation and selection are confirmed." : "Offset values remain stored in meter flash."}</p>
           ${stock ? b`<section class="measurement-evidence" aria-label="Offset preparation backup">
-            <h3>Backup and preparation</h3>
-            <p>${preparation?.backup_available ? "Private backup retained; captured results are preserved." : "A private backup is required before installing the selected zero baseline."}</p>
-            <p>Preparation requires exact saved/effective per-chip tables for Stage ${stage}. Missing evidence is unavailable, not zero. Saved-source labels alone do not authorize calibration.</p>
+            <h3>Why preparation is required</h3>
+            <p>Before calibration, the helper temporarily installs zero offsets for the selected chips so existing corrections do not affect the new measurements.</p>
+            <p>The helper first saves your current configuration and Stage ${stage} offset values in a private recovery backup. If any required value cannot be read, calibration remains blocked—unknown values are never treated as zero.</p>
             ${matching && preparation?.installed ? b`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review and install a fresh preparation for unfinished chips; retained values are not lost."}</p>` : A}
-            <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event) => stock.setBackup(event.target.checked)}> I acknowledge the private backup and reviewed zero-baseline installation.</label>
+            <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event) => stock.setBackup(event.target.checked)}> I understand that this step creates a private backup and installs a temporary zero-offset configuration.</label>
             <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
               @click=${stock.prepare}>${recovery ? "Review unfinished-chip preparation" : "Review offset preparation"}</button>
             ${attempted ? b`<p>This receipt was already attempted. Retry requires a new reviewed installation for only unfinished chips; completed values, including zeros, are retained.</p>` : A}
