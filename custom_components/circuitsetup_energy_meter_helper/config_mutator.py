@@ -1421,7 +1421,15 @@ def _reject_local_offset_overrides(
         aliases.add(meter_key)
         if meter_key in substitutions:
             aliases.add(substitutions[meter_key].value)
-    lines = ESPHomeConfigDocument.parse(content).code_lines
+    document = ESPHomeConfigDocument.parse(content)
+    lines = document.code_lines
+    if document.writable_sensor_span is None and any(
+        (mapping := _yaml_mapping(line)) is not None
+        and mapping[0] == 0
+        and mapping[2] == "sensor"
+        for line in lines
+    ):
+        raise ConfigMutationError("sensor block offsets are unresolved")
     offset_fields = {
         "enable_offset_calibration",
         "offset_voltage",
@@ -1436,10 +1444,12 @@ def _reject_local_offset_overrides(
                 raise ConfigMutationError(
                     "existing offset overrides are not safely writable"
                 )
-        item = re.match(r"(?P<indent> *)-\s+", line)
+        item = re.match(r"(?P<indent> *)-\s+(?P<rest>.*)$", line)
         if item is None:
             continue
         item_indent = len(item["indent"])
+        if item_indent == document.sensor_item_indent and item["rest"].lstrip().startswith(("!", "*", "&")):
+            raise ConfigMutationError("existing offset overrides are not safely writable")
         end = next(
             (
                 candidate
@@ -1455,6 +1465,14 @@ def _reject_local_offset_overrides(
             if (mapping := _yaml_mapping(lines[candidate])) is not None
         ]
         if not {mapping[2] for mapping in mappings}.intersection(offset_fields):
+            if any(
+                mapping[2] in {"phase_a", "phase_b", "phase_c"}
+                and mapping[3].strip().startswith(("!", "*", "&", "${"))
+                for mapping in mappings
+            ):
+                ids = [mapping for mapping in mappings if mapping[2] == "id"]
+                if len(ids) != 1 or _yaml_identifier(ids[0][3]) in aliases:
+                    raise ConfigMutationError("existing offset overrides are not safely writable")
             continue
         ids = [mapping for mapping in mappings if mapping[2] == "id"]
         if len(ids) != 1:

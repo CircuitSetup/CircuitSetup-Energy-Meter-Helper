@@ -465,11 +465,34 @@ class ESPHomeApiSession:
         *,
         offset_stage: Literal[1, 2],
         timeout: float = 5.0,
+        require_communication: bool = False,
+        expected_chip_count: int | None = None,
     ) -> dict[str, OffsetTableSnapshot | None]:
         """Capture one bounded fresh dump without depending on the public log ring."""
         if offset_stage not in (1, 2):
             raise ValueError("offset stage must be 1 or 2")
+        if type(require_communication) is not bool:
+            raise ValueError("communication evidence flag must be boolean")
+        if expected_chip_count is not None and (
+            type(expected_chip_count) is not int
+            or expected_chip_count < len(expected_instance_ids)
+            or not 1 <= expected_chip_count <= 14
+        ):
+            raise ValueError("invalid expected meter chip count")
         generation, captured = await self._async_offset_dump(timeout)
+        if require_communication:
+            parser = MeterCommunicationParser()
+            for item in captured:
+                parser.feed(item.line)
+            if parser.failed:
+                raise MeterCommunicationError(tuple(sorted(parser.failed_cs_pins)))
+            expected = (
+                len(expected_instance_ids)
+                if expected_chip_count is None
+                else expected_chip_count
+            )
+            if len(parser.checked_cs_pins) != expected:
+                raise TimeoutError("Meter chip communication evidence is incomplete")
         return parse_offset_table_snapshot(
             captured,
             connection_generation=generation,

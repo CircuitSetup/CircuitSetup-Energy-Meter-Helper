@@ -246,7 +246,12 @@ class OffsetTableSnapshot:
     instance_id: str
     offset_stage: Literal[1, 2]
     phase_values: tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
-    reported_state: Literal["restored", "mismatch", "configuration"]
+    reported_state: Literal[
+        "restored",
+        "mismatch",
+        "configuration",
+        "first_calibration_configuration",
+    ]
     register_verified: bool
     config_differs_from_flash: bool
 
@@ -1049,6 +1054,26 @@ def parse_offset_table_snapshot(
         if power
         else "|Phase|offset_voltage|offset_current|"
     )
+    other_positive_header = (
+        "Restored offset calibration from memory"
+        if power
+        else "Restored power offset calibration from memory"
+    )
+    other_mismatch_header = (
+        "Offset mismatch: using flash values"
+        if power
+        else "Power offset mismatch: using flash values"
+    )
+    other_columns = (
+        "|Phase|offset_voltage|offset_current|"
+        if power
+        else "|Phase|offset_active_power|offset_reactive_power|"
+    )
+    other_verified_term = (
+        "Offset calibration restore verified."
+        if power
+        else "Power offset calibration restore verified."
+    )
     fallback_terms = (
         _POWER_OFFSET_FALLBACK_TERMS if power else (_OFFSET_FALLBACK_TERM,)
     )
@@ -1078,10 +1103,6 @@ def parse_offset_table_snapshot(
     )
     if any("SPI read mismatch" in item.line for item in matching):
         raise LogEvidenceError(f"{kind} snapshot observed SPI read mismatch")
-    row_pattern = _POWER_OFFSET_ROW_RE if power else _OFFSET_ROW_RE
-    comparison_row_pattern = (
-        _POWER_OFFSET_COMPARE_ROW_RE if power else _OFFSET_COMPARE_ROW_RE
-    )
     verified_term = (
         "Power offset calibration restore verified."
         if power
@@ -1093,11 +1114,15 @@ def parse_offset_table_snapshot(
             positive_header in item.line
             or mismatch_header in item.line
             or columns in normalized
-            or row_pattern.search(item.line) is not None
-            or comparison_row_pattern.search(item.line) is not None
             or verified_term in item.line
             or any(term in item.line for term in fallback_terms)
             or any(term in item.line for term in failure_terms)
+            # Validate tags on either stage's rows without making them selected
+            # stage evidence; the table category still comes from its header.
+            or _OFFSET_ROW_RE.search(item.line) is not None
+            or _POWER_OFFSET_ROW_RE.search(item.line) is not None
+            or _OFFSET_COMPARE_ROW_RE.search(item.line) is not None
+            or _POWER_OFFSET_COMPARE_ROW_RE.search(item.line) is not None
         )
         if not relevant:
             continue
@@ -1116,6 +1141,7 @@ def parse_offset_table_snapshot(
             positive_header in item.line
             or mismatch_header in item.line
             or columns in re.sub(r"\s+", "", item.line)
+            or verified_term in item.line
             for item in instance_lines
         )
         has_fallback = any(
@@ -1129,6 +1155,23 @@ def parse_offset_table_snapshot(
             any(term in item.line for term in failure_terms)
             for item in instance_lines
         )
+        has_other_stage_table = any(
+            other_positive_header in item.line
+            or other_mismatch_header in item.line
+            or other_columns in re.sub(r"\s+", "", item.line)
+            or other_verified_term in item.line
+            for item in instance_lines
+        )
+        has_orphan_rows = any(
+            pattern.search(item.line) is not None
+            for item in instance_lines
+            for pattern in (
+                _OFFSET_ROW_RE,
+                _POWER_OFFSET_ROW_RE,
+                _OFFSET_COMPARE_ROW_RE,
+                _POWER_OFFSET_COMPARE_ROW_RE,
+            )
+        )
         if has_fallback and (
             has_positive or has_mismatch or has_verified or has_failure
         ):
@@ -1136,61 +1179,11 @@ def parse_offset_table_snapshot(
         if not has_table_evidence:
             if has_failure:
                 raise LogEvidenceError(f"{instance_id}: {kind} snapshot restore failed")
+            if has_orphan_rows and not has_other_stage_table:
+                raise LogEvidenceError(f"{instance_id}: {kind} snapshot table is orphaned")
             # A stock dump can omit this table entirely. A reported fallback is
             # still unavailable here, never a manufactured all-zero table.
             snapshots[instance_id] = None
-            continue
-        if has_fallback:
-            fallback_lines = [
-                item
-                for item in instance_lines
-                if any(term in item.line for term in fallback_terms)
-            ]
-            if len(fallback_lines) != 1:
-                raise LogEvidenceError(f"{instance_id}: {kind} fallback is ambiguous")
-            if sum(
-                columns in re.sub(r"\s+", "", item.line)
-                for item in instance_lines
-            ) != 1:
-                raise LogEvidenceError(f"{instance_id}: {kind} table columns are duplicate")
-            fallback_header = next(
-                term for term in fallback_terms if term in fallback_lines[0].line
-            )
-            configuration_block = _signed_table(
-                instance_lines,
-                fallback_header,
-                columns,
-                comparison=False,
-            )
-            if configuration_block is None:
-                snapshots[instance_id] = None
-                continue
-            row_matches = [
-                match
-                for item in configuration_block
-                if (match := row_pattern.search(item.line)) is not None
-            ]
-            if len(row_matches) != 3 or {
-                match.group("phase")
-                for match in row_matches
-            } != {"A", "B", "C"}:
-                snapshots[instance_id] = None
-                continue
-            pair_names = ("active", "reactive") if power else ("voltage", "current")
-            snapshots[instance_id] = OffsetTableSnapshot(
-                connection_generation,
-                instance_id,
-                offset_stage,
-                _signed_phase_pairs(
-                    configuration_block,
-                    row_pattern,
-                    pair_names,
-                    kind,
-                ),
-                "configuration",
-                False,
-                False,
-            )
             continue
         rows, verified, differs = _restore_offset_category(
             instance_lines,
@@ -1541,8 +1534,31 @@ def _restore_offset_category(
         raise LogEvidenceError(
             f"{instance_id}: {kind} restore verification is missing or duplicate"
         )
-    positive_block = _signed_table(lines, positive_header, columns, comparison=False)
-    mismatch_block = _signed_table(lines, mismatch_header, columns, comparison=True)
+    other_positive_header = (
+        "Restored offset calibration from memory"
+        if power
+        else "Restored power offset calibration from memory"
+    )
+    other_mismatch_header = (
+        "Offset mismatch: using flash values"
+        if power
+        else "Power offset mismatch: using flash values"
+    )
+    stop_markers = (other_positive_header, other_mismatch_header)
+    positive_block = _signed_table(
+        lines,
+        positive_header,
+        columns,
+        comparison=False,
+        stop_markers=stop_markers,
+    )
+    mismatch_block = _signed_table(
+        lines,
+        mismatch_header,
+        columns,
+        comparison=True,
+        stop_markers=stop_markers,
+    )
     if positive_block is not None and mismatch_block is not None:
         raise LogEvidenceError(f"{instance_id}: {kind} restore tables are ambiguous")
     if positive_block is not None:
@@ -1576,6 +1592,7 @@ def _signed_table(
     columns: str,
     *,
     comparison: bool,
+    stop_markers: tuple[str, ...] = (),
 ) -> list[CalibrationLogLine] | None:
     headers = [index for index, item in enumerate(lines) if header in item.line]
     if not headers:
@@ -1584,7 +1601,7 @@ def _signed_table(
         raise LogEvidenceError(f"duplicate signed table header: {header}")
     block: list[CalibrationLogLine] = []
     for item in lines[headers[0] + 1 :]:
-        if "====" in item.line:
+        if "====" in item.line or any(marker in item.line for marker in stop_markers):
             break
         block.append(item)
     normalized = [re.sub(r"\s+", "", item.line) for item in block]

@@ -33,6 +33,7 @@ from .log_parser import (
     LogEvidenceError,
     OffsetClearEvidence,
     OffsetRunEvidence,
+    OffsetTableSnapshot,
     PowerOffsetRunEvidence,
     RestoreEvidence,
     parse_gain_run,
@@ -49,9 +50,11 @@ from .models import (
 )
 from .offset_readiness import OffsetReadinessStage, async_check_offset_readiness
 from .offset_recovery import (
+    FIRST_CALIBRATION_CONFIGURATION,
     ZERO_OFFSETS,
     OffsetRecovery,
     StockOffsetPreparation,
+    _allowed_observation_sources,
     _validate_source,
 )
 from .preflight import (
@@ -776,7 +779,10 @@ class CalibrationEngine:
             ) -> Any:
                 try:
                     snapshots = await session.async_offset_table_snapshot(
-                        {instance}, offset_stage=offset_stage
+                        {instance},
+                        offset_stage=offset_stage,
+                        require_communication=True,
+                        expected_chip_count=len(binding.groups),
                     )
                     return snapshots.get(instance)
                 except Exception:  # noqa: BLE001 - never reflect native logs from failed snapshots
@@ -812,6 +818,18 @@ class CalibrationEngine:
 
             source = await reconcile()
             record = await recovery.async_require(lease, preparation, installed=True)
+            allowed_sources = _allowed_observation_sources(record)
+            source_bound: dict[tuple[str, int], OffsetTableSnapshot] = {}
+            for item in record.observations:
+                if (
+                    item.source_sha256 in allowed_sources
+                    and item.snapshot.reported_state
+                    in ("configuration", FIRST_CALIBRATION_CONFIGURATION)
+                ):
+                    source_bound.setdefault(
+                        (item.snapshot.instance_id, item.snapshot.offset_stage),
+                        item.snapshot,
+                    )
             expected = {
                 item.instance_id: item.phase_values
                 for item in record.results
@@ -854,17 +872,22 @@ class CalibrationEngine:
                 if instance not in unfinished:
                     continue
                 snapshot = await read_snapshot(instance, stage)
+                source_configuration = snapshot is None
+                if source_configuration:
+                    snapshot = source_bound.get((instance, stage))
                 if (
                     snapshot is None
-                    or snapshot.connection_generation != generation
+                    or not source_configuration
+                    and snapshot.connection_generation != generation
                     or snapshot.instance_id != instance
                     or snapshot.offset_stage != stage
                 ):
                     raise ValueError("fresh saved offset table is unavailable")
                 source = await reconcile()
-                await recovery.async_backup(
-                    lease, source, binding.topology, (snapshot,)
-                )
+                if not source_configuration:
+                    await recovery.async_backup(
+                        lease, source, binding.topology, (snapshot,)
+                    )
             # The fresh source receipt is the only permitted origin rebase.
             if pending is not None:
                 self.sessions.rebind_prepared_calibration(

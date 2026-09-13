@@ -1126,9 +1126,10 @@ export class HelperApi {
     this.call("get_offset_preparation", (value) => offsetPreparation(value, "get_offset_preparation"), { session_id: sessionId });
   public getOffsetFinalization = (sessionId: string) =>
     this.call("get_offset_finalization", (value) => offsetFinalization(value, "get_offset_finalization"), { session_id: sessionId });
-  public previewOffsetPreparation = (sessionId: string, boardIndex: number, stage: 1 | 2, backupAcknowledged: boolean) =>
+  public previewOffsetPreparation = (sessionId: string, boardIndex: number, stage: 1 | 2, backupAcknowledged: boolean, firstCalibrationConfirmed = false) =>
     this.call("preview_offset_preparation", (value) => offsetPreview(value, "preview_offset_preparation", stage, boardIndex) as OffsetPreparationPreview,
-      { session_id: sessionId, board_index: boardIndex, stage, backup_acknowledged: backupAcknowledged });
+      { session_id: sessionId, board_index: boardIndex, stage, backup_acknowledged: backupAcknowledged,
+        ...(firstCalibrationConfirmed ? { first_calibration_confirmed: true } : {}) });
   public resumeOffsetCalibration = (sessionId: string, operationId: string, boardIndex: number, stage: 1 | 2, preparationAcknowledged: boolean) =>
     this.call("resume_offset_calibration", (value) => offsetCalibration(value, "resume_offset_calibration", boardIndex, stage),
       { session_id: sessionId, operation_id: operationId, board_index: boardIndex, stage, preparation_acknowledged: preparationAcknowledged });

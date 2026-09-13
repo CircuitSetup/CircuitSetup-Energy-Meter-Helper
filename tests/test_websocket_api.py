@@ -4458,6 +4458,11 @@ def test_stock_offset_routes_preserve_confirmations_and_private_boundary() -> No
                     for value in (False, 1, "yes"):
                         with pytest.raises(vol.Invalid):
                             schema(valid | {key: value})
+            if operation == "preview_offset_preparation":
+                assert schema(valid)["first_calibration_confirmed"] is False
+                for value in (0, 1, "yes"):
+                    with pytest.raises(vol.Invalid):
+                        schema(valid | {"first_calibration_confirmed": value})
             if command in MUTATION_COMMANDS:
                 with pytest.raises(Unauthorized):
                     handler(hass, FakeConnection(admin=False), schema(valid))
@@ -4465,7 +4470,7 @@ def test_stock_offset_routes_preserve_confirmations_and_private_boundary() -> No
             assert connection.results[-1][1] == {"operation": f"async_{operation}", "action_ready": False}
             assert calls[-1][0] == f"async_{operation}"
             assert calls[-1][1][0] == "3" * 32
-        assert calls[2][2] == {"backup_acknowledged": True}
+        assert calls[2][2] == {"backup_acknowledged": True, "first_calibration_confirmed": False}
         assert calls[3][1] == ("3" * 32, "4" * 32, 0, 1)
         assert calls[3][2] == {"preparation_acknowledged": True}
         assert calls[4][2] == {"verification_id": None, "changes": (), "package_options": None}

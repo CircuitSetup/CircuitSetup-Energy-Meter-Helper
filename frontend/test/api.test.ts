@@ -236,6 +236,8 @@ describe("HelperApi", () => {
     await expect(api.previewOffsetPreparation("3".repeat(32), 0, 1, true)).resolves.toMatchObject({ transaction: { purpose: "offset_preparation" } });
     expect(hass.messages.at(-1)).toEqual({ type: "circuitsetup_energy_meter_helper/preview_offset_preparation", entry_id: "entry-1",
       session_id: "3".repeat(32), board_index: 0, stage: 1, backup_acknowledged: true });
+    await expect(api.previewOffsetPreparation("3".repeat(32), 0, 1, true, true)).resolves.toMatchObject({ transaction: { purpose: "offset_preparation" } });
+    expect(hass.messages.at(-1)).toMatchObject({ first_calibration_confirmed: true });
     for (const invalid of [{ ...status, action_ready: true, installed: false }, { ...status, stage: true },
       { ...status, operation_id: "bad" }, { ...status, targets: ["meter_main1", "meter_main1"] }, { ...status, private_binding: {} }]) {
       hass.responses.get_offset_preparation = invalid;

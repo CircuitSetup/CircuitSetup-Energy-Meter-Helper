@@ -93,6 +93,235 @@ def test_first_stock_preparation_blocks_unproven_builder_source_without_writes(
     asyncio.run(run())
 
 
+def test_confirmed_first_stock_preparation_uses_source_for_both_stages(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            OffsetRecovery,
+        )
+        from tests.test_workflow import _workflow
+
+        workflow, handle, sessions, _ = _workflow()
+        workflow._sessions.clear()
+        handle.session_id = "b" * 32
+        workflow._sessions[handle.session_id] = handle
+        handle.binding = binding_with_offset_controls(0)
+        source = _snapshot()
+        handle.configuration, handle.configuration_sha256 = (
+            "meter.yaml",
+            source.sha256,
+        )
+        session = StockSession(handle.binding)
+        session.sessions = sessions
+        session.snapshot_unknown = True
+        workflow._api = session
+        workflow._builder = Builder(remote_content=source.content)
+        recovery = workflow._offset_recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+        workflow.transactions = ConfigTransactionManager(
+            workflow._builder,
+            Verifier(
+                ReconnectEvidence(
+                    MAC, handle.topology, {i: f"CT {i}" for i in range(1, 7)}, 6
+                )
+            ),
+            Persistence(),
+            sessions,
+            offset_recovery=recovery,
+        )
+
+        preview = await workflow.async_preview_offset_preparation(
+            handle.session_id,
+            0,
+            1,
+            backup_acknowledged=True,
+            first_calibration_confirmed=True,
+        )
+        assert preview["backup_available"] is True
+        assert preview["transaction"].purpose == "offset_preparation"
+        assert not session.events
+        assert session.configuration_selections == []
+        assert "write" not in workflow._builder.calls
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            record = await recovery.async_load(lease)
+            assert record is not None and record.preparation is not None
+            assert len(record.observations) == 4
+            assert {
+                (item.snapshot.instance_id, item.snapshot.offset_stage)
+                for item in record.observations
+            } == {
+                (instance, stage)
+                for instance in ("meter_main1", "meter_main2")
+                for stage in (1, 2)
+            }
+            assert all(
+                item.snapshot.reported_state == "first_calibration_configuration"
+                and item.snapshot.phase_values == ZERO
+                and item.source_sha256 == source.sha256
+                for item in record.observations
+            )
+        finally:
+            lease.release()
+
+    asyncio.run(run())
+
+
+def test_confirmed_first_baseline_reuses_unchanged_values_for_stage_two_after_install(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            OffsetRecovery,
+        )
+        from tests.test_workflow import _workflow
+
+        workflow, handle, sessions, _ = _workflow()
+        workflow._sessions.clear()
+        handle.session_id = "b" * 32
+        workflow._sessions[handle.session_id] = handle
+        handle.binding = binding_with_offset_controls(0)
+        source = _snapshot()
+        handle.configuration, handle.configuration_sha256 = "meter.yaml", source.sha256
+        session = StockSession(handle.binding)
+        session.sessions = sessions
+        session.snapshot_unknown = True
+        workflow._api = session
+        workflow._builder = Builder(remote_content=source.content)
+        recovery = workflow._offset_recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+        workflow.transactions = ConfigTransactionManager(
+            workflow._builder,
+            Verifier(
+                ReconnectEvidence(
+                    MAC, handle.topology, {i: f"CT {i}" for i in range(1, 7)}, 6
+                )
+            ),
+            Persistence(),
+            sessions,
+            offset_recovery=recovery,
+        )
+
+        first = await workflow.async_preview_offset_preparation(
+            handle.session_id,
+            0,
+            1,
+            backup_acknowledged=True,
+            first_calibration_confirmed=True,
+        )
+        transaction_id = first["transaction"].transaction_id
+        await workflow.transactions.async_confirm_write(transaction_id, "admin")
+        await workflow.transactions.async_compile(transaction_id)
+        assert (
+            await workflow.transactions.async_confirm_install(transaction_id, "admin")
+        ).state.value == "verified"
+        handle.configuration_sha256 = sha256(
+            workflow._builder.remote_content.encode()
+        ).hexdigest()
+
+        second = await workflow.async_preview_offset_preparation(
+            handle.session_id, 0, 2, backup_acknowledged=True
+        )
+
+        assert second["targets"] == ("meter_main1", "meter_main2")
+        assert "enable_offset_calibration: true" in sessions._get_transaction(
+            second["transaction"].transaction_id
+        ).plan.proposed_content
+        assert not session.events
+
+    asyncio.run(run())
+
+
+def test_confirmed_first_stock_preparation_uses_fresh_parser_health_evidence(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            OffsetRecovery,
+        )
+        from tests.test_esphome_api import FakeClient, make_session
+        from tests.test_workflow import _workflow
+
+        workflow, handle, sessions, _ = _workflow()
+        workflow._sessions.clear()
+        handle.session_id = "b" * 32
+        workflow._sessions[handle.session_id] = handle
+        handle.binding = binding_with_offset_controls(0)
+        source = _snapshot()
+        handle.configuration, handle.configuration_sha256 = "meter.yaml", source.sha256
+        session = StockSession(handle.binding)
+        session.snapshot_unknown = True
+
+        async def parser_snapshot(
+            targets: set[str], *, offset_stage: int, **kwargs: Any
+        ) -> dict[str, Any]:
+            del kwargs
+            client = FakeClient()
+            native = make_session([client])
+            await native.async_connect()
+            try:
+                pending = asyncio.create_task(
+                    native.async_offset_table_snapshot(
+                        targets,
+                        offset_stage=offset_stage,
+                        timeout=0.05,
+                        require_communication=True,
+                        expected_chip_count=len(handle.binding.groups),
+                    )
+                )
+                await asyncio.sleep(0)
+                assert client.on_log is not None
+                client.on_log(
+                    SimpleNamespace(
+                        message=(
+                            "[I][atm90e32:805] ATM90E32:\n"
+                            "[I][atm90e32:805] CS Pin: GPIO5\n"
+                            "[I][atm90e32:805] Update Interval: 5s\n"
+                            "[I][atm90e32:805] ATM90E32:\n"
+                            "[I][atm90e32:805] CS Pin: GPIO4\n"
+                            "[I][atm90e32:805] Update Interval: 5s\n"
+                        )
+                    )
+                )
+                return await pending
+            finally:
+                await native.async_shutdown()
+
+        session.async_offset_table_snapshot = parser_snapshot
+        workflow._api = session
+        workflow._builder = Builder(remote_content=source.content)
+        recovery = workflow._offset_recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+        workflow.transactions = ConfigTransactionManager(
+            workflow._builder,
+            Verifier(
+                ReconnectEvidence(
+                    MAC, handle.topology, {i: f"CT {i}" for i in range(1, 7)}, 6
+                )
+            ),
+            Persistence(),
+            sessions,
+            offset_recovery=recovery,
+        )
+
+        preview = await workflow.async_preview_offset_preparation(
+            handle.session_id,
+            0,
+            1,
+            backup_acknowledged=True,
+            first_calibration_confirmed=True,
+        )
+        assert preview["backup_available"] is True
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            record = await recovery.async_load(lease)
+            assert record is not None
+            assert len(record.observations) == 4
+            assert all(item.snapshot.phase_values == ZERO for item in record.observations)
+        finally:
+            lease.release()
+
+    asyncio.run(run())
+
+
 class StockSession(FakeOffsetSession):
     def __init__(
         self,
@@ -429,6 +658,89 @@ def test_prepared_run_captures_stock_without_promoting_it_and_waits_for_late_err
                 source_reader=lambda: builder.async_get_config("meter.yaml"),
             )
         assert not any(event[0] == "button" for event in session.events[len(before) :])
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "reported_state", ("first_calibration_configuration", "configuration")
+)
+def test_prepared_run_reuses_source_bound_backup_when_stock_table_is_absent(
+    tmp_path: Path, reported_state: str
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
+            CalibrationEngine,
+        )
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            FIRST_CALIBRATION_CONFIGURATION,
+        )
+
+        sessions, recovery, builder, manager, preview, prepared = await preparation(
+            tmp_path
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            before = await recovery.async_load(lease)
+            assert before is not None
+            before = replace(
+                before,
+                observations=tuple(
+                    replace(
+                        item,
+                        snapshot=replace(
+                            item.snapshot,
+                            reported_state=(
+                                FIRST_CALIBRATION_CONFIGURATION
+                                if reported_state == FIRST_CALIBRATION_CONFIGURATION
+                                else "configuration"
+                            ),
+                        ),
+                    )
+                    for item in before.observations
+                ),
+            )
+            await recovery._save(lease, before)
+        finally:
+            lease.release()
+        meter = replace(binding_with_offset_controls(0), connection_generation=2)
+        session = StockSession(meter)
+        session.sessions = sessions
+        session.snapshot_unknown = True
+        snapshot_calls = 0
+        real_snapshot = session.async_offset_table_snapshot
+
+        async def absent_snapshot(*args: Any, **kwargs: Any) -> Any:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            return await real_snapshot(*args, **kwargs)
+
+        session.async_offset_table_snapshot = absent_snapshot
+        engine = CalibrationEngine(sessions, lambda *args: asyncio.sleep(0), evidence_timeout=0.025)
+        result = await engine.async_calibrate_prepared_offset_board(
+            MAC,
+            session,
+            meter,
+            0,
+            prepared,
+            recovery,
+            source_reader=lambda: builder.async_get_config("meter.yaml"),
+        )
+        assert result.state.value == "captured_pending_configuration"
+        assert snapshot_calls == 2
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            after = await recovery.async_load(lease)
+            assert after is not None
+            assert after.original == before.original
+            assert after.observations == before.observations
+            assert {item.instance_id for item in after.results} == set(prepared.targets)
+        finally:
+            lease.release()
+        assert session.snapshot_unknown is True
 
     asyncio.run(run())
 
@@ -1392,9 +1704,10 @@ def test_stage_two_requires_stage_one_and_only_dispatches_power_controls(
             plan = build_offset_table_mutation(
                 source,
                 _topology(),
-                {instance: ZERO for instance in prepared.targets}
-                if prerequisite
-                else {},
+                {
+                    instance: ZERO if prerequisite else observed().phase_values
+                    for instance in prepared.targets
+                },
                 {instance: ZERO for instance in prepared.targets},
                 enable_calibration=frozenset(prepared.targets),
             )

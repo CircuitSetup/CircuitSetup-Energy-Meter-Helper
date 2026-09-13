@@ -194,6 +194,7 @@ export class CircuitSetupPanel extends LitElement {
   private offsetAcknowledged = [false, false];
   private offsetRetryConfirmed = false;
   private offsetBackupAcknowledged = false;
+  private offsetFirstCalibrationConfirmed = false;
   private offsetPreparation: import("./types").OffsetPreparationStatus | null = null;
   private offsetFinalization: import("./types").OffsetFinalizationStatus | null = null;
   private drafts = new Map<number, CtDraft>();
@@ -479,6 +480,7 @@ export class CircuitSetupPanel extends LitElement {
     this.offsetAcknowledged = [false, false];
     this.offsetRetryConfirmed = false;
     this.offsetBackupAcknowledged = false;
+    this.offsetFirstCalibrationConfirmed = false;
     this.offsetPreparation = null;
     this.offsetFinalization = null;
     this.finishBusy = false;
@@ -1047,7 +1049,7 @@ export class CircuitSetupPanel extends LitElement {
         this.clearSubscription("transaction"); this.transaction = null; this.transactionPurpose = null;
         await this.refreshOffsetRecovery(api, generation);
         if (!this.ownsOperation(generation, api, deviceId)) return;
-        this.offsetBackupAcknowledged = false;
+        this.offsetBackupAcknowledged = false; this.offsetFirstCalibrationConfirmed = false;
         this.navigate(current.purpose === "offset_preparation" ? "offset" : "save-calibration");
       }, "The review could not be cancelled. Recovery and captured values are retained.", () => this.ownsOperation(generation, api, deviceId));
       this.pendingAction = ""; this.requestUpdate(); return;
@@ -1747,7 +1749,7 @@ export class CircuitSetupPanel extends LitElement {
       if (action === "install" && transaction.state === "verified" && transaction.purpose.startsWith("offset_")) {
         this.clearSubscription("transaction");
         this.offsetAcknowledged = [false, false]; this.offsetReadinessByTarget = new Map();
-        this.offsetBackupAcknowledged = false; this.offsetRetryConfirmed = false;
+        this.offsetBackupAcknowledged = false; this.offsetFirstCalibrationConfirmed = false; this.offsetRetryConfirmed = false;
         await this.refreshOffsetRecovery(api, generation, true);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.transaction = null; this.transactionPurpose = null;
@@ -1989,6 +1991,9 @@ export class CircuitSetupPanel extends LitElement {
       || session.session_id !== sessionId || session.device_id !== deviceId) return;
     this.offsetPreparation = preparation; this.offsetFinalization = finalization; this.session = session;
     if (restoreSelection && finalization.board_index !== null && finalization.stage !== null) {
+      if (this.board !== finalization.board_index || this.offsetStage !== finalization.stage) {
+        this.offsetFirstCalibrationConfirmed = false;
+      }
       this.board = finalization.board_index; this.offsetStage = finalization.stage;
     }
     const results = new Map<string, OffsetCalibrationResult>();
@@ -2013,7 +2018,7 @@ export class CircuitSetupPanel extends LitElement {
     const board = this.board; const stage = this.offsetStage; const generation = ++this.operationGeneration;
     this.offsetBusy = true; this.requestUpdate();
     await this.run(async () => {
-      const review = await api.previewOffsetPreparation(sessionId, board, stage, true);
+      const review = await api.previewOffsetPreparation(sessionId, board, stage, true, this.offsetFirstCalibrationConfirmed);
       if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
       this.transaction = review.transaction; this.transactionPurpose = review.transaction.purpose;
       this.calibrationHandoff = false;
@@ -2067,7 +2072,7 @@ export class CircuitSetupPanel extends LitElement {
       await api.beginOffsetCycle(sessionId, true);
       if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
       this.offsetAcknowledged = [false, false]; this.offsetReadinessByTarget = new Map();
-      this.offsetBackupAcknowledged = false; this.offsetRetryConfirmed = false;
+      this.offsetBackupAcknowledged = false; this.offsetFirstCalibrationConfirmed = false; this.offsetRetryConfirmed = false;
       await this.refreshOffsetRecovery(api, generation, true);
       if (!this.ownsOperation(generation, api, deviceId)) return;
       this.navigate("offset");
@@ -2607,16 +2612,19 @@ export class CircuitSetupPanel extends LitElement {
       this.offsetAcknowledged[this.offsetStage - 1] ?? false, this.offsetRetryConfirmed,
       this.offsetReadinessByTarget.get(this.offsetKey()) ?? null, this.offsetResultByTarget.get(this.offsetKey()) ?? null,
       this.offsetBusy,
-      (value) => { this.board = value; this.offsetRetryConfirmed = false; this.requestUpdate(); },
+      (value) => { this.board = value; this.offsetFirstCalibrationConfirmed = false; this.offsetRetryConfirmed = false; this.requestUpdate(); },
       (value) => { if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed")) {
-        this.offsetStage = value; this.board = 0; this.offsetRetryConfirmed = false; this.requestUpdate();
+        this.offsetStage = value; this.board = 0; this.offsetFirstCalibrationConfirmed = false; this.offsetRetryConfirmed = false; this.requestUpdate();
       } },
       (value) => { this.offsetAcknowledged = this.offsetAcknowledged.map((current, index) => index === this.offsetStage - 1 ? value : current); this.requestUpdate(); },
       (value) => { this.offsetRetryConfirmed = value; this.requestUpdate(); },
       () => void this.checkOffsetReadiness(), () => void this.calibrateOffset(), () => void this.reconnectSession(),
       () => void this.skipOffset(), () => this.back(), () => this.navigate("voltage"),
       this.stockOffsetMode() ? { preparation: this.offsetPreparation, backupAcknowledged: this.offsetBackupAcknowledged,
-        setBackup: (value) => { this.offsetBackupAcknowledged = value; this.requestUpdate(); }, prepare: () => void this.reviewOffsetPreparation() } : null);
+        setBackup: (value) => { this.offsetBackupAcknowledged = value; this.requestUpdate(); },
+        firstCalibrationConfirmed: this.offsetFirstCalibrationConfirmed,
+        setFirstCalibrationConfirmed: (value) => { this.offsetFirstCalibrationConfirmed = value; this.requestUpdate(); },
+        prepare: () => void this.reviewOffsetPreparation() } : null);
     if (this.step === "voltage") return html`${(this.calibrationMeterSettings ?? this.meterSettingsDraft)?.warnings.includes("slow_interval_extends_calibration") ? html`<div class="warning-band" role="status">This meter uses a ${(this.calibrationMeterSettings ?? this.meterSettingsDraft)!.update_interval_s}-second update interval. Calibration takes longer; keep the reference stable until each check finishes.</div>` : nothing}${voltageStep(this.topology, this.session, this.board, this.voltageReferenceIds().map((id, index) => this.voltageReferences instanceof Map ? this.voltageReferences.get(id) ?? 0 : this.voltageReferences[index] ?? 0), this.voltageReferenceIds().map((id) => this.voltageReferenceLabel(id)), this.stabilityFor("voltage"), this.voltageResultsForBoard(), this.voltageBusy,
       (value) => { this.board = value; this.requestUpdate(); },
       (index, value) => { const id = this.voltageReferenceIds()[index]; if (id) this.voltageReferences = new Map(this.voltageReferences).set(id, value); this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession())}

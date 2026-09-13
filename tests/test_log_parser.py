@@ -1355,7 +1355,7 @@ def test_stock_offset_snapshot_uses_flash_mismatch_values_and_preserves_zeroes()
         ),
     ),
 )
-def test_first_run_offset_snapshot_uses_reported_configuration_table(
+def test_first_run_offset_snapshot_rejects_reported_configuration_table(
     stage: int, fallback: str, columns: str
 ) -> None:
     source = (
@@ -1370,27 +1370,18 @@ def test_first_run_offset_snapshot_uses_reported_configuration_table(
         for index, line in enumerate(source)
     ]
 
-    snapshot = parse_offset_table_snapshot(
-        lines,
-        connection_generation=3,
-        operation_sequence=4,
-        expected_instance_ids={"meter_main1"},
-        started_after=10.0,
-        offset_stage=stage,
-    )["meter_main1"]
-
-    assert snapshot == OffsetTableSnapshot(
-        3,
-        "meter_main1",
-        stage,
-        ((-10, 30), (0, 0), (11, -31)),
-        "configuration",
-        False,
-        False,
-    )
+    with pytest.raises(LogEvidenceError, match="fell back to config"):
+        parse_offset_table_snapshot(
+            lines,
+            connection_generation=3,
+            operation_sequence=4,
+            expected_instance_ids={"meter_main1"},
+            started_after=10.0,
+            offset_stage=stage,
+        )
 
 
-def test_offset_snapshot_keeps_incomplete_configuration_table_unavailable() -> None:
+def test_offset_snapshot_rejects_incomplete_configuration_table() -> None:
     lines = [
         CalibrationLogLine(
             3,
@@ -1420,14 +1411,124 @@ def test_offset_snapshot_keeps_incomplete_configuration_table_unavailable() -> N
         ),
     ]
 
+    with pytest.raises(LogEvidenceError, match="fell back to config"):
+        parse_offset_table_snapshot(
+            lines,
+            connection_generation=3,
+            operation_sequence=4,
+            expected_instance_ids={"meter_main1"},
+            started_after=10.0,
+            offset_stage=1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("reported_stage", "requested_stage", "columns"),
+    (
+        (1, 2, "offset_voltage | offset_current"),
+        (2, 1, "offset_active_power | offset_reactive_power"),
+    ),
+)
+def test_offset_snapshot_ignores_a_complete_other_stage_table(
+    reported_stage: int, requested_stage: int, columns: str
+) -> None:
+    kind = "offset" if reported_stage == 1 else "power offset"
+    lines = [
+        CalibrationLogLine(
+            3,
+            4,
+            11.0 + index,
+            f"[I][atm90e32] [CALIBRATION][meter_main1] {line}",
+        )
+        for index, line in enumerate(
+            (
+                f"Restored {kind} calibration from memory",
+                f"| Phase | {columns} |",
+                "| A | -10 | 30 |",
+                "| B | 0 | 0 |",
+                "| C | 11 | -31 |",
+            )
+        )
+    ]
+
     assert parse_offset_table_snapshot(
         lines,
         connection_generation=3,
         operation_sequence=4,
         expected_instance_ids={"meter_main1"},
         started_after=10.0,
-        offset_stage=1,
+        offset_stage=requested_stage,
     ) == {"meter_main1": None}
+
+
+@pytest.mark.parametrize("requested_stage", (1, 2))
+def test_offset_snapshot_keeps_selected_stage_isolated_in_a_mixed_dump(
+    requested_stage: int,
+) -> None:
+    rms = (
+        "Restored offset calibration from memory",
+        "| Phase | offset_voltage | offset_current |",
+        "| A | -10 | 30 |",
+        "| B | 0 | 0 |",
+        "| C | 11 | -31 |",
+    )
+    power = (
+        "Restored power offset calibration from memory",
+        "| Phase | offset_active_power | offset_reactive_power |",
+        "| A | 7 | 8 |",
+        "| B | 9 | 10 |",
+        "| C | 11 | 12 |",
+    )
+    stages = (rms, power) if requested_stage == 1 else (power, rms)
+    lines = [
+        CalibrationLogLine(
+            3,
+            4,
+            11.0 + index,
+            f"[I][atm90e32] [CALIBRATION][meter_main1] {line}",
+        )
+        for index, line in enumerate((*stages[0], *stages[1]))
+    ]
+
+    snapshot = parse_offset_table_snapshot(
+        lines,
+        connection_generation=3,
+        operation_sequence=4,
+        expected_instance_ids={"meter_main1"},
+        started_after=10.0,
+        offset_stage=requested_stage,
+    )["meter_main1"]
+
+    assert snapshot is not None
+    assert snapshot.phase_values == (
+        ((-10, 30), (0, 0), (11, -31))
+        if requested_stage == 1
+        else ((7, 8), (9, 10), (11, 12))
+    )
+
+
+def test_offset_snapshot_rejects_orphan_rows_without_a_stage_header() -> None:
+    lines = [
+        CalibrationLogLine(
+            3,
+            4,
+            11.0 + index,
+            f"[I][atm90e32] [CALIBRATION][meter_main1] {line}",
+        )
+        for index, line in enumerate(
+            ("| A | -10 | 30 |", "| B | 0 | 0 |", "| C | 11 | -31 |")
+        )
+    ]
+
+    with pytest.raises(LogEvidenceError, match="orphaned"):
+        parse_offset_table_snapshot(
+            lines,
+            connection_generation=3,
+            operation_sequence=4,
+            expected_instance_ids={"meter_main1"},
+            started_after=10.0,
+            offset_stage=1,
+        )
 
 
 @pytest.mark.parametrize(

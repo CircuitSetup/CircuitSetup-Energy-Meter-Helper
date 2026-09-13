@@ -328,7 +328,7 @@ class WorkflowOwner(Protocol):
 
     async def async_preview_offset_preparation(
         self, session_id: str, board_index: int, stage: OffsetReadinessStage,
-        *, backup_acknowledged: bool,
+        *, backup_acknowledged: bool, first_calibration_confirmed: bool = False,
     ) -> Any: ...
 
     async def async_resume_offset_calibration(
@@ -604,7 +604,9 @@ class EntryWebsocketController:
             return await workflow.async_get_offset_finalization(msg["session_id"])
         if operation == "preview_offset_preparation" and workflow is not None:
             return await workflow.async_preview_offset_preparation(
-                msg["session_id"], msg["board_index"], msg["stage"], backup_acknowledged=msg["backup_acknowledged"],
+                msg["session_id"], msg["board_index"], msg["stage"],
+                backup_acknowledged=msg["backup_acknowledged"],
+                first_calibration_confirmed=msg.get("first_calibration_confirmed", False),
             )
         if operation == "resume_offset_calibration" and workflow is not None:
             return await workflow.async_resume_offset_calibration(
@@ -1311,6 +1313,7 @@ def _schema(command: str) -> Any:
             schema[vol.Optional("confirm_retry", default=False)] = bool
         elif operation == "preview_offset_preparation":
             schema[vol.Required("backup_acknowledged")] = _literal_true
+            schema[vol.Optional("first_calibration_confirmed", default=False)] = bool
         elif operation == "resume_offset_calibration":
             schema[vol.Required("operation_id")] = _SERVER_ID
             schema[vol.Required("preparation_acknowledged")] = _literal_true

@@ -9,6 +9,11 @@ OFFICIAL_PACKAGE_REPOSITORY = (
     "CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter"
 )
 CALIBRATION_PACKAGE_DIRECTORY = "calibration"
+_COMMON_PACKAGE_PATHS = {
+    "wifi": "Software/ESPHome/6chan_common.yaml",
+    "ethernet_lilygo": "Software/ESPHome/6chan_common_ethernet.yaml",
+    "ethernet_waveshare": "Software/ESPHome/6chan_common_ethernet_waveshare.yaml",
+}
 PACKAGE_CAPABILITY_STATES = frozenset(
     {"already_present", "available_to_prepare", "cannot_safely_manage"}
 )
@@ -141,6 +146,11 @@ def package_path(feature: str, board_index: int) -> str:
         raise ValueError(f"unsupported package feature: {feature}") from error
 
 
+def common_package_path(connection_type: str) -> str | None:
+    """Return the exact official common package for a known connection type."""
+    return _COMMON_PACKAGE_PATHS.get(connection_type)
+
+
 def calibration_package_path(board_index: int) -> str:
     """Return the reviewed official calibration-controls package path."""
     if not 0 <= board_index <= 6:
@@ -149,4 +159,15 @@ def calibration_package_path(board_index: int) -> str:
     return (
         f"Software/ESPHome/{CALIBRATION_PACKAGE_DIRECTORY}/"
         f"6chan_{board}_calibration.yaml"
+    )
+
+
+def offset_calibration_package_path(board_index: int) -> str:
+    """Return the checked-in official offset-default package path."""
+    if not 0 <= board_index <= 6:
+        raise ValueError("board_index must be between 0 and 6")
+    board = "main" if board_index == 0 else f"addon{board_index}"
+    return (
+        f"Software/ESPHome/{CALIBRATION_PACKAGE_DIRECTORY}/"
+        f"6chan_{board}_offset_calibrations.yaml"
     )

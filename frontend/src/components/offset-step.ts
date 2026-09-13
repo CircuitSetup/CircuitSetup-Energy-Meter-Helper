@@ -26,7 +26,7 @@ export function offsetStep(
   skip: () => void,
   back: () => void,
   continueToVoltage: () => void,
-  stock: { preparation: OffsetPreparationStatus | null; backupAcknowledged: boolean; setBackup: (value: boolean) => void; prepare: () => void } | null = null,
+  stock: { preparation: OffsetPreparationStatus | null; backupAcknowledged: boolean; setBackup: (value: boolean) => void; firstCalibrationConfirmed: boolean; setFirstCalibrationConfirmed: (value: boolean) => void; prepare: () => void } | null = null,
 ): TemplateResult {
   const capability = session?.offset_capability;
   const boards = session?.offset_boards ?? [];
@@ -78,9 +78,10 @@ export function offsetStep(
           ${stock ? html`<section class="measurement-evidence" aria-label="Offset preparation backup">
             <h3>Why preparation is required</h3>
             <p>Before calibration, the helper temporarily installs zero offsets for the selected chips so existing corrections do not affect the new measurements.</p>
-            <p>The helper first saves your current configuration and Stage ${stage} offset values in a private recovery backup. If any required value cannot be read, calibration remains blocked—unknown values are never treated as zero.</p>
+            <p>The helper saves both offset stages for the selected chips in a private recovery backup. It uses fresh meter tables when available; with the first-run confirmation below, a missing table may use the current Device Builder YAML. This is not flash readback, and unknown values stay blocked.</p>
             ${matching && preparation?.installed ? html`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review and install a fresh preparation for unfinished chips; retained values are not lost."}</p>` : nothing}
             <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event: Event) => stock.setBackup((event.target as HTMLInputElement).checked)}> I understand that this step creates a private backup and installs a temporary zero-offset configuration.</label>
+            ${!recovery ? html`<label class="check-row"><input type="checkbox" .checked=${stock.firstCalibrationConfirmed} @change=${(event: Event) => stock.setFirstCalibrationConfirmed((event.target as HTMLInputElement).checked)}> I confirm the selected chips have never had offset calibration applied.</label>` : nothing}
             <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
               @click=${stock.prepare}>${recovery ? "Review unfinished-chip preparation" : "Review offset preparation"}</button>
             ${attempted ? html`<p>This receipt was already attempted. Retry requires a new reviewed installation for only unfinished chips; completed values, including zeros, are retained.</p>` : nothing}

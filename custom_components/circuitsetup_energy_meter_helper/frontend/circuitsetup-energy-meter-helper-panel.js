@@ -1673,10 +1673,16 @@ class HelperApi {
     this.skipOffsetCalibration = (sessionId) => this.call("skip_offset_calibration", (value) => session(value, "skip_offset_calibration"), { session_id: sessionId });
     this.getOffsetPreparation = (sessionId) => this.call("get_offset_preparation", (value) => offsetPreparation(value, "get_offset_preparation"), { session_id: sessionId });
     this.getOffsetFinalization = (sessionId) => this.call("get_offset_finalization", (value) => offsetFinalization(value, "get_offset_finalization"), { session_id: sessionId });
-    this.previewOffsetPreparation = (sessionId, boardIndex, stage, backupAcknowledged) => this.call(
+    this.previewOffsetPreparation = (sessionId, boardIndex, stage, backupAcknowledged, firstCalibrationConfirmed = false) => this.call(
       "preview_offset_preparation",
       (value) => offsetPreview(value, "preview_offset_preparation", stage, boardIndex),
-      { session_id: sessionId, board_index: boardIndex, stage, backup_acknowledged: backupAcknowledged }
+      {
+        session_id: sessionId,
+        board_index: boardIndex,
+        stage,
+        backup_acknowledged: backupAcknowledged,
+        ...firstCalibrationConfirmed ? { first_calibration_confirmed: true } : {}
+      }
     );
     this.resumeOffsetCalibration = (sessionId, operationId, boardIndex, stage, preparationAcknowledged) => this.call(
       "resume_offset_calibration",
@@ -3463,9 +3469,10 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
           ${stock ? b`<section class="measurement-evidence" aria-label="Offset preparation backup">
             <h3>Why preparation is required</h3>
             <p>Before calibration, the helper temporarily installs zero offsets for the selected chips so existing corrections do not affect the new measurements.</p>
-            <p>The helper first saves your current configuration and Stage ${stage} offset values in a private recovery backup. If any required value cannot be read, calibration remains blocked—unknown values are never treated as zero.</p>
+            <p>The helper saves both offset stages for the selected chips in a private recovery backup. It uses fresh meter tables when available; with the first-run confirmation below, a missing table may use the current Device Builder YAML. This is not flash readback, and unknown values stay blocked.</p>
             ${matching && preparation?.installed ? b`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review and install a fresh preparation for unfinished chips; retained values are not lost."}</p>` : A}
             <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event) => stock.setBackup(event.target.checked)}> I understand that this step creates a private backup and installs a temporary zero-offset configuration.</label>
+            ${!recovery ? b`<label class="check-row"><input type="checkbox" .checked=${stock.firstCalibrationConfirmed} @change=${(event) => stock.setFirstCalibrationConfirmed(event.target.checked)}> I confirm the selected chips have never had offset calibration applied.</label>` : A}
             <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
               @click=${stock.prepare}>${recovery ? "Review unfinished-chip preparation" : "Review offset preparation"}</button>
             ${attempted ? b`<p>This receipt was already attempted. Retry requires a new reviewed installation for only unfinished chips; completed values, including zeros, are retained.</p>` : A}
@@ -4386,6 +4393,7 @@ class CircuitSetupPanel extends i$2 {
     this.offsetAcknowledged = [false, false];
     this.offsetRetryConfirmed = false;
     this.offsetBackupAcknowledged = false;
+    this.offsetFirstCalibrationConfirmed = false;
     this.offsetPreparation = null;
     this.offsetFinalization = null;
     this.drafts = /* @__PURE__ */ new Map();
@@ -4652,6 +4660,7 @@ class CircuitSetupPanel extends i$2 {
     this.offsetAcknowledged = [false, false];
     this.offsetRetryConfirmed = false;
     this.offsetBackupAcknowledged = false;
+    this.offsetFirstCalibrationConfirmed = false;
     this.offsetPreparation = null;
     this.offsetFinalization = null;
     this.finishBusy = false;
@@ -5191,6 +5200,7 @@ class CircuitSetupPanel extends i$2 {
         await this.refreshOffsetRecovery(api, generation2);
         if (!this.ownsOperation(generation2, api, deviceId)) return;
         this.offsetBackupAcknowledged = false;
+        this.offsetFirstCalibrationConfirmed = false;
         this.navigate(current.purpose === "offset_preparation" ? "offset" : "save-calibration");
       }, "The review could not be cancelled. Recovery and captured values are retained.", () => this.ownsOperation(generation2, api, deviceId));
       this.pendingAction = "";
@@ -5931,6 +5941,7 @@ class CircuitSetupPanel extends i$2 {
           this.offsetAcknowledged = [false, false];
           this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
           this.offsetBackupAcknowledged = false;
+          this.offsetFirstCalibrationConfirmed = false;
           this.offsetRetryConfirmed = false;
           await this.refreshOffsetRecovery(api, generation, true);
           if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -6171,6 +6182,9 @@ class CircuitSetupPanel extends i$2 {
     this.offsetFinalization = finalization;
     this.session = session2;
     if (restoreSelection && finalization.board_index !== null && finalization.stage !== null) {
+      if (this.board !== finalization.board_index || this.offsetStage !== finalization.stage) {
+        this.offsetFirstCalibrationConfirmed = false;
+      }
       this.board = finalization.board_index;
       this.offsetStage = finalization.stage;
     }
@@ -6203,7 +6217,7 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
     await this.run(
       async () => {
-        const review = await api.previewOffsetPreparation(sessionId, board, stage, true);
+        const review = await api.previewOffsetPreparation(sessionId, board, stage, true, this.offsetFirstCalibrationConfirmed);
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
         this.transaction = review.transaction;
         this.transactionPurpose = review.transaction.purpose;
@@ -6291,6 +6305,7 @@ class CircuitSetupPanel extends i$2 {
         this.offsetAcknowledged = [false, false];
         this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
         this.offsetBackupAcknowledged = false;
+        this.offsetFirstCalibrationConfirmed = false;
         this.offsetRetryConfirmed = false;
         await this.refreshOffsetRecovery(api, generation, true);
         if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -6956,6 +6971,7 @@ class CircuitSetupPanel extends i$2 {
       this.offsetBusy,
       (value) => {
         this.board = value;
+        this.offsetFirstCalibrationConfirmed = false;
         this.offsetRetryConfirmed = false;
         this.requestUpdate();
       },
@@ -6963,6 +6979,7 @@ class CircuitSetupPanel extends i$2 {
         if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed")) {
           this.offsetStage = value;
           this.board = 0;
+          this.offsetFirstCalibrationConfirmed = false;
           this.offsetRetryConfirmed = false;
           this.requestUpdate();
         }
@@ -6986,6 +7003,11 @@ class CircuitSetupPanel extends i$2 {
         backupAcknowledged: this.offsetBackupAcknowledged,
         setBackup: (value) => {
           this.offsetBackupAcknowledged = value;
+          this.requestUpdate();
+        },
+        firstCalibrationConfirmed: this.offsetFirstCalibrationConfirmed,
+        setFirstCalibrationConfirmed: (value) => {
+          this.offsetFirstCalibrationConfirmed = value;
           this.requestUpdate();
         },
         prepare: () => void this.reviewOffsetPreparation()

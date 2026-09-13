@@ -6,10 +6,12 @@ async function install(page: Page) {
   await page.getByRole("button", { name: "Build firmware", exact: true }).click();
   await page.getByRole("button", { name: "Install on meter", exact: true }).click();
 }
-async function runStage(page: Page) {
-  await page.getByLabel("I completed the USB-only, de-energized preparation.", { exact: true }).check();
+async function runStage(page: Page, stage: 1 | 2) {
+  await page.getByLabel(stage === 1
+    ? "I completed the USB-only, de-energized preparation."
+    : "I powered down for rewiring and safely enclosed and energized only the voltage reference.", { exact: true }).check();
   await page.getByRole("button", { name: "Check measured readiness", exact: true }).click();
-  await page.getByRole("button", { name: "Run Stage 1 calibration", exact: true }).click();
+  await page.getByRole("button", { name: `Run Stage ${stage} calibration`, exact: true }).click();
 }
 test("stock preparation installs before explicit run, retries only unfinished, finalizes and starts an intentional cycle", async ({ page, request }) => {
   const session = `stock-${Date.now()}`;
@@ -22,6 +24,7 @@ test("stock preparation installs before explicit run, retries only unfinished, f
   await expect(page.getByRole("heading", { name: /Optional offset calibration/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Run Stage 1 calibration", exact: true })).toBeDisabled();
   await page.getByLabel("I understand that this step creates a private backup and installs a temporary zero-offset configuration.").check();
+  await page.getByLabel("I confirm the selected chips have never had offset calibration applied.", { exact: true }).check();
   await page.getByRole("button", { name: "Review offset preparation", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Install offset preparation", exact: true })).toBeVisible();
   await page.reload();
@@ -30,7 +33,7 @@ test("stock preparation installs before explicit run, retries only unfinished, f
   await install(page);
   await expect(page.getByRole("button", { name: "Run Stage 1 calibration", exact: true })).toBeDisabled();
   expect((await frames()).filter((frame) => /resume_offset_calibration|calibrate_offset|cancel_session$/.test(frame.type))).toEqual([]);
-  await runStage(page);
+  await runStage(page, 1);
   await expect(page.getByText("One chip finished; recovery is required")).toBeVisible();
   await expect(page.getByText("0/0, 0/0, 0/0", { exact: true })).toBeVisible();
   await page.reload(); await page.locator('[data-action="configure-device"]').click();
@@ -44,9 +47,18 @@ test("stock preparation installs before explicit run, retries only unfinished, f
   await page.getByLabel("I understand that this step creates a private backup and installs a temporary zero-offset configuration.").check();
   await page.getByRole("button", { name: "Review unfinished-chip preparation", exact: true }).click();
   await install(page);
-  await runStage(page);
+  await runStage(page, 1);
   await expect(page.getByText("0/0, 0/0, 0/0", { exact: true })).toHaveCount(2);
-  await page.getByRole("button", { name: "Skip offset calibration", exact: true }).click();
+
+  await page.locator('[data-offset-stage="2"]').click();
+  await expect(page.getByRole("heading", { name: /Optional offset calibration · Stage 2/ })).toBeVisible();
+  await expect(page.getByLabel("I confirm the selected chips have never had offset calibration applied.", { exact: true })).not.toBeChecked();
+  await page.getByLabel("I understand that this step creates a private backup and installs a temporary zero-offset configuration.").check();
+  await page.getByRole("button", { name: "Review offset preparation", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Install offset preparation", exact: true })).toBeVisible();
+  await install(page);
+  await runStage(page, 2);
+  await expect(page.getByText("0/0, 0/0, 0/0", { exact: true })).toHaveCount(2);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Skip voltage calibration", exact: true }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
@@ -62,7 +74,7 @@ test("stock preparation installs before explicit run, retries only unfinished, f
   await page.getByRole("button", { name: "Start new offset cycle", exact: true }).click();
   await expect(page.getByRole("button", { name: "Review offset preparation", exact: true })).toBeVisible({ timeout: 10_000 });
   const calls = await frames();
-  expect(calls.filter((frame) => frame.type.endsWith("/resume_offset_calibration"))).toHaveLength(2);
+  expect(calls.filter((frame) => frame.type.endsWith("/resume_offset_calibration"))).toHaveLength(3);
   expect(calls.filter((frame) => /\/(calibrate_offset|restart_and_verify|clear_calibration_flash|complete_calibration_without_changes|cancel_session)$/.test(frame.type))).toEqual([]);
   expect(errors).toEqual([]);
 });

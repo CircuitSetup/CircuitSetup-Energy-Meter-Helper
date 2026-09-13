@@ -15,22 +15,122 @@ from uuid import uuid4
 from homeassistant.core import HomeAssistant
 from homeassistant.util.file import write_utf8_file_atomic
 
+from .config_blocks import replace_managed_block
 from .config_document import _MAX_DOCUMENT_BYTES, ESPHomeConfigDocument
 from .config_mutator import (
     _gain_group_address,
     _read_calibrated_offset_entries,
+    _reject_local_offset_overrides,
     build_offset_table_mutation,
 )
 from .device_builder import ESPHomeConfigSnapshot
 from .log_parser import OffsetTableSnapshot
 from .models import ConfigMutationPlan, MeterTopology, PhaseOffsetTable, canonical_mac
+from .package_contract import (
+    calibration_package_path,
+    common_package_path,
+    offset_calibration_package_path,
+    package_path,
+)
 from .session_manager import CalibrationLease, ConfigLease, SessionManager
 from .store import _configuration_hash, _exact_mapping, _validate_group_table
-from .topology import topology_from_config, topology_from_native
+from .topology import (
+    package_graph_owner_is_official,
+    topology_from_config,
+    topology_from_native,
+)
 
 _MAX_RECORD_BYTES = 2 * _MAX_DOCUMENT_BYTES
 _MAX_OBSERVATIONS = 512
 ZERO_OFFSETS = ((0, 0), (0, 0), (0, 0))
+FIRST_CALIBRATION_CONFIGURATION: Literal["first_calibration_configuration"] = (
+    "first_calibration_configuration"
+)
+
+
+def _supported_offset_package_graph(
+    document: ESPHomeConfigDocument, topology: MeterTopology
+) -> bool:
+    """Accept only the checked-in package paths whose offset defaults are known."""
+    if not document.package_references:
+        return True
+    if not package_graph_owner_is_official(document):
+        return False
+    common = common_package_path(topology.connection_type)
+    if common is None:
+        return False
+    paths = {common}
+    for board_index in range(topology.board_count):
+        board = "main" if board_index == 0 else f"addon{board_index}"
+        paths.update(
+            {
+                f"Software/ESPHome/meter_sensors/6chan_{'main_sensor' if board_index == 0 else board}.yaml",
+                calibration_package_path(board_index),
+                offset_calibration_package_path(board_index),
+                package_path("power_quality", board_index),
+                package_path("status_fields", board_index),
+            }
+        )
+    return all(
+        reference.path in paths and reference.ref == "master"
+        for reference in document.package_references
+    )
+
+
+def source_offset_snapshots(
+    source: ESPHomeConfigSnapshot,
+    topology: MeterTopology,
+    instance_ids: set[str],
+    connection_generation: int,
+    *,
+    stages: tuple[Literal[1, 2], ...] = (1, 2),
+    reported_state: Literal[
+        "configuration", "first_calibration_configuration"
+    ] = FIRST_CALIBRATION_CONFIGURATION,
+    require_complete: bool = False,
+) -> tuple[OffsetTableSnapshot, ...]:
+    """Project known configuration offsets without treating flash as evidence."""
+    if reported_state not in ("configuration", FIRST_CALIBRATION_CONFIGURATION):
+        raise ValueError("configuration offset provenance is invalid")
+    _validate_source(source, topology)
+    document = ESPHomeConfigDocument.parse(source.content)
+    if (
+        document.unresolved_package_sources
+        or not _supported_offset_package_graph(document, topology)
+    ):
+        raise ValueError("configuration offset provenance is unavailable")
+    source_without_managed_offsets = source.content
+    if "calibrated_offsets" in document.managed_blocks:
+        source_without_managed_offsets = replace_managed_block(
+            source_without_managed_offsets, "calibrated_offsets", ""
+        )
+    _reject_local_offset_overrides(
+        source_without_managed_offsets,
+        topology,
+        instance_ids,
+        document.substitutions,
+    )
+    entries = _read_calibrated_offset_entries(document, topology)
+    snapshots: list[OffsetTableSnapshot] = []
+    for instance_id in sorted(instance_ids):
+        configured = entries.get(instance_id, {})
+        for stage in stages:
+            field = "rms" if stage == 1 else "power"
+            if require_complete and field not in configured:
+                raise ValueError("configuration offset table is incomplete")
+            # Stock ATM90E32 uses zero when a configuration offset is absent.
+            snapshots.append(
+                OffsetTableSnapshot(
+                    connection_generation,
+                    instance_id,
+                    stage,
+                    configured.get(field, ZERO_OFFSETS),
+                    reported_state,
+                    False,
+                    False,
+                )
+            )
+    return tuple(snapshots)
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,11 +243,17 @@ def _validate_observation(
         or snapshot.connection_generation < 1
         or type(snapshot.offset_stage) is not int
         or snapshot.offset_stage not in (1, 2)
-        or snapshot.reported_state not in ("restored", "mismatch", "configuration")
+        or snapshot.reported_state not in (
+            "restored",
+            "mismatch",
+            "configuration",
+            FIRST_CALIBRATION_CONFIGURATION,
+        )
         or type(snapshot.register_verified) is not bool
         or type(snapshot.config_differs_from_flash) is not bool
         or snapshot.config_differs_from_flash != (snapshot.reported_state == "mismatch")
-        or snapshot.reported_state == "configuration" and snapshot.register_verified
+        or snapshot.reported_state in ("configuration", FIRST_CALIBRATION_CONFIGURATION)
+        and snapshot.register_verified
     ):
         raise ValueError(
             "configuration observation cannot claim register verification"
@@ -184,6 +290,38 @@ def _final_evidence_hash(record: OffsetRecoveryRecord) -> str:
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
+
+
+def _offset_observation_tables(
+    observations: tuple[SavedOffsetObservation, ...],
+    *,
+    source_sha256: str | None = None,
+    allowed_sources: set[str] | None = None,
+) -> dict[tuple[str, int], PhaseOffsetTable]:
+    tables: dict[tuple[str, int], PhaseOffsetTable] = {}
+    for item in observations:
+        if source_sha256 is not None and item.source_sha256 != source_sha256:
+            continue
+        if allowed_sources is not None and item.source_sha256 not in allowed_sources:
+            continue
+        key = (item.snapshot.instance_id, item.snapshot.offset_stage)
+        if item.snapshot.reported_state in ("configuration", FIRST_CALIBRATION_CONFIGURATION):
+            tables.setdefault(key, item.snapshot.phase_values)
+        else:
+            tables[key] = item.snapshot.phase_values
+    return tables
+
+
+def _allowed_observation_sources(record: OffsetRecoveryRecord) -> set[str]:
+    allowed = {record.original.sha256}
+    if record.preparation is not None:
+        allowed.add(record.preparation.source_sha256)
+        if record.installed:
+            allowed.add(record.preparation.proposed_sha256)
+    if record.finalization is not None:
+        allowed.add(record.finalization.source_sha256)
+        allowed.add(record.finalization.proposed_sha256)
+    return allowed
 
 
 def _encode(record: OffsetRecoveryRecord) -> bytes:
@@ -704,6 +842,8 @@ class OffsetRecovery:
                         or pending.config_filename != source.configuration
                         or _topology_identity(pending.topology)
                         != _topology_identity(topology)
+                        or observed.reported_state
+                        in ("configuration", FIRST_CALIBRATION_CONFIGURATION)
                     ):
                         raise ValueError(
                             "completed offsets need fresh source and table reconciliation"
@@ -737,15 +877,25 @@ class OffsetRecovery:
             for item in record.results
         ):
             raise ValueError("offset chip is already complete")
+        tables = _offset_observation_tables(
+            record.observations,
+            allowed_sources=_allowed_observation_sources(record),
+        )
+        tables.update(
+            {
+                (item.instance_id, item.stage): item.phase_values
+                for item in record.results
+            }
+        )
         rms = {
-            item.instance_id: item.phase_values
-            for item in record.results
-            if item.stage == 1
+            instance: table
+            for (instance, offset_stage), table in tables.items()
+            if offset_stage == 1
         }
         power = {
-            item.instance_id: item.phase_values
-            for item in record.results
-            if item.stage == 2
+            instance: table
+            for (instance, offset_stage), table in tables.items()
+            if offset_stage == 2
         }
         (rms if stage == 1 else power).update(zeros)
         return build_offset_table_mutation(
@@ -770,13 +920,17 @@ class OffsetRecovery:
         targets = {item.instance_id for item in record.results}
         if not targets:
             raise ValueError("captured offset results are absent")
-        tables = {
-            (
-                item.snapshot.instance_id,
-                item.snapshot.offset_stage,
-            ): item.snapshot.phase_values
-            for item in record.observations
-        }
+        allowed_sources = {record.original.sha256}
+        if record.preparation is not None:
+            allowed_sources.add(record.preparation.source_sha256)
+            if record.installed:
+                allowed_sources.add(record.preparation.proposed_sha256)
+        if record.finalization is not None:
+            allowed_sources.add(record.finalization.source_sha256)
+            allowed_sources.add(record.finalization.proposed_sha256)
+        tables = _offset_observation_tables(
+            record.observations, allowed_sources=allowed_sources
+        )
         tables.update(
             {
                 (item.instance_id, item.stage): item.phase_values
@@ -1066,25 +1220,16 @@ class OffsetRecovery:
             or source.configuration != record.original.configuration
         ):
             raise ValueError("final offset source changed")
-        entries = _read_calibrated_offset_entries(
-            ESPHomeConfigDocument.parse(source.content), record.topology
-        )
-        stages: tuple[tuple[Literal[1, 2], str], ...] = ((1, "rms"), (2, "power"))
         observations = tuple(
-            SavedOffsetObservation(
-                source.sha256,
-                OffsetTableSnapshot(
-                    generation,
-                    instance,
-                    stage,
-                    entries[instance][key],
-                    "configuration",
-                    False,
-                    False,
-                ),
+            SavedOffsetObservation(source.sha256, snapshot)
+            for snapshot in source_offset_snapshots(
+                source,
+                record.topology,
+                set(record.finalization.targets),
+                generation,
+                reported_state="configuration",
+                require_complete=True,
             )
-            for instance in record.finalization.targets
-            for stage, key in stages
         )
         new = OffsetRecoveryRecord(lease.mac, source, record.topology, observations)
         async with api.hold_connection_generation(generation):

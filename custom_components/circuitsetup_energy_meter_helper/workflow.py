@@ -89,9 +89,12 @@ from .offset_readiness import (
     async_check_offset_readiness,
 )
 from .offset_recovery import (
+    FIRST_CALIBRATION_CONFIGURATION,
     OffsetRecovery,
     OffsetRecoveryRecord,
+    _allowed_observation_sources,
     _validate_source,
+    source_offset_snapshots,
 )
 from .preflight import PreflightResult, async_preflight
 from .provisioning import (
@@ -1582,12 +1585,15 @@ class EntryWorkflow:
         stage: OffsetReadinessStage,
         *,
         backup_acknowledged: bool,
+        first_calibration_confirmed: bool = False,
     ) -> dict[str, Any]:
         """Back up exact tables and review a zero baseline; internal workflow entry."""
         if backup_acknowledged is not True:
             raise WorkflowHandleError(
                 "private recovery backup acknowledgement is absent"
             )
+        if type(first_calibration_confirmed) is not bool:
+            raise WorkflowHandleError("first calibration confirmation is invalid")
         handle, revision = self._claim_ready_session(session_id)
         try:
             self._validate_offset_target(handle, board_index, stage)
@@ -1625,55 +1631,94 @@ class EntryWorkflow:
                 if not targets:
                     raise WorkflowHandleError(
                         "selected offset stage is already complete"
-                    )
-                snapshots = await api.async_offset_table_snapshot(
-                    set(targets), offset_stage=stage
                 )
                 generation = handle.binding.connection_generation
-                if (
-                    old is not None
-                    and old.preparation is None
-                    and old.original.sha256 == source.sha256
-                ):
-                    configured = {
-                        item.snapshot.instance_id: replace(
-                            item.snapshot, connection_generation=generation
-                        )
-                        for item in old.observations
-                        if item.source_sha256 == source.sha256
-                        and item.snapshot.reported_state == "configuration"
-                        and item.snapshot.offset_stage == stage
-                        and item.snapshot.instance_id in targets
-                    }
+                allowed_sources = (
+                    _allowed_observation_sources(old)
+                    if old is not None
+                    else {source.sha256}
+                )
+                stored_configuration = {
+                    (item.snapshot.instance_id, item.snapshot.offset_stage): replace(
+                        item.snapshot, connection_generation=generation
+                    )
+                    for item in old.observations
+                    if item.source_sha256 in allowed_sources
+                    and item.snapshot.reported_state
+                    in ("configuration", FIRST_CALIBRATION_CONFIGURATION)
+                    and item.snapshot.instance_id in targets
+                } if old is not None else {}
+                allow_new_configuration = old is None or not old.attempted
+                configured: dict[tuple[str, int], Any] | None = None
+                selected_configuration_targets: set[str] = set()
+                captured = []
+                completed_results = (
+                    {(item.instance_id, item.stage) for item in old.results}
+                    if old is not None
+                    else set()
+                )
+                for baseline_stage in (1, 2):
                     missing = {
                         instance
                         for instance in targets
-                        if snapshots.get(instance) is None
+                        if (instance, baseline_stage) not in completed_results
                     }
-                    if missing and missing <= set(configured):
-                        selected = await api.async_offset_configuration_selection(
-                            missing
-                        )
-                        if selected != dict.fromkeys(missing, generation):
-                            raise WorkflowCapabilityUnavailable(
-                                "configured offset tables need fresh selection"
+                    if not missing:
+                        continue
+                    snapshots = await api.async_offset_table_snapshot(
+                        missing,
+                        offset_stage=baseline_stage,
+                        require_communication=True,
+                        expected_chip_count=len(handle.binding.groups),
+                    )
+                    for instance in missing:
+                        item = snapshots.get(instance)
+                        if item is None:
+                            item = stored_configuration.get((instance, baseline_stage))
+                            if (
+                                item is not None
+                                and item.reported_state == "configuration"
+                            ):
+                                selected_configuration_targets.add(instance)
+                        if item is None and first_calibration_confirmed and allow_new_configuration:
+                            if configured is None or (
+                                instance, baseline_stage
+                            ) not in configured:
+                                source_items = source_offset_snapshots(
+                                    source,
+                                    handle.topology,
+                                    missing,
+                                    generation,
+                                    stages=(baseline_stage,),
+                                )
+                                configured = {
+                                    **(configured or {}),
+                                    **{
+                                        (candidate.instance_id, candidate.offset_stage): candidate
+                                        for candidate in source_items
+                                    },
+                                }
+                            item = configured.get((instance, baseline_stage))
+                        if (
+                            item is None
+                            or item.connection_generation != generation
+                            or item.instance_id != instance
+                            or item.offset_stage != baseline_stage
+                        ):
+                            raise OffsetTablesUnavailable(
+                                "fresh exact saved offset tables are unavailable"
                             )
-                        snapshots.update(
-                            {instance: configured[instance] for instance in missing}
-                        )
-                captured = []
-                for instance in targets:
-                    item = snapshots.get(instance)
-                    if (
-                        item is None
-                        or item.connection_generation != generation
-                        or item.instance_id != instance
-                        or item.offset_stage != stage
+                        captured.append(item)
+                if selected_configuration_targets:
+                    selected = await api.async_offset_configuration_selection(
+                        selected_configuration_targets
+                    )
+                    if selected != dict.fromkeys(
+                        selected_configuration_targets, generation
                     ):
-                        raise OffsetTablesUnavailable(
-                            "fresh exact saved offset tables are unavailable"
+                        raise WorkflowCapabilityUnavailable(
+                            "configured offset tables need fresh selection"
                         )
-                    captured.append(item)
                 if pending is not None:
                     retained = (
                         {(item.instance_id, item.stage) for item in old.results}
@@ -1695,7 +1740,10 @@ class EntryWorkflow:
                         if not missing:
                             continue
                         completed_snapshots = await api.async_offset_table_snapshot(
-                            missing, offset_stage=completed_stage
+                            missing,
+                            offset_stage=completed_stage,
+                            require_communication=True,
+                            expected_chip_count=len(handle.binding.groups),
                         )
                         for instance in missing:
                             item = completed_snapshots.get(instance)
@@ -1965,20 +2013,36 @@ class EntryWorkflow:
                 targets = {item.instance_id for item in record.results}
                 captured = {(item.instance_id, item.stage) for item in record.results}
                 if record.finalization is None:
+                    allowed_sources = _allowed_observation_sources(record)
+                    known = set(captured)
+                    configured = {
+                        (item.snapshot.instance_id, item.snapshot.offset_stage): replace(
+                            item.snapshot, connection_generation=api.connection_generation
+                        )
+                        for item in record.observations
+                        if item.source_sha256 in allowed_sources
+                        and item.snapshot.reported_state
+                        == FIRST_CALIBRATION_CONFIGURATION
+                    }
                     observations = []
                     for stage in (1, 2):
                         missing = {
                             instance
                             for instance in targets
-                            if (instance, stage) not in captured
+                            if (instance, stage) not in known
                         }
                         if not missing:
                             continue
                         snapshots = await api.async_offset_table_snapshot(
-                            missing, offset_stage=stage
+                            missing,
+                            offset_stage=stage,
+                            require_communication=True,
+                            expected_chip_count=len(handle.binding.groups),
                         )
                         for instance in missing:
                             item = snapshots.get(instance)
+                            if item is None:
+                                item = configured.get((instance, stage))
                             if (
                                 item is None
                                 or item.instance_id != instance

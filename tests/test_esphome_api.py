@@ -45,6 +45,7 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     sanitize_control_text,
 )
 from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+    MeterCommunicationError,
     OffsetTableSnapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
@@ -702,6 +703,74 @@ def test_offset_table_snapshot_reads_full_fresh_dump_outside_public_log_ring() -
         }
         assert len(session.log_lines) <= 2
         assert client.log_unsubscribed == 2
+
+    asyncio.run(run())
+
+
+def test_offset_table_snapshot_qualifies_missing_stage_from_the_same_healthy_dump() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_offset_table_snapshot(
+                {"meter_main1"},
+                offset_stage=2,
+                require_communication=True,
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    "ATM90E32:\nCS Pin: GPIO5\nUpdate Interval: 5s\n"
+                    "[CALIBRATION][meter_main1] Restored offset calibration from memory\n"
+                    "[CALIBRATION][meter_main1] | Phase | offset_voltage | offset_current |\n"
+                    "[CALIBRATION][meter_main1] | A | -10 | 30 |\n"
+                    "[CALIBRATION][meter_main1] | B | 0 | 0 |\n"
+                    "[CALIBRATION][meter_main1] | C | 11 | -31 |"
+                )
+            )
+        )
+
+        assert await pending == {"meter_main1": None}
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("message", "error"),
+    (
+        ("", TimeoutError),
+        ("ATM90E32:\nCS Pin: GPIO5\nCommunication failed", MeterCommunicationError),
+        ("ATM90E32:\nCS Pin: GPIO5", TimeoutError),
+    ),
+)
+def test_offset_table_snapshot_never_qualifies_empty_failed_or_truncated_dump(
+    message: str, error: type[Exception]
+) -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_offset_table_snapshot(
+                {"meter_main1"},
+                offset_stage=1,
+                require_communication=True,
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        if message:
+            assert client.on_log is not None
+            client.on_log(SimpleNamespace(message=message))
+        with pytest.raises(error):
+            await pending
+        await session.async_shutdown()
 
     asyncio.run(run())
 
