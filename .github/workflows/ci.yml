@@ -24,13 +24,19 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          PR_ACTION: ${{ github.event.action }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BEFORE_SHA: ${{ github.event.before }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_SHA: ${{ github.sha }}
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             base="$PR_BASE_SHA"
-            head="$PUSH_SHA"
+            if [[ "$PR_ACTION" == "synchronize" && -n "$PR_BEFORE_SHA" ]]; then
+              base="$PR_BEFORE_SHA"
+            fi
+            head="$PR_HEAD_SHA"
           else
             base="$PUSH_BEFORE_SHA"
             head="$PUSH_SHA"
