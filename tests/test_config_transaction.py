@@ -991,6 +991,9 @@ def test_source_diff_redacts_credentials_and_keeps_field_names() -> None:
     source = """wifi:
   ssid: HomeNetwork
   password: oldWifiValue
+web_server:
+  auth:
+    username: oldAdminName
 http_request:
   headers:
     Authorization: BearerOldValue
@@ -1000,6 +1003,7 @@ package:
 """
     proposed = (
         source.replace("oldWifiValue", "newWifiValue")
+        .replace("oldAdminName", "newAdminName")
         .replace("BearerOldValue", "BearerNewValue")
         .replace("oldCookieValue", "newCookieValue")
         .replace("oldUrlValue", "newUrlValue")
@@ -1011,6 +1015,8 @@ package:
         "HomeNetwork",
         "oldWifiValue",
         "newWifiValue",
+        "oldAdminName",
+        "newAdminName",
         "BearerOldValue",
         "BearerNewValue",
         "oldCookieValue",
@@ -1019,7 +1025,7 @@ package:
         "newUrlValue",
     ):
         assert value not in diff
-    for key in ("ssid:", "password:", "Authorization:", "Cookie:", "source:"):
+    for key in ("ssid:", "password:", "username:", "Authorization:", "Cookie:", "source:"):
         assert key in diff
 
 

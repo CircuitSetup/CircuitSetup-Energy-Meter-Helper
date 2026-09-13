@@ -13,7 +13,6 @@ from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
     _apply_package_options,
     build_calibration_preparation_mutation,
     package_capabilities_from_document,
-    package_graph_owner_is_official,
 )
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
     ConfigTransactionManager,
@@ -35,7 +34,7 @@ from custom_components.circuitsetup_energy_meter_helper.session_manager import (
     SessionManager,
 )
 from custom_components.circuitsetup_energy_meter_helper.topology import (
-    _official_package_graph,
+    package_graph_owner_is_official,
 )
 from custom_components.circuitsetup_energy_meter_helper.workflow import EntryWorkflow
 
@@ -46,7 +45,6 @@ def test_unresolved_local_package_does_not_inherit_official_authority() -> None:
     )
     document = ESPHomeConfigDocument.parse(content)
     assert not package_graph_owner_is_official(document)
-    assert not _official_package_graph(document)
     assert all(
         capability.state == "cannot_safely_manage"
         for capability in package_capabilities_from_document(document, _main_topology())
@@ -607,6 +605,23 @@ def test_prepared_package_enable_is_idempotent_and_provenance_bound() -> None:
     assert prepared.count("power_quality/6chan_main_power_quality.yaml") == 1
 
 
+def test_unchanged_official_shorthand_package_is_accepted() -> None:
+    content = (
+        "packages:\n"
+        "  meter: github://CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter/"
+        "Software/ESPHome/status_fields/6chan_main_status.yaml@master\n"
+    )
+
+    proposed, changes = _apply_package_options(
+        content,
+        _main_topology(),
+        {"power_quality": (False,), "status_fields": (True,)},
+    )
+
+    assert proposed == content
+    assert changes == []
+
+
 def test_commented_official_package_is_available_to_prepare() -> None:
     """A reviewed official include can be enabled without duplicating it."""
     content = _official_comments_stripped_config().replace(
@@ -650,7 +665,7 @@ def test_package_toggle_requires_a_writable_source_ref_even_when_the_path_exists
         _apply_package_options(
             content,
             _main_topology(),
-            {"power_quality": (False,), "status_fields": (True,)},
+            {"power_quality": (False,), "status_fields": (False,)},
         )
 
 

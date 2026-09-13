@@ -153,6 +153,55 @@ async def _install_totals_preview(
     return await manager.async_confirm_install(status.transaction_id, "admin")
 
 
+def test_chip_failure_abandon_advances_admitted_source_hash() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.const import (
+        CONF_INSPECTION_ADMISSION,
+        DOMAIN,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+        MeterCommunicationError,
+    )
+    from tests.test_config_mutator import _contract_snapshot
+
+    async def run() -> None:
+        content = _contract_snapshot().content
+        workflow, plan, _, builder, verifier = await _persisted_totals_workflow(content)
+        helper = SimpleNamespace(
+            domain=DOMAIN,
+            data={
+                CONF_INSPECTION_ADMISSION: {
+                    "device_id": plan.device_id,
+                    "mac": MAC,
+                    "configuration": plan.snapshot.configuration,
+                    "source_sha256": plan.snapshot.sha256,
+                    "physical_chip_count": plan.topology.group_count,
+                }
+            },
+        )
+        workflow._hass.config_entries = SimpleNamespace(
+            async_entries=lambda domain: [helper] if domain == DOMAIN else [],
+            async_update_entry=lambda entry, **kwargs: setattr(entry, "data", kwargs["data"]),
+        )
+        workflow._inspections = {}
+        requested = replace(
+            plan.inventory.configuration,
+            meter=replace(plan.inventory.configuration.meter, friendly_name="Retained"),
+        )
+        preview = await workflow._async_preview_meter_configuration(plan, requested)
+        verifier.evidence = MeterCommunicationError((0,))
+        manager = workflow.transactions
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        retained_sha256 = sha256(builder.remote_content.encode()).hexdigest()
+
+        await manager.async_abandon(preview.transaction_id)
+
+        assert helper.data[CONF_INSPECTION_ADMISSION]["source_sha256"] == retained_sha256
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("addons", (0, 1))
 @pytest.mark.parametrize("visible", (False, True))
 @pytest.mark.parametrize("rollback", (False, True))

@@ -50,4 +50,3 @@ def test_status_contract_distinguishes_phase_and_board_diagnostics(board: int) -
     expected_disabled = contract.ha_disabled_entity_count(board)
     assert expected_disabled is not None
     assert source.count("disabled_by_default: true") == expected_disabled
-    assert contract.ha_entities_disabled_by_default

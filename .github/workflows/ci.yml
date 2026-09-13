@@ -158,7 +158,7 @@ jobs:
           ref: ${{ matrix.ref }}
           path: firmware
       - name: Test pinned firmware total hierarchy
-        run: uv sync --all-groups && uv run pytest -q tests/test_firmware_total_contract.py
+        run: uv run --no-sync pytest -q tests/test_firmware_total_contract.py
         env:
           FIRMWARE_ROOT: firmware
       - name: Verify ${{ matrix.name }} catalog, package, and project contracts

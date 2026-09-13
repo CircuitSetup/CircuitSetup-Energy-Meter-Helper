@@ -46,7 +46,6 @@ def is_static_package_ref(value: str | None) -> bool:
 class PackageContract:
     """One optional official package and the entities it contributes."""
 
-    key: str
     directory: str
     suffix: str
     phase_metrics: tuple[str, ...]
@@ -55,8 +54,6 @@ class PackageContract:
     phase_metric_count: int
     board_metrics: tuple[tuple[int, tuple[str, ...]], ...]
     metrics_are_numeric: bool
-    ha_entities_disabled_by_default: bool
-    default_main_enabled: bool
     ha_disabled_entity_counts: tuple[tuple[int, int], ...]
 
     def path(self, board_index: int) -> str:
@@ -112,7 +109,6 @@ class CalibrationPreparationCapability:
 
 SUPPORTED_PACKAGE_CONTRACTS = {
     "power_quality": PackageContract(
-        key="power_quality",
         directory="power_quality",
         suffix="power_quality",
         phase_metrics=("reactive_power", "apparent_power", "power_factor"),
@@ -121,12 +117,9 @@ SUPPORTED_PACKAGE_CONTRACTS = {
         phase_metric_count=6,
         board_metrics=(),
         metrics_are_numeric=True,
-        ha_entities_disabled_by_default=False,
-        default_main_enabled=False,
         ha_disabled_entity_counts=(),
     ),
     "status_fields": PackageContract(
-        key="status_fields",
         directory="status_fields",
         suffix="status",
         phase_metrics=("phase_status",),
@@ -135,8 +128,6 @@ SUPPORTED_PACKAGE_CONTRACTS = {
         phase_metric_count=2,
         board_metrics=((0, ("frequency_status",)),),
         metrics_are_numeric=False,
-        ha_entities_disabled_by_default=True,
-        default_main_enabled=True,
         ha_disabled_entity_counts=((0, 7), (1, 6)),
     ),
 }
@@ -159,16 +150,3 @@ def calibration_package_path(board_index: int) -> str:
         f"Software/ESPHome/{CALIBRATION_PACKAGE_DIRECTORY}/"
         f"6chan_{board}_calibration.yaml"
     )
-
-
-def default_package_options(board_count: int) -> dict[str, tuple[bool, ...]]:
-    """Return the established new-install package selection defaults."""
-    if not 1 <= board_count <= 7:
-        raise ValueError("board_count must be between 1 and 7")
-    return {
-        key: tuple(
-            contract.default_main_enabled if board == 0 else False
-            for board in range(board_count)
-        )
-        for key, contract in SUPPORTED_PACKAGE_CONTRACTS.items()
-    }

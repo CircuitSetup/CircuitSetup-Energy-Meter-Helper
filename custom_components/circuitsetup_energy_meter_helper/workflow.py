@@ -44,13 +44,13 @@ from .config_mutator import (
     build_calibration_preparation_mutation,
     calibration_preparation_capability_from_document,
     package_capabilities_from_document,
-    package_graph_owner_is_official,
     package_options_from_document,
 )
 from .config_transaction import (
     ConfigTransactionManager,
     ConfigTransactionState,
     ReconnectEvidence,
+    TransactionEvidenceCode,
 )
 from .const import CONF_INSPECTION_ADMISSION, DOMAIN, ESPHOME_DEVICE_BUILDERS
 from .ct_catalog import REPORTING_MULTIPLIERS, CTPresetCatalog
@@ -115,6 +115,7 @@ from .topology import (
     TopologyMismatchError,
     TopologyParseError,
     is_supported_project,
+    package_graph_owner_is_official,
     topology_from_config,
     topology_from_inspection,
     topology_from_native,
@@ -1176,7 +1177,13 @@ class EntryWorkflow:
 
         def advance_admission(update: Any) -> None:
             nonlocal unsubscribe
-            if update.state is not ConfigTransactionState.VERIFIED:
+            retained_source = (
+                update.state is ConfigTransactionState.FAILED
+                and TransactionEvidenceCode.METER_COMMUNICATION_FAILED
+                in update.evidence
+                and TransactionEvidenceCode.CANCELLED in update.evidence
+            )
+            if update.state is not ConfigTransactionState.VERIFIED and not retained_source:
                 if update.state not in {
                     ConfigTransactionState.FAILED,
                     ConfigTransactionState.ROLLED_BACK,

@@ -302,14 +302,14 @@ def _apply_package_options(
                 )
             reference = references[0] if references else None
             current = reference is not None and reference.active
+            if current == enabled:
+                continue
             if reference is not None and not _official_package_reference(reference):
                 raise ConfigMutationError(
                     f"{feature} package cannot be safely managed "
                     "from this package source",
                     reason_code=_package_reference_reason(reference),
                 )
-            if current == enabled:
-                continue
             if reference is None:
                 if not enabled:
                     continue
@@ -579,16 +579,6 @@ def _official_package_reference(reference: PackageFileReference) -> bool:
         reference.repository == OFFICIAL_PACKAGE_REPOSITORY
         and is_static_package_ref(reference.ref)
         and reference.files_span is not None
-    )
-
-
-def package_graph_owner_is_official(document: ESPHomeConfigDocument) -> bool:
-    """Return whether every parsed package reference has the official source."""
-    references = document.package_references
-    return not document.unresolved_package_sources and bool(references) and all(
-        reference.repository == OFFICIAL_PACKAGE_REPOSITORY
-        and is_static_package_ref(reference.ref)
-        for reference in references
     )
 
 
@@ -2090,7 +2080,7 @@ def _render_value(key: str, value: str, content: str, current: ConfigScalar) -> 
     if _is_gain_key(key):
         return _render_gain(value, old_token)
     if key in {"offset_calibration", "gain_calibration"}:
-        return _render_boolean(value, old_token)
+        return _render_gain(value, old_token)
     if key == "electric_freq":
         return _render_frequency(value, old_token)
     return _render_name(value, old_token)
@@ -2118,14 +2108,6 @@ def _prevailing_quote(document: ESPHomeConfigDocument, key: str) -> str:
 
 
 def _render_gain(value: str, old_token: str) -> str:
-    if old_token.startswith("'"):
-        return f"'{value}'"
-    if old_token.startswith('"'):
-        return json.dumps(value)
-    return value
-
-
-def _render_boolean(value: str, old_token: str) -> str:
     if old_token.startswith("'"):
         return f"'{value}'"
     if old_token.startswith('"'):

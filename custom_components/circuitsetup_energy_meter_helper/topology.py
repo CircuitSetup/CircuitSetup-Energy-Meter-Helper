@@ -381,7 +381,7 @@ def addon_count_from_dashboard_import(url: str | None) -> int | None:
     return None
 
 
-def _official_package_graph(document: ESPHomeConfigDocument) -> bool:
+def package_graph_owner_is_official(document: ESPHomeConfigDocument) -> bool:
     references = document.package_references
     return not document.unresolved_package_sources and bool(references) and all(
         reference.repository == OFFICIAL_PACKAGE_REPOSITORY
@@ -488,7 +488,7 @@ def topology_from_inspection(
 
     evidence: list[TopologyEvidence] = []
     package_count = addon_count_from_packages(document.package_files)
-    if package_count is not None and _official_package_graph(document):
+    if package_count is not None and package_graph_owner_is_official(document):
         evidence.append(
             TopologyEvidence(
                 TopologyEvidenceSource.CONFIG_PACKAGES,

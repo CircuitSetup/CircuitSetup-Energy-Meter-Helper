@@ -29,7 +29,6 @@ from .config_mutator import (
     ConfigMutationError,
     CTChangeRequest,
     build_calibrated_gain_mutation,
-    package_graph_owner_is_official,
     package_options_from_document,
 )
 from .ct_catalog import CTPresetCatalog
@@ -76,6 +75,7 @@ from .store import (
     VerifiedCalibrationRecord,
 )
 from .topology import (
+    package_graph_owner_is_official,
     verified_voltage_reference_fingerprint,
     voltage_reference_fingerprint_for_meter,
     voltage_reference_topology_from_config,
@@ -2294,7 +2294,17 @@ def _mark_sensitive_yaml_node(
                 sensitive_lines,
                 parent_sensitive=parent_sensitive or context_sensitive,
                 all_values_sensitive=all_values_sensitive
-                or key.casefold() == "headers",
+                or key.casefold()
+                in {
+                    "auth",
+                    "authentication",
+                    "credential",
+                    "credentials",
+                    "headers",
+                    "private",
+                    "secret",
+                    "secrets",
+                },
             )
     elif isinstance(node, SequenceNode):
         for child in node.value:

@@ -1116,11 +1116,6 @@ class _DocumentParser:
         return match.group(1)
 
     @classmethod
-    def _remote_shorthand_path(cls, value: str) -> str | None:
-        remote = cls._remote_shorthand(value)
-        return remote[0] if remote is not None else None
-
-    @classmethod
     def _remote_shorthand(
         cls, value: str
     ) -> tuple[str, str, str | None] | None:
