@@ -1335,6 +1335,145 @@ def test_stock_offset_snapshot_uses_flash_mismatch_values_and_preserves_zeroes()
     )
 
 
+@pytest.mark.parametrize(
+    ("stage", "fallback", "columns"),
+    (
+        (
+            1,
+            "No stored offset calibrations found. Using default values.",
+            "| Phase | offset_voltage | offset_current |",
+        ),
+        (
+            2,
+            "No stored power offset calibrations found. Using default values.",
+            "| Phase | offset_active_power | offset_reactive_power |",
+        ),
+        (
+            2,
+            "No stored power offsets found. Using default values.",
+            "| Phase | offset_active_power | offset_reactive_power |",
+        ),
+    ),
+)
+def test_first_run_offset_snapshot_uses_reported_configuration_table(
+    stage: int, fallback: str, columns: str
+) -> None:
+    source = (
+        f"[W][atm90e32] [CALIBRATION][meter_main1] {fallback}",
+        f"[I][atm90e32] [CALIBRATION][meter_main1] {columns}",
+        "[I][atm90e32] [CALIBRATION][meter_main1] | A | -10 | 30 |",
+        "[I][atm90e32] [CALIBRATION][meter_main1] | B | 0 | 0 |",
+        "[I][atm90e32] [CALIBRATION][meter_main1] | C | 11 | -31 |",
+    )
+    lines = [
+        CalibrationLogLine(3, 4, 11.0 + index, line)
+        for index, line in enumerate(source)
+    ]
+
+    snapshot = parse_offset_table_snapshot(
+        lines,
+        connection_generation=3,
+        operation_sequence=4,
+        expected_instance_ids={"meter_main1"},
+        started_after=10.0,
+        offset_stage=stage,
+    )["meter_main1"]
+
+    assert snapshot == OffsetTableSnapshot(
+        3,
+        "meter_main1",
+        stage,
+        ((-10, 30), (0, 0), (11, -31)),
+        "configuration",
+        False,
+        False,
+    )
+
+
+def test_offset_snapshot_keeps_incomplete_configuration_table_unavailable() -> None:
+    lines = [
+        CalibrationLogLine(
+            3,
+            4,
+            11.0,
+            "[W][atm90e32] [CALIBRATION][meter_main1] "
+            "No stored offset calibrations found. Using default values.",
+        ),
+        CalibrationLogLine(
+            3,
+            4,
+            12.0,
+            "[I][atm90e32] [CALIBRATION][meter_main1] "
+            "| Phase | offset_voltage | offset_current |",
+        ),
+        CalibrationLogLine(
+            3,
+            4,
+            13.0,
+            "[I][atm90e32] [CALIBRATION][meter_main1] | A | -10 | 30 |",
+        ),
+        CalibrationLogLine(
+            3,
+            4,
+            14.0,
+            "[I][atm90e32] [CALIBRATION][meter_main1] | B | 0 | 0 |",
+        ),
+    ]
+
+    assert parse_offset_table_snapshot(
+        lines,
+        connection_generation=3,
+        operation_sequence=4,
+        expected_instance_ids={"meter_main1"},
+        started_after=10.0,
+        offset_stage=1,
+    ) == {"meter_main1": None}
+
+
+@pytest.mark.parametrize(
+    ("stage", "fallback", "flash_header"),
+    (
+        (
+            1,
+            "No stored offset calibrations found. Using default values.",
+            "Offset mismatch: using flash values",
+        ),
+        (
+            2,
+            "No stored power offset calibrations found. Using default values.",
+            "Power offset mismatch: using flash values",
+        ),
+    ),
+)
+def test_offset_snapshot_rejects_fallback_mixed_with_flash_evidence(
+    stage: int, fallback: str, flash_header: str
+) -> None:
+    columns = (
+        "| Phase | offset_voltage | offset_current |"
+        if stage == 1
+        else "| Phase | offset_active_power | offset_reactive_power |"
+    )
+    lines = [
+        CalibrationLogLine(
+            3,
+            4,
+            11.0 + index,
+            f"[I][atm90e32] [CALIBRATION][meter_main1] {line}",
+        )
+        for index, line in enumerate((fallback, flash_header, columns))
+    ]
+
+    with pytest.raises(LogEvidenceError, match="contradictory"):
+        parse_offset_table_snapshot(
+            lines,
+            connection_generation=3,
+            operation_sequence=4,
+            expected_instance_ids={"meter_main1"},
+            started_after=10.0,
+            offset_stage=stage,
+        )
+
+
 def test_offset_snapshot_keeps_silence_unavailable_and_rejects_delayed_spi_failure() -> (
     None
 ):

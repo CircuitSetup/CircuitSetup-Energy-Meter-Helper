@@ -49,7 +49,6 @@ from custom_components.circuitsetup_energy_meter_helper.log_parser import (
 )
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
     FreshWindowError,
-    StateUnavailableError,
 )
 
 
@@ -492,7 +491,7 @@ def test_absolute_sensor_window_rejects_another_connection_generation() -> None:
     asyncio.run(run())
 
 
-def test_number_ack_uses_shared_tracker_and_rejects_unavailable_state() -> None:
+def test_number_ack_waits_through_transient_unavailable_state() -> None:
     async def run() -> None:
         client = FakeClient(acknowledge_numbers=False)
         session = make_session([client])
@@ -502,9 +501,11 @@ def test_number_ack_uses_shared_tracker_and_rejects_unavailable_state() -> None:
         assert client.on_state is not None
 
         client.on_state(NumberState(4, 0.0, missing_state=True))
+        await asyncio.sleep(0)
+        assert not pending.done()
 
-        with pytest.raises(StateUnavailableError, match="unavailable"):
-            await pending
+        client.on_state(NumberState(4, 0.0))
+        assert (await pending).state == 0.0
 
     asyncio.run(run())
 

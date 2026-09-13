@@ -140,21 +140,13 @@ class StateTracker:
             if waiter.future.done() or received_at <= waiter.dispatched_after:
                 continue
             if bool(getattr(state, "missing_state", False)):
-                waiter.future.set_exception(
-                    StateUnavailableError("state is unavailable")
-                )
                 continue
             try:
                 value = float(state.state)
             except TypeError, ValueError:
-                waiter.future.set_exception(
-                    StateUnavailableError("state is non-finite")
-                )
                 continue
             if not math.isfinite(value):
-                waiter.future.set_exception(
-                    StateUnavailableError("state is non-finite")
-                )
+                continue
             elif abs(value - waiter.target) <= waiter.tolerance:
                 waiter.future.set_result(value)
         self._waiters[waiter_key] = [
