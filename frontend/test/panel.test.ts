@@ -2732,7 +2732,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector(".sr-status")?.textContent).not.toContain("applied_pending_restart_verification");
   });
 
-  it.each(["offset_tables_unavailable", "operation_failed"])("explains offset preparation failure %s without claiming a backup", async (code) => {
+  it.each(["offset_tables_unavailable", "offset_communication_failed", "offset_diagnostics_incomplete", "offset_chip_identity_unavailable", "operation_failed"])("explains offset preparation failure %s without claiming a backup", async (code) => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     const preview = vi.fn().mockRejectedValue({ code, message: "private backend details" });
     const state = panel as unknown as { api: unknown; session: unknown; offsetBackupAcknowledged: boolean;
@@ -2747,9 +2747,30 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("Recovery is retained.");
     expect(text(panel)).toContain(code === "offset_tables_unavailable"
       ? "even when the firmware supports offset calibration"
-      : "preparation could not be reviewed");
+      : code === "offset_communication_failed"
+        ? "could not verify meter-chip communication"
+        : code === "offset_diagnostics_incomplete"
+          ? "diagnostics for the selected Main Board were incomplete"
+          : code === "offset_chip_identity_unavailable"
+            ? "mapping for the selected Main Board could not be verified"
+            : "preparation could not be reviewed");
     if (code === "operation_failed") expect(text(panel)).not.toContain("Stock ESPHome");
     expect(state.transaction).toBeNull();
+  });
+
+  it("identifies the selected add-on in offset communication errors", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const preview = vi.fn().mockRejectedValue({ code: "offset_communication_failed", message: "private backend details" });
+    const state = panel as unknown as { api: unknown; session: unknown; board: number; offsetBackupAcknowledged: boolean;
+      reviewOffsetPreparation(): Promise<void> };
+    state.api = { previewOffsetPreparation: preview };
+    state.session = { session_id: "session" };
+    state.board = 2;
+    state.offsetBackupAcknowledged = true;
+    await state.reviewOffsetPreparation();
+    await panel.updateComplete;
+    expect(text(panel)).toContain("selected Add-on 2");
+    expect(text(panel)).not.toContain("Board 3");
   });
 
   it("renders ordered offset preparation, gates Stage 2, and bounds seven-board tabs", async () => {

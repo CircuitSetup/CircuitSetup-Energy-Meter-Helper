@@ -4315,6 +4315,7 @@ const OFFICIAL_PROJECT_REMAINDERS = /* @__PURE__ */ new Set([
 const REBIND_TIMEOUT_MS = 1e4;
 const REBIND_RETRY_MS = 250;
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const offsetBoardLabel = (board) => board === 0 ? "Main Board" : `Add-on ${board}`;
 const meterSettings = ({ authoritative: _authoritative, warnings: _warnings, ...meter }) => meter;
 const profileNominalVoltage = (system) => system === "split_phase_120_240" ? 120 : system === "single_phase_230" ? 230 : null;
 const ENTITY_COUNT_WARNING_THRESHOLD = 100;
@@ -6227,7 +6228,7 @@ class CircuitSetupPanel extends i$2 {
         this.navigate("install-configuration");
         await this.subscribeTransaction(this.connectionGeneration);
       },
-      `Board ${board + 1} Stage ${stage} preparation could not be reviewed. Check ESPHome Device Builder and the meter connection, then retry. Existing recovery data, if any, is retained.`,
+      `${offsetBoardLabel(board)} Stage ${stage} preparation could not be reviewed. Check ESPHome Device Builder and the meter connection, then retry. Existing recovery data, if any, is retained.`,
       () => this.ownsOperation(generation, api, deviceId)
     );
     this.offsetBusy = false;
@@ -6759,7 +6760,12 @@ class CircuitSetupPanel extends i$2 {
   }
   safeErrorMessage(error, fallback) {
     const code = error.code;
-    if (code === "offset_tables_unavailable") return "The meter did not report all offset values needed to back up this calibration stage. This can happen before the first offset calibration, even when the firmware supports offset calibration. Retry to request fresh diagnostics, or choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data is unchanged.";
+    const board = offsetBoardLabel(this.board);
+    if (code === "offset_communication_failed") return `The selected ${board} could not verify meter-chip communication. Check the meter connection and retry. Existing recovery data is unchanged.`;
+    if (code === "meter_communication_failed") return this.step === "offset" ? `The selected ${board} could not verify meter-chip communication. Check the meter connection and retry. Existing recovery data is unchanged.` : "Meter-chip communication could not be verified. Check the meter connection and retry.";
+    if (code === "offset_diagnostics_incomplete") return `Fresh offset diagnostics for the selected ${board} were incomplete. Retry to request fresh diagnostics. Existing recovery data is unchanged.`;
+    if (code === "offset_chip_identity_unavailable") return `The meter-chip mapping for the selected ${board} could not be verified from the authoritative configuration. Review the source/package definitions and retry. Existing recovery data is unchanged.`;
+    if (code === "offset_tables_unavailable") return `The meter did not report all offset values needed to back up this calibration stage for the selected ${board}. This can happen before the first offset calibration, even when the firmware supports offset calibration. Retry to request fresh diagnostics, or choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data is unchanged.`;
     if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
     return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
   }

@@ -23,14 +23,25 @@ MAC = "aabbccddeeff"
 OLD = ((-12, 31), (-13, 32), (-14, 33))
 
 
-def _snapshot() -> Any:
+def _snapshot(addons: int = 0) -> Any:
     snapshot = base_snapshot()
+    pins = ((5, 4), (0, 16), (27, 17), (2, 21), (13, 22), (14, 25), (15, 26))
+    hardware = "".join(
+        f"  - platform: atm90e32\n    id: ${{{'main_meter_id' + str(group + 1) if board == 0 else f'addon{board}_id{group + 1}'}}}\n    cs_pin: {pin}\n"
+        for board in range(addons + 1)
+        for group, pin in enumerate(pins[board])
+    )
+    ids = "".join(
+        f"  {'main_meter_id' + str(group + 1) if board == 0 else f'addon{board}_id{group + 1}'}: {'meter_main' + str(group + 1) if board == 0 else f'addon{board}_{group + 1}'}\n"
+        for board in range(addons + 1)
+        for group in range(2)
+    )
     content = (
         "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n    version: '1'\n"
         + snapshot.content.replace(
             "substitutions:\n",
-            "substitutions:\n  main_meter_name1: Main Meter 1\n  main_meter_name2: Main Meter 2\n",
-        )
+            "substitutions:\n  main_meter_name1: Main Meter 1\n  main_meter_name2: Main Meter 2\n" + ids,
+        ).replace("logger:\n", hardware + "logger:\n", 1)
     )
     return replace(
         snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
@@ -88,13 +99,7 @@ def test_source_offset_cs_pins_use_official_defaults_and_literal_override() -> N
     )
     assert pins == {"meter_main1": 5, "meter_main2": 4}
 
-    content = source.content.replace(
-        "logger:\n",
-        "  - id: !extend meter_main1\n"
-        "    cs_pin: GPIO33\n"
-        "logger:\n",
-        1,
-    )
+    content = source.content.replace("    cs_pin: 5\n", "    cs_pin: GPIO33\n", 1)
     source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
     assert source_offset_cs_pins(source, _topology(), {"meter_main1"}) == {
         "meter_main1": 33
@@ -107,7 +112,7 @@ def test_source_offset_cs_pins_cover_official_addon_defaults() -> None:
     )
     from tests.test_config_mutator import _topology_for_addons
 
-    source = _snapshot()
+    source = _snapshot(addons=2)
     content = source.content.replace(
         "circuitsetup.6c-energy-meter", "circuitsetup.6c-energy-meter-2-addons", 1
     )
@@ -124,6 +129,78 @@ def test_source_offset_cs_pins_cover_official_addon_defaults() -> None:
         "addon2_1": 27,
         "addon2_2": 17,
     }
+
+
+def test_source_offset_cs_pins_require_hardware_definitions() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    content = (
+        "esphome:\n  name: meter\n  project:\n"
+        "    name: circuitsetup.6c-energy-meter\n    version: '1.8'\n"
+    )
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    with pytest.raises(ValueError, match="chip identities"):
+        source_offset_cs_pins(source, _topology(), {"meter_main1", "meter_main2"})
+
+
+def test_source_offset_cs_pins_rejects_official_packages_without_sensor_coverage() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    content = """esphome:
+  project:
+    name: circuitsetup.6c-energy-meter
+    version: '1'
+packages:
+  remote_package:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
+    files:
+      - Software/ESPHome/6chan_common.yaml
+      - Software/ESPHome/calibration/6chan_main_calibration.yaml
+      - Software/ESPHome/calibration/6chan_main_offset_calibrations.yaml
+"""
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    with pytest.raises(ValueError, match="chip identities"):
+        source_offset_cs_pins(source, _topology(), {"meter_main1", "meter_main2"})
+
+
+@pytest.mark.parametrize("sensor_file", ("6chan_main_sensor.yaml", "main.yaml"))
+def test_source_offset_cs_pins_requires_real_official_sensor_package_coverage(
+    sensor_file: str,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    content = """esphome:
+  project:
+    name: circuitsetup.6c-energy-meter
+    version: '1'
+packages:
+  remote_package:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
+    files:
+      - Software/ESPHome/meter_sensors/SENSOR_FILE
+""".replace("SENSOR_FILE", sensor_file)
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    if sensor_file == "main.yaml":
+        with pytest.raises(ValueError, match="chip identities"):
+            source_offset_cs_pins(source, _topology(), {"meter_main1", "meter_main2"})
+    else:
+        assert source_offset_cs_pins(
+            source, _topology(), {"meter_main1", "meter_main2"}
+        ) == {"meter_main1": 5, "meter_main2": 4}
 
 
 @pytest.mark.parametrize(

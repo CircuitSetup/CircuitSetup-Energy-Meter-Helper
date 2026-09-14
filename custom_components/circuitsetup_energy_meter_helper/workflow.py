@@ -72,6 +72,7 @@ from .entity_estimator import (
     summarize_configuration_totals,
 )
 from .esphome_api import ESPHomeApiSession
+from .log_parser import LogEvidenceError, MeterCommunicationError
 from .meter_config_mutator import (
     build_meter_configuration_mutation,
     expected_meter_entity_evidence,
@@ -302,6 +303,14 @@ class WorkflowCapabilityUnavailable(RuntimeError):
 
 class OffsetTablesUnavailable(WorkflowCapabilityUnavailable):
     """Fresh diagnostics did not supply complete tables for a safe offset backup."""
+
+
+class OffsetDiagnosticsIncomplete(WorkflowCapabilityUnavailable):
+    """Fresh offset diagnostics ended before the selected chips were proven."""
+
+
+class OffsetChipIdentityUnavailable(WorkflowCapabilityUnavailable):
+    """The authoritative source could not establish the selected chip mapping."""
 
 
 class WorkflowHandleError(KeyError):
@@ -1634,11 +1643,15 @@ class EntryWorkflow:
                         "selected offset stage is already complete"
                 )
                 try:
+                    required_instances = set(targets)
+                    if pending is not None:
+                        required_instances.update(pending.expected_phase_offsets)
+                        required_instances.update(pending.expected_phase_power_offsets)
                     target_cs_pins = source_offset_cs_pins(
-                        source, handle.topology, set(targets)
+                        source, handle.topology, required_instances
                     )
                 except Exception:  # noqa: BLE001 - source details stay private
-                    raise WorkflowCapabilityUnavailable(
+                    raise OffsetChipIdentityUnavailable(
                         "selected offset chip identities are unavailable"
                     ) from None
                 generation = handle.binding.connection_generation
@@ -1674,14 +1687,19 @@ class EntryWorkflow:
                     }
                     if not missing:
                         continue
-                    snapshots = await api.async_offset_table_snapshot(
-                        missing,
-                        offset_stage=baseline_stage,
-                        require_communication=True,
-                        expected_cs_pins=frozenset(
-                            target_cs_pins[instance] for instance in missing
-                        ),
-                    )
+                    try:
+                        snapshots = await api.async_offset_table_snapshot(
+                            missing,
+                            offset_stage=baseline_stage,
+                            require_communication=True,
+                            expected_cs_pins=frozenset(
+                                target_cs_pins[instance] for instance in missing
+                            ),
+                        )
+                    except (LogEvidenceError, TimeoutError):
+                        raise OffsetDiagnosticsIncomplete(
+                            "fresh offset diagnostics are incomplete"
+                        ) from None
                     for instance in missing:
                         item = snapshots.get(instance)
                         if item is None:
@@ -1750,14 +1768,19 @@ class EntryWorkflow:
                         }
                         if not missing:
                             continue
-                        completed_snapshots = await api.async_offset_table_snapshot(
-                            missing,
-                            offset_stage=completed_stage,
-                            require_communication=True,
-                            expected_cs_pins=frozenset(
-                                target_cs_pins[instance] for instance in missing
-                            ),
-                        )
+                        try:
+                            completed_snapshots = await api.async_offset_table_snapshot(
+                                missing,
+                                offset_stage=completed_stage,
+                                require_communication=True,
+                                expected_cs_pins=frozenset(
+                                    target_cs_pins[instance] for instance in missing
+                                ),
+                            )
+                        except (LogEvidenceError, TimeoutError):
+                            raise OffsetDiagnosticsIncomplete(
+                                "fresh offset diagnostics are incomplete"
+                            ) from None
                         for instance in missing:
                             item = completed_snapshots.get(instance)
                             if (
@@ -1815,7 +1838,12 @@ class EntryWorkflow:
                 }
             finally:
                 lease.release()
-        except WorkflowHandleError, WorkflowCapabilityUnavailable, CalibrationBusyError:
+        except (
+            WorkflowHandleError,
+            WorkflowCapabilityUnavailable,
+            CalibrationBusyError,
+            MeterCommunicationError,
+        ):
             raise
         except Exception:  # noqa: BLE001 - private source/native failures are not public diagnostics
             raise WorkflowCapabilityUnavailable(
@@ -2029,7 +2057,7 @@ class EntryWorkflow:
                         source, handle.topology, targets
                     )
                 except Exception:  # noqa: BLE001 - source details stay private
-                    raise WorkflowCapabilityUnavailable(
+                    raise OffsetChipIdentityUnavailable(
                         "selected offset chip identities are unavailable"
                     ) from None
                 captured = {(item.instance_id, item.stage) for item in record.results}
@@ -2054,14 +2082,19 @@ class EntryWorkflow:
                         }
                         if not missing:
                             continue
-                        snapshots = await api.async_offset_table_snapshot(
-                            missing,
-                            offset_stage=stage,
-                            require_communication=True,
-                            expected_cs_pins=frozenset(
-                                target_cs_pins[instance] for instance in missing
-                            ),
-                        )
+                        try:
+                            snapshots = await api.async_offset_table_snapshot(
+                                missing,
+                                offset_stage=stage,
+                                require_communication=True,
+                                expected_cs_pins=frozenset(
+                                    target_cs_pins[instance] for instance in missing
+                                ),
+                            )
+                        except (LogEvidenceError, TimeoutError):
+                            raise OffsetDiagnosticsIncomplete(
+                                "fresh offset diagnostics are incomplete"
+                            ) from None
                         for instance in missing:
                             item = snapshots.get(instance)
                             if item is None:
@@ -2132,7 +2165,12 @@ class EntryWorkflow:
                 "purpose": "offset_finalization",
                 "targets": final.targets,
             }
-        except WorkflowHandleError, WorkflowCapabilityUnavailable, CalibrationBusyError:
+        except (
+            WorkflowHandleError,
+            WorkflowCapabilityUnavailable,
+            CalibrationBusyError,
+            MeterCommunicationError,
+        ):
             raise
         except Exception:  # noqa: BLE001 - redact private recovery and source failures
             raise WorkflowCapabilityUnavailable(
@@ -2796,13 +2834,13 @@ class EntryWorkflow:
             await api.async_check_meter_communication(topology.group_count)
         else:
             if not expected_instance_ids:
-                raise WorkflowCapabilityUnavailable(
+                raise OffsetChipIdentityUnavailable(
                     "selected offset chip identities are unavailable"
                 )
             if handle is not None:
                 source = await self._async_calibration_snapshot(mac, topology)
             if source is None:
-                raise WorkflowCapabilityUnavailable(
+                raise OffsetChipIdentityUnavailable(
                     "selected offset chip identities are unavailable"
                 )
             try:
@@ -2812,7 +2850,7 @@ class EntryWorkflow:
                     ).values()
                 )
             except Exception:  # noqa: BLE001 - source parser details stay private
-                raise WorkflowCapabilityUnavailable(
+                raise OffsetChipIdentityUnavailable(
                     "selected offset chip identities are unavailable"
                 ) from None
             await api.async_check_meter_communication(

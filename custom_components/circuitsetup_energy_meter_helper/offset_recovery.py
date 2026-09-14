@@ -93,7 +93,7 @@ def source_offset_cs_pins(
     """Resolve selected stock chips from authoritative source/package semantics."""
     _validate_source(source, topology)
     requested = set(instance_ids)
-    all_pins: dict[str, int] = {}
+    default_pins: dict[str, int] = {}
     for board in range(topology.board_count):
         for group in range(2):
             instance = (
@@ -101,8 +101,8 @@ def source_offset_cs_pins(
                 if board == 0
                 else f"addon{board}_{group + 1}"
             )
-            all_pins[instance] = _DEFAULT_OFFSET_CS_PINS[board][group]
-    if not requested or not requested <= all_pins.keys():
+            default_pins[instance] = _DEFAULT_OFFSET_CS_PINS[board][group]
+    if not requested or not requested <= default_pins.keys():
         raise ValueError("selected offset chip identities are unavailable")
     document = ESPHomeConfigDocument.parse(source.content)
     if (
@@ -111,7 +111,7 @@ def source_offset_cs_pins(
     ):
         raise ValueError("selected offset chip identities are unavailable")
     aliases: dict[str, str] = {}
-    for instance in all_pins:
+    for instance in default_pins:
         board, group = _gain_group_address(instance, topology)
         meter_key = (
             f"main_meter_id{group}"
@@ -127,7 +127,42 @@ def source_offset_cs_pins(
             previous = aliases.setdefault(alias, instance)
             if previous != instance:
                 raise ValueError("offset chip identity mapping is ambiguous")
-    _apply_source_offset_cs_pin_overrides(document, aliases, all_pins)
+    explicit_pins: dict[str, int] = {}
+    local_definitions = _apply_source_offset_cs_pin_overrides(
+        document, aliases, explicit_pins
+    )
+    package_instances: set[str] = set()
+    if document.package_references:
+        active_package_paths = {
+            reference.path
+            for reference in document.package_references
+            if reference.active
+        }
+        for board in range(topology.board_count):
+            sensor_path = (
+                "Software/ESPHome/meter_sensors/6chan_main_sensor.yaml"
+                if board == 0
+                else f"Software/ESPHome/meter_sensors/6chan_addon{board}.yaml"
+            )
+            if sensor_path in active_package_paths:
+                package_instances.update(
+                    (
+                        f"meter_main{group + 1}"
+                        if board == 0
+                        else f"addon{board}_{group + 1}"
+                    )
+                    for group in range(2)
+                )
+    established = local_definitions | package_instances
+    if not requested <= established or not established <= set(default_pins):
+        raise ValueError("selected offset chip identities are unavailable")
+    all_pins = {
+        instance: default_pins[instance]
+        for instance in package_instances
+    }
+    all_pins.update(explicit_pins)
+    if not set(all_pins) >= requested:
+        raise ValueError("selected offset chip identities are unavailable")
     if len(set(all_pins.values())) != len(all_pins):
         raise ValueError("offset chip CS pin mapping is ambiguous")
     return {instance: all_pins[instance] for instance in requested}
@@ -136,8 +171,8 @@ def source_offset_cs_pins(
 def _apply_source_offset_cs_pin_overrides(
     document: ESPHomeConfigDocument,
     aliases: dict[str, str],
-    all_pins: dict[str, int],
-) -> None:
+    pins: dict[str, int],
+) -> set[str]:
     """Read only direct, literal top-level sensor overrides."""
     try:
         root = yaml.compose(document.content)
@@ -147,7 +182,7 @@ def _apply_source_offset_cs_pin_overrides(
         raise ValueError("selected offset chip identities are unavailable")  # noqa: TRY004
     sensors = [value for key, value in root.value if isinstance(key, ScalarNode) and key.value == "sensor"]
     if not sensors:
-        return
+        return set()
     if (
         len(sensors) != 1
         or document.writable_sensor_span is None
@@ -155,6 +190,7 @@ def _apply_source_offset_cs_pin_overrides(
     ):
         raise ValueError("selected offset chip identities are unavailable")
     overrides: set[str] = set()
+    local_definitions: set[str] = set()
     for item in sensors[0].value:
         if not isinstance(item, MappingNode):
             raise ValueError("selected offset chip identities are unavailable")  # noqa: TRY004
@@ -193,14 +229,19 @@ def _apply_source_offset_cs_pin_overrides(
             if platform == "atm90e32" and id_node is not None and id_node.tag != "!extend":
                 raise ValueError("selected offset chip identities are unavailable")
             continue
+        if platform is None and (id_node is None or id_node.tag != "!extend"):
+            raise ValueError("selected offset chip identities are unavailable")
         if instance in overrides:
             raise ValueError("offset chip identity is duplicated")
         cs_pin_node = values["cs_pin"]
         if not isinstance(cs_pin_node, ScalarNode):
             raise ValueError("selected offset chip identities are unavailable")  # noqa: TRY004
         pin = _source_offset_cs_pin(cs_pin_node)
-        all_pins[instance] = pin
+        pins[instance] = pin
         overrides.add(instance)
+        if platform == "atm90e32" and id_node is not None and id_node.tag != "!extend":
+            local_definitions.add(instance)
+    return local_definitions
 
 
 def _source_offset_instance(

@@ -28,6 +28,7 @@ from .ct_catalog import REPORTING_MULTIPLIERS
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
+from .log_parser import MeterCommunicationError
 from .meter_config_mutator import SourceOwnedTotalEditError
 from .meter_configuration import (
     AggregateTotalSource,
@@ -61,6 +62,8 @@ from .store import HelperStore
 from .topology import topology_from_native
 from .workflow import (
     CalibrationPlan,
+    OffsetChipIdentityUnavailable,
+    OffsetDiagnosticsIncomplete,
     OffsetTablesUnavailable,
     WorkflowCapabilityUnavailable,
     WorkflowHandleError,
@@ -915,7 +918,7 @@ class _Router:
                 signals_from_result(error),
                 authoritative=False,
             )
-            _send_safe_error(connection, msg["id"], error)
+            _send_safe_error(connection, msg["id"], error, operation=operation)
         else:
             if operation == "adopt_device":
                 try:
@@ -1847,9 +1850,24 @@ def _admin_user_id(user_id: str | None) -> str:
 
 
 def _send_safe_error(
-    connection: ActiveConnection, msg_id: int, error: Exception
+    connection: ActiveConnection,
+    msg_id: int,
+    error: Exception,
+    *,
+    operation: str | None = None,
 ) -> None:
-    if isinstance(error, CapabilityUnavailable):
+    if isinstance(error, MeterCommunicationError):
+        if operation in {"preview_offset_preparation", "preview_offset_finalization"}:
+            code, message = (
+                "offset_communication_failed",
+                "Selected meter chip communication could not be verified",
+            )
+        else:
+            code, message = (
+                "meter_communication_failed",
+                "Meter chip communication could not be verified",
+            )
+    elif isinstance(error, CapabilityUnavailable):
         code, message = "capability_unavailable", "This capability is not available"
     elif isinstance(error, ApiFailure):
         code, message = error.code, error.safe_message
@@ -1857,6 +1875,16 @@ def _send_safe_error(
         code, message = "stale_confirmation", "The confirmation is stale or invalid"
     elif isinstance(error, WorkflowHandleError):
         code, message = "stale_handle", "The selected device changed or is no longer available"
+    elif isinstance(error, OffsetDiagnosticsIncomplete):
+        code, message = (
+            "offset_diagnostics_incomplete",
+            "Fresh offset diagnostics are incomplete",
+        )
+    elif isinstance(error, OffsetChipIdentityUnavailable):
+        code, message = (
+            "offset_chip_identity_unavailable",
+            "The selected chip identity could not be verified",
+        )
     elif isinstance(error, OffsetTablesUnavailable):
         code, message = "offset_tables_unavailable", "Complete offset tables are unavailable"
     elif isinstance(error, WorkflowCapabilityUnavailable):

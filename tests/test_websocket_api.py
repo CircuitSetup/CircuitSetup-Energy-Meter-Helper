@@ -56,6 +56,9 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
 from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeApiSession,
 )
+from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+    MeterCommunicationError,
+)
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     AutomaticTotalSettings,
     TotalOutputSettings,
@@ -103,6 +106,8 @@ from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
 from custom_components.circuitsetup_energy_meter_helper.workflow import (
     EntryWorkflow,
     LazyDeviceBuilder,
+    OffsetChipIdentityUnavailable,
+    OffsetDiagnosticsIncomplete,
     WorkflowCapabilityUnavailable,
     WorkflowHandleError,
     _public_sample_window,
@@ -705,6 +710,58 @@ def test_stale_confirmation_and_workflow_handle_use_distinct_public_codes() -> N
     assert handle.errors == [
         (2, "stale_handle", "The selected device changed or is no longer available")
     ]
+
+
+def test_offset_safe_errors_distinguish_communication_diagnostics_and_identity() -> None:
+    connection = FakeConnection()
+
+    _send_safe_error(
+        connection,
+        1,
+        MeterCommunicationError((16,)),
+        operation="preview_offset_preparation",
+    )
+    _send_safe_error(connection, 2, OffsetDiagnosticsIncomplete())
+    _send_safe_error(connection, 3, OffsetChipIdentityUnavailable())
+    _send_safe_error(connection, 4, MeterCommunicationError((16,)))
+
+    assert connection.errors == [
+        (
+            1,
+            "offset_communication_failed",
+            "Selected meter chip communication could not be verified",
+        ),
+        (2, "offset_diagnostics_incomplete", "Fresh offset diagnostics are incomplete"),
+        (3, "offset_chip_identity_unavailable", "The selected chip identity could not be verified"),
+        (4, "meter_communication_failed", "Meter chip communication could not be verified"),
+    ]
+
+
+def test_offset_websocket_maps_meter_communication_to_offset_code() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        await async_setup_entry(hass, FakeEntry(data={}))
+        controller = hass.data[DOMAIN]["helper"]["websocket_controller"]
+
+        async def fail(*args: Any, **kwargs: Any) -> Any:
+            del args, kwargs
+            raise MeterCommunicationError((16,))
+
+        controller.async_call = fail  # type: ignore[method-assign]
+        connection = FakeConnection()
+        await _invoke(
+            hass,
+            connection,
+            _message(f"{DOMAIN}/preview_offset_preparation"),
+        )
+
+        assert connection.errors[-1] == (
+            1,
+            "offset_communication_failed",
+            "Selected meter chip communication could not be verified",
+        )
+
+    asyncio.run(run())
 
 
 def _assert_browser_safe(value: Any) -> None:

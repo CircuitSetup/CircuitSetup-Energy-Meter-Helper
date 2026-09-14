@@ -27,6 +27,55 @@ from tests.test_preflight import binding_with_offset_controls
 ZERO = ((0, 0), (0, 0), (0, 0))
 
 
+def test_preparation_preserves_completed_chip_outside_remaining_targets(tmp_path: Path) -> None:
+    async def run() -> None:
+        from unittest.mock import AsyncMock
+
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            OffsetRecovery,
+        )
+        from tests.test_workflow import _workflow
+
+        workflow, handle, sessions, _ = _workflow()
+        workflow._sessions.clear()
+        handle.session_id = "b" * 32
+        workflow._sessions[handle.session_id] = handle
+        handle.binding = binding_with_offset_controls(0)
+        source = _snapshot()
+        handle.configuration, handle.configuration_sha256 = source.configuration, source.sha256
+        session = workflow._api = StockSession(handle.binding)
+        workflow._builder = Builder(remote_content=source.content)
+        recovery = workflow._offset_recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+        workflow.transactions = SimpleNamespace(async_preview=AsyncMock(return_value=None))
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            origin = sessions._begin_calibration_origin(lease, session, handle.binding, source)
+            sessions.record_offset_calibration_group(
+                lease, origin.operation_id, origin.revision, session, handle.binding,
+                "meter_main1", 1, observed().phase_values,
+            )
+        finally:
+            lease.release()
+
+        preview = await workflow.async_preview_offset_preparation(
+            handle.session_id, 0, 1, backup_acknowledged=True,
+        )
+        assert preview["targets"] == ("meter_main2",)
+        assert session.snapshot_communication_scopes[-1] == (
+            ("meter_main1",), frozenset({5}),
+        )
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            record = await recovery.async_load(lease)
+            assert record is not None
+            assert record.results[0].instance_id == "meter_main1"
+            assert record.results[0].phase_values == observed().phase_values
+        finally:
+            lease.release()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("stage", (1, 2))
 def test_first_stock_preparation_blocks_unproven_builder_source_without_writes(
     tmp_path: Path, stage: int
