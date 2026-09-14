@@ -638,15 +638,24 @@ class ConfigTransactionManager:
         if offset_preparation is not None and offset_finalization is not None:
             raise ValueError("offset transaction has conflicting purposes")
         offset_operation = offset_preparation or offset_finalization
+        if offset_operation is not None and getattr(offset_operation, "mode", None) == "native":
+            raise ValueError("native offset preparation has no configuration transaction")
         if offset_operation is not None and (
             self._offset_recovery is None
             or offset_operation.source_sha256 != source_snapshot.sha256
             or offset_operation.proposed_sha256
             != sha256(plan.proposed_content.encode()).hexdigest()
-            or self.sessions._get_transaction(offset_operation.transaction_id)
-            is not None
+            or not isinstance(offset_operation.transaction_id, str)
+            or self.sessions._get_transaction(offset_operation.transaction_id) is not None
         ):
             raise ValueError("stock offset preparation does not match transaction")
+        transaction_id = (
+            offset_operation.transaction_id
+            if offset_operation is not None
+            else uuid4().hex
+        )
+        if not isinstance(transaction_id, str):
+            raise TypeError("stock offset preparation does not match transaction")
         if type(reconcile_stale_metadata) is not bool or (
             reconcile_stale_metadata and meter_configuration is None
         ):
@@ -737,9 +746,7 @@ class ConfigTransactionManager:
             merged.update({selection.channel: selection for selection in selections})
             selections = tuple(merged[channel] for channel in sorted(merged))
         transaction = _ConfigTransaction(
-            offset_operation.transaction_id
-            if offset_operation is not None
-            else uuid4().hex,
+            transaction_id,
             self._clock() + self._confirmation_ttl,
             mac,
             topology,

@@ -2021,7 +2021,18 @@ export class CircuitSetupPanel extends LitElement {
     await this.run(async () => {
       const review = await api.previewOffsetPreparation(sessionId, board, stage, true, this.offsetFirstCalibrationConfirmed);
       if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
-      this.transaction = review.transaction; this.transactionPurpose = review.transaction.purpose;
+      if (review.mode === "native") {
+        this.clearSubscription("transaction");
+        this.transaction = null; this.transactionPurpose = null;
+        this.offsetPreparation = await api.getOffsetPreparation(sessionId);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        this.calibrationHandoff = false;
+        this.offsetAcknowledged = [false, false]; this.offsetReadinessByTarget = new Map();
+        this.navigate("offset");
+        this.announcement = "Native offset controls are ready. Check measured readiness before Run.";
+        return;
+      }
+      this.transaction = review.transaction; this.transactionPurpose = review.transaction!.purpose;
       this.calibrationHandoff = false;
       this.offsetAcknowledged = [false, false]; this.offsetReadinessByTarget = new Map();
       this.navigate("install-configuration"); await this.subscribeTransaction(this.connectionGeneration);

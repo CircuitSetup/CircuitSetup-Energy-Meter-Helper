@@ -291,11 +291,14 @@ def create_app(port: int, frontend_port: int) -> web.Application:
                 "stored": await value.store.async_get_meter_configuration_read(MAC)}),
                 # Deliberately outside the production sanitizer: only this fabricated local source is readable.
                 "source_content": value.builder.remote_content,
-                "proposed_content": transaction.plan.proposed_content if transaction and transaction.plan else None})
+                "proposed_content": transaction.plan.proposed_content if transaction and transaction.plan else None,
+                "stock_button_names": getattr(getattr(value, "stock_api", None), "button_names", [])})
         if frame["type"] == "fixture_outcome":
             value.builder.validation = [Job(frame.get("validation", True))]
             value.builder.compile = Job(frame.get("compile", True))
             value.builder.upload = Job(frame.get("install", True))
+            if value.name == "stock-offset" and "fail_second" in frame:
+                value.stock_api.fail_second = frame["fail_second"] is True
             return web.json_response({"ok": True})
         try:
             return web.json_response(sanitize_payload(await value.call(frame), allow_transaction_change_keys=True, allow_nested_transaction=True))

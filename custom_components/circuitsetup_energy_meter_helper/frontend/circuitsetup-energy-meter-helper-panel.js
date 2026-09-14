@@ -1376,11 +1376,12 @@ function offsetId(value, label) {
 }
 function offsetPreparation(value, label) {
   const item = record(value, label);
-  exactKeys(item, ["backup_available", "operation_id", "stage", "targets", "installed", "cancelled", "action_ready", "attempted", "completed"], label);
+  exactKeys(item, ["backup_available", "operation_id", "stage", "targets", "mode", "installed", "cancelled", "action_ready", "attempted", "completed"], label);
   offsetId(item.operation_id, label);
   const targets = offsetInstances(item.targets, label, 2);
   const attempted = offsetInstances(item.attempted, label, 2);
   if (item.stage !== null && item.stage !== 1 && item.stage !== 2) throw new Error(`${label} response is invalid`);
+  if (item.mode !== null && item.mode !== "native" && item.mode !== "legacy") throw new Error(`${label} response is invalid`);
   for (const key of ["backup_available", "installed", "cancelled", "action_ready"]) boolean(item[key], label);
   const completed = array(item.completed, label, 28).map((entry) => {
     const pair = array(entry, label, 2);
@@ -1388,7 +1389,7 @@ function offsetPreparation(value, label) {
     offsetInstances([pair[0]], label);
     return `${pair[0]}:${pair[1]}`;
   });
-  if (new Set(completed).size !== completed.length || attempted.some((id2) => !targets.includes(id2)) || item.operation_id === null !== (item.stage === null) || item.operation_id === null !== (targets.length === 0) || item.action_ready && (!item.installed || item.cancelled || !item.backup_available || item.operation_id === null)) throw new Error(`${label} response is invalid`);
+  if (new Set(completed).size !== completed.length || attempted.some((id2) => !targets.includes(id2)) || item.operation_id === null !== (item.stage === null) || item.operation_id === null !== (targets.length === 0) || item.operation_id === null !== (item.mode === null) || item.mode === "native" && item.installed || item.action_ready && (item.mode === null || item.cancelled || !item.backup_available || item.operation_id === null || item.mode === "legacy" && !item.installed)) throw new Error(`${label} response is invalid`);
   return value;
 }
 function offsetFinalization(value, label) {
@@ -1413,13 +1414,14 @@ function offsetFinalization(value, label) {
 function offsetPreview(value, label, stage, board) {
   const item = record(value, label);
   const preparing = stage !== void 0;
-  exactKeys(item, preparing ? ["operation_id", "stage", "targets", "backup_available", "transaction"] : ["purpose", "operation_id", "targets", "transaction"], label);
+  exactKeys(item, preparing ? ["operation_id", "stage", "targets", "backup_available", "mode", "transaction"] : ["purpose", "operation_id", "targets", "transaction"], label);
   offsetId(item.operation_id, label);
   if (item.operation_id === null) throw new Error(`${label} response is invalid`);
   const targets = offsetInstances(item.targets, label, preparing ? 2 : 14);
-  const status = transaction(item.transaction, label);
+  if (preparing && item.mode !== "native" && item.mode !== "legacy") throw new Error(`${label} response is invalid`);
+  const status = item.transaction === null ? null : transaction(item.transaction, label);
   const expected = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
-  if (!targets.length || preparing && (item.stage !== stage || item.backup_available !== true || status.purpose !== "offset_preparation" || targets.some((id2) => !expected.includes(id2))) || !preparing && (item.purpose !== "offset_finalization" || status.purpose !== "offset_finalization")) throw new Error(`${label} response is invalid`);
+  if (!targets.length || preparing && (item.stage !== stage || item.backup_available !== true || (item.mode === "native" ? item.transaction !== null : status?.purpose !== "offset_preparation") || targets.some((id2) => !expected.includes(id2))) || !preparing && (item.purpose !== "offset_finalization" || status?.purpose !== "offset_finalization")) throw new Error(`${label} response is invalid`);
   return value;
 }
 function stability(value, label, expectedTarget, expectedTargetId) {
@@ -3427,9 +3429,11 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
   const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
   const preparation = stock?.preparation;
+  const nativePreparation = Boolean(stock && (preparation?.mode ?? "native") === "native");
   const selectedInstances = groupKeys(board).map((id2) => id2.replace("main_", "meter_main"));
   const matching = preparation?.stage === stage && preparation.targets.length > 0 && preparation.targets.every((id2) => selectedInstances.includes(id2));
   const attempted = Boolean(matching && preparation?.attempted.length);
+  const nativeReview = nativePreparation || Boolean(preparation && (!preparation.installed || !preparation.action_ready || attempted));
   const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate" || attempted && stageState !== "completed";
   const actionReady = !stock || Boolean(matching && preparation?.action_ready && !attempted);
   const unavailable = capability?.status !== "available";
@@ -3467,15 +3471,15 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
           <h2>Optional offset calibration · Stage ${stage} · ${boardLabel(board)}</h2>
           <p>Offset calibration is optional and requires changing the power and wiring state as described below. ${stock ? "Captured values remain pending until reviewed configuration installation and selection are confirmed." : "Offset values remain stored in meter flash."}</p>
           ${stock ? b`<section class="measurement-evidence" aria-label="Offset preparation backup">
-            <h3>Why preparation is required</h3>
-            <p>Before calibration, the helper temporarily installs zero offsets for the selected chips so existing corrections do not affect the new measurements.</p>
+            <h3>${nativeReview ? "Native offset readiness" : "Why preparation is required"}</h3>
+            <p>${nativeReview ? "The helper uses the meter's native ATM90E32 offset controls; no firmware or zero-offset YAML is installed." : "Before calibration, the helper temporarily installs zero offsets for the selected chips so existing corrections do not affect the new measurements."}</p>
             <p>The helper saves both offset stages for the selected chips in a private recovery backup. It uses fresh meter tables when available; with the first-run confirmation below, a missing table may use the current Device Builder YAML. This is not flash readback, and unknown values stay blocked.</p>
-            ${matching && preparation?.installed ? b`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review and install a fresh preparation for unfinished chips; retained values are not lost."}</p>` : A}
-            <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event) => stock.setBackup(event.target.checked)}> I understand that this step creates a private backup and installs a temporary zero-offset configuration.</label>
+            ${matching && preparation?.installed ? b`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : nativeReview ? "This historical preparation is not authorized by this backend owner. Review native offset readiness again; retained values are not lost." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review the preparation for unfinished chips; retained values are not lost."}</p>` : A}
+            <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event) => stock.setBackup(event.target.checked)}> I understand that this step creates a private backup and ${nativeReview ? "uses the meter's native offset controls; no firmware is installed" : "installs a temporary zero-offset configuration"}.</label>
             ${!recovery ? b`<label class="check-row"><input type="checkbox" .checked=${stock.firstCalibrationConfirmed} @change=${(event) => stock.setFirstCalibrationConfirmed(event.target.checked)}> I confirm the selected chips have never had offset calibration applied.</label>` : A}
             <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
-              @click=${stock.prepare}>${recovery ? "Review unfinished-chip preparation" : "Review offset preparation"}</button>
-            ${attempted ? b`<p>This receipt was already attempted. Retry requires a new reviewed installation for only unfinished chips; completed values, including zeros, are retained.</p>` : A}
+              @click=${stock.prepare}>${recovery ? nativeReview ? "Review unfinished-chip readiness" : "Review unfinished-chip preparation" : nativeReview ? "Review native offset readiness" : "Review offset preparation"}</button>
+            ${attempted ? b`<p>${nativeReview ? "This run was already attempted. Review unfinished-chip readiness again before retrying; completed values, including zeros, are retained." : "This historical preparation was already attempted. Review the historical preparation again before retrying; completed values, including zeros, are retained."}</p>` : A}
           </section>` : A}
           <div class="warning-band"><strong>Warning:</strong> An open-circuit current-output CT on a live conductor can be hazardous. De-energize conductors before unplugging any CT.</div>
           ${stage === 1 ? b`
@@ -6220,6 +6224,19 @@ class CircuitSetupPanel extends i$2 {
       async () => {
         const review = await api.previewOffsetPreparation(sessionId, board, stage, true, this.offsetFirstCalibrationConfirmed);
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        if (review.mode === "native") {
+          this.clearSubscription("transaction");
+          this.transaction = null;
+          this.transactionPurpose = null;
+          this.offsetPreparation = await api.getOffsetPreparation(sessionId);
+          if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+          this.calibrationHandoff = false;
+          this.offsetAcknowledged = [false, false];
+          this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
+          this.navigate("offset");
+          this.announcement = "Native offset controls are ready. Check measured readiness before Run.";
+          return;
+        }
         this.transaction = review.transaction;
         this.transactionPurpose = review.transaction.purpose;
         this.calibrationHandoff = false;

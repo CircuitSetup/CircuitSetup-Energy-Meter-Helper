@@ -457,7 +457,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
       }
       else if (operation === "acknowledge_safety") result = currentSession = { ...currentSession, state: "ready", safety_acknowledged: true };
       else if (operation === "get_offset_preparation") result = { backup_available: false, operation_id: null, stage: null,
-        targets: [], installed: false, cancelled: false, action_ready: false, attempted: [], completed: [] };
+        targets: [], mode: null, installed: false, cancelled: false, action_ready: false, attempted: [], completed: [] };
       else if (operation === "get_offset_finalization") result = { purpose: "offset_preparation", operation_id: null, transaction_id: null,
         stage: null, board_index: null, targets: [], backup_available: false, installed: false, cancelled: false,
         configuration_selected: false, action_ready: false, register_verified: false, gain_verification_id: null, results: [] };

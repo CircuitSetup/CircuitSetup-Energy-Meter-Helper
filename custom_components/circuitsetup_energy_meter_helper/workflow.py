@@ -91,6 +91,7 @@ from .offset_readiness import (
 )
 from .offset_recovery import (
     FIRST_CALIBRATION_CONFIGURATION,
+    ZERO_OFFSETS,
     OffsetRecovery,
     OffsetRecoveryRecord,
     _allowed_observation_sources,
@@ -1607,7 +1608,7 @@ class EntryWorkflow:
         handle, revision = self._claim_ready_session(session_id)
         try:
             self._validate_offset_target(handle, board_index, stage)
-            if handle.offset_skipped or self.transactions is None:
+            if handle.offset_skipped:
                 raise WorkflowCapabilityUnavailable(
                     "stock offset preparation is unavailable"
                 )
@@ -1666,19 +1667,50 @@ class EntryWorkflow:
                     )
                     for item in old.observations
                     if item.source_sha256 in allowed_sources
-                    and item.snapshot.reported_state
-                    in ("configuration", FIRST_CALIBRATION_CONFIGURATION)
+                    and item.snapshot.reported_state in (
+                        "restored",
+                        "mismatch",
+                        "configuration",
+                        FIRST_CALIBRATION_CONFIGURATION,
+                    )
                     and item.snapshot.instance_id in targets
                 } if old is not None else {}
-                allow_new_configuration = old is None or not old.attempted
                 configured: dict[tuple[str, int], Any] | None = None
                 selected_configuration_targets: set[str] = set()
+                clear_targets: set[str] = set()
                 captured = []
                 completed_results = (
                     {(item.instance_id, item.stage) for item in old.results}
                     if old is not None
                     else set()
                 )
+
+                def first_use_allowed(instance: str, baseline_stage: int) -> bool:
+                    if old is None:
+                        return True
+                    if any(
+                        item.snapshot.instance_id == instance
+                        and item.snapshot.offset_stage == baseline_stage
+                        for item in old.observations
+                    ):
+                        return False
+                    if any(
+                        item.instance_id == instance and item.stage == baseline_stage
+                        for item in old.results
+                    ):
+                        return False
+                    if pending is not None and instance in (
+                        pending.expected_phase_offsets
+                        if baseline_stage == 1
+                        else pending.expected_phase_power_offsets
+                    ):
+                        return False
+                    return not (
+                        old.preparation is not None
+                        and old.preparation.stage == baseline_stage
+                        and instance in old.attempted
+                    )
+
                 for baseline_stage in (1, 2):
                     missing = {
                         instance
@@ -1700,6 +1732,10 @@ class EntryWorkflow:
                         raise OffsetDiagnosticsIncomplete(
                             "fresh offset diagnostics are incomplete"
                         ) from None
+                    if not isinstance(snapshots, dict) or set(snapshots) != missing:
+                        raise OffsetDiagnosticsIncomplete(
+                            "fresh offset diagnostics are incomplete"
+                        )
                     for instance in missing:
                         item = snapshots.get(instance)
                         if item is None:
@@ -1709,7 +1745,11 @@ class EntryWorkflow:
                                 and item.reported_state == "configuration"
                             ):
                                 selected_configuration_targets.add(instance)
-                        if item is None and first_calibration_confirmed and allow_new_configuration:
+                        if (
+                            item is None
+                            and first_calibration_confirmed
+                            and first_use_allowed(instance, baseline_stage)
+                        ):
                             if configured is None or (
                                 instance, baseline_stage
                             ) not in configured:
@@ -1737,6 +1777,22 @@ class EntryWorkflow:
                             raise OffsetTablesUnavailable(
                                 "fresh exact saved offset tables are unavailable"
                             )
+                        prior_attempted = bool(
+                            old is not None
+                            and old.preparation is not None
+                            and old.preparation.stage == baseline_stage
+                            and instance in old.attempted
+                        )
+                        if (
+                            baseline_stage == stage
+                            and not (
+                                item.reported_state
+                                == FIRST_CALIBRATION_CONFIGURATION
+                                and item.phase_values == ZERO_OFFSETS
+                                and not prior_attempted
+                            )
+                        ):
+                            clear_targets.add(instance)
                         captured.append(item)
                 if selected_configuration_targets:
                     selected = await api.async_offset_configuration_selection(
@@ -1781,6 +1837,13 @@ class EntryWorkflow:
                             raise OffsetDiagnosticsIncomplete(
                                 "fresh offset diagnostics are incomplete"
                             ) from None
+                        if (
+                            not isinstance(completed_snapshots, dict)
+                            or set(completed_snapshots) != missing
+                        ):
+                            raise OffsetDiagnosticsIncomplete(
+                                "fresh offset diagnostics are incomplete"
+                            )
                         for instance in missing:
                             item = completed_snapshots.get(instance)
                             if (
@@ -1795,46 +1858,34 @@ class EntryWorkflow:
                             captured.append(item)
                 self._assert_claim(handle, revision)
                 self._calibration._validate_binding_generation(api, handle.binding)
-                record = await self._require_offset_recovery().async_backup(
+                recovery = self._require_offset_recovery()
+                record = await recovery.async_backup(
                     lease, source, handle.topology, tuple(captured)
                 )
-                plan = self._require_offset_recovery().build_preparation_plan(
-                    record, source, stage, targets
-                )
-                prepared = await self._require_offset_recovery().async_prepare(
+                prepared = await recovery.async_prepare(
                     lease,
                     record,
                     source,
-                    plan,
+                    None,
                     handle.session_id,
                     stage,
                     targets,
                     generation,
+                    mode="native",
+                    clear_targets=tuple(sorted(clear_targets)),
                 )
                 self._assert_claim(handle, revision)
 
                 handle.offset_preparation_id = prepared.operation_id
                 handle.stock_offset_pending = True
 
-                def live_session() -> None:
-                    if self._session(session_id) is not handle or handle.revoked:
-                        raise WorkflowHandleError("offset preparation session is stale")
-
-                transaction = await self.transactions.async_preview(
-                    handle.mac,
-                    handle.topology,
-                    plan,
-                    source,
-                    offset_preparation=prepared,
-                    preparation_guard=live_session,
-                )
-                self._assert_claim(handle, revision)
                 return {
                     "operation_id": prepared.operation_id,
                     "stage": stage,
                     "targets": targets,
                     "backup_available": True,
-                    "transaction": transaction,
+                    "mode": prepared.mode,
+                    "transaction": None,
                 }
             finally:
                 lease.release()
@@ -1873,11 +1924,15 @@ class EntryWorkflow:
             "operation_id": prepared.operation_id if prepared is not None else None,
             "stage": prepared.stage if prepared is not None else None,
             "targets": prepared.targets if prepared is not None else (),
+            "mode": prepared.mode if prepared is not None else None,
             "installed": bool(
                 record is not None and record.installed and not record.cancelled
             ),
             "cancelled": bool(record is not None and record.cancelled),
-            "action_ready": self._require_offset_recovery().is_action_ready(record),
+            "action_ready": self._require_offset_recovery().is_action_ready(
+                record,
+                generation=getattr(self._api, "connection_generation", None),
+            ),
             "attempted": record.attempted if record is not None else (),
             "completed": tuple(
                 (item.instance_id, item.stage) for item in record.results
@@ -2339,10 +2394,19 @@ class EntryWorkflow:
                     or record.preparation is None
                     or record.preparation.operation_id != operation_id
                     or record.preparation.stage != stage
-                    or not self._require_offset_recovery().is_action_ready(record)
+                    or not self._require_offset_recovery().is_action_ready(
+                        record, generation=api.connection_generation
+                    )
                 ):
+                    native = bool(
+                        record is not None
+                        and record.preparation is not None
+                        and record.preparation.mode == "native"
+                    )
                     raise WorkflowHandleError(
-                        "current Core offset preparation is not ready; new reviewed install required"
+                        "current Core native offset preparation is not ready; review readiness again"
+                        if native
+                        else "current Core offset preparation is not ready; new reviewed installation required"
                     )
                 prepared = record.preparation
                 source = await self._require_builder().async_get_config(
@@ -2354,7 +2418,9 @@ class EntryWorkflow:
                     or source.sha256 != prepared.proposed_sha256
                 ):
                     raise WorkflowHandleError(
-                        "installed offset preparation source changed"
+                        "native offset source changed; review readiness again"
+                        if prepared.mode == "native"
+                        else "installed offset preparation source changed"
                     )
                 substitutions = {
                     key: scalar.value

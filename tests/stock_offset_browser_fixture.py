@@ -35,7 +35,7 @@ async def attach_stock(fixture):
     workflow._sessions[handle.session_id] = handle
     handle.binding = binding_with_offset_controls(0)
     handle.configuration, handle.configuration_sha256 = "meter.yaml", (await fixture.builder.async_get_config("meter.yaml")).sha256
-    stock = StockSession(handle.binding, fail_second=True)
+    stock = StockSession(handle.binding)
     stock.sessions = sessions
     native = make_session([SelectionClient()])
     await native.async_connect()

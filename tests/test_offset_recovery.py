@@ -21,6 +21,7 @@ from tests.test_config_mutator import _topology
 
 MAC = "aabbccddeeff"
 OLD = ((-12, 31), (-13, 32), (-14, 33))
+ZERO = ((0, 0), (0, 0), (0, 0))
 
 
 def _snapshot(addons: int = 0) -> Any:
@@ -172,7 +173,7 @@ packages:
         source_offset_cs_pins(source, _topology(), {"meter_main1", "meter_main2"})
 
 
-@pytest.mark.parametrize("sensor_file", ("6chan_main_sensor.yaml", "main.yaml"))
+@pytest.mark.parametrize("sensor_file", ("6chan_main_sensor.yaml",))
 def test_source_offset_cs_pins_requires_real_official_sensor_package_coverage(
     sensor_file: str,
 ) -> None:
@@ -194,13 +195,32 @@ packages:
 """.replace("SENSOR_FILE", sensor_file)
     source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
 
-    if sensor_file == "main.yaml":
-        with pytest.raises(ValueError, match="chip identities"):
-            source_offset_cs_pins(source, _topology(), {"meter_main1", "meter_main2"})
-    else:
-        assert source_offset_cs_pins(
-            source, _topology(), {"meter_main1", "meter_main2"}
-        ) == {"meter_main1": 5, "meter_main2": 4}
+    assert source_offset_cs_pins(
+        source, _topology(), {"meter_main1", "meter_main2"}
+    ) == {"meter_main1": 5, "meter_main2": 4}
+
+
+def test_source_offset_cs_pins_rejects_noncanonical_sensor_package_path() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    content = """esphome:
+  project:
+    name: circuitsetup.6c-energy-meter
+    version: '1'
+packages:
+  remote_package:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
+    files:
+      - Software/ESPHome/meter_sensors/main.yaml
+"""
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    with pytest.raises(ValueError, match="chip identities"):
+        source_offset_cs_pins(source, _topology(), {"meter_main1", "meter_main2"})
 
 
 @pytest.mark.parametrize(
@@ -429,6 +449,50 @@ def test_actual_offset_observation_precedes_configuration_observation() -> None:
     plan = OffsetRecovery.build_finalization_plan(record, source)
     assert "offset_voltage: -12" in plan.proposed_content
     assert "offset_voltage: 1" not in plan.proposed_content
+
+
+def test_native_preparation_rejects_contradictory_first_use_history(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            FIRST_CALIBRATION_CONFIGURATION,
+            OffsetRecovery,
+        )
+
+        sessions = SessionManager()
+        recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            record = await recovery.async_backup(
+                lease,
+                _snapshot(),
+                _topology(),
+                (
+                    observed(),
+                    replace(
+                        observed(),
+                        phase_values=((0, 0), (0, 0), (0, 0)),
+                        reported_state=FIRST_CALIBRATION_CONFIGURATION,
+                    ),
+                ),
+            )
+            with pytest.raises(ValueError, match="native clear eligibility"):
+                await recovery.async_prepare(
+                    lease,
+                    record,
+                    _snapshot(),
+                    None,
+                    "b" * 32,
+                    1,
+                    ("meter_main1",),
+                    1,
+                    mode="native",
+                )
+        finally:
+            lease.release()
+
+    asyncio.run(run())
 
 
 def test_configuration_observation_cannot_claim_register_readback() -> None:
@@ -666,42 +730,36 @@ def test_raw_offset_plan_preserves_other_stage_and_unselected_chip() -> None:
 
 
 @pytest.mark.parametrize("stage", (1, 2))
-def test_owner_candidate_plan_preserves_both_families_and_rejects_completed_targets(
-    tmp_path: Path,
+def test_candidate_plan_preserves_both_families_and_marks_only_target_enabled(
     stage: int,
 ) -> None:
     import yaml
 
-    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
-        CapturedOffsetResult,
-        OffsetRecovery,
-        OffsetRecoveryRecord,
-        SavedOffsetObservation,
+    from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
+        build_offset_table_mutation,
     )
 
     source = _snapshot()
-    record = OffsetRecoveryRecord(
-        MAC,
+    configured = build_offset_table_mutation(
         source,
         _topology(),
-        (SavedOffsetObservation(source.sha256, observed()),),
-        results=(
-            CapturedOffsetResult(
-                "meter_main1", 1, OLD, 2, "a" * 32, source.sha256, True
-            ),
-            CapturedOffsetResult(
-                "meter_main1",
-                2,
-                ((0, 0), (-32768, 32767), (-1, 1)),
-                2,
-                "b" * 32,
-                source.sha256,
-                False,
-            ),
-        ),
+        {"meter_main1": OLD},
+        {"meter_main1": ((0, 0), (-32768, 32767), (-1, 1))},
+        enable_calibration=frozenset({"meter_main1"}),
     )
-    recovery = OffsetRecovery(hass_at(tmp_path), SessionManager())
-    plan = recovery.build_preparation_plan(record, source, stage, ("meter_main2",))
+    source = replace(
+        source,
+        content=configured.proposed_content,
+        sha256=sha256(configured.proposed_content.encode()).hexdigest(),
+    )
+    main_power = ((0, 0), (-32768, 32767), (-1, 1))
+    plan = build_offset_table_mutation(
+        source,
+        _topology(),
+        {"meter_main1": OLD, "meter_main2": ZERO} if stage == 1 else {"meter_main1": OLD},
+        {"meter_main1": main_power, "meter_main2": ZERO} if stage == 2 else {"meter_main1": main_power},
+        enable_calibration={"meter_main1": False, "meter_main2": True},
+    )
     parsed = yaml.load(plan.proposed_content, Loader=yaml.BaseLoader)
     chips = {item["id"]: item for item in parsed["sensor"] if "id" in item}
     assert chips["meter_main1"]["phase_a"]["offset_voltage"] == "-12"
@@ -716,11 +774,9 @@ def test_owner_candidate_plan_preserves_both_families_and_rejects_completed_targ
     for phase in ("phase_a", "phase_b", "phase_c"):
         assert chips["meter_main2"][phase] == {first: "0", second: "0"}
     assert chips["meter_main2"]["enable_offset_calibration"] == "true"
-    assert "enable_offset_calibration" not in chips["meter_main1"]
+    assert chips["meter_main1"]["enable_offset_calibration"] == "false"
     assert parsed["substitutions"]["current_cal_ct1"] == "11143"
     assert "top-secret" not in plan.redacted_diff
-    with pytest.raises(ValueError, match="complete"):
-        recovery.build_preparation_plan(record, source, stage, ("meter_main1",))
 
 
 @pytest.mark.parametrize(
@@ -866,5 +922,33 @@ def test_persisted_receipt_is_not_action_permission_for_a_new_core_owner(
         assert (await workflow.async_get_offset_preparation(handle.session_id))[
             "action_ready"
         ] is True
+
+    asyncio.run(run())
+
+
+def test_legacy_preparation_record_loads_without_native_fields(tmp_path: Path) -> None:
+    async def run() -> None:
+        from tests.test_stock_offset_preparation import preparation
+
+        sessions, recovery, _builder, manager, preview, prepared = await preparation(
+            tmp_path
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            path = recovery._path(lease)
+            raw = json.loads(path.read_bytes())
+            raw["preparation"].pop("mode")
+            raw["preparation"].pop("clear_targets")
+            path.write_bytes(json.dumps(raw).encode())
+            loaded = await recovery.async_load(lease)
+            assert loaded is not None
+            assert loaded.preparation == prepared
+            assert loaded.preparation.mode == "legacy"
+            assert loaded.preparation.clear_targets == ()
+        finally:
+            lease.release()
 
     asyncio.run(run())

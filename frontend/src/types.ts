@@ -553,11 +553,14 @@ export interface OffsetCalibrationResult {
   error: string | null;
 }
 
+export type OffsetPreparationMode = "native" | "legacy";
+
 export interface OffsetPreparationStatus {
   backup_available: boolean;
   operation_id: string | null;
   stage: 1 | 2 | null;
   targets: string[];
+  mode: OffsetPreparationMode | null;
   installed: boolean;
   cancelled: boolean;
   action_ready: boolean;
@@ -587,7 +590,8 @@ export interface OffsetPreparationPreview {
   stage: 1 | 2;
   targets: string[];
   backup_available: true;
-  transaction: TransactionStatus;
+  mode: OffsetPreparationMode;
+  transaction: TransactionStatus | null;
 }
 
 export interface OffsetFinalizationPreview {

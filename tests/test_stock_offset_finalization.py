@@ -209,7 +209,13 @@ def test_offset_preview_rejects_ordinary_metadata_authority_before_work(
         try:
             record = await recovery.async_load(lease)
             if purpose == "offset_preparation":
-                plan = recovery.build_preparation_plan(record, source, 1, binding.targets)
+                plan = config_mutator.build_offset_table_mutation(
+                    source,
+                    _topology(),
+                    {instance: ZERO for instance in binding.targets},
+                    {},
+                    enable_calibration=frozenset(binding.targets),
+                )
             else:
                 plan = recovery.build_finalization_plan(record, source)
                 binding = await recovery.async_review_finalization(
@@ -822,6 +828,9 @@ def test_workflow_final_review_install_selection_reload_and_explicit_next_cycle(
         )
 
         async def install(review):
+            if review["transaction"] is None:
+                assert review["mode"] == "native"
+                return
             transaction_id = review["transaction"].transaction_id
             await workflow.transactions.async_confirm_write(transaction_id, "admin")
             await workflow.transactions.async_compile(transaction_id)
@@ -971,9 +980,8 @@ def test_workflow_final_review_install_selection_reload_and_explicit_next_cycle(
             handle.session_id, 0, 1, backup_acknowledged=True
         )
         assert next_review["targets"] == ("meter_main1", "meter_main2")
-        assert "enable_offset_calibration: true" in sessions._get_transaction(
-            next_review["transaction"].transaction_id
-        ).plan.proposed_content
+        assert next_review["mode"] == "native"
+        assert next_review["transaction"] is None
         assert stock.events == before
         await native.async_shutdown()
 

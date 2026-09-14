@@ -53,6 +53,7 @@ ZERO_OFFSETS = ((0, 0), (0, 0), (0, 0))
 FIRST_CALIBRATION_CONFIGURATION: Literal["first_calibration_configuration"] = (
     "first_calibration_configuration"
 )
+type PreparationMode = Literal["native", "legacy"]
 _DEFAULT_OFFSET_CS_PINS = ((5, 4), (0, 16), (27, 17), (2, 21), (13, 22), (14, 25), (15, 26))
 
 
@@ -139,12 +140,12 @@ def source_offset_cs_pins(
             if reference.active
         }
         for board in range(topology.board_count):
-            sensor_path = (
-                "Software/ESPHome/meter_sensors/6chan_main_sensor.yaml"
+            sensor_paths = (
+                {"Software/ESPHome/meter_sensors/6chan_main_sensor.yaml"}
                 if board == 0
-                else f"Software/ESPHome/meter_sensors/6chan_addon{board}.yaml"
+                else {f"Software/ESPHome/meter_sensors/6chan_addon{board}.yaml"}
             )
-            if sensor_path in active_package_paths:
+            if sensor_paths & active_package_paths:
                 package_instances.update(
                     (
                         f"meter_main{group + 1}"
@@ -349,13 +350,15 @@ class StockOffsetPreparation:
 
     operation_id: str
     revision: int
-    transaction_id: str
+    transaction_id: str | None
     session_id: str
     source_sha256: str
     proposed_sha256: str
     stage: Literal[1, 2]
     targets: tuple[str, ...]
     generation: int
+    mode: PreparationMode = "legacy"
+    clear_targets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -550,16 +553,24 @@ def _encode(record: OffsetRecoveryRecord) -> bytes:
         raise ValueError("invalid recovery state")
     preparation = record.preparation
     if preparation is not None:
-        for value in (
-            preparation.operation_id,
-            preparation.transaction_id,
-            preparation.session_id,
-        ):
+        for value in (preparation.operation_id, preparation.session_id):
             if (
                 not isinstance(value, str)
                 or re.fullmatch(r"[0-9a-f]{32}", value) is None
             ):
                 raise ValueError("invalid preparation identity")
+        if preparation.mode not in ("native", "legacy"):
+            raise ValueError("invalid preparation mode")
+        if preparation.mode == "legacy" and (
+            not isinstance(preparation.transaction_id, str)
+            or re.fullmatch(r"[0-9a-f]{32}", preparation.transaction_id) is None
+        ):
+            raise ValueError("invalid preparation identity")
+        if preparation.mode == "native" and (
+            preparation.transaction_id is not None
+            or preparation.proposed_sha256 != preparation.source_sha256
+        ):
+            raise ValueError("invalid native preparation")
         _hash(preparation.source_sha256)
         _hash(preparation.proposed_sha256)
         if (
@@ -572,6 +583,9 @@ def _encode(record: OffsetRecoveryRecord) -> bytes:
             or not preparation.targets
             or len(preparation.targets) > 2
             or len(set(preparation.targets)) != len(preparation.targets)
+            or len(set(preparation.clear_targets)) != len(preparation.clear_targets)
+            or len(preparation.clear_targets) > len(preparation.targets)
+            or not set(preparation.clear_targets) <= set(preparation.targets)
         ):
             raise ValueError("invalid preparation targets")
         boards = {
@@ -794,24 +808,39 @@ def _decode(data: bytes) -> OffsetRecoveryRecord:
             )
         preparation = raw["preparation"]
         if preparation is not None:
-            preparation = _exact_mapping(
-                preparation,
-                {
-                    "operation_id",
-                    "revision",
-                    "transaction_id",
-                    "session_id",
-                    "source_sha256",
-                    "proposed_sha256",
-                    "stage",
-                    "targets",
-                    "generation",
-                },
-                "preparation",
-            )
-            if not isinstance(preparation["targets"], list):
+            legacy_keys = {
+                "operation_id",
+                "revision",
+                "transaction_id",
+                "session_id",
+                "source_sha256",
+                "proposed_sha256",
+                "stage",
+                "targets",
+                "generation",
+            }
+            preparation_keys = legacy_keys | {"mode", "clear_targets"}
+            if isinstance(preparation, dict) and set(preparation) == legacy_keys:
+                preparation = _exact_mapping(
+                    preparation, legacy_keys, "preparation"
+                )
+                preparation["mode"] = "legacy"
+                preparation["clear_targets"] = []
+            elif isinstance(preparation, dict) and set(preparation) == legacy_keys | {"mode"}:
+                preparation = _exact_mapping(
+                    preparation, legacy_keys | {"mode"}, "preparation"
+                )
+                preparation["clear_targets"] = []
+            else:
+                preparation = _exact_mapping(
+                    preparation, preparation_keys, "preparation"
+                )
+            if not isinstance(preparation["targets"], list) or not isinstance(
+                preparation["clear_targets"], list
+            ):
                 raise ValueError("invalid preparation targets")
             preparation["targets"] = tuple(preparation["targets"])
+            preparation["clear_targets"] = tuple(preparation["clear_targets"])
             preparation = StockOffsetPreparation(**preparation)
         if (
             not isinstance(raw["attempted"], list)
@@ -930,16 +959,23 @@ class OffsetRecovery:
             raise ValueError("recovery meter identity changed")
         return record
 
-    def is_action_ready(self, record: OffsetRecoveryRecord | None) -> bool:
+    def is_action_ready(
+        self, record: OffsetRecoveryRecord | None, *, generation: int | None = None
+    ) -> bool:
         """Check Core-local confirmation against a freshly loaded durable receipt."""
-        return bool(
-            record is not None
-            and record.installed
-            and not record.cancelled
-            and record.preparation is not None
-            and record.finalization is None
-            and self._confirmed_receipts.get(record.mac) == record.preparation
-        )
+        if (
+            record is None
+            or record.cancelled
+            or record.preparation is None
+            or record.finalization is not None
+            or self._confirmed_receipts.get(record.mac) != record.preparation
+        ):
+            return False
+        if record.preparation.mode == "native":
+            return not record.installed and (
+                generation is None or record.preparation.generation == generation
+            )
+        return record.installed
 
     async def _save(
         self, lease: CalibrationLease | ConfigLease, record: OffsetRecoveryRecord
@@ -1072,49 +1108,6 @@ class OffsetRecovery:
             record = replace(record, results=tuple(retained.values()))
         await self._save(lease, record)
         return record
-
-    @staticmethod
-    def build_preparation_plan(
-        record: OffsetRecoveryRecord,
-        source: ESPHomeConfigSnapshot,
-        stage: Literal[1, 2],
-        targets: tuple[str, ...],
-    ) -> ConfigMutationPlan:
-        """Keep completed tables and selected zero baselines in one construction."""
-        zeros = {instance: ZERO_OFFSETS for instance in targets}
-        if any(
-            item.stage == stage and item.instance_id in targets
-            for item in record.results
-        ):
-            raise ValueError("offset chip is already complete")
-        tables = _offset_observation_tables(
-            record.observations,
-            allowed_sources=_allowed_observation_sources(record),
-        )
-        tables.update(
-            {
-                (item.instance_id, item.stage): item.phase_values
-                for item in record.results
-            }
-        )
-        rms = {
-            instance: table
-            for (instance, offset_stage), table in tables.items()
-            if offset_stage == 1
-        }
-        power = {
-            instance: table
-            for (instance, offset_stage), table in tables.items()
-            if offset_stage == 2
-        }
-        (rms if stage == 1 else power).update(zeros)
-        return build_offset_table_mutation(
-            source,
-            record.topology,
-            rms,
-            power,
-            enable_calibration=frozenset(targets),
-        )
 
     @staticmethod
     def build_finalization_plan(
@@ -1474,28 +1467,52 @@ class OffsetRecovery:
         lease: CalibrationLease,
         record: OffsetRecoveryRecord,
         source: ESPHomeConfigSnapshot,
-        plan: ConfigMutationPlan,
+        plan: ConfigMutationPlan | None,
         session_id: str,
         stage: Literal[1, 2],
         targets: tuple[str, ...],
         generation: int,
+        *,
+        mode: PreparationMode = "native",
+        clear_targets: tuple[str, ...] = (),
     ) -> StockOffsetPreparation:
         if await self.async_load(lease) != record:
             raise ValueError("recovery revision changed")
         if record.finalization is not None:
             raise ValueError("finalized offsets require an explicit new cycle")
-        if plan != self.build_preparation_plan(record, source, stage, targets):
-            raise ValueError("preparation plan changed")
+        _validate_source(source, record.topology)
+        if mode != "native" or plan is not None:
+            raise ValueError("new offset preparations are native only")
+        no_clear = set(targets) - set(clear_targets)
+        for instance in no_clear:
+            matching = tuple(
+                item
+                for item in record.observations
+                if item.source_sha256 == source.sha256
+                and item.snapshot.connection_generation == generation
+                and item.snapshot.instance_id == instance
+                and item.snapshot.offset_stage == stage
+            )
+            if not matching or any(
+                item.snapshot.reported_state != FIRST_CALIBRATION_CONFIGURATION
+                or item.snapshot.phase_values != ZERO_OFFSETS
+                for item in matching
+            ):
+                raise ValueError("native clear eligibility is unproven")
+        transaction_id = None
+        proposed_sha256 = source.sha256
         preparation = StockOffsetPreparation(
             uuid4().hex,
             record.revision + 1,
-            uuid4().hex,
+            transaction_id,
             session_id,
             source.sha256,
-            sha256(plan.proposed_content.encode()).hexdigest(),
+            proposed_sha256,
             stage,
             targets,
             generation,
+            mode,
+            clear_targets,
         )
         self._confirmed_receipts.pop(lease.mac, None)
         await self._save(
@@ -1509,6 +1526,7 @@ class OffsetRecovery:
                 attempted=(),
             ),
         )
+        self._confirmed_receipts[lease.mac] = preparation
         return preparation
 
     async def async_require(
@@ -1524,7 +1542,7 @@ class OffsetRecovery:
             or record.preparation != preparation
             or record.cancelled
             or record.installed is not installed
-            or installed
+            or (installed or preparation.mode == "native")
             and not self.is_action_ready(record)
         ):
             raise ValueError("stock offset preparation is stale or unavailable")
@@ -1533,6 +1551,8 @@ class OffsetRecovery:
     async def async_mark_installed(
         self, lease: ConfigLease, preparation: StockOffsetPreparation
     ) -> None:
+        if preparation.mode != "legacy":
+            raise ValueError("native preparation has no install receipt")
         record = await self.async_require(lease, preparation, installed=False)
         try:
             await self._save(
@@ -1566,7 +1586,9 @@ class OffsetRecovery:
         preparation: StockOffsetPreparation,
         instance_id: str,
     ) -> None:
-        record = await self.async_require(lease, preparation, installed=True)
+        record = await self.async_require(
+            lease, preparation, installed=preparation.mode != "native"
+        )
         if (
             instance_id not in preparation.targets
             or instance_id in record.attempted
@@ -1596,7 +1618,9 @@ class OffsetRecovery:
         generation: int,
         register_verified: bool,
     ) -> None:
-        record = await self.async_require(lease, preparation, installed=True)
+        record = await self.async_require(
+            lease, preparation, installed=preparation.mode != "native"
+        )
         if instance_id not in record.attempted or any(
             item.instance_id == instance_id and item.stage == preparation.stage
             for item in record.results

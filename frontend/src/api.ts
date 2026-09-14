@@ -703,11 +703,12 @@ function offsetId(value: unknown, label: string): void {
 
 function offsetPreparation(value: unknown, label: string): OffsetPreparationStatus {
   const item = record(value, label);
-  exactKeys(item, ["backup_available", "operation_id", "stage", "targets", "installed", "cancelled", "action_ready", "attempted", "completed"], label);
+  exactKeys(item, ["backup_available", "operation_id", "stage", "targets", "mode", "installed", "cancelled", "action_ready", "attempted", "completed"], label);
   offsetId(item.operation_id, label);
   const targets = offsetInstances(item.targets, label, 2);
   const attempted = offsetInstances(item.attempted, label, 2);
   if (item.stage !== null && item.stage !== 1 && item.stage !== 2) throw new Error(`${label} response is invalid`);
+  if (item.mode !== null && item.mode !== "native" && item.mode !== "legacy") throw new Error(`${label} response is invalid`);
   for (const key of ["backup_available", "installed", "cancelled", "action_ready"]) boolean(item[key], label);
   const completed = array(item.completed, label, 28).map((entry) => {
     const pair = array(entry, label, 2); if (pair.length !== 2 || pair[1] !== 1 && pair[1] !== 2) throw new Error(`${label} response is invalid`);
@@ -715,7 +716,10 @@ function offsetPreparation(value: unknown, label: string): OffsetPreparationStat
   });
   if (new Set(completed).size !== completed.length || attempted.some((id) => !targets.includes(id))
     || (item.operation_id === null) !== (item.stage === null) || (item.operation_id === null) !== (targets.length === 0)
-    || item.action_ready && (!item.installed || item.cancelled || !item.backup_available || item.operation_id === null)) throw new Error(`${label} response is invalid`);
+    || (item.operation_id === null) !== (item.mode === null)
+    || item.mode === "native" && item.installed
+    || item.action_ready && (item.mode === null || item.cancelled || !item.backup_available || item.operation_id === null
+      || item.mode === "legacy" && !item.installed)) throw new Error(`${label} response is invalid`);
   return value as OffsetPreparationStatus;
 }
 
@@ -745,13 +749,14 @@ function offsetFinalization(value: unknown, label: string): OffsetFinalizationSt
 
 function offsetPreview(value: unknown, label: string, stage?: 1 | 2, board?: number): OffsetPreparationPreview | OffsetFinalizationPreview {
   const item = record(value, label); const preparing = stage !== undefined;
-  exactKeys(item, preparing ? ["operation_id", "stage", "targets", "backup_available", "transaction"] : ["purpose", "operation_id", "targets", "transaction"], label);
+  exactKeys(item, preparing ? ["operation_id", "stage", "targets", "backup_available", "mode", "transaction"] : ["purpose", "operation_id", "targets", "transaction"], label);
   offsetId(item.operation_id, label); if (item.operation_id === null) throw new Error(`${label} response is invalid`);
   const targets = offsetInstances(item.targets, label, preparing ? 2 : 14);
-  const status = transaction(item.transaction, label);
+  if (preparing && item.mode !== "native" && item.mode !== "legacy") throw new Error(`${label} response is invalid`);
+  const status = item.transaction === null ? null : transaction(item.transaction, label);
   const expected = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
-  if (!targets.length || preparing && (item.stage !== stage || item.backup_available !== true || status.purpose !== "offset_preparation" || targets.some((id) => !expected.includes(id)))
-    || !preparing && (item.purpose !== "offset_finalization" || status.purpose !== "offset_finalization")) throw new Error(`${label} response is invalid`);
+  if (!targets.length || preparing && (item.stage !== stage || item.backup_available !== true || (item.mode === "native" ? item.transaction !== null : status?.purpose !== "offset_preparation") || targets.some((id) => !expected.includes(id)))
+    || !preparing && (item.purpose !== "offset_finalization" || status?.purpose !== "offset_finalization")) throw new Error(`${label} response is invalid`);
   return value as OffsetPreparationPreview | OffsetFinalizationPreview;
 }
 
