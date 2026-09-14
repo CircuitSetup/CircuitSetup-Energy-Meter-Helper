@@ -102,6 +102,46 @@ def test_native_first_use_rechecks_newly_reported_saved_values(tmp_path: Path) -
     asyncio.run(run())
 
 
+def test_native_review_replaces_stale_unstarted_preview(tmp_path: Path) -> None:
+    async def run() -> None:
+        workflow, handle, _session, recovery, sessions = _native_workflow(tmp_path)
+        first = await workflow.async_preview_offset_preparation(
+            handle.session_id,
+            0,
+            1,
+            backup_acknowledged=True,
+            first_calibration_confirmed=True,
+        )
+        source = await workflow._builder.async_get_config("meter.yaml")
+        changed = replace(
+            source,
+            content=source.content + "\n# unrelated source edit\n",
+            sha256=sha256((source.content + "\n# unrelated source edit\n").encode()).hexdigest(),
+        )
+        workflow._builder.remote_content = changed.content
+        handle.configuration_sha256 = changed.sha256
+        replacement = await workflow.async_preview_offset_preparation(
+            handle.session_id,
+            0,
+            1,
+            backup_acknowledged=True,
+            first_calibration_confirmed=True,
+        )
+        assert replacement["mode"] == "native"
+        assert replacement["operation_id"] != first["operation_id"]
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            record = await recovery.async_load(lease)
+            assert record is not None
+            assert record.original.sha256 == changed.sha256
+            assert record.preparation is not None
+            assert record.preparation.operation_id == replacement["operation_id"]
+        finally:
+            lease.release()
+
+    asyncio.run(run())
+
+
 def test_native_first_use_across_main_and_addon_uses_real_instance_ids(
     tmp_path: Path,
 ) -> None:

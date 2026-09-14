@@ -1022,26 +1022,36 @@ class OffsetRecovery:
     ) -> OffsetRecoveryRecord:
         _validate_source(source, topology)
         original = await self.async_load(lease)
-        if original is not None and (
-            _topology_identity(original.topology) != _topology_identity(topology)
-            or source.configuration != original.original.configuration
-            or (
-                original.original.sha256 != source.sha256
-                and (
-                    original.preparation is None
+        pending = self._sessions.pending_calibration(lease.mac)
+        replace_stale_preview = False
+        if original is not None:
+            if (
+                _topology_identity(original.topology) != _topology_identity(topology)
+                or source.configuration != original.original.configuration
+            ):
+                raise ValueError("recovery source changed")
+            if original.original.sha256 != source.sha256:
+                accepted_preparation_source = original.preparation is not None and (
+                    source.sha256 == original.preparation.source_sha256
                     or (
-                        # Replacement preview/cancellation or CAS rollback leaves
-                        # this exact prior source valid for backup, not for Run.
-                        source.sha256 != original.preparation.source_sha256
-                        and (
-                            not original.installed
-                            or source.sha256 != original.preparation.proposed_sha256
-                        )
+                        original.installed
+                        and source.sha256 == original.preparation.proposed_sha256
                     )
                 )
-            )
-        ):
-            raise ValueError("recovery source changed")
+                replace_stale_preview = (
+                    not accepted_preparation_source
+                    and original.preparation is not None
+                    and not original.installed
+                    and not original.attempted
+                    and not original.results
+                    and original.finalization is None
+                    and not original.final_installed
+                    and not original.final_cancelled
+                    and not original.configuration_selected
+                    and pending is None
+                )
+                if not accepted_preparation_source and not replace_stale_preview:
+                    raise ValueError("recovery source changed")
         additions = tuple(
             SavedOffsetObservation(source.sha256, item) for item in snapshots
         )
@@ -1049,16 +1059,22 @@ class OffsetRecovery:
             raise ValueError("recovery requires exact saved tables")
         record = (
             OffsetRecoveryRecord(
-                lease.mac, source, replace(topology, evidence=()), additions
+                lease.mac,
+                source,
+                replace(topology, evidence=()),
+                (original.observations if replace_stale_preview and original else ())
+                + additions,
+                revision=original.revision + 1
+                if replace_stale_preview and original
+                else 0,
             )
-            if original is None
+            if original is None or replace_stale_preview
             else replace(
                 original,
                 observations=original.observations + additions,
                 revision=original.revision + 1,
             )
         )
-        pending = self._sessions.pending_calibration(lease.mac)
         if pending is not None:
             retained = {(item.instance_id, item.stage): item for item in record.results}
             stages: tuple[Literal[1, 2], ...] = (1, 2)
