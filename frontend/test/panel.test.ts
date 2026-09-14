@@ -2801,6 +2801,52 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(true);
   });
 
+  it("advances offset Continue to the next board and scrolls to the heading", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.configurationMode = "runtime_only";
+    state.topology = { addon_count: 1, board_count: 2, ct_count: 12, group_count: 4,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name, evidence: [] };
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
+      offset_capability: { status: "available", repair_reason: null }, offset_disposition: "in_progress",
+      offset_boards: [
+        { board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+        { board_index: 1, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] },
+      ], has_pending_calibration: false };
+    state.offsetStage = 1;
+    state.board = 0;
+    panel.showState("offset" as never);
+    await panel.updateComplete;
+
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    try {
+      const continueButton = panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary");
+      expect(continueButton?.disabled).toBe(false);
+      continueButton?.click();
+      await panel.updateComplete;
+      expect(state.board).toBe(1);
+      expect(text(panel)).toContain("Optional offset calibration · Stage 1 · Add-on 1");
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+
+      state.session = { ...(state.session as Record<string, unknown>), offset_boards: [
+        { board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+        { board_index: 1, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+      ] };
+      panel.requestUpdate(); await panel.updateComplete;
+      panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.click();
+      await panel.updateComplete;
+      expect(state.board).toBe(0);
+      expect(state.offsetStage).toBe(2);
+      expect(text(panel)).toContain("Optional offset calibration · Stage 2 · Main Board");
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: originalScrollIntoView });
+    }
+  });
+
   it("shows invalid offset capability as repair-aware skip-only", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     const state = panel as unknown as Record<string, unknown>;

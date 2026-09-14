@@ -25,7 +25,7 @@ export function offsetStep(
   reconnect: () => void,
   skip: () => void,
   back: () => void,
-  continueToVoltage: () => void,
+  continueOffset: () => void,
   stock: { preparation: OffsetPreparationStatus | null; backupAcknowledged: boolean; setBackup: (value: boolean) => void; firstCalibrationConfirmed: boolean; setFirstCalibrationConfirmed: (value: boolean) => void; prepare: () => void } | null = null,
 ): TemplateResult {
   const capability = session?.offset_capability;
@@ -34,6 +34,7 @@ export function offsetStep(
     || session?.offset_disposition === "partial" && session.state === "applied_pending_restart_verification";
   const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
+  const canContinue = finalized || stageState === "completed";
   const preparation = stock?.preparation;
   const nativePreparation = Boolean(stock && (preparation?.mode ?? "native") === "native");
   const selectedInstances = groupKeys(board).map((id) => id.replace("main_", "meter_main"));
@@ -152,7 +153,7 @@ export function offsetStep(
       <footer class="action-footer offset-footer">
         <button class="secondary" ?disabled=${busy} @click=${back}>Back</button>
         <button class="secondary" data-action="skip-offset" ?disabled=${busy || finalized} @click=${skip}>Skip offset calibration</button>
-        <button class="primary" ?disabled=${busy || !finalized} @click=${continueToVoltage}>Continue</button>
+        <button class="primary" ?disabled=${busy || !canContinue} @click=${continueOffset}>Continue</button>
       </footer>
     </section>
   `;

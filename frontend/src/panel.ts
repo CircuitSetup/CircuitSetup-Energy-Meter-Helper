@@ -286,7 +286,9 @@ export class CircuitSetupPanel extends LitElement {
     }
     else if (this.focusHeading) {
       this.focusHeading = false;
-      this.shadowRoot?.querySelector<HTMLElement>("#step-heading")?.focus();
+      const heading = this.shadowRoot?.querySelector<HTMLElement>("#step-heading");
+      heading?.scrollIntoView?.({ block: "start" });
+      heading?.focus({ preventScroll: true });
     }
   }
 
@@ -2176,6 +2178,24 @@ export class CircuitSetupPanel extends LitElement {
     }
   }
 
+  private continueOffset(): void {
+    if (!this.session || this.offsetBusy) return;
+    const finalized = this.session.offset_disposition === "skipped"
+      || this.session.offset_disposition === "partial" && this.session.state === "applied_pending_restart_verification";
+    if (finalized) { this.navigate("voltage"); return; }
+    if (this.session.offset_boards?.[this.board]?.stages[this.offsetStage - 1]?.state !== "completed") return;
+    const boardCount = this.topology?.board_count ?? this.session.offset_boards?.length ?? 1;
+    if (this.board + 1 < boardCount) this.board += 1;
+    else if (this.offsetStage === 1) { this.offsetStage = 2; this.board = 0; }
+    else { this.navigate("voltage"); return; }
+    this.offsetAcknowledged = this.offsetAcknowledged.map((value, index) => index === this.offsetStage - 1 ? false : value);
+    this.offsetFirstCalibrationConfirmed = false;
+    this.offsetRetryConfirmed = false;
+    this.offsetReadinessByTarget = new Map();
+    this.focusHeading = true;
+    this.requestUpdate();
+  }
+
   private async finishCurrent(): Promise<void> {
     if (!this.session || this.finishBusy) return;
     if (this.totalsIntentNeedsResolution()) { this.explainTotalsModeConflict(); return; }
@@ -2638,7 +2658,7 @@ export class CircuitSetupPanel extends LitElement {
       (value) => { this.offsetAcknowledged = this.offsetAcknowledged.map((current, index) => index === this.offsetStage - 1 ? value : current); this.requestUpdate(); },
       (value) => { this.offsetRetryConfirmed = value; this.requestUpdate(); },
       () => void this.checkOffsetReadiness(), () => void this.calibrateOffset(), () => void this.reconnectSession(),
-      () => void this.skipOffset(), () => this.back(), () => this.navigate("voltage"),
+      () => void this.skipOffset(), () => this.back(), () => this.continueOffset(),
       this.stockOffsetMode() ? { preparation: this.offsetPreparation, backupAcknowledged: this.offsetBackupAcknowledged,
         setBackup: (value) => { this.offsetBackupAcknowledged = value; this.requestUpdate(); },
         firstCalibrationConfirmed: this.offsetFirstCalibrationConfirmed,

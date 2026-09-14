@@ -3422,12 +3422,13 @@ function existingMeterInspection(candidates, inspection, busyAction, find, inspe
 }
 const boardLabel = (index) => index === 0 ? "Main Board" : `Add-on ${index}`;
 const groupKeys = (board) => board === 0 ? ["main_1", "main_2"] : [`addon${board}_1`, `addon${board}_2`];
-function offsetStep(topology2, session2, board, stage, acknowledged, retryConfirmed, readiness, result, busy, selectBoard, selectStage, setAcknowledged, setRetryConfirmed, check, calibrate, reconnect, skip, back, continueToVoltage, stock = null) {
+function offsetStep(topology2, session2, board, stage, acknowledged, retryConfirmed, readiness, result, busy, selectBoard, selectStage, setAcknowledged, setRetryConfirmed, check, calibrate, reconnect, skip, back, continueOffset, stock = null) {
   const capability = session2?.offset_capability;
   const boards = session2?.offset_boards ?? [];
   const finalized = session2?.offset_disposition === "completed" || session2?.offset_disposition === "skipped" || session2?.offset_disposition === "partial" && session2.state === "applied_pending_restart_verification";
   const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
+  const canContinue = finalized || stageState === "completed";
   const preparation = stock?.preparation;
   const nativePreparation = Boolean(stock && (preparation?.mode ?? "native") === "native");
   const selectedInstances = groupKeys(board).map((id2) => id2.replace("main_", "meter_main"));
@@ -3541,7 +3542,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
       <footer class="action-footer offset-footer">
         <button class="secondary" ?disabled=${busy} @click=${back}>Back</button>
         <button class="secondary" data-action="skip-offset" ?disabled=${busy || finalized} @click=${skip}>Skip offset calibration</button>
-        <button class="primary" ?disabled=${busy || !finalized} @click=${continueToVoltage}>Continue</button>
+        <button class="primary" ?disabled=${busy || !canContinue} @click=${continueOffset}>Continue</button>
       </footer>
     </section>
   `;
@@ -4491,7 +4492,9 @@ class CircuitSetupPanel extends i$2 {
       this.shadowRoot?.querySelector("[role=alert]")?.focus();
     } else if (this.focusHeading) {
       this.focusHeading = false;
-      this.shadowRoot?.querySelector("#step-heading")?.focus();
+      const heading = this.shadowRoot?.querySelector("#step-heading");
+      heading?.scrollIntoView?.({ block: "start" });
+      heading?.focus({ preventScroll: true });
     }
   }
   async ensureApi(generation) {
@@ -6434,6 +6437,30 @@ class CircuitSetupPanel extends i$2 {
       this.requestUpdate();
     }
   }
+  continueOffset() {
+    if (!this.session || this.offsetBusy) return;
+    const finalized = this.session.offset_disposition === "skipped" || this.session.offset_disposition === "partial" && this.session.state === "applied_pending_restart_verification";
+    if (finalized) {
+      this.navigate("voltage");
+      return;
+    }
+    if (this.session.offset_boards?.[this.board]?.stages[this.offsetStage - 1]?.state !== "completed") return;
+    const boardCount = this.topology?.board_count ?? this.session.offset_boards?.length ?? 1;
+    if (this.board + 1 < boardCount) this.board += 1;
+    else if (this.offsetStage === 1) {
+      this.offsetStage = 2;
+      this.board = 0;
+    } else {
+      this.navigate("voltage");
+      return;
+    }
+    this.offsetAcknowledged = this.offsetAcknowledged.map((value, index) => index === this.offsetStage - 1 ? false : value);
+    this.offsetFirstCalibrationConfirmed = false;
+    this.offsetRetryConfirmed = false;
+    this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
+    this.focusHeading = true;
+    this.requestUpdate();
+  }
   async finishCurrent() {
     if (!this.session || this.finishBusy) return;
     if (this.totalsIntentNeedsResolution()) {
@@ -7020,7 +7047,7 @@ class CircuitSetupPanel extends i$2 {
       () => void this.reconnectSession(),
       () => void this.skipOffset(),
       () => this.back(),
-      () => this.navigate("voltage"),
+      () => this.continueOffset(),
       this.stockOffsetMode() ? {
         preparation: this.offsetPreparation,
         backupAcknowledged: this.offsetBackupAcknowledged,
