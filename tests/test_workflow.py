@@ -1552,6 +1552,55 @@ class SensorInfo:
         self.unit_of_measurement = unit
 
 
+def test_offset_reconnect_verification_scopes_communication_to_target_source_chip() -> None:
+    from tests.test_offset_recovery import _snapshot
+
+    workflow, handle, _sessions, api = _workflow()
+    source = _snapshot()
+    handle.configuration = source.configuration
+    handle.configuration_sha256 = source.sha256
+
+    class Builder:
+        async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
+            assert configuration == source.configuration
+            return source
+
+    sensors = tuple(
+        SensorInfo(channel, f"CT {channel} Amps") for channel in range(1, 7)
+    )
+    channels = tuple(
+        SimpleNamespace(
+            channel=channel,
+            current_sensor=SimpleNamespace(descriptor=sensor),
+        )
+        for channel, sensor in enumerate(sensors, 1)
+    )
+    handle.binding.rebind = lambda *_args: SimpleNamespace(channels=channels)
+    workflow._builder = Builder()
+    api.entities = sensors
+    checked: list[tuple[int, frozenset[int]]] = []
+
+    async def reconnect() -> None:
+        return None
+
+    async def check_communication(
+        expected_chips: int, *, expected_cs_pins: frozenset[int] | None = None
+    ) -> None:
+        assert expected_cs_pins is not None
+        checked.append((expected_chips, expected_cs_pins))
+
+    api.async_reconnect = reconnect
+    api.async_check_meter_communication = check_communication
+    evidence = asyncio.run(
+        workflow.async_verify(
+            MAC, expected_instance_ids=frozenset({"meter_main1"})
+        )
+    )
+
+    assert checked == [(1, frozenset({5}))]
+    assert evidence.current_sensor_count == 6
+
+
 def _ordinary_verification_workflow(
     monkeypatch: pytest.MonkeyPatch,
     content: str,

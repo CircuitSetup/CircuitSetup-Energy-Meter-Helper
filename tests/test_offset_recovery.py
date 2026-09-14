@@ -77,6 +77,77 @@ def test_first_configuration_snapshot_is_source_bound_and_not_flash_evidence() -
     )
 
 
+def test_source_offset_cs_pins_use_official_defaults_and_literal_override() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    pins = source_offset_cs_pins(
+        source, _topology(), {"meter_main1", "meter_main2"}
+    )
+    assert pins == {"meter_main1": 5, "meter_main2": 4}
+
+    content = source.content.replace(
+        "logger:\n",
+        "  - id: !extend meter_main1\n"
+        "    cs_pin: GPIO33\n"
+        "logger:\n",
+        1,
+    )
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+    assert source_offset_cs_pins(source, _topology(), {"meter_main1"}) == {
+        "meter_main1": 33
+    }
+
+
+def test_source_offset_cs_pins_cover_official_addon_defaults() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+    from tests.test_config_mutator import _topology_for_addons
+
+    source = _snapshot()
+    content = source.content.replace(
+        "circuitsetup.6c-energy-meter", "circuitsetup.6c-energy-meter-2-addons", 1
+    )
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+    assert source_offset_cs_pins(
+        source,
+        _topology_for_addons(2),
+        {"meter_main1", "meter_main2", "addon1_1", "addon1_2", "addon2_1", "addon2_2"},
+    ) == {
+        "meter_main1": 5,
+        "meter_main2": 4,
+        "addon1_1": 0,
+        "addon1_2": 16,
+        "addon2_1": 27,
+        "addon2_2": 17,
+    }
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    (
+        "  - platform: atm90e32\n    id: meter_main1\n",
+        "  - id: !extend meter_main1\n    cs_pin: !include pin.yaml\n",
+        "  - platform: atm90e32\n    id: meter_main1\n    cs_pin: 4\n",
+    ),
+)
+def test_source_offset_cs_pins_reject_ambiguous_or_unsupported_overrides(
+    suffix: str,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    content = source.content.replace("logger:\n", suffix + "logger:\n", 1)
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+    with pytest.raises(ValueError, match="offset chip"):
+        source_offset_cs_pins(source, _topology(), {"meter_main1"})
+
+
 def test_first_configuration_snapshot_reads_helper_owned_tables() -> None:
     from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
         build_offset_table_mutation,

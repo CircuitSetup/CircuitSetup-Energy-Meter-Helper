@@ -141,6 +141,10 @@ def test_confirmed_first_stock_preparation_uses_source_for_both_stages(
         assert preview["transaction"].purpose == "offset_preparation"
         assert not session.events
         assert session.configuration_selections == []
+        assert session.snapshot_communication_scopes == [
+            (("meter_main1", "meter_main2"), frozenset((5, 4))),
+            (("meter_main1", "meter_main2"), frozenset((5, 4))),
+        ]
         assert "write" not in workflow._builder.calls
         lease = await sessions.async_acquire_calibration(MAC)
         try:
@@ -189,13 +193,14 @@ def test_confirmed_first_baseline_reuses_unchanged_values_for_stage_two_after_in
         workflow._api = session
         workflow._builder = Builder(remote_content=source.content)
         recovery = workflow._offset_recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+        verifier = Verifier(
+            ReconnectEvidence(
+                MAC, handle.topology, {i: f"CT {i}" for i in range(1, 7)}, 6
+            )
+        )
         workflow.transactions = ConfigTransactionManager(
             workflow._builder,
-            Verifier(
-                ReconnectEvidence(
-                    MAC, handle.topology, {i: f"CT {i}" for i in range(1, 7)}, 6
-                )
-            ),
+            verifier,
             Persistence(),
             sessions,
             offset_recovery=recovery,
@@ -223,6 +228,9 @@ def test_confirmed_first_baseline_reuses_unchanged_values_for_stage_two_after_in
         )
 
         assert second["targets"] == ("meter_main1", "meter_main2")
+        assert verifier.expected_instance_ids_calls == [
+            frozenset(("meter_main1", "meter_main2"))
+        ]
         assert "enable_offset_calibration: true" in sessions._get_transaction(
             second["transaction"].transaction_id
         ).plan.proposed_content
@@ -343,10 +351,14 @@ class StockSession(FakeOffsetSession):
         self.snapshot_unknown = False
         self.snapshot_overrides: dict[tuple[str, int], Any] = {}
         self.configuration_selections: list[tuple[str, ...]] = []
+        self.snapshot_communication_scopes: list[tuple[tuple[str, ...], frozenset[int]]] = []
 
     async def async_offset_table_snapshot(
         self, targets: set[str], *, offset_stage: int, **kwargs: Any
     ) -> dict[str, Any]:
+        self.snapshot_communication_scopes.append(
+            (tuple(sorted(targets)), frozenset(kwargs.get("expected_cs_pins", ())))
+        )
         return {
             instance: self.snapshot_overrides[(instance, offset_stage)]
             if (instance, offset_stage) in self.snapshot_overrides
@@ -731,6 +743,10 @@ def test_prepared_run_reuses_source_bound_backup_when_stock_table_is_absent(
         )
         assert result.state.value == "captured_pending_configuration"
         assert snapshot_calls == 2
+        assert session.snapshot_communication_scopes == [
+            (("meter_main1",), frozenset({5})),
+            (("meter_main2",), frozenset({4})),
+        ]
         lease = await sessions.async_acquire_calibration(MAC)
         try:
             after = await recovery.async_load(lease)

@@ -75,6 +75,37 @@ def _strip_terminal_sequences(value: str) -> str:
     return _ANSI_CSI.sub("", _ANSI_OSC.sub("", value))
 
 
+def _validate_expected_cs_pins(
+    expected_cs_pins: set[int] | frozenset[int] | None,
+    expected_count: int,
+) -> frozenset[int] | None:
+    if expected_cs_pins is None:
+        return None
+    if not isinstance(expected_cs_pins, (set, frozenset)):
+        raise ValueError("invalid expected meter CS pins")  # noqa: TRY004
+    pins = frozenset(expected_cs_pins)
+    if (
+        not pins
+        or len(pins) != expected_count
+        or len(pins) > 14
+        or any(type(pin) is not int or not 0 <= pin <= 63 for pin in pins)
+    ):
+        raise ValueError("invalid expected meter CS pins")
+    return pins
+
+
+def _raise_scoped_communication_error(
+    parser: MeterCommunicationParser, expected_cs_pins: frozenset[int] | None
+) -> None:
+    if not parser.failed:
+        return
+    if expected_cs_pins is None:
+        raise MeterCommunicationError(tuple(sorted(parser.failed_cs_pins)))
+    failed = parser.failed_cs_pins.intersection(expected_cs_pins)
+    if failed or parser.unattributed_failure or not parser.failed_cs_pins:
+        raise MeterCommunicationError(tuple(sorted(failed)))
+
+
 class ESPHomeApiRepairRequired(RuntimeError):
     """The selected ESPHome entry cannot safely supply a secondary client."""
 
@@ -467,6 +498,7 @@ class ESPHomeApiSession:
         timeout: float = 5.0,
         require_communication: bool = False,
         expected_chip_count: int | None = None,
+        expected_cs_pins: set[int] | frozenset[int] | None = None,
     ) -> dict[str, OffsetTableSnapshot | None]:
         """Capture one bounded fresh dump without depending on the public log ring."""
         if offset_stage not in (1, 2):
@@ -479,19 +511,23 @@ class ESPHomeApiSession:
             or not 1 <= expected_chip_count <= 14
         ):
             raise ValueError("invalid expected meter chip count")
+        expected_pins = _validate_expected_cs_pins(
+            expected_cs_pins,
+            len(expected_instance_ids),
+        )
         generation, captured = await self._async_offset_dump(timeout)
         if require_communication:
             parser = MeterCommunicationParser()
             for item in captured:
                 parser.feed(item.line)
-            if parser.failed:
-                raise MeterCommunicationError(tuple(sorted(parser.failed_cs_pins)))
-            expected = (
+            _raise_scoped_communication_error(parser, expected_pins)
+            if expected_pins is None and len(parser.checked_cs_pins) != (
                 len(expected_instance_ids)
                 if expected_chip_count is None
                 else expected_chip_count
-            )
-            if len(parser.checked_cs_pins) != expected:
+            ):
+                raise TimeoutError("Meter chip communication evidence is incomplete")
+            if expected_pins is not None and not expected_pins <= parser.checked_cs_pins:
                 raise TimeoutError("Meter chip communication evidence is incomplete")
         return parse_offset_table_snapshot(
             captured,
@@ -604,13 +640,18 @@ class ESPHomeApiSession:
                     self._subscribe_normal_logs(client)
 
     async def async_check_meter_communication(
-        self, expected_chips: int, *, timeout: float = 30.0
+        self,
+        expected_chips: int,
+        *,
+        timeout: float = 30.0,
+        expected_cs_pins: set[int] | frozenset[int] | None = None,
     ) -> None:
         """Verify every chip from a fresh config dump, not a cached boot log."""
         if type(expected_chips) is not int or not 1 <= expected_chips <= 14:
             raise ValueError("invalid expected meter chip count")
         if not isfinite(timeout) or timeout <= 0:
             raise ValueError("meter communication timeout must be positive")
+        expected_pins = _validate_expected_cs_pins(expected_cs_pins, expected_chips)
         async with self._lifecycle_lock:
             client = self._ready_client()
             parser = MeterCommunicationParser()
@@ -630,16 +671,21 @@ class ESPHomeApiSession:
                     callback, self._log_level("LOG_LEVEL_DEBUG"), dump_config=True
                 )
                 deadline = monotonic() + timeout
-                while len(parser.checked_cs_pins) < expected_chips:
+                while (
+                    not expected_pins <= parser.checked_cs_pins
+                    if expected_pins is not None
+                    else len(parser.checked_cs_pins) < expected_chips
+                ):
                     self._ready_client()
                     remaining = deadline - monotonic()
                     if remaining <= 0:
                         break
                     await asyncio.sleep(min(0.05, remaining))
-                if parser.failed:
-                    raise MeterCommunicationError(tuple(sorted(parser.failed_cs_pins)))
+                _raise_scoped_communication_error(parser, expected_pins)
                 self._ready_client()
-                if len(parser.checked_cs_pins) != expected_chips:
+                if expected_pins is None and len(parser.checked_cs_pins) != expected_chips:
+                    raise TimeoutError("Meter chip communication evidence is incomplete")
+                if expected_pins is not None and not expected_pins <= parser.checked_cs_pins:
                     raise TimeoutError("Meter chip communication evidence is incomplete")
             finally:
                 self._clear_log_subscription()

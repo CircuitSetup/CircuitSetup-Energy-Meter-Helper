@@ -106,6 +106,7 @@ class MeterCommunicationParser:
     def __init__(self) -> None:
         self.checked_cs_pins: set[int] = set()
         self.failed_cs_pins: set[int] = set()
+        self.unattributed_failure = False
         self.failed = False
         self._active = False
         self._pin: int | None = None
@@ -127,6 +128,8 @@ class MeterCommunicationParser:
                 self.failed = True
                 if self._pin is not None:
                     self.failed_cs_pins.add(self._pin)
+                else:
+                    self.unattributed_failure = True
         elif self._active and payload.casefold().startswith("update interval:"):
             if self._pin is not None:
                 self.checked_cs_pins.add(self._pin)

@@ -329,7 +329,12 @@ class ReconnectEvidence:
 
 
 class ReconnectVerifier(Protocol):
-    async def async_verify(self, mac: str) -> ReconnectEvidence: ...
+    async def async_verify(
+        self,
+        mac: str,
+        *,
+        expected_instance_ids: frozenset[str] | None = None,
+    ) -> ReconnectEvidence: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1395,8 +1400,23 @@ class ConfigTransactionManager:
             while (remaining := deadline - self._clock()) > 0:
                 transaction.aggregate_entity_mismatch = False
                 try:
+                    target_instance_ids = (
+                        frozenset(transaction.offset_preparation.targets)
+                        if transaction.offset_preparation is not None
+                        else frozenset(transaction.offset_finalization.targets)
+                        if transaction.offset_finalization is not None
+                        else None
+                    )
                     async with asyncio.timeout(remaining):
-                        verification = await self._verifier.async_verify(transaction.mac)
+                        if target_instance_ids is None:
+                            verification = await self._verifier.async_verify(
+                                transaction.mac
+                            )
+                        else:
+                            verification = await self._verifier.async_verify(
+                                transaction.mac,
+                                expected_instance_ids=target_instance_ids,
+                            )
                 except MeterCommunicationError as communication_error:
                     transaction.communication_failed_cs_pins = communication_error.cs_pins
                     return self._retain_install_retry(

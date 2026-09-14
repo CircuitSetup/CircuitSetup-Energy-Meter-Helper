@@ -56,6 +56,7 @@ from .offset_recovery import (
     StockOffsetPreparation,
     _allowed_observation_sources,
     _validate_source,
+    source_offset_cs_pins,
 )
 from .preflight import (
     ReferenceZeroError,
@@ -773,6 +774,7 @@ class CalibrationEngine:
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
             generation = binding.connection_generation
+            target_cs_pins: dict[str, int] = {}
 
             async def read_snapshot(
                 instance: str, offset_stage: OffsetReadinessStage
@@ -782,7 +784,7 @@ class CalibrationEngine:
                         {instance},
                         offset_stage=offset_stage,
                         require_communication=True,
-                        expected_chip_count=len(binding.groups),
+                        expected_cs_pins=frozenset({target_cs_pins[instance]}),
                     )
                     return snapshots.get(instance)
                 except Exception:  # noqa: BLE001 - never reflect native logs from failed snapshots
@@ -817,6 +819,16 @@ class CalibrationEngine:
                 return source
 
             source = await reconcile()
+            try:
+                target_cs_pins = source_offset_cs_pins(
+                    source,
+                    binding.topology,
+                    {item[2] for item in selected},
+                )
+            except Exception:  # noqa: BLE001 - source parser details stay private
+                raise CalibrationError(
+                    "authoritative offset chip mapping is unavailable"
+                ) from None
             record = await recovery.async_require(lease, preparation, installed=True)
             allowed_sources = _allowed_observation_sources(record)
             source_bound: dict[tuple[str, int], OffsetTableSnapshot] = {}

@@ -94,6 +94,7 @@ from .offset_recovery import (
     OffsetRecoveryRecord,
     _allowed_observation_sources,
     _validate_source,
+    source_offset_cs_pins,
     source_offset_snapshots,
 )
 from .preflight import PreflightResult, async_preflight
@@ -1632,6 +1633,14 @@ class EntryWorkflow:
                     raise WorkflowHandleError(
                         "selected offset stage is already complete"
                 )
+                try:
+                    target_cs_pins = source_offset_cs_pins(
+                        source, handle.topology, set(targets)
+                    )
+                except Exception:  # noqa: BLE001 - source details stay private
+                    raise WorkflowCapabilityUnavailable(
+                        "selected offset chip identities are unavailable"
+                    ) from None
                 generation = handle.binding.connection_generation
                 allowed_sources = (
                     _allowed_observation_sources(old)
@@ -1669,7 +1678,9 @@ class EntryWorkflow:
                         missing,
                         offset_stage=baseline_stage,
                         require_communication=True,
-                        expected_chip_count=len(handle.binding.groups),
+                        expected_cs_pins=frozenset(
+                            target_cs_pins[instance] for instance in missing
+                        ),
                     )
                     for instance in missing:
                         item = snapshots.get(instance)
@@ -1743,7 +1754,9 @@ class EntryWorkflow:
                             missing,
                             offset_stage=completed_stage,
                             require_communication=True,
-                            expected_chip_count=len(handle.binding.groups),
+                            expected_cs_pins=frozenset(
+                                target_cs_pins[instance] for instance in missing
+                            ),
                         )
                         for instance in missing:
                             item = completed_snapshots.get(instance)
@@ -2011,6 +2024,14 @@ class EntryWorkflow:
                     record.original.configuration
                 )
                 targets = {item.instance_id for item in record.results}
+                try:
+                    target_cs_pins = source_offset_cs_pins(
+                        source, handle.topology, targets
+                    )
+                except Exception:  # noqa: BLE001 - source details stay private
+                    raise WorkflowCapabilityUnavailable(
+                        "selected offset chip identities are unavailable"
+                    ) from None
                 captured = {(item.instance_id, item.stage) for item in record.results}
                 if record.finalization is None:
                     allowed_sources = _allowed_observation_sources(record)
@@ -2037,7 +2058,9 @@ class EntryWorkflow:
                             missing,
                             offset_stage=stage,
                             require_communication=True,
-                            expected_chip_count=len(handle.binding.groups),
+                            expected_cs_pins=frozenset(
+                                target_cs_pins[instance] for instance in missing
+                            ),
                         )
                         for instance in missing:
                             item = snapshots.get(instance)
@@ -2729,7 +2752,12 @@ class EntryWorkflow:
 
         return unsubscribe
 
-    async def async_verify(self, mac: str) -> ReconnectEvidence:
+    async def async_verify(
+        self,
+        mac: str,
+        *,
+        expected_instance_ids: frozenset[str] | None = None,
+    ) -> ReconnectEvidence:
         api = self._require_api()
         await api.async_reconnect()
         handle = next(
@@ -2741,6 +2769,7 @@ class EntryWorkflow:
             None,
         )
         document: ESPHomeConfigDocument | None = None
+        source: ESPHomeConfigSnapshot | None = None
         if handle is None:
             device_id = self._esphome_entry_id
             if device_id is None:
@@ -2755,6 +2784,7 @@ class EntryWorkflow:
             substitutions: Mapping[str, str] = {}
             if self._builder is not None:
                 snapshot = await self._async_snapshot(device)
+                source = snapshot
                 document = ESPHomeConfigDocument.parse(snapshot.content)
                 substitutions = {
                     key: scalar.value for key, scalar in document.substitutions.items()
@@ -2762,7 +2792,32 @@ class EntryWorkflow:
         else:
             topology = handle.topology
             substitutions = handle.substitutions
-        await api.async_check_meter_communication(topology.group_count)
+        if expected_instance_ids is None:
+            await api.async_check_meter_communication(topology.group_count)
+        else:
+            if not expected_instance_ids:
+                raise WorkflowCapabilityUnavailable(
+                    "selected offset chip identities are unavailable"
+                )
+            if handle is not None:
+                source = await self._async_calibration_snapshot(mac, topology)
+            if source is None:
+                raise WorkflowCapabilityUnavailable(
+                    "selected offset chip identities are unavailable"
+                )
+            try:
+                expected_cs_pins = frozenset(
+                    source_offset_cs_pins(
+                        source, topology, expected_instance_ids
+                    ).values()
+                )
+            except Exception:  # noqa: BLE001 - source parser details stay private
+                raise WorkflowCapabilityUnavailable(
+                    "selected offset chip identities are unavailable"
+                ) from None
+            await api.async_check_meter_communication(
+                len(expected_instance_ids), expected_cs_pins=expected_cs_pins
+            )
         catalog = EntityCatalog(api.entities, api.connection_generation)
         sensors = catalog.by_kind("sensor")
         sensor_object_ids = Counter(entity.object_id for entity in sensors)

@@ -12,8 +12,15 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+import yaml  # type: ignore[import-untyped]
 from homeassistant.core import HomeAssistant
 from homeassistant.util.file import write_utf8_file_atomic
+from yaml.nodes import (  # type: ignore[import-untyped]
+    MappingNode,
+    Node,
+    ScalarNode,
+    SequenceNode,
+)
 
 from .config_blocks import replace_managed_block
 from .config_document import _MAX_DOCUMENT_BYTES, ESPHomeConfigDocument
@@ -46,6 +53,7 @@ ZERO_OFFSETS = ((0, 0), (0, 0), (0, 0))
 FIRST_CALIBRATION_CONFIGURATION: Literal["first_calibration_configuration"] = (
     "first_calibration_configuration"
 )
+_DEFAULT_OFFSET_CS_PINS = ((5, 4), (0, 16), (27, 17), (2, 21), (13, 22), (14, 25), (15, 26))
 
 
 def _supported_offset_package_graph(
@@ -75,6 +83,167 @@ def _supported_offset_package_graph(
         reference.path in paths and reference.ref == "master"
         for reference in document.package_references
     )
+
+
+def source_offset_cs_pins(
+    source: ESPHomeConfigSnapshot,
+    topology: MeterTopology,
+    instance_ids: set[str] | frozenset[str],
+) -> dict[str, int]:
+    """Resolve selected stock chips from authoritative source/package semantics."""
+    _validate_source(source, topology)
+    requested = set(instance_ids)
+    all_pins: dict[str, int] = {}
+    for board in range(topology.board_count):
+        for group in range(2):
+            instance = (
+                f"meter_main{group + 1}"
+                if board == 0
+                else f"addon{board}_{group + 1}"
+            )
+            all_pins[instance] = _DEFAULT_OFFSET_CS_PINS[board][group]
+    if not requested or not requested <= all_pins.keys():
+        raise ValueError("selected offset chip identities are unavailable")
+    document = ESPHomeConfigDocument.parse(source.content)
+    if (
+        document.unresolved_package_sources
+        or not _supported_offset_package_graph(document, topology)
+    ):
+        raise ValueError("selected offset chip identities are unavailable")
+    aliases: dict[str, str] = {}
+    for instance in all_pins:
+        board, group = _gain_group_address(instance, topology)
+        meter_key = (
+            f"main_meter_id{group}"
+            if board == 0
+            else f"addon{board}_id{group}"
+        )
+        for alias in (instance, meter_key):
+            previous = aliases.setdefault(alias, instance)
+            if previous != instance:
+                raise ValueError("offset chip identity mapping is ambiguous")
+        if meter_key in document.substitutions:
+            alias = document.substitutions[meter_key].value
+            previous = aliases.setdefault(alias, instance)
+            if previous != instance:
+                raise ValueError("offset chip identity mapping is ambiguous")
+    _apply_source_offset_cs_pin_overrides(document, aliases, all_pins)
+    if len(set(all_pins.values())) != len(all_pins):
+        raise ValueError("offset chip CS pin mapping is ambiguous")
+    return {instance: all_pins[instance] for instance in requested}
+
+
+def _apply_source_offset_cs_pin_overrides(
+    document: ESPHomeConfigDocument,
+    aliases: dict[str, str],
+    all_pins: dict[str, int],
+) -> None:
+    """Read only direct, literal top-level sensor overrides."""
+    try:
+        root = yaml.compose(document.content)
+    except yaml.YAMLError as error:
+        raise ValueError("selected offset chip identities are unavailable") from error
+    if not isinstance(root, MappingNode):
+        raise ValueError("selected offset chip identities are unavailable")  # noqa: TRY004
+    sensors = [value for key, value in root.value if isinstance(key, ScalarNode) and key.value == "sensor"]
+    if not sensors:
+        return
+    if (
+        len(sensors) != 1
+        or document.writable_sensor_span is None
+        or not isinstance(sensors[0], SequenceNode)
+    ):
+        raise ValueError("selected offset chip identities are unavailable")
+    overrides: set[str] = set()
+    for item in sensors[0].value:
+        if not isinstance(item, MappingNode):
+            raise ValueError("selected offset chip identities are unavailable")  # noqa: TRY004
+        values: dict[str, Node] = {}
+        keys: set[str] = set()
+        for key, value in item.value:
+            if not isinstance(key, ScalarNode) or key.value in keys:
+                raise ValueError("selected offset chip identities are unavailable")
+            keys.add(key.value)
+            values[key.value] = value
+        if "<<" in keys:
+            raise ValueError("selected offset chip identities are unavailable")
+        id_node = values.get("id")
+        if id_node is not None and not isinstance(id_node, ScalarNode):
+            raise ValueError("selected offset chip identities are unavailable")
+        if id_node is not None and id_node.tag not in {
+            "tag:yaml.org,2002:str",
+            "!extend",
+        }:
+            raise ValueError("selected offset chip identities are unavailable")
+        platform = _literal_node_value(values.get("platform"))
+        if "platform" in keys and platform is None:
+            raise ValueError("selected offset chip identities are unavailable")
+        has_cs_pin = "cs_pin" in keys
+        instance = _source_offset_instance(id_node, document, aliases)
+        is_atm90e32 = platform == "atm90e32" or platform is None and instance is not None
+        if platform == "atm90e32" or has_cs_pin:
+            is_atm90e32 = True
+        if not is_atm90e32:
+            continue
+        if instance is None or platform not in (None, "atm90e32"):
+            raise ValueError("selected offset chip identities are unavailable")
+        if not has_cs_pin:
+            if platform is None and id_node is not None and id_node.tag != "!extend":
+                raise ValueError("selected offset chip identities are unavailable")
+            if platform == "atm90e32" and id_node is not None and id_node.tag != "!extend":
+                raise ValueError("selected offset chip identities are unavailable")
+            continue
+        if instance in overrides:
+            raise ValueError("offset chip identity is duplicated")
+        cs_pin_node = values["cs_pin"]
+        if not isinstance(cs_pin_node, ScalarNode):
+            raise ValueError("selected offset chip identities are unavailable")  # noqa: TRY004
+        pin = _source_offset_cs_pin(cs_pin_node)
+        all_pins[instance] = pin
+        overrides.add(instance)
+
+
+def _source_offset_instance(
+    node: ScalarNode | None,
+    document: ESPHomeConfigDocument,
+    aliases: dict[str, str],
+) -> str | None:
+    if node is None:
+        return None
+    value = node.value.strip()
+    seen: set[str] = set()
+    for _ in range(4):
+        if value in seen:
+            return None
+        seen.add(value)
+        if value.startswith("${") and value.endswith("}"):
+            key = value[2:-1]
+            substitution = document.substitutions.get(key)
+            if substitution is None:
+                return aliases.get(key)
+            value = substitution.value.strip()
+            continue
+        return aliases.get(value)
+    return None
+
+
+def _literal_node_value(node: ScalarNode | None) -> str | None:
+    if node is None or node.tag not in {"tag:yaml.org,2002:str", "tag:yaml.org,2002:int"}:
+        return None
+    return node.value.strip()
+
+
+def _source_offset_cs_pin(node: ScalarNode) -> int:
+    value = _literal_node_value(node)
+    if value is None:
+        raise ValueError("selected offset chip identities are unavailable")
+    match = re.fullmatch(r"(?:GPIO)?(\d{1,2})", value, re.IGNORECASE)
+    if match is None:
+        raise ValueError("selected offset chip identities are unavailable")
+    pin = int(match.group(1))
+    if not 0 <= pin <= 63:
+        raise ValueError("selected offset chip identities are unavailable")
+    return pin
 
 
 def source_offset_snapshots(

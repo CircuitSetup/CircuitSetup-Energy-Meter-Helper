@@ -741,6 +741,79 @@ def test_offset_table_snapshot_qualifies_missing_stage_from_the_same_healthy_dum
     asyncio.run(run())
 
 
+def test_offset_table_snapshot_scopes_communication_to_selected_cs_pins() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_offset_table_snapshot(
+                {"meter_main1"},
+                offset_stage=1,
+                require_communication=True,
+                expected_cs_pins={5},
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    "ATM90E32:\nCS Pin: GPIO5\nUpdate Interval: 5s\n"
+                    "ATM90E32:\nCS Pin: GPIO16\nCommunication failed\n"
+                    "Update Interval: 5s"
+                )
+            )
+        )
+        assert await pending == {"meter_main1": None}
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("message", "error"),
+    (
+        (
+            (
+                "ATM90E32:\nCS Pin: GPIO5\nUpdate Interval: 5s\n"
+                "ATM90E32:\nCommunication failed\nUpdate Interval: 5s"
+            ),
+            MeterCommunicationError,
+        ),
+        (
+            "ATM90E32:\nCommunication failed\nUpdate Interval: 5s",
+            MeterCommunicationError,
+        ),
+    ),
+)
+def test_scoped_offset_communication_fails_closed_for_target_or_unattributed_failure(
+    message: str, error: type[Exception]
+) -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_offset_table_snapshot(
+                {"meter_main1"},
+                offset_stage=1,
+                require_communication=True,
+                expected_cs_pins={5},
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(SimpleNamespace(message=message))
+        with pytest.raises(error):
+            await pending
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     ("message", "error"),
     (
@@ -1363,6 +1436,33 @@ def test_meter_communication_checks_fresh_complete_dump_despite_log_eviction(
             await pending
         assert client.dump_configs[-1] is None
         assert len(session.log_lines) <= 2
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+def test_meter_communication_scope_ignores_unselected_failed_chip() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_check_meter_communication(
+                1, expected_cs_pins={5}, timeout=0.1
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    "ATM90E32:\nCS Pin: GPIO5\nUpdate Interval: 5s\n"
+                    "ATM90E32:\nCS Pin: GPIO16\nCommunication failed\n"
+                    "Update Interval: 5s"
+                )
+            )
+        )
+        await pending
         await session.async_shutdown()
 
     asyncio.run(run())

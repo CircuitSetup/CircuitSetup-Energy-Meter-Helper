@@ -293,9 +293,16 @@ class Verifier:
     ) -> None:
         self.evidence = evidence
         self.calls = 0
+        self.expected_instance_ids_calls: list[frozenset[str] | None] = []
 
-    async def async_verify(self, mac: str) -> ReconnectEvidence:
+    async def async_verify(
+        self,
+        mac: str,
+        *,
+        expected_instance_ids: frozenset[str] | None = None,
+    ) -> ReconnectEvidence:
         del mac
+        self.expected_instance_ids_calls.append(expected_instance_ids)
         self.calls += 1
         evidence = (
             self.evidence.pop(0)
