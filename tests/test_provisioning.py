@@ -413,6 +413,53 @@ def test_device_builder_status_uses_current_runtime_name_after_rename() -> None:
     assert status.importable is False
 
 
+def test_device_builder_status_keeps_hostname_match_when_runtime_name_is_friendly() -> None:
+    entry = FakeEntry(
+        "meter",
+        "Old title",
+        FakeRuntimeData(
+            FakeDeviceInfo(
+                "circuitsetup.6c-energy-meter", name="CircuitSetup Energy Meter 12x"
+            )
+        ),
+        data={"device_name": "energy-meter-6f94c0"},
+    )
+
+    status = device_builder_status(
+        entry,
+        {
+            "configured": [
+                {"name": "energy-meter-6f94c0", "configuration": "energy-meter-6f94c0.yaml"}
+            ],
+            "importable": [],
+        },
+    )
+
+    assert status.configuration == "energy-meter-6f94c0.yaml"
+
+
+def test_rescan_uses_current_runtime_name_for_display() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        hass.config_entries.entries.append(
+            FakeEntry(
+                "meter",
+                "Stale title",
+                FakeRuntimeData(
+                    FakeDeviceInfo(
+                        "circuitsetup.6c-energy-meter", name="Current meter"
+                    )
+                ),
+                data={"device_name": "meter"},
+            )
+        )
+        snapshot = await ProvisioningCoordinator(hass).async_rescan()
+
+        assert snapshot.devices[0].title == "Current meter"
+
+    asyncio.run(run())
+
+
 def test_rescan_reports_configured_and_importable_device_builder_state() -> None:
     """Current backend state distinguishes configured and importable meters."""
 

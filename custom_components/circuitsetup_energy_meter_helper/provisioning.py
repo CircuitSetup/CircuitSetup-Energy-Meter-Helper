@@ -86,23 +86,31 @@ def _project_version(entry: Any) -> str | None:
     return version if isinstance(version, str) else None
 
 
+def _runtime_name(entry: Any) -> str | None:
+    """Read ESPHome's current friendly name when the runtime provides one."""
+    name = getattr(
+        getattr(getattr(entry, "runtime_data", None), "device_info", None),
+        "name",
+        None,
+    )
+    return name if isinstance(name, str) and name.strip() else None
+
+
 def device_builder_status(
     entry: Any, listing: Mapping[str, Any] | None, *, strict: bool = False
 ) -> DeviceBuilderStatus:
     """Match one ESPHome entry to the current Device Builder listing."""
     if listing is None:
         return DeviceBuilderStatus(None, None)
-    device_name = getattr(entry, "data", {}).get("device_name")
-    runtime_name = getattr(
-        getattr(getattr(entry, "runtime_data", None), "device_info", None),
-        "name",
-        None,
+    configured_name = getattr(entry, "data", {}).get("device_name")
+    names = tuple(
+        dict.fromkeys(
+            name
+            for name in (configured_name, _runtime_name(entry))
+            if isinstance(name, str) and name.strip()
+        )
     )
-    if isinstance(runtime_name, str) and runtime_name.strip():
-        device_name = runtime_name
-    if strict and (
-        not isinstance(device_name, str) or not device_name.strip()
-    ):
+    if strict and not names:
         return DeviceBuilderStatus(None, None)
 
     def matches(items: Any) -> list[Mapping[str, Any]]:
@@ -110,7 +118,7 @@ def device_builder_status(
             item
             for item in items
             if isinstance(item, Mapping)
-            and (device_name is None or item.get("name") == device_name)
+            and (not names or item.get("name") in names)
         ]
 
     configured = [
@@ -243,7 +251,7 @@ class ProvisioningCoordinator:
         )
         return DiscoveredDevice(
             entry.entry_id,
-            entry.title,
+            _runtime_name(entry) or entry.title,
             project_name,
             _project_version(entry),
             status.importable,
@@ -284,7 +292,7 @@ def existing_device_candidate(entry: Any) -> ExistingDeviceCandidate:
         compatibility = ("custom_or_older_project",)
     return ExistingDeviceCandidate(
         str(getattr(entry, "entry_id", "")),
-        str(getattr(entry, "title", "")),
+        _runtime_name(entry) or str(getattr(entry, "title", "")),
         project_name,
         _project_version(entry),
         compatibility,
