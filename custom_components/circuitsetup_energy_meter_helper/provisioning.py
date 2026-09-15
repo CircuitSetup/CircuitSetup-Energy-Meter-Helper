@@ -96,6 +96,18 @@ def _runtime_name(entry: Any) -> str | None:
     return name if isinstance(name, str) and name.strip() else None
 
 
+def _mac_key(value: Any) -> str | None:
+    """Normalize a MAC address for identity matching."""
+    if not isinstance(value, str):
+        return None
+    compact = value.replace(":", "").replace("-", "")
+    return (
+        compact.lower()
+        if len(compact) == 12 and set(compact.lower()) <= set("0123456789abcdef")
+        else None
+    )
+
+
 def device_builder_status(
     entry: Any, listing: Mapping[str, Any] | None, *, strict: bool = False
 ) -> DeviceBuilderStatus:
@@ -103,6 +115,14 @@ def device_builder_status(
     if listing is None:
         return DeviceBuilderStatus(None, None)
     configured_name = getattr(entry, "data", {}).get("device_name")
+    entry_data = getattr(entry, "data", {})
+    entry_mac = _mac_key(entry_data.get("unique_id"))
+    entry_host = entry_data.get("host")
+    configuration_name = (
+        f"{configured_name}.yaml"
+        if isinstance(configured_name, str) and configured_name.strip()
+        else None
+    )
     names = tuple(
         dict.fromkeys(
             name
@@ -110,16 +130,32 @@ def device_builder_status(
             if isinstance(name, str) and name.strip()
         )
     )
-    if strict and not names:
+    if strict and not (names or entry_mac or isinstance(entry_host, str)):
         return DeviceBuilderStatus(None, None)
 
     def matches(items: Any) -> list[Mapping[str, Any]]:
-        return [
-            item
-            for item in items
-            if isinstance(item, Mapping)
-            and (not names or item.get("name") in names)
-        ]
+        matched: list[Mapping[str, Any]] = []
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            if not names and not entry_mac and not isinstance(entry_host, str):
+                matched.append(item)
+                continue
+            if item.get("name") in names or item.get("configuration") == configuration_name:
+                matched.append(item)
+                continue
+            if entry_mac and any(
+                _mac_key(item.get(key)) == entry_mac
+                for key in ("mac_address", "ethernet_mac", "bluetooth_mac")
+            ):
+                matched.append(item)
+                continue
+            if isinstance(entry_host, str) and entry_host in {
+                item.get("ip"),
+                item.get("address"),
+            }:
+                matched.append(item)
+        return matched
 
     configured = [
         item

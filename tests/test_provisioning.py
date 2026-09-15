@@ -438,6 +438,33 @@ def test_device_builder_status_keeps_hostname_match_when_runtime_name_is_friendl
     assert status.configuration == "energy-meter-6f94c0.yaml"
 
 
+def test_device_builder_status_matches_renamed_entry_by_mac() -> None:
+    entry = FakeEntry(
+        "meter",
+        "Old title",
+        FakeRuntimeData(
+            FakeDeviceInfo("circuitsetup.6c-energy-meter", name="old-hostname")
+        ),
+        data={"device_name": "old-hostname", "unique_id": "58:2a:bd:6f:94:c0"},
+    )
+
+    status = device_builder_status(
+        entry,
+        {
+            "configured": [
+                {
+                    "name": "energy-meter-6f94c0",
+                    "configuration": "energy-meter-6f94c0.yaml",
+                    "mac_address": "58:2A:BD:6F:94:C0",
+                }
+            ],
+            "importable": [],
+        },
+    )
+
+    assert status.configuration == "energy-meter-6f94c0.yaml"
+
+
 def test_rescan_uses_current_runtime_name_for_display() -> None:
     async def run() -> None:
         hass = FakeHass()
