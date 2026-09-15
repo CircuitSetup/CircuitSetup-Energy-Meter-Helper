@@ -2702,6 +2702,12 @@ export class CircuitSetupPanel extends LitElement {
     const loading = this.firmwareCatalogState === "loading";
     return html`<section class="step-content" aria-labelledby="firmware-heading">
       <h2 id="firmware-heading">Install firmware</h2>
+      <ol class="firmware-steps">
+        <li>Connect the ESP32 you will use for your energy meter to your computer with a USB cable.</li>
+        <li>Click <strong>Install firmware</strong>, select the ESP32's <strong>CP2102 USB to UART</strong>, then click <strong>Connect</strong>.</li>
+        <li>Select <strong>Install CircuitSetup 6 Channel Energy Meter</strong> when ESP Web Tools asks for the firmware.</li>
+        <li>Before clicking <strong>Install</strong>, hold down the right <strong>IO0</strong> (or <strong>BOOT</strong>) button on the ESP32.</li>
+      </ol>
       <label>ESPHome firmware version
         <select data-action="firmware-version" ?disabled=${loading || this.firmwareCatalogState !== "ready" || !this.resolvedFirmwareOptions.length}
           @change=${(event: Event) => this.selectFirmwareVersion((event.target as HTMLSelectElement).value)}>

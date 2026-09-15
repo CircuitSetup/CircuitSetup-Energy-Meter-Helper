@@ -2096,10 +2096,19 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector('[name="line-frequency"]')).toBeNull();
     expect(text(panel)).toContain("Add-on address jumper settings");
     expect(text(panel)).toContain("Install firmware");
+    expect(text(panel)).toContain("ESPHome Device Builder must be installed and running in Home Assistant");
+    expect(panel.shadowRoot?.querySelector<HTMLAnchorElement>('a[href="https://esphome.io/install/"]')?.textContent).toContain("See how to install it in Home Assistant");
+    expect(Array.from(panel.shadowRoot?.querySelectorAll(".firmware-steps li") ?? [], (item) => item.textContent?.trim())).toEqual([
+      "Connect the ESP32 you will use for your energy meter to your computer with a USB cable.",
+      "Click Install firmware, select the ESP32's CP2102 USB to UART, then click Connect.",
+      "Select Install CircuitSetup 6 Channel Energy Meter when ESP Web Tools asks for the firmware.",
+      "Before clicking Install, hold down the right IO0 (or BOOT) button on the ESP32.",
+    ]);
     expect(Array.from(panel.shadowRoot?.querySelectorAll(".next-steps li") ?? [], (item) => item.textContent?.trim())).toEqual([
-      "Install the selected firmware and select Next in ESP Web Tools.",
-      "Select Add to Home Assistant and approve the discovered ESPHome device.",
-      "Return here. The helper will import it into ESPHome Builder and continue.",
+      "After the firmware is installed, click Next.",
+      "If you are using Wi-Fi, enter your Wi-Fi credentials.",
+      "Select Add to Home Assistant, then approve the discovered ESPHome device in ESPHome Device Builder.",
+      "Return here. The helper will import your meter so you can customize its settings.",
     ]);
     expect(text(panel)).toContain("Rescan for device");
     expect(text(panel)).toContain("USB data cable");
@@ -2117,7 +2126,7 @@ describe("CircuitSetup panel", () => {
       panel.shadowRoot?.querySelector('[data-action="firmware-version"]'),
       panel.shadowRoot?.querySelector("esp-web-install-button"),
       panel.shadowRoot?.querySelector(".next-steps"),
-      panel.shadowRoot?.querySelector(".info-band"),
+      panel.shadowRoot?.querySelector(".setup-step > p.info-band:last-of-type"),
       panel.shadowRoot?.querySelector('[data-action="rescan"]'),
     ];
     const completeOrder = setupOrder.filter((element): element is Element => Boolean(element));
@@ -2514,10 +2523,10 @@ describe("CircuitSetup panel", () => {
     panel.shadowRoot?.querySelector<HTMLInputElement>('[name="connection-type"][value="ethernet_lilygo"]')?.click();
     await panel.updateComplete;
 
-    expect(Array.from(panel.shadowRoot?.querySelectorAll(".next-steps li") ?? [], (item) => item.textContent?.trim())).toHaveLength(3);
+    expect(Array.from(panel.shadowRoot?.querySelectorAll(".next-steps li") ?? [], (item) => item.textContent?.trim())).toHaveLength(4);
     expect(text(panel)).toContain("connect Ethernet and power, then wait for an address from DHCP");
     expect(text(panel)).not.toContain("ESP Web Tools asks for your Wi-Fi network and password");
-    const handoff = panel.shadowRoot?.querySelector(".info-band")?.textContent ?? "";
+    const handoff = panel.shadowRoot?.querySelector(".setup-step > p.info-band:last-of-type")?.textContent ?? "";
     expect(handoff).not.toMatch(/wi-fi|password|credential/i);
   });
 

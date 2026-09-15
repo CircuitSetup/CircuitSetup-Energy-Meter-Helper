@@ -3626,6 +3626,7 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
       ${existingMeterInspection(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected, existingSearchComplete)}
       ${discoverOnly ? "" : b`<hr />
       <h2>Set up a new meter</h2>
+      <p class="info-band">ESPHome Device Builder must be installed and running in Home Assistant before you can set up a new meter. <a href="https://esphome.io/install/" target="_blank" rel="noreferrer noopener">See how to install it in Home Assistant</a>.</p>
       <fieldset class="choice-field">
         <legend>Add-on boards</legend>
         <p>Select how many add-on boards are attached to your energy meter.</p>
@@ -3664,9 +3665,10 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
       <section class="next-steps" aria-labelledby="next-steps-heading">
         <h2 id="next-steps-heading">What happens next</h2>
         <ol>
-          <li>Install the selected firmware and select <strong>Next</strong> in ESP Web Tools.</li>
-          <li>Select <strong>Add to Home Assistant</strong> and approve the discovered ESPHome device.</li>
-          <li>Return here. The helper will import it into ESPHome Builder and continue.</li>
+          <li>After the firmware is installed, click <strong>Next</strong>.</li>
+          <li>If you are using Wi-Fi, enter your Wi-Fi credentials.</li>
+          <li>Select <strong>Add to Home Assistant</strong>, then approve the discovered ESPHome device in <strong>ESPHome Device Builder</strong>.</li>
+          <li>Return here. The helper will import your meter so you can customize its settings.</li>
         </ol>
       </section>
       <p class="info-band">${connection === "wifi" ? "Use a USB data cable. ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter. This helper does not store or send those credentials to Home Assistant." : "Use a USB data cable, connect Ethernet and power, then wait for an address from DHCP."}</p>
@@ -7178,6 +7180,12 @@ class CircuitSetupPanel extends i$2 {
     const loading = this.firmwareCatalogState === "loading";
     return b`<section class="step-content" aria-labelledby="firmware-heading">
       <h2 id="firmware-heading">Install firmware</h2>
+      <ol class="firmware-steps">
+        <li>Connect the ESP32 you will use for your energy meter to your computer with a USB cable.</li>
+        <li>Click <strong>Install firmware</strong>, select the ESP32's <strong>CP2102 USB to UART</strong>, then click <strong>Connect</strong>.</li>
+        <li>Select <strong>Install CircuitSetup 6 Channel Energy Meter</strong> when ESP Web Tools asks for the firmware.</li>
+        <li>Before clicking <strong>Install</strong>, hold down the right <strong>IO0</strong> (or <strong>BOOT</strong>) button on the ESP32.</li>
+      </ol>
       <label>ESPHome firmware version
         <select data-action="firmware-version" ?disabled=${loading || this.firmwareCatalogState !== "ready" || !this.resolvedFirmwareOptions.length}
           @change=${(event) => this.selectFirmwareVersion(event.target.value)}>
