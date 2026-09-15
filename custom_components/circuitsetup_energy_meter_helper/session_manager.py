@@ -362,15 +362,25 @@ class SessionManager:
         source: ESPHomeConfigSnapshot,
         recovery: OffsetRecoveryRecord,
     ) -> PendingCalibrationOrigin:
-        """Rebase retained strict groups only through an exact installed receipt."""
+        """Rebase retained strict groups through exact native or legacy evidence."""
         self._require_active_calibration_lease(lease)
         pending = self._pending_calibrations.get(lease.mac)
         preparation = recovery.preparation
+        source_authorized = (
+            preparation is not None
+            and (
+                recovery.installed and preparation.mode == "legacy"
+                or not recovery.installed
+                and preparation.mode == "native"
+                and preparation.generation == binding.connection_generation
+                and source.sha256 == preparation.source_sha256 == preparation.proposed_sha256
+            )
+        )
         if (
             pending is None
             or pending.claimed_revision is not None
             or recovery.mac != lease.mac
-            or not recovery.installed
+            or not source_authorized
             or recovery.cancelled
             or preparation is None
             or source.sha256 != preparation.proposed_sha256

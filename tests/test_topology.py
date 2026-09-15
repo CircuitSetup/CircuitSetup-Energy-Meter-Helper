@@ -29,6 +29,7 @@ from custom_components.circuitsetup_energy_meter_helper.topology import (
     channel_address,
     connection_type_from_project,
     cross_check_runtime,
+    is_supported_project,
     topology_from_config,
     topology_from_native,
     voltage_layout_from_project,
@@ -73,6 +74,7 @@ from custom_components.circuitsetup_energy_meter_helper.topology import (
 def test_task4_project_variants(
     name: str, count: int, connection: str, layout: str
 ) -> None:
+    assert is_supported_project(name)
     assert addon_count_from_project(name) == count
     assert connection_type_from_project(name) == connection
     assert voltage_layout_from_project(name) == layout
@@ -90,6 +92,7 @@ def test_task4_project_variants(
     ),
 )
 def test_unknown_project_is_not_zero_addons(name: str) -> None:
+    assert not is_supported_project(name)
     with pytest.raises(TopologyParseError):
         addon_count_from_project(name)
 

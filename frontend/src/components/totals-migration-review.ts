@@ -1,5 +1,5 @@
 import { html, nothing, type TemplateResult } from "lit";
-import type { MeterConfiguration, MeterConfigurationCapabilities, MeterConfigurationRequest, TotalGraphPreview, TotalsInventory, TransactionStatus } from "../types";
+import type { MeterConfiguration, MeterConfigurationCapabilities, MeterConfigurationRequest, TotalGraphPreview, TotalsInventory } from "../types";
 import { derivedParentId, reparentAggregate, sourceLeaves } from "../total-graph";
 
 export function canAdoptTotals(meter: MeterConfiguration): boolean {
@@ -20,7 +20,7 @@ export function legacyTotalsNotice(capabilities: MeterConfigurationCapabilities)
 }
 
 export function totalsMigrationReview(meter: MeterConfiguration, update: (configuration: MeterConfigurationRequest) => void,
-  preview: TotalGraphPreview | null = null, fresh = true, readOnly = false, transaction: TransactionStatus | null = null): TemplateResult {
+  preview: TotalGraphPreview | null = null, fresh = true, readOnly = false): TemplateResult {
   const { configuration, totals, capabilities } = meter;
   const intent = configuration.totals_change_intent ?? { adopt_managed_totals: false, legacy_parent_decisions: [] };
   const adoptionRequired = capabilities.reason_codes.includes("totals_adoption_required");
@@ -36,7 +36,7 @@ export function totalsMigrationReview(meter: MeterConfiguration, update: (config
         @click=${() => { if (canAdoptTotals(meter) && !intent.adopt_managed_totals) update({ ...configuration, totals_change_intent: { ...intent, adopt_managed_totals: true } }); }}>Adopt managed totals</button>`
         : !canAdoptTotals(meter) ? html`<p role="status">Adoption requires authoritative editable YAML, confirmed native visibility and supported contract.</p>` : nothing}
       ${intent.adopt_managed_totals ? html`<p role="status">Adoption selected; awaiting successful commit. Review the exact native visibility overrides and helper blocks before Save and validate.</p>
-        ${fresh && preview ? html`<h3>Requested visibility changes versus firmware defaults</h3><p>These are requested outputs, not the source-aware overrides to be added. The server transaction diff below is authoritative for actual YAML changes.</p><ul>${preview.graph.native_visibility.map((item) => {
+        ${fresh && preview ? html`<h3>Requested visibility changes versus firmware defaults</h3><p>These are requested outputs, not the source-aware overrides to be added. Review the exact source-aware YAML diff in Configuration review.</p><ul>${preview.graph.native_visibility.map((item) => {
           const native = totals.native_sources.find((source) => source.power_id === item.sensor_id || source.current_id === item.sensor_id || source.existing_energy_id === item.sensor_id);
           const output = native?.power_id === item.sensor_id ? "Watts" : native?.current_id === item.sensor_id ? "Amps" : "kWh";
           return html`<li>${native?.label ?? "Native total"} ${output}: ${item.internal ? "internal dependency" : "public output"}</li>`;
@@ -44,8 +44,7 @@ export function totalsMigrationReview(meter: MeterConfiguration, update: (config
           ${totals.native_sources.filter((source) => source.source_id !== "overall").map((source, index) => source.existing_energy_id === null && configuration.default_totals.boards.find((board) => board.board_index === index)?.outputs.kwh
             ? html`<li>${source.label}: kWh</li>` : nothing)}</ul>`
           : html`<p role="status">Current validated total preview is required to list requested visibility and helper blocks.</p>`}
-        ${transaction ? html`<details><summary>Exact source-aware additions and helper blocks (server transaction diff)</summary><pre class="config-diff" aria-label="Exact adoption transaction diff">${transaction.redacted_diff}</pre></details>`
-          : html`<p>Continue to configuration review for the exact source-aware additions and helper blocks in the server transaction diff.</p>`}` : nothing}
+        ` : nothing}
     </section>` : nothing}
     ${legacyTotalsNotice(capabilities)}
     ${totals.migration.legacy_parent_links.length ? html`<section class="totals-migration" aria-labelledby="legacy-parent-heading">

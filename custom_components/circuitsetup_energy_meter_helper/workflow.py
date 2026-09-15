@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping
@@ -12,7 +13,7 @@ from http.cookies import SimpleCookie
 from statistics import pstdev
 from threading import RLock
 from time import monotonic
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from aioesphomeapi.model import build_device_unique_id
@@ -38,11 +39,21 @@ from .calibration_engine import (
 )
 from .config_document import ESPHomeConfigDocument
 from .config_mutator import (
+    ConfigMutationError,
     CTChangeRequest,
+    _read_phase_channel_states,
+    build_calibration_preparation_mutation,
+    calibration_preparation_capability_from_document,
+    package_capabilities_from_document,
     package_options_from_document,
 )
-from .config_transaction import ConfigTransactionManager, ReconnectEvidence
-from .const import ESPHOME_DEVICE_BUILDERS
+from .config_transaction import (
+    ConfigTransactionManager,
+    ConfigTransactionState,
+    ReconnectEvidence,
+    TransactionEvidenceCode,
+)
+from .const import CONF_INSPECTION_ADMISSION, DOMAIN, ESPHOME_DEVICE_BUILDERS
 from .ct_catalog import REPORTING_MULTIPLIERS, CTPresetCatalog
 from .ct_inventory import CTInventory
 from .device_builder import (
@@ -62,6 +73,7 @@ from .entity_estimator import (
     summarize_configuration_totals,
 )
 from .esphome_api import ESPHomeApiSession
+from .log_parser import LogEvidenceError, MeterCommunicationError
 from .meter_config_mutator import (
     build_meter_configuration_mutation,
     expected_meter_entity_evidence,
@@ -79,18 +91,24 @@ from .offset_readiness import (
     async_check_offset_readiness,
 )
 from .offset_recovery import (
+    FIRST_CALIBRATION_CONFIGURATION,
+    ZERO_OFFSETS,
     OffsetRecovery,
     OffsetRecoveryRecord,
+    _allowed_observation_sources,
     _validate_source,
+    source_offset_cs_pins,
+    source_offset_snapshots,
 )
 from .preflight import PreflightResult, async_preflight
 from .provisioning import (
-    BASE_PROJECT,
     DiscoveredDevice,
+    ExistingDeviceCandidate,
     ProvisioningCoordinator,
     _project_name,
     _project_version,
     device_builder_status,
+    existing_device_candidate,
 )
 from .session_manager import CalibrationBusyError, SessionManager
 from .state_tracker import SensorSampleWindow
@@ -101,7 +119,12 @@ from .store import (
     TotalsMigrationRecord,
 )
 from .topology import (
+    TopologyMismatchError,
+    TopologyParseError,
+    is_supported_project,
+    package_graph_owner_is_official,
     topology_from_config,
+    topology_from_inspection,
     topology_from_native,
     verified_voltage_reference_fingerprint,
     voltage_reference_topology_from_legacy,
@@ -116,15 +139,84 @@ from .total_graph import (
 )
 from .voltage_transformer_catalog import VoltageTransformerCatalog
 
+_LOGGER = logging.getLogger(__name__)
+
 DEFAULT_HANDLE_TTL = 15 * 60.0
 CalibrationPlan = Literal["standard", "full"]
 MAX_HANDLE_TTL = 60 * 60.0
 MAX_PLAN_HANDLES = 8
+MAX_INSPECTION_HANDLES = 8
 _INGRESS_ENTRY_PREFIX = "/api/hassio_ingress/"
 _INGRESS_SESSION_COOKIE = "ingress_session"
 _SUPERVISOR_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,256}\Z", re.ASCII)
 
 
+def _configured_current_sensors(
+    catalog: EntityCatalog,
+    substitutions: Mapping[str, str],
+    channels: set[int],
+) -> dict[int, Any]:
+    """Resolve only configured public CT readings with strict native identity."""
+    current_sensors: dict[int, Any] = {}
+    used_object_ids: set[str] = set()
+    used_raw_keys: set[tuple[str, int, int]] = set()
+    for channel in sorted(channels):
+        configured_name = substitutions.get(f"ct{channel}_name")
+        if not isinstance(configured_name, str) or not configured_name:
+            raise WorkflowCapabilityUnavailable(
+                f"configured CT{channel} name is unavailable"
+            )
+        expected_name = f"{configured_name} Amps"
+        named = tuple(
+            entity
+            for entity in catalog.by_name(expected_name)
+            if entity.kind == "sensor"
+        )
+        if len(named) != 1:
+            reason = "missing" if not named else "ambiguous"
+            raise WorkflowCapabilityUnavailable(
+                f"configured CT{channel} current reading is {reason}"
+            )
+        entity = named[0]
+        if entity.unit != "A":
+            raise WorkflowCapabilityUnavailable(
+                f"configured CT{channel} current reading has the wrong unit"
+            )
+        if len(catalog.by_object_id("sensor", entity.object_id)) != 1:
+            raise WorkflowCapabilityUnavailable(
+                f"configured CT{channel} current reading has a duplicate object ID"
+            )
+        if entity.object_id in used_object_ids or entity.raw_key in used_raw_keys:
+            raise WorkflowCapabilityUnavailable(
+                f"configured CT{channel} current reading is reused"
+            )
+        used_object_ids.add(entity.object_id)
+        used_raw_keys.add(entity.raw_key)
+        current_sensors[channel] = entity
+    return current_sensors
+
+
+def _configured_enabled_channels(
+    document: ESPHomeConfigDocument, topology: MeterTopology
+) -> set[int]:
+    """Read Helper-owned unused-channel state from the authoritative YAML."""
+    try:
+        options = package_options_from_document(document, topology)
+        states = _read_phase_channel_states(
+            document.content,
+            topology,
+            document.substitutions,
+            options["power_quality"],
+        )
+    except (ConfigMutationError, ValueError) as error:
+        raise WorkflowCapabilityUnavailable(
+            "configured CT phase ownership is unavailable"
+        ) from error
+    return {
+        channel
+        for channel in range(1, topology.ct_count + 1)
+        if states.get(channel) is None or states[channel].enabled
+    }
 def _existing_circuit_suggestions(
     configuration: MeterConfigurationRequest,
     existing: frozenset[frozenset[int]],
@@ -139,8 +231,9 @@ def _existing_circuit_suggestions(
     hidden_ids = {item.candidate_id for item in hidden}
     configured = {item.candidate_id for item in configuration.automatic_totals}
     saved_outputs = {item.candidate_id: item.outputs for item in previous}
+    saved_names = {item.candidate_id: item.name for item in previous}
     return replace(configuration, automatic_totals=(*configuration.automatic_totals, *(
-        AutomaticTotalSettings(item.candidate_id, False, saved_outputs.get(item.candidate_id, item.recommended_outputs))
+        AutomaticTotalSettings(item.candidate_id, False, saved_outputs.get(item.candidate_id, item.recommended_outputs), saved_names.get(item.candidate_id))
         for item in hidden if item.candidate_id not in configured
     ))), tuple(item for item in candidates if item.candidate_id not in hidden_ids)
 
@@ -204,12 +297,24 @@ def _instance_id_for_channel(channel: int) -> str:
     return f"meter_main{group}" if board == 0 else f"addon{board}_{group}"
 
 
+def _native_project_name(device: DiscoveredDevice) -> str | None:
+    return device.project_name if device.project_name != "unknown" else None
+
+
 class WorkflowCapabilityUnavailable(RuntimeError):
     """A required external runtime owner is genuinely absent."""
 
 
 class OffsetTablesUnavailable(WorkflowCapabilityUnavailable):
     """Fresh diagnostics did not supply complete tables for a safe offset backup."""
+
+
+class OffsetDiagnosticsIncomplete(WorkflowCapabilityUnavailable):
+    """Fresh offset diagnostics ended before the selected chips were proven."""
+
+
+class OffsetChipIdentityUnavailable(WorkflowCapabilityUnavailable):
+    """The authoritative source could not establish the selected chip mapping."""
 
 
 class WorkflowHandleError(KeyError):
@@ -232,6 +337,22 @@ class _PlanHandle:
         self.snapshot = ESPHomeConfigSnapshot("expired.yaml", "", "0" * 64)
         self.issued_total_candidate_ids.clear()
         self.existing_circuit_channels = frozenset()
+
+
+@dataclass(slots=True)
+class _InspectionHandle:
+    """Short-lived proof that an explicit legacy inspection passed."""
+
+    device_id: str
+    mac: str
+    configuration: str
+    source_sha256: str
+    topology: MeterTopology
+    expires_at: float
+
+    def scrub(self) -> None:
+        self.configuration = ""
+        self.source_sha256 = "0" * 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,6 +397,7 @@ class _SessionHandle:
     pending_reporting_multipliers: dict[int, float] = field(default_factory=dict)
     meter_configuration: MeterConfigurationRequest | None = None
     configuration_sha256: str | None = None
+    configuration_authoritative: bool = True
     timing_policy: CalibrationTimingPolicy = field(
         default_factory=lambda: CalibrationTimingPolicy(5, 3)
     )
@@ -386,6 +508,13 @@ def _stored_reporting_multipliers(
         for selection in selections
         if selection.config_sha256 == config_sha256
     }
+
+
+def _selections_for_topology(
+    selections: tuple[StoredCTSelection, ...], topology: MeterTopology
+) -> tuple[StoredCTSelection, ...]:
+    """Ignore persisted CT choices for boards no longer in the live config."""
+    return tuple(selection for selection in selections if selection.channel <= topology.ct_count)
 
 
 class LazyDeviceBuilder:
@@ -507,6 +636,7 @@ class EntryWorkflow:
         self._ttl = handle_ttl
         self._clock = clock
         self._plans: dict[str, _PlanHandle] = {}
+        self._inspections: dict[str, _InspectionHandle] = {}
         self._sessions: dict[str, _SessionHandle] = {}
         self._session_guards: dict[str, RLock] = {}
         self._subscribers: dict[str, set[Callable[[SessionStatus], None]]] = {}
@@ -539,13 +669,92 @@ class EntryWorkflow:
         except WorkflowCapabilityUnavailable:
             return topology_from_native(device.project_name)
         document = ESPHomeConfigDocument.parse(snapshot.content)
-        topology = topology_from_config(
-            document,
-            native_project_name=device.project_name,
+        topology = self._topology_from_document(
+            document, device, snapshot.sha256, snapshot.configuration
         )
         return {
+            "configuration_authoritative": snapshot.configuration_authoritative,
             "topology": topology,
             "package_options": package_options_from_document(document, topology),
+            "package_capabilities": package_capabilities_from_document(
+                document, topology
+            ),
+            "calibration_preparation": calibration_preparation_capability_from_document(
+                document, topology
+            ),
+        }
+
+    async def async_inspect_existing_meter(self, device_id: str) -> dict[str, Any]:
+        """Inspect one selected ESPHome entry without touching the bound session."""
+        candidate = self._inspection_candidate(device_id)
+        entry = self._entry(device_id)
+        builder = self._require_builder()
+        listing = await builder.async_list_devices()
+        status = device_builder_status(entry, listing, strict=True)
+        configuration = status.configuration
+        if configuration is None:
+            raise WorkflowCapabilityUnavailable(
+                "a unique Device Builder configuration is unavailable"
+            )
+        snapshot = await builder.async_get_config(configuration)
+        if sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256:
+            raise WorkflowCapabilityUnavailable("configuration snapshot is untrusted")
+        document = ESPHomeConfigDocument.parse(snapshot.content)
+        try:
+            preliminary = topology_from_inspection(
+                document,
+                native_project_name=candidate.project_name,
+                physical_chip_count=None,
+            )
+        except (TopologyMismatchError, TopologyParseError) as error:
+            raise WorkflowCapabilityUnavailable(
+                "configuration topology cannot be safely corroborated"
+            ) from error
+
+        secondary = ESPHomeApiSession(self._hass, device_id)
+        try:
+            await secondary.async_connect()
+            await secondary.async_check_meter_communication(preliminary.group_count)
+        finally:
+            await secondary.async_shutdown()
+        try:
+            topology = topology_from_inspection(
+                document,
+                native_project_name=candidate.project_name,
+                physical_chip_count=preliminary.group_count,
+            )
+        except (TopologyMismatchError, TopologyParseError) as error:
+            raise WorkflowCapabilityUnavailable(
+                "configuration topology cannot be safely corroborated"
+            ) from error
+        self._prune_inspections()
+        previous = self._inspections.pop(device_id, None)
+        if previous is not None:
+            previous.scrub()
+        while len(self._inspections) >= MAX_INSPECTION_HANDLES:
+            oldest_device_id = next(iter(self._inspections))
+            oldest = self._inspections.pop(oldest_device_id)
+            oldest.scrub()
+        self._inspections[device_id] = _InspectionHandle(
+            device_id,
+            self._mac(device_id),
+            configuration,
+            snapshot.sha256,
+            topology,
+            self._deadline(),
+        )
+        return {
+            "device": candidate,
+            "configuration": configuration,
+            "source_sha256": snapshot.sha256,
+            "topology": topology,
+            "package_options": package_options_from_document(document, topology),
+            "package_capabilities": package_capabilities_from_document(
+                document, topology
+            ),
+            "calibration_preparation": calibration_preparation_capability_from_document(
+                document, topology
+            ),
         }
 
     def transaction_device_identity(self, device_id: str) -> str:
@@ -554,7 +763,11 @@ class EntryWorkflow:
         return self._mac(device_id)
 
     async def async_get_meter_configuration(self, device_id: str) -> dict[str, Any]:
-        return await self._async_get_meter_configuration(device_id)
+        try:
+            return await self._async_get_meter_configuration(device_id)
+        except Exception:
+            _LOGGER.exception("Meter configuration load failed for %s", device_id)
+            raise
 
     async def _async_get_meter_configuration(
         self, device_id: str
@@ -563,14 +776,16 @@ class EntryWorkflow:
         mac = self._mac(device_id)
         snapshot = await self._async_snapshot(device)
         document = ESPHomeConfigDocument.parse(snapshot.content)
-        topology = topology_from_config(
-            document, native_project_name=device.project_name
+        topology = self._topology_from_document(
+            document, device, snapshot.sha256, snapshot.configuration
         )
         ct_catalog = await self._hass.async_add_executor_job(CTPresetCatalog.load)
         voltage_catalog = await self._hass.async_add_executor_job(
             VoltageTransformerCatalog.load
         )
-        selections = await self._store.async_get_ct_selections(mac)
+        selections = _selections_for_topology(
+            await self._store.async_get_ct_selections(mac), topology
+        )
         stored_read = await self._store.async_get_meter_configuration_read(mac)
         plan_id = uuid4().hex
         inventory = MeterConfigurationInventory.from_document(
@@ -587,6 +802,7 @@ class EntryWorkflow:
             reporting_multipliers=_stored_reporting_multipliers(
                 selections, snapshot.sha256
             ),
+            configuration_authoritative=snapshot.configuration_authoritative,
             stored_semantics_stale=stored_read.stale,
         )
         existing = _analyzer_circuit_channels(self._hass, device_id, inventory)
@@ -697,10 +913,23 @@ class EntryWorkflow:
         self._assert_rebind_idle(device_id)
         builder = self._require_builder()
         entry = self._entry(device_id)
+        project_name = _project_name(entry)
+        inspection = None
+        if not is_supported_project(project_name):
+            inspection = await self._assert_inspection_current(device_id, builder)
+            self._record_inspection_admission(inspection)
+            return {
+                "device_id": device_id,
+                "configuration": inspection.configuration,
+            }
         name = getattr(entry, "data", {}).get("device_name")
         if not isinstance(name, str):
             raise WorkflowCapabilityUnavailable("adoption metadata is unavailable")
-        status = device_builder_status(entry, await builder.async_list_devices())
+        status = device_builder_status(
+            entry,
+            await builder.async_list_devices(),
+            strict=inspection is not None,
+        )
         if status.configuration is not None:
             return {"device_id": device_id, "configuration": status.configuration}
         import_data = status.import_data
@@ -830,12 +1059,80 @@ class EntryWorkflow:
             self._plan(plan_id, device_id, source_sha256), requested
         )
 
+    async def async_prepare_calibration(self, device_id: str) -> Any:
+        """Open a reviewed transaction for missing official calibration controls."""
+        device = self._device(device_id)
+        manager = self.transactions
+        if manager is None:
+            raise WorkflowCapabilityUnavailable("configuration writes are unavailable")
+        mac = self._mac(device_id)
+        with self._guard(mac):
+            self._prune_device_sessions_locked(mac)
+            session = next(
+                (item for item in self._sessions.values() if item.mac == mac), None
+            )
+        if session is not None and session.active_task is not None:
+            raise CalibrationBusyError(mac)
+        if session is not None:
+            raise CalibrationBusyError(mac)
+        snapshot = await self._async_snapshot(device)
+        document = ESPHomeConfigDocument.parse(snapshot.content)
+        topology = self._topology_from_document(
+            document, device, snapshot.sha256, snapshot.configuration
+        )
+        plan = build_calibration_preparation_mutation(snapshot, topology)
+        if not plan.changes:
+            raise ConfigMutationError(
+                "native calibration support is unavailable although the reviewed "
+                "official package is already enabled",
+                reason_code="native_support_unavailable",
+            )
+        status = await manager.async_preview(mac, topology, plan, snapshot)
+        unsubscribe: Callable[[], None] | None = None
+
+        def advance_admission(update: Any) -> None:
+            nonlocal unsubscribe
+            if update.state is ConfigTransactionState.VERIFIED:
+                self._advance_inspection_admission(
+                    device_id, snapshot.sha256,
+                    sha256(plan.proposed_content.encode()).hexdigest(),
+                )
+            if update.state in {
+                ConfigTransactionState.VERIFIED,
+                ConfigTransactionState.FAILED,
+                ConfigTransactionState.ROLLED_BACK,
+            } and unsubscribe is not None:
+                unsubscribe()
+                unsubscribe = None
+
+        if self._inspection_admission(device_id) is not None:
+            unsubscribe = manager.subscribe(status.transaction_id, advance_admission)
+        return status
+
     async def _async_preview_meter_configuration(
         self, plan: _PlanHandle, requested: MeterConfigurationRequest
     ) -> Any:
         requested, _ = _existing_circuit_suggestions(
             requested, plan.existing_circuit_channels, plan.inventory.configuration.automatic_totals,
         )
+        document = ESPHomeConfigDocument.parse(plan.snapshot.content)
+        candidates = _source_aware_automatic_candidates(requested, document)
+        stale = stale_automatic_total_settings(candidates, requested.automatic_totals)
+        known = plan.issued_total_candidate_ids | {
+            candidate.candidate_id for candidate in plan.inventory.automatic_candidates
+        } | {setting.candidate_id for setting in plan.inventory.stale_automatic_total_settings}
+        if any(setting.candidate_id not in known for setting in stale):
+            raise ValueError("automatic total setting has no issued candidate")
+        if len({setting.candidate_id for setting in requested.automatic_totals}) != len(requested.automatic_totals):
+            raise ValueError("automatic candidate settings must be unique")
+        for setting in stale:
+            if type(setting.enabled) is not bool or any(type(value) is not bool for value in (
+                setting.outputs.watts, setting.outputs.amps, setting.outputs.kwh
+            )):
+                raise ValueError("automatic candidate settings require booleans")
+        requested = replace(requested, automatic_totals=tuple(
+            setting for setting in requested.automatic_totals if setting not in stale
+        ))
         plan.inventory.validate_totals_change(requested)
         manager = self.transactions
         if manager is None:
@@ -866,9 +1163,10 @@ class EntryWorkflow:
             )
             for channel in requested.channels
         )
-        current_candidate_ids = {item.candidate_id for item in automatic_total_candidates(requested)}
+        current_candidate_ids = {item.candidate_id for item in candidates}
         stale_settings = {item.candidate_id: item for item in (
             *plan.inventory.stale_automatic_total_settings,
+            *stale,
             *plan.inventory.configuration.automatic_totals,
         ) if item.candidate_id not in current_candidate_ids}
         configuration = StoredMeterConfiguration(
@@ -904,6 +1202,33 @@ class EntryWorkflow:
             expected_sensor_entities=expected.sensor_entities,
             expected_aggregate_sensor_entities=expected.aggregate_sensor_entities,
         )
+        admission_source = plan.snapshot.sha256
+        unsubscribe: Callable[[], None] | None = None
+
+        def advance_admission(update: Any) -> None:
+            nonlocal unsubscribe
+            retained_source = (
+                update.state is ConfigTransactionState.FAILED
+                and TransactionEvidenceCode.METER_COMMUNICATION_FAILED
+                in update.evidence
+                and TransactionEvidenceCode.CANCELLED in update.evidence
+            )
+            if update.state is not ConfigTransactionState.VERIFIED and not retained_source:
+                if update.state not in {
+                    ConfigTransactionState.FAILED,
+                    ConfigTransactionState.ROLLED_BACK,
+                }:
+                    return
+            else:
+                self._advance_inspection_admission(
+                    plan.device_id, admission_source, proposed_sha256
+                )
+            if unsubscribe is not None:
+                unsubscribe()
+                unsubscribe = None
+
+        if self._inspection_admission(plan.device_id) is not None:
+            unsubscribe = manager.subscribe(status.transaction_id, advance_admission)
         self._plans.pop(plan.plan_id, None)
         plan.scrub()
         return status
@@ -981,8 +1306,8 @@ class EntryWorkflow:
             if sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256:
                 raise WorkflowHandleError("configuration snapshot is untrusted")
             document = ESPHomeConfigDocument.parse(snapshot.content)
-            topology = topology_from_config(
-                document, native_project_name=device.project_name
+            topology = self._topology_from_document(
+                document, device, snapshot.sha256, snapshot.configuration
             )
             configuration = snapshot.configuration
             substitutions = {
@@ -1002,7 +1327,9 @@ class EntryWorkflow:
             voltage_catalog = await self._hass.async_add_executor_job(
                 VoltageTransformerCatalog.load
             )
-            selections = await self._store.async_get_ct_selections(mac)
+            selections = _selections_for_topology(
+                await self._store.async_get_ct_selections(mac), topology
+            )
             meter_configuration = MeterConfigurationInventory.from_document(
                 session_id,
                 document,
@@ -1015,6 +1342,7 @@ class EntryWorkflow:
                 reporting_multipliers=_stored_reporting_multipliers(
                     selections, snapshot.sha256
                 ),
+                configuration_authoritative=snapshot.configuration_authoritative,
                 stored_semantics_stale=stored_read.stale,
             ).configuration
         cleanup = self._cleaning_macs.get(mac)
@@ -1075,6 +1403,9 @@ class EntryWorkflow:
             state="safety_required" if preflight.ok else "preflight_failed",
             meter_configuration=meter_configuration,
             configuration_sha256=(snapshot.sha256 if snapshot is not None else None),
+            configuration_authoritative=(
+                snapshot.configuration_authoritative if snapshot is not None else True
+            ),
             timing_policy=CalibrationTimingPolicy(
                 (
                     meter_configuration.meter.update_interval_s
@@ -1283,16 +1614,19 @@ class EntryWorkflow:
         stage: OffsetReadinessStage,
         *,
         backup_acknowledged: bool,
+        first_calibration_confirmed: bool = False,
     ) -> dict[str, Any]:
         """Back up exact tables and review a zero baseline; internal workflow entry."""
         if backup_acknowledged is not True:
             raise WorkflowHandleError(
                 "private recovery backup acknowledgement is absent"
             )
+        if type(first_calibration_confirmed) is not bool:
+            raise WorkflowHandleError("first calibration confirmation is invalid")
         handle, revision = self._claim_ready_session(session_id)
         try:
             self._validate_offset_target(handle, board_index, stage)
-            if handle.offset_skipped or self.transactions is None:
+            if handle.offset_skipped:
                 raise WorkflowCapabilityUnavailable(
                     "stock offset preparation is unavailable"
                 )
@@ -1326,55 +1660,168 @@ class EntryWorkflow:
                 if not targets:
                     raise WorkflowHandleError(
                         "selected offset stage is already complete"
-                    )
-                snapshots = await api.async_offset_table_snapshot(
-                    set(targets), offset_stage=stage
                 )
+                try:
+                    required_instances = set(targets)
+                    if pending is not None:
+                        required_instances.update(pending.expected_phase_offsets)
+                        required_instances.update(pending.expected_phase_power_offsets)
+                    target_cs_pins = source_offset_cs_pins(
+                        source, handle.topology, required_instances
+                    )
+                except Exception:  # noqa: BLE001 - source details stay private
+                    raise OffsetChipIdentityUnavailable(
+                        "selected offset chip identities are unavailable"
+                    ) from None
                 generation = handle.binding.connection_generation
-                if (
-                    old is not None
-                    and old.preparation is None
-                    and old.original.sha256 == source.sha256
-                ):
-                    configured = {
-                        item.snapshot.instance_id: replace(
-                            item.snapshot, connection_generation=generation
-                        )
+                allowed_sources = (
+                    _allowed_observation_sources(old)
+                    if old is not None
+                    else {source.sha256}
+                )
+                stored_configuration = {
+                    (item.snapshot.instance_id, item.snapshot.offset_stage): replace(
+                        item.snapshot, connection_generation=generation
+                    )
+                    for item in old.observations
+                    if item.source_sha256 in allowed_sources
+                    and item.snapshot.reported_state in (
+                        "restored",
+                        "mismatch",
+                        "configuration",
+                        FIRST_CALIBRATION_CONFIGURATION,
+                    )
+                    and item.snapshot.instance_id in targets
+                } if old is not None else {}
+                configured: dict[tuple[str, int], Any] | None = None
+                selected_configuration_targets: set[str] = set()
+                clear_targets: set[str] = set()
+                captured = []
+                completed_results = (
+                    {(item.instance_id, item.stage) for item in old.results}
+                    if old is not None
+                    else set()
+                )
+
+                def first_use_allowed(instance: str, baseline_stage: int) -> bool:
+                    if old is None:
+                        return True
+                    if any(
+                        item.snapshot.instance_id == instance
+                        and item.snapshot.offset_stage == baseline_stage
                         for item in old.observations
-                        if item.source_sha256 == source.sha256
-                        and item.snapshot.reported_state == "configuration"
-                        and item.snapshot.offset_stage == stage
-                        and item.snapshot.instance_id in targets
-                    }
+                    ):
+                        return False
+                    if any(
+                        item.instance_id == instance and item.stage == baseline_stage
+                        for item in old.results
+                    ):
+                        return False
+                    if pending is not None and instance in (
+                        pending.expected_phase_offsets
+                        if baseline_stage == 1
+                        else pending.expected_phase_power_offsets
+                    ):
+                        return False
+                    return not (
+                        old.preparation is not None
+                        and old.preparation.stage == baseline_stage
+                        and instance in old.attempted
+                    )
+
+                for baseline_stage in (1, 2):
                     missing = {
                         instance
                         for instance in targets
-                        if snapshots.get(instance) is None
+                        if (instance, baseline_stage) not in completed_results
                     }
-                    if missing and missing <= set(configured):
-                        selected = await api.async_offset_configuration_selection(
-                            missing
+                    if not missing:
+                        continue
+                    try:
+                        snapshots = await api.async_offset_table_snapshot(
+                            missing,
+                            offset_stage=baseline_stage,
+                            require_communication=True,
+                            expected_cs_pins=frozenset(
+                                target_cs_pins[instance] for instance in missing
+                            ),
                         )
-                        if selected != dict.fromkeys(missing, generation):
-                            raise WorkflowCapabilityUnavailable(
-                                "configured offset tables need fresh selection"
+                    except (LogEvidenceError, TimeoutError):
+                        raise OffsetDiagnosticsIncomplete(
+                            "fresh offset diagnostics are incomplete"
+                        ) from None
+                    if not isinstance(snapshots, dict) or set(snapshots) != missing:
+                        raise OffsetDiagnosticsIncomplete(
+                            "fresh offset diagnostics are incomplete"
+                        )
+                    for instance in missing:
+                        item = snapshots.get(instance)
+                        if item is None:
+                            item = stored_configuration.get((instance, baseline_stage))
+                            if (
+                                item is not None
+                                and item.reported_state == "configuration"
+                            ):
+                                selected_configuration_targets.add(instance)
+                        if (
+                            item is None
+                            and first_calibration_confirmed
+                            and first_use_allowed(instance, baseline_stage)
+                        ):
+                            if configured is None or (
+                                instance, baseline_stage
+                            ) not in configured:
+                                source_items = source_offset_snapshots(
+                                    source,
+                                    handle.topology,
+                                    missing,
+                                    generation,
+                                    stages=(baseline_stage,),
+                                )
+                                configured = {
+                                    **(configured or {}),
+                                    **{
+                                        (candidate.instance_id, candidate.offset_stage): candidate
+                                        for candidate in source_items
+                                    },
+                                }
+                            item = configured.get((instance, baseline_stage))
+                        if (
+                            item is None
+                            or item.connection_generation != generation
+                            or item.instance_id != instance
+                            or item.offset_stage != baseline_stage
+                        ):
+                            raise OffsetTablesUnavailable(
+                                "fresh exact saved offset tables are unavailable"
                             )
-                        snapshots.update(
-                            {instance: configured[instance] for instance in missing}
+                        prior_attempted = bool(
+                            old is not None
+                            and old.preparation is not None
+                            and old.preparation.stage == baseline_stage
+                            and instance in old.attempted
                         )
-                captured = []
-                for instance in targets:
-                    item = snapshots.get(instance)
-                    if (
-                        item is None
-                        or item.connection_generation != generation
-                        or item.instance_id != instance
-                        or item.offset_stage != stage
+                        if (
+                            baseline_stage == stage
+                            and not (
+                                item.reported_state
+                                == FIRST_CALIBRATION_CONFIGURATION
+                                and item.phase_values == ZERO_OFFSETS
+                                and not prior_attempted
+                            )
+                        ):
+                            clear_targets.add(instance)
+                        captured.append(item)
+                if selected_configuration_targets:
+                    selected = await api.async_offset_configuration_selection(
+                        selected_configuration_targets
+                    )
+                    if selected != dict.fromkeys(
+                        selected_configuration_targets, generation
                     ):
-                        raise OffsetTablesUnavailable(
-                            "fresh exact saved offset tables are unavailable"
+                        raise WorkflowCapabilityUnavailable(
+                            "configured offset tables need fresh selection"
                         )
-                    captured.append(item)
                 if pending is not None:
                     retained = (
                         {(item.instance_id, item.stage) for item in old.results}
@@ -1395,9 +1842,26 @@ class EntryWorkflow:
                         }
                         if not missing:
                             continue
-                        completed_snapshots = await api.async_offset_table_snapshot(
-                            missing, offset_stage=completed_stage
-                        )
+                        try:
+                            completed_snapshots = await api.async_offset_table_snapshot(
+                                missing,
+                                offset_stage=completed_stage,
+                                require_communication=True,
+                                expected_cs_pins=frozenset(
+                                    target_cs_pins[instance] for instance in missing
+                                ),
+                            )
+                        except (LogEvidenceError, TimeoutError):
+                            raise OffsetDiagnosticsIncomplete(
+                                "fresh offset diagnostics are incomplete"
+                            ) from None
+                        if (
+                            not isinstance(completed_snapshots, dict)
+                            or set(completed_snapshots) != missing
+                        ):
+                            raise OffsetDiagnosticsIncomplete(
+                                "fresh offset diagnostics are incomplete"
+                            )
                         for instance in missing:
                             item = completed_snapshots.get(instance)
                             if (
@@ -1412,50 +1876,43 @@ class EntryWorkflow:
                             captured.append(item)
                 self._assert_claim(handle, revision)
                 self._calibration._validate_binding_generation(api, handle.binding)
-                record = await self._require_offset_recovery().async_backup(
+                recovery = self._require_offset_recovery()
+                record = await recovery.async_backup(
                     lease, source, handle.topology, tuple(captured)
                 )
-                plan = self._require_offset_recovery().build_preparation_plan(
-                    record, source, stage, targets
-                )
-                prepared = await self._require_offset_recovery().async_prepare(
+                prepared = await recovery.async_prepare(
                     lease,
                     record,
                     source,
-                    plan,
+                    None,
                     handle.session_id,
                     stage,
                     targets,
                     generation,
+                    mode="native",
+                    clear_targets=tuple(sorted(clear_targets)),
                 )
                 self._assert_claim(handle, revision)
 
                 handle.offset_preparation_id = prepared.operation_id
                 handle.stock_offset_pending = True
 
-                def live_session() -> None:
-                    if self._session(session_id) is not handle or handle.revoked:
-                        raise WorkflowHandleError("offset preparation session is stale")
-
-                transaction = await self.transactions.async_preview(
-                    handle.mac,
-                    handle.topology,
-                    plan,
-                    source,
-                    offset_preparation=prepared,
-                    preparation_guard=live_session,
-                )
-                self._assert_claim(handle, revision)
                 return {
                     "operation_id": prepared.operation_id,
                     "stage": stage,
                     "targets": targets,
                     "backup_available": True,
-                    "transaction": transaction,
+                    "mode": prepared.mode,
+                    "transaction": None,
                 }
             finally:
                 lease.release()
-        except WorkflowHandleError, WorkflowCapabilityUnavailable, CalibrationBusyError:
+        except (
+            WorkflowHandleError,
+            WorkflowCapabilityUnavailable,
+            CalibrationBusyError,
+            MeterCommunicationError,
+        ):
             raise
         except Exception:  # noqa: BLE001 - private source/native failures are not public diagnostics
             raise WorkflowCapabilityUnavailable(
@@ -1485,11 +1942,15 @@ class EntryWorkflow:
             "operation_id": prepared.operation_id if prepared is not None else None,
             "stage": prepared.stage if prepared is not None else None,
             "targets": prepared.targets if prepared is not None else (),
+            "mode": prepared.mode if prepared is not None else None,
             "installed": bool(
                 record is not None and record.installed and not record.cancelled
             ),
             "cancelled": bool(record is not None and record.cancelled),
-            "action_ready": self._require_offset_recovery().is_action_ready(record),
+            "action_ready": self._require_offset_recovery().is_action_ready(
+                record,
+                generation=getattr(self._api, "connection_generation", None),
+            ),
             "attempted": record.attempted if record is not None else (),
             "completed": tuple(
                 (item.instance_id, item.stage) for item in record.results
@@ -1664,22 +2125,53 @@ class EntryWorkflow:
                     record.original.configuration
                 )
                 targets = {item.instance_id for item in record.results}
+                try:
+                    target_cs_pins = source_offset_cs_pins(
+                        source, handle.topology, targets
+                    )
+                except Exception:  # noqa: BLE001 - source details stay private
+                    raise OffsetChipIdentityUnavailable(
+                        "selected offset chip identities are unavailable"
+                    ) from None
                 captured = {(item.instance_id, item.stage) for item in record.results}
                 if record.finalization is None:
+                    allowed_sources = _allowed_observation_sources(record)
+                    known = set(captured)
+                    configured = {
+                        (item.snapshot.instance_id, item.snapshot.offset_stage): replace(
+                            item.snapshot, connection_generation=api.connection_generation
+                        )
+                        for item in record.observations
+                        if item.source_sha256 in allowed_sources
+                        and item.snapshot.reported_state
+                        == FIRST_CALIBRATION_CONFIGURATION
+                    }
                     observations = []
                     for stage in (1, 2):
                         missing = {
                             instance
                             for instance in targets
-                            if (instance, stage) not in captured
+                            if (instance, stage) not in known
                         }
                         if not missing:
                             continue
-                        snapshots = await api.async_offset_table_snapshot(
-                            missing, offset_stage=stage
-                        )
+                        try:
+                            snapshots = await api.async_offset_table_snapshot(
+                                missing,
+                                offset_stage=stage,
+                                require_communication=True,
+                                expected_cs_pins=frozenset(
+                                    target_cs_pins[instance] for instance in missing
+                                ),
+                            )
+                        except (LogEvidenceError, TimeoutError):
+                            raise OffsetDiagnosticsIncomplete(
+                                "fresh offset diagnostics are incomplete"
+                            ) from None
                         for instance in missing:
                             item = snapshots.get(instance)
+                            if item is None:
+                                item = configured.get((instance, stage))
                             if (
                                 item is None
                                 or item.instance_id != instance
@@ -1746,7 +2238,12 @@ class EntryWorkflow:
                 "purpose": "offset_finalization",
                 "targets": final.targets,
             }
-        except WorkflowHandleError, WorkflowCapabilityUnavailable, CalibrationBusyError:
+        except (
+            WorkflowHandleError,
+            WorkflowCapabilityUnavailable,
+            CalibrationBusyError,
+            MeterCommunicationError,
+        ):
             raise
         except Exception:  # noqa: BLE001 - redact private recovery and source failures
             raise WorkflowCapabilityUnavailable(
@@ -1915,10 +2412,19 @@ class EntryWorkflow:
                     or record.preparation is None
                     or record.preparation.operation_id != operation_id
                     or record.preparation.stage != stage
-                    or not self._require_offset_recovery().is_action_ready(record)
+                    or not self._require_offset_recovery().is_action_ready(
+                        record, generation=api.connection_generation
+                    )
                 ):
+                    native = bool(
+                        record is not None
+                        and record.preparation is not None
+                        and record.preparation.mode == "native"
+                    )
                     raise WorkflowHandleError(
-                        "current Core offset preparation is not ready; new reviewed install required"
+                        "current Core native offset preparation is not ready; review readiness again"
+                        if native
+                        else "current Core offset preparation is not ready; new reviewed installation required"
                     )
                 prepared = record.preparation
                 source = await self._require_builder().async_get_config(
@@ -1930,7 +2436,9 @@ class EntryWorkflow:
                     or source.sha256 != prepared.proposed_sha256
                 ):
                     raise WorkflowHandleError(
-                        "installed offset preparation source changed"
+                        "native offset source changed; review readiness again"
+                        if prepared.mode == "native"
+                        else "installed offset preparation source changed"
                     )
                 substitutions = {
                     key: scalar.value
@@ -2366,7 +2874,12 @@ class EntryWorkflow:
 
         return unsubscribe
 
-    async def async_verify(self, mac: str) -> ReconnectEvidence:
+    async def async_verify(
+        self,
+        mac: str,
+        *,
+        expected_instance_ids: frozenset[str] | None = None,
+    ) -> ReconnectEvidence:
         api = self._require_api()
         await api.async_reconnect()
         handle = next(
@@ -2377,6 +2890,8 @@ class EntryWorkflow:
             ),
             None,
         )
+        document: ESPHomeConfigDocument | None = None
+        source: ESPHomeConfigSnapshot | None = None
         if handle is None:
             device_id = self._esphome_entry_id
             if device_id is None:
@@ -2388,20 +2903,44 @@ class EntryWorkflow:
                 if isinstance(topology_result, dict)
                 else topology_result
             )
-            snapshot = await self._async_snapshot(device)
-            document = ESPHomeConfigDocument.parse(snapshot.content)
-            substitutions = {
-                key: scalar.value for key, scalar in document.substitutions.items()
-            }
+            substitutions: Mapping[str, str] = {}
+            if self._builder is not None:
+                snapshot = await self._async_snapshot(device)
+                source = snapshot
+                document = ESPHomeConfigDocument.parse(snapshot.content)
+                substitutions = {
+                    key: scalar.value for key, scalar in document.substitutions.items()
+                }
         else:
             topology = handle.topology
-        await api.async_check_meter_communication(topology.group_count)
-        catalog = EntityCatalog(api.entities, api.connection_generation)
-        if handle is None:
-            binding = bind_meter(catalog, topology, substitutions)
+            substitutions = handle.substitutions
+        if expected_instance_ids is None:
+            await api.async_check_meter_communication(topology.group_count)
         else:
-            binding = handle.binding.rebind(catalog, handle.substitutions)
-            handle.binding = binding
+            if not expected_instance_ids:
+                raise OffsetChipIdentityUnavailable(
+                    "selected offset chip identities are unavailable"
+                )
+            if handle is not None:
+                source = await self._async_calibration_snapshot(mac, topology)
+            if source is None:
+                raise OffsetChipIdentityUnavailable(
+                    "selected offset chip identities are unavailable"
+                )
+            try:
+                expected_cs_pins = frozenset(
+                    source_offset_cs_pins(
+                        source, topology, expected_instance_ids
+                    ).values()
+                )
+            except Exception:  # noqa: BLE001 - source parser details stay private
+                raise OffsetChipIdentityUnavailable(
+                    "selected offset chip identities are unavailable"
+                ) from None
+            await api.async_check_meter_communication(
+                len(expected_instance_ids), expected_cs_pins=expected_cs_pins
+            )
+        catalog = EntityCatalog(api.entities, api.connection_generation)
         sensors = catalog.by_kind("sensor")
         sensor_object_ids = Counter(entity.object_id for entity in sensors)
         duplicates = frozenset(
@@ -2409,16 +2948,37 @@ class EntryWorkflow:
             for object_id, count in sensor_object_ids.items()
             if count > 1
         )
+        if handle is not None:
+            binding = handle.binding.rebind(catalog, handle.substitutions)
+            handle.binding = binding
+            current_sensors = {
+                channel.channel: channel.current_sensor.descriptor
+                for channel in binding.channels
+            }
+        elif self._builder is None:
+            binding = bind_native_meter(catalog, topology)
+            current_sensors = {
+                channel.channel: channel.current_sensor.descriptor
+                for channel in binding.channels
+            }
+        else:
+            if document is None:
+                raise WorkflowCapabilityUnavailable(
+                    "configuration snapshot is unavailable"
+                )
+            current_sensors = _configured_current_sensors(
+                catalog,
+                substitutions,
+                _configured_enabled_channels(document, topology),
+            )
         return ReconnectEvidence(
             canonical_mac(mac),
             topology,
             {
-                channel.channel: channel.current_sensor.descriptor.name.removesuffix(
-                    " Amps"
-                )
-                for channel in binding.channels
+                channel: entity.name.removesuffix(" Amps")
+                for channel, entity in current_sensors.items()
             },
-            len(binding.channels),
+            len(current_sensors),
             frozenset((entity.object_id, entity.name) for entity in sensors),
             duplicates,
         )
@@ -2458,6 +3018,8 @@ class EntryWorkflow:
                 and not isinstance(result, asyncio.CancelledError)
             )
         self._plans.clear()
+        inspections = tuple(self._inspections.values())
+        self._inspections.clear()
         self._sessions.clear()
         self._subscribers.clear()
         self._session_cleanup_tasks.clear()
@@ -2466,6 +3028,11 @@ class EntryWorkflow:
         for plan in plans:
             try:
                 plan.scrub()
+            except BaseException as error:  # noqa: BLE001 - scrub every handle
+                errors.append(error)
+        for inspection in inspections:
+            try:
+                inspection.scrub()
             except BaseException as error:  # noqa: BLE001 - scrub every handle
                 errors.append(error)
         if builder is not None:
@@ -2506,7 +3073,10 @@ class EntryWorkflow:
             and snapshot.sha256 != handle.configuration_sha256
         ):
             raise WorkflowHandleError("calibration configuration is stale")
-        return snapshot
+        return replace(
+            snapshot,
+            configuration_authoritative=handle.configuration_authoritative,
+        )
 
     async def _async_trusted_voltage_fingerprint(
         self,
@@ -2553,7 +3123,9 @@ class EntryWorkflow:
         if handle.configuration is None:
             raise WorkflowCapabilityUnavailable("configuration inventory is unavailable")
         snapshot = await self._require_builder().async_get_config(handle.configuration)
-        selections = await self._store.async_get_ct_selections(handle.mac)
+        selections = _selections_for_topology(
+            await self._store.async_get_ct_selections(handle.mac), handle.topology
+        )
         return CTInventory.from_document(
             ESPHomeConfigDocument.parse(snapshot.content),
             handle.topology,
@@ -2566,15 +3138,233 @@ class EntryWorkflow:
     async def _async_snapshot(self, device: DiscoveredDevice) -> ESPHomeConfigSnapshot:
         builder = self._require_builder()
         configuration = device.configuration
+        list_devices = getattr(builder, "async_list_devices", None)
+        if callable(list_devices):
+            try:
+                listing = await list_devices()
+            except ConnectionError:
+                listing = None
+            if isinstance(listing, Mapping):
+                current = device_builder_status(
+                    self._entry(device.entry_id), listing
+                ).configuration
+                if current is not None:
+                    configuration = current
         if configuration is None:
-            listing = await builder.async_list_devices()
-            entry = self._entry(device.entry_id)
-            configuration = device_builder_status(entry, listing).configuration
-            if configuration is None:
-                raise WorkflowCapabilityUnavailable(
-                    "the Device Builder configuration is unavailable"
+            raise WorkflowCapabilityUnavailable(
+                "the Device Builder configuration is unavailable"
+            )
+        snapshot = await builder.async_get_config(configuration)
+        document = ESPHomeConfigDocument.parse(snapshot.content)
+        source_is_official = (
+            package_graph_owner_is_official(document)
+            if document.package_references or document.unresolved_package_sources
+            else is_supported_project(document.project_name)
+        )
+        return replace(
+            snapshot,
+            configuration_authoritative=source_is_official,
+        )
+
+    def _topology_from_document(
+        self,
+        document: ESPHomeConfigDocument,
+        device: DiscoveredDevice,
+        source_sha256: str,
+        configuration: str,
+    ) -> MeterTopology:
+        """Use strict config topology, with only a prior explicit admission escape hatch."""
+        try:
+            return topology_from_config(
+                document, native_project_name=_native_project_name(device)
+            )
+        except (TopologyMismatchError, TopologyParseError) as original_error:
+            admission = self._inspection_admission(device.entry_id)
+            if (
+                admission is None
+                or admission["configuration"] != configuration
+            ):
+                raise
+            try:
+                if admission["mac"] != self._mac(device.entry_id):
+                    raise TopologyMismatchError("inspection identity changed")
+                if admission["source_sha256"] != source_sha256:
+                    manager = self.transactions
+                    if (
+                        manager is None
+                        or not manager._is_proposed_source_authorized(
+                            admission["mac"],
+                            configuration,
+                            cast(str, admission["source_sha256"]),
+                            document.content,
+                        )
+                    ):
+                        raise TopologyMismatchError(
+                            "configuration is not authorized by an active transaction"
+                        )
+                preliminary = topology_from_inspection(
+                    document,
+                    native_project_name=_native_project_name(device),
+                    physical_chip_count=None,
                 )
-        return await builder.async_get_config(configuration)
+                if admission["physical_chip_count"] != preliminary.group_count:
+                    raise TopologyMismatchError("inspection topology changed")
+                return topology_from_inspection(
+                    document,
+                    native_project_name=_native_project_name(device),
+                    physical_chip_count=admission["physical_chip_count"],
+                )
+            except (TopologyMismatchError, TopologyParseError, WorkflowHandleError):
+                raise original_error
+
+    def _inspection_candidate(self, device_id: str) -> ExistingDeviceCandidate:
+        if self._closed or self._closing:
+            raise WorkflowHandleError("workflow is closed")
+        entry = self._entry(device_id)
+        if getattr(entry, "domain", None) != "esphome":
+            raise WorkflowHandleError("device is not available")
+        candidate = existing_device_candidate(entry)
+        if candidate.entry_id != device_id:
+            raise WorkflowHandleError("device is not available")
+        return candidate
+
+    async def _assert_inspection_current(
+        self, device_id: str, builder: LazyDeviceBuilder
+    ) -> _InspectionHandle:
+        self._prune_inspections()
+        handle = self._inspections.get(device_id)
+        if handle is None:
+            raise WorkflowHandleError("inspection is stale; inspect again")
+        entry = self._entry(device_id)
+        status = device_builder_status(
+            entry, await builder.async_list_devices(), strict=True
+        )
+        if status.configuration != handle.configuration:
+            raise WorkflowHandleError("inspection is stale; inspect again")
+        snapshot = await builder.async_get_config(handle.configuration)
+        if (
+            snapshot.sha256 != handle.source_sha256
+            or sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256
+        ):
+            raise WorkflowHandleError("inspection is stale; inspect again")
+        if self._mac(device_id) != handle.mac:
+            raise WorkflowHandleError("inspection is stale; inspect again")
+        document = ESPHomeConfigDocument.parse(snapshot.content)
+        try:
+            topology = topology_from_inspection(
+                document,
+                native_project_name=_project_name(entry),
+                physical_chip_count=handle.topology.group_count,
+            )
+        except (TopologyMismatchError, TopologyParseError) as error:
+            raise WorkflowHandleError("inspection is stale; inspect again") from error
+        if topology != handle.topology:
+            raise WorkflowHandleError("inspection is stale; inspect again")
+        handle.expires_at = self._deadline()
+        return handle
+
+    def _inspection_admission(
+        self, device_id: str
+    ) -> dict[str, str | int] | None:
+        entries_reader = getattr(self._hass.config_entries, "async_entries", None)
+        if not callable(entries_reader):
+            return None
+        helper = next(
+            (
+                entry
+                for entry in entries_reader(DOMAIN)
+                if getattr(entry, "domain", None) == DOMAIN
+            ),
+            None,
+        )
+        if helper is None:
+            return None
+        helper_data = getattr(helper, "data", {})
+        if not isinstance(helper_data, Mapping):
+            return None
+        admission = helper_data.get(CONF_INSPECTION_ADMISSION)
+        if not isinstance(admission, Mapping):
+            return None
+        if (
+            admission.get("device_id") != device_id
+            or not isinstance(admission.get("mac"), str)
+            or not isinstance(admission.get("configuration"), str)
+            or not isinstance(admission.get("source_sha256"), str)
+            or not isinstance(admission.get("physical_chip_count"), int)
+        ):
+            return None
+        return {
+            "device_id": device_id,
+            "mac": admission["mac"],
+            "configuration": admission["configuration"],
+            "source_sha256": admission["source_sha256"],
+            "physical_chip_count": admission["physical_chip_count"],
+        }
+
+    def _record_inspection_admission(self, handle: _InspectionHandle) -> None:
+        entries_reader = getattr(self._hass.config_entries, "async_entries", None)
+        updater = getattr(self._hass.config_entries, "async_update_entry", None)
+        if not callable(entries_reader) or not callable(updater):
+            return
+        helper = next(
+            (
+                entry
+                for entry in entries_reader(DOMAIN)
+                if getattr(entry, "domain", None) == DOMAIN
+            ),
+            None,
+        )
+        if helper is None:
+            return
+        data = dict(getattr(helper, "data", {}) or {})
+        data[CONF_INSPECTION_ADMISSION] = {
+            "device_id": handle.device_id,
+            "mac": handle.mac,
+            "configuration": handle.configuration,
+            "source_sha256": handle.source_sha256,
+            "physical_chip_count": handle.topology.group_count,
+        }
+        updater(helper, data=data)
+
+    def _advance_inspection_admission(
+        self, device_id: str, source_sha256: str, proposed_sha256: str
+    ) -> None:
+        """Advance custom-source admission only after a verified transaction."""
+        admission = self._inspection_admission(device_id)
+        if admission is None or admission["source_sha256"] != source_sha256:
+            return
+        entries_reader = getattr(self._hass.config_entries, "async_entries", None)
+        updater = getattr(self._hass.config_entries, "async_update_entry", None)
+        if not callable(entries_reader) or not callable(updater):
+            return
+        helper = next(
+            (
+                entry
+                for entry in entries_reader(DOMAIN)
+                if getattr(entry, "domain", None) == DOMAIN
+            ),
+            None,
+        )
+        if helper is None:
+            return
+        data = dict(getattr(helper, "data", {}) or {})
+        current = data.get(CONF_INSPECTION_ADMISSION)
+        if not isinstance(current, Mapping) or current.get("source_sha256") != source_sha256:
+            return
+        data[CONF_INSPECTION_ADMISSION] = {
+            **dict(current),
+            "source_sha256": proposed_sha256,
+        }
+        updater(helper, data=data)
+        handle = self._inspections.get(device_id)
+        if handle is not None and handle.source_sha256 == source_sha256:
+            handle.source_sha256 = proposed_sha256
+
+    def _prune_inspections(self) -> None:
+        for device_id, handle in tuple(self._inspections.items()):
+            if self._clock() >= handle.expires_at:
+                self._inspections.pop(device_id, None)
+                handle.scrub()
 
     def _device(self, device_id: str) -> DiscoveredDevice:
         if self._closed or self._closing:
@@ -2597,7 +3387,9 @@ class EntryWorkflow:
                 None,
             )
             if not isinstance(project_name, str):
-                raise WorkflowHandleError("device is not available")
+                if self._inspection_admission(device_id) is None:
+                    raise WorkflowHandleError("device is not available")
+                project_name = "unknown"
             device = DiscoveredDevice(device_id, entry.title, project_name)
         return device
 
@@ -2615,12 +3407,10 @@ class EntryWorkflow:
         if device is None:
             entry = self._entry(device_id)
             project_name = _project_name(entry)
-            if (
-                getattr(entry, "domain", None) != "esphome"
-                or not isinstance(project_name, str)
-                or not project_name.startswith(BASE_PROJECT)
-            ):
+            if getattr(entry, "domain", None) != "esphome":
                 raise WorkflowHandleError("device is not available")
+            if not isinstance(project_name, str):
+                project_name = "unknown"
             device = DiscoveredDevice(
                 device_id,
                 entry.title,
@@ -2641,8 +3431,14 @@ class EntryWorkflow:
                 for handle in self._sessions.values()
             ):
                 raise CalibrationBusyError(mac)
-        if self.transactions is not None and self.transactions.active_status(mac) is not None:
-            raise CalibrationBusyError(mac)
+        if self.transactions is not None:
+            transaction = self.transactions.active_status(mac)
+            if transaction is not None and (
+                getattr(transaction, "rollback_available", True)
+                or getattr(transaction, "state", None)
+                not in {"verified", "failed", "rolled_back"}
+            ):
+                raise CalibrationBusyError(mac)
 
     def _entry(self, device_id: str) -> Any:
         getter = getattr(self._hass.config_entries, "async_get_entry", None)

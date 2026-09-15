@@ -17,6 +17,7 @@ from custom_components.circuitsetup_energy_meter_helper.models import (
 from custom_components.circuitsetup_energy_meter_helper.provisioning import (
     DeviceBuilderStatus,
     ProvisioningCoordinator,
+    device_builder_status,
 )
 
 
@@ -26,6 +27,7 @@ class FakeDeviceInfo:
 
     project_name: str
     project_version: str = "2026.8.0"
+    name: str | None = None
 
 
 @dataclass
@@ -271,6 +273,58 @@ def test_rescan_requires_circuitsetup_runtime_project_prefix() -> None:
     asyncio.run(run())
 
 
+def test_existing_meter_listing_excludes_the_bound_entry() -> None:
+    """The explicit "another meter" search does not return the current meter."""
+
+    async def run() -> None:
+        hass = FakeHass()
+        hass.config_entries.entries.extend(
+            [
+                FakeEntry(
+                    "bound",
+                    "Current meter",
+                    FakeRuntimeData(FakeDeviceInfo("circuitsetup.6c-energy-meter")),
+                ),
+                FakeEntry(
+                    "other",
+                    "Other meter",
+                    FakeRuntimeData(FakeDeviceInfo("legacy.custom-meter")),
+                ),
+            ]
+        )
+
+        candidates = await ProvisioningCoordinator(hass).async_list_existing_meters(
+            "bound"
+        )
+
+        assert [candidate.entry_id for candidate in candidates] == ["other"]
+
+    asyncio.run(run())
+
+
+def test_existing_meter_listing_pages_past_32_entries_without_losing_candidates() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        hass.config_entries.entries.extend(
+            FakeEntry(f"device-{index:03}", f"Device {index}",
+                FakeRuntimeData(FakeDeviceInfo("legacy.custom-meter")))
+            for index in reversed(range(130))
+        )
+        coordinator = ProvisioningCoordinator(hass)
+        found = []
+        after = None
+        while True:
+            page = await coordinator.async_list_existing_meters("device-040", after)
+            assert len(page) <= 32
+            found.extend(candidate.entry_id for candidate in page)
+            if len(page) < 32:
+                break
+            after = page[-1].entry_id
+        assert found == [f"device-{index:03}" for index in range(130) if index != 40]
+
+    asyncio.run(run())
+
+
 def test_production_setup_reports_unavailable_device_builder_state_as_unknown() -> None:
     """The real integration setup never claims unavailability as a false value."""
 
@@ -302,7 +356,11 @@ def test_production_setup_reports_configured_device_builder_state(monkeypatch) -
     class FakeBuilder:
         async def async_list_devices(self):
             return {
-                "configured": [{"name": "meter", "configuration": "meter.yaml"}],
+                "configured": [{
+                    "name": "meter",
+                    "friendly_name": "Updated meter",
+                    "configuration": "meter.yaml",
+                }],
                 "importable": [],
             }
 
@@ -328,7 +386,113 @@ def test_production_setup_reports_configured_device_builder_state(monkeypatch) -
 
         assert coordinator.snapshot.devices[0].configuration == "meter.yaml"
         assert coordinator.snapshot.devices[0].importable is False
+        assert coordinator.snapshot.devices[0].title == "Updated meter"
         await coordinator.async_stop()
+
+    asyncio.run(run())
+
+
+def test_device_builder_status_uses_current_runtime_name_after_rename() -> None:
+    entry = FakeEntry(
+        "meter",
+        "CircuitSetup meter",
+        FakeRuntimeData(
+            FakeDeviceInfo(
+                "circuitsetup.6c-energy-meter", name="renamed-meter"
+            )
+        ),
+        data={"device_name": "old-meter"},
+    )
+
+    status = device_builder_status(
+        entry,
+        {
+            "configured": [
+                {"name": "renamed-meter", "configuration": "renamed-meter.yaml"}
+            ],
+            "importable": [],
+        },
+    )
+
+    assert status.configuration == "renamed-meter.yaml"
+    assert status.importable is False
+
+
+def test_device_builder_status_keeps_hostname_match_when_runtime_name_is_friendly() -> None:
+    entry = FakeEntry(
+        "meter",
+        "Old title",
+        FakeRuntimeData(
+            FakeDeviceInfo(
+                "circuitsetup.6c-energy-meter", name="CircuitSetup Energy Meter 12x"
+            )
+        ),
+        data={"device_name": "energy-meter-6f94c0"},
+    )
+
+    status = device_builder_status(
+        entry,
+        {
+            "configured": [
+                {
+                    "name": "energy-meter-6f94c0",
+                    "friendly_name": "CircuitSetup Energy Meter 12x",
+                    "configuration": "energy-meter-6f94c0.yaml",
+                }
+            ],
+            "importable": [],
+        },
+    )
+
+    assert status.configuration == "energy-meter-6f94c0.yaml"
+    assert status.friendly_name == "CircuitSetup Energy Meter 12x"
+
+
+def test_device_builder_status_matches_renamed_entry_by_mac() -> None:
+    entry = FakeEntry(
+        "meter",
+        "Old title",
+        FakeRuntimeData(
+            FakeDeviceInfo("circuitsetup.6c-energy-meter", name="old-hostname")
+        ),
+        data={"device_name": "old-hostname", "unique_id": "58:2a:bd:6f:94:c0"},
+    )
+
+    status = device_builder_status(
+        entry,
+        {
+            "configured": [
+                {
+                    "name": "energy-meter-6f94c0",
+                    "configuration": "energy-meter-6f94c0.yaml",
+                    "mac_address": "58:2A:BD:6F:94:C0",
+                }
+            ],
+            "importable": [],
+        },
+    )
+
+    assert status.configuration == "energy-meter-6f94c0.yaml"
+
+
+def test_rescan_uses_current_runtime_name_for_display() -> None:
+    async def run() -> None:
+        hass = FakeHass()
+        hass.config_entries.entries.append(
+            FakeEntry(
+                "meter",
+                "Stale title",
+                FakeRuntimeData(
+                    FakeDeviceInfo(
+                        "circuitsetup.6c-energy-meter", name="Current meter"
+                    )
+                ),
+                data={"device_name": "meter"},
+            )
+        )
+        snapshot = await ProvisioningCoordinator(hass).async_rescan()
+
+        assert snapshot.devices[0].title == "Current meter"
 
     asyncio.run(run())
 

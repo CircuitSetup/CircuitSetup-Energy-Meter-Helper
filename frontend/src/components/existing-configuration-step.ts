@@ -1,5 +1,5 @@
 import { html, nothing, type TemplateResult } from "lit";
-import type { MeterConfiguration } from "../types";
+import type { MeterConfiguration, ExistingDeviceCandidate, ExistingMeterInspection } from "../types";
 
 export interface ExistingConfigurationMetadata {
   configurationFilename: string;
@@ -45,5 +45,40 @@ export function existingConfigurationStep(
     </dl>
     ${warnings.length ? html`<div class="warning-band" role="note"><strong>Review notes</strong><ul>${warnings.map((warning) => html`<li>${warningCopy[warning] ?? "Some settings could not be identified from the source and need review."}</li>`)}</ul><details><summary>Technical details</summary><code>${warnings.join(", ")}</code></details></div>` : nothing}
     <div class="action-footer"><button class="secondary" @click=${onBack}>Back</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="primary" @click=${onManage}>Review and manage with helper</button></div>
+  </section>`;
+}
+
+export function existingMeterInspection(
+  candidates: ExistingDeviceCandidate[],
+  inspection: ExistingMeterInspection | null,
+  busyAction: string,
+  find: () => void,
+  inspect: (deviceId: string) => void,
+  adopt: (deviceId: string) => void,
+  searched = false,
+): TemplateResult {
+  return html`<section class="existing-inspection" aria-labelledby="find-existing-heading">
+    <h3 id="find-existing-heading">Find another ESPHome meter</h3>
+    <p>This checks one selected ESPHome entry before it can be adopted. It does not install firmware.</p>
+    <button class="secondary" data-action="find-existing" ?disabled=${Boolean(busyAction)} @click=${find}>
+      ${busyAction === "find-existing" ? "Finding meters…" : "Find another ESPHome meter"}
+    </button>
+    ${searched && !candidates.length ? html`<p class="info-band" role="status">Could not find any more CircuitSetup energy meters</p>` : nothing}
+    ${candidates.length ? html`<div class="meter-list">
+      ${candidates.map((candidate) => html`<div class="meter-row">
+        <span><strong>${candidate.title}</strong><small>${candidate.project_name ?? "Project label unavailable"}${candidate.project_version ? ` · ${candidate.project_version}` : ""}</small></span>
+        <span>${candidate.compatibility.join(", ")}</span>
+        <button class="primary" data-action="inspect-existing" ?disabled=${Boolean(busyAction)} @click=${() => inspect(candidate.entry_id)}>
+          ${busyAction === `inspect:${candidate.entry_id}` ? "Inspecting…" : "Inspect"}
+        </button>
+      </div>`)}
+    </div>` : ""}
+    ${inspection ? html`<div class="info-band" role="status">
+      <strong>${inspection.device.title} passed inspection.</strong>
+      <span>${inspection.topology.board_count} board${inspection.topology.board_count === 1 ? "" : "s"}; live meter-chip communication corroborated.</span>
+      <button class="primary" data-action="adopt-inspected" ?disabled=${Boolean(busyAction)} @click=${() => adopt(inspection.device.entry_id)}>
+        ${busyAction === `adopt:${inspection.device.entry_id}` ? "Adopting…" : "Adopt inspected meter"}
+      </button>
+    </div>` : ""}
   </section>`;
 }

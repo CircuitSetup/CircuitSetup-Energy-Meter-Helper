@@ -158,7 +158,9 @@ def validate_offset_controls(binding: MeterBinding) -> tuple[PreflightIssue, ...
         )
     expected = [
         (entity, "button", "")
-        for controls in capability.controls
+        for controls in (
+            capability.controls or capability.run_controls
+        )
         for entity in controls.entities
     ]
     return tuple(_validate_entities(expected))

@@ -150,6 +150,15 @@ it("keeps Setup Device free of legacy installer and IO0 controls", () => {
       .some((value) => /ssid|network password|wifi password|passphrase/i.test(value ?? "")))).toBe(false);
 });
 
+it("hides device discovery rescan after setup is open", () => {
+  container = document.createElement("div");
+  document.body.append(container);
+  render(setupDeviceStep(null, 0, "wifi", noop, noop, noop, noop, noop, "", true), container);
+
+  expect(container.querySelector('[data-action="rescan"]')).toBeNull();
+  expect(container.querySelector('[data-action="find-existing"]')).not.toBeNull();
+});
+
 it("opens advanced meter settings and confirms the profile with keyboard focus", () => {
   container = document.createElement("div");
   document.body.append(container);

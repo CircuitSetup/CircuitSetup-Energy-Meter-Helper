@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { html, render } from "lit";
-import { existingConfigurationStep } from "../src/components/existing-configuration-step";
+import { existingConfigurationStep, existingMeterInspection } from "../src/components/existing-configuration-step";
 import { panelStyles } from "../src/styles";
 import { meterResponse } from "./workflow-scenarios";
 
@@ -68,5 +68,12 @@ describe("existing configuration step", () => {
     }, vi.fn(), vi.fn(), vi.fn()), host);
     expect(host.textContent).toContain("Ready for setup");
     expect(host.textContent).not.toContain("Configuration changed externally");
+  });
+
+  it("reports when no other ESPHome meters are available", () => {
+    const host = document.createElement("div");
+    render(existingMeterInspection([], null, "", vi.fn(), vi.fn(), vi.fn(), true), host);
+
+    expect(host.textContent).toContain("Could not find any more CircuitSetup energy meters");
   });
 });

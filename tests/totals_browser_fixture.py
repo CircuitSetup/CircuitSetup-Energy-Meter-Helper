@@ -14,7 +14,7 @@ from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
 
-import voluptuous as vol
+# isort: off
 from aiohttp import web
 
 from custom_components.circuitsetup_energy_meter_helper.config_document import (
@@ -60,6 +60,8 @@ from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
     sanitize_payload,
 )
 from custom_components.circuitsetup_energy_meter_helper.workflow import EntryWorkflow
+import voluptuous as vol
+# isort: on
 from tests.test_config_transaction import Builder, Job, Verifier, _evidence
 from tests.test_meter_inventory import _document, _inventory
 from tests.test_store import _CopyingStorage, _record
@@ -80,6 +82,7 @@ class Fixture:
         self.name = name
         addons = addons if addons is not None else int(name in ("one-addon", "native-parent", "child-parent", "custom-overall"))
         content = _document(contract=True, addon_count=addons)
+        content = content.replace("packages:\n  files:\n", "packages:\n  circuitsetup:\n    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter\n    ref: master\n    files:\n").replace("    - Software/ESPHome/", "      - Software/ESPHome/")
         # Known models and unchanged channel names make every fixture immediately reviewable.
         content = re.sub(r"(current_cal_ct\d+:) \d+", r"\1 11143", content)
         content = re.sub(r"ct(\d+)_name: [^\n]+", r"ct\1_name: CT\1", content)
@@ -206,7 +209,8 @@ class Fixture:
             return {"state": "device_discovered", "devices": [self.device],
                 "bound_device_id": "meter-1", "configuration_authoritative": self.name != "runtime-only"}
         if operation == "rescan":
-            return {"state": "device_discovered", "devices": [self.device]}
+            return {"state": "device_discovered", "devices": [self.device],
+                "bound_device_id": "meter-1", "configuration_authoritative": self.name != "runtime-only"}
         if operation == "get_topology":
             return {"topology": self.topology, "configuration_authoritative": self.name != "runtime-only"}
         if operation == "get_meter_configuration":
@@ -287,11 +291,14 @@ def create_app(port: int, frontend_port: int) -> web.Application:
                 "stored": await value.store.async_get_meter_configuration_read(MAC)}),
                 # Deliberately outside the production sanitizer: only this fabricated local source is readable.
                 "source_content": value.builder.remote_content,
-                "proposed_content": transaction.plan.proposed_content if transaction and transaction.plan else None})
+                "proposed_content": transaction.plan.proposed_content if transaction and transaction.plan else None,
+                "stock_button_names": getattr(getattr(value, "stock_api", None), "button_names", [])})
         if frame["type"] == "fixture_outcome":
             value.builder.validation = [Job(frame.get("validation", True))]
             value.builder.compile = Job(frame.get("compile", True))
             value.builder.upload = Job(frame.get("install", True))
+            if value.name == "stock-offset" and "fail_second" in frame:
+                value.stock_api.fail_second = frame["fail_second"] is True
             return web.json_response({"ok": True})
         try:
             return web.json_response(sanitize_payload(await value.call(frame), allow_transaction_change_keys=True, allow_nested_transaction=True))

@@ -8,6 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from custom_components.circuitsetup_energy_meter_helper.package_contract import (
+    SUPPORTED_PACKAGE_CONTRACTS,
+)
+
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "verify_firmware_contract.py"
 REPRESENTATIVES = (
@@ -155,6 +159,18 @@ def _contract_fixture(tmp_path: Path, *, api_ready: bool = True) -> tuple[Path, 
     firmware_data = firmware_root / "Software/ESPHome"
     helper_data.mkdir(parents=True)
     firmware_data.mkdir(parents=True)
+    helper_contract = (
+        helper_root
+        / "custom_components/circuitsetup_energy_meter_helper/package_contract.py"
+    )
+    helper_contract.parent.mkdir(parents=True, exist_ok=True)
+    helper_contract.write_text(
+        (
+            ROOT
+            / "custom_components/circuitsetup_energy_meter_helper/package_contract.py"
+        ).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     catalog = json.dumps({"schema_version": 1, "presets": []})
     (helper_data / "ct_presets.json").write_text(catalog, encoding="utf-8")
     (firmware_data / "ct_presets.json").write_text(catalog, encoding="utf-8")
@@ -166,6 +182,22 @@ def _contract_fixture(tmp_path: Path, *, api_ready: bool = True) -> tuple[Path, 
         calibration.mkdir()
         sensors.mkdir()
         tests.mkdir()
+        for contract in SUPPORTED_PACKAGE_CONTRACTS.values():
+            for board in range(7):
+                package = firmware_root / contract.path(board)
+                package.parent.mkdir(parents=True, exist_ok=True)
+                lines = ["sensor:"]
+                for metric in contract.phase_metrics:
+                    lines.extend(
+                        f"    {metric}:" for _ in range(contract.phase_metric_count)
+                    )
+                for metric in contract.board_metric_names(board):
+                    lines.append(f"    {metric}:")
+                lines.extend(
+                    "      disabled_by_default: true"
+                    for _ in range(contract.ha_disabled_entity_count(board) or 0)
+                )
+                package.write_text("\n".join(lines) + "\n", encoding="utf-8")
         for common in (
             "6chan_common.yaml",
             "6chan_common_ethernet.yaml",

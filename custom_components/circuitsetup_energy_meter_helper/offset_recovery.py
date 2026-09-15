@@ -12,25 +12,336 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+import yaml  # type: ignore[import-untyped]
 from homeassistant.core import HomeAssistant
 from homeassistant.util.file import write_utf8_file_atomic
+from yaml.nodes import (  # type: ignore[import-untyped]
+    MappingNode,
+    Node,
+    ScalarNode,
+    SequenceNode,
+)
 
+from .config_blocks import replace_managed_block
 from .config_document import _MAX_DOCUMENT_BYTES, ESPHomeConfigDocument
 from .config_mutator import (
     _gain_group_address,
     _read_calibrated_offset_entries,
+    _reject_local_offset_overrides,
     build_offset_table_mutation,
 )
 from .device_builder import ESPHomeConfigSnapshot
 from .log_parser import OffsetTableSnapshot
 from .models import ConfigMutationPlan, MeterTopology, PhaseOffsetTable, canonical_mac
+from .package_contract import (
+    calibration_package_path,
+    common_package_path,
+    offset_calibration_package_path,
+    package_path,
+)
 from .session_manager import CalibrationLease, ConfigLease, SessionManager
 from .store import _configuration_hash, _exact_mapping, _validate_group_table
-from .topology import topology_from_config, topology_from_native
+from .topology import (
+    package_graph_owner_is_official,
+    topology_from_config,
+    topology_from_native,
+)
 
 _MAX_RECORD_BYTES = 2 * _MAX_DOCUMENT_BYTES
 _MAX_OBSERVATIONS = 512
 ZERO_OFFSETS = ((0, 0), (0, 0), (0, 0))
+FIRST_CALIBRATION_CONFIGURATION: Literal["first_calibration_configuration"] = (
+    "first_calibration_configuration"
+)
+type PreparationMode = Literal["native", "legacy"]
+_DEFAULT_OFFSET_CS_PINS = ((5, 4), (0, 16), (27, 17), (2, 21), (13, 22), (14, 25), (15, 26))
+
+
+def _supported_offset_package_graph(
+    document: ESPHomeConfigDocument, topology: MeterTopology
+) -> bool:
+    """Accept only the checked-in package paths whose offset defaults are known."""
+    if not document.package_references:
+        return True
+    if not package_graph_owner_is_official(document):
+        return False
+    common = common_package_path(topology.connection_type)
+    if common is None:
+        return False
+    paths = {common}
+    for board_index in range(topology.board_count):
+        board = "main" if board_index == 0 else f"addon{board_index}"
+        paths.update(
+            {
+                f"Software/ESPHome/meter_sensors/6chan_{'main_sensor' if board_index == 0 else board}.yaml",
+                calibration_package_path(board_index),
+                offset_calibration_package_path(board_index),
+                package_path("power_quality", board_index),
+                package_path("status_fields", board_index),
+            }
+        )
+    return all(
+        reference.path in paths and reference.ref == "master"
+        for reference in document.package_references
+    )
+
+
+def source_offset_cs_pins(
+    source: ESPHomeConfigSnapshot,
+    topology: MeterTopology,
+    instance_ids: set[str] | frozenset[str],
+) -> dict[str, int]:
+    """Resolve selected stock chips from authoritative source/package semantics."""
+    _validate_source(source, topology)
+    requested = set(instance_ids)
+    default_pins: dict[str, int] = {}
+    for board in range(topology.board_count):
+        for group in range(2):
+            instance = (
+                f"meter_main{group + 1}"
+                if board == 0
+                else f"addon{board}_{group + 1}"
+            )
+            default_pins[instance] = _DEFAULT_OFFSET_CS_PINS[board][group]
+    if not requested or not requested <= default_pins.keys():
+        raise ValueError("selected offset chip identities are unavailable")
+    document = ESPHomeConfigDocument.parse(source.content)
+    if (
+        document.unresolved_package_sources
+        or not _supported_offset_package_graph(document, topology)
+    ):
+        raise ValueError("selected offset chip identities are unavailable")
+    aliases: dict[str, str] = {}
+    for instance in default_pins:
+        board, group = _gain_group_address(instance, topology)
+        meter_key = (
+            f"main_meter_id{group}"
+            if board == 0
+            else f"addon{board}_id{group}"
+        )
+        for alias in (instance, meter_key):
+            previous = aliases.setdefault(alias, instance)
+            if previous != instance:
+                raise ValueError("offset chip identity mapping is ambiguous")
+        if meter_key in document.substitutions:
+            alias = document.substitutions[meter_key].value
+            previous = aliases.setdefault(alias, instance)
+            if previous != instance:
+                raise ValueError("offset chip identity mapping is ambiguous")
+    explicit_pins: dict[str, int] = {}
+    local_definitions = _apply_source_offset_cs_pin_overrides(
+        document, aliases, explicit_pins
+    )
+    package_instances: set[str] = set()
+    if document.package_references:
+        active_package_paths = {
+            reference.path
+            for reference in document.package_references
+            if reference.active
+        }
+        for board in range(topology.board_count):
+            sensor_paths = (
+                {"Software/ESPHome/meter_sensors/6chan_main_sensor.yaml"}
+                if board == 0
+                else {f"Software/ESPHome/meter_sensors/6chan_addon{board}.yaml"}
+            )
+            if sensor_paths & active_package_paths:
+                package_instances.update(
+                    (
+                        f"meter_main{group + 1}"
+                        if board == 0
+                        else f"addon{board}_{group + 1}"
+                    )
+                    for group in range(2)
+                )
+    established = local_definitions | package_instances
+    if not requested <= established or not established <= set(default_pins):
+        raise ValueError("selected offset chip identities are unavailable")
+    all_pins = {
+        instance: default_pins[instance]
+        for instance in package_instances
+    }
+    all_pins.update(explicit_pins)
+    if not set(all_pins) >= requested:
+        raise ValueError("selected offset chip identities are unavailable")
+    if len(set(all_pins.values())) != len(all_pins):
+        raise ValueError("offset chip CS pin mapping is ambiguous")
+    return {instance: all_pins[instance] for instance in requested}
+
+
+def _apply_source_offset_cs_pin_overrides(
+    document: ESPHomeConfigDocument,
+    aliases: dict[str, str],
+    pins: dict[str, int],
+) -> set[str]:
+    """Read only direct, literal top-level sensor overrides."""
+    try:
+        root = yaml.compose(document.content)
+    except yaml.YAMLError as error:
+        raise ValueError("selected offset chip identities are unavailable") from error
+    if not isinstance(root, MappingNode):
+        raise ValueError("selected offset chip identities are unavailable")  # noqa: TRY004
+    sensors = [value for key, value in root.value if isinstance(key, ScalarNode) and key.value == "sensor"]
+    if not sensors:
+        return set()
+    if (
+        len(sensors) != 1
+        or document.writable_sensor_span is None
+        or not isinstance(sensors[0], SequenceNode)
+    ):
+        raise ValueError("selected offset chip identities are unavailable")
+    overrides: set[str] = set()
+    local_definitions: set[str] = set()
+    for item in sensors[0].value:
+        if not isinstance(item, MappingNode):
+            raise ValueError("selected offset chip identities are unavailable")  # noqa: TRY004
+        values: dict[str, Node] = {}
+        keys: set[str] = set()
+        for key, value in item.value:
+            if not isinstance(key, ScalarNode) or key.value in keys:
+                raise ValueError("selected offset chip identities are unavailable")
+            keys.add(key.value)
+            values[key.value] = value
+        if "<<" in keys:
+            raise ValueError("selected offset chip identities are unavailable")
+        id_node = values.get("id")
+        if id_node is not None and not isinstance(id_node, ScalarNode):
+            raise ValueError("selected offset chip identities are unavailable")
+        if id_node is not None and id_node.tag not in {
+            "tag:yaml.org,2002:str",
+            "!extend",
+        }:
+            raise ValueError("selected offset chip identities are unavailable")
+        platform = _literal_node_value(values.get("platform"))
+        if "platform" in keys and platform is None:
+            raise ValueError("selected offset chip identities are unavailable")
+        has_cs_pin = "cs_pin" in keys
+        instance = _source_offset_instance(id_node, document, aliases)
+        is_atm90e32 = platform == "atm90e32" or platform is None and instance is not None
+        if platform == "atm90e32" or has_cs_pin:
+            is_atm90e32 = True
+        if not is_atm90e32:
+            continue
+        if instance is None or platform not in (None, "atm90e32"):
+            raise ValueError("selected offset chip identities are unavailable")
+        if not has_cs_pin:
+            if platform is None and id_node is not None and id_node.tag != "!extend":
+                raise ValueError("selected offset chip identities are unavailable")
+            if platform == "atm90e32" and id_node is not None and id_node.tag != "!extend":
+                raise ValueError("selected offset chip identities are unavailable")
+            continue
+        if platform is None and (id_node is None or id_node.tag != "!extend"):
+            raise ValueError("selected offset chip identities are unavailable")
+        if instance in overrides:
+            raise ValueError("offset chip identity is duplicated")
+        cs_pin_node = values["cs_pin"]
+        if not isinstance(cs_pin_node, ScalarNode):
+            raise ValueError("selected offset chip identities are unavailable")  # noqa: TRY004
+        pin = _source_offset_cs_pin(cs_pin_node)
+        pins[instance] = pin
+        overrides.add(instance)
+        if platform == "atm90e32" and id_node is not None and id_node.tag != "!extend":
+            local_definitions.add(instance)
+    return local_definitions
+
+
+def _source_offset_instance(
+    node: ScalarNode | None,
+    document: ESPHomeConfigDocument,
+    aliases: dict[str, str],
+) -> str | None:
+    if node is None:
+        return None
+    value = node.value.strip()
+    seen: set[str] = set()
+    for _ in range(4):
+        if value in seen:
+            return None
+        seen.add(value)
+        if value.startswith("${") and value.endswith("}"):
+            key = value[2:-1]
+            substitution = document.substitutions.get(key)
+            if substitution is None:
+                return aliases.get(key)
+            value = substitution.value.strip()
+            continue
+        return aliases.get(value)
+    return None
+
+
+def _literal_node_value(node: ScalarNode | None) -> str | None:
+    if node is None or node.tag not in {"tag:yaml.org,2002:str", "tag:yaml.org,2002:int"}:
+        return None
+    return node.value.strip()
+
+
+def _source_offset_cs_pin(node: ScalarNode) -> int:
+    value = _literal_node_value(node)
+    if value is None:
+        raise ValueError("selected offset chip identities are unavailable")
+    match = re.fullmatch(r"(?:GPIO)?(\d{1,2})", value, re.IGNORECASE)
+    if match is None:
+        raise ValueError("selected offset chip identities are unavailable")
+    pin = int(match.group(1))
+    if not 0 <= pin <= 63:
+        raise ValueError("selected offset chip identities are unavailable")
+    return pin
+
+
+def source_offset_snapshots(
+    source: ESPHomeConfigSnapshot,
+    topology: MeterTopology,
+    instance_ids: set[str],
+    connection_generation: int,
+    *,
+    stages: tuple[Literal[1, 2], ...] = (1, 2),
+    reported_state: Literal[
+        "configuration", "first_calibration_configuration"
+    ] = FIRST_CALIBRATION_CONFIGURATION,
+    require_complete: bool = False,
+) -> tuple[OffsetTableSnapshot, ...]:
+    """Project known configuration offsets without treating flash as evidence."""
+    if reported_state not in ("configuration", FIRST_CALIBRATION_CONFIGURATION):
+        raise ValueError("configuration offset provenance is invalid")
+    _validate_source(source, topology)
+    document = ESPHomeConfigDocument.parse(source.content)
+    if (
+        document.unresolved_package_sources
+        or not _supported_offset_package_graph(document, topology)
+    ):
+        raise ValueError("configuration offset provenance is unavailable")
+    source_without_managed_offsets = source.content
+    if "calibrated_offsets" in document.managed_blocks:
+        source_without_managed_offsets = replace_managed_block(
+            source_without_managed_offsets, "calibrated_offsets", ""
+        )
+    _reject_local_offset_overrides(
+        source_without_managed_offsets,
+        topology,
+        instance_ids,
+        document.substitutions,
+    )
+    entries = _read_calibrated_offset_entries(document, topology)
+    snapshots: list[OffsetTableSnapshot] = []
+    for instance_id in sorted(instance_ids):
+        configured = entries.get(instance_id, {})
+        for stage in stages:
+            field = "rms" if stage == 1 else "power"
+            if require_complete and field not in configured:
+                raise ValueError("configuration offset table is incomplete")
+            # Stock ATM90E32 uses zero when a configuration offset is absent.
+            snapshots.append(
+                OffsetTableSnapshot(
+                    connection_generation,
+                    instance_id,
+                    stage,
+                    configured.get(field, ZERO_OFFSETS),
+                    reported_state,
+                    False,
+                    False,
+                )
+            )
+    return tuple(snapshots)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,13 +350,15 @@ class StockOffsetPreparation:
 
     operation_id: str
     revision: int
-    transaction_id: str
+    transaction_id: str | None
     session_id: str
     source_sha256: str
     proposed_sha256: str
     stage: Literal[1, 2]
     targets: tuple[str, ...]
     generation: int
+    mode: PreparationMode = "legacy"
+    clear_targets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -143,12 +456,23 @@ def _validate_observation(
         or snapshot.connection_generation < 1
         or type(snapshot.offset_stage) is not int
         or snapshot.offset_stage not in (1, 2)
-        or snapshot.reported_state not in ("restored", "mismatch", "configuration")
+        or snapshot.reported_state not in (
+            "restored",
+            "mismatch",
+            "configuration",
+            FIRST_CALIBRATION_CONFIGURATION,
+        )
         or type(snapshot.register_verified) is not bool
         or type(snapshot.config_differs_from_flash) is not bool
         or snapshot.config_differs_from_flash != (snapshot.reported_state == "mismatch")
+        or snapshot.reported_state in ("configuration", FIRST_CALIBRATION_CONFIGURATION)
+        and snapshot.register_verified
     ):
-        raise ValueError("invalid recovery observation")
+        raise ValueError(
+            "configuration observation cannot claim register verification"
+            if snapshot.reported_state == "configuration" and snapshot.register_verified
+            else "invalid recovery observation"
+        )
     _gain_group_address(snapshot.instance_id, topology)
     _validate_group_table(
         snapshot.instance_id, snapshot.phase_values, signed=True, label="offsets"
@@ -181,6 +505,38 @@ def _final_evidence_hash(record: OffsetRecoveryRecord) -> str:
     ).hexdigest()
 
 
+def _offset_observation_tables(
+    observations: tuple[SavedOffsetObservation, ...],
+    *,
+    source_sha256: str | None = None,
+    allowed_sources: set[str] | None = None,
+) -> dict[tuple[str, int], PhaseOffsetTable]:
+    tables: dict[tuple[str, int], PhaseOffsetTable] = {}
+    for item in observations:
+        if source_sha256 is not None and item.source_sha256 != source_sha256:
+            continue
+        if allowed_sources is not None and item.source_sha256 not in allowed_sources:
+            continue
+        key = (item.snapshot.instance_id, item.snapshot.offset_stage)
+        if item.snapshot.reported_state in ("configuration", FIRST_CALIBRATION_CONFIGURATION):
+            tables.setdefault(key, item.snapshot.phase_values)
+        else:
+            tables[key] = item.snapshot.phase_values
+    return tables
+
+
+def _allowed_observation_sources(record: OffsetRecoveryRecord) -> set[str]:
+    allowed = {record.original.sha256}
+    if record.preparation is not None:
+        allowed.add(record.preparation.source_sha256)
+        if record.installed:
+            allowed.add(record.preparation.proposed_sha256)
+    if record.finalization is not None:
+        allowed.add(record.finalization.source_sha256)
+        allowed.add(record.finalization.proposed_sha256)
+    return allowed
+
+
 def _encode(record: OffsetRecoveryRecord) -> bytes:
     if (
         canonical_mac(record.mac) != record.mac
@@ -197,16 +553,24 @@ def _encode(record: OffsetRecoveryRecord) -> bytes:
         raise ValueError("invalid recovery state")
     preparation = record.preparation
     if preparation is not None:
-        for value in (
-            preparation.operation_id,
-            preparation.transaction_id,
-            preparation.session_id,
-        ):
+        for value in (preparation.operation_id, preparation.session_id):
             if (
                 not isinstance(value, str)
                 or re.fullmatch(r"[0-9a-f]{32}", value) is None
             ):
                 raise ValueError("invalid preparation identity")
+        if preparation.mode not in ("native", "legacy"):
+            raise ValueError("invalid preparation mode")
+        if preparation.mode == "legacy" and (
+            not isinstance(preparation.transaction_id, str)
+            or re.fullmatch(r"[0-9a-f]{32}", preparation.transaction_id) is None
+        ):
+            raise ValueError("invalid preparation identity")
+        if preparation.mode == "native" and (
+            preparation.transaction_id is not None
+            or preparation.proposed_sha256 != preparation.source_sha256
+        ):
+            raise ValueError("invalid native preparation")
         _hash(preparation.source_sha256)
         _hash(preparation.proposed_sha256)
         if (
@@ -219,6 +583,9 @@ def _encode(record: OffsetRecoveryRecord) -> bytes:
             or not preparation.targets
             or len(preparation.targets) > 2
             or len(set(preparation.targets)) != len(preparation.targets)
+            or len(set(preparation.clear_targets)) != len(preparation.clear_targets)
+            or len(preparation.clear_targets) > len(preparation.targets)
+            or not set(preparation.clear_targets) <= set(preparation.targets)
         ):
             raise ValueError("invalid preparation targets")
         boards = {
@@ -397,11 +764,19 @@ def _decode(data: bytes) -> OffsetRecoveryRecord:
         topology = replace(topology_from_native(identity[1]), evidence=())
         if list(_topology_identity(topology)) != identity:
             raise ValueError("invalid recovery topology")
-        original = ESPHomeConfigSnapshot(
-            **_exact_mapping(
-                raw["original"], {"configuration", "content", "sha256"}, "source"
+        source_keys = raw["original"]
+        if not isinstance(source_keys, dict):
+            raise TypeError("invalid recovery source")
+        if set(source_keys) == {"configuration", "content", "sha256"}:
+            source = _exact_mapping(source_keys, set(source_keys), "source")
+            source["configuration_authoritative"] = True
+        else:
+            source = _exact_mapping(
+                source_keys,
+                {"configuration", "configuration_authoritative", "content", "sha256"},
+                "source",
             )
-        )
+        original = ESPHomeConfigSnapshot(**source)
         observations = []
         if (
             not isinstance(raw["observations"], list)
@@ -433,24 +808,39 @@ def _decode(data: bytes) -> OffsetRecoveryRecord:
             )
         preparation = raw["preparation"]
         if preparation is not None:
-            preparation = _exact_mapping(
-                preparation,
-                {
-                    "operation_id",
-                    "revision",
-                    "transaction_id",
-                    "session_id",
-                    "source_sha256",
-                    "proposed_sha256",
-                    "stage",
-                    "targets",
-                    "generation",
-                },
-                "preparation",
-            )
-            if not isinstance(preparation["targets"], list):
+            legacy_keys = {
+                "operation_id",
+                "revision",
+                "transaction_id",
+                "session_id",
+                "source_sha256",
+                "proposed_sha256",
+                "stage",
+                "targets",
+                "generation",
+            }
+            preparation_keys = legacy_keys | {"mode", "clear_targets"}
+            if isinstance(preparation, dict) and set(preparation) == legacy_keys:
+                preparation = _exact_mapping(
+                    preparation, legacy_keys, "preparation"
+                )
+                preparation["mode"] = "legacy"
+                preparation["clear_targets"] = []
+            elif isinstance(preparation, dict) and set(preparation) == legacy_keys | {"mode"}:
+                preparation = _exact_mapping(
+                    preparation, legacy_keys | {"mode"}, "preparation"
+                )
+                preparation["clear_targets"] = []
+            else:
+                preparation = _exact_mapping(
+                    preparation, preparation_keys, "preparation"
+                )
+            if not isinstance(preparation["targets"], list) or not isinstance(
+                preparation["clear_targets"], list
+            ):
                 raise ValueError("invalid preparation targets")
             preparation["targets"] = tuple(preparation["targets"])
+            preparation["clear_targets"] = tuple(preparation["clear_targets"])
             preparation = StockOffsetPreparation(**preparation)
         if (
             not isinstance(raw["attempted"], list)
@@ -569,16 +959,23 @@ class OffsetRecovery:
             raise ValueError("recovery meter identity changed")
         return record
 
-    def is_action_ready(self, record: OffsetRecoveryRecord | None) -> bool:
+    def is_action_ready(
+        self, record: OffsetRecoveryRecord | None, *, generation: int | None = None
+    ) -> bool:
         """Check Core-local confirmation against a freshly loaded durable receipt."""
-        return bool(
-            record is not None
-            and record.installed
-            and not record.cancelled
-            and record.preparation is not None
-            and record.finalization is None
-            and self._confirmed_receipts.get(record.mac) == record.preparation
-        )
+        if (
+            record is None
+            or record.cancelled
+            or record.preparation is None
+            or record.finalization is not None
+            or self._confirmed_receipts.get(record.mac) != record.preparation
+        ):
+            return False
+        if record.preparation.mode == "native":
+            return not record.installed and (
+                generation is None or record.preparation.generation == generation
+            )
+        return record.installed
 
     async def _save(
         self, lease: CalibrationLease | ConfigLease, record: OffsetRecoveryRecord
@@ -625,26 +1022,36 @@ class OffsetRecovery:
     ) -> OffsetRecoveryRecord:
         _validate_source(source, topology)
         original = await self.async_load(lease)
-        if original is not None and (
-            _topology_identity(original.topology) != _topology_identity(topology)
-            or source.configuration != original.original.configuration
-            or (
-                original.original.sha256 != source.sha256
-                and (
-                    original.preparation is None
+        pending = self._sessions.pending_calibration(lease.mac)
+        replace_stale_preview = False
+        if original is not None:
+            if (
+                _topology_identity(original.topology) != _topology_identity(topology)
+                or source.configuration != original.original.configuration
+            ):
+                raise ValueError("recovery source changed")
+            if original.original.sha256 != source.sha256:
+                accepted_preparation_source = original.preparation is not None and (
+                    source.sha256 == original.preparation.source_sha256
                     or (
-                        # Replacement preview/cancellation or CAS rollback leaves
-                        # this exact prior source valid for backup, not for Run.
-                        source.sha256 != original.preparation.source_sha256
-                        and (
-                            not original.installed
-                            or source.sha256 != original.preparation.proposed_sha256
-                        )
+                        original.installed
+                        and source.sha256 == original.preparation.proposed_sha256
                     )
                 )
-            )
-        ):
-            raise ValueError("recovery source changed")
+                replace_stale_preview = (
+                    not accepted_preparation_source
+                    and original.preparation is not None
+                    and not original.installed
+                    and not original.attempted
+                    and not original.results
+                    and original.finalization is None
+                    and not original.final_installed
+                    and not original.final_cancelled
+                    and not original.configuration_selected
+                    and pending is None
+                )
+                if not accepted_preparation_source and not replace_stale_preview:
+                    raise ValueError("recovery source changed")
         additions = tuple(
             SavedOffsetObservation(source.sha256, item) for item in snapshots
         )
@@ -652,16 +1059,22 @@ class OffsetRecovery:
             raise ValueError("recovery requires exact saved tables")
         record = (
             OffsetRecoveryRecord(
-                lease.mac, source, replace(topology, evidence=()), additions
+                lease.mac,
+                source,
+                replace(topology, evidence=()),
+                (original.observations if replace_stale_preview and original else ())
+                + additions,
+                revision=original.revision + 1
+                if replace_stale_preview and original
+                else 0,
             )
-            if original is None
+            if original is None or replace_stale_preview
             else replace(
                 original,
                 observations=original.observations + additions,
                 revision=original.revision + 1,
             )
         )
-        pending = self._sessions.pending_calibration(lease.mac)
         if pending is not None:
             retained = {(item.instance_id, item.stage): item for item in record.results}
             stages: tuple[Literal[1, 2], ...] = (1, 2)
@@ -691,6 +1104,8 @@ class OffsetRecovery:
                         or pending.config_filename != source.configuration
                         or _topology_identity(pending.topology)
                         != _topology_identity(topology)
+                        or observed.reported_state
+                        in ("configuration", FIRST_CALIBRATION_CONFIGURATION)
                     ):
                         raise ValueError(
                             "completed offsets need fresh source and table reconciliation"
@@ -711,39 +1126,6 @@ class OffsetRecovery:
         return record
 
     @staticmethod
-    def build_preparation_plan(
-        record: OffsetRecoveryRecord,
-        source: ESPHomeConfigSnapshot,
-        stage: Literal[1, 2],
-        targets: tuple[str, ...],
-    ) -> ConfigMutationPlan:
-        """Keep completed tables and selected zero baselines in one construction."""
-        zeros = {instance: ZERO_OFFSETS for instance in targets}
-        if any(
-            item.stage == stage and item.instance_id in targets
-            for item in record.results
-        ):
-            raise ValueError("offset chip is already complete")
-        rms = {
-            item.instance_id: item.phase_values
-            for item in record.results
-            if item.stage == 1
-        }
-        power = {
-            item.instance_id: item.phase_values
-            for item in record.results
-            if item.stage == 2
-        }
-        (rms if stage == 1 else power).update(zeros)
-        return build_offset_table_mutation(
-            source,
-            record.topology,
-            rms,
-            power,
-            enable_calibration=frozenset(targets),
-        )
-
-    @staticmethod
     def build_finalization_plan(
         record: OffsetRecoveryRecord,
         source: ESPHomeConfigSnapshot,
@@ -757,13 +1139,17 @@ class OffsetRecovery:
         targets = {item.instance_id for item in record.results}
         if not targets:
             raise ValueError("captured offset results are absent")
-        tables = {
-            (
-                item.snapshot.instance_id,
-                item.snapshot.offset_stage,
-            ): item.snapshot.phase_values
-            for item in record.observations
-        }
+        allowed_sources = {record.original.sha256}
+        if record.preparation is not None:
+            allowed_sources.add(record.preparation.source_sha256)
+            if record.installed:
+                allowed_sources.add(record.preparation.proposed_sha256)
+        if record.finalization is not None:
+            allowed_sources.add(record.finalization.source_sha256)
+            allowed_sources.add(record.finalization.proposed_sha256)
+        tables = _offset_observation_tables(
+            record.observations, allowed_sources=allowed_sources
+        )
         tables.update(
             {
                 (item.instance_id, item.stage): item.phase_values
@@ -1053,25 +1439,16 @@ class OffsetRecovery:
             or source.configuration != record.original.configuration
         ):
             raise ValueError("final offset source changed")
-        entries = _read_calibrated_offset_entries(
-            ESPHomeConfigDocument.parse(source.content), record.topology
-        )
-        stages: tuple[tuple[Literal[1, 2], str], ...] = ((1, "rms"), (2, "power"))
         observations = tuple(
-            SavedOffsetObservation(
-                source.sha256,
-                OffsetTableSnapshot(
-                    generation,
-                    instance,
-                    stage,
-                    entries[instance][key],
-                    "configuration",
-                    False,
-                    False,
-                ),
+            SavedOffsetObservation(source.sha256, snapshot)
+            for snapshot in source_offset_snapshots(
+                source,
+                record.topology,
+                set(record.finalization.targets),
+                generation,
+                reported_state="configuration",
+                require_complete=True,
             )
-            for instance in record.finalization.targets
-            for stage, key in stages
         )
         new = OffsetRecoveryRecord(lease.mac, source, record.topology, observations)
         async with api.hold_connection_generation(generation):
@@ -1106,28 +1483,52 @@ class OffsetRecovery:
         lease: CalibrationLease,
         record: OffsetRecoveryRecord,
         source: ESPHomeConfigSnapshot,
-        plan: ConfigMutationPlan,
+        plan: ConfigMutationPlan | None,
         session_id: str,
         stage: Literal[1, 2],
         targets: tuple[str, ...],
         generation: int,
+        *,
+        mode: PreparationMode = "native",
+        clear_targets: tuple[str, ...] = (),
     ) -> StockOffsetPreparation:
         if await self.async_load(lease) != record:
             raise ValueError("recovery revision changed")
         if record.finalization is not None:
             raise ValueError("finalized offsets require an explicit new cycle")
-        if plan != self.build_preparation_plan(record, source, stage, targets):
-            raise ValueError("preparation plan changed")
+        _validate_source(source, record.topology)
+        if mode != "native" or plan is not None:
+            raise ValueError("new offset preparations are native only")
+        no_clear = set(targets) - set(clear_targets)
+        for instance in no_clear:
+            matching = tuple(
+                item
+                for item in record.observations
+                if item.source_sha256 == source.sha256
+                and item.snapshot.connection_generation == generation
+                and item.snapshot.instance_id == instance
+                and item.snapshot.offset_stage == stage
+            )
+            if not matching or any(
+                item.snapshot.reported_state != FIRST_CALIBRATION_CONFIGURATION
+                or item.snapshot.phase_values != ZERO_OFFSETS
+                for item in matching
+            ):
+                raise ValueError("native clear eligibility is unproven")
+        transaction_id = None
+        proposed_sha256 = source.sha256
         preparation = StockOffsetPreparation(
             uuid4().hex,
             record.revision + 1,
-            uuid4().hex,
+            transaction_id,
             session_id,
             source.sha256,
-            sha256(plan.proposed_content.encode()).hexdigest(),
+            proposed_sha256,
             stage,
             targets,
             generation,
+            mode,
+            clear_targets,
         )
         self._confirmed_receipts.pop(lease.mac, None)
         await self._save(
@@ -1141,6 +1542,7 @@ class OffsetRecovery:
                 attempted=(),
             ),
         )
+        self._confirmed_receipts[lease.mac] = preparation
         return preparation
 
     async def async_require(
@@ -1156,7 +1558,7 @@ class OffsetRecovery:
             or record.preparation != preparation
             or record.cancelled
             or record.installed is not installed
-            or installed
+            or (installed or preparation.mode == "native")
             and not self.is_action_ready(record)
         ):
             raise ValueError("stock offset preparation is stale or unavailable")
@@ -1165,6 +1567,8 @@ class OffsetRecovery:
     async def async_mark_installed(
         self, lease: ConfigLease, preparation: StockOffsetPreparation
     ) -> None:
+        if preparation.mode != "legacy":
+            raise ValueError("native preparation has no install receipt")
         record = await self.async_require(lease, preparation, installed=False)
         try:
             await self._save(
@@ -1198,7 +1602,9 @@ class OffsetRecovery:
         preparation: StockOffsetPreparation,
         instance_id: str,
     ) -> None:
-        record = await self.async_require(lease, preparation, installed=True)
+        record = await self.async_require(
+            lease, preparation, installed=preparation.mode != "native"
+        )
         if (
             instance_id not in preparation.targets
             or instance_id in record.attempted
@@ -1228,7 +1634,9 @@ class OffsetRecovery:
         generation: int,
         register_verified: bool,
     ) -> None:
-        record = await self.async_require(lease, preparation, installed=True)
+        record = await self.async_require(
+            lease, preparation, installed=preparation.mode != "native"
+        )
         if instance_id not in record.attempted or any(
             item.instance_id == instance_id and item.stage == preparation.stage
             for item in record.results

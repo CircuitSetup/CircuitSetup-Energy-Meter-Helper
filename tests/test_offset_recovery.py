@@ -21,16 +21,28 @@ from tests.test_config_mutator import _topology
 
 MAC = "aabbccddeeff"
 OLD = ((-12, 31), (-13, 32), (-14, 33))
+ZERO = ((0, 0), (0, 0), (0, 0))
 
 
-def _snapshot() -> Any:
+def _snapshot(addons: int = 0) -> Any:
     snapshot = base_snapshot()
+    pins = ((5, 4), (0, 16), (27, 17), (2, 21), (13, 22), (14, 25), (15, 26))
+    hardware = "".join(
+        f"  - platform: atm90e32\n    id: ${{{'main_meter_id' + str(group + 1) if board == 0 else f'addon{board}_id{group + 1}'}}}\n    cs_pin: {pin}\n"
+        for board in range(addons + 1)
+        for group, pin in enumerate(pins[board])
+    )
+    ids = "".join(
+        f"  {'main_meter_id' + str(group + 1) if board == 0 else f'addon{board}_id{group + 1}'}: {'meter_main' + str(group + 1) if board == 0 else f'addon{board}_{group + 1}'}\n"
+        for board in range(addons + 1)
+        for group in range(2)
+    )
     content = (
         "esphome:\n  project:\n    name: circuitsetup.6c-energy-meter\n    version: '1'\n"
         + snapshot.content.replace(
             "substitutions:\n",
-            "substitutions:\n  main_meter_name1: Main Meter 1\n  main_meter_name2: Main Meter 2\n",
-        )
+            "substitutions:\n  main_meter_name1: Main Meter 1\n  main_meter_name2: Main Meter 2\n" + ids,
+        ).replace("logger:\n", hardware + "logger:\n", 1)
     )
     return replace(
         snapshot, content=content, sha256=sha256(content.encode()).hexdigest()
@@ -49,6 +61,457 @@ def hass_at(path: Path) -> Any:
 
 def observed(instance: str = "meter_main1", generation: int = 1) -> OffsetTableSnapshot:
     return OffsetTableSnapshot(generation, instance, 1, OLD, "restored", False, False)
+
+
+def test_first_configuration_snapshot_is_source_bound_and_not_flash_evidence() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        FIRST_CALIBRATION_CONFIGURATION,
+        source_offset_snapshots,
+    )
+
+    snapshots = source_offset_snapshots(
+        _snapshot(), _topology(), {"meter_main1", "meter_main2"}, 4
+    )
+
+    assert len(snapshots) == 4
+    assert {
+        (item.instance_id, item.offset_stage) for item in snapshots
+    } == {
+        (instance, stage)
+        for instance in ("meter_main1", "meter_main2")
+        for stage in (1, 2)
+    }
+    assert all(
+        item.reported_state == FIRST_CALIBRATION_CONFIGURATION
+        and item.phase_values == ((0, 0), (0, 0), (0, 0))
+        and not item.register_verified
+        for item in snapshots
+    )
+
+
+def test_source_offset_cs_pins_use_official_defaults_and_literal_override() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    pins = source_offset_cs_pins(
+        source, _topology(), {"meter_main1", "meter_main2"}
+    )
+    assert pins == {"meter_main1": 5, "meter_main2": 4}
+
+    content = source.content.replace("    cs_pin: 5\n", "    cs_pin: GPIO33\n", 1)
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+    assert source_offset_cs_pins(source, _topology(), {"meter_main1"}) == {
+        "meter_main1": 33
+    }
+
+
+def test_source_offset_cs_pins_cover_official_addon_defaults() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+    from tests.test_config_mutator import _topology_for_addons
+
+    source = _snapshot(addons=2)
+    content = source.content.replace(
+        "circuitsetup.6c-energy-meter", "circuitsetup.6c-energy-meter-2-addons", 1
+    )
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+    assert source_offset_cs_pins(
+        source,
+        _topology_for_addons(2),
+        {"meter_main1", "meter_main2", "addon1_1", "addon1_2", "addon2_1", "addon2_2"},
+    ) == {
+        "meter_main1": 5,
+        "meter_main2": 4,
+        "addon1_1": 0,
+        "addon1_2": 16,
+        "addon2_1": 27,
+        "addon2_2": 17,
+    }
+
+
+def test_source_offset_cs_pins_require_hardware_definitions() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    content = (
+        "esphome:\n  name: meter\n  project:\n"
+        "    name: circuitsetup.6c-energy-meter\n    version: '1.8'\n"
+    )
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    with pytest.raises(ValueError, match="chip identities"):
+        source_offset_cs_pins(source, _topology(), {"meter_main1", "meter_main2"})
+
+
+def test_source_offset_cs_pins_rejects_official_packages_without_sensor_coverage() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    content = """esphome:
+  project:
+    name: circuitsetup.6c-energy-meter
+    version: '1'
+packages:
+  remote_package:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
+    files:
+      - Software/ESPHome/6chan_common.yaml
+      - Software/ESPHome/calibration/6chan_main_calibration.yaml
+      - Software/ESPHome/calibration/6chan_main_offset_calibrations.yaml
+"""
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    with pytest.raises(ValueError, match="chip identities"):
+        source_offset_cs_pins(source, _topology(), {"meter_main1", "meter_main2"})
+
+
+@pytest.mark.parametrize("sensor_file", ("6chan_main_sensor.yaml",))
+def test_source_offset_cs_pins_requires_real_official_sensor_package_coverage(
+    sensor_file: str,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    content = """esphome:
+  project:
+    name: circuitsetup.6c-energy-meter
+    version: '1'
+packages:
+  remote_package:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
+    files:
+      - Software/ESPHome/meter_sensors/SENSOR_FILE
+""".replace("SENSOR_FILE", sensor_file)
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    assert source_offset_cs_pins(
+        source, _topology(), {"meter_main1", "meter_main2"}
+    ) == {"meter_main1": 5, "meter_main2": 4}
+
+
+def test_source_offset_cs_pins_rejects_noncanonical_sensor_package_path() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    content = """esphome:
+  project:
+    name: circuitsetup.6c-energy-meter
+    version: '1'
+packages:
+  remote_package:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
+    files:
+      - Software/ESPHome/meter_sensors/main.yaml
+"""
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    with pytest.raises(ValueError, match="chip identities"):
+        source_offset_cs_pins(source, _topology(), {"meter_main1", "meter_main2"})
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    (
+        "  - platform: atm90e32\n    id: meter_main1\n",
+        "  - id: !extend meter_main1\n    cs_pin: !include pin.yaml\n",
+        "  - platform: atm90e32\n    id: meter_main1\n    cs_pin: 4\n",
+    ),
+)
+def test_source_offset_cs_pins_reject_ambiguous_or_unsupported_overrides(
+    suffix: str,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_cs_pins,
+    )
+
+    source = _snapshot()
+    content = source.content.replace("logger:\n", suffix + "logger:\n", 1)
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+    with pytest.raises(ValueError, match="offset chip"):
+        source_offset_cs_pins(source, _topology(), {"meter_main1"})
+
+
+def test_first_configuration_snapshot_reads_helper_owned_tables() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
+        build_offset_table_mutation,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_snapshots,
+    )
+
+    source = _snapshot()
+    power = ((7, 8), (9, 10), (11, 12))
+    plan = build_offset_table_mutation(
+        source,
+        _topology(),
+        {"meter_main1": OLD},
+        {"meter_main1": power},
+        enable_calibration=frozenset(("meter_main1",)),
+    )
+    configured = replace(
+        source,
+        content=plan.proposed_content,
+        sha256=sha256(plan.proposed_content.encode()).hexdigest(),
+    )
+    snapshots = source_offset_snapshots(configured, _topology(), {"meter_main1"}, 4)
+
+    assert snapshots[0].phase_values == OLD
+    assert snapshots[1].phase_values == power
+
+
+def test_first_configuration_snapshot_accepts_the_reviewed_offset_package_fixture() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_snapshots,
+    )
+
+    source = _snapshot()
+    content = source.content + """
+packages:
+  remote_package:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
+    files:
+      - Software/ESPHome/calibration/6chan_main_calibration.yaml
+      - Software/ESPHome/calibration/6chan_main_offset_calibrations.yaml
+"""
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    snapshots = source_offset_snapshots(source, _topology(), {"meter_main1"}, 4)
+
+    assert all(item.phase_values == ((0, 0), (0, 0), (0, 0)) for item in snapshots)
+
+
+@pytest.mark.parametrize(
+    ("project", "connection", "common"),
+    (
+        (
+            "circuitsetup.6c-energy-meter",
+            "wifi",
+            "6chan_common.yaml",
+        ),
+        (
+            "circuitsetup.6c-energy-meter-ethernet",
+            "ethernet_lilygo",
+            "6chan_common_ethernet.yaml",
+        ),
+        (
+            "circuitsetup.6c-energy-meter-ethernet-waveshare",
+            "ethernet_waveshare",
+            "6chan_common_ethernet_waveshare.yaml",
+        ),
+    ),
+)
+def test_first_configuration_snapshot_accepts_each_known_official_common_fixture(
+    project: str, connection: str, common: str
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_snapshots,
+    )
+
+    source = _snapshot()
+    content = source.content.replace(
+        "circuitsetup.6c-energy-meter", project, 1
+    ) + f"""
+packages:
+  remote_package:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: master
+    files:
+      - Software/ESPHome/{common}
+"""
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+    topology = replace(
+        _topology(), project_name=project, connection_type=connection
+    )
+
+    snapshots = source_offset_snapshots(source, topology, {"meter_main1"}, 4)
+
+    assert all(item.phase_values == ((0, 0), (0, 0), (0, 0)) for item in snapshots)
+
+
+@pytest.mark.parametrize(
+    ("package_file", "package_ref"),
+    (
+        ("Software/ESPHome/custom_offsets.yaml", "master"),
+        ("Software/ESPHome/calibration/6chan_main_calibration.yaml", "unreviewed"),
+    ),
+)
+def test_first_configuration_snapshot_rejects_unknown_official_offset_package(
+    package_file: str,
+    package_ref: str,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_snapshots,
+    )
+
+    source = _snapshot()
+    content = source.content + f"""
+packages:
+  remote_package:
+    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+    ref: {package_ref}
+    files:
+      - {package_file}
+"""
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    with pytest.raises(ValueError, match="provenance"):
+        source_offset_snapshots(source, _topology(), {"meter_main1"}, 4)
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    (
+        "packages:\n  custom: !include custom.yaml\n",
+        "  - id: !extend meter_main1\n    phase_a:\n      offset_voltage: 12\n",
+        "  - id: !extend meter_main1\n    phase_a: !include offsets.yaml\n",
+    ),
+)
+def test_first_configuration_snapshot_rejects_unresolved_or_local_offsets(
+    suffix: str,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_snapshots,
+    )
+
+    source = _snapshot()
+    content = (
+        source.content + suffix
+        if suffix.startswith("packages:")
+        else source.content.replace("logger:\n", suffix + "logger:\n")
+    )
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    with pytest.raises(ValueError):
+        source_offset_snapshots(source, _topology(), {"meter_main1"}, 4)
+
+
+def test_first_configuration_snapshot_rejects_sensor_include() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        source_offset_snapshots,
+    )
+
+    source = _snapshot()
+    content = source.content.replace(
+        "sensor:\n  - platform: uptime\n    name: Uptime\n",
+        "sensor: !include sensors.yaml\n",
+    )
+    source = replace(source, content=content, sha256=sha256(content.encode()).hexdigest())
+
+    with pytest.raises(ValueError, match="unresolved"):
+        source_offset_snapshots(source, _topology(), {"meter_main1"}, 4)
+
+
+def test_actual_offset_observation_precedes_configuration_observation() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        FIRST_CALIBRATION_CONFIGURATION,
+        CapturedOffsetResult,
+        OffsetRecovery,
+        OffsetRecoveryRecord,
+        SavedOffsetObservation,
+    )
+
+    source = _snapshot()
+    configured = replace(
+        observed(),
+        phase_values=((1, 1), (1, 1), (1, 1)),
+        reported_state=FIRST_CALIBRATION_CONFIGURATION,
+    )
+    record = OffsetRecoveryRecord(
+        MAC,
+        source,
+        _topology(),
+        (
+            SavedOffsetObservation(source.sha256, configured),
+            SavedOffsetObservation(source.sha256, observed()),
+        ),
+        results=(
+            CapturedOffsetResult(
+                "meter_main1", 2, ((0, 0), (0, 0), (0, 0)), 1, "a" * 32, source.sha256, False
+            ),
+        ),
+    )
+
+    plan = OffsetRecovery.build_finalization_plan(record, source)
+    assert "offset_voltage: -12" in plan.proposed_content
+    assert "offset_voltage: 1" not in plan.proposed_content
+
+
+def test_native_preparation_rejects_contradictory_first_use_history(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+            FIRST_CALIBRATION_CONFIGURATION,
+            OffsetRecovery,
+        )
+
+        sessions = SessionManager()
+        recovery = OffsetRecovery(hass_at(tmp_path), sessions)
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            record = await recovery.async_backup(
+                lease,
+                _snapshot(),
+                _topology(),
+                (
+                    observed(),
+                    replace(
+                        observed(),
+                        phase_values=((0, 0), (0, 0), (0, 0)),
+                        reported_state=FIRST_CALIBRATION_CONFIGURATION,
+                    ),
+                ),
+            )
+            with pytest.raises(ValueError, match="native clear eligibility"):
+                await recovery.async_prepare(
+                    lease,
+                    record,
+                    _snapshot(),
+                    None,
+                    "b" * 32,
+                    1,
+                    ("meter_main1",),
+                    1,
+                    mode="native",
+                )
+        finally:
+            lease.release()
+
+    asyncio.run(run())
+
+
+def test_configuration_observation_cannot_claim_register_readback() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        OffsetRecoveryRecord,
+        SavedOffsetObservation,
+        _encode,
+    )
+
+    snapshot = replace(observed(), reported_state="configuration", register_verified=True)
+    with pytest.raises(ValueError, match="configuration observation"):
+        _encode(
+            OffsetRecoveryRecord(
+                MAC,
+                _snapshot(),
+                _topology(),
+                (SavedOffsetObservation(_snapshot().sha256, snapshot),),
+            )
+        )
 
 
 def test_unfinished_selected_preparation_cannot_authorize_or_rotate_recovery(tmp_path: Path) -> None:
@@ -267,42 +730,36 @@ def test_raw_offset_plan_preserves_other_stage_and_unselected_chip() -> None:
 
 
 @pytest.mark.parametrize("stage", (1, 2))
-def test_owner_candidate_plan_preserves_both_families_and_rejects_completed_targets(
-    tmp_path: Path,
+def test_candidate_plan_preserves_both_families_and_marks_only_target_enabled(
     stage: int,
 ) -> None:
     import yaml
 
-    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
-        CapturedOffsetResult,
-        OffsetRecovery,
-        OffsetRecoveryRecord,
-        SavedOffsetObservation,
+    from custom_components.circuitsetup_energy_meter_helper.config_mutator import (
+        build_offset_table_mutation,
     )
 
     source = _snapshot()
-    record = OffsetRecoveryRecord(
-        MAC,
+    configured = build_offset_table_mutation(
         source,
         _topology(),
-        (SavedOffsetObservation(source.sha256, observed()),),
-        results=(
-            CapturedOffsetResult(
-                "meter_main1", 1, OLD, 2, "a" * 32, source.sha256, True
-            ),
-            CapturedOffsetResult(
-                "meter_main1",
-                2,
-                ((0, 0), (-32768, 32767), (-1, 1)),
-                2,
-                "b" * 32,
-                source.sha256,
-                False,
-            ),
-        ),
+        {"meter_main1": OLD},
+        {"meter_main1": ((0, 0), (-32768, 32767), (-1, 1))},
+        enable_calibration=frozenset({"meter_main1"}),
     )
-    recovery = OffsetRecovery(hass_at(tmp_path), SessionManager())
-    plan = recovery.build_preparation_plan(record, source, stage, ("meter_main2",))
+    source = replace(
+        source,
+        content=configured.proposed_content,
+        sha256=sha256(configured.proposed_content.encode()).hexdigest(),
+    )
+    main_power = ((0, 0), (-32768, 32767), (-1, 1))
+    plan = build_offset_table_mutation(
+        source,
+        _topology(),
+        {"meter_main1": OLD, "meter_main2": ZERO} if stage == 1 else {"meter_main1": OLD},
+        {"meter_main1": main_power, "meter_main2": ZERO} if stage == 2 else {"meter_main1": main_power},
+        enable_calibration={"meter_main1": False, "meter_main2": True},
+    )
     parsed = yaml.load(plan.proposed_content, Loader=yaml.BaseLoader)
     chips = {item["id"]: item for item in parsed["sensor"] if "id" in item}
     assert chips["meter_main1"]["phase_a"]["offset_voltage"] == "-12"
@@ -317,11 +774,9 @@ def test_owner_candidate_plan_preserves_both_families_and_rejects_completed_targ
     for phase in ("phase_a", "phase_b", "phase_c"):
         assert chips["meter_main2"][phase] == {first: "0", second: "0"}
     assert chips["meter_main2"]["enable_offset_calibration"] == "true"
-    assert "enable_offset_calibration" not in chips["meter_main1"]
+    assert chips["meter_main1"]["enable_offset_calibration"] == "false"
     assert parsed["substitutions"]["current_cal_ct1"] == "11143"
     assert "top-secret" not in plan.redacted_diff
-    with pytest.raises(ValueError, match="complete"):
-        recovery.build_preparation_plan(record, source, stage, ("meter_main1",))
 
 
 @pytest.mark.parametrize(
@@ -467,5 +922,33 @@ def test_persisted_receipt_is_not_action_permission_for_a_new_core_owner(
         assert (await workflow.async_get_offset_preparation(handle.session_id))[
             "action_ready"
         ] is True
+
+    asyncio.run(run())
+
+
+def test_legacy_preparation_record_loads_without_native_fields(tmp_path: Path) -> None:
+    async def run() -> None:
+        from tests.test_stock_offset_preparation import preparation
+
+        sessions, recovery, _builder, manager, preview, prepared = await preparation(
+            tmp_path
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        lease = await sessions.async_acquire_calibration(MAC)
+        try:
+            path = recovery._path(lease)
+            raw = json.loads(path.read_bytes())
+            raw["preparation"].pop("mode")
+            raw["preparation"].pop("clear_targets")
+            path.write_bytes(json.dumps(raw).encode())
+            loaded = await recovery.async_load(lease)
+            assert loaded is not None
+            assert loaded.preparation == prepared
+            assert loaded.preparation.mode == "legacy"
+            assert loaded.preparation.clear_targets == ()
+        finally:
+            lease.release()
 
     asyncio.run(run())

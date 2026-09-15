@@ -14,10 +14,12 @@ from enum import Enum
 from functools import wraps
 from typing import Any, Protocol
 
-import voluptuous as vol
+# isort: off
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant
+import voluptuous as vol
+# isort: on
 
 from .config_mutator import ConfigMutationError
 from .config_transaction import RollbackFailedError
@@ -26,6 +28,7 @@ from .ct_catalog import REPORTING_MULTIPLIERS
 from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
+from .log_parser import MeterCommunicationError
 from .meter_config_mutator import SourceOwnedTotalEditError
 from .meter_configuration import (
     AggregateTotalSource,
@@ -59,6 +62,8 @@ from .store import HelperStore
 from .topology import topology_from_native
 from .workflow import (
     CalibrationPlan,
+    OffsetChipIdentityUnavailable,
+    OffsetDiagnosticsIncomplete,
     OffsetTablesUnavailable,
     WorkflowCapabilityUnavailable,
     WorkflowHandleError,
@@ -68,6 +73,7 @@ _PREFIX = f"{DOMAIN}/"
 READ_COMMANDS = (
     f"{_PREFIX}setup_status",
     f"{_PREFIX}list_meters",
+    f"{_PREFIX}list_existing_meters",
     f"{_PREFIX}get_topology",
     f"{_PREFIX}get_ct_inventory",
     f"{_PREFIX}get_meter_configuration",
@@ -83,8 +89,10 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}set_installer_intent",
     f"{_PREFIX}rescan",
     f"{_PREFIX}adopt_device",
+    f"{_PREFIX}inspect_existing_meter",
     f"{_PREFIX}preview_ct_config",
     f"{_PREFIX}preview_meter_configuration",
+    f"{_PREFIX}prepare_calibration",
     f"{_PREFIX}set_ha_labels",
     f"{_PREFIX}apply_ct_config",
     f"{_PREFIX}compile_ct_config",
@@ -122,6 +130,7 @@ _TRANSACTION_STATUS_COMMANDS = frozenset(
     for operation in (
         "preview_ct_config",
         "preview_meter_configuration",
+        "prepare_calibration",
         "preview_calibrated_gains",
         "apply_ct_config",
         "compile_ct_config",
@@ -155,7 +164,7 @@ _FORBIDDEN_KEY = re.compile(
     re.IGNORECASE,
 )
 _ALLOWED_CHANGE_PATH = re.compile(
-    r"(?:meter|voltage_reference|channel|aggregate|package)\.[a-z0-9_.-]+"
+    r"(?:meter|voltage_reference|channel|aggregate|package|calibration)\.[a-z0-9_.-]+"
 )
 _LEGACY_CHANGE_PATHS = {
     "calibrated_voltage_gains": "meter.calibrated_voltage_gains",
@@ -163,6 +172,8 @@ _LEGACY_CHANGE_PATHS = {
     "friendly_name": "meter.friendly_name",
     "update_time": "meter.update_interval_s",
     "electric_freq": "meter.line_frequency_hz",
+    "offset_calibration": "calibration.offset_calibration",
+    "gain_calibration": "calibration.gain_calibration",
 }
 _LEGACY_CHANGE_PATTERNS = (
     (re.compile(r"ct([1-9]|[1-3][0-9]|4[0-2])_name"), "channel", "name"),
@@ -182,6 +193,14 @@ _FORBIDDEN_VALUE = re.compile(
     r"(?:api[_ -]?key|credential|encryption[_ -]?key|noise[_ -]?psk|password|"
     r"secret|token)(?:\s*[:=]|\b)",
     re.IGNORECASE,
+)
+_DIFF_FORBIDDEN_VALUE = re.compile(
+    r"(?:authorization|cookie|ssid)\s*[:=]|"
+    r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@",
+    re.IGNORECASE,
+)
+_SAFE_REDACTED_DIFF_LINE = re.compile(
+    r"^[ +\-]?\s*(?:[^:\r\n]+:\s*)?\[redacted\]\s*$", re.IGNORECASE
 )
 _SHA256 = vol.All(str, vol.Match(r"^[0-9a-f]{64}$"))
 _SERVER_ID = vol.All(str, vol.Match(r"^[0-9a-f]{32}$"))
@@ -243,6 +262,8 @@ class WorkflowOwner(Protocol):
 
     async def async_adopt_device(self, device_id: str) -> Any: ...
 
+    async def async_inspect_existing_meter(self, device_id: str) -> Any: ...
+
     async def async_preview_ct_config(
         self,
         device_id: str,
@@ -270,6 +291,8 @@ class WorkflowOwner(Protocol):
         source_sha256: str,
         requested: MeterConfigurationRequest,
     ) -> Any: ...
+
+    async def async_prepare_calibration(self, device_id: str) -> Any: ...
 
     async def async_set_ha_labels(
         self, device_id: str, plan_id: str, source_sha256: str, changes: tuple[Mapping[str, Any], ...]
@@ -308,7 +331,7 @@ class WorkflowOwner(Protocol):
 
     async def async_preview_offset_preparation(
         self, session_id: str, board_index: int, stage: OffsetReadinessStage,
-        *, backup_acknowledged: bool,
+        *, backup_acknowledged: bool, first_calibration_confirmed: bool = False,
     ) -> Any: ...
 
     async def async_resume_offset_calibration(
@@ -431,6 +454,10 @@ class EntryWebsocketController:
             return self._setup_payload(self.provisioning.snapshot)
         if operation == "list_meters":
             return self.provisioning.snapshot.devices
+        if operation == "list_existing_meters":
+            return await self.provisioning.async_list_existing_meters(
+                self.esphome_entry_id, msg.get("after_entry_id")
+            )
         workflow = self.workflow
         if operation == "get_topology" and workflow is not None:
             return await workflow.async_get_topology(msg["device_id"])
@@ -491,6 +518,8 @@ class EntryWebsocketController:
             return await result if inspect.isawaitable(result) else result
         if operation == "adopt_device" and workflow is not None:
             return await workflow.async_adopt_device(msg["device_id"])
+        if operation == "inspect_existing_meter" and workflow is not None:
+            return await workflow.async_inspect_existing_meter(msg["device_id"])
         if operation == "preview_ct_config" and workflow is not None:
             return await workflow.async_preview_ct_config(
                 msg["device_id"],
@@ -515,6 +544,19 @@ class EntryWebsocketController:
             except (AssertionError, ConfigMutationError, ValueError, vol.Invalid) as error:
                 raise ApiFailure(
                     "meter_configuration_invalid", "The meter configuration is invalid"
+                ) from error
+            except WorkflowCapabilityUnavailable as error:
+                raise ApiFailure(
+                    "capability_unavailable",
+                    "This capability is not available",
+                ) from error
+        if operation == "prepare_calibration" and workflow is not None:
+            try:
+                return await workflow.async_prepare_calibration(msg["device_id"])
+            except ConfigMutationError as error:
+                raise ApiFailure(
+                    "calibration_preparation_unavailable",
+                    "Official calibration controls cannot be safely prepared",
                 ) from error
         if operation == "set_ha_labels" and workflow is not None:
             return await workflow.async_set_ha_labels(
@@ -565,7 +607,9 @@ class EntryWebsocketController:
             return await workflow.async_get_offset_finalization(msg["session_id"])
         if operation == "preview_offset_preparation" and workflow is not None:
             return await workflow.async_preview_offset_preparation(
-                msg["session_id"], msg["board_index"], msg["stage"], backup_acknowledged=msg["backup_acknowledged"],
+                msg["session_id"], msg["board_index"], msg["stage"],
+                backup_acknowledged=msg["backup_acknowledged"],
+                first_calibration_confirmed=msg.get("first_calibration_confirmed", False),
             )
         if operation == "resume_offset_calibration" and workflow is not None:
             return await workflow.async_resume_offset_calibration(
@@ -659,7 +703,9 @@ class EntryWebsocketController:
             raise ApiFailure(
                 "config_rollback_failed", "Configuration rollback requires attention"
             ) from error
-        except (KeyError, RuntimeError) as error:
+        except RuntimeError as error:
+            raise StaleConfirmation from error
+        except KeyError as error:
             raise StaleConfirmation from error
         return result
 
@@ -845,16 +891,12 @@ class _Router:
             await async_reconcile_issues(
                 self.hass, msg["entry_id"], operation, signals_from_result(result)
             )
-            connection.send_result(
-                msg["id"],
-                sanitize_payload(
-                    result,
-                    allow_transaction_change_keys=(
-                        msg["type"] in _TRANSACTION_STATUS_COMMANDS
-                    ),
-                    allow_nested_transaction=operation in {"get_active_work", "preview_offset_preparation", "preview_offset_finalization"},
-                ),
+            payload = sanitize_payload(
+                result,
+                allow_transaction_change_keys=msg["type"] in _TRANSACTION_STATUS_COMMANDS,
+                allow_nested_transaction=operation in {"get_active_work", "preview_offset_preparation", "preview_offset_finalization"},
             )
+            connection.send_result(msg["id"], payload)
         except asyncio.CancelledError as error:
             if controller is not None:
                 controller.diagnostics.record_error(error)
@@ -876,7 +918,7 @@ class _Router:
                 signals_from_result(error),
                 authoritative=False,
             )
-            _send_safe_error(connection, msg["id"], error)
+            _send_safe_error(connection, msg["id"], error, operation=operation)
         else:
             if operation == "adopt_device":
                 try:
@@ -1095,6 +1137,8 @@ def _schema(command: str) -> Any:
         vol.Required("type"): command,
         vol.Required("entry_id"): _ID,
     }
+    if operation == "list_existing_meters":
+        schema[vol.Optional("after_entry_id")] = _ID
     if operation == "set_installer_intent":
         schema |= {
             vol.Required("addon_count"): vol.All(int, vol.Range(min=0, max=6)),
@@ -1125,6 +1169,8 @@ def _schema(command: str) -> Any:
         "get_ct_inventory",
         "get_meter_configuration",
         "adopt_device",
+        "inspect_existing_meter",
+        "prepare_calibration",
     }:
         schema[vol.Required("device_id")] = _ID
     elif operation == "get_total_details":
@@ -1270,6 +1316,7 @@ def _schema(command: str) -> Any:
             schema[vol.Optional("confirm_retry", default=False)] = bool
         elif operation == "preview_offset_preparation":
             schema[vol.Required("backup_acknowledged")] = _literal_true
+            schema[vol.Optional("first_calibration_confirmed", default=False)] = bool
         elif operation == "resume_offset_calibration":
             schema[vol.Required("operation_id")] = _SERVER_ID
             schema[vol.Required("preparation_acknowledged")] = _literal_true
@@ -1498,6 +1545,7 @@ _METER_CONFIGURATION_SCHEMA = vol.Schema(
         vol.Required("automatic_totals"): vol.All([vol.Schema({
             vol.Required("candidate_id"): _ID, vol.Required("enabled"): bool,
             vol.Required("outputs"): _TOTAL_OUTPUTS_SCHEMA,
+            vol.Optional("name"): vol.All(str, vol.Length(min=1, max=64)),
         }, extra=vol.PREVENT_EXTRA)], vol.Length(max=_MAX_ITEMS)),
         vol.Optional("totals_change_intent"): _TOTALS_CHANGE_INTENT_SCHEMA,
         vol.Required("aggregates"): vol.All(
@@ -1585,7 +1633,7 @@ def _meter_configuration_request(
             tuple(BoardTotalSettings(board["board_index"], _parse_total_outputs(board["outputs"]))
                   for board in configuration["default_totals"]["boards"]),
         ),
-        tuple(AutomaticTotalSettings(setting["candidate_id"], setting["enabled"], _parse_total_outputs(setting["outputs"]))
+        tuple(AutomaticTotalSettings(setting["candidate_id"], setting["enabled"], _parse_total_outputs(setting["outputs"]), setting.get("name"))
               for setting in configuration["automatic_totals"]),
         tuple(_parse_advanced_total(aggregate) for aggregate in configuration["aggregates"]),
         tuple(configuration["power_quality"]),
@@ -1657,7 +1705,33 @@ def sanitize_payload(
         had_line_break = "\n" in value or "\r" in value
         flattened = sanitize_control_text(value)
         value = sanitize_control_text(value, preserve_line_breaks=True) if _field == "redacted_diff" else flattened
-        if _FORBIDDEN_VALUE.search(flattened) or _FORBIDDEN_VALUE.search(value):
+        if _field == "redacted_diff":
+            unchecked: list[str] = []
+            unsafe_value = False
+            for line in value.splitlines():
+                sensitive = (
+                    _FORBIDDEN_VALUE.search(line) is not None
+                    or _DIFF_FORBIDDEN_VALUE.search(line) is not None
+                )
+                if sensitive:
+                    unsafe_value = (
+                        unsafe_value
+                        or _SAFE_REDACTED_DIFF_LINE.fullmatch(line) is None
+                    )
+                    unchecked.append("")
+                else:
+                    unchecked.append(line)
+            unchecked_value = "".join(unchecked)
+            unsafe_value = unsafe_value or (
+                _FORBIDDEN_VALUE.search(unchecked_value) is not None
+                or _DIFF_FORBIDDEN_VALUE.search(unchecked_value) is not None
+            )
+        else:
+            unsafe_value = (
+                _FORBIDDEN_VALUE.search(flattened) is not None
+                or _FORBIDDEN_VALUE.search(value) is not None
+            )
+        if unsafe_value:
             return "<redacted>"
         if had_line_break and _field != "redacted_diff":
             return "<redacted>"
@@ -1751,7 +1825,10 @@ def _canonical_server_change_path(key: str) -> str | None:
 
 
 def _dataclass_mapping(value: Any) -> dict[str, Any]:
-    return {field.name: getattr(value, field.name) for field in fields(value)}
+    mapping = {field.name: getattr(value, field.name) for field in fields(value)}
+    if isinstance(value, AutomaticTotalSettings) and value.name is None:
+        mapping.pop("name", None)
+    return mapping
 
 
 def _check_payload_size(value: Any) -> None:
@@ -1773,9 +1850,24 @@ def _admin_user_id(user_id: str | None) -> str:
 
 
 def _send_safe_error(
-    connection: ActiveConnection, msg_id: int, error: Exception
+    connection: ActiveConnection,
+    msg_id: int,
+    error: Exception,
+    *,
+    operation: str | None = None,
 ) -> None:
-    if isinstance(error, CapabilityUnavailable):
+    if isinstance(error, MeterCommunicationError):
+        if operation in {"preview_offset_preparation", "preview_offset_finalization"}:
+            code, message = (
+                "offset_communication_failed",
+                "Selected meter chip communication could not be verified",
+            )
+        else:
+            code, message = (
+                "meter_communication_failed",
+                "Meter chip communication could not be verified",
+            )
+    elif isinstance(error, CapabilityUnavailable):
         code, message = "capability_unavailable", "This capability is not available"
     elif isinstance(error, ApiFailure):
         code, message = error.code, error.safe_message
@@ -1783,6 +1875,16 @@ def _send_safe_error(
         code, message = "stale_confirmation", "The confirmation is stale or invalid"
     elif isinstance(error, WorkflowHandleError):
         code, message = "stale_handle", "The selected device changed or is no longer available"
+    elif isinstance(error, OffsetDiagnosticsIncomplete):
+        code, message = (
+            "offset_diagnostics_incomplete",
+            "Fresh offset diagnostics are incomplete",
+        )
+    elif isinstance(error, OffsetChipIdentityUnavailable):
+        code, message = (
+            "offset_chip_identity_unavailable",
+            "The selected chip identity could not be verified",
+        )
     elif isinstance(error, OffsetTablesUnavailable):
         code, message = "offset_tables_unavailable", "Complete offset tables are unavailable"
     elif isinstance(error, WorkflowCapabilityUnavailable):

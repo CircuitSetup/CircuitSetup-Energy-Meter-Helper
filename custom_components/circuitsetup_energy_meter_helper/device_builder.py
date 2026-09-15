@@ -64,6 +64,7 @@ class ESPHomeConfigSnapshot:
     configuration: str
     content: str
     sha256: str
+    configuration_authoritative: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,7 +452,9 @@ class DeviceBuilderClient:
         result: dict[str, Any],
         progress: Callable[[JobProgress], None] | None = None,
     ) -> JobResult:
-        job_id = result["job_id"]
+        job_id = result.get("job_id")
+        if not isinstance(job_id, str) or not 0 < len(job_id) <= 256:
+            raise ConnectionError("Device Builder returned an invalid job")
         terminal, output = await self._async_stream_command(
             "firmware/follow_job", {"job_id": job_id}, progress
         )

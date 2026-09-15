@@ -368,6 +368,7 @@ def test_command_result_is_correlated() -> None:
     asyncio.run(run())
 
 
+
 def test_disconnect_fails_pending_request() -> None:
     """Connection loss fails waiting callers rather than hanging."""
 

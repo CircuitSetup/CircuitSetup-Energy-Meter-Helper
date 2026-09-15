@@ -21,6 +21,13 @@ from custom_components.circuitsetup_energy_meter_helper.meter_configuration impo
 from tests.test_meter_configuration import request, topology
 
 
+def test_six_used_channels_add_eighteen_power_quality_readings() -> None:
+    configuration = request()
+    before = estimate_configuration_impact(configuration, topology())
+    after = estimate_configuration_impact(
+        replace(configuration, power_quality=(True,)), topology()
+    )
+    assert after.numeric_entity_count - before.numeric_entity_count == 18
 @pytest.mark.parametrize("public_current", (False, True))
 def test_unresolved_native_impact_counts_only_confirmed_source_visibility(
     public_current: bool,
@@ -135,7 +142,7 @@ def test_all_42_channels_with_power_quality() -> None:
         impact.numeric_entity_count,
         impact.text_entity_count,
         impact.energy_entity_count,
-    ) == (42, 278, 42, 8)
+    ) == (42, 236, 42, 8)
 
 
 def test_unused_channels_do_not_add_entities() -> None:
