@@ -34,6 +34,10 @@ export function offsetStep(
     || session?.offset_disposition === "partial" && session.state === "applied_pending_restart_verification";
   const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
+  const boardCount = topology?.board_count ?? boards.length;
+  const continueLabel = finalized ? "Continue to Voltage"
+    : board + 1 < boardCount ? `Continue to Add-on ${board + 1}`
+      : stage === 1 ? "Continue to Stage 2" : "Continue to Voltage";
   const canContinue = finalized || stageState === "completed";
   const preparation = stock?.preparation;
   const nativePreparation = Boolean(stock && (preparation?.mode ?? "native") === "native");
@@ -153,7 +157,7 @@ export function offsetStep(
       <footer class="action-footer offset-footer">
         <button class="secondary" ?disabled=${busy} @click=${back}>Back</button>
         <button class="secondary" data-action="skip-offset" ?disabled=${busy || finalized} @click=${skip}>Skip offset calibration</button>
-        <button class="primary" ?disabled=${busy || !canContinue} @click=${continueOffset}>Continue</button>
+        <button class="primary" ?disabled=${busy || !canContinue} @click=${continueOffset}>${continueLabel}</button>
       </footer>
     </section>
   `;

@@ -1025,10 +1025,10 @@ async function reachCurrent(page: Page, channel: number): Promise<void> {
   expect(offsetCopy.indexOf("open-circuit current-output CT")).toBeLessThan(offsetCopy.indexOf("unplug the voltage transformer"));
   await expect(page.getByRole("button", { name: "Run Stage 1 calibration" })).toBeDisabled();
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Voltage", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Voltage", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Skip voltage calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Current", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Current", exact: true })).toBeVisible();
 }
 
@@ -1421,7 +1421,7 @@ test("centered CT skip preserves drafts and starts calibration with saved target
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Offset", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Voltage", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Voltage", exact: true })).toBeVisible();
   await page.locator('.reference-block input').fill("120");
   await page.getByRole("button", { name: "Check stability", exact: true }).click();
@@ -1429,7 +1429,7 @@ test("centered CT skip preserves drafts and starts calibration with saved target
   expect(frames.find((frame) => frame.type.endsWith("/check_stability"))).toMatchObject({ target: "voltage", target_id: "main" });
   await page.getByRole("button", { name: "Calibrate voltage", exact: true }).click();
   await expect(page.getByText("Voltage calibration complete for Main Board.")).toBeVisible();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Current", exact: true }).click();
   await page.getByLabel("CT1 reference", { exact: true }).fill("5");
   await page.getByRole("button", { name: "Check stability", exact: true }).click();
   await page.getByRole("button", { name: "Calibrate current", exact: true }).click();
@@ -1462,11 +1462,11 @@ test("verified configuration continues through calibration and finishes only fro
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Voltage", exact: true }).click();
   await page.locator('.reference-block input').fill("120");
   await page.getByRole("button", { name: "Check stability" }).click();
   await page.getByRole("button", { name: "Calibrate voltage" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Current", exact: true }).click();
   await page.getByRole("button", { name: "Skip current calibration" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Restart", exact: true })).toBeVisible();
@@ -1532,12 +1532,12 @@ test("split-phase Wi-Fi configuration previews, installs, and calibrates a bidir
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Voltage", exact: true }).click();
   await page.locator('.reference-block input').fill("120");
   await page.getByRole("button", { name: "Check stability" }).click();
   await page.getByRole("button", { name: "Calibrate voltage" }).click();
   await expect(page.getByText("Voltage calibration complete for Main Board.")).toBeVisible();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Current", exact: true }).click();
   await page.getByRole("button", { name: "Skip current calibration" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Restart", exact: true })).toBeVisible();
@@ -1614,7 +1614,7 @@ test("three voltage references cover each three-phase board exactly once and cal
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Voltage", exact: true }).click();
   for (const [board, label] of [[0, "Main Board"], [1, "Add-on 1"], [2, "Add-on 2"]] as const) {
     await page.getByRole("tab", { name: label }).click();
     await page.locator('.reference-block input').fill("230");
@@ -1805,7 +1805,7 @@ async function calibrateVoltageToRestart(page: Page) {
   await page.locator(".reference-block input").fill("120");
   await page.getByRole("button", { name: "Check stability" }).click();
   await page.getByRole("button", { name: "Calibrate voltage" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Current", exact: true }).click();
   await page.getByRole("button", { name: "Skip current calibration" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Restart", exact: true })).toBeVisible();
@@ -1909,9 +1909,9 @@ test("journey 3: runtime-only full calibration keeps verified offsets in flash",
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Check measured readiness" }).click();
   await page.getByRole("button", { name: "Run Stage 2 calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Voltage", exact: true }).click();
   await page.getByRole("button", { name: "Skip voltage calibration" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Current", exact: true }).click();
   await page.getByRole("button", { name: "Skip current calibration" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Restart and verify" }).click();

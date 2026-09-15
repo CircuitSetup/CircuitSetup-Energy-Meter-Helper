@@ -111,9 +111,9 @@ test("native stock offset recovery survives reload, back, retry, finalization, a
   await runStage(page, 2);
   await expect(page.getByText("0/0, 0/0, 0/0", { exact: true })).toHaveCount(2);
 
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Voltage", exact: true }).click();
   await page.getByRole("button", { name: "Skip voltage calibration", exact: true }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to Current", exact: true }).click();
   await page.getByRole("button", { name: "Skip current calibration", exact: true }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Review captured offsets for installation", exact: true }).click();

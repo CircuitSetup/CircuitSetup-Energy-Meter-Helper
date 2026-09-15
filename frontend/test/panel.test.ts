@@ -2825,10 +2825,12 @@ describe("CircuitSetup panel", () => {
     try {
       const continueButton = panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary");
       expect(continueButton?.disabled).toBe(false);
+      expect(continueButton?.textContent?.trim()).toBe("Continue to Add-on 1");
       continueButton?.click();
       await panel.updateComplete;
       expect(state.board).toBe(1);
       expect(text(panel)).toContain("Optional offset calibration · Stage 1 · Add-on 1");
+      expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.textContent?.trim()).toBe("Continue to Stage 2");
       expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
 
       state.session = { ...(state.session as Record<string, unknown>), offset_boards: [
@@ -2841,7 +2843,18 @@ describe("CircuitSetup panel", () => {
       expect(state.board).toBe(0);
       expect(state.offsetStage).toBe(2);
       expect(text(panel)).toContain("Optional offset calibration · Stage 2 · Main Board");
+      expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.textContent?.trim()).toBe("Continue to Add-on 1");
       expect(scrollIntoView).toHaveBeenCalledTimes(2);
+
+      state.session = { ...(state.session as Record<string, unknown>), offset_boards: [
+        { board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "completed" }] },
+        { board_index: 1, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+      ] };
+      panel.requestUpdate(); await panel.updateComplete;
+      panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.click();
+      await panel.updateComplete;
+      expect(state.board).toBe(1);
+      expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.textContent?.trim()).toBe("Continue to Voltage");
     } finally {
       Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: originalScrollIntoView });
     }
@@ -3983,7 +3996,7 @@ describe("CircuitSetup panel", () => {
 
     panel.showState("voltage"); await panel.updateComplete;
     let footer = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []];
-    expect(footer.map((button) => button.textContent?.trim())).toEqual(["Back", "Skip voltage calibration", "Continue"]);
+    expect(footer.map((button) => button.textContent?.trim())).toEqual(["Back", "Skip voltage calibration", "Continue to Current"]);
     expect(footer[2]?.disabled).toBe(true);
     footer[1]?.click(); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Voltage");
@@ -4185,7 +4198,7 @@ describe("CircuitSetup panel", () => {
 
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Voltage");
     [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []]
-      .find((button) => button.textContent?.trim() === "Continue")?.click();
+      .find((button) => button.textContent?.trim() === "Continue to Current")?.click();
     await panel.updateComplete;
 
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Current");
