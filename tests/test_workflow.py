@@ -1106,7 +1106,21 @@ def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() 
     calls: list[str] = []
 
     class Builder:
+        def __init__(self) -> None:
+            self.configurations: list[str] = []
+
+        async def async_list_devices(self) -> dict[str, Any]:
+            return {
+                "configured": [
+                    {"name": "renamed-meter", "configuration": "renamed.yaml"}
+                ],
+                "importable": [],
+            }
+
         async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
+            self.configurations.append(configuration)
+            if configuration != "renamed.yaml":
+                raise ConnectionError("stale Device Builder configuration")
             return ESPHomeConfigSnapshot(configuration, content, digest)
 
         async def async_close(self) -> None:
@@ -1141,7 +1155,13 @@ def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() 
         def _entry(device_id: str) -> object | None:
             if device_id != "meter":
                 return None
-            return SimpleNamespace(unique_id="aa:bb:cc:dd:ee:ff")
+            return SimpleNamespace(
+                unique_id="aa:bb:cc:dd:ee:ff",
+                data={"device_name": "old-meter"},
+                runtime_data=SimpleNamespace(
+                    device_info=SimpleNamespace(name="renamed-meter")
+                ),
+            )
 
         async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
             return target(*args)
@@ -1170,8 +1190,9 @@ def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() 
             )
         )
         store = Store()
+        builder = Builder()
         workflow = EntryWorkflow(
-            Hass(), provisioning, SessionManager(), store, "meter", None, Builder()
+            Hass(), provisioning, SessionManager(), store, "meter", None, builder
         )
 
         with pytest.raises(WorkflowHandleError, match="owned"):
@@ -1212,6 +1233,8 @@ def test_stale_meter_configuration_plan_uses_live_source_and_legacy_semantics() 
         assert workflow._plans[wrapper["plan_id"]].inventory.plan_id == wrapper["plan_id"]
         assert result["source_sha256"] == digest
         assert result["configuration"].meter.friendly_name == "Garage Meter"
+        assert builder.configurations
+        assert set(builder.configurations) == {"renamed.yaml"}
         assert result["configuration_impact"].numeric_entity_count == 14
         assert result["configuration_impact"].text_entity_count == 0
         assert "slow_interval_extends_calibration" in result["warnings"]

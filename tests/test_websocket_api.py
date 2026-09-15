@@ -1564,7 +1564,9 @@ packages:
         assert compiled.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert websocket.calls == [
             "devices/list",
+            "devices/list",
             "devices/get_config",
+            "devices/list",
             "devices/get_config",
             "devices/get_config",
             "devices/update_config",

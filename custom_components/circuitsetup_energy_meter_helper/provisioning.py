@@ -93,6 +93,13 @@ def device_builder_status(
     if listing is None:
         return DeviceBuilderStatus(None, None)
     device_name = getattr(entry, "data", {}).get("device_name")
+    runtime_name = getattr(
+        getattr(getattr(entry, "runtime_data", None), "device_info", None),
+        "name",
+        None,
+    )
+    if isinstance(runtime_name, str) and runtime_name.strip():
+        device_name = runtime_name
     if strict and (
         not isinstance(device_name, str) or not device_name.strip()
     ):

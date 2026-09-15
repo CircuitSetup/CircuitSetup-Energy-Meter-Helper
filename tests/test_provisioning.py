@@ -17,6 +17,7 @@ from custom_components.circuitsetup_energy_meter_helper.models import (
 from custom_components.circuitsetup_energy_meter_helper.provisioning import (
     DeviceBuilderStatus,
     ProvisioningCoordinator,
+    device_builder_status,
 )
 
 
@@ -26,6 +27,7 @@ class FakeDeviceInfo:
 
     project_name: str
     project_version: str = "2026.8.0"
+    name: str | None = None
 
 
 @dataclass
@@ -383,6 +385,32 @@ def test_production_setup_reports_configured_device_builder_state(monkeypatch) -
         await coordinator.async_stop()
 
     asyncio.run(run())
+
+
+def test_device_builder_status_uses_current_runtime_name_after_rename() -> None:
+    entry = FakeEntry(
+        "meter",
+        "CircuitSetup meter",
+        FakeRuntimeData(
+            FakeDeviceInfo(
+                "circuitsetup.6c-energy-meter", name="renamed-meter"
+            )
+        ),
+        data={"device_name": "old-meter"},
+    )
+
+    status = device_builder_status(
+        entry,
+        {
+            "configured": [
+                {"name": "renamed-meter", "configuration": "renamed-meter.yaml"}
+            ],
+            "importable": [],
+        },
+    )
+
+    assert status.configuration == "renamed-meter.yaml"
+    assert status.importable is False
 
 
 def test_rescan_reports_configured_and_importable_device_builder_state() -> None:

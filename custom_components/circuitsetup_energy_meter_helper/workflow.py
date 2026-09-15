@@ -3118,14 +3118,22 @@ class EntryWorkflow:
     async def _async_snapshot(self, device: DiscoveredDevice) -> ESPHomeConfigSnapshot:
         builder = self._require_builder()
         configuration = device.configuration
+        list_devices = getattr(builder, "async_list_devices", None)
+        if callable(list_devices):
+            try:
+                listing = await list_devices()
+            except ConnectionError:
+                listing = None
+            if isinstance(listing, Mapping):
+                current = device_builder_status(
+                    self._entry(device.entry_id), listing
+                ).configuration
+                if current is not None:
+                    configuration = current
         if configuration is None:
-            listing = await builder.async_list_devices()
-            entry = self._entry(device.entry_id)
-            configuration = device_builder_status(entry, listing).configuration
-            if configuration is None:
-                raise WorkflowCapabilityUnavailable(
-                    "the Device Builder configuration is unavailable"
-                )
+            raise WorkflowCapabilityUnavailable(
+                "the Device Builder configuration is unavailable"
+            )
         snapshot = await builder.async_get_config(configuration)
         document = ESPHomeConfigDocument.parse(snapshot.content)
         source_is_official = (
