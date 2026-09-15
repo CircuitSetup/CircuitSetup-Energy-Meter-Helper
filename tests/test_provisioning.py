@@ -356,7 +356,11 @@ def test_production_setup_reports_configured_device_builder_state(monkeypatch) -
     class FakeBuilder:
         async def async_list_devices(self):
             return {
-                "configured": [{"name": "meter", "configuration": "meter.yaml"}],
+                "configured": [{
+                    "name": "meter",
+                    "friendly_name": "Updated meter",
+                    "configuration": "meter.yaml",
+                }],
                 "importable": [],
             }
 
@@ -382,6 +386,7 @@ def test_production_setup_reports_configured_device_builder_state(monkeypatch) -
 
         assert coordinator.snapshot.devices[0].configuration == "meter.yaml"
         assert coordinator.snapshot.devices[0].importable is False
+        assert coordinator.snapshot.devices[0].title == "Updated meter"
         await coordinator.async_stop()
 
     asyncio.run(run())
@@ -429,13 +434,18 @@ def test_device_builder_status_keeps_hostname_match_when_runtime_name_is_friendl
         entry,
         {
             "configured": [
-                {"name": "energy-meter-6f94c0", "configuration": "energy-meter-6f94c0.yaml"}
+                {
+                    "name": "energy-meter-6f94c0",
+                    "friendly_name": "CircuitSetup Energy Meter 12x",
+                    "configuration": "energy-meter-6f94c0.yaml",
+                }
             ],
             "importable": [],
         },
     )
 
     assert status.configuration == "energy-meter-6f94c0.yaml"
+    assert status.friendly_name == "CircuitSetup Energy Meter 12x"
 
 
 def test_device_builder_status_matches_renamed_entry_by_mac() -> None:

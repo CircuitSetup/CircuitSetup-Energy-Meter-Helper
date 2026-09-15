@@ -31,6 +31,10 @@ from custom_components.circuitsetup_energy_meter_helper.meter_configuration impo
 from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
     MeterConfigurationInventory,
 )
+from custom_components.circuitsetup_energy_meter_helper.models import (
+    MeterTopology,
+    StoredCTSelection,
+)
 from custom_components.circuitsetup_energy_meter_helper.offset_readiness import (
     DEFAULT_OFFSET_READINESS_THRESHOLDS,
     OffsetReadinessResult,
@@ -55,12 +59,31 @@ from custom_components.circuitsetup_energy_meter_helper.workflow import (
     EntryWorkflow,
     WorkflowCapabilityUnavailable,
     WorkflowHandleError,
+    _selections_for_topology,
     _SessionHandle,
 )
 
 MAC = "aabbccddeeff"
 OFFSET_TABLE = ((1, 2), (3, 4), (5, 6))
 POWER_OFFSET_TABLE = ((7, 8), (9, 10), (11, 12))
+
+
+def test_stale_ct_selections_are_bounded_to_live_topology() -> None:
+    topology = MeterTopology.from_addon_count(
+        1,
+        connection_type="wifi",
+        voltage_layout="standard",
+        project_name="circuitsetup.6c-energy-meter-1-addon",
+        evidence=(),
+    )
+    selections = tuple(
+        StoredCTSelection(channel, "custom", f"CT{channel}", 11143, 1, "a" * 64)
+        for channel in (1, 12, 13, 36)
+    )
+
+    bounded = _selections_for_topology(selections, topology)
+
+    assert tuple(item.channel for item in bounded) == (1, 12)
 
 
 async def _persisted_totals_workflow(

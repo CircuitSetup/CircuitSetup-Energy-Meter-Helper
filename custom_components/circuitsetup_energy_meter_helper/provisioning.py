@@ -55,6 +55,7 @@ class DeviceBuilderStatus:
     importable: bool | None
     configuration: str | None
     import_data: dict[str, str] | None = None
+    friendly_name: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -106,6 +107,11 @@ def _mac_key(value: Any) -> str | None:
         if len(compact) == 12 and set(compact.lower()) <= set("0123456789abcdef")
         else None
     )
+
+
+def _friendly_name(item: Mapping[str, Any]) -> str | None:
+    value = item.get("friendly_name")
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def device_builder_status(
@@ -164,7 +170,11 @@ def device_builder_status(
         and bool(item["configuration"].strip())
     ]
     if len(configured) == 1:
-        return DeviceBuilderStatus(False, str(configured[0]["configuration"]))
+        return DeviceBuilderStatus(
+            False,
+            str(configured[0]["configuration"]),
+            friendly_name=_friendly_name(configured[0]),
+        )
     if len(configured) > 1:
         return DeviceBuilderStatus(None, None)
     importable = matches(listing.get("importable", ()))
@@ -177,7 +187,12 @@ def device_builder_status(
         }
         if {"name", "package_import_url"} <= candidate.keys():
             import_data = candidate
-    return DeviceBuilderStatus(bool(importable), None, import_data)
+    return DeviceBuilderStatus(
+        bool(importable),
+        None,
+        import_data,
+        friendly_name=_friendly_name(importable[0]) if len(importable) == 1 else None,
+    )
 
 
 class ProvisioningCoordinator:
@@ -287,7 +302,7 @@ class ProvisioningCoordinator:
         )
         return DiscoveredDevice(
             entry.entry_id,
-            _runtime_name(entry) or entry.title,
+            status.friendly_name or _runtime_name(entry) or entry.title,
             project_name,
             _project_version(entry),
             status.importable,

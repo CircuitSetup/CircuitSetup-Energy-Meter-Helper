@@ -510,6 +510,13 @@ def _stored_reporting_multipliers(
     }
 
 
+def _selections_for_topology(
+    selections: tuple[StoredCTSelection, ...], topology: MeterTopology
+) -> tuple[StoredCTSelection, ...]:
+    """Ignore persisted CT choices for boards no longer in the live config."""
+    return tuple(selection for selection in selections if selection.channel <= topology.ct_count)
+
+
 class LazyDeviceBuilder:
     """Connect the existing pinned client only when a Device Builder call is made."""
 
@@ -776,7 +783,9 @@ class EntryWorkflow:
         voltage_catalog = await self._hass.async_add_executor_job(
             VoltageTransformerCatalog.load
         )
-        selections = await self._store.async_get_ct_selections(mac)
+        selections = _selections_for_topology(
+            await self._store.async_get_ct_selections(mac), topology
+        )
         stored_read = await self._store.async_get_meter_configuration_read(mac)
         plan_id = uuid4().hex
         inventory = MeterConfigurationInventory.from_document(
@@ -1318,7 +1327,9 @@ class EntryWorkflow:
             voltage_catalog = await self._hass.async_add_executor_job(
                 VoltageTransformerCatalog.load
             )
-            selections = await self._store.async_get_ct_selections(mac)
+            selections = _selections_for_topology(
+                await self._store.async_get_ct_selections(mac), topology
+            )
             meter_configuration = MeterConfigurationInventory.from_document(
                 session_id,
                 document,
@@ -3112,7 +3123,9 @@ class EntryWorkflow:
         if handle.configuration is None:
             raise WorkflowCapabilityUnavailable("configuration inventory is unavailable")
         snapshot = await self._require_builder().async_get_config(handle.configuration)
-        selections = await self._store.async_get_ct_selections(handle.mac)
+        selections = _selections_for_topology(
+            await self._store.async_get_ct_selections(handle.mac), handle.topology
+        )
         return CTInventory.from_document(
             ESPHomeConfigDocument.parse(snapshot.content),
             handle.topology,
