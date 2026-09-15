@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping
@@ -137,6 +138,8 @@ from .total_graph import (
     stale_automatic_total_settings,
 )
 from .voltage_transformer_catalog import VoltageTransformerCatalog
+
+_LOGGER = logging.getLogger(__name__)
 
 DEFAULT_HANDLE_TTL = 15 * 60.0
 CalibrationPlan = Literal["standard", "full"]
@@ -753,7 +756,11 @@ class EntryWorkflow:
         return self._mac(device_id)
 
     async def async_get_meter_configuration(self, device_id: str) -> dict[str, Any]:
-        return await self._async_get_meter_configuration(device_id)
+        try:
+            return await self._async_get_meter_configuration(device_id)
+        except Exception:
+            _LOGGER.exception("Meter configuration load failed for %s", device_id)
+            raise
 
     async def _async_get_meter_configuration(
         self, device_id: str
