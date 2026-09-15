@@ -42,6 +42,13 @@ jobs:
             head="$PUSH_SHA"
           fi
 
+          # A force-pushed PR can discard github.event.before; use the PR base
+          # when that predecessor is no longer present in the checkout.
+          if [[ "$EVENT_NAME" == "pull_request" && "$base" != 0000000000000000000000000000000000000000 && -n "$PR_BASE_SHA" ]] \
+              && ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base="$PR_BASE_SHA"
+          fi
+
           if [[ "$base" == 0000000000000000000000000000000000000000 ]]; then
             changed_files="$(git show --format= --name-only "$head")"
           else
