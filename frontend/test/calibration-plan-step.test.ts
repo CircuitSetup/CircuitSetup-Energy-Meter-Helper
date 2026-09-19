@@ -46,6 +46,7 @@ describe("calibrationPlanStep", () => {
     render(calibrationPlanStep("standard", vi.fn(), vi.fn(), false, true), root);
 
     expect(root.querySelector('[role="status"]')?.textContent).toContain("Loading calibration");
+    expect(root.querySelector(".loading-spinner")?.getAttribute("aria-hidden")).toBe("true");
     expect(root.querySelector("fieldset")?.disabled).toBe(true);
     expect(root.querySelector("button")?.disabled).toBe(true);
   });

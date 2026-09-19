@@ -90,7 +90,7 @@ export function offsetStep(
             <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event: Event) => stock.setBackup((event.target as HTMLInputElement).checked)}> I understand that this step creates a private backup and ${nativeReview ? "uses the meter's native offset controls; no firmware is installed" : "installs a temporary zero-offset configuration"}.</label>
             ${!recovery ? html`<label class="check-row"><input type="checkbox" .checked=${stock.firstCalibrationConfirmed} @change=${(event: Event) => stock.setFirstCalibrationConfirmed((event.target as HTMLInputElement).checked)}> I confirm the selected chips have never had offset calibration applied.</label>` : nothing}
             <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
-              @click=${stock.prepare}>${recovery ? (nativeReview ? "Review unfinished-chip readiness" : "Review unfinished-chip preparation") : (nativeReview ? "Review native offset readiness" : "Review offset preparation")}</button>
+              @click=${stock.prepare}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Loading offset preparation…` : recovery ? (nativeReview ? "Review unfinished-chip readiness" : "Review unfinished-chip preparation") : (nativeReview ? "Review native offset readiness" : "Review offset preparation")}</button>
             ${attempted ? html`<p>${nativeReview ? "This run was already attempted. Review unfinished-chip readiness again before retrying; completed values, including zeros, are retained." : "This historical preparation was already attempted. Review the historical preparation again before retrying; completed values, including zeros, are retained."}</p>` : nothing}
           </section>` : nothing}
           <div class="warning-band"><strong>Warning:</strong> An open-circuit current-output CT on a live conductor can be hazardous. De-energize conductors before unplugging any CT.</div>
@@ -105,11 +105,11 @@ export function offsetStep(
           </label>
           <div class="offset-actions">
             <button class="secondary" data-action="check-offset" ?disabled=${busy || !acknowledged || stageState === "completed"} @click=${check}>
-              ${busy ? "Checking measured readiness…" : "Check measured readiness"}
+              ${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Checking measured readiness…` : "Check measured readiness"}
             </button>
             <button class="primary" data-action="calibrate-offset"
               ?disabled=${busy || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
-              @click=${calibrate}>${result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
+              @click=${calibrate}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Running Stage ${stage} calibration…` : result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
           </div>
           ${readiness ? html`
             <section class="measurement-evidence" aria-label="Offset readiness evidence">

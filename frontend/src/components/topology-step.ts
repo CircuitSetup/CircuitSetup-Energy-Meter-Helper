@@ -45,7 +45,7 @@ export function topologyStep(topology: MeterTopology, projectVersion: string | n
           <strong>Calibration controls are missing from this firmware configuration.</strong>
           <span>Review the official calibration package and its literal enable flags before installing.</span>
           <button class="secondary" data-action="prepare-calibration" ?disabled=${busy} @click=${prepareCalibration}>
-            ${busy ? "Preparing calibration controls…" : "Prepare reviewed official calibration controls"}
+            ${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Preparing calibration controls…` : "Prepare reviewed official calibration controls"}
           </button>
         </div>
       ` : !mismatch && calibrationPreparation?.state === "cannot_safely_manage" ? html`
@@ -55,7 +55,7 @@ export function topologyStep(topology: MeterTopology, projectVersion: string | n
       ` : ""}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        ${mismatch ? "" : html`<button class="primary" data-action="continue" ?disabled=${busy} @click=${continueFlow}>${busy ? "Loading CTs…" : "Continue"}</button>`}
+        ${mismatch ? "" : html`<button class="primary" data-action="continue" ?disabled=${busy} @click=${continueFlow}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Loading CTs…` : "Continue"}</button>`}
       </footer>
     </section>
   `;

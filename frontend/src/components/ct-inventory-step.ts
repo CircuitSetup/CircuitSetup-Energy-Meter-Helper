@@ -181,7 +181,7 @@ export function ctInventoryStep(
       <footer class="action-footer offset-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="secondary" data-action="skip-ct" ?disabled=${busy} @click=${skip}>Skip to Calibration</button>
-        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
+        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Starting calibration…` : "Continue"}</button>
       </footer>
     </section>
   `;

@@ -2140,7 +2140,7 @@ function calibrationPlanStep(selected, choose, back, runtimeOnly, busy) {
       <label><input type="radio" name="calibration-plan" .checked=${selected === "standard"} @change=${() => choose("standard")}> Standard calibration — preserve existing offset values, then calibrate voltage and current.</label>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "full"} @change=${() => choose("full")}> Full calibration — includes optional offset calibration before voltage and current.</label>
     </fieldset>
-    ${busy ? b`<p role="status">Loading calibration…</p>` : ""}
+    ${busy ? b`<p role="status"><span class="loading-spinner" aria-hidden="true"></span>Loading calibration…</p>` : ""}
     <footer class="action-footer"><button class="secondary" ?disabled=${busy} @click=${back}>Back</button></footer>
   </section>`;
 }
@@ -2725,7 +2725,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       <footer class="action-footer offset-footer">
         <button class="secondary" @click=${back}>Back</button>
         <button class="secondary" data-action="skip-ct" ?disabled=${busy} @click=${skip}>Skip to Calibration</button>
-        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? "Starting calibration…" : "Continue"}</button>
+        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Starting calibration…` : "Continue"}</button>
       </footer>
     </section>
   `;
@@ -2899,8 +2899,8 @@ function currentStep(topology2, inventory, session2, channel, references, report
     setReportingMultiplier(value || null);
   }}><option value="" ?selected=${reportingMultiplier === null}>Choose multiplier</option>${[1, 2, 4, 8].map((value) => b`<option value=${value} ?selected=${reportingMultiplier === value}>${value}</option>`)}</select></label><p>ESPHome source editing is unavailable, so the multiplier cannot be read from authoritative configuration. Choose it explicitly.</p>` : ""}
       </div>
-      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy || !referenceReady}>${busy ? "Loading live current data…" : "Check stability"}</button>
-        <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability2?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
+      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy || !referenceReady}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading live current data…` : "Check stability"}</button>
+        <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability2?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Calibrating current…` : result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
       ${stability2 ? b`<div class=${stability2.stable ? "success-band" : "warning-band"} role="status">${stability2.stable ? "Stable and ready for calibration." : stability2.windows.length ? "Data is changing too much; keep the load steady." : "Waiting for live data…"}</div>` : ""}
       ${stabilityEvidence(stability2, selected.map((value) => `CT${value}`))}
       ${result?.state === "applied_pending_restart_verification" ? b`<div class="success-band" role="status">Current calibration complete for CT${first}–CT${first + 2}.</div>` : ""}
@@ -3475,7 +3475,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
             <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event) => stock.setBackup(event.target.checked)}> I understand that this step creates a private backup and ${nativeReview ? "uses the meter's native offset controls; no firmware is installed" : "installs a temporary zero-offset configuration"}.</label>
             ${!recovery ? b`<label class="check-row"><input type="checkbox" .checked=${stock.firstCalibrationConfirmed} @change=${(event) => stock.setFirstCalibrationConfirmed(event.target.checked)}> I confirm the selected chips have never had offset calibration applied.</label>` : A}
             <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
-              @click=${stock.prepare}>${recovery ? nativeReview ? "Review unfinished-chip readiness" : "Review unfinished-chip preparation" : nativeReview ? "Review native offset readiness" : "Review offset preparation"}</button>
+              @click=${stock.prepare}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading offset preparation…` : recovery ? nativeReview ? "Review unfinished-chip readiness" : "Review unfinished-chip preparation" : nativeReview ? "Review native offset readiness" : "Review offset preparation"}</button>
             ${attempted ? b`<p>${nativeReview ? "This run was already attempted. Review unfinished-chip readiness again before retrying; completed values, including zeros, are retained." : "This historical preparation was already attempted. Review the historical preparation again before retrying; completed values, including zeros, are retained."}</p>` : A}
           </section>` : A}
           <div class="warning-band"><strong>Warning:</strong> An open-circuit current-output CT on a live conductor can be hazardous. De-energize conductors before unplugging any CT.</div>
@@ -3490,11 +3490,11 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
           </label>
           <div class="offset-actions">
             <button class="secondary" data-action="check-offset" ?disabled=${busy || !acknowledged || stageState === "completed"} @click=${check}>
-              ${busy ? "Checking measured readiness…" : "Check measured readiness"}
+              ${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Checking measured readiness…` : "Check measured readiness"}
             </button>
             <button class="primary" data-action="calibrate-offset"
               ?disabled=${busy || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
-              @click=${calibrate}>${result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
+              @click=${calibrate}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Running Stage ${stage} calibration…` : result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
           </div>
           ${readiness ? b`
             <section class="measurement-evidence" aria-label="Offset readiness evidence">
@@ -3550,11 +3550,11 @@ function restartStep(state, result, rollbackAvailable, busy, restart2, rollback,
   return b`
     <section class="step-content" aria-labelledby="step-heading">
       <p>Restart verification checks the exact meter identity, topology, restored references, gains, voltage/current offsets, power offsets, and entity bindings.</p>
-      <div class="status-band" role="status">${busy ? "Restarting and verifying…" : state || "Ready for restart verification"}</div>
+      <div class="status-band" role="status">${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying…` : state || "Ready for restart verification"}</div>
       ${result ? b`<dl class="status-list"><div><dt>Verification</dt><dd>${result.verification_id}</dd></div><div><dt>Authority</dt><dd>${result.source_authority.replaceAll("_", " ")}</dd></div><div><dt>Connection generation</dt><dd>${result.connection_generation}</dd></div><div><dt>Source handoff</dt><dd>${handoffStatus}</dd></div></dl>` : ""}
       ${state === "cancelled" ? b`<div class="recovery-panel"><strong>Session cancelled</strong><p>Cleanup completed without claiming restart verification.</p></div>` : ""}
       ${recovery ? b`<div class="recovery-panel"><strong>Recovery required</strong><p>Reconnect to the meter and inspect live session evidence before retrying. Use rollback only when the current transaction makes it available.</p>${rollbackAvailable ? b`<button class="danger" data-action="rollback" @click=${rollback}>Review rollback</button>` : ""}</div>` : ""}
-      <footer class="action-footer"><button class="secondary" @click=${back} ?disabled=${busy}>Back</button><button class="primary" @click=${restart2} ?disabled=${busy || state === "cancelled" || Boolean(result)}>${busy ? "Restarting and verifying…" : state.includes("failed") ? "Retry restart verification" : "Restart and verify"}</button></footer>
+      <footer class="action-footer"><button class="secondary" @click=${back} ?disabled=${busy}>Back</button><button class="primary" @click=${restart2} ?disabled=${busy || state === "cancelled" || Boolean(result)}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying…` : state.includes("failed") ? "Retry restart verification" : "Restart and verify"}</button></footer>
     </section>
   `;
 }
@@ -3584,7 +3584,7 @@ function safetyStep(session2, acknowledged, setAcknowledged, confirm, cancel, ba
       <button class="danger" @click=${cancel}>Cancel session</button>
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        <button class="primary" @click=${confirm} ?disabled=${busy || session2?.state === "cancelled" || !acknowledged || Boolean(session2?.preflight.issues.length)}>${busy ? "Loading calibration…" : "Continue"}</button>
+        <button class="primary" @click=${confirm} ?disabled=${busy || session2?.state === "cancelled" || !acknowledged || Boolean(session2?.preflight.issues.length)}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading calibration…` : "Continue"}</button>
       </footer>
     </section>
   `;
@@ -3812,7 +3812,7 @@ function topologyStep(topology2, projectVersion, back, continueFlow, forceMismat
           <strong>Calibration controls are missing from this firmware configuration.</strong>
           <span>Review the official calibration package and its literal enable flags before installing.</span>
           <button class="secondary" data-action="prepare-calibration" ?disabled=${busy} @click=${prepareCalibration}>
-            ${busy ? "Preparing calibration controls…" : "Prepare reviewed official calibration controls"}
+            ${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Preparing calibration controls…` : "Prepare reviewed official calibration controls"}
           </button>
         </div>
       ` : !mismatch && calibrationPreparation2?.state === "cannot_safely_manage" ? b`
@@ -3822,7 +3822,7 @@ function topologyStep(topology2, projectVersion, back, continueFlow, forceMismat
       ` : ""}
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        ${mismatch ? "" : b`<button class="primary" data-action="continue" ?disabled=${busy} @click=${continueFlow}>${busy ? "Loading CTs…" : "Continue"}</button>`}
+        ${mismatch ? "" : b`<button class="primary" data-action="continue" ?disabled=${busy} @click=${continueFlow}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading CTs…` : "Continue"}</button>`}
       </footer>
     </section>
   `;
@@ -3854,8 +3854,8 @@ function voltageStep(topology2, session2, board, references, referenceLabels = [
           <span>V</span><input aria-label=${`${referenceLabels[index] ?? "Voltage"} reference (V)`} type="number" min="0.01" step="0.01" .value=${references[index] ? String(references[index]) : ""}
             @input=${(event) => setReference(index, Number(event.target.value))} /></label>`)}
       </div>
-      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy}>${busy ? "Loading live voltage data…" : "Check stability"}</button>
-        <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability2?.stable || terminal || complete && !retry}>${retry ? "Retry voltage calibration" : "Calibrate voltage"}</button></div>
+      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading live voltage data…` : "Check stability"}</button>
+        <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability2?.stable || terminal || complete && !retry}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Calibrating voltage…` : retry ? "Retry voltage calibration" : "Calibrate voltage"}</button></div>
       ${stability2 ? b`<div class=${stability2.stable ? "success-band" : "warning-band"} role="status">${stability2.stable ? "Stable and ready for calibration." : stability2.windows.length ? "Data is changing too much; keep the load and reference steady." : "Waiting for live data…"}</div>` : ""}
       ${stabilityEvidence(stability2)}
       ${complete ? b`<div class="success-band" role="status">Voltage calibration complete for ${boardLabel2}.</div>` : ""}
@@ -3931,6 +3931,8 @@ const panelStyles = i$5`
   button:hover:not(:disabled) { border-color: var(--accent); background: var(--surface-alt); }
   button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   button:disabled { opacity: .45; cursor: not-allowed; }
+  .loading-spinner { display: inline-block; width: .85em; height: .85em; margin-inline-end: .45em; border: 2px solid currentColor; border-inline-end-color: transparent; border-radius: 50%; vertical-align: -.12em; animation: loading-spinner 0.7s linear infinite; }
+  @keyframes loading-spinner { to { transform: rotate(360deg); } }
   input:not([type="radio"]):not([type="checkbox"]), select { background: var(--surface); border-color: var(--border); border-radius: var(--radius-small); }
   input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
   .primary, .rescan { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
@@ -6957,14 +6959,14 @@ class CircuitSetupPanel extends i$2 {
       </tbody></table>` : A}
       <p>${this.restartResult ? `Gain authority: ${this.restartResult.source_authority.replaceAll("_", " ")}. Offset configuration selection never clears gain flash.` : "If gains were also calibrated, restart and verify gains only before the combined review. This does not verify stock offsets."}</p>
       <footer class="action-footer"><button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => this.navigate("offset", true)}>Back to offset stages</button>
-      ${!this.restartResult ? b`<button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => void this.restart()}>${this.restartBusy ? "Restarting and verifying gains…" : "Restart and verify gains only"}</button>` : A}
+      ${!this.restartResult ? b`<button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => void this.restart()}>${this.restartBusy ? b`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying gains…` : "Restart and verify gains only"}</button>` : A}
       <button class="primary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy || !this.offsetFinalization?.results.length} @click=${() => void this.reviewOffsetFinalization()}>Review captured offsets for installation</button>
       ${this.offsetFinalization?.action_ready ? b`<button class="primary" ?disabled=${Boolean(this.pendingAction)} @click=${() => void this.reconcileOffsetFinalization()}>Confirm installed offset selection</button>` : A}</footer>
     </section>`;
     if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return b`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
       <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
       <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>
-      <footer class="action-footer"><button class="secondary" data-action="keep-calibration-flash" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => this.keepCalibrationInFlash()}>Keep calibration in meter flash</button><button class="primary" data-action="review-calibration-handoff" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => void this.reviewCalibrationHandoff()}>${this.pendingAction === "calibration-handoff" ? "Preparing YAML review…" : "Review and save calibration to YAML"}</button></footer>
+      <footer class="action-footer"><button class="secondary" data-action="keep-calibration-flash" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => this.keepCalibrationInFlash()}>Keep calibration in meter flash</button><button class="primary" data-action="review-calibration-handoff" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => void this.reviewCalibrationHandoff()}>${this.pendingAction === "calibration-handoff" ? b`<span class="loading-spinner" aria-hidden="true"></span>Preparing YAML review…` : "Review and save calibration to YAML"}</button></footer>
     </section>`;
     if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep(
       this.transaction?.purpose ?? (this.step === "save-calibration" ? "save_calibration" : "install_configuration"),
@@ -7129,7 +7131,7 @@ class CircuitSetupPanel extends i$2 {
       this.announcement = "Remaining current calibration was skipped; completed gains were preserved.";
       this.requestUpdate();
     }}>Skip current calibration</button>
-        <button class="primary" ?disabled=${this.finishBusy || !this.currentSkipped && !this.hasCompletedCalibration("current")} @click=${() => void this.finishCurrent()}>${this.finishBusy ? "Finishing…" : "Continue"}</button></footer>`;
+        <button class="primary" ?disabled=${this.finishBusy || !this.currentSkipped && !this.hasCompletedCalibration("current")} @click=${() => void this.finishCurrent()}>${this.finishBusy ? b`<span class="loading-spinner" aria-hidden="true"></span>Finishing…` : "Continue"}</button></footer>`;
     if (this.step === "restart") return restartStep(
       this.session?.state ?? this.error,
       this.restartResult,

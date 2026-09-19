@@ -33,6 +33,8 @@ export const panelStyles = css`
   button:hover:not(:disabled) { border-color: var(--accent); background: var(--surface-alt); }
   button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   button:disabled { opacity: .45; cursor: not-allowed; }
+  .loading-spinner { display: inline-block; width: .85em; height: .85em; margin-inline-end: .45em; border: 2px solid currentColor; border-inline-end-color: transparent; border-radius: 50%; vertical-align: -.12em; animation: loading-spinner 0.7s linear infinite; }
+  @keyframes loading-spinner { to { transform: rotate(360deg); } }
   input:not([type="radio"]):not([type="checkbox"]), select { background: var(--surface); border-color: var(--border); border-radius: var(--radius-small); }
   input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
   .primary, .rescan { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }

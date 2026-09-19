@@ -32,7 +32,7 @@ export function safetyStep(
       <button class="danger" @click=${cancel}>Cancel session</button>
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        <button class="primary" @click=${confirm} ?disabled=${busy || session?.state === "cancelled" || !acknowledged || Boolean(session?.preflight.issues.length)}>${busy ? "Loading calibration…" : "Continue"}</button>
+        <button class="primary" @click=${confirm} ?disabled=${busy || session?.state === "cancelled" || !acknowledged || Boolean(session?.preflight.issues.length)}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Loading calibration…` : "Continue"}</button>
       </footer>
     </section>
   `;

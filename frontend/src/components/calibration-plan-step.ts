@@ -24,7 +24,7 @@ export function calibrationPlanStep(
       <label><input type="radio" name="calibration-plan" .checked=${selected === "standard"} @change=${() => choose("standard")}> Standard calibration — preserve existing offset values, then calibrate voltage and current.</label>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "full"} @change=${() => choose("full")}> Full calibration — includes optional offset calibration before voltage and current.</label>
     </fieldset>
-    ${busy ? html`<p role="status">Loading calibration…</p>` : ""}
+    ${busy ? html`<p role="status"><span class="loading-spinner" aria-hidden="true"></span>Loading calibration…</p>` : ""}
     <footer class="action-footer"><button class="secondary" ?disabled=${busy} @click=${back}>Back</button></footer>
   </section>`;
 }
