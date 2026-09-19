@@ -65,7 +65,7 @@ it("renders purpose-specific configuration installation controls", () => {
   expect(host.textContent).toContain("Build firmware");
   expect(host.textContent).toContain("Install on meter");
   expect(host.querySelector("details pre")?.getAttribute("aria-label")).toBe("Configuration file diff");
-  expect(host.querySelector("details")?.textContent).toContain("source_checked");
+  expect(host.querySelector("details")?.textContent).not.toContain("source_checked");
 
   render(buildInstallStep("save_calibration", status, noop, noop, noop, noop, noop, noop), host);
   expect(host.textContent).toContain("Save verified calibration");
@@ -968,6 +968,10 @@ describe("meter configuration review and summary", () => {
     const diff = [...root.querySelectorAll(".diff-line")];
     expect(diff.map((line) => line.textContent)).toEqual(["@@ -1,3 +1,3 @@", "Meter:", " - old", " - new"]);
     expect(diff.map((line) => line.className)).toEqual(["diff-line context", "diff-line context", "diff-line removed", "diff-line added"]);
+    const differences = root.querySelector("details");
+    expect(differences?.querySelector("summary")?.textContent).toBe("Configuration differences");
+    expect(differences?.querySelector("dl")).toBeNull();
+    expect(differences?.textContent).not.toContain("Transaction ID");
 
     const finish = vi.fn();
     render(summaryStep(meter.topology, null, { ...transaction, state: "verified" }, new Map(), new Map(), null, false, "2026.8.0", () => undefined, () => undefined, meter, meter.configuration_impact, finish), root);
@@ -4990,7 +4994,8 @@ describe("CircuitSetup panel", () => {
 
     panel.showState("install-configuration"); await panel.updateComplete;
 
-    expect(text(panel)).toContain("0 errors; 0 warnings");
+    expect(text(panel)).toContain("Errors0 records (unreported)");
+    expect(text(panel)).toContain("Warnings0 records (unreported)");
     expect(text(panel)).toContain("ESPHome rejected the config (code 2)");
     expect(text(panel)).toContain("original config was restored");
   });
@@ -4999,6 +5004,11 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     panel.showState("summary"); await panel.updateComplete;
     expect(text(panel)).not.toContain("exact restart verification are complete");
+    expect(text(panel)).not.toContain("Build evidence");
+    expect(text(panel)).not.toContain("Transaction ID: Unavailable");
+    expect(text(panel)).not.toContain("Sample windows by target");
+    expect(text(panel)).not.toContain("Calibration results by target");
+    expect(text(panel)).not.toContain("Calibration completion record");
 
     const state = panel as unknown as Record<string, unknown>;
     state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
@@ -5020,6 +5030,9 @@ describe("CircuitSetup panel", () => {
     panel.showState("summary"); await panel.updateComplete;
     for (const expected of ["saved flash", "9.9", "5500", "5600", "0.4", "65%", "warning"])
       expect(text(panel).toLowerCase()).toContain(expected.toLowerCase());
+    expect(text(panel)).toContain("Sample windows by target");
+    expect(text(panel)).toContain("Calibration results by target");
+    expect(text(panel)).toContain("Calibration completion record");
     expect(text(panel)).not.toMatch(/Mean|Standard deviation|Range/);
   });
 
@@ -5189,6 +5202,12 @@ describe("CircuitSetup panel", () => {
 
   it("keeps verified calibration in flash without opening a YAML transaction", async () => {
     const operations: string[] = [];
+    const build = { transaction_id: "2".repeat(32), state: "verified", source_sha256: "b".repeat(64), changes: [],
+      redacted_diff: "", rollback_available: false, evidence: [],
+      progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"],
+      validation_detail: { code: 0, reported_error_count: 0, reported_warning_count: 0, error_record_count: 0, warning_record_count: 0 },
+      upload_progress: [{ stage: "finished", percentage: 100 }], purpose: "install_configuration" as const,
+      aggregate_entity_mismatch: false, full_meter_configuration_verified: true };
     const restart = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
       topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
       topology_voltage_layout: "two_groups", connection_generation: 4, groups: [], verification_id: "1".repeat(32),
@@ -5203,6 +5222,7 @@ describe("CircuitSetup panel", () => {
     };
     const panel = await mount(hass);
     const state = panel as unknown as Record<string, unknown>;
+    state.transaction = build;
     state.restartResult = restart;
     panel.showState("summary"); await panel.updateComplete;
 
@@ -5212,6 +5232,11 @@ describe("CircuitSetup panel", () => {
     expect(operations).not.toContain("clear_calibration_flash");
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup complete");
     expect(text(panel)).toContain("Installing firmware may replace it");
+    expect(state.transaction).toEqual(build);
+    expect(text(panel)).toContain("No build issues recorded.");
+    expect(text(panel)).toContain(build.transaction_id);
+    expect(text(panel)).toContain(build.source_sha256);
+    expect(text(panel)).toContain("firmware_compiled");
   });
 
   it("guards handoff preview reentry and ignores a late preview after keeping flash", async () => {

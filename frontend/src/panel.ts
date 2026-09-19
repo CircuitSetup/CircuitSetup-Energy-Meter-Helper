@@ -2322,7 +2322,7 @@ export class CircuitSetupPanel extends LitElement {
     ++this.operationGeneration;
     if (this.pendingAction === "calibration-handoff") this.pendingAction = "";
     this.clearSubscription("transaction");
-    this.transaction = null;
+    if (this.transaction?.state !== "verified") this.transaction = null;
     this.handoffDeclined = true;
     this.announcement = "Calibration remains in meter flash. Installing firmware may replace it.";
     this.navigate("summary");

@@ -951,7 +951,7 @@ test("adoption review uses one authoritative source diff before any write", asyn
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("switch", { name: "Overall meter total Watts", exact: true }).uncheck();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByRole("region", { name: "Review changes" }).getByText("Technical details", { exact: true }).click();
+  await page.getByRole("region", { name: "Review changes" }).getByText("Configuration differences", { exact: true }).click();
   const diff = page.getByLabel("Configuration file diff", { exact: true });
   await expect(diff).toBeVisible();
   await expect(diff).toContainText("totalWattsMain");
@@ -1690,7 +1690,7 @@ test("42-channel separate install/rebind leads through main CT evidence and exac
   await expect(page.getByRole("heading", { name: "Save Calibration", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Review and save calibration to YAML" }).click();
   await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
-  await page.getByRole("region", { name: "Review changes" }).getByText("Technical details", { exact: true }).click();
+  await page.getByRole("region", { name: "Review changes" }).getByText("Configuration differences", { exact: true }).click();
   await expect(page.getByLabel("Configuration file diff")).toBeVisible();
   await page.getByRole("button", { name: "Write verified gains to ESPHome" }).click();
   await page.getByRole("button", { name: "Build firmware" }).click();
@@ -1963,7 +1963,7 @@ test("journey 4: legacy manage requires review before migration preview", async 
   await page.getByLabel("I reviewed used/unused channels and circuit roles").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Install Configuration", exact: true })).toBeVisible();
-  await page.getByRole("region", { name: "Review changes" }).getByText("Technical details", { exact: true }).click();
+  await page.getByRole("region", { name: "Review changes" }).getByText("Configuration differences", { exact: true }).click();
   await expect(page.getByLabel("Configuration file diff")).toBeVisible();
   await installConfiguration(page);
   await page.getByLabel(/Keep existing calibration/).click();

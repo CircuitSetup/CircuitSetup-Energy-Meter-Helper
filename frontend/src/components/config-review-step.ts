@@ -59,13 +59,7 @@ export function configReview(
         <div><dt>Install</dt><dd>${status?.state === "install_confirmation_required" ? "Confirmation required" : status?.state ?? "Pending"}</dd></div>
       </dl>
       <details>
-        <summary>Technical details</summary>
-        <dl class="status-list evidence-list">
-          <div><dt>Transaction ID</dt><dd>${status?.transaction_id ?? "Unavailable"}</dd></div>
-          <div><dt>Validation records</dt><dd>${status?.validation_detail ? `${status.validation_detail.error_record_count} errors; ${status.validation_detail.warning_record_count} warnings` : "Not available"}</dd></div>
-          <div><dt>Evidence</dt><dd>${status?.evidence.join(", ") || "No evidence recorded."}</dd></div>
-          <div><dt>Upload trace</dt><dd>${status?.upload_progress.map((item) => `${item.stage}: ${item.percentage ?? "in progress"}`).join(", ") || "No upload trace."}</dd></div>
-        </dl>
+        <summary>Configuration differences</summary>
         <pre class="config-diff" aria-label="Configuration file diff"><code>${diff.map((line) => { const item = diffLine(line); return html`<span class=${`diff-line ${item.kind}`}>${item.value}</span>`; })}</code></pre>
       </details>
     </section>

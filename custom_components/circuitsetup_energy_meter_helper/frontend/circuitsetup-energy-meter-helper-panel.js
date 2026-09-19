@@ -1969,13 +1969,7 @@ function configReview(status, configuration = null, impact = null, totals = null
         <div><dt>Install</dt><dd>${status?.state === "install_confirmation_required" ? "Confirmation required" : status?.state ?? "Pending"}</dd></div>
       </dl>
       <details>
-        <summary>Technical details</summary>
-        <dl class="status-list evidence-list">
-          <div><dt>Transaction ID</dt><dd>${status?.transaction_id ?? "Unavailable"}</dd></div>
-          <div><dt>Validation records</dt><dd>${status?.validation_detail ? `${status.validation_detail.error_record_count} errors; ${status.validation_detail.warning_record_count} warnings` : "Not available"}</dd></div>
-          <div><dt>Evidence</dt><dd>${status?.evidence.join(", ") || "No evidence recorded."}</dd></div>
-          <div><dt>Upload trace</dt><dd>${status?.upload_progress.map((item) => `${item.stage}: ${item.percentage ?? "in progress"}`).join(", ") || "No upload trace."}</dd></div>
-        </dl>
+        <summary>Configuration differences</summary>
         <pre class="config-diff" aria-label="Configuration file diff"><code>${diff.map((line) => {
     const item = diffLine(line);
     return b`<span class=${`diff-line ${item.kind}`}>${item.value}</span>`;
@@ -3683,15 +3677,16 @@ function technicalDetails(topology2, session2, transaction2, stability2, calibra
       <summary>Technical details</summary>
       <div class="technical-grid">
         <section><h3>Configuration and project evidence</h3><ul>${topology2?.evidence.map((item) => b`<li>${item.source}: ${item.detail}</li>`) ?? "No evidence loaded."}</ul></section>
-        <section><h3>Semantic API mapping</h3><p>${session2?.preflight.zeroed_roles.length ?? 0} reference roles verified and zeroed.</p></section>
-        <section><h3>Sample windows by target</h3>${[...stability2.entries()].map(([target, result]) => b`<div data-target=${target}>${stabilityEvidence(result)}</div>`) || "No sample evidence."}</section>
-        <section><h3>Calibration results by target</h3>${[...calibration2.entries()].map(([target, result]) => b`<div data-target=${target}>${calibrationEvidence(result)}</div>`) || "No calibration evidence."}</section>
-        <section><h3>Build evidence</h3><p>${transaction2?.evidence.join(", ") || "No build evidence."}</p><p>${transaction2?.progress.join(", ") || "No transaction progress."}</p>
-          <p>Transaction ID: ${transaction2?.transaction_id ?? "Unavailable"}; source hash: ${transaction2?.source_sha256 ?? "Unavailable"}.</p>
-          ${transaction2?.validation_detail ? b`<p>Validation code ${transaction2.validation_detail.code ?? "unavailable"}; ${transaction2.validation_detail.error_record_count} error records; ${transaction2.validation_detail.warning_record_count} warning records.</p>` : ""}
-          ${transaction2?.upload_progress?.length ? b`<ul>${transaction2.upload_progress.map((item) => b`<li>${item.stage}: ${item.percentage ?? "in progress"}${item.percentage != null ? "%" : ""}</li>`)}</ul>` : ""}
-        </section>
-        <section><h3>Calibration completion record</h3><p>${restart2 ? `Restart-verified ${restart2.source_authority.replaceAll("_", " ")} calibration record` : completedWithoutChanges ? "No-change completion; no restart-verified record was created" : "Not yet established"}</p><p>${restart2 ? `Verification ${restart2.verification_id}, source hash ${restart2.config_sha256 ?? "Unavailable"}, generation ${restart2.connection_generation}; ${restart2.offset_groups?.length ?? 0} voltage/current offset tables; ${restart2.power_offset_groups?.length ?? 0} power-offset tables.` : completedWithoutChanges ? "The server confirmed there were no pending gain or offset changes." : "No authoritative restart result."}</p></section>
+        ${session2 ? b`<section><h3>Semantic API mapping</h3><p>${session2.preflight.zeroed_roles.length} reference roles verified and zeroed.</p></section>` : ""}
+        ${stability2.size ? b`<section><h3>Sample windows by target</h3>${[...stability2.entries()].map(([target, result]) => b`<div data-target=${target}>${stabilityEvidence(result)}</div>`)}</section>` : ""}
+        ${calibration2.size ? b`<section><h3>Calibration results by target</h3>${[...calibration2.entries()].map(([target, result]) => b`<div data-target=${target}>${calibrationEvidence(result)}</div>`)}</section>` : ""}
+        ${transaction2 ? b`<section><h3>Build evidence</h3><p>${transaction2.evidence.join(", ") || "No build issues recorded."}</p>
+          ${transaction2.progress.length ? b`<p>${transaction2.progress.join(", ")}</p>` : ""}
+          <p>Transaction ID: ${transaction2.transaction_id}; source hash: ${transaction2.source_sha256}.</p>
+          ${transaction2.validation_detail ? b`<p>${transaction2.validation_detail.code === null ? "" : `Validation code ${transaction2.validation_detail.code}; `}${transaction2.validation_detail.error_record_count} error records; ${transaction2.validation_detail.warning_record_count} warning records.</p>` : ""}
+          ${transaction2.upload_progress.length ? b`<ul>${transaction2.upload_progress.map((item) => b`<li>${item.stage}: ${item.percentage ?? "in progress"}${item.percentage != null ? "%" : ""}</li>`)}</ul>` : ""}
+        </section>` : ""}
+        ${restart2 || completedWithoutChanges ? b`<section><h3>Calibration completion record</h3><p>${restart2 ? `Restart-verified ${restart2.source_authority.replaceAll("_", " ")} calibration record` : "No-change completion; no restart-verified record was created"}</p><p>${restart2 ? `Verification ${restart2.verification_id}, source hash ${restart2.config_sha256 ?? "Unavailable"}, generation ${restart2.connection_generation}; ${restart2.offset_groups?.length ?? 0} voltage/current offset tables; ${restart2.power_offset_groups?.length ?? 0} power-offset tables.` : "The server confirmed there were no pending gain or offset changes."}</p></section>` : ""}
       </div>
     </details>
   `;
@@ -6621,7 +6616,7 @@ class CircuitSetupPanel extends i$2 {
     ++this.operationGeneration;
     if (this.pendingAction === "calibration-handoff") this.pendingAction = "";
     this.clearSubscription("transaction");
-    this.transaction = null;
+    if (this.transaction?.state !== "verified") this.transaction = null;
     this.handoffDeclined = true;
     this.announcement = "Calibration remains in meter flash. Installing firmware may replace it.";
     this.navigate("summary");
