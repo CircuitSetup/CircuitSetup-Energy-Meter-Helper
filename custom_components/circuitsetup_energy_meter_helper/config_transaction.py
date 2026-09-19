@@ -1312,6 +1312,14 @@ class ConfigTransactionManager:
                 raise RuntimeError(
                     "install confirmation is not legal in the current state"
                 )
+            if TransactionProgress.OTA_UPLOADED in transaction.progress:
+                await self._check_configuration_source(transaction, proposed=True)
+                transaction.evidence[:] = [
+                    code
+                    for code in transaction.evidence
+                    if code not in _RETRYABLE_INSTALL_EVIDENCE
+                ]
+                return await self._verify_existing_upload_locked(transaction)
             if transaction.verification_id is not None:
                 verified = await self._persistence.async_get_verified_calibration(
                     transaction.mac

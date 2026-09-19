@@ -89,6 +89,7 @@ def test_firmware_filter_only_matches_yaml_configuration_changes() -> None:
     component = "custom_components/circuitsetup_energy_meter_helper/"
     for path in (
         component + "config_mutator.py",
+        component + "package_contract.py",
         component + "meter_config_mutator.py",
         component + "total_graph.py",
         component + "voltage_gains.py",

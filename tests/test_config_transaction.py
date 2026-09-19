@@ -2969,6 +2969,7 @@ def test_reconnect_exhaustion_preserves_manual_install_retry() -> None:
         assert completed.state is ConfigTransactionState.VERIFIED
         assert completed.evidence == ()
         assert verifier.calls == exhausted_calls + 1
+        assert manager._device_builder.calls.count("upload") == 1
 
     asyncio.run(run())
 

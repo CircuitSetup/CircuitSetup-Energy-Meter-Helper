@@ -43,7 +43,8 @@ it("shows affected SPI pins and hardware troubleshooting without allowing Contin
   expect(warning?.textContent).toContain("update the configuration to match");
   expect(warning?.textContent).toContain("stays with the same add-on");
   expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
-  [...host.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.click();
+  expect(warning?.textContent).toContain("without another upload");
+  [...host.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.click();
   expect(retry).toHaveBeenCalledOnce();
 
   render(buildInstallStep("install_configuration", { ...status, state: "verified", evidence: [], communication_failed_cs_pins: [] },
@@ -141,7 +142,7 @@ it.each(["entity_mismatch", "reconnect_unavailable"] as const)("shows only the l
   expect(host.textContent).toContain("Build or install needs attention");
   expect(host.querySelectorAll(".upload-progress li")).toHaveLength(0);
   expect(host.querySelector<HTMLProgressElement>("progress")?.value).toBe(100);
-  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.disabled).toBe(false);
+  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
   expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
 });
 
@@ -523,7 +524,7 @@ const contrastRatio = (first: string, second: string): number => {
   return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
 };
 
-it("offers install retry after reconnect verification is exhausted", () => {
+it("offers verification retry after reconnect verification is exhausted", () => {
   const root = document.createElement("div");
   const status = { purpose: "install_configuration", transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
     changes: [], redacted_diff: "", rollback_available: true, evidence: ["reconnect_unavailable"], progress: ["firmware_compiled", "ota_uploaded"],
@@ -533,7 +534,7 @@ it("offers install retry after reconnect verification is exhausted", () => {
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), root);
 
   expect(root.textContent).toContain("Build or install needs attention");
-  expect([...root.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.disabled).toBe(false);
+  expect([...root.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
   expect([...root.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
 });
 

@@ -48,7 +48,7 @@ export function buildInstallStep(
     : status?.upload_progress.length ? status.progress.includes("firmware_compiled") ? "Install" : "Compile" : null;
   const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
-  const failureMessage = status?.failure?.reason_code === "missing_package" ? "A required supported package is missing. Review the package selection and create a fresh review." : status?.failure?.reason_code === "unsupported_component_option" ? "The selected option is not supported by this ESPHome version. Choose a supported firmware version and review again." : status?.failure?.reason_code === "required_secret" ? "A required secret name is unresolved. Add it in ESPHome and create a fresh review." : status?.failure?.reason_code === "conflicting_managed_override" ? "A managed configuration override conflicts with the reviewed source. Restore the source or create a fresh review." : status?.failure?.reason_code === "verification_incomplete" ? "Uploaded; verification incomplete. Reconnect the meter and retry installation." : null;
+  const failureMessage = status?.failure?.reason_code === "missing_package" ? "A required supported package is missing. Review the package selection and create a fresh review." : status?.failure?.reason_code === "unsupported_component_option" ? "The selected option is not supported by this ESPHome version. Choose a supported firmware version and review again." : status?.failure?.reason_code === "required_secret" ? "A required secret name is unresolved. Add it in ESPHome and create a fresh review." : status?.failure?.reason_code === "conflicting_managed_override" ? "A managed configuration override conflicts with the reviewed source. Restore the source or create a fresh review." : status?.failure?.reason_code === "verification_incomplete" ? "Uploaded; verification incomplete. Reconnect the meter and retry verification." : null;
   return html`
     <section class="step-content" aria-labelledby="step-heading">
       <h2>${labels.heading}</h2>
@@ -69,7 +69,7 @@ export function buildInstallStep(
               <li>If the ESP32 model, seating, and CS assignments are correct, try another known-good ESP32 with the correct firmware.</li>
               <li>If an add-on still fails, move its CS jumper to a different unused, supported CS pin and update the configuration to match before rebuilding and installing. A fault that follows the GPIO points to the ESP32 pin or its connection; a fault that stays with the same add-on on a known-good GPIO points to that add-on board or meter chip.</li>
             </ol>
-            <p>After correcting the hardware or configuration, power up and use Retry Install. This uploads the firmware again and repeats startup verification.</p>
+            <p>After correcting the hardware or configuration, power up and use Retry verification. This checks the installed firmware again without another upload.</p>
             <p>Use Back to keep this saved configuration and edit it; rollback is optional.</p>
           ` : html`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? html`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
@@ -87,7 +87,7 @@ export function buildInstallStep(
       <div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? "Installing…" : retryClear ? "Retry clearing saved flash values" : retryableInstall ? "Retry Install" : labels.install}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? retryableInstall ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : retryableInstall ? "Retry verification" : labels.install}</button>
       </div>
       ${status?.validation_detail ? html`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
