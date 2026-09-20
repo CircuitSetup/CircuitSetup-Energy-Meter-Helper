@@ -6128,8 +6128,14 @@ class CircuitSetupPanel extends i$2 {
       return;
     }
     if (this.pendingAction) return;
-    if (!this.api || !this.session) {
+    if (!this.api) {
       this.fail(new Error(), "Calibration session could not be closed. Summary remains available; retry Finish.");
+      return;
+    }
+    if (!this.session) {
+      this.selectDevice(null);
+      this.navigate("setup");
+      this.announcement = message;
       return;
     }
     const api = this.api;

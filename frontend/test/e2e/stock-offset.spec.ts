@@ -32,7 +32,6 @@ test("native stock offset review stays on Offset and runs both first-use stages"
   await expect(page.getByRole("heading", { name: /Optional offset calibration/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Run Stage 1 calibration", exact: true })).toBeDisabled();
   await page.getByLabel("I understand that this step creates a private backup and uses the meter's native offset controls; no firmware is installed.", { exact: true }).check();
-  await page.getByLabel("I confirm the selected chips have never had offset calibration applied.", { exact: true }).check();
   await page.getByRole("button", { name: "Review native offset readiness", exact: true }).click();
   await expect(page.getByRole("heading", { name: /Optional offset calibration/ })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Install offset preparation", exact: true })).toHaveCount(0);
@@ -76,7 +75,6 @@ test("native stock offset recovery survives reload, back, retry, finalization, a
   await page.goto(`/test/harness.html?${query}`);
   await openOffset();
   await nativeBackup.check();
-  await page.getByLabel("I confirm the selected chips have never had offset calibration applied.", { exact: true }).check();
   await page.getByRole("button", { name: "Review native offset readiness", exact: true }).click();
   await expect(page.getByRole("status").filter({ hasText: "Native offset controls are ready." })).toBeVisible();
 

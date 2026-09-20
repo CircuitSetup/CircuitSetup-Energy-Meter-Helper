@@ -1922,7 +1922,13 @@ export class CircuitSetupPanel extends LitElement {
     if (this.offsetRecoveryPending()) { this.navigate("save-calibration"); return; }
     if (this.hasUnsupportedCalibrationChanges()) { this.explainCalibrationConfigurationConflict(); return; }
     if (this.pendingAction) return;
-    if (!this.api || !this.session) { this.fail(new Error(), "Calibration session could not be closed. Summary remains available; retry Finish."); return; }
+    if (!this.api) { this.fail(new Error(), "Calibration session could not be closed. Summary remains available; retry Finish."); return; }
+    if (!this.session) {
+      this.selectDevice(null);
+      this.navigate("setup");
+      this.announcement = message;
+      return;
+    }
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
     this.pendingAction = "finish"; this.requestUpdate();

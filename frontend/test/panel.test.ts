@@ -5366,6 +5366,17 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
   });
 
+  it("clears Summary locally when no calibration session exists", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown> & { finishFlow(message: string): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    panel.showState("summary");
+
+    await state.finishFlow("Finished");
+    expect(state.selectedDeviceId).toBeNull();
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+  });
+
   it("keeps Summary selected when server close fails", async () => {
     const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] }, close_session: new Error("busy") });
     const panel = await mount(hass);
