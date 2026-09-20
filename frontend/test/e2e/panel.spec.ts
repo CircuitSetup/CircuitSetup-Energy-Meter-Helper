@@ -495,7 +495,7 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
             restore_evidence: null, retry_allowed: false };
         if (options.calibration !== "addon-indeterminate") currentSession = { ...currentSession,
           state: "applied_pending_restart_verification", has_pending_calibration: true };
-      } else if (operation === "get_session") result = currentSession;
+      } else if (["get_session", "reconnect_session"].includes(operation)) result = currentSession;
       else if (operation === "restart_and_verify") {
         const base = restart(addons);
         currentSession = { ...currentSession, state: "verified" };
@@ -1729,10 +1729,10 @@ test("add-on CT42 indeterminate disconnect never auto-represses calibration", as
   expect(frames.find((frame) => frame.type.endsWith("/calibrate_current"))).toMatchObject({ references: [{ channel: 42,
     reference: 25 }], confirm_iteration: true });
   expect(operations(frames)).not.toContain("restart_and_verify");
-  const priorSessionReads = operations(frames).filter((value) => value === "get_session").length;
+  const priorReconnects = operations(frames).filter((value) => value === "reconnect_session").length;
   await page.getByRole("button", { name: "Reconnect and inspect" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Session reconnected with state" })).toBeVisible();
-  expect(operations(frames).filter((value) => value === "get_session").length).toBeGreaterThan(priorSessionReads);
+  expect(operations(frames).filter((value) => value === "reconnect_session").length).toBeGreaterThan(priorReconnects);
   expect(operations(frames).filter((value) => value === "calibrate_current")).toHaveLength(1);
 });
 
@@ -1742,7 +1742,7 @@ test("add-on CT42 indeterminate disconnect never auto-represses calibration", as
 const mutationOperations = new Set([
   "adopt_device", "preview_meter_configuration", "preview_ct_config", "apply_ct_config",
   "compile_ct_config", "install_ct_config", "abandon_ct_config", "set_ha_labels", "start_session",
-  "acknowledge_safety", "skip_offset_calibration", "calibrate_voltage", "calibrate_current",
+  "acknowledge_safety", "reconnect_session", "skip_offset_calibration", "calibrate_voltage", "calibrate_current",
   "calibrate_offset", "restart_and_verify", "complete_calibration_without_changes",
   "preview_calibrated_gains", "clear_calibration_flash",
 ]);

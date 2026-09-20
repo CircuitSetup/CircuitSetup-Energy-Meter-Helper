@@ -1505,6 +1505,26 @@ def _workflow(
     return workflow, handle, sessions, api
 
 
+def test_reconnect_session_reconnects_and_inspects_the_live_meter() -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        calls: list[str] = []
+
+        async def verify(mac: str) -> None:
+            calls.append(mac)
+
+        workflow.async_verify = verify  # type: ignore[method-assign]
+
+        status = await workflow.async_reconnect_session(handle.session_id)
+
+        assert calls == [MAC]
+        assert status.session_id == handle.session_id
+        assert handle.active_task is None
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     ("communication_failed", "renamed"),
     ((False, False), (True, False), (False, True)),

@@ -888,6 +888,16 @@ class EntryWorkflow:
     async def async_get_session(self, session_id: str) -> SessionStatus:
         return self._status(self._session(session_id))
 
+    async def async_reconnect_session(self, session_id: str) -> SessionStatus:
+        handle, revision = self._claim_ready_session(session_id)
+        try:
+            await self.async_verify(handle.mac)
+            self._assert_claim(handle, revision)
+            self._refresh(handle)
+            return self._publish(handle)
+        finally:
+            self._release_claim(handle, revision)
+
     async def async_get_active_work(self, device_id: str) -> dict[str, Any]:
         """Return safe resumable work for one selected device."""
         self._device(device_id)

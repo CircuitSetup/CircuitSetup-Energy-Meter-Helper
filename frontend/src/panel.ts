@@ -2456,7 +2456,7 @@ export class CircuitSetupPanel extends LitElement {
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
     await this.run(async () => {
-      const session = await api.getSession(sessionId);
+      const session = await api.reconnectSession(sessionId);
       if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
       this.session = session;
       this.offsetAcknowledged = [false, false]; this.offsetReadinessByTarget = new Map();

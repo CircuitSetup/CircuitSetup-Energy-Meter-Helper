@@ -100,6 +100,7 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}abandon_ct_config",
     f"{_PREFIX}rollback_ct_config",
     f"{_PREFIX}start_session",
+    f"{_PREFIX}reconnect_session",
     f"{_PREFIX}acknowledge_safety",
     f"{_PREFIX}check_stability",
     f"{_PREFIX}check_offset_readiness",
@@ -301,6 +302,8 @@ class WorkflowOwner(Protocol):
     async def async_start_session(
         self, device_id: str, calibration_plan: CalibrationPlan
     ) -> Any: ...
+
+    async def async_reconnect_session(self, session_id: str) -> Any: ...
 
     async def async_acknowledge_safety(
         self, session_id: str, acknowledged: bool
@@ -572,6 +575,8 @@ class EntryWebsocketController:
             return await self._async_transaction(operation, msg, user_id)
         if operation == "start_session" and workflow is not None:
             return await workflow.async_start_session(msg["device_id"], msg["calibration_plan"])
+        if operation == "reconnect_session" and workflow is not None:
+            return await workflow.async_reconnect_session(msg["session_id"])
         if operation == "acknowledge_safety" and workflow is not None:
             return await workflow.async_acknowledge_safety(
                 msg["session_id"], msg["acknowledged"]
@@ -1371,6 +1376,7 @@ def _schema(command: str) -> Any:
         }
     elif operation in {
         "get_session",
+        "reconnect_session",
         "skip_offset_calibration",
         "restart_and_verify",
         "complete_calibration_without_changes",

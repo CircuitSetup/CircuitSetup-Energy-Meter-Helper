@@ -688,6 +688,7 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
             ],
         }
     elif suffix in {
+        "reconnect_session",
         "get_session",
         "restart_and_verify",
         "cancel_session",
@@ -4367,6 +4368,7 @@ def test_every_topology_and_calibration_route_delegates_and_session_events_unsub
         "adopt_device",
         "preview_ct_config",
         "start_session",
+        "reconnect_session",
         "acknowledge_safety",
         "check_stability",
         "check_offset_readiness",

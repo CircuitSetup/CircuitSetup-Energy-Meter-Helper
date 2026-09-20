@@ -5287,12 +5287,20 @@ describe("CircuitSetup panel", () => {
     expect(state.pendingAction).toBe("");
   });
 
-  it("reconnect assigns the returned live session instead of discarding it", async () => {
+  it("reconnect inspects the live meter and assigns the returned session", async () => {
+    const calls: string[] = [];
     const live = { session_id: "session", device_id: "meter-1", state: "unstable", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
-    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, get_session: live }));
+    const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] }, reconnect_session: live });
+    const callWS = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      calls.push(String(message.type).split("/").at(-1) ?? "");
+      return callWS<T>(message);
+    };
+    const panel = await mount(hass);
     const state = panel as unknown as Record<string, unknown> & { reconnectSession(): Promise<void> };
     state.session = { ...live, state: "indeterminate" };
     await state.reconnectSession();
     expect((state.session as { state: string }).state).toBe("unstable");
+    expect(calls).toContain("reconnect_session");
   });
 });

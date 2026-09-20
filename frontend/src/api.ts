@@ -1041,6 +1041,8 @@ export class HelperApi {
     this.call("get_active_work", (value) => activeWork(value, "get_active_work", expectedTopology), { device_id: deviceId });
   public getSession = (sessionId: string) =>
     this.call("get_session", (value) => session(value, "get_session"), { session_id: sessionId });
+  public reconnectSession = (sessionId: string) =>
+    this.call("reconnect_session", (value) => session(value, "reconnect_session"), { session_id: sessionId });
   public getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (value) => record(value, "get_diagnostics_summary"));
   public setInstallerIntent = (
     addonCount: number,

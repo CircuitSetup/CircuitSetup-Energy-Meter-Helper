@@ -1604,6 +1604,7 @@ class HelperApi {
     };
     this.getActiveWork = (deviceId, expectedTopology) => this.call("get_active_work", (value) => activeWork(value, "get_active_work", expectedTopology), { device_id: deviceId });
     this.getSession = (sessionId) => this.call("get_session", (value) => session(value, "get_session"), { session_id: sessionId });
+    this.reconnectSession = (sessionId) => this.call("reconnect_session", (value) => session(value, "reconnect_session"), { session_id: sessionId });
     this.getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (value) => record(value, "get_diagnostics_summary"));
     this.setInstallerIntent = (addonCount, connectionType, firmware, packageOptions2, electricalSystem, lineFrequencyHz) => this.call("set_installer_intent", (value) => setup(value, "set_installer_intent"), {
       addon_count: addonCount,
@@ -6742,7 +6743,7 @@ class CircuitSetupPanel extends i$2 {
     const generation = ++this.operationGeneration;
     await this.run(
       async () => {
-        const session2 = await api.getSession(sessionId);
+        const session2 = await api.reconnectSession(sessionId);
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
         this.session = session2;
         this.offsetAcknowledged = [false, false];
