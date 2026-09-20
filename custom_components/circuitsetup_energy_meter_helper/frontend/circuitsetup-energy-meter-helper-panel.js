@@ -1604,7 +1604,10 @@ class HelperApi {
     };
     this.getActiveWork = (deviceId, expectedTopology) => this.call("get_active_work", (value) => activeWork(value, "get_active_work", expectedTopology), { device_id: deviceId });
     this.getSession = (sessionId) => this.call("get_session", (value) => session(value, "get_session"), { session_id: sessionId });
-    this.reconnectSession = (sessionId) => this.call("reconnect_session", (value) => session(value, "reconnect_session"), { session_id: sessionId });
+    this.reconnectSession = (sessionId, boardIndex, stage) => this.call("reconnect_session", (value) => session(value, "reconnect_session"), {
+      session_id: sessionId,
+      ...boardIndex !== void 0 && stage !== void 0 ? { board_index: boardIndex, stage } : {}
+    });
     this.getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (value) => record(value, "get_diagnostics_summary"));
     this.setInstallerIntent = (addonCount, connectionType, firmware, packageOptions2, electricalSystem, lineFrequencyHz) => this.call("set_installer_intent", (value) => setup(value, "set_installer_intent"), {
       addon_count: addonCount,
@@ -1676,16 +1679,10 @@ class HelperApi {
     this.skipOffsetCalibration = (sessionId) => this.call("skip_offset_calibration", (value) => session(value, "skip_offset_calibration"), { session_id: sessionId });
     this.getOffsetPreparation = (sessionId) => this.call("get_offset_preparation", (value) => offsetPreparation(value, "get_offset_preparation"), { session_id: sessionId });
     this.getOffsetFinalization = (sessionId) => this.call("get_offset_finalization", (value) => offsetFinalization(value, "get_offset_finalization"), { session_id: sessionId });
-    this.previewOffsetPreparation = (sessionId, boardIndex, stage, backupAcknowledged, firstCalibrationConfirmed = false) => this.call(
+    this.previewOffsetPreparation = (sessionId, boardIndex, stage, backupAcknowledged) => this.call(
       "preview_offset_preparation",
       (value) => offsetPreview(value, "preview_offset_preparation", stage, boardIndex),
-      {
-        session_id: sessionId,
-        board_index: boardIndex,
-        stage,
-        backup_acknowledged: backupAcknowledged,
-        ...firstCalibrationConfirmed ? { first_calibration_confirmed: true } : {}
-      }
+      { session_id: sessionId, board_index: boardIndex, stage, backup_acknowledged: backupAcknowledged }
     );
     this.resumeOffsetCalibration = (sessionId, operationId, boardIndex, stage, preparationAcknowledged) => this.call(
       "resume_offset_calibration",
@@ -1752,6 +1749,14 @@ class HelperApi {
       transaction_id: transactionId
     });
     this.cancelSession = (sessionId) => this.call("cancel_session", (value) => session(value, "cancel_session"), { session_id: sessionId });
+    this.closeSession = (sessionId) => this.call("close_session", (value) => {
+      const item = record(value, "close_session");
+      exactKeys(item, ["session_id", "closed"], "close_session");
+      string(item.session_id, "close_session");
+      boolean(item.closed, "close_session");
+      if (item.session_id !== sessionId || item.closed !== true) throw new Error("close_session response is invalid");
+      return item;
+    }, { session_id: sessionId });
     this.subscribeSetup = (callback) => this.subscribe("subscribe_setup", {}, (value) => setup(value, "subscribe_setup"), callback);
     this.subscribeConfigTransaction = (deviceId, transactionId, sourceSha256, callback) => this.subscribe("subscribe_config_transaction", {
       device_id: deviceId,
@@ -3471,10 +3476,9 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
           ${stock ? b`<section class="measurement-evidence" aria-label="Offset preparation backup">
             <h3>${nativeReview ? "Native offset readiness" : "Why preparation is required"}</h3>
             <p>${nativeReview ? "The helper uses the meter's native ATM90E32 offset controls; no firmware or zero-offset YAML is installed." : "Before calibration, the helper temporarily installs zero offsets for the selected chips so existing corrections do not affect the new measurements."}</p>
-            <p>The helper saves both offset stages for the selected chips in a private recovery backup. It uses fresh meter tables when available; with the first-run confirmation below, a missing table may use the current Device Builder YAML. This is not flash readback, and unknown values stay blocked.</p>
+            <p>The helper saves both offset stages for the selected chips in a private recovery backup. It uses fresh meter tables when available; a missing first-use table may use the current Device Builder YAML. This is not flash readback, and unknown values stay blocked.</p>
             ${matching && preparation?.installed ? b`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : nativeReview ? "This historical preparation is not authorized by this backend owner. Review native offset readiness again; retained values are not lost." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review the preparation for unfinished chips; retained values are not lost."}</p>` : A}
             <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event) => stock.setBackup(event.target.checked)}> I understand that this step creates a private backup and ${nativeReview ? "uses the meter's native offset controls; no firmware is installed" : "installs a temporary zero-offset configuration"}.</label>
-            ${!recovery ? b`<label class="check-row"><input type="checkbox" .checked=${stock.firstCalibrationConfirmed} @change=${(event) => stock.setFirstCalibrationConfirmed(event.target.checked)}> I confirm the selected chips have never had offset calibration applied.</label>` : A}
             <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
               @click=${stock.prepare}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading offset preparation…` : recovery ? nativeReview ? "Review unfinished-chip readiness" : "Review unfinished-chip preparation" : nativeReview ? "Review native offset readiness" : "Review offset preparation"}</button>
             ${attempted ? b`<p>${nativeReview ? "This run was already attempted. Review unfinished-chip readiness again before retrying; completed values, including zeros, are retained." : "This historical preparation was already attempted. Review the historical preparation again before retrying; completed values, including zeros, are retained."}</p>` : A}
@@ -4401,7 +4405,6 @@ class CircuitSetupPanel extends i$2 {
     this.offsetAcknowledged = [false, false];
     this.offsetRetryConfirmed = false;
     this.offsetBackupAcknowledged = false;
-    this.offsetFirstCalibrationConfirmed = false;
     this.offsetPreparation = null;
     this.offsetFinalization = null;
     this.drafts = /* @__PURE__ */ new Map();
@@ -4670,7 +4673,6 @@ class CircuitSetupPanel extends i$2 {
     this.offsetAcknowledged = [false, false];
     this.offsetRetryConfirmed = false;
     this.offsetBackupAcknowledged = false;
-    this.offsetFirstCalibrationConfirmed = false;
     this.offsetPreparation = null;
     this.offsetFinalization = null;
     this.finishBusy = false;
@@ -5210,7 +5212,6 @@ class CircuitSetupPanel extends i$2 {
         await this.refreshOffsetRecovery(api, generation2);
         if (!this.ownsOperation(generation2, api, deviceId)) return;
         this.offsetBackupAcknowledged = false;
-        this.offsetFirstCalibrationConfirmed = false;
         this.navigate(current.purpose === "offset_preparation" ? "offset" : "save-calibration");
       }, "The review could not be cancelled. Recovery and captured values are retained.", () => this.ownsOperation(generation2, api, deviceId));
       this.pendingAction = "";
@@ -5611,13 +5612,13 @@ class CircuitSetupPanel extends i$2 {
       };
       this.totalGraphPreview = preview;
       this.totalGraphState = "ready";
-      if (this.error === this.safeErrorMessage({ code: "source_owned_totals" }, "")) this.error = "";
+      if (["source_owned_totals", "generated_total_id_conflict"].some((code) => this.error === this.safeErrorMessage({ code }, ""))) this.error = "";
       this.acceptedAutomaticInputs = this.automaticCandidateInputs();
     } catch (error) {
       if (!current()) return;
       this.totalGraphPreview = null;
       this.totalGraphState = "invalid";
-      if (error.code === "source_owned_totals") this.fail(error, this.safeErrorMessage(error, ""));
+      if (["source_owned_totals", "generated_total_id_conflict"].includes(error.code ?? "")) this.fail(error, this.safeErrorMessage(error, ""));
     }
     this.requestUpdate();
   }
@@ -5951,7 +5952,6 @@ class CircuitSetupPanel extends i$2 {
           this.offsetAcknowledged = [false, false];
           this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
           this.offsetBackupAcknowledged = false;
-          this.offsetFirstCalibrationConfirmed = false;
           this.offsetRetryConfirmed = false;
           await this.refreshOffsetRecovery(api, generation, true);
           if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -6118,7 +6118,7 @@ class CircuitSetupPanel extends i$2 {
   isCalibrationPreparationTransaction(transaction2) {
     return Boolean(transaction2?.changes.length && transaction2.changes.every((change) => /^(?:offset_calibration|gain_calibration|calibration\.(?:offset_calibration|gain_calibration)|package\.(?:main|addon[1-6])\.calibration)$/.test(change.key)));
   }
-  finishFlow(message) {
+  async finishFlow(message) {
     if (this.offsetRecoveryPending()) {
       this.navigate("save-calibration");
       return;
@@ -6127,9 +6127,33 @@ class CircuitSetupPanel extends i$2 {
       this.explainCalibrationConfigurationConflict();
       return;
     }
-    this.selectDevice(null);
-    this.navigate("setup");
-    this.announcement = message;
+    if (this.pendingAction) return;
+    if (!this.api || !this.session) {
+      this.fail(new Error(), "Calibration session could not be closed. Summary remains available; retry Finish.");
+      return;
+    }
+    const api = this.api;
+    const deviceId = this.selectedDeviceId;
+    const sessionId = this.session.session_id;
+    const generation = ++this.operationGeneration;
+    this.pendingAction = "finish";
+    this.requestUpdate();
+    await this.run(
+      async () => {
+        await api.closeSession(sessionId);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        this.selectDevice(null);
+        this.pendingAction = "";
+        this.navigate("setup");
+        this.announcement = message;
+      },
+      "Calibration session could not be closed. Summary remains available; retry Finish.",
+      () => this.ownsOperation(generation, api, deviceId)
+    );
+    if (this.ownsOperation(generation, api, deviceId)) {
+      this.pendingAction = "";
+      this.requestUpdate();
+    }
   }
   async subscribeSession(generation) {
     if (!this.api || !this.session) return;
@@ -6192,9 +6216,6 @@ class CircuitSetupPanel extends i$2 {
     this.offsetFinalization = finalization;
     this.session = session2;
     if (restoreSelection && finalization.board_index !== null && finalization.stage !== null) {
-      if (this.board !== finalization.board_index || this.offsetStage !== finalization.stage) {
-        this.offsetFirstCalibrationConfirmed = false;
-      }
       this.board = finalization.board_index;
       this.offsetStage = finalization.stage;
     }
@@ -6227,7 +6248,7 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
     await this.run(
       async () => {
-        const review = await api.previewOffsetPreparation(sessionId, board, stage, true, this.offsetFirstCalibrationConfirmed);
+        const review = await api.previewOffsetPreparation(sessionId, board, stage, true);
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
         if (review.mode === "native") {
           this.clearSubscription("transaction");
@@ -6328,7 +6349,6 @@ class CircuitSetupPanel extends i$2 {
         this.offsetAcknowledged = [false, false];
         this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
         this.offsetBackupAcknowledged = false;
-        this.offsetFirstCalibrationConfirmed = false;
         this.offsetRetryConfirmed = false;
         await this.refreshOffsetRecovery(api, generation, true);
         if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -6457,7 +6477,6 @@ class CircuitSetupPanel extends i$2 {
       return;
     }
     this.offsetAcknowledged = this.offsetAcknowledged.map((value, index) => index === this.offsetStage - 1 ? false : value);
-    this.offsetFirstCalibrationConfirmed = false;
     this.offsetRetryConfirmed = false;
     this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
     this.focusHeading = true;
@@ -6729,7 +6748,12 @@ class CircuitSetupPanel extends i$2 {
       if (this.error) return;
       if (this.meterConfiguration && this.hasCanonicalChanges()) await this.previewCanonicalConfiguration();
       else if (changes.length || this.hasPackageChanges()) await this.reviewChanges();
-      else this.finishFlow("No changes were made. Select another device to configure.");
+      else {
+        this.selectDevice(null);
+        this.pendingAction = "";
+        this.navigate("setup");
+        this.announcement = "No changes were made. Select another device to configure.";
+      }
     } finally {
       this.pendingAction = "";
       this.requestUpdate();
@@ -6743,7 +6767,7 @@ class CircuitSetupPanel extends i$2 {
     const generation = ++this.operationGeneration;
     await this.run(
       async () => {
-        const session2 = await api.reconnectSession(sessionId);
+        const session2 = this.step === "offset" ? await api.reconnectSession(sessionId, this.board, this.offsetStage) : await api.reconnectSession(sessionId);
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
         this.session = session2;
         this.offsetAcknowledged = [false, false];
@@ -6813,6 +6837,7 @@ class CircuitSetupPanel extends i$2 {
     if (code === "offset_chip_identity_unavailable") return `The meter-chip mapping for the selected ${board} could not be verified from the authoritative configuration. Review the source/package definitions and retry. Existing recovery data is unchanged.`;
     if (code === "offset_tables_unavailable") return `The meter did not report all offset values needed to back up this calibration stage for the selected ${board}. This can happen before the first offset calibration, even when the firmware supports offset calibration. Retry to request fresh diagnostics, or choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data is unchanged.`;
     if (code === "source_owned_totals") return "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities.";
+    if (code === "generated_total_id_conflict") return "Rename one of the totals so its generated sensor IDs are unique and do not conflict with existing sensors.";
     return code === "stale_confirmation" ? "This confirmation expired. Reload live data and review again." : code === "stale_handle" ? "The selected device changed or is no longer available. Rescan and try again." : fallback;
   }
   fail(_error, safeMessage) {
@@ -7023,7 +7048,6 @@ class CircuitSetupPanel extends i$2 {
       this.offsetBusy,
       (value) => {
         this.board = value;
-        this.offsetFirstCalibrationConfirmed = false;
         this.offsetRetryConfirmed = false;
         this.requestUpdate();
       },
@@ -7031,7 +7055,6 @@ class CircuitSetupPanel extends i$2 {
         if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed")) {
           this.offsetStage = value;
           this.board = 0;
-          this.offsetFirstCalibrationConfirmed = false;
           this.offsetRetryConfirmed = false;
           this.requestUpdate();
         }
@@ -7055,11 +7078,6 @@ class CircuitSetupPanel extends i$2 {
         backupAcknowledged: this.offsetBackupAcknowledged,
         setBackup: (value) => {
           this.offsetBackupAcknowledged = value;
-          this.requestUpdate();
-        },
-        firstCalibrationConfirmed: this.offsetFirstCalibrationConfirmed,
-        setFirstCalibrationConfirmed: (value) => {
-          this.offsetFirstCalibrationConfirmed = value;
           this.requestUpdate();
         },
         prepare: () => void this.reviewOffsetPreparation()

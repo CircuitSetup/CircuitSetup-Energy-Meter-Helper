@@ -75,7 +75,6 @@ def test_native_first_use_rechecks_newly_reported_saved_values(tmp_path: Path) -
             0,
             1,
             backup_acknowledged=True,
-            first_calibration_confirmed=True,
         )
         session.snapshot_overrides[("meter_main1", 1)] = observed("meter_main1")
         with pytest.raises(WorkflowCapabilityUnavailable):
@@ -110,7 +109,6 @@ def test_native_review_replaces_stale_unstarted_preview(tmp_path: Path) -> None:
             0,
             1,
             backup_acknowledged=True,
-            first_calibration_confirmed=True,
         )
         source = await workflow._builder.async_get_config("meter.yaml")
         changed = replace(
@@ -125,7 +123,6 @@ def test_native_review_replaces_stale_unstarted_preview(tmp_path: Path) -> None:
             0,
             1,
             backup_acknowledged=True,
-            first_calibration_confirmed=True,
         )
         assert replacement["mode"] == "native"
         assert replacement["operation_id"] != first["operation_id"]
@@ -155,8 +152,6 @@ def test_native_first_use_across_main_and_addon_uses_real_instance_ids(
                 board,
                 stage,
                 backup_acknowledged=True,
-                first_calibration_confirmed=board == 0 and stage == 1
-                or board == 1 and stage == 1,
             )
             result = await workflow.async_resume_offset_calibration(
                 handle.session_id,
@@ -194,8 +189,7 @@ def test_native_main_run_does_not_require_unselected_addon_mapping(tmp_path: Pat
             )
         handle.configuration_sha256 = sha256(builder.remote_content.encode()).hexdigest()
         preview = await workflow.async_preview_offset_preparation(
-            handle.session_id, 0, 1,
-            backup_acknowledged=True, first_calibration_confirmed=True,
+            handle.session_id, 0, 1, backup_acknowledged=True,
         )
         result = await workflow.async_resume_offset_calibration(
             handle.session_id, preview["operation_id"], 0, 1,
@@ -231,7 +225,7 @@ def test_native_stock_preparation_review_has_no_transaction_or_install(tmp_path:
         workflow._calibration._evidence_timeout = 0.05
 
         preview = await workflow.async_preview_offset_preparation(
-            handle.session_id, 0, 1, backup_acknowledged=True, first_calibration_confirmed=True,
+            handle.session_id, 0, 1, backup_acknowledged=True,
         )
 
         assert preview["mode"] == "native"
@@ -281,7 +275,7 @@ def test_native_first_calibration_runs_both_stages_without_clear_or_install(
         workflow._calibration._evidence_timeout = 0.05
 
         stage_one = await workflow.async_preview_offset_preparation(
-            handle.session_id, 0, 1, backup_acknowledged=True, first_calibration_confirmed=True,
+            handle.session_id, 0, 1, backup_acknowledged=True,
         )
         result_one = await workflow.async_resume_offset_calibration(
             handle.session_id, stage_one["operation_id"], 0, 1,
@@ -364,7 +358,7 @@ def test_native_mixed_first_and_saved_offsets_only_clears_saved_chip(
         workflow._calibration._evidence_timeout = 0.05
 
         review = await workflow.async_preview_offset_preparation(
-            handle.session_id, 0, 1, backup_acknowledged=True, first_calibration_confirmed=True,
+            handle.session_id, 0, 1, backup_acknowledged=True,
         )
         lease = await sessions.async_acquire_calibration(MAC)
         try:
@@ -387,43 +381,6 @@ def test_native_mixed_first_and_saved_offsets_only_clears_saved_chip(
         assert "write" not in builder.calls
         assert "compile" not in builder.calls
         assert "upload" not in builder.calls
-
-    asyncio.run(run())
-
-
-def test_native_no_table_requires_explicit_first_use_evidence(tmp_path: Path) -> None:
-    async def run() -> None:
-        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
-            OffsetRecovery,
-        )
-        from custom_components.circuitsetup_energy_meter_helper.workflow import (
-            OffsetTablesUnavailable,
-        )
-        from tests.test_workflow import _workflow
-
-        workflow, handle, sessions, _ = _workflow()
-        workflow._sessions.clear()
-        handle.session_id = "b" * 32
-        workflow._sessions[handle.session_id] = handle
-        handle.binding = binding_with_offset_controls(0)
-        source = _snapshot()
-        handle.configuration, handle.configuration_sha256 = source.configuration, source.sha256
-        session = StockSession(handle.binding)
-        session.snapshot_unknown = True
-        workflow._api = session
-        workflow._builder = Builder(remote_content=source.content)
-        recovery = workflow._offset_recovery = OffsetRecovery(hass_at(tmp_path), sessions)
-        workflow.transactions = None
-
-        with pytest.raises(OffsetTablesUnavailable):
-            await workflow.async_preview_offset_preparation(
-                handle.session_id, 0, 1, backup_acknowledged=True
-            )
-        lease = await sessions.async_acquire_calibration(MAC)
-        try:
-            assert await recovery.async_load(lease) is None
-        finally:
-            lease.release()
 
     asyncio.run(run())
 
@@ -466,7 +423,6 @@ def test_native_invalid_fresh_diagnostics_block_first_use_shortcut(
                 0,
                 1,
                 backup_acknowledged=True,
-                first_calibration_confirmed=True,
             )
         lease = await sessions.async_acquire_calibration(MAC)
         try:
@@ -520,7 +476,6 @@ def test_native_stale_fresh_diagnostics_block_preparation(tmp_path: Path) -> Non
                 0,
                 1,
                 backup_acknowledged=True,
-                first_calibration_confirmed=True,
             )
 
     asyncio.run(run())
@@ -662,7 +617,6 @@ def test_native_first_use_runs_with_run_controls_when_clear_controls_are_absent(
             0,
             1,
             backup_acknowledged=True,
-            first_calibration_confirmed=True,
         )
         result = await workflow.async_resume_offset_calibration(
             handle.session_id, review["operation_id"], 0, 1, preparation_acknowledged=True
@@ -778,73 +732,7 @@ def test_preparation_preserves_completed_chip_outside_remaining_targets(tmp_path
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("stage", (1, 2))
-def test_first_stock_preparation_blocks_unproven_builder_source_without_writes(
-    tmp_path: Path, stage: int
-) -> None:
-    async def run() -> None:
-        from unittest.mock import AsyncMock
-
-        from custom_components.circuitsetup_energy_meter_helper.diagnostics import (
-            _error_code,
-        )
-        from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
-            OffsetRecovery,
-        )
-        from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
-            _send_safe_error,
-        )
-        from custom_components.circuitsetup_energy_meter_helper.workflow import (
-            OffsetTablesUnavailable,
-        )
-        from tests.test_websocket_api import FakeConnection
-        from tests.test_workflow import _workflow
-
-        workflow, handle, sessions, _ = _workflow()
-        handle.binding = binding_with_offset_controls(0)
-        running_source = _snapshot()
-        builder_source = replace(
-            running_source,
-            content=running_source.content + "\n# edited after firmware build\n",
-            sha256=sha256(
-                (running_source.content + "\n# edited after firmware build\n").encode()
-                ).hexdigest(),
-        )
-        assert running_source.sha256 != builder_source.sha256
-        handle.configuration = "meter.yaml"
-        handle.configuration_sha256 = builder_source.sha256
-        session = StockSession(handle.binding)
-        session.snapshot_unknown = True
-        workflow._api = session
-        builder = workflow._builder = Builder(remote_content=builder_source.content)
-        recovery = workflow._offset_recovery = OffsetRecovery(hass_at(tmp_path), sessions)
-        preview = AsyncMock()
-        workflow.transactions = SimpleNamespace(async_preview=preview)
-
-        with pytest.raises(OffsetTablesUnavailable) as raised:
-            await workflow.async_preview_offset_preparation(
-                handle.session_id, 0, stage, backup_acknowledged=True
-            )
-        connection = FakeConnection()
-        _send_safe_error(connection, 1, raised.value)
-        assert _error_code(raised.value) == "offset_tables_unavailable"
-        assert connection.errors == [
-            (1, "offset_tables_unavailable", "Complete offset tables are unavailable")
-        ]
-        assert not any(event[0] == "button" for event in session.events)
-        assert session.configuration_selections == []
-        assert "write" not in builder.calls
-        preview.assert_not_awaited()
-        lease = await sessions.async_acquire_calibration(MAC)
-        try:
-            assert await recovery.async_load(lease) is None
-        finally:
-            lease.release()
-
-    asyncio.run(run())
-
-
-def test_confirmed_first_stock_preparation_uses_source_for_both_stages(
+def test_first_stock_preparation_uses_source_for_both_stages_without_confirmation(
     tmp_path: Path,
 ) -> None:
     async def run() -> None:
@@ -886,7 +774,6 @@ def test_confirmed_first_stock_preparation_uses_source_for_both_stages(
             0,
             1,
             backup_acknowledged=True,
-            first_calibration_confirmed=True,
         )
         assert preview["backup_available"] is True
         assert preview["mode"] == "native"
@@ -923,7 +810,7 @@ def test_confirmed_first_stock_preparation_uses_source_for_both_stages(
     asyncio.run(run())
 
 
-def test_confirmed_first_baseline_reuses_unchanged_values_for_stage_two_without_install(
+def test_first_baseline_reuses_unchanged_values_for_stage_two_without_install(
     tmp_path: Path,
 ) -> None:
     async def run() -> None:
@@ -963,7 +850,6 @@ def test_confirmed_first_baseline_reuses_unchanged_values_for_stage_two_without_
             0,
             1,
             backup_acknowledged=True,
-            first_calibration_confirmed=True,
         )
         assert first["mode"] == "native"
         assert first["transaction"] is None
@@ -981,7 +867,7 @@ def test_confirmed_first_baseline_reuses_unchanged_values_for_stage_two_without_
     asyncio.run(run())
 
 
-def test_confirmed_first_stock_preparation_uses_fresh_parser_health_evidence(
+def test_first_stock_preparation_uses_fresh_parser_health_evidence(
     tmp_path: Path,
 ) -> None:
     async def run() -> None:
@@ -1057,7 +943,6 @@ def test_confirmed_first_stock_preparation_uses_fresh_parser_health_evidence(
             0,
             1,
             backup_acknowledged=True,
-            first_calibration_confirmed=True,
         )
         assert preview["backup_available"] is True
         lease = await sessions.async_acquire_calibration(MAC)
@@ -1683,7 +1568,6 @@ def test_native_prepared_run_rebinds_retained_pending_origin(tmp_path: Path) -> 
             0,
             1,
             backup_acknowledged=True,
-            first_calibration_confirmed=True,
         )
         source = _snapshot()
         lease = await sessions.async_acquire_calibration(MAC)

@@ -117,6 +117,24 @@ def test_firmware_filter_only_matches_yaml_configuration_changes() -> None:
     assert "if: needs.changes.outputs.firmware == 'true'" in workflow
 
 
+def test_ci_firmware_filter_uses_the_full_pr_range_and_push_predecessor() -> None:
+    workflow = (WORKFLOW_DIR / "ci.yml").read_text()
+
+    assert "PR_ACTION:" not in workflow
+    assert "PR_BEFORE_SHA:" not in workflow
+    assert (
+        'if [[ "$EVENT_NAME" == "pull_request" ]]; then\n'
+        '            base="$PR_BASE_SHA"\n'
+        '            head="$PR_HEAD_SHA"\n'
+        '          else\n'
+        '            base="$PUSH_BEFORE_SHA"\n'
+        '            head="$PUSH_SHA"\n'
+        '          fi'
+    ) in workflow
+    assert 'git diff --no-renames --name-only "$base" "$head"' in workflow
+    assert 'git show --format= --name-only "$head"' in workflow
+
+
 def test_release_runs_firmware_tests_without_compiling_every_meter() -> None:
     workflow = (WORKFLOW_DIR / "release.yml").read_text()
 

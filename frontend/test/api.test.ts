@@ -49,6 +49,17 @@ it("rejects a repeated discovery page instead of looping indefinitely", async ()
   await expect(new HelperApi(hass, "helper").listExistingMeters()).rejects.toThrow();
 });
 
+it("scopes offset reconnects and closes a completed session", async () => {
+  const hass = new FakeHass();
+  const api = new HelperApi(hass, "entry-1");
+  hass.responses.reconnect_session = { session_id: "session-1", device_id: "meter-1", state: "ready", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+  await api.reconnectSession("session-1", 1, 2);
+  expect(hass.messages.at(-1)).toMatchObject({ board_index: 1, stage: 2 });
+  hass.responses.close_session = { session_id: "session-1", closed: true };
+  await api.closeSession("session-1");
+  expect(hass.messages.at(-1)).toMatchObject({ session_id: "session-1" });
+});
+
 const device = {
   entry_id: "meter-1", title: "Meter", project_name: "circuitsetup.6c-energy-meter",
   project_version: "2026.8.0", importable: true, configuration: null,
@@ -239,8 +250,8 @@ describe("HelperApi", () => {
     await expect(api.previewOffsetPreparation("3".repeat(32), 0, 1, true)).resolves.toMatchObject({ transaction: { purpose: "offset_preparation" } });
     expect(hass.messages.at(-1)).toEqual({ type: "circuitsetup_energy_meter_helper/preview_offset_preparation", entry_id: "entry-1",
       session_id: "3".repeat(32), board_index: 0, stage: 1, backup_acknowledged: true });
-    await expect(api.previewOffsetPreparation("3".repeat(32), 0, 1, true, true)).resolves.toMatchObject({ transaction: { purpose: "offset_preparation" } });
-    expect(hass.messages.at(-1)).toMatchObject({ first_calibration_confirmed: true });
+    await expect(api.previewOffsetPreparation("3".repeat(32), 0, 1, true)).resolves.toMatchObject({ transaction: { purpose: "offset_preparation" } });
+    expect(hass.messages.at(-1)).not.toHaveProperty("first_calibration_confirmed");
     hass.responses.preview_offset_preparation = { operation_id: native.operation_id, stage: 1,
       targets: native.targets, backup_available: true, mode: "native", transaction: null };
     await expect(api.previewOffsetPreparation("3".repeat(32), 0, 1, true)).resolves.toMatchObject({ mode: "native", transaction: null });

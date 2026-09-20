@@ -26,7 +26,7 @@ export function offsetStep(
   skip: () => void,
   back: () => void,
   continueOffset: () => void,
-  stock: { preparation: OffsetPreparationStatus | null; backupAcknowledged: boolean; setBackup: (value: boolean) => void; firstCalibrationConfirmed: boolean; setFirstCalibrationConfirmed: (value: boolean) => void; prepare: () => void } | null = null,
+  stock: { preparation: OffsetPreparationStatus | null; backupAcknowledged: boolean; setBackup: (value: boolean) => void; prepare: () => void } | null = null,
 ): TemplateResult {
   const capability = session?.offset_capability;
   const boards = session?.offset_boards ?? [];
@@ -85,10 +85,9 @@ export function offsetStep(
           ${stock ? html`<section class="measurement-evidence" aria-label="Offset preparation backup">
             <h3>${nativeReview ? "Native offset readiness" : "Why preparation is required"}</h3>
             <p>${nativeReview ? "The helper uses the meter's native ATM90E32 offset controls; no firmware or zero-offset YAML is installed." : "Before calibration, the helper temporarily installs zero offsets for the selected chips so existing corrections do not affect the new measurements."}</p>
-            <p>The helper saves both offset stages for the selected chips in a private recovery backup. It uses fresh meter tables when available; with the first-run confirmation below, a missing table may use the current Device Builder YAML. This is not flash readback, and unknown values stay blocked.</p>
+            <p>The helper saves both offset stages for the selected chips in a private recovery backup. It uses fresh meter tables when available; a missing first-use table may use the current Device Builder YAML. This is not flash readback, and unknown values stay blocked.</p>
             ${matching && preparation?.installed ? html`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : nativeReview ? "This historical preparation is not authorized by this backend owner. Review native offset readiness again; retained values are not lost." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review the preparation for unfinished chips; retained values are not lost."}</p>` : nothing}
             <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event: Event) => stock.setBackup((event.target as HTMLInputElement).checked)}> I understand that this step creates a private backup and ${nativeReview ? "uses the meter's native offset controls; no firmware is installed" : "installs a temporary zero-offset configuration"}.</label>
-            ${!recovery ? html`<label class="check-row"><input type="checkbox" .checked=${stock.firstCalibrationConfirmed} @change=${(event: Event) => stock.setFirstCalibrationConfirmed((event.target as HTMLInputElement).checked)}> I confirm the selected chips have never had offset calibration applied.</label>` : nothing}
             <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
               @click=${stock.prepare}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Loading offset preparation…` : recovery ? (nativeReview ? "Review unfinished-chip readiness" : "Review unfinished-chip preparation") : (nativeReview ? "Review native offset readiness" : "Review offset preparation")}</button>
             ${attempted ? html`<p>${nativeReview ? "This run was already attempted. Review unfinished-chip readiness again before retrying; completed values, including zeros, are retained." : "This historical preparation was already attempted. Review the historical preparation again before retrying; completed values, including zeros, are retained."}</p>` : nothing}

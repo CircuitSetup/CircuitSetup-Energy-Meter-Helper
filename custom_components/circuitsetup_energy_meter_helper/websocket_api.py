@@ -29,7 +29,10 @@ from .device_builder import ConfigChangedError, _wait_for_owned_cleanup
 from .diagnostics import DiagnosticsTracker
 from .esphome_api import sanitize_control_text
 from .log_parser import MeterCommunicationError
-from .meter_config_mutator import SourceOwnedTotalEditError
+from .meter_config_mutator import (
+    GeneratedTotalSensorIdConflictError,
+    SourceOwnedTotalEditError,
+)
 from .meter_configuration import (
     AggregateTotalSource,
     AutomaticTotalSettings,
@@ -119,6 +122,7 @@ MUTATION_COMMANDS = (
     f"{_PREFIX}preview_calibrated_gains",
     f"{_PREFIX}clear_calibration_flash",
     f"{_PREFIX}cancel_session",
+    f"{_PREFIX}close_session",
 )
 SUBSCRIPTION_COMMANDS = (
     f"{_PREFIX}subscribe_setup",
@@ -303,7 +307,12 @@ class WorkflowOwner(Protocol):
         self, device_id: str, calibration_plan: CalibrationPlan
     ) -> Any: ...
 
-    async def async_reconnect_session(self, session_id: str) -> Any: ...
+    async def async_reconnect_session(
+        self,
+        session_id: str,
+        board_index: int | None = None,
+        stage: OffsetReadinessStage | None = None,
+    ) -> Any: ...
 
     async def async_acknowledge_safety(
         self, session_id: str, acknowledged: bool
@@ -334,7 +343,7 @@ class WorkflowOwner(Protocol):
 
     async def async_preview_offset_preparation(
         self, session_id: str, board_index: int, stage: OffsetReadinessStage,
-        *, backup_acknowledged: bool, first_calibration_confirmed: bool = False,
+        *, backup_acknowledged: bool,
     ) -> Any: ...
 
     async def async_resume_offset_calibration(
@@ -388,6 +397,8 @@ class WorkflowOwner(Protocol):
     ) -> Any: ...
 
     async def async_cancel_session(self, session_id: str) -> Any: ...
+
+    async def async_close_session(self, session_id: str) -> Any: ...
 
     def subscribe_session(
         self, session_id: str, callback: Callable[[Any], None]
@@ -540,6 +551,11 @@ class EntryWebsocketController:
                     msg["source_sha256"],
                     _meter_configuration_request(msg["configuration"]),
                 )
+            except GeneratedTotalSensorIdConflictError as error:
+                raise ApiFailure(
+                    "generated_total_id_conflict",
+                    "Rename one of the totals so its generated sensor IDs are unique and do not conflict with existing sensors.",
+                ) from error
             except SourceOwnedTotalEditError as error:
                 raise ApiFailure(
                     "source_owned_totals", "Edit these existing totals in ESPHome Device Builder to preserve their energy links and entity identities."
@@ -576,7 +592,9 @@ class EntryWebsocketController:
         if operation == "start_session" and workflow is not None:
             return await workflow.async_start_session(msg["device_id"], msg["calibration_plan"])
         if operation == "reconnect_session" and workflow is not None:
-            return await workflow.async_reconnect_session(msg["session_id"])
+            return await workflow.async_reconnect_session(
+                msg["session_id"], msg.get("board_index"), msg.get("stage")
+            )
         if operation == "acknowledge_safety" and workflow is not None:
             return await workflow.async_acknowledge_safety(
                 msg["session_id"], msg["acknowledged"]
@@ -614,7 +632,6 @@ class EntryWebsocketController:
             return await workflow.async_preview_offset_preparation(
                 msg["session_id"], msg["board_index"], msg["stage"],
                 backup_acknowledged=msg["backup_acknowledged"],
-                first_calibration_confirmed=msg.get("first_calibration_confirmed", False),
             )
         if operation == "resume_offset_calibration" and workflow is not None:
             return await workflow.async_resume_offset_calibration(
@@ -673,6 +690,8 @@ class EntryWebsocketController:
             )
         if operation == "cancel_session" and workflow is not None:
             return await workflow.async_cancel_session(msg["session_id"])
+        if operation == "close_session" and workflow is not None:
+            return await workflow.async_close_session(msg["session_id"])
         raise CapabilityUnavailable
 
     async def _async_transaction(
@@ -1321,7 +1340,6 @@ def _schema(command: str) -> Any:
             schema[vol.Optional("confirm_retry", default=False)] = bool
         elif operation == "preview_offset_preparation":
             schema[vol.Required("backup_acknowledged")] = _literal_true
-            schema[vol.Optional("first_calibration_confirmed", default=False)] = bool
         elif operation == "resume_offset_calibration":
             schema[vol.Required("operation_id")] = _SERVER_ID
             schema[vol.Required("preparation_acknowledged")] = _literal_true
@@ -1374,13 +1392,22 @@ def _schema(command: str) -> Any:
                 vol.Length(max=42),
             ),
         }
+    elif operation == "reconnect_session":
+        schema |= {
+            vol.Required("session_id"): _ID,
+            vol.Optional("board_index"): vol.All(
+                _strict_integer, vol.Range(min=0, max=6)
+            ),
+            vol.Optional("stage"): vol.All(_strict_integer, vol.In((1, 2))),
+        }
+        return vol.All(vol.Schema(schema), _validate_reconnect_schema)
     elif operation in {
         "get_session",
-        "reconnect_session",
         "skip_offset_calibration",
         "restart_and_verify",
         "complete_calibration_without_changes",
         "cancel_session",
+        "close_session",
         "subscribe_session",
     }:
         schema[vol.Required("session_id")] = _ID
@@ -1417,6 +1444,12 @@ def _validate_stability_schema(value: dict[str, Any]) -> dict[str, Any]:
             raise vol.Invalid("voltage stability requires one reference")
     elif "target_id" not in value or "target_ids" in value:
         raise vol.Invalid("current stability requires one channel")
+    return value
+
+
+def _validate_reconnect_schema(value: dict[str, Any]) -> dict[str, Any]:
+    if ("board_index" in value) != ("stage" in value):
+        raise vol.Invalid("offset reconnect requires board_index and stage together")
     return value
 
 

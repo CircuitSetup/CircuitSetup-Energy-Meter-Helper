@@ -7,6 +7,7 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ESPHomeConfigSnapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+    GeneratedTotalSensorIdConflictError,
     build_meter_configuration_mutation,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
@@ -60,8 +61,28 @@ def test_colliding_names_are_rejected_before_saving():
         (ChannelTotalSource('channel', 1),), MeasurementMethod.DIRECT,
         EnergyMode.CONSUMPTION, TotalOutputSettings(True, False, False))
     requested = replace(current.configuration, aggregates=(first, replace(first, aggregate_id='second', name='Pool-Pump')))
-    with pytest.raises(ValueError, match='conflicts'):
+    with pytest.raises(ValueError, match='generated total sensor ID conflicts') as raised:
         build_meter_configuration_mutation(snapshot, topology, current, requested)
+    assert isinstance(raised.value, GeneratedTotalSensorIdConflictError)
+
+
+def test_generated_total_id_conflicts_with_source_sensor_without_rewriting_source():
+    snapshot, topology, current = _native_total_setup(0)
+    content = snapshot.content.replace(
+        'logger:\n', '  - platform: uptime\n    id: poolPumpWatts\nlogger:\n'
+    )
+    snapshot = replace(snapshot, content=content, sha256=sha256(content.encode()).hexdigest())
+    current = replace(current, source_sha256=snapshot.sha256)
+    total = CircuitAggregate('first', 'Pool Pump', CircuitRole.CUSTOM,
+        (ChannelTotalSource('channel', 1),), MeasurementMethod.DIRECT,
+        EnergyMode.CONSUMPTION, TotalOutputSettings(True, False, False))
+
+    with pytest.raises(ValueError, match='generated total sensor ID conflicts') as raised:
+        build_meter_configuration_mutation(snapshot, topology, current,
+            replace(current.configuration, aggregates=(total,)))
+
+    assert isinstance(raised.value, GeneratedTotalSensorIdConflictError)
+    assert snapshot.content == content
 
 
 def test_new_output_on_source_total_uses_name_and_preserves_existing_ids():

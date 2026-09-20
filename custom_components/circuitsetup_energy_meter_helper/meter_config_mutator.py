@@ -78,6 +78,10 @@ class SourceOwnedTotalEditError(ValueError):
     """An existing sensor relationship cannot be replaced without changing identity."""
 
 
+class GeneratedTotalSensorIdConflictError(ValueError):
+    """A newly generated total sensor ID is not unique in the resulting configuration."""
+
+
 @dataclass(frozen=True, slots=True)
 class ExpectedMeterEntityEvidence:
     """Visible meter entities derived from validated server-side semantics."""
@@ -327,7 +331,7 @@ def build_meter_configuration_mutation(
         expected_meter_entity_evidence(requested, topology,
             document=ESPHomeConfigDocument.parse(snapshot.content), previous=current.configuration,
             native_visibility_resolved=current.native_visibility_resolved)
-    except SourceOwnedTotalEditError:
+    except (GeneratedTotalSensorIdConflictError, SourceOwnedTotalEditError):
         raise
     except ValueError as error:
         raise ConfigMutationError(str(error)) from error
@@ -1185,6 +1189,17 @@ def _render_total_updates(
     return body
 
 
+def validate_generated_total_sensor_ids(
+    requested: MeterConfigurationRequest,
+    topology: MeterTopology,
+    document: ESPHomeConfigDocument,
+    previous: MeterConfigurationRequest,
+) -> None:
+    """Validate generated total IDs without writing a rendered configuration."""
+    rendered, replacements = _select_render_totals(requested, topology, document, previous)
+    _render_total_updates(rendered, topology, document, replacements, named_ids=True)
+
+
 def _saved_total_sensor_ids(document: ESPHomeConfigDocument) -> dict[str, str]:
     block = document.managed_blocks.get("aggregates")
     prefix = "# csemh-sensor-ids: "
@@ -1244,7 +1259,9 @@ def _validate_total_sensor_ids(body: str, document: ESPHomeConfigDocument) -> No
     generated = [_plain_sensor_scalar(item.get("id", "")) for item in _managed_sensor_items(body, 2)
         if "platform" in item]
     if len(generated) != len(set(generated)) or existing.intersection(generated):
-        raise SourceOwnedTotalEditError("A generated sensor ID conflicts with an existing sensor ID")
+        raise GeneratedTotalSensorIdConflictError(
+            "A generated total sensor ID conflicts with another generated or existing sensor ID"
+        )
 
 
 def _render_aggregates(

@@ -1041,8 +1041,11 @@ export class HelperApi {
     this.call("get_active_work", (value) => activeWork(value, "get_active_work", expectedTopology), { device_id: deviceId });
   public getSession = (sessionId: string) =>
     this.call("get_session", (value) => session(value, "get_session"), { session_id: sessionId });
-  public reconnectSession = (sessionId: string) =>
-    this.call("reconnect_session", (value) => session(value, "reconnect_session"), { session_id: sessionId });
+  public reconnectSession = (sessionId: string, boardIndex?: number, stage?: 1 | 2) =>
+    this.call("reconnect_session", (value) => session(value, "reconnect_session"), {
+      session_id: sessionId,
+      ...(boardIndex !== undefined && stage !== undefined ? { board_index: boardIndex, stage } : {}),
+    });
   public getDiagnosticsSummary = () => this.call("get_diagnostics_summary", (value) => record(value, "get_diagnostics_summary"));
   public setInstallerIntent = (
     addonCount: number,
@@ -1133,10 +1136,9 @@ export class HelperApi {
     this.call("get_offset_preparation", (value) => offsetPreparation(value, "get_offset_preparation"), { session_id: sessionId });
   public getOffsetFinalization = (sessionId: string) =>
     this.call("get_offset_finalization", (value) => offsetFinalization(value, "get_offset_finalization"), { session_id: sessionId });
-  public previewOffsetPreparation = (sessionId: string, boardIndex: number, stage: 1 | 2, backupAcknowledged: boolean, firstCalibrationConfirmed = false) =>
+  public previewOffsetPreparation = (sessionId: string, boardIndex: number, stage: 1 | 2, backupAcknowledged: boolean) =>
     this.call("preview_offset_preparation", (value) => offsetPreview(value, "preview_offset_preparation", stage, boardIndex) as OffsetPreparationPreview,
-      { session_id: sessionId, board_index: boardIndex, stage, backup_acknowledged: backupAcknowledged,
-        ...(firstCalibrationConfirmed ? { first_calibration_confirmed: true } : {}) });
+      { session_id: sessionId, board_index: boardIndex, stage, backup_acknowledged: backupAcknowledged });
   public resumeOffsetCalibration = (sessionId: string, operationId: string, boardIndex: number, stage: 1 | 2, preparationAcknowledged: boolean) =>
     this.call("resume_offset_calibration", (value) => offsetCalibration(value, "resume_offset_calibration", boardIndex, stage),
       { session_id: sessionId, operation_id: operationId, board_index: boardIndex, stage, preparation_acknowledged: preparationAcknowledged });
@@ -1216,6 +1218,15 @@ export class HelperApi {
   });
   public cancelSession = (sessionId: string) =>
     this.call("cancel_session", (value) => session(value, "cancel_session"), { session_id: sessionId });
+  public closeSession = (sessionId: string) =>
+    this.call("close_session", (value) => {
+      const item = record(value, "close_session");
+      exactKeys(item, ["session_id", "closed"], "close_session");
+      string(item.session_id, "close_session");
+      boolean(item.closed, "close_session");
+      if (item.session_id !== sessionId || item.closed !== true) throw new Error("close_session response is invalid");
+      return item;
+    }, { session_id: sessionId });
   public subscribeSetup = (callback: (message: SetupSnapshot) => void) =>
     this.subscribe("subscribe_setup", {}, (value) => setup(value, "subscribe_setup"), callback);
   public subscribeConfigTransaction = (

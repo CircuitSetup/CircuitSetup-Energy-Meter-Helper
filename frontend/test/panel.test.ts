@@ -217,7 +217,7 @@ describe("explicit totals adoption and migration transactions", () => {
       managed_advanced_totals: false, reason_codes: ["totals_adoption_required"] });
     const calls: Record<string, unknown>[] = [];
     const responses: Record<string, unknown> = { setup_status: { state: "device_discovered", devices: [device] },
-      preview_meter_configuration: reviewed(), cancel_session: { ...session, state: "cancelled" }, get_meter_configuration: meter,
+      preview_meter_configuration: reviewed(), cancel_session: { ...session, state: "cancelled" }, close_session: { session_id: "session", closed: true }, get_meter_configuration: meter,
       preview_total_graph: { plan_id: meter.plan_id, source_sha256: meter.source_sha256, configuration_impact: meter.configuration_impact,
         automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } }, ...overrides };
     const hass = makeHass(responses); const call = hass.callWS;
@@ -325,8 +325,7 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(extra.restartResult).toEqual(restart);
     expect(calls.some((message) => /preview_meter_configuration|apply_ct_config|cancel_session/.test(String(message.type)))).toBe(false);
     panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="finish"]')?.click();
-    await panel.updateComplete;
-    expect(state.selectedDeviceId).toBeNull();
+    await vi.waitFor(() => expect(state.selectedDeviceId).toBeNull());
     confirm.mockRestore();
   });
 
@@ -349,6 +348,16 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(calls.some((message) => String(message.type).endsWith("preview_meter_configuration"))).toBe(true);
     expect(state.meterConfiguration.configuration.totals_change_intent.legacy_parent_decisions).toHaveLength(1);
     expect(calls.some((message) => String(message.type).endsWith("complete_calibration_without_changes"))).toBe(false);
+  });
+
+  it("cancels and clears a no-change finish without closing the session twice", async () => {
+    const { panel, state, calls } = await prepare({}, false);
+    state.session = session;
+    await state.finishWithoutCalibration();
+    expect(calls.filter((message) => String(message.type).endsWith("cancel_session"))).toHaveLength(1);
+    expect(calls.some((message) => String(message.type).endsWith("close_session"))).toBe(false);
+    expect(state.selectedDeviceId).toBeNull();
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
   });
 
   it.each(["adoption", "keep independent"])("retains metadata-only %s after a failed install and clears it only on verified retry", async (choice) => {
@@ -891,6 +900,28 @@ describe("meter configuration review and summary", () => {
     expect(panel.shadowRoot?.querySelector('[role="alert"]')?.textContent).toContain("Edit these existing totals in ESPHome Device Builder");
     expect(text(panel)).not.toContain("private-source-canary");
     expect(text(panel)).not.toContain("Circuit configuration could not be reviewed.");
+    expect(state.step).toBe("ct");
+  });
+
+  it.each(["preview_meter_configuration", "preview_total_graph"])("explains %s generated total ID conflicts without exposing server details", async (operation) => {
+    const response = meterResponse();
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] } });
+    const call = hass.callWS.bind(hass);
+    hass.callWS = <T>(message: Record<string, unknown>): Promise<T> => String(message.type).endsWith(`/${operation}`)
+      ? Promise.reject({ code: "generated_total_id_conflict", message: "private-generated-id-canary" }) : call<T>(message);
+    const panel = await mount(hass);
+    const state = panel as unknown as { selectedDeviceId: string; setMeterConfiguration(value: typeof response): void;
+      previewCanonicalConfiguration(): Promise<void>; refreshTotalGraph(configuration: MeterConfigurationRequest): Promise<void>;
+      meterConfiguration: typeof response; step: string };
+    state.selectedDeviceId = "meter-1";
+    state.setMeterConfiguration(response);
+    panel.showInventory(response);
+    if (operation === "preview_meter_configuration") await state.previewCanonicalConfiguration();
+    else await state.refreshTotalGraph(state.meterConfiguration.configuration);
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector('[role="alert"]')?.textContent).toContain("Rename one of the totals");
+    expect(text(panel)).not.toContain("Device Builder");
+    expect(text(panel)).not.toContain("private-generated-id-canary");
     expect(state.step).toBe("ct");
   });
 
@@ -2799,6 +2830,9 @@ describe("CircuitSetup panel", () => {
       offset_boards: Array.from({ length: 7 }, (_, board_index) => ({ board_index, stages: [
         { stage: 1, state: "not_started" }, { stage: 2, state: "not_started" },
       ] })), has_pending_calibration: false };
+    state.offsetPreparation = { backup_available: true, operation_id: "4".repeat(32), stage: 1,
+      targets: ["meter_main1", "meter_main2"], mode: "native", installed: false, cancelled: false,
+      action_ready: true, attempted: [], completed: [] };
 
     panel.showState("offset" as never);
     await panel.updateComplete;
@@ -2809,6 +2843,7 @@ describe("CircuitSetup panel", () => {
     expect(copy).toContain("power the meter from USB only");
     expect(copy).toContain("check that every voltage/current phase reads near zero");
     expect(copy).toContain("Measurements cannot prove");
+    expect(copy).not.toContain("never had offset calibration applied");
     expect(panel.shadowRoot?.querySelectorAll("[data-offset-board]")).toHaveLength(7);
     expect(panel.shadowRoot?.querySelector("[data-offset-stage='1']")?.getAttribute("aria-current")).toBe("step");
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-offset-stage='2']")?.disabled).toBe(true);
@@ -5302,5 +5337,46 @@ describe("CircuitSetup panel", () => {
     await state.reconnectSession();
     expect((state.session as { state: string }).state).toBe("unstable");
     expect(calls).toContain("reconnect_session");
+  });
+
+  it("waits for server close before clearing the selected Summary device", async () => {
+    let resolveClose!: (value: unknown) => void;
+    const close = new Promise((resolve) => { resolveClose = resolve; });
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "close_session") return close as Promise<T>;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { finishFlow(message: string): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.session = { session_id: "session", device_id: "meter-1", state: "verified", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+    panel.showState("summary");
+
+    const finishing = state.finishFlow("Finished");
+    await tick();
+    expect(state.selectedDeviceId).toBe("meter-1");
+    resolveClose({ session_id: "session", closed: true });
+    await finishing;
+    expect(state.selectedDeviceId).toBeNull();
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+  });
+
+  it("keeps Summary selected when server close fails", async () => {
+    const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] }, close_session: new Error("busy") });
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { finishFlow(message: string): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.session = { session_id: "session", device_id: "meter-1", state: "verified", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+    panel.showState("summary");
+
+    await state.finishFlow("Finished");
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup complete");
+    expect(text(panel)).toContain("Summary remains available");
   });
 });

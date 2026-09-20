@@ -692,6 +692,7 @@ def _message(command: str, msg_id: int = 1) -> dict[str, Any]:
         "get_session",
         "restart_and_verify",
         "cancel_session",
+        "close_session",
         "subscribe_session",
     }:
         base["session_id"] = "session"
@@ -3576,9 +3577,9 @@ def test_preview_meter_configuration_checks_size_then_admin_before_nested_schema
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("source_owned_failure", (False, True))
+@pytest.mark.parametrize("failure", (None, "source_owned", "generated"))
 @pytest.mark.parametrize("operation", ("preview_meter_configuration", "preview_total_graph"))
-def test_controller_routes_full_meter_configuration_without_browser_changes(source_owned_failure: bool, operation: str) -> None:
+def test_controller_routes_full_meter_configuration_without_browser_changes(failure: str | None, operation: str) -> None:
     """The browser supplies a schema-validated request, never a change record."""
     from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
         ApiFailure,
@@ -3598,11 +3599,16 @@ def test_controller_routes_full_meter_configuration_without_browser_changes(sour
                 self, device_id: str, plan_id: str, source_sha256: str, request: object
             ) -> str:
                 received.append((device_id, plan_id, source_sha256, request))
-                if source_owned_failure:
+                if failure == "source_owned":
                     from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
                         SourceOwnedTotalEditError,
                     )
                     raise SourceOwnedTotalEditError("private-source-canary")
+                if failure == "generated":
+                    from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
+                        GeneratedTotalSensorIdConflictError,
+                    )
+                    raise GeneratedTotalSensorIdConflictError("private-generated-id-canary")
                 return "previewed"
 
             async_preview_total_graph = async_preview_meter_configuration
@@ -3641,12 +3647,19 @@ def test_controller_routes_full_meter_configuration_without_browser_changes(sour
              "configuration": request},
             "admin",
         )
-        if source_owned_failure:
-            with pytest.raises(ApiFailure) as failure:
+        if failure == "source_owned":
+            with pytest.raises(ApiFailure) as raised:
                 await preview
-            assert failure.value.code == "source_owned_totals"
-            assert "Device Builder" in failure.value.safe_message
-            assert "private-source-canary" not in failure.value.safe_message
+            assert raised.value.code == "source_owned_totals"
+            assert "Device Builder" in raised.value.safe_message
+            assert "private-source-canary" not in raised.value.safe_message
+        elif failure == "generated":
+            with pytest.raises(ApiFailure) as raised:
+                await preview
+            assert raised.value.code == "generated_total_id_conflict"
+            assert "Rename" in raised.value.safe_message
+            assert "Device Builder" not in raised.value.safe_message
+            assert "private-generated-id-canary" not in raised.value.safe_message
         else:
             assert await preview == "previewed"
         assert received and received[0][:3] == ("meter", "plan", "a" * 64)
@@ -4379,6 +4392,7 @@ def test_every_topology_and_calibration_route_delegates_and_session_events_unsub
         "calibrate_current",
         "restart_and_verify",
         "cancel_session",
+        "close_session",
     )
 
     async def run() -> None:
@@ -4392,6 +4406,18 @@ def test_every_topology_and_calibration_route_delegates_and_session_events_unsub
         for msg_id, operation in enumerate(commands, 1):
             await _invoke(hass, connection, _message(f"{DOMAIN}/{operation}", msg_id))
             assert connection.results[-1][1]["operation"] == f"async_{operation}"
+
+        reconnect_command = f"{DOMAIN}/reconnect_session"
+        _handler, reconnect_schema = hass.data["websocket_api"][reconnect_command]
+        targeted = reconnect_schema(
+            _message(reconnect_command, len(commands) + 2)
+            | {"board_index": 1, "stage": 2}
+        )
+        await _invoke(hass, connection, targeted)
+        assert workflow.calls[-1] == ("async_reconnect_session", ("session", 1, 2))
+        for partial in ({"board_index": 1}, {"stage": 2}):
+            with pytest.raises(vol.Invalid):
+                reconnect_schema(_message(reconnect_command) | partial)
 
         await _invoke(
             hass,
@@ -4519,11 +4545,6 @@ def test_stock_offset_routes_preserve_confirmations_and_private_boundary() -> No
                     for value in (False, 1, "yes"):
                         with pytest.raises(vol.Invalid):
                             schema(valid | {key: value})
-            if operation == "preview_offset_preparation":
-                assert schema(valid)["first_calibration_confirmed"] is False
-                for value in (0, 1, "yes"):
-                    with pytest.raises(vol.Invalid):
-                        schema(valid | {"first_calibration_confirmed": value})
             if command in MUTATION_COMMANDS:
                 with pytest.raises(Unauthorized):
                     handler(hass, FakeConnection(admin=False), schema(valid))
@@ -4531,7 +4552,7 @@ def test_stock_offset_routes_preserve_confirmations_and_private_boundary() -> No
             assert connection.results[-1][1] == {"operation": f"async_{operation}", "action_ready": False}
             assert calls[-1][0] == f"async_{operation}"
             assert calls[-1][1][0] == "3" * 32
-        assert calls[2][2] == {"backup_acknowledged": True, "first_calibration_confirmed": False}
+        assert calls[2][2] == {"backup_acknowledged": True}
         assert calls[3][1] == ("3" * 32, "4" * 32, 0, 1)
         assert calls[3][2] == {"preparation_acknowledged": True}
         assert calls[4][2] == {"verification_id": None, "changes": (), "package_options": None}

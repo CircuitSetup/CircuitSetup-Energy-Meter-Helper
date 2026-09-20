@@ -77,6 +77,7 @@ from .log_parser import LogEvidenceError, MeterCommunicationError
 from .meter_config_mutator import (
     build_meter_configuration_mutation,
     expected_meter_entity_evidence,
+    validate_generated_total_sensor_ids,
 )
 from .meter_configuration import AutomaticTotalSettings, MeterConfigurationRequest
 from .meter_inventory import (
@@ -642,6 +643,7 @@ class EntryWorkflow:
         self._subscribers: dict[str, set[Callable[[SessionStatus], None]]] = {}
         self._session_cleanup_tasks: dict[str, asyncio.Task[None]] = {}
         self._cleaning_macs: dict[str, asyncio.Task[None]] = {}
+        self._closed_sessions: set[str] = set()
         self._close_task: asyncio.Task[None] | None = None
         self._closing = False
         self.transactions: ConfigTransactionManager | None = None
@@ -888,10 +890,33 @@ class EntryWorkflow:
     async def async_get_session(self, session_id: str) -> SessionStatus:
         return self._status(self._session(session_id))
 
-    async def async_reconnect_session(self, session_id: str) -> SessionStatus:
+    async def async_reconnect_session(
+        self,
+        session_id: str,
+        board_index: int | None = None,
+        stage: OffsetReadinessStage | None = None,
+    ) -> SessionStatus:
         handle, revision = self._claim_ready_session(session_id)
         try:
-            await self.async_verify(handle.mac)
+            if (board_index is None) != (stage is None):
+                raise WorkflowHandleError("offset reconnect target is incomplete")
+            if board_index is None:
+                await self.async_verify(handle.mac)
+            else:
+                if stage is None:
+                    raise WorkflowHandleError("offset reconnect target is incomplete")
+                self._validate_offset_target(handle, board_index, stage)
+                groups = handle.binding.groups[board_index * 2 : board_index * 2 + 2]
+                expected_instance_ids = frozenset(
+                    group.key.replace("main_", "meter_main") for group in groups
+                )
+                if len(expected_instance_ids) != 2:
+                    raise OffsetChipIdentityUnavailable(
+                        "selected offset chip identities are unavailable"
+                    )
+                await self.async_verify(
+                    handle.mac, expected_instance_ids=expected_instance_ids
+                )
             self._assert_claim(handle, revision)
             self._refresh(handle)
             return self._publish(handle)
@@ -1033,6 +1058,9 @@ class EntryWorkflow:
                 raise ValueError("automatic candidate settings require booleans")
         plan.inventory.validate_totals_change(current, preview_only=True)
         current = suppress_duplicate_automatic_totals(current, document)
+        validate_generated_total_sensor_ids(
+            current, plan.topology, document, plan.inventory.configuration
+        )
         graph = plan_total_graph(current, plan.topology)
         impact = estimate_configuration_impact(current, plan.topology,
             document=ESPHomeConfigDocument.parse(plan.snapshot.content), previous=plan.inventory.configuration,
@@ -1624,15 +1652,12 @@ class EntryWorkflow:
         stage: OffsetReadinessStage,
         *,
         backup_acknowledged: bool,
-        first_calibration_confirmed: bool = False,
     ) -> dict[str, Any]:
         """Back up exact tables and review a zero baseline; internal workflow entry."""
         if backup_acknowledged is not True:
             raise WorkflowHandleError(
                 "private recovery backup acknowledgement is absent"
             )
-        if type(first_calibration_confirmed) is not bool:
-            raise WorkflowHandleError("first calibration confirmation is invalid")
         handle, revision = self._claim_ready_session(session_id)
         try:
             self._validate_offset_target(handle, board_index, stage)
@@ -1775,7 +1800,6 @@ class EntryWorkflow:
                                 selected_configuration_targets.add(instance)
                         if (
                             item is None
-                            and first_calibration_confirmed
                             and first_use_allowed(instance, baseline_stage)
                         ):
                             if configured is None or (
@@ -2870,6 +2894,34 @@ class EntryWorkflow:
             raise asyncio.CancelledError
         return status
 
+    async def async_close_session(self, session_id: str) -> dict[str, Any]:
+        if session_id in self._closed_sessions and session_id not in self._sessions:
+            return {"session_id": session_id, "closed": True}
+        handle = self._session(session_id)
+        with self._guard(handle.mac):
+            handle = self._session_locked(session_id)
+            if (
+                handle.active_task is not None
+                or handle.state not in {"verified", "offset_configuration_selected"}
+                or handle.stock_offset_pending
+                or self._sessions_owner.pending_calibration(handle.mac) is not None
+            ):
+                raise WorkflowHandleError("calibration session is not terminal")
+            cleanup_task = self._start_session_cleanup(handle, None)
+            handle.revoked = True
+            handle.revision += 1
+            self._sessions.pop(session_id, None)
+            self._subscribers.pop(session_id, None)
+            self._closed_sessions.add(session_id)
+        try:
+            caller_cancelled = await _wait_for_owned_cleanup(cleanup_task)
+        finally:
+            if cleanup_task.done():
+                self._session_cleanup_tasks.pop(session_id, None)
+        if caller_cancelled:
+            raise asyncio.CancelledError
+        return {"session_id": session_id, "closed": True}
+
     def subscribe_session(
         self, session_id: str, callback: Callable[[SessionStatus], None]
     ) -> Callable[[], None]:
@@ -3032,6 +3084,7 @@ class EntryWorkflow:
         self._inspections.clear()
         self._sessions.clear()
         self._subscribers.clear()
+        self._closed_sessions.clear()
         self._session_cleanup_tasks.clear()
         self._cleaning_macs.clear()
         builder = self._builder

@@ -32,6 +32,7 @@ _PUBLIC_ERROR_CODES = {
     "device_busy",
     "device_not_adopted",
     "device_not_found",
+    "generated_total_id_conflict",
     "invalid_request",
     "legacy_totals_unmanaged",
     "meter_configuration_invalid",

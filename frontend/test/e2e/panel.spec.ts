@@ -509,6 +509,10 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         ...currentSession, state: "verified", has_pending_calibration: false,
       };
       else if (operation === "cancel_session") result = currentSession = session("cancelled", false);
+      else if (operation === "close_session") {
+        sessionActive = false;
+        result = { session_id: frame.session_id, closed: true };
+      }
       else if (operation === "subscribe_setup") {
         ++setupSubscriptionGeneration;
         result = setupSnapshot();
@@ -1744,7 +1748,7 @@ const mutationOperations = new Set([
   "compile_ct_config", "install_ct_config", "abandon_ct_config", "set_ha_labels", "start_session",
   "acknowledge_safety", "reconnect_session", "skip_offset_calibration", "calibrate_voltage", "calibrate_current",
   "calibrate_offset", "restart_and_verify", "complete_calibration_without_changes",
-  "preview_calibrated_gains", "clear_calibration_flash",
+  "preview_calibrated_gains", "clear_calibration_flash", "close_session",
 ]);
 
 function mutations(frames: Frame[]) {

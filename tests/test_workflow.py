@@ -1004,6 +1004,34 @@ def test_total_graph_preview_is_repeatable_read_only_and_recomputes_roles() -> N
     asyncio.run(run())
 
 
+def test_total_graph_preview_rejects_colliding_generated_sensor_ids() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        ChannelTotalSource,
+        CircuitAggregate,
+        EnergyMode,
+        MeasurementMethod,
+        TotalOutputSettings,
+    )
+
+    async def run() -> None:
+        workflow, plan = _total_preview_workflow()
+        first = CircuitAggregate(
+            "first", "Pool Pump", CircuitRole.CUSTOM, (ChannelTotalSource("channel", 1),),
+            MeasurementMethod.DIRECT, EnergyMode.CONSUMPTION,
+            TotalOutputSettings(True, False, False),
+        )
+        second = replace(first, aggregate_id="second", name="Pool-Pump",
+            sources=(ChannelTotalSource("channel", 2),))
+        requested = replace(plan.inventory.configuration, aggregates=(first, second))
+
+        with pytest.raises(ValueError, match="generated total sensor ID conflicts"):
+            await workflow.async_preview_total_graph(
+                "meter", "plan", plan.snapshot.sha256, requested
+            )
+
+    asyncio.run(run())
+
+
 def test_configuration_preview_accepts_known_automatic_settings_after_candidate_disappears() -> None:
     """A renamed CT pair may make a previously issued suggestion stale during review."""
 
@@ -1520,6 +1548,67 @@ def test_reconnect_session_reconnects_and_inspects_the_live_meter() -> None:
         assert calls == [MAC]
         assert status.session_id == handle.session_id
         assert handle.active_task is None
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_reconnect_session_scopes_selected_offset_board() -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        calls: list[tuple[str, frozenset[str] | None]] = []
+
+        async def verify(
+            mac: str, *, expected_instance_ids: frozenset[str] | None = None
+        ) -> None:
+            calls.append((mac, expected_instance_ids))
+
+        workflow.async_verify = verify  # type: ignore[method-assign]
+
+        await workflow.async_reconnect_session(handle.session_id, 0, 1)
+
+        assert calls == [(MAC, frozenset({"meter_main1", "meter_main2"}))]
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("state", ("verified", "offset_configuration_selected"))
+def test_close_session_retires_terminal_handle_and_is_idempotent(state: str) -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        handle.state = state
+        workflow.subscribe_session(handle.session_id, lambda _status: None)
+
+        closed = await workflow.async_close_session(handle.session_id)
+
+        assert closed == {"session_id": handle.session_id, "closed": True}
+        assert handle.session_id not in workflow._sessions
+        assert handle.session_id not in workflow._subscribers
+        assert not workflow._cleaning_macs
+        assert await workflow.async_close_session(handle.session_id) == closed
+
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("state", "stock_offset_pending"),
+    (("ready", False), ("verified", True), ("offset_configuration_selected", True)),
+)
+def test_close_session_rejects_nonterminal_or_recovery_pending_work(
+    state: str, stock_offset_pending: bool
+) -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        handle.state = state
+        handle.stock_offset_pending = stock_offset_pending
+
+        with pytest.raises(WorkflowHandleError, match="terminal"):
+            await workflow.async_close_session(handle.session_id)
+
+        assert workflow._session(handle.session_id) is handle
         await workflow.async_close()
 
     asyncio.run(run())
