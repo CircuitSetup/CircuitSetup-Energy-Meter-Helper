@@ -1035,9 +1035,12 @@ export class CircuitSetupPanel extends LitElement {
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
     const calibrationPreparation = current !== null && this.isCalibrationPreparationTransaction(current);
-    const chipFailureRetry = current?.purpose === "install_configuration"
+    const appliedInstallRetry = current?.purpose === "install_configuration"
       && current.state === "install_confirmation_required"
-      && current.evidence.includes("meter_communication_failed");
+      && current.evidence.some((code) => ["meter_communication_failed", "persistence_failed"].includes(code));
+    const terminalPersistenceFailure = current?.purpose === "install_configuration"
+      && current.state === "failed" && !current.rollback_available
+      && current.evidence.includes("persistence_failed") && current.progress.includes("device_verified");
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
         this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first."); return;
@@ -1055,7 +1058,7 @@ export class CircuitSetupPanel extends LitElement {
       }, "The review could not be cancelled. Recovery and captured values are retained.", () => this.ownsOperation(generation, api, deviceId));
       this.pendingAction = ""; this.requestUpdate(); return;
     }
-    if (current && !["previewed", "rolled_back"].includes(current.state) && !chipFailureRetry) {
+    if (current && !["previewed", "rolled_back"].includes(current.state) && !appliedInstallRetry && !terminalPersistenceFailure) {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
     }
@@ -1072,7 +1075,7 @@ export class CircuitSetupPanel extends LitElement {
       meterFrequencyTouched: this.meterFrequencyTouched,
       meterNominalVoltageTouched: new Set(this.meterNominalVoltageTouched),
     } : null);
-    if (!chipFailureRetry && !this.calibrationHandoff && !calibrationPreparation && !correction) {
+    if (!appliedInstallRetry && !terminalPersistenceFailure && !this.calibrationHandoff && !calibrationPreparation && !correction) {
       this.fail(new Error(), "The edited configuration is unavailable. Return to setup and reload the meter.");
       return;
     }
@@ -1082,15 +1085,16 @@ export class CircuitSetupPanel extends LitElement {
     const generation = ++this.operationGeneration;
     let abandoned = current === null || current?.state === "rolled_back";
     try {
-      if (current?.state === "previewed" || chipFailureRetry) {
+      if (current?.state === "previewed" || appliedInstallRetry) {
         await api.abandonCtConfig(deviceId, current.transaction_id, current.source_sha256);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.clearSubscription("transaction");
         this.transaction = null;
         abandoned = true;
-      } else if (current?.state === "rolled_back") {
+      } else if (current?.state === "rolled_back" || terminalPersistenceFailure) {
         this.clearSubscription("transaction");
         this.transaction = null;
+        abandoned = true;
       }
       if (calibrationPreparation) {
         this.clearSubscription("session");
@@ -1108,14 +1112,16 @@ export class CircuitSetupPanel extends LitElement {
       this.reviewCorrection = correction;
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      if (chipFailureRetry) {
+      if (appliedInstallRetry || terminalPersistenceFailure) {
         this.packageOptionsTouched = false;
         this.meterFrequencyTouched = false;
         this.meterNominalVoltageTouched = new Set();
         this.setMeterConfiguration(fresh);
         this.showInventory(this.meterConfiguration!);
         this.reviewCorrection = null;
-        this.announcement = "Review cancelled. Live saved configuration was reloaded.";
+        this.announcement = current?.evidence.includes("persistence_failed")
+          ? "Installed configuration was reloaded."
+          : "Review cancelled. Live saved configuration was reloaded.";
         return;
       }
       if (fresh.source_sha256 !== correction!.sourceSha256) {

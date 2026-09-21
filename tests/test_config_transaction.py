@@ -710,6 +710,12 @@ def test_new_upload_revokes_previous_flash_clear_authority_before_side_effects(f
             result = await manager.async_confirm_install(preview.transaction_id, "admin")
             if failure == "reconnect_timeout":
                 await manager.async_rollback(preview.transaction_id)
+            elif failure == "metadata_save":
+                assert result.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+                backend.fail = False
+                assert (
+                    await manager.async_confirm_install(preview.transaction_id, "admin")
+                ).state is ConfigTransactionState.VERIFIED
             else:
                 assert result.state is ConfigTransactionState.FAILED
         backend.fail = False
@@ -1915,7 +1921,7 @@ def test_unload_keeps_started_store_commit_owned_until_terminal_state() -> None:
 
 
 def test_unload_drains_started_store_failure_before_returning() -> None:
-    """A durable-save error reaches the transaction terminal state before unload ends."""
+    """A durable-save error reaches retry state before unload closes the transaction."""
 
     class FailingPersistence(Persistence):
         def __init__(self) -> None:
@@ -1979,9 +1985,11 @@ def test_unload_drains_started_store_failure_before_returning() -> None:
         assert not unload.done()
         persistence.finish.set()
 
-        assert (await install).state is ConfigTransactionState.FAILED
+        assert (
+            await install
+        ).state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         await unload
-        assert states[-1] is ConfigTransactionState.FAILED
+        assert states[-1] is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert persistence.meter_configuration is None
         assert sessions._get_transaction(preview.transaction_id) is None
         assert transaction.closed and transaction.meter_configuration is None
@@ -3025,15 +3033,48 @@ def test_reconnect_rejects_wrong_identity_topology_entities_or_count(
     asyncio.run(run())
 
 
-def test_persistence_failure_is_terminal_and_releases_lease() -> None:
+def test_persistence_failure_retries_metadata_without_uploading_again() -> None:
     async def run() -> None:
-        manager = _manager(Builder(), Persistence(OSError("disk secret")))
+        builder = Builder()
+        persistence = Persistence(OSError("disk secret"))
+        manager = _manager(builder, persistence)
         preview = await _preview(manager)
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert status.evidence == (TransactionEvidenceCode.PERSISTENCE_FAILED,)
+        assert not status.rollback_available
         assert "secret" not in repr(status)
+        assert manager.sessions.is_config_locked("aabbccddeeff")
+
+        persistence.error = None
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert status.evidence == ()
+        assert builder.calls.count("upload") == 1
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
+
+    asyncio.run(run())
+
+
+def test_persistence_retry_can_be_abandoned_without_rollback() -> None:
+    async def run() -> None:
+        builder = Builder()
+        manager = _manager(builder, Persistence(OSError("disk secret")))
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        retry = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert retry.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert not retry.rollback_available
+        abandoned = await manager.async_abandon(preview.transaction_id)
+
+        assert abandoned.state is ConfigTransactionState.FAILED
+        assert abandoned.evidence[-1] is TransactionEvidenceCode.CANCELLED
+        assert builder.restored_content is None
         assert not manager.sessions.is_config_locked("aabbccddeeff")
 
     asyncio.run(run())

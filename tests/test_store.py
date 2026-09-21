@@ -715,10 +715,108 @@ def test_verified_meter_configuration_compare_and_swap_updates_record_and_metada
         assert raw["config_sha256"] == PROPOSED_HASH  # type: ignore[index]
         assert raw["meter_configuration"]["config_sha256"] == PROPOSED_HASH  # type: ignore[index]
         assert await store.async_get_meter_configuration(MAC) == proposed
-        with pytest.raises(ValueError, match="current meter record"):
-            await store.async_save_verified_meter_configuration(
-                MAC, CONFIG_HASH, proposed
+        await store.async_save_verified_meter_configuration(MAC, CONFIG_HASH, proposed)
+
+    asyncio.run(run())
+
+
+def test_verified_meter_configuration_retries_after_uncertain_save() -> None:
+    class UncertainStorage(_CopyingStorage):
+        fail_after_commit = False
+
+        async def async_save(self, data: dict[str, object]) -> None:
+            await super().async_save(data)
+            if self.fail_after_commit:
+                self.fail_after_commit = False
+                raise OSError("write response lost")
+
+    async def run() -> None:
+        backend = UncertainStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+        proposed = replace(_configuration(), config_sha256=PROPOSED_HASH)
+
+        backend.fail_after_commit = True
+        with pytest.raises(OSError, match="response lost"):
+            await store.async_save_verified_meter_configuration(MAC, CONFIG_HASH, proposed)
+        await store.async_save_verified_meter_configuration(MAC, CONFIG_HASH, proposed)
+
+        assert await store.async_get_meter_configuration(MAC) == proposed
+
+    asyncio.run(run())
+
+
+def test_offset_source_advancement_retries_after_uncertain_save() -> None:
+    class UncertainStorage(_CopyingStorage):
+        fail_after_commit = False
+
+        async def async_save(self, data: dict[str, object]) -> None:
+            await super().async_save(data)
+            if self.fail_after_commit:
+                self.fail_after_commit = False
+                raise OSError("write response lost")
+
+    async def run() -> None:
+        backend = UncertainStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+
+        backend.fail_after_commit = True
+        with pytest.raises(OSError, match="response lost"):
+            await store.async_advance_offset_configuration_source(
+                MAC, CONFIG_HASH, PROPOSED_HASH, _record()
             )
+        assert await store.async_advance_offset_configuration_source(
+            MAC, CONFIG_HASH, PROPOSED_HASH, _record()
+        )
+
+    asyncio.run(run())
+
+
+def test_calibrated_install_retries_after_uncertain_save() -> None:
+    class UncertainStorage(_CopyingStorage):
+        fail_after_commit = False
+
+        async def async_save(self, data: dict[str, object]) -> None:
+            await super().async_save(data)
+            if self.fail_after_commit:
+                self.fail_after_commit = False
+                raise OSError("write response lost")
+
+    async def run() -> None:
+        backend = UncertainStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        calibration = VerifiedCalibrationRecord(
+            MAC, "meter.yaml", CONFIG_HASH, 0,
+            "circuitsetup.6c-energy-meter", "wifi", "standard", 1,
+            (VerifiedGainGroup("meter_main1", ((7305, 27518),) * 3),),
+            "b" * 32,
+        )
+        transaction_id = "c" * 32
+        proposed = replace(_configuration(), config_sha256=PROPOSED_HASH)
+        await store.async_save_meter(_record())
+        await store.async_save_verified_calibration(calibration)
+        assert await store.async_claim_verified_calibration(
+            MAC, calibration.verification_id, transaction_id
+        )
+
+        backend.fail_after_commit = True
+        with pytest.raises(OSError, match="response lost"):
+            await store.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+                MAC, CONFIG_HASH, proposed, calibration.verification_id, transaction_id
+            )
+        assert await store.async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
+            MAC, CONFIG_HASH, proposed, calibration.verification_id, transaction_id
+        )
+
+        installed = await store.async_get_verified_calibration(MAC)
+        assert installed is not None and installed.source_handoff_firmware_installed
 
     asyncio.run(run())
 
@@ -741,10 +839,9 @@ def test_verified_meter_configuration_creates_initial_record_after_reconnect() -
         assert raw["config_sha256"] == PROPOSED_HASH  # type: ignore[index]
         assert raw["meter_configuration"]["config_sha256"] == PROPOSED_HASH  # type: ignore[index]
         assert await store.async_get_meter_configuration(MAC) == proposed
-        with pytest.raises(ValueError, match="current meter record"):
-            await store.async_save_verified_meter_configuration(
-                MAC, CONFIG_HASH, proposed, _record()
-            )
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, proposed, _record()
+        )
 
     asyncio.run(run())
 
@@ -1458,6 +1555,51 @@ def test_legacy_calibrated_install_commits_selections_and_marker_in_one_save() -
         assert "meter_configuration" not in raw  # type: ignore[operator]
         stored = await store.async_get_verified_calibration(MAC)
         assert stored is not None and stored.source_handoff_firmware_installed
+
+    asyncio.run(run())
+
+
+def test_legacy_calibrated_install_retries_after_uncertain_save() -> None:
+    class UncertainStorage(_CopyingStorage):
+        fail_after_commit = False
+
+        async def async_save(self, data: dict[str, object]) -> None:
+            await super().async_save(data)
+            if self.fail_after_commit:
+                self.fail_after_commit = False
+                raise OSError("write response lost")
+
+    async def run() -> None:
+        backend = UncertainStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        calibration = VerifiedCalibrationRecord(
+            MAC, "meter.yaml", CONFIG_HASH, 0,
+            "circuitsetup.6c-energy-meter", "wifi", "standard", 1,
+            (VerifiedGainGroup("meter_main1", ((7305, 27518),) * 3),),
+            "b" * 32,
+        )
+        transaction_id = "c" * 32
+        selections = (
+            StoredCTSelection(1, "ct", "Kitchen", 27518, 1.0, PROPOSED_HASH),
+        )
+        await store.async_save_meter(_record())
+        await store.async_save_verified_calibration(calibration)
+        assert await store.async_claim_verified_calibration(
+            MAC, calibration.verification_id, transaction_id
+        )
+
+        backend.fail_after_commit = True
+        with pytest.raises(OSError, match="response lost"):
+            await store.async_save_verified_ct_selections_and_mark_verified_calibration_installed(
+                MAC, CONFIG_HASH, PROPOSED_HASH, _record(), selections,
+                calibration.verification_id, transaction_id,
+            )
+        assert await store.async_save_verified_ct_selections_and_mark_verified_calibration_installed(
+            MAC, CONFIG_HASH, PROPOSED_HASH, _record(), selections,
+            calibration.verification_id, transaction_id,
+        )
 
     asyncio.run(run())
 
