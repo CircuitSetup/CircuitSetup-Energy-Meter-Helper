@@ -120,7 +120,7 @@ test("native stock offset recovery survives reload, back, retry, finalization, a
   await page.getByRole("button", { name: "Build firmware", exact: true }).click();
   await page.getByRole("button", { name: "Install on meter", exact: true }).click();
   await page.getByRole("button", { name: "Confirm installed offset selection", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Offsets are installed and configuration-selected; register readback is not verified." })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: "Setup complete", exact: true })).toBeVisible({ timeout: 10_000 });
 
   await page.reload();
   await page.locator('[data-action="configure-device"]').click();
